@@ -16,7 +16,9 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Notify;
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -79,8 +81,207 @@ pub struct SubAgentHandle {
 }
 
 struct SubAgentRecord {
-    session: Box<Session>,
+    session: Option<Box<Session>>,
+    active_task: Option<tokio::task::JoinHandle<SubAgentTaskOutput>>,
     result: Option<SubAgentResult>,
+}
+
+struct SubAgentTaskOutput {
+    session: Box<Session>,
+    result: SubAgentResult,
+}
+
+#[derive(Clone)]
+struct ModelOverrideProviderProfile {
+    inner: Arc<dyn ProviderProfile>,
+    model_override: String,
+}
+
+impl ModelOverrideProviderProfile {
+    fn new(inner: Arc<dyn ProviderProfile>, model_override: String) -> Self {
+        Self {
+            inner,
+            model_override,
+        }
+    }
+}
+
+impl ProviderProfile for ModelOverrideProviderProfile {
+    fn id(&self) -> &str {
+        self.inner.id()
+    }
+
+    fn model(&self) -> &str {
+        &self.model_override
+    }
+
+    fn tool_registry(&self) -> Arc<crate::ToolRegistry> {
+        self.inner.tool_registry()
+    }
+
+    fn base_instructions(&self) -> &str {
+        self.inner.base_instructions()
+    }
+
+    fn project_instruction_files(&self) -> Vec<String> {
+        self.inner.project_instruction_files()
+    }
+
+    fn build_system_prompt(
+        &self,
+        environment: &EnvironmentContext,
+        tools: &[forge_llm::ToolDefinition],
+        project_docs: &[ProjectDocument],
+        user_override: Option<&str>,
+    ) -> String {
+        self.inner
+            .build_system_prompt(environment, tools, project_docs, user_override)
+    }
+
+    fn tools(&self) -> Vec<forge_llm::ToolDefinition> {
+        self.inner.tools()
+    }
+
+    fn provider_options(&self) -> Option<Value> {
+        self.inner.provider_options()
+    }
+
+    fn capabilities(&self) -> crate::ProviderCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn knowledge_cutoff(&self) -> Option<&str> {
+        self.inner.knowledge_cutoff()
+    }
+}
+
+#[derive(Clone)]
+struct ScopedExecutionEnvironment {
+    inner: Arc<dyn ExecutionEnvironment>,
+    scoped_working_directory: PathBuf,
+    platform: String,
+    os_version: String,
+}
+
+impl ScopedExecutionEnvironment {
+    fn new(inner: Arc<dyn ExecutionEnvironment>, scoped_working_directory: PathBuf) -> Self {
+        Self {
+            platform: inner.platform().to_string(),
+            os_version: inner.os_version().to_string(),
+            inner,
+            scoped_working_directory,
+        }
+    }
+
+    fn resolve_path(&self, path: &str) -> String {
+        let candidate = Path::new(path);
+        if candidate.is_absolute() {
+            candidate.to_string_lossy().to_string()
+        } else {
+            self.scoped_working_directory
+                .join(candidate)
+                .to_string_lossy()
+                .to_string()
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ExecutionEnvironment for ScopedExecutionEnvironment {
+    async fn read_file(
+        &self,
+        path: &str,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> Result<String, AgentError> {
+        self.inner
+            .read_file(&self.resolve_path(path), offset, limit)
+            .await
+    }
+
+    async fn write_file(&self, path: &str, content: &str) -> Result<(), AgentError> {
+        self.inner
+            .write_file(&self.resolve_path(path), content)
+            .await
+    }
+
+    async fn delete_file(&self, path: &str) -> Result<(), AgentError> {
+        self.inner.delete_file(&self.resolve_path(path)).await
+    }
+
+    async fn move_file(&self, from: &str, to: &str) -> Result<(), AgentError> {
+        self.inner
+            .move_file(&self.resolve_path(from), &self.resolve_path(to))
+            .await
+    }
+
+    async fn file_exists(&self, path: &str) -> Result<bool, AgentError> {
+        self.inner.file_exists(&self.resolve_path(path)).await
+    }
+
+    async fn list_directory(
+        &self,
+        path: &str,
+        depth: usize,
+    ) -> Result<Vec<crate::DirEntry>, AgentError> {
+        self.inner
+            .list_directory(&self.resolve_path(path), depth)
+            .await
+    }
+
+    async fn exec_command(
+        &self,
+        command: &str,
+        timeout_ms: u64,
+        working_dir: Option<&str>,
+        env_vars: Option<HashMap<String, String>>,
+    ) -> Result<crate::ExecResult, AgentError> {
+        let effective_working_dir = working_dir
+            .map(|path| self.resolve_path(path))
+            .unwrap_or_else(|| self.scoped_working_directory.to_string_lossy().to_string());
+        self.inner
+            .exec_command(command, timeout_ms, Some(&effective_working_dir), env_vars)
+            .await
+    }
+
+    async fn grep(
+        &self,
+        pattern: &str,
+        path: &str,
+        options: crate::GrepOptions,
+    ) -> Result<String, AgentError> {
+        self.inner
+            .grep(pattern, &self.resolve_path(path), options)
+            .await
+    }
+
+    async fn glob(&self, pattern: &str, path: &str) -> Result<Vec<String>, AgentError> {
+        self.inner.glob(pattern, &self.resolve_path(path)).await
+    }
+
+    async fn initialize(&self) -> Result<(), AgentError> {
+        self.inner.initialize().await
+    }
+
+    async fn cleanup(&self) -> Result<(), AgentError> {
+        self.inner.cleanup().await
+    }
+
+    async fn terminate_all_commands(&self) -> Result<(), AgentError> {
+        self.inner.terminate_all_commands().await
+    }
+
+    fn working_directory(&self) -> &Path {
+        &self.scoped_working_directory
+    }
+
+    fn platform(&self) -> &str {
+        &self.platform
+    }
+
+    fn os_version(&self) -> &str {
+        &self.os_version
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +307,21 @@ pub struct Session {
     subagents: HashMap<String, SubAgentHandle>,
     subagent_records: HashMap<String, SubAgentRecord>,
     subagent_depth: usize,
-    abort_requested: bool,
+    abort_requested: Arc<AtomicBool>,
+    abort_notify: Arc<Notify>,
+}
+
+#[derive(Clone)]
+pub struct SessionAbortHandle {
+    abort_requested: Arc<AtomicBool>,
+    abort_notify: Arc<Notify>,
+}
+
+impl SessionAbortHandle {
+    pub fn request_abort(&self) {
+        self.abort_requested.store(true, Ordering::SeqCst);
+        self.abort_notify.notify_waiters();
+    }
 }
 
 impl Session {
@@ -173,7 +388,8 @@ impl Session {
             subagents: HashMap::new(),
             subagent_records: HashMap::new(),
             subagent_depth,
-            abort_requested: false,
+            abort_requested: Arc::new(AtomicBool::new(false)),
+            abort_notify: Arc::new(Notify::new()),
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
         Ok(session)
@@ -275,8 +491,15 @@ impl Session {
         self.followup_queue.pop_front()
     }
 
-    pub fn request_abort(&mut self) {
-        self.abort_requested = true;
+    pub fn request_abort(&self) {
+        self.abort_handle().request_abort();
+    }
+
+    pub fn abort_handle(&self) -> SessionAbortHandle {
+        SessionAbortHandle {
+            abort_requested: self.abort_requested.clone(),
+            abort_notify: self.abort_notify.clone(),
+        }
     }
 
     pub async fn process_input(&mut self, user_input: impl Into<String>) -> Result<(), AgentError> {
@@ -303,10 +526,20 @@ impl Session {
             return Err(AgentError::session_closed());
         }
 
-        if self.abort_requested {
-            self.transition_to(SessionState::Closed)?;
+        if self.is_abort_requested() {
+            self.shutdown_to_closed().await?;
             return Ok(false);
         }
+
+        let abort_notify = self.abort_notify.clone();
+        let abort_requested = self.abort_requested.clone();
+        let execution_env = self.execution_env.clone();
+        let abort_kill_watchdog = tokio::spawn(async move {
+            abort_notify.notified().await;
+            if abort_requested.load(Ordering::SeqCst) {
+                let _ = execution_env.terminate_all_commands().await;
+            }
+        });
 
         self.transition_to(SessionState::Processing)?;
         self.push_turn(Turn::User(UserTurn::new(
@@ -323,8 +556,9 @@ impl Session {
         let mut completed_naturally = false;
         let mut context_warning_emitted = false;
         loop {
-            if self.abort_requested {
-                self.transition_to(SessionState::Closed)?;
+            if self.is_abort_requested() {
+                abort_kill_watchdog.abort();
+                self.shutdown_to_closed().await?;
                 return Ok(false);
             }
 
@@ -350,13 +584,28 @@ impl Session {
 
             let request = self.build_request();
             self.emit(EventKind::AssistantTextStart, EventData::new())?;
-            let response = match self.llm_client.complete(request).await {
-                Ok(response) => response,
-                Err(error) => {
-                    self.event_emitter
-                        .emit(SessionEvent::error(self.id.clone(), error.to_string()))?;
-                    self.transition_to(SessionState::Closed)?;
-                    return Err(error.into());
+            let response = {
+                let llm_client = self.llm_client.clone();
+                let llm_call = llm_client.complete(request);
+                tokio::pin!(llm_call);
+                tokio::select! {
+                    result = &mut llm_call => {
+                        match result {
+                            Ok(response) => response,
+                            Err(error) => {
+                                self.event_emitter
+                                    .emit(SessionEvent::error(self.id.clone(), error.to_string()))?;
+                                abort_kill_watchdog.abort();
+                                self.shutdown_to_closed().await?;
+                                return Err(error.into());
+                            }
+                        }
+                    }
+                    _ = self.abort_notify.notified() => {
+                        abort_kill_watchdog.abort();
+                        self.shutdown_to_closed().await?;
+                        return Ok(false);
+                    }
                 }
             };
 
@@ -400,6 +649,7 @@ impl Session {
             self.inject_loop_detection_warning_if_needed()?;
         }
 
+        abort_kill_watchdog.abort();
         if self.state != SessionState::Closed {
             self.transition_to(SessionState::Idle)?;
         }
@@ -521,10 +771,38 @@ impl Session {
         }
 
         let task = required_string_argument(&arguments, "task")?;
+        let working_dir = optional_string_argument(&arguments, "working_dir")?;
+        let model_override = optional_string_argument(&arguments, "model")?;
         let requested_max_turns = optional_usize_argument(&arguments, "max_turns")?;
         let mut child_config = self.config.clone();
         child_config.max_turns = requested_max_turns.unwrap_or(50);
         child_config.max_subagent_depth = self.config.max_subagent_depth;
+
+        let child_execution_env: Arc<dyn ExecutionEnvironment> = if let Some(working_dir) =
+            working_dir
+        {
+            let scoped_dir = resolve_subagent_working_directory(
+                self.execution_env.working_directory(),
+                &working_dir,
+            )?;
+            Arc::new(ScopedExecutionEnvironment::new(
+                self.execution_env.clone(),
+                scoped_dir,
+            ))
+        } else {
+            self.execution_env.clone()
+        };
+
+        let child_provider_profile: Arc<dyn ProviderProfile> = if let Some(model) =
+            model_override.filter(|value| !value.trim().is_empty())
+        {
+            Arc::new(ModelOverrideProviderProfile::new(
+                self.provider_profile.clone(),
+                model,
+            ))
+        } else {
+            self.provider_profile.clone()
+        };
 
         let child_id = Uuid::new_v4().to_string();
         self.subagents.insert(
@@ -535,52 +813,28 @@ impl Session {
             },
         );
 
-        let mut child_session = Session::new_with_depth(
-            self.provider_profile.clone(),
-            self.execution_env.clone(),
+        let child_session = Session::new_with_depth(
+            child_provider_profile,
+            child_execution_env,
             self.llm_client.clone(),
             child_config,
             self.event_emitter.clone(),
             self.subagent_depth + 1,
         )?;
-
-        let completion = Box::pin(child_session.submit(task)).await;
-        let (status, result) = match completion {
-            Ok(_) => {
-                let output = latest_assistant_output(child_session.history()).unwrap_or_default();
-                let result = SubAgentResult {
-                    output,
-                    success: true,
-                    turns_used: child_session.history().len(),
-                };
-                (SubAgentStatus::Completed, result)
-            }
-            Err(error) => {
-                let result = SubAgentResult {
-                    output: error.to_string(),
-                    success: false,
-                    turns_used: child_session.history().len(),
-                };
-                (SubAgentStatus::Failed, result)
-            }
-        };
-
-        if let Some(handle) = self.subagents.get_mut(&child_id) {
-            handle.status = status.clone();
-        }
+        let active_task = Some(spawn_subagent_submit_task(Box::new(child_session), task));
         self.subagent_records.insert(
             child_id.clone(),
             SubAgentRecord {
-                session: Box::new(child_session),
-                result: Some(result.clone()),
+                session: None,
+                active_task,
+                result: None,
             },
         );
+        tokio::task::yield_now().await;
 
         Ok(serde_json::json!({
             "agent_id": child_id,
-            "status": subagent_status_label(&status),
-            "success": result.success,
-            "turns_used": result.turns_used
+            "status": subagent_status_label(&SubAgentStatus::Running),
         })
         .to_string())
     }
@@ -588,59 +842,64 @@ impl Session {
     async fn handle_send_input(&mut self, arguments: Value) -> Result<String, AgentError> {
         let agent_id = required_string_argument(&arguments, "agent_id")?;
         let message = required_string_argument(&arguments, "message")?;
-        let record = self
+        let mut record = self
             .subagent_records
-            .get_mut(&agent_id)
+            .remove(&agent_id)
             .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
+        self.reconcile_subagent_record(&agent_id, &mut record, false)
+            .await?;
 
-        let outcome = Box::pin(record.session.submit(message)).await;
-        let result = match outcome {
-            Ok(_) => {
-                let output = latest_assistant_output(record.session.history()).unwrap_or_default();
-                let result = SubAgentResult {
-                    output,
-                    success: true,
-                    turns_used: record.session.history().len(),
-                };
-                record.result = Some(result.clone());
-                self.set_subagent_status(&agent_id, SubAgentStatus::Completed);
-                result
-            }
-            Err(error) => {
-                let result = SubAgentResult {
-                    output: error.to_string(),
-                    success: false,
-                    turns_used: record.session.history().len(),
-                };
-                record.result = Some(result.clone());
-                self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
-                result
-            }
+        if record.active_task.is_some() {
+            self.subagent_records.insert(agent_id.clone(), record);
+            return Err(ToolError::Execution(format!(
+                "subagent '{}' is still running; call wait before send_input",
+                agent_id
+            ))
+            .into());
+        }
+
+        let Some(session) = record.session.take() else {
+            self.subagent_records.insert(agent_id.clone(), record);
+            return Err(ToolError::Execution(format!(
+                "subagent '{}' is unavailable for new input",
+                agent_id
+            ))
+            .into());
         };
+
+        record.active_task = Some(spawn_subagent_submit_task(session, message));
+        self.set_subagent_status(&agent_id, SubAgentStatus::Running);
+        self.subagent_records.insert(agent_id.clone(), record);
 
         Ok(serde_json::json!({
             "agent_id": agent_id,
-            "status": subagent_status_label(self.subagents.get(&agent_id).map(|h| &h.status).unwrap_or(&SubAgentStatus::Failed)),
-            "success": result.success,
-            "turns_used": result.turns_used
+            "status": subagent_status_label(&SubAgentStatus::Running),
         })
         .to_string())
     }
 
     async fn handle_wait(&mut self, arguments: Value) -> Result<String, AgentError> {
         let agent_id = required_string_argument(&arguments, "agent_id")?;
-        let record = self
+        let mut record = self
             .subagent_records
-            .get(&agent_id)
+            .remove(&agent_id)
             .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
+        self.reconcile_subagent_record(&agent_id, &mut record, true)
+            .await?;
+
         let result = record.result.clone().unwrap_or(SubAgentResult {
             output: String::new(),
             success: matches!(
                 self.subagents.get(&agent_id).map(|handle| &handle.status),
                 Some(SubAgentStatus::Completed)
             ),
-            turns_used: record.session.history().len(),
+            turns_used: record
+                .session
+                .as_ref()
+                .map(|session| session.history().len())
+                .unwrap_or_default(),
         });
+        self.subagent_records.insert(agent_id.clone(), record);
 
         Ok(serde_json::json!({
             "agent_id": agent_id,
@@ -654,18 +913,65 @@ impl Session {
 
     async fn handle_close_agent(&mut self, arguments: Value) -> Result<String, AgentError> {
         let agent_id = required_string_argument(&arguments, "agent_id")?;
-        let record = self
+        let mut record = self
             .subagent_records
-            .get_mut(&agent_id)
+            .remove(&agent_id)
             .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
-        record.session.close()?;
+        if let Some(task) = record.active_task.take() {
+            task.abort();
+        }
+        if let Some(session) = record.session.as_mut() {
+            session.request_abort();
+            let _ = session.close();
+        }
         self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
+        self.subagent_records.insert(agent_id.clone(), record);
 
         Ok(serde_json::json!({
             "agent_id": agent_id,
             "status": "closed"
         })
         .to_string())
+    }
+
+    async fn reconcile_subagent_record(
+        &mut self,
+        agent_id: &str,
+        record: &mut SubAgentRecord,
+        wait_for_completion: bool,
+    ) -> Result<(), AgentError> {
+        let Some(task) = record.active_task.take() else {
+            return Ok(());
+        };
+
+        if !wait_for_completion && !task.is_finished() {
+            record.active_task = Some(task);
+            self.set_subagent_status(agent_id, SubAgentStatus::Running);
+            return Ok(());
+        }
+
+        match task.await {
+            Ok(output) => {
+                let status = if output.result.success {
+                    SubAgentStatus::Completed
+                } else {
+                    SubAgentStatus::Failed
+                };
+                record.session = Some(output.session);
+                record.result = Some(output.result);
+                self.set_subagent_status(agent_id, status);
+            }
+            Err(error) => {
+                record.result = Some(SubAgentResult {
+                    output: format!("subagent task join failed: {}", error),
+                    success: false,
+                    turns_used: 0,
+                });
+                self.set_subagent_status(agent_id, SubAgentStatus::Failed);
+            }
+        }
+
+        Ok(())
     }
 
     fn set_subagent_status(&mut self, agent_id: &str, status: SubAgentStatus) {
@@ -702,7 +1008,12 @@ impl Session {
         let agent_ids: Vec<String> = self.subagent_records.keys().cloned().collect();
         for agent_id in agent_ids {
             if let Some(record) = self.subagent_records.get_mut(&agent_id) {
-                let _ = record.session.close();
+                if let Some(task) = record.active_task.take() {
+                    task.abort();
+                }
+                if let Some(session) = record.session.as_mut() {
+                    let _ = session.close();
+                }
             }
             self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
         }
@@ -807,6 +1118,19 @@ impl Session {
             provider_options: self.provider_profile.provider_options(),
         }
     }
+
+    fn is_abort_requested(&self) -> bool {
+        self.abort_requested.load(Ordering::SeqCst)
+    }
+
+    async fn shutdown_to_closed(&mut self) -> Result<(), AgentError> {
+        if self.state == SessionState::Closed {
+            return Ok(());
+        }
+
+        let _ = self.execution_env.terminate_all_commands().await;
+        self.transition_to(SessionState::Closed)
+    }
 }
 
 fn is_subagent_tool(tool_name: &str) -> bool {
@@ -838,6 +1162,16 @@ fn required_string_argument(arguments: &Value, key: &str) -> Result<String, Agen
     Ok(value.to_string())
 }
 
+fn optional_string_argument(arguments: &Value, key: &str) -> Result<Option<String>, AgentError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(ToolError::Validation(format!("argument '{}' must be a string", key)).into());
+    };
+    Ok(Some(value.to_string()))
+}
+
 fn optional_usize_argument(arguments: &Value, key: &str) -> Result<Option<usize>, AgentError> {
     let Some(value) = arguments.get(key) else {
         return Ok(None);
@@ -856,6 +1190,51 @@ fn latest_assistant_output(history: &[Turn]) -> Option<String> {
             None
         }
     })
+}
+
+fn spawn_subagent_submit_task(
+    mut session: Box<Session>,
+    input: String,
+) -> tokio::task::JoinHandle<SubAgentTaskOutput> {
+    tokio::spawn(async move {
+        let completion = session.submit(input).await;
+        let result = match completion {
+            Ok(_) => SubAgentResult {
+                output: latest_assistant_output(session.history()).unwrap_or_default(),
+                success: true,
+                turns_used: session.history().len(),
+            },
+            Err(error) => SubAgentResult {
+                output: error.to_string(),
+                success: false,
+                turns_used: session.history().len(),
+            },
+        };
+        SubAgentTaskOutput { session, result }
+    })
+}
+
+fn resolve_subagent_working_directory(
+    parent_working_directory: &Path,
+    requested: &str,
+) -> Result<PathBuf, AgentError> {
+    let requested_path = Path::new(requested);
+    let candidate = if requested_path.is_absolute() {
+        requested_path.to_path_buf()
+    } else {
+        parent_working_directory.join(requested_path)
+    };
+
+    let canonical = canonicalize_or_fallback(&candidate);
+    if !canonical.exists() || !canonical.is_dir() {
+        return Err(ToolError::Execution(format!(
+            "subagent working_dir '{}' does not exist or is not a directory",
+            requested
+        ))
+        .into());
+    }
+
+    Ok(canonical)
 }
 
 fn subagent_status_label(status: &SubAgentStatus) -> &'static str {
@@ -1294,6 +1673,7 @@ mod tests {
     use crate::{
         BufferedEventEmitter, LocalExecutionEnvironment, PROJECT_DOC_TRUNCATION_MARKER,
         ProviderCapabilities, RegisteredTool, StaticProviderProfile, ToolExecutor, ToolRegistry,
+        build_openai_tool_registry,
     };
     use async_trait::async_trait;
     use forge_llm::{
@@ -1313,6 +1693,7 @@ mod tests {
     struct SequenceAdapter {
         responses: Arc<Mutex<VecDeque<Response>>>,
         requests: Arc<Mutex<Vec<Request>>>,
+        delay_ms: u64,
     }
 
     #[async_trait]
@@ -1322,6 +1703,9 @@ mod tests {
         }
 
         async fn complete(&self, request: Request) -> Result<Response, SDKError> {
+            if self.delay_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(self.delay_ms)).await;
+            }
             self.requests.lock().expect("requests mutex").push(request);
             self.responses
                 .lock()
@@ -1394,9 +1778,17 @@ mod tests {
     }
 
     fn build_test_client(responses: Vec<Response>) -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
+        build_test_client_with_delay(responses, 0)
+    }
+
+    fn build_test_client_with_delay(
+        responses: Vec<Response>,
+        delay_ms: u64,
+    ) -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
         let adapter = Arc::new(SequenceAdapter {
             responses: Arc::new(Mutex::new(VecDeque::from(responses))),
             requests: Arc::new(Mutex::new(Vec::new())),
+            delay_ms,
         });
 
         let requests = adapter.requests.clone();
@@ -1945,6 +2337,96 @@ mod tests {
         }));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn abort_handle_cancels_inflight_llm_call_and_closes_session() {
+        let (client, _requests) = build_test_client_with_delay(
+            vec![text_response("resp-1", "should not complete normally")],
+            2_000,
+        );
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: tool_registry_with_echo(),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let mut session = Session::new_with_emitter(
+            profile,
+            env,
+            client,
+            SessionConfig::default(),
+            emitter.clone(),
+        )
+        .expect("new session");
+
+        let abort_handle = session.abort_handle();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            abort_handle.request_abort();
+        });
+
+        let started = std::time::Instant::now();
+        session
+            .submit("trigger abort")
+            .await
+            .expect("submit should complete cleanly on abort");
+
+        assert_eq!(session.state(), &SessionState::Closed);
+        assert!(started.elapsed() < std::time::Duration::from_millis(800));
+        assert!(
+            emitter
+                .snapshot()
+                .iter()
+                .any(|event| event.kind == EventKind::SessionEnd),
+            "expected SESSION_END after abort"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn abort_handle_terminates_running_shell_command() {
+        #[cfg(windows)]
+        let command = "ping -n 6 127.0.0.1 > NUL";
+        #[cfg(not(windows))]
+        let command = "sleep 5";
+
+        let (client, _requests) = build_test_client(vec![tool_call_response(
+            "resp-1",
+            "call-shell",
+            "shell",
+            serde_json::json!({ "command": command }),
+        )]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(build_openai_tool_registry()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env_dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(env_dir.path()));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let abort_handle = session.abort_handle();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            abort_handle.request_abort();
+        });
+
+        let started = std::time::Instant::now();
+        session
+            .submit("run long command")
+            .await
+            .expect("submit should complete after abort");
+
+        assert_eq!(session.state(), &SessionState::Closed);
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+    }
+
     #[test]
     fn discover_project_documents_respects_provider_filter_and_precedence() {
         let tmp = tempdir().expect("temp dir should be created");
@@ -2056,7 +2538,7 @@ mod tests {
             .expect("agent_id must exist");
         assert_eq!(
             spawn_payload.get("status").and_then(Value::as_str),
-            Some("completed")
+            Some("running")
         );
 
         let wait = session
@@ -2085,6 +2567,143 @@ mod tests {
         assert_eq!(
             wait_payload.get("success").and_then(Value::as_bool),
             Some(true)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_agent_honors_model_override_for_child_requests() {
+        let (client, requests) = build_test_client(vec![text_response("child-resp-1", "done")]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(build_openai_tool_registry()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let spawn = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-1",
+                "spawn_agent",
+                serde_json::json!({ "task": "do child task", "model": "override-model" }),
+            ))
+            .await
+            .expect("spawn should execute");
+        assert!(!spawn.is_error);
+        let spawn_payload: Value = serde_json::from_str(
+            spawn
+                .content
+                .as_str()
+                .expect("spawn payload should be string JSON"),
+        )
+        .expect("spawn payload should parse");
+        let agent_id = spawn_payload
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .expect("agent_id must exist");
+
+        let wait = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-2",
+                "wait",
+                serde_json::json!({ "agent_id": agent_id }),
+            ))
+            .await
+            .expect("wait should execute");
+        assert!(!wait.is_error);
+
+        let seen_requests = requests.lock().expect("requests mutex").clone();
+        assert_eq!(seen_requests.len(), 1);
+        assert_eq!(seen_requests[0].model, "override-model");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_agent_honors_working_dir_scope_for_child_tools() {
+        let temp = tempdir().expect("temp dir should exist");
+        let scoped_dir = temp.path().join("scoped");
+        fs::create_dir_all(&scoped_dir).expect("scoped dir should exist");
+        fs::write(scoped_dir.join("only.txt"), "scoped-data\n").expect("seed file should write");
+
+        let (client, _requests) = build_test_client(vec![
+            tool_call_response(
+                "child-resp-1",
+                "call-read",
+                "read_file",
+                serde_json::json!({ "file_path": "only.txt", "offset": 1, "limit": 10 }),
+            ),
+            text_response("child-resp-2", "done"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(build_openai_tool_registry()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(temp.path()));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let spawn = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-1",
+                "spawn_agent",
+                serde_json::json!({ "task": "read file", "working_dir": "scoped" }),
+            ))
+            .await
+            .expect("spawn should execute");
+        assert!(!spawn.is_error);
+        let spawn_payload: Value = serde_json::from_str(
+            spawn
+                .content
+                .as_str()
+                .expect("spawn payload should be string JSON"),
+        )
+        .expect("spawn payload should parse");
+        let agent_id = spawn_payload
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .expect("agent_id must exist");
+
+        let wait = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-2",
+                "wait",
+                serde_json::json!({ "agent_id": agent_id }),
+            ))
+            .await
+            .expect("wait should execute");
+        assert!(!wait.is_error);
+
+        let record = session
+            .subagent_records
+            .get(agent_id)
+            .expect("subagent record should exist");
+        let child = record.session.as_ref().expect("child session should be available");
+        let read_result = child.history().iter().find_map(|turn| {
+            if let Turn::ToolResults(results) = turn {
+                results
+                    .results
+                    .iter()
+                    .find(|result| result.tool_call_id == "call-read")
+                    .cloned()
+            } else {
+                None
+            }
+        });
+        let read_result = read_result.expect("read_file result should be present");
+        assert!(!read_result.is_error);
+        assert!(
+            read_result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("scoped-data")
         );
     }
 

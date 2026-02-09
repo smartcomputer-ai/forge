@@ -135,6 +135,12 @@ impl ToolRegistry {
                 return Ok(tool_error_result(tool_call.id, error.to_string()));
             }
         };
+        let parsed_arguments = normalize_tool_arguments_for_dispatch(
+            &tool_call.name,
+            parsed_arguments,
+            &registered.definition.parameters,
+            config,
+        );
 
         if let Err(error) =
             validate_tool_arguments(&registered.definition.parameters, &parsed_arguments)
@@ -173,6 +179,62 @@ impl ToolRegistry {
             is_error: false,
         })
     }
+}
+
+fn normalize_tool_arguments_for_dispatch(
+    tool_name: &str,
+    arguments: Value,
+    schema: &Value,
+    config: &SessionConfig,
+) -> Value {
+    if tool_name != SHELL_TOOL {
+        return arguments;
+    }
+
+    let has_timeout_property = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .and_then(|properties| properties.get("timeout_ms"))
+        .is_some();
+    if !has_timeout_property {
+        return arguments;
+    }
+
+    let Some(object) = arguments.as_object() else {
+        return arguments;
+    };
+    let mut normalized = object.clone();
+    let (default_timeout_ms, max_timeout_ms) = effective_shell_timeout_policy(config);
+
+    let timeout_ms = match normalized.get("timeout_ms") {
+        Some(Value::Number(number)) => {
+            if let Some(value) = number.as_u64() {
+                value.min(max_timeout_ms)
+            } else {
+                return Value::Object(normalized);
+            }
+        }
+        Some(_) => return Value::Object(normalized),
+        None => default_timeout_ms,
+    };
+
+    normalized.insert("timeout_ms".to_string(), Value::from(timeout_ms));
+    Value::Object(normalized)
+}
+
+fn effective_shell_timeout_policy(config: &SessionConfig) -> (u64, u64) {
+    let default_timeout_ms = if config.default_command_timeout_ms == 0 {
+        10_000
+    } else {
+        config.default_command_timeout_ms
+    };
+    let max_timeout_ms = if config.max_command_timeout_ms == 0 {
+        600_000
+    } else {
+        config.max_command_timeout_ms
+    };
+    let max_timeout_ms = max_timeout_ms.max(default_timeout_ms);
+    (default_timeout_ms, max_timeout_ms)
 }
 
 pub const READ_FILE_TOOL: &str = "read_file";
@@ -1081,7 +1143,7 @@ mod tests {
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
     use tokio::time::{Duration, Instant, sleep};
 
@@ -1156,6 +1218,99 @@ mod tests {
             Self {
                 working_dir: PathBuf::from("."),
             }
+        }
+    }
+
+    struct TimeoutCaptureEnv {
+        working_dir: PathBuf,
+        observed_timeout_ms: Arc<AtomicU64>,
+    }
+
+    impl TimeoutCaptureEnv {
+        fn new(observed_timeout_ms: Arc<AtomicU64>) -> Self {
+            Self {
+                working_dir: PathBuf::from("."),
+                observed_timeout_ms,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ExecutionEnvironment for TimeoutCaptureEnv {
+        async fn read_file(
+            &self,
+            _path: &str,
+            _offset: Option<usize>,
+            _limit: Option<usize>,
+        ) -> Result<String, AgentError> {
+            Err(AgentError::NotImplemented("read_file".to_string()))
+        }
+
+        async fn write_file(&self, _path: &str, _content: &str) -> Result<(), AgentError> {
+            Err(AgentError::NotImplemented("write_file".to_string()))
+        }
+
+        async fn delete_file(&self, _path: &str) -> Result<(), AgentError> {
+            Err(AgentError::NotImplemented("delete_file".to_string()))
+        }
+
+        async fn move_file(&self, _from: &str, _to: &str) -> Result<(), AgentError> {
+            Err(AgentError::NotImplemented("move_file".to_string()))
+        }
+
+        async fn file_exists(&self, _path: &str) -> Result<bool, AgentError> {
+            Err(AgentError::NotImplemented("file_exists".to_string()))
+        }
+
+        async fn list_directory(
+            &self,
+            _path: &str,
+            _depth: usize,
+        ) -> Result<Vec<crate::DirEntry>, AgentError> {
+            Err(AgentError::NotImplemented("list_directory".to_string()))
+        }
+
+        async fn exec_command(
+            &self,
+            _command: &str,
+            timeout_ms: u64,
+            _working_dir: Option<&str>,
+            _env_vars: Option<HashMap<String, String>>,
+        ) -> Result<crate::ExecResult, AgentError> {
+            self.observed_timeout_ms
+                .store(timeout_ms, Ordering::SeqCst);
+            Ok(crate::ExecResult {
+                stdout: "ok".to_string(),
+                stderr: String::new(),
+                exit_code: 0,
+                timed_out: false,
+                duration_ms: 1,
+            })
+        }
+
+        async fn grep(
+            &self,
+            _pattern: &str,
+            _path: &str,
+            _options: crate::GrepOptions,
+        ) -> Result<String, AgentError> {
+            Err(AgentError::NotImplemented("grep".to_string()))
+        }
+
+        async fn glob(&self, _pattern: &str, _path: &str) -> Result<Vec<String>, AgentError> {
+            Err(AgentError::NotImplemented("glob".to_string()))
+        }
+
+        fn working_directory(&self) -> &Path {
+            &self.working_dir
+        }
+
+        fn platform(&self) -> &str {
+            "linux"
+        }
+
+        fn os_version(&self) -> &str {
+            "test"
         }
     }
 
@@ -1534,6 +1689,74 @@ mod tests {
             .expect("output field should be present");
         assert_eq!(event_output.chars().count(), 40_000);
         assert!(event_output.chars().all(|ch| ch == 'x'));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_dispatch_injects_default_timeout_from_session_config() {
+        let observed_timeout = Arc::new(AtomicU64::new(0));
+        let env = Arc::new(TimeoutCaptureEnv::new(observed_timeout.clone()));
+        let mut registry = ToolRegistry::default();
+        registry.register(shell_tool());
+
+        let mut config = SessionConfig::default();
+        config.default_command_timeout_ms = 12_345;
+        config.max_command_timeout_ms = 60_000;
+
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: json!({ "command": "echo hi" }),
+                    raw_arguments: None,
+                }],
+                env,
+                &config,
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!results[0].is_error);
+        assert_eq!(observed_timeout.load(Ordering::SeqCst), 12_345);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn shell_dispatch_clamps_timeout_to_session_max() {
+        let observed_timeout = Arc::new(AtomicU64::new(0));
+        let env = Arc::new(TimeoutCaptureEnv::new(observed_timeout.clone()));
+        let mut registry = ToolRegistry::default();
+        registry.register(shell_tool());
+
+        let mut config = SessionConfig::default();
+        config.default_command_timeout_ms = 1_000;
+        config.max_command_timeout_ms = 1_500;
+
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: json!({ "command": "echo hi", "timeout_ms": 30_000 }),
+                    raw_arguments: None,
+                }],
+                env,
+                &config,
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!results[0].is_error);
+        assert_eq!(observed_timeout.load(Ordering::SeqCst), 1_500);
     }
 
     #[test]

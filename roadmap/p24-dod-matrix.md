@@ -18,7 +18,7 @@ This matrix is populated as implementation milestones complete.
 ## 9.2 Provider Profiles
 - [x] OpenAI profile with codex-aligned tools (`apply_patch`) (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
 - [x] Anthropic profile with Claude-aligned tools (`edit_file`) (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
-- [x] Gemini profile with gemini-cli-aligned tools (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
+- [ ] Gemini profile with gemini-cli-aligned tools (deferred; see `roadmap/p24-gaps.md` G5)
 - [x] Provider-specific base system prompts in place (`crates/forge-agent/src/profiles.rs`)
 - [x] Custom tool extension supported (`crates/forge-agent/src/tools.rs`, `crates/forge-agent/src/profiles.rs`)
 - [x] Tool name collision behavior is latest-wins (`crates/forge-agent/src/tools.rs`)
@@ -84,9 +84,10 @@ This matrix is populated as implementation milestones complete.
 - [x] Transient provider errors rely on SDK retry layer (`crates/forge-agent/src/session.rs`, `crates/forge-llm/src/client.rs`)
 - [x] Authentication errors close session without retry (`crates/forge-agent/src/session.rs`)
 - [x] Context usage warnings emitted (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/events.rs`)
-- [ ] Graceful shutdown sequence implemented
+- [x] Graceful shutdown sequence implemented (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/execution.rs`, `crates/forge-agent/src/session.rs` tests)
 
 ## 9.12 Cross-Provider Parity Matrix
+- Note: Gemini parity expansion is deferred for current iteration.
 - [x] Simple file creation task (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Read then edit task (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Multi-file edit flow (`crates/forge-agent/tests/conformance_matrix.rs`)

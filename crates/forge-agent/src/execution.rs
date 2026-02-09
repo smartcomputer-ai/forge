@@ -2,10 +2,10 @@ use crate::AgentError;
 use async_trait::async_trait;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio::process::{Child, Command};
@@ -83,6 +83,10 @@ pub trait ExecutionEnvironment: Send + Sync {
         Ok(())
     }
 
+    async fn terminate_all_commands(&self) -> Result<(), AgentError> {
+        Ok(())
+    }
+
     fn working_directory(&self) -> &Path;
     fn platform(&self) -> &str;
     fn os_version(&self) -> &str;
@@ -96,6 +100,7 @@ pub struct LocalExecutionEnvironment {
     env_policy: EnvVarPolicy,
     default_command_timeout_ms: u64,
     max_command_timeout_ms: u64,
+    running_processes: Arc<Mutex<HashSet<u32>>>,
 }
 
 impl LocalExecutionEnvironment {
@@ -107,6 +112,7 @@ impl LocalExecutionEnvironment {
             env_policy: env_policy_from_env().unwrap_or_default(),
             default_command_timeout_ms: 10_000,
             max_command_timeout_ms: 600_000,
+            running_processes: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -175,6 +181,38 @@ impl LocalExecutionEnvironment {
         }
 
         env
+    }
+
+    fn register_running_process(&self, pid: u32) {
+        if let Ok(mut guard) = self.running_processes.lock() {
+            guard.insert(pid);
+        }
+    }
+
+    fn unregister_running_process(&self, pid: u32) {
+        if let Ok(mut guard) = self.running_processes.lock() {
+            guard.remove(&pid);
+        }
+    }
+
+    fn running_process_ids(&self) -> Vec<u32> {
+        self.running_processes
+            .lock()
+            .map(|guard| guard.iter().copied().collect())
+            .unwrap_or_default()
+    }
+}
+
+struct RunningProcessGuard<'a> {
+    env: &'a LocalExecutionEnvironment,
+    pid: Option<u32>,
+}
+
+impl Drop for RunningProcessGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(pid) = self.pid {
+            self.env.unregister_running_process(pid);
+        }
     }
 }
 
@@ -346,6 +384,14 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
                 command, error
             ))
         })?;
+        let child_pid = child.id();
+        if let Some(pid) = child_pid {
+            self.register_running_process(pid);
+        }
+        let _running_process_guard = RunningProcessGuard {
+            env: self,
+            pid: child_pid,
+        };
 
         let stdout_task = tokio::spawn(read_pipe(child.stdout.take()));
         let stderr_task = tokio::spawn(read_pipe(child.stderr.take()));
@@ -399,13 +445,15 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
             ));
         }
 
-        Ok(ExecResult {
+        let result = ExecResult {
             stdout,
             stderr,
             exit_code: status.code().unwrap_or(if timed_out { 124 } else { -1 }),
             timed_out,
             duration_ms: started.elapsed().as_millis(),
-        })
+        };
+
+        Ok(result)
     }
 
     async fn grep(
@@ -480,6 +528,56 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
     fn os_version(&self) -> &str {
         &self.os_version
     }
+
+    async fn terminate_all_commands(&self) -> Result<(), AgentError> {
+        let pids = self.running_process_ids();
+        if pids.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(unix)]
+        {
+            terminate_process_groups_unix(&pids, nix::sys::signal::Signal::SIGTERM)?;
+            sleep(Duration::from_secs(2)).await;
+            terminate_process_groups_unix(&pids, nix::sys::signal::Signal::SIGKILL)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            for pid in &pids {
+                let _ = Command::new("taskkill")
+                    .arg("/PID")
+                    .arg(pid.to_string())
+                    .arg("/T")
+                    .arg("/F")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .await;
+            }
+        }
+
+        if let Ok(mut guard) = self.running_processes.lock() {
+            for pid in pids {
+                guard.remove(&pid);
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn terminate_process_groups_unix(
+    pids: &[u32],
+    signal: nix::sys::signal::Signal,
+) -> Result<(), AgentError> {
+    use nix::sys::signal::killpg;
+    use nix::unistd::Pid;
+
+    for pid in pids {
+        let _ = killpg(Pid::from_raw(*pid as i32), signal);
+    }
+    Ok(())
 }
 
 fn build_shell_command(command: &str) -> Command {

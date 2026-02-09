@@ -2,6 +2,7 @@
 
 **Status**
 - Open (2026-02-09)
+- Note: Gemini Priority 1 gap work is deferred for now.
 
 **Goal**
 - Close remaining implementation gaps between `spec/02-coding-agent-loop-spec.md` and `crates/forge-agent`.
@@ -12,7 +13,7 @@
 
 ## Priority 0 (Behavioral correctness)
 
-### G1. Wire `SessionConfig` command timeout policy into shell execution
+### [x] G1. Wire `SessionConfig` command timeout policy into shell execution
 - Spec refs: 2.2, 5.4, 9.4
 - Current gap:
   - `SessionConfig.default_command_timeout_ms` / `max_command_timeout_ms` are defined but not used by shell dispatch.
@@ -29,8 +30,11 @@
 - DoD:
   - Session config default/max alter runtime shell behavior in tests.
   - Per-call override works and is clamped by configured max.
+- Completed:
+  - Shell dispatch now injects/clamps `timeout_ms` using `SessionConfig` policy before execution.
+  - Added tests for default timeout injection and max clamp behavior.
 
-### G2. Implement graceful abort/shutdown sequence
+### [x] G2. Implement graceful abort/shutdown sequence
 - Spec refs: 2.8, 9.11, Appendix B graceful shutdown
 - Current gap:
   - Abort flag transitions state, but no explicit cancellation/termination orchestration for in-flight work at session layer.
@@ -48,8 +52,13 @@
 - DoD:
   - Abort test verifies transition to `CLOSED`, subagents closed, and `SESSION_END` emitted.
   - Running shell command is terminated on abort.
+- Completed:
+  - Added `SessionAbortHandle` for out-of-band cancellation.
+  - Session loop now cancels in-flight completion waits via `tokio::select!`.
+  - Added process tracking + `terminate_all_commands()` in `ExecutionEnvironment` and `LocalExecutionEnvironment`.
+  - Added tests for in-flight LLM abort and shell-command termination on abort.
 
-### G3. Fix subagent semantics (`spawn_agent` async behavior + arg support)
+### [x] G3. Fix subagent semantics (`spawn_agent` async behavior + arg support)
 - Spec refs: 7.2, 7.3, 9.9
 - Current gap:
   - `spawn_agent` currently blocks until child completes.
@@ -67,6 +76,11 @@
   - `spawn_agent` returns before child completion.
   - `wait` returns final output deterministically.
   - `working_dir` and `model` are observable in behavior/tests.
+- Completed:
+  - `spawn_agent` now returns `running` immediately and executes child work asynchronously.
+  - `wait` reconciles child task completion and returns final result payload.
+  - Implemented `model` override via provider wrapper and `working_dir` scoping via execution-env wrapper.
+  - Added tests for model override and working-directory scoping.
 
 ## Priority 1 (Spec parity)
 
@@ -85,7 +99,7 @@
 - DoD:
   - 9.10 row in `roadmap/p24-dod-matrix.md` can be marked complete with tests.
 
-### G5. Complete Gemini profile tool parity
+### [deferred] G5. Complete Gemini profile tool parity
 - Spec refs: 3.6, 9.2
 - Current gap:
   - Missing `read_many_files`, `list_dir`, and optional web tools (`web_search`, `web_fetch`).
@@ -98,6 +112,9 @@
   - `crates/forge-agent/tests/conformance_matrix.rs`
 - DoD:
   - Gemini registry includes required tools or documented deferral with rationale.
+- Deferred rationale:
+  - Team decision: skip Gemini work for current Priority 1 closure.
+  - Track this under a follow-up roadmap item after OpenAI/Anthropic parity items are complete.
 
 ### G6. Implement `AWAITING_INPUT` runtime transition logic
 - Spec refs: 2.3, 9.1
@@ -142,7 +159,7 @@
 
 ## Cross-provider test gaps to add
 - Add missing parity case from 9.12:
-  - Multi-step task (`read -> analyze -> edit`) across OpenAI/Anthropic/Gemini.
+  - Multi-step task (`read -> analyze -> edit`) across OpenAI/Anthropic.
 - File:
   - `crates/forge-agent/tests/conformance_matrix.rs`
 
@@ -151,11 +168,10 @@
 2. G2 shutdown/abort
 3. G3 subagent semantics
 4. G4 events
-5. G5 Gemini tool parity
-6. G6 awaiting-input lifecycle
-7. G7 binary/image read handling
-8. G8 fuzzy matching
-9. Add missing 9.12 parity test
+5. G6 awaiting-input lifecycle
+6. G7 binary/image read handling
+7. G8 fuzzy matching
+8. Add missing 9.12 parity test (OpenAI/Anthropic scope for now)
 
 ## Exit criteria for this file
 - `roadmap/p24-dod-matrix.md` has no unchecked items except explicitly deferred real-key smoke notes.
