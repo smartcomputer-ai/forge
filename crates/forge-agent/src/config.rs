@@ -44,6 +44,9 @@ pub fn default_tool_output_limits() -> HashMap<String, usize> {
         ("apply_patch".to_string(), 10_000),
         ("write_file".to_string(), 1_000),
         ("spawn_agent".to_string(), 20_000),
+        ("send_input".to_string(), 10_000),
+        ("wait".to_string(), 20_000),
+        ("close_agent".to_string(), 5_000),
     ])
 }
 

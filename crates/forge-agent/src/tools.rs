@@ -182,10 +182,15 @@ pub const APPLY_PATCH_TOOL: &str = "apply_patch";
 pub const SHELL_TOOL: &str = "shell";
 pub const GREP_TOOL: &str = "grep";
 pub const GLOB_TOOL: &str = "glob";
+pub const SPAWN_AGENT_TOOL: &str = "spawn_agent";
+pub const SEND_INPUT_TOOL: &str = "send_input";
+pub const WAIT_TOOL: &str = "wait";
+pub const CLOSE_AGENT_TOOL: &str = "close_agent";
 
 pub fn build_openai_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
     registry.register(apply_patch_tool());
     registry
 }
@@ -193,6 +198,7 @@ pub fn build_openai_tool_registry() -> ToolRegistry {
 pub fn build_anthropic_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
     registry.register(edit_file_tool());
     registry
 }
@@ -200,6 +206,7 @@ pub fn build_anthropic_tool_registry() -> ToolRegistry {
 pub fn build_gemini_tool_registry() -> ToolRegistry {
     let mut registry = ToolRegistry::default();
     register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
     registry.register(edit_file_tool());
     registry
 }
@@ -210,6 +217,13 @@ pub fn register_shared_core_tools(registry: &mut ToolRegistry) {
     registry.register(shell_tool());
     registry.register(grep_tool());
     registry.register(glob_tool());
+}
+
+pub fn register_subagent_tools(registry: &mut ToolRegistry) {
+    registry.register(spawn_agent_tool());
+    registry.register(send_input_tool());
+    registry.register(wait_tool());
+    registry.register(close_agent_tool());
 }
 
 fn read_file_tool() -> RegisteredTool {
@@ -370,6 +384,94 @@ fn glob_tool() -> RegisteredTool {
             })
         }),
     }
+}
+
+fn spawn_agent_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: SPAWN_AGENT_TOOL.to_string(),
+            description: "Spawn a subagent to handle a scoped task autonomously.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["task"],
+                "properties": {
+                    "task": { "type": "string" },
+                    "working_dir": { "type": "string" },
+                    "model": { "type": "string" },
+                    "max_turns": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: unsupported_subagent_executor(SPAWN_AGENT_TOOL),
+    }
+}
+
+fn send_input_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: SEND_INPUT_TOOL.to_string(),
+            description: "Send a message to a running subagent.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["agent_id", "message"],
+                "properties": {
+                    "agent_id": { "type": "string" },
+                    "message": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: unsupported_subagent_executor(SEND_INPUT_TOOL),
+    }
+}
+
+fn wait_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: WAIT_TOOL.to_string(),
+            description: "Wait for a subagent to complete and return its result.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["agent_id"],
+                "properties": {
+                    "agent_id": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: unsupported_subagent_executor(WAIT_TOOL),
+    }
+}
+
+fn close_agent_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: CLOSE_AGENT_TOOL.to_string(),
+            description: "Terminate a subagent.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["agent_id"],
+                "properties": {
+                    "agent_id": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: unsupported_subagent_executor(CLOSE_AGENT_TOOL),
+    }
+}
+
+fn unsupported_subagent_executor(tool_name: &'static str) -> ToolExecutor {
+    Arc::new(move |_args, _env| {
+        Box::pin(async move {
+            Err(ToolError::Execution(format!(
+                "{} can only run inside a live Session dispatcher",
+                tool_name
+            ))
+            .into())
+        })
+    })
 }
 
 fn edit_file_tool() -> RegisteredTool {
@@ -1446,6 +1548,10 @@ mod tests {
         assert!(!anthropic.names().contains(&APPLY_PATCH_TOOL.to_string()));
         assert!(gemini.names().contains(&EDIT_FILE_TOOL.to_string()));
         assert!(!gemini.names().contains(&APPLY_PATCH_TOOL.to_string()));
+        assert!(openai.names().contains(&SPAWN_AGENT_TOOL.to_string()));
+        assert!(openai.names().contains(&SEND_INPUT_TOOL.to_string()));
+        assert!(openai.names().contains(&WAIT_TOOL.to_string()));
+        assert!(openai.names().contains(&CLOSE_AGENT_TOOL.to_string()));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -2,12 +2,14 @@ use crate::{
     AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
     ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
     SessionError, SessionEvent, SteeringTurn, ToolDispatchOptions, ToolResultTurn, ToolResultsTurn,
-    Turn, UserTurn,
+    ToolError, Turn, UserTurn, truncate_tool_output,
 };
 use forge_llm::{
-    Client, ContentPart, Message, Request, Role, ThinkingData, ToolCallData, ToolChoice,
+    Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
+    ToolResult,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
@@ -76,6 +78,18 @@ pub struct SubAgentHandle {
     pub status: SubAgentStatus,
 }
 
+struct SubAgentRecord {
+    session: Box<Session>,
+    result: Option<SubAgentResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubAgentResult {
+    pub output: String,
+    pub success: bool,
+    pub turns_used: usize,
+}
+
 pub struct Session {
     id: String,
     provider_profile: Arc<dyn ProviderProfile>,
@@ -90,6 +104,8 @@ pub struct Session {
     steering_queue: VecDeque<String>,
     followup_queue: VecDeque<String>,
     subagents: HashMap<String, SubAgentHandle>,
+    subagent_records: HashMap<String, SubAgentRecord>,
+    subagent_depth: usize,
     abort_requested: bool,
 }
 
@@ -116,6 +132,24 @@ impl Session {
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
     ) -> Result<Self, AgentError> {
+        Self::new_with_depth(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            event_emitter,
+            0,
+        )
+    }
+
+    fn new_with_depth(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        event_emitter: Arc<dyn EventEmitter>,
+        subagent_depth: usize,
+    ) -> Result<Self, AgentError> {
         let environment_context =
             build_environment_context_snapshot(provider_profile.as_ref(), execution_env.as_ref());
         let project_docs = discover_project_documents(
@@ -137,6 +171,8 @@ impl Session {
             steering_queue: VecDeque::new(),
             followup_queue: VecDeque::new(),
             subagents: HashMap::new(),
+            subagent_records: HashMap::new(),
+            subagent_depth,
             abort_requested: false,
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
@@ -170,6 +206,7 @@ impl Session {
 
         self.state = next_state;
         if self.state == SessionState::Closed {
+            self.close_all_subagents()?;
             self.emit_session_end()?;
         }
         Ok(())
@@ -346,23 +383,7 @@ impl Session {
             }
 
             round_count += 1;
-            let results = self
-                .provider_profile
-                .tool_registry()
-                .dispatch(
-                    tool_calls,
-                    self.execution_env.clone(),
-                    &self.config,
-                    self.event_emitter.clone(),
-                    ToolDispatchOptions {
-                        session_id: self.id.clone(),
-                        supports_parallel_tool_calls: self
-                            .provider_profile
-                            .capabilities()
-                            .supports_parallel_tool_calls,
-                    },
-                )
-                .await?;
+            let results = self.execute_tool_calls(tool_calls).await?;
             let result_turns = results
                 .into_iter()
                 .map(|result| ToolResultTurn {
@@ -383,6 +404,274 @@ impl Session {
             self.transition_to(SessionState::Idle)?;
         }
         Ok(completed_naturally)
+    }
+
+    async fn execute_tool_calls(
+        &mut self,
+        tool_calls: Vec<ToolCall>,
+    ) -> Result<Vec<ToolResult>, AgentError> {
+        if tool_calls
+            .iter()
+            .all(|tool_call| !is_subagent_tool(&tool_call.name))
+        {
+            return self
+                .provider_profile
+                .tool_registry()
+                .dispatch(
+                    tool_calls,
+                    self.execution_env.clone(),
+                    &self.config,
+                    self.event_emitter.clone(),
+                    ToolDispatchOptions {
+                        session_id: self.id.clone(),
+                        supports_parallel_tool_calls: self
+                            .provider_profile
+                            .capabilities()
+                            .supports_parallel_tool_calls,
+                    },
+                )
+                .await;
+        }
+
+        let mut results = Vec::with_capacity(tool_calls.len());
+        for tool_call in tool_calls {
+            if is_subagent_tool(&tool_call.name) {
+                results.push(self.execute_subagent_tool_call(tool_call).await?);
+                continue;
+            }
+
+            let mut standard = self
+                .provider_profile
+                .tool_registry()
+                .dispatch(
+                    vec![tool_call],
+                    self.execution_env.clone(),
+                    &self.config,
+                    self.event_emitter.clone(),
+                    ToolDispatchOptions {
+                        session_id: self.id.clone(),
+                        supports_parallel_tool_calls: false,
+                    },
+                )
+                .await?;
+            if let Some(result) = standard.pop() {
+                results.push(result);
+            }
+        }
+
+        Ok(results)
+    }
+
+    async fn execute_subagent_tool_call(
+        &mut self,
+        tool_call: ToolCall,
+    ) -> Result<ToolResult, AgentError> {
+        self.event_emitter.emit(SessionEvent::tool_call_start(
+            self.id.clone(),
+            tool_call.name.clone(),
+            tool_call.id.clone(),
+        ))?;
+
+        let arguments = parse_tool_call_arguments(&tool_call)?;
+        let output = match tool_call.name.as_str() {
+            "spawn_agent" => self.handle_spawn_agent(arguments).await,
+            "send_input" => self.handle_send_input(arguments).await,
+            "wait" => self.handle_wait(arguments).await,
+            "close_agent" => self.handle_close_agent(arguments).await,
+            _ => Err(ToolError::UnknownTool(tool_call.name.clone()).into()),
+        };
+
+        match output {
+            Ok(raw_output) => {
+                self.event_emitter.emit(SessionEvent::tool_call_end_output(
+                    self.id.clone(),
+                    tool_call.id.clone(),
+                    raw_output.clone(),
+                ))?;
+                let truncated = truncate_tool_output(&raw_output, &tool_call.name, &self.config);
+                Ok(ToolResult {
+                    tool_call_id: tool_call.id,
+                    content: Value::String(truncated),
+                    is_error: false,
+                })
+            }
+            Err(error) => {
+                let message = error.to_string();
+                self.event_emitter.emit(SessionEvent::tool_call_end_error(
+                    self.id.clone(),
+                    tool_call.id.clone(),
+                    message.clone(),
+                ))?;
+                Ok(ToolResult {
+                    tool_call_id: tool_call.id,
+                    content: Value::String(message),
+                    is_error: true,
+                })
+            }
+        }
+    }
+
+    async fn handle_spawn_agent(&mut self, arguments: Value) -> Result<String, AgentError> {
+        if self.subagent_depth >= self.config.max_subagent_depth {
+            return Err(ToolError::Execution(format!(
+                "max_subagent_depth={} reached; recursive spawning is blocked",
+                self.config.max_subagent_depth
+            ))
+            .into());
+        }
+
+        let task = required_string_argument(&arguments, "task")?;
+        let requested_max_turns = optional_usize_argument(&arguments, "max_turns")?;
+        let mut child_config = self.config.clone();
+        child_config.max_turns = requested_max_turns.unwrap_or(50);
+        child_config.max_subagent_depth = self.config.max_subagent_depth;
+
+        let child_id = Uuid::new_v4().to_string();
+        self.subagents.insert(
+            child_id.clone(),
+            SubAgentHandle {
+                id: child_id.clone(),
+                status: SubAgentStatus::Running,
+            },
+        );
+
+        let mut child_session = Session::new_with_depth(
+            self.provider_profile.clone(),
+            self.execution_env.clone(),
+            self.llm_client.clone(),
+            child_config,
+            self.event_emitter.clone(),
+            self.subagent_depth + 1,
+        )?;
+
+        let completion = Box::pin(child_session.submit(task)).await;
+        let (status, result) = match completion {
+            Ok(_) => {
+                let output = latest_assistant_output(child_session.history()).unwrap_or_default();
+                let result = SubAgentResult {
+                    output,
+                    success: true,
+                    turns_used: child_session.history().len(),
+                };
+                (SubAgentStatus::Completed, result)
+            }
+            Err(error) => {
+                let result = SubAgentResult {
+                    output: error.to_string(),
+                    success: false,
+                    turns_used: child_session.history().len(),
+                };
+                (SubAgentStatus::Failed, result)
+            }
+        };
+
+        if let Some(handle) = self.subagents.get_mut(&child_id) {
+            handle.status = status.clone();
+        }
+        self.subagent_records.insert(
+            child_id.clone(),
+            SubAgentRecord {
+                session: Box::new(child_session),
+                result: Some(result.clone()),
+            },
+        );
+
+        Ok(serde_json::json!({
+            "agent_id": child_id,
+            "status": subagent_status_label(&status),
+            "success": result.success,
+            "turns_used": result.turns_used
+        })
+        .to_string())
+    }
+
+    async fn handle_send_input(&mut self, arguments: Value) -> Result<String, AgentError> {
+        let agent_id = required_string_argument(&arguments, "agent_id")?;
+        let message = required_string_argument(&arguments, "message")?;
+        let record = self
+            .subagent_records
+            .get_mut(&agent_id)
+            .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
+
+        let outcome = Box::pin(record.session.submit(message)).await;
+        let result = match outcome {
+            Ok(_) => {
+                let output = latest_assistant_output(record.session.history()).unwrap_or_default();
+                let result = SubAgentResult {
+                    output,
+                    success: true,
+                    turns_used: record.session.history().len(),
+                };
+                record.result = Some(result.clone());
+                self.set_subagent_status(&agent_id, SubAgentStatus::Completed);
+                result
+            }
+            Err(error) => {
+                let result = SubAgentResult {
+                    output: error.to_string(),
+                    success: false,
+                    turns_used: record.session.history().len(),
+                };
+                record.result = Some(result.clone());
+                self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
+                result
+            }
+        };
+
+        Ok(serde_json::json!({
+            "agent_id": agent_id,
+            "status": subagent_status_label(self.subagents.get(&agent_id).map(|h| &h.status).unwrap_or(&SubAgentStatus::Failed)),
+            "success": result.success,
+            "turns_used": result.turns_used
+        })
+        .to_string())
+    }
+
+    async fn handle_wait(&mut self, arguments: Value) -> Result<String, AgentError> {
+        let agent_id = required_string_argument(&arguments, "agent_id")?;
+        let record = self
+            .subagent_records
+            .get(&agent_id)
+            .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
+        let result = record.result.clone().unwrap_or(SubAgentResult {
+            output: String::new(),
+            success: matches!(
+                self.subagents.get(&agent_id).map(|handle| &handle.status),
+                Some(SubAgentStatus::Completed)
+            ),
+            turns_used: record.session.history().len(),
+        });
+
+        Ok(serde_json::json!({
+            "agent_id": agent_id,
+            "status": subagent_status_label(self.subagents.get(&agent_id).map(|h| &h.status).unwrap_or(&SubAgentStatus::Failed)),
+            "output": result.output,
+            "success": result.success,
+            "turns_used": result.turns_used
+        })
+        .to_string())
+    }
+
+    async fn handle_close_agent(&mut self, arguments: Value) -> Result<String, AgentError> {
+        let agent_id = required_string_argument(&arguments, "agent_id")?;
+        let record = self
+            .subagent_records
+            .get_mut(&agent_id)
+            .ok_or_else(|| ToolError::Execution(format!("subagent '{}' not found", agent_id)))?;
+        record.session.close()?;
+        self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
+
+        Ok(serde_json::json!({
+            "agent_id": agent_id,
+            "status": "closed"
+        })
+        .to_string())
+    }
+
+    fn set_subagent_status(&mut self, agent_id: &str, status: SubAgentStatus) {
+        if let Some(handle) = self.subagents.get_mut(agent_id) {
+            handle.status = status;
+        }
     }
 
     pub fn close(&mut self) -> Result<(), AgentError> {
@@ -407,6 +696,17 @@ impl Session {
             self.id.clone(),
             self.state.to_string(),
         ))
+    }
+
+    fn close_all_subagents(&mut self) -> Result<(), AgentError> {
+        let agent_ids: Vec<String> = self.subagent_records.keys().cloned().collect();
+        for agent_id in agent_ids {
+            if let Some(record) = self.subagent_records.get_mut(&agent_id) {
+                let _ = record.session.close();
+            }
+            self.set_subagent_status(&agent_id, SubAgentStatus::Failed);
+        }
+        Ok(())
     }
 
     fn drain_steering_queue(&mut self) -> Result<(), AgentError> {
@@ -506,6 +806,63 @@ impl Session {
             metadata: None,
             provider_options: self.provider_profile.provider_options(),
         }
+    }
+}
+
+fn is_subagent_tool(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        "spawn_agent" | "send_input" | "wait" | "close_agent"
+    )
+}
+
+fn parse_tool_call_arguments(tool_call: &ToolCall) -> Result<Value, AgentError> {
+    if let Some(raw_arguments) = &tool_call.raw_arguments {
+        let parsed = serde_json::from_str::<Value>(raw_arguments).map_err(|error| {
+            ToolError::Validation(format!(
+                "invalid JSON arguments for tool '{}': {}",
+                tool_call.name, error
+            ))
+        })?;
+        return Ok(parsed);
+    }
+
+    Ok(tool_call.arguments.clone())
+}
+
+fn required_string_argument(arguments: &Value, key: &str) -> Result<String, AgentError> {
+    let value = arguments
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| ToolError::Validation(format!("missing required argument '{}'", key)))?;
+    Ok(value.to_string())
+}
+
+fn optional_usize_argument(arguments: &Value, key: &str) -> Result<Option<usize>, AgentError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(ToolError::Validation(format!("argument '{}' must be an integer", key)).into());
+    };
+    Ok(Some(value as usize))
+}
+
+fn latest_assistant_output(history: &[Turn]) -> Option<String> {
+    history.iter().rev().find_map(|turn| {
+        if let Turn::Assistant(assistant) = turn {
+            Some(assistant.content.clone())
+        } else {
+            None
+        }
+    })
+}
+
+fn subagent_status_label(status: &SubAgentStatus) -> &'static str {
+    match status {
+        SubAgentStatus::Running => "running",
+        SubAgentStatus::Completed => "completed",
+        SubAgentStatus::Failed => "failed",
     }
 }
 
@@ -1651,5 +2008,157 @@ mod tests {
         assert_eq!(docs.len(), 1);
         assert!(docs[0].content.contains(PROJECT_DOC_TRUNCATION_MARKER));
         assert!(docs[0].content.len() <= (32 * 1024) + PROJECT_DOC_TRUNCATION_MARKER.len() + 1);
+    }
+
+    fn build_tool_call(id: &str, name: &str, arguments: Value) -> ToolCall {
+        ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments,
+            raw_arguments: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn subagent_tools_spawn_and_wait_flow_returns_deterministic_result() {
+        let (client, _) = build_test_client(vec![text_response("child-resp-1", "child complete")]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let spawn = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-1",
+                "spawn_agent",
+                serde_json::json!({ "task": "do child task" }),
+            ))
+            .await
+            .expect("spawn should execute");
+        assert!(!spawn.is_error);
+        let spawn_payload: Value = serde_json::from_str(
+            spawn
+                .content
+                .as_str()
+                .expect("spawn payload should be string JSON"),
+        )
+        .expect("spawn payload should parse");
+        let agent_id = spawn_payload
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .expect("agent_id must exist");
+        assert_eq!(
+            spawn_payload.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+
+        let wait = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-2",
+                "wait",
+                serde_json::json!({ "agent_id": agent_id }),
+            ))
+            .await
+            .expect("wait should execute");
+        assert!(!wait.is_error);
+        let wait_payload: Value = serde_json::from_str(
+            wait.content
+                .as_str()
+                .expect("wait payload should be string JSON"),
+        )
+        .expect("wait payload should parse");
+        assert_eq!(
+            wait_payload.get("agent_id").and_then(Value::as_str),
+            Some(agent_id)
+        );
+        assert_eq!(
+            wait_payload.get("status").and_then(Value::as_str),
+            Some("completed")
+        );
+        assert_eq!(
+            wait_payload.get("success").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_agent_rejects_when_depth_limit_reached() {
+        let (client, _) = build_test_client(vec![]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut config = SessionConfig::default();
+        config.max_subagent_depth = 0;
+        let mut session = Session::new(profile, env, client, config).expect("new session");
+
+        let result = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-1",
+                "spawn_agent",
+                serde_json::json!({ "task": "blocked" }),
+            ))
+            .await
+            .expect("tool execution should not panic");
+
+        assert!(result.is_error);
+        assert!(
+            result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("max_subagent_depth")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn close_closes_all_subagents_and_updates_status() {
+        let (client, _) = build_test_client(vec![text_response("child-resp-1", "done")]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let spawn = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-1",
+                "spawn_agent",
+                serde_json::json!({ "task": "run child" }),
+            ))
+            .await
+            .expect("spawn should execute");
+        let spawn_payload: Value =
+            serde_json::from_str(spawn.content.as_str().expect("spawn content")).expect("json");
+        let agent_id = spawn_payload
+            .get("agent_id")
+            .and_then(Value::as_str)
+            .expect("agent id");
+        assert!(session.subagents.contains_key(agent_id));
+
+        session.close().expect("close should succeed");
+        assert_eq!(session.state(), &SessionState::Closed);
+        assert!(matches!(
+            session.subagents.get(agent_id).map(|h| &h.status),
+            Some(SubAgentStatus::Failed)
+        ));
     }
 }

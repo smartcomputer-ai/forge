@@ -16,10 +16,10 @@ This matrix is populated as implementation milestones complete.
 - [x] Multiple sequential inputs supported (`crates/forge-agent/src/session.rs`)
 
 ## 9.2 Provider Profiles
-- [ ] OpenAI profile with codex-aligned tools (`apply_patch`)
-- [ ] Anthropic profile with Claude-aligned tools (`edit_file`)
-- [ ] Gemini profile with gemini-cli-aligned tools
-- [ ] Provider-specific base system prompts in place
+- [x] OpenAI profile with codex-aligned tools (`apply_patch`) (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
+- [x] Anthropic profile with Claude-aligned tools (`edit_file`) (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
+- [x] Gemini profile with gemini-cli-aligned tools (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/tools.rs`)
+- [x] Provider-specific base system prompts in place (`crates/forge-agent/src/profiles.rs`)
 - [x] Custom tool extension supported (`crates/forge-agent/src/tools.rs`, `crates/forge-agent/src/profiles.rs`)
 - [x] Tool name collision behavior is latest-wins (`crates/forge-agent/src/tools.rs`)
 
@@ -58,20 +58,20 @@ This matrix is populated as implementation milestones complete.
 - [x] Supported values covered by validation/tests (`crates/forge-agent/src/session.rs`)
 
 ## 9.8 System Prompts
-- [ ] Includes provider base instructions
-- [ ] Includes environment context block
-- [ ] Includes active tool descriptions
-- [ ] Includes discovered project docs
-- [ ] User override appended last
-- [ ] Provider-relevant docs only (plus `AGENTS.md`)
+- [x] Includes provider base instructions (`crates/forge-agent/src/profiles.rs`)
+- [x] Includes environment context block (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/session.rs`)
+- [x] Includes active tool descriptions (`crates/forge-agent/src/profiles.rs`)
+- [x] Includes discovered project docs (`crates/forge-agent/src/session.rs`)
+- [x] User override appended last (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/config.rs`)
+- [x] Provider-relevant docs only (plus `AGENTS.md`) (`crates/forge-agent/src/profiles.rs`, `crates/forge-agent/src/session.rs`)
 
 ## 9.9 Subagents
-- [ ] `spawn_agent` implemented
-- [ ] Shared execution environment behavior
-- [ ] Independent history per subagent
-- [ ] Depth limiting enforced
-- [ ] Subagent result returned to parent
-- [ ] `send_input`, `wait`, `close_agent` implemented
+- [x] `spawn_agent` implemented (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`)
+- [x] Shared execution environment behavior (`crates/forge-agent/src/session.rs`)
+- [x] Independent history per subagent (`crates/forge-agent/src/session.rs`)
+- [x] Depth limiting enforced (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/config.rs`)
+- [x] Subagent result returned to parent (`crates/forge-agent/src/session.rs`)
+- [x] `send_input`, `wait`, `close_agent` implemented (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`)
 
 ## 9.10 Event System
 - [ ] All Section 2.9 event kinds emitted
