@@ -177,3 +177,7 @@
 - `roadmap/p24-dod-matrix.md` has no unchecked items except explicitly deferred real-key smoke notes.
 - `cargo test -p forge-agent` passes with added conformance coverage.
 - This file marked complete once all non-deferred gaps are closed.
+
+## Questions:
+- should we add live integration tests? and which ones
+- applying patches, how does it work? should we consider a lib for that?
