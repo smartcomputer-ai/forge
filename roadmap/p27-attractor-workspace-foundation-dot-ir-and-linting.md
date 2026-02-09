@@ -68,7 +68,6 @@ Create the `forge-attractor` foundation crate and implement the DOT front-end pi
   - `dot-structures` is used only via parser AST, not as runtime contract.
 - Files:
   - `crates/forge-attractor/src/parse.rs`
-  - `crates/forge-attractor/src/normalize.rs`
   - `crates/forge-attractor/src/graph.rs`
 - DoD:
   - Parse path handles spec examples and emits normalized IR suitable for validation.
