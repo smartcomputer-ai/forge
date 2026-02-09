@@ -1,0 +1,30 @@
+# AGENTS
+
+## Entry
+Primary specs live in `spec/`:
+
+- `spec/00-vision.md` — vision + principles + techniques
+- `spec/01-unified-llm-spec.md` — unified LLM spec
+- `spec/02-coding-agent-loop-spec.md` — coding agent loop spec
+- `spec/03-attractor-spec.md` — attractor spec
+
+When making changes, align behavior and terminology to these documents first.
+
+## Test Strategy (Concise, Deterministic)
+
+- Unit tests live next to code: place `mod tests` at the bottom of the same file with `#[cfg(test)]`. Keep them short, one behavior per test.
+- Integration tests go under `tests/` when they cross crate boundaries, hit I/O, spawn the kernel stepper, or involve adapters.
+- Naming: use `function_under_test_condition_expected()` style; structure as arrange/act/assert. Prefer explicit inputs over shared mutable fixtures.
+- Errors: assert on error kinds/types (e.g., custom errors with `thiserror`) instead of string matching. Prefer `matches!`/`downcast_ref` over brittle text.
+- Parallel-safe: tests run in parallel by default. Avoid global state and temp dirs without unique prefixes. Only serialize when necessary.
+- Property tests (optional): add a small number of targeted property tests (e.g., canonical encoding invariants). Gate heavier fuzzing behind a feature.
+- Doctests: keep crate-level examples compilable; simple examples belong in doc comments and are run with `cargo test --doc`.
+- Async tests: if needed, use `#[tokio::test(flavor = "current_thread")]` to keep scheduling deterministic.
+
+## Important
+When modifying specs or architecture:
+1. Update the relevant spec files in `spec/`
+2. Update this file (AGENTS.md or CLAUDE.md) if the high-level architecture changes
+3. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
+
+The specs in `spec/` are the source of truth. This file is just an index.
