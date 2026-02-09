@@ -1,13 +1,13 @@
 mod support;
 
-use support::{
-    client_with_adapter, enqueue, text_response, tool_call_response, tool_result_by_call_id,
-};
 use forge_agent::{
     BufferedEventEmitter, EventKind, ExecutionEnvironment, LocalExecutionEnvironment, Session,
     SessionConfig,
 };
 use std::sync::Arc;
+use support::{
+    client_with_adapter, enqueue, text_response, tool_call_response, tool_result_by_call_id,
+};
 use tempfile::tempdir;
 
 fn event_index(events: &[forge_agent::SessionEvent], kind: EventKind) -> Option<usize> {
@@ -52,15 +52,20 @@ async fn event_sequence_smoke_emits_expected_lifecycle_and_tool_kinds() {
         text_response("openai", "gpt-5.2-codex", "resp-2", "done"),
     );
 
-    session.submit("run tool then finish").await.expect("submit");
+    session
+        .submit("run tool then finish")
+        .await
+        .expect("submit");
     session.close().expect("close should succeed");
 
     let events = emitter.snapshot();
     assert!(event_index(&events, EventKind::SessionStart).is_some());
     assert!(event_index(&events, EventKind::UserInput).is_some());
     assert!(event_index(&events, EventKind::AssistantTextStart).is_some());
+    assert!(event_index(&events, EventKind::AssistantTextDelta).is_some());
     assert!(event_index(&events, EventKind::AssistantTextEnd).is_some());
     assert!(event_index(&events, EventKind::ToolCallStart).is_some());
+    assert!(event_index(&events, EventKind::ToolCallOutputDelta).is_some());
     assert!(event_index(&events, EventKind::ToolCallEnd).is_some());
     assert!(event_index(&events, EventKind::SessionEnd).is_some());
 
@@ -84,7 +89,9 @@ async fn tool_call_end_event_carries_full_output_when_tool_result_is_truncated()
     let profile = forge_agent::OpenAiProviderProfile::with_default_tools("gpt-5.2-codex");
     let emitter = Arc::new(BufferedEventEmitter::default());
     let mut config = SessionConfig::default();
-    config.tool_output_limits.insert("read_file".to_string(), 60);
+    config
+        .tool_output_limits
+        .insert("read_file".to_string(), 60);
     let mut session =
         Session::new_with_emitter(Arc::new(profile), env, client, config, emitter.clone())
             .expect("session should initialize");

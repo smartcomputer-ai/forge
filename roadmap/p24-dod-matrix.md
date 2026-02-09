@@ -74,7 +74,7 @@ This matrix is populated as implementation milestones complete.
 - [x] `send_input`, `wait`, `close_agent` implemented (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`)
 
 ## 9.10 Event System
-- [ ] All Section 2.9 event kinds emitted
+- [x] All Section 2.9 event kinds emitted (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`, `crates/forge-agent/tests/events_integration.rs`)
 - [x] Events consumable via async stream/iterator (`crates/forge-agent/src/events.rs`)
 - [x] `TOOL_CALL_END` carries full output (`crates/forge-agent/src/tools.rs`)
 - [x] `SESSION_START` and `SESSION_END` emitted correctly (`crates/forge-agent/src/session.rs`)

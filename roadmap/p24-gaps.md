@@ -84,7 +84,7 @@
 
 ## Priority 1 (Spec parity)
 
-### G4. Emit all declared event kinds at correct times
+### [x] G4. Emit all declared event kinds at correct times
 - Spec refs: 2.9, 9.10
 - Current gap:
   - `ASSISTANT_TEXT_DELTA` and `TOOL_CALL_OUTPUT_DELTA` kinds exist but are not emitted.
@@ -98,6 +98,11 @@
   - `crates/forge-agent/tests/events_integration.rs`
 - DoD:
   - 9.10 row in `roadmap/p24-dod-matrix.md` can be marked complete with tests.
+- Completed:
+  - Added `ASSISTANT_TEXT_DELTA` emission during assistant responses.
+  - Added `TOOL_CALL_OUTPUT_DELTA` emission during tool execution output publication.
+  - Introduced explicit warning event semantics for context-usage threshold events.
+  - Added/updated event integration tests to cover delta and warning behavior.
 
 ### [deferred] G5. Complete Gemini profile tool parity
 - Spec refs: 3.6, 9.2
@@ -116,7 +121,7 @@
   - Team decision: skip Gemini work for current Priority 1 closure.
   - Track this under a follow-up roadmap item after OpenAI/Anthropic parity items are complete.
 
-### G6. Implement `AWAITING_INPUT` runtime transition logic
+### [x] G6. Implement `AWAITING_INPUT` runtime transition logic
 - Spec refs: 2.3, 9.1
 - Current gap:
   - State exists but runtime loop never transitions into it.
@@ -128,6 +133,11 @@
   - `crates/forge-agent/tests/conformance_runtime_behaviors.rs`
 - DoD:
   - Test asserts explicit state transitions for question/answer flow.
+- Completed:
+  - Added deterministic question detection (`?`-terminated natural-language prompt heuristic).
+  - Runtime now transitions `PROCESSING -> AWAITING_INPUT` when the model asks a user question.
+  - Next `submit()` transitions `AWAITING_INPUT -> PROCESSING` and returns to `IDLE` on completion.
+  - Added unit + cross-provider runtime tests for question/answer state transitions.
 
 ## Priority 2 (Quality and edge cases)
 

@@ -166,6 +166,13 @@ impl ToolRegistry {
             }
         };
 
+        if !raw_output.is_empty() {
+            event_emitter.emit(SessionEvent::tool_call_output_delta(
+                session_id.to_string(),
+                tool_call.id.clone(),
+                raw_output.clone(),
+            ))?;
+        }
         let truncated = truncate_tool_output(&raw_output, &tool_call.name, config);
         event_emitter.emit(SessionEvent::tool_call_end_output(
             session_id.to_string(),
@@ -1277,8 +1284,7 @@ mod tests {
             _working_dir: Option<&str>,
             _env_vars: Option<HashMap<String, String>>,
         ) -> Result<crate::ExecResult, AgentError> {
-            self.observed_timeout_ms
-                .store(timeout_ms, Ordering::SeqCst);
+            self.observed_timeout_ms.store(timeout_ms, Ordering::SeqCst);
             Ok(crate::ExecResult {
                 stdout: "ok".to_string(),
                 stderr: String::new(),
@@ -1634,12 +1640,15 @@ mod tests {
 
         assert!(!results[0].is_error);
         let events = emitter.snapshot();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, EventKind::ToolCallStart);
-        assert_eq!(events[1].kind, EventKind::ToolCallEnd);
+        assert_eq!(events[1].kind, EventKind::ToolCallOutputDelta);
+        assert_eq!(events[2].kind, EventKind::ToolCallEnd);
         assert_eq!(events[0].data.get_str("call_id"), Some("call-1"));
         assert_eq!(events[1].data.get_str("call_id"), Some("call-1"));
-        assert_eq!(events[1].data.get_str("output"), Some("done"));
+        assert_eq!(events[1].data.get_str("delta"), Some("done"));
+        assert_eq!(events[2].data.get_str("call_id"), Some("call-1"));
+        assert_eq!(events[2].data.get_str("output"), Some("done"));
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -1,12 +1,12 @@
 mod support;
 
+use forge_agent::{ExecutionEnvironment, LocalExecutionEnvironment, Session, SessionConfig};
+use serde_json::json;
+use std::sync::Arc;
 use support::{
     FixtureKind, all_fixtures, client_with_adapter, enqueue, last_assistant_text, text_response,
     tool_call_response, tool_result_by_call_id,
 };
-use forge_agent::{ExecutionEnvironment, LocalExecutionEnvironment, Session, SessionConfig};
-use serde_json::json;
-use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "current_thread")]
@@ -63,7 +63,11 @@ async fn cross_profile_file_creation_read_edit_and_native_variant() {
             .submit("create note")
             .await
             .expect("create submit should succeed");
-        assert!(env.file_exists("note.txt").await.expect("exists should work"));
+        assert!(
+            env.file_exists("note.txt")
+                .await
+                .expect("exists should work")
+        );
 
         // Step 2: read then provider-native edit.
         let edit_tool = fixture.edit_tool_name();
@@ -194,11 +198,12 @@ async fn cross_profile_shell_search_and_timeout_flows() {
 
         let glob = tool_result_by_call_id(session.history(), "call-glob")
             .expect("glob result should exist");
-        assert!(glob
-            .content
-            .as_str()
-            .unwrap_or_default()
-            .contains("main.txt"));
+        assert!(
+            glob.content
+                .as_str()
+                .unwrap_or_default()
+                .contains("main.txt")
+        );
 
         enqueue(
             &responses,
@@ -224,11 +229,13 @@ async fn cross_profile_shell_search_and_timeout_flows() {
 
         let timeout_result = tool_result_by_call_id(session.history(), "call-timeout")
             .expect("timeout result should exist");
-        assert!(timeout_result
-            .content
-            .as_str()
-            .unwrap_or_default()
-            .contains("Command timed out"));
+        assert!(
+            timeout_result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("Command timed out")
+        );
     }
 }
 
@@ -295,7 +302,12 @@ async fn cross_profile_parallel_tool_calls_and_subagent_spawn_wait() {
         );
         enqueue(
             &responses,
-            text_response(fixture.id(), fixture.model(), "resp-child-1", "child finished"),
+            text_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-child-1",
+                "child finished",
+            ),
         );
         enqueue(
             &responses,

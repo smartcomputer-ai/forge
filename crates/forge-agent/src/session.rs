@@ -1,8 +1,8 @@
 use crate::{
     AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
     ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
-    SessionError, SessionEvent, SteeringTurn, ToolDispatchOptions, ToolResultTurn, ToolResultsTurn,
-    ToolError, Turn, UserTurn, truncate_tool_output,
+    SessionError, SessionEvent, SteeringTurn, ToolDispatchOptions, ToolError, ToolResultTurn,
+    ToolResultsTurn, Turn, UserTurn, truncate_tool_output,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
@@ -612,6 +612,12 @@ impl Session {
             let text = response.text();
             let tool_calls = response.tool_calls();
             let reasoning = response.reasoning();
+            if !text.is_empty() {
+                self.event_emitter.emit(SessionEvent::assistant_text_delta(
+                    self.id.clone(),
+                    text.clone(),
+                ))?;
+            }
             self.push_turn(Turn::Assistant(AssistantTurn::new(
                 text.clone(),
                 tool_calls.clone(),
@@ -622,12 +628,16 @@ impl Session {
             )));
             self.event_emitter.emit(SessionEvent::assistant_text_end(
                 self.id.clone(),
-                text,
+                text.clone(),
                 reasoning,
             ))?;
 
             if tool_calls.is_empty() {
-                completed_naturally = true;
+                if should_transition_to_awaiting_input(&text) {
+                    self.transition_to(SessionState::AwaitingInput)?;
+                } else {
+                    completed_naturally = true;
+                }
                 break;
             }
 
@@ -650,7 +660,7 @@ impl Session {
         }
 
         abort_kill_watchdog.abort();
-        if self.state != SessionState::Closed {
+        if self.state == SessionState::Processing {
             self.transition_to(SessionState::Idle)?;
         }
         Ok(completed_naturally)
@@ -778,31 +788,29 @@ impl Session {
         child_config.max_turns = requested_max_turns.unwrap_or(50);
         child_config.max_subagent_depth = self.config.max_subagent_depth;
 
-        let child_execution_env: Arc<dyn ExecutionEnvironment> = if let Some(working_dir) =
-            working_dir
-        {
-            let scoped_dir = resolve_subagent_working_directory(
-                self.execution_env.working_directory(),
-                &working_dir,
-            )?;
-            Arc::new(ScopedExecutionEnvironment::new(
-                self.execution_env.clone(),
-                scoped_dir,
-            ))
-        } else {
-            self.execution_env.clone()
-        };
+        let child_execution_env: Arc<dyn ExecutionEnvironment> =
+            if let Some(working_dir) = working_dir {
+                let scoped_dir = resolve_subagent_working_directory(
+                    self.execution_env.working_directory(),
+                    &working_dir,
+                )?;
+                Arc::new(ScopedExecutionEnvironment::new(
+                    self.execution_env.clone(),
+                    scoped_dir,
+                ))
+            } else {
+                self.execution_env.clone()
+            };
 
-        let child_provider_profile: Arc<dyn ProviderProfile> = if let Some(model) =
-            model_override.filter(|value| !value.trim().is_empty())
-        {
-            Arc::new(ModelOverrideProviderProfile::new(
-                self.provider_profile.clone(),
-                model,
-            ))
-        } else {
-            self.provider_profile.clone()
-        };
+        let child_provider_profile: Arc<dyn ProviderProfile> =
+            if let Some(model) = model_override.filter(|value| !value.trim().is_empty()) {
+                Arc::new(ModelOverrideProviderProfile::new(
+                    self.provider_profile.clone(),
+                    model,
+                ))
+            } else {
+                self.provider_profile.clone()
+            };
 
         let child_id = Uuid::new_v4().to_string();
         self.subagents.insert(
@@ -1243,6 +1251,20 @@ fn subagent_status_label(status: &SubAgentStatus) -> &'static str {
         SubAgentStatus::Completed => "completed",
         SubAgentStatus::Failed => "failed",
     }
+}
+
+fn should_transition_to_awaiting_input(text: &str) -> bool {
+    let trimmed = text.trim();
+    if !trimmed.ends_with('?') {
+        return false;
+    }
+
+    // Keep the heuristic deterministic: require a short natural-language question.
+    let word_count = trimmed
+        .split_whitespace()
+        .filter(|segment| segment.chars().any(char::is_alphabetic))
+        .count();
+    word_count >= 3
 }
 
 fn convert_history_to_messages(history: &[Turn]) -> Vec<Message> {
@@ -2018,6 +2040,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn submit_transitions_to_awaiting_input_for_question_then_back_to_idle_on_answer() {
+        let (client, requests) = build_test_client(vec![
+            text_response("resp-1", "Which file should I edit next?"),
+            text_response("resp-2", "Done."),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        session
+            .submit("start")
+            .await
+            .expect("first submit should succeed");
+        assert_eq!(session.state(), &SessionState::AwaitingInput);
+
+        session
+            .submit("Edit src/main.rs")
+            .await
+            .expect("answer submit should succeed");
+        assert_eq!(session.state(), &SessionState::Idle);
+        assert_eq!(requests.lock().expect("requests mutex").len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn submit_enforces_per_input_round_limit_and_emits_turn_limit_event() {
         let (client, requests) = build_test_client(vec![
             tool_call_response(
@@ -2296,7 +2350,7 @@ mod tests {
         let warning = events
             .iter()
             .find(|event| {
-                event.kind == EventKind::Error
+                event.kind == EventKind::Warning
                     && event.data.get_str("category") == Some("context_usage")
             })
             .expect("context usage warning event should be emitted");
@@ -2332,7 +2386,7 @@ mod tests {
 
         let events = emitter.snapshot();
         assert!(!events.iter().any(|event| {
-            event.kind == EventKind::Error
+            event.kind == EventKind::Warning
                 && event.data.get_str("category") == Some("context_usage")
         }));
     }
@@ -2684,7 +2738,10 @@ mod tests {
             .subagent_records
             .get(agent_id)
             .expect("subagent record should exist");
-        let child = record.session.as_ref().expect("child session should be available");
+        let child = record
+            .session
+            .as_ref()
+            .expect("child session should be available");
         let read_result = child.history().iter().find_map(|turn| {
             if let Turn::ToolResults(results) = turn {
                 results

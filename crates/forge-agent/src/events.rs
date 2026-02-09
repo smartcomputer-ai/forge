@@ -84,6 +84,7 @@ pub enum EventKind {
     SteeringInjected,
     TurnLimit,
     LoopDetection,
+    Warning,
     Error,
 }
 
@@ -148,6 +149,12 @@ impl SessionEvent {
         Self::new(EventKind::AssistantTextEnd, session_id, data)
     }
 
+    pub fn assistant_text_delta(session_id: impl Into<String>, delta: impl Into<String>) -> Self {
+        let mut data = EventData::new();
+        data.insert_string("delta", delta);
+        Self::new(EventKind::AssistantTextDelta, session_id, data)
+    }
+
     pub fn tool_call_start(
         session_id: impl Into<String>,
         tool_name: impl Into<String>,
@@ -168,6 +175,17 @@ impl SessionEvent {
         data.insert_string("call_id", call_id);
         data.insert_string("output", output);
         Self::new(EventKind::ToolCallEnd, session_id, data)
+    }
+
+    pub fn tool_call_output_delta(
+        session_id: impl Into<String>,
+        call_id: impl Into<String>,
+        delta: impl Into<String>,
+    ) -> Self {
+        let mut data = EventData::new();
+        data.insert_string("call_id", call_id);
+        data.insert_string("delta", delta);
+        Self::new(EventKind::ToolCallOutputDelta, session_id, data)
     }
 
     pub fn tool_call_end_error(
@@ -221,7 +239,7 @@ impl SessionEvent {
         data.insert_u64("approx_tokens", approx_tokens as u64);
         data.insert_u64("context_window_size", context_window_size as u64);
         data.insert_u64("usage_percent", usage_percent as u64);
-        Self::new(EventKind::Error, session_id, data)
+        Self::new(EventKind::Warning, session_id, data)
     }
 }
 
@@ -364,7 +382,7 @@ mod tests {
         assert_eq!(text.data.get_str("reasoning"), Some("analysis"));
 
         let warning = SessionEvent::context_usage_warning("s1", 100, 128_000, 81);
-        assert_eq!(warning.kind, EventKind::Error);
+        assert_eq!(warning.kind, EventKind::Warning);
         assert_eq!(warning.data.get_str("severity"), Some("warning"));
         assert_eq!(warning.data.get_str("category"), Some("context_usage"));
     }
