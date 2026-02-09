@@ -2,11 +2,9 @@
 
 use std::collections::HashMap;
 
-use crate::stream::{StreamEvent, StreamEventType, StreamEventTypeOrString};
-use crate::types::{
-    ContentPart, FinishReason, Message, Role, ToolCall, ToolCallData, Usage,
-};
 use crate::Response;
+use crate::stream::{StreamEvent, StreamEventType, StreamEventTypeOrString};
+use crate::types::{ContentPart, FinishReason, Message, Role, ToolCall, ToolCallData, Usage};
 
 #[derive(Clone, Debug)]
 pub struct ResponseSeed {
@@ -54,14 +52,20 @@ impl StreamAccumulator {
         match &event.event_type {
             StreamEventTypeOrString::Known(kind) => match kind {
                 StreamEventType::TextStart => {
-                    let id = event.text_id.clone().unwrap_or_else(|| "default".to_string());
+                    let id = event
+                        .text_id
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string());
                     if !self.text_segments.contains_key(&id) {
                         self.text_order.push(id.clone());
                         self.text_segments.insert(id, String::new());
                     }
                 }
                 StreamEventType::TextDelta => {
-                    let id = event.text_id.clone().unwrap_or_else(|| "default".to_string());
+                    let id = event
+                        .text_id
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string());
                     let entry = self.text_segments.entry(id.clone()).or_default();
                     if !self.text_order.contains(&id) {
                         self.text_order.push(id.clone());
@@ -178,7 +182,8 @@ impl StreamAccumulator {
 mod tests {
     use super::*;
     use crate::stream::{StreamEvent, StreamEventTypeOrString};
-    use crate::types::{FinishReason, Usage};
+    use crate::types::{FinishReason, Message, Usage};
+    use serde_json::json;
 
     #[test]
     fn accumulates_text_and_finish() {
@@ -241,5 +246,112 @@ mod tests {
         assert_eq!(response.text(), "Hello");
         assert_eq!(response.finish_reason.reason, "stop");
         assert_eq!(response.usage.total_tokens, 3);
+    }
+
+    #[test]
+    fn accumulates_reasoning_and_tool_calls_in_order() {
+        let seed = ResponseSeed {
+            id: "resp".to_string(),
+            model: "model".to_string(),
+            provider: "provider".to_string(),
+        };
+        let mut acc = StreamAccumulator::new(seed);
+        acc.process(&StreamEvent {
+            event_type: StreamEventTypeOrString::Known(StreamEventType::ReasoningDelta),
+            delta: None,
+            text_id: None,
+            reasoning_delta: Some("think".to_string()),
+            tool_call: None,
+            finish_reason: None,
+            usage: None,
+            response: None,
+            error: None,
+            raw: None,
+        });
+        acc.process(&StreamEvent {
+            event_type: StreamEventTypeOrString::Known(StreamEventType::ToolCallStart),
+            delta: None,
+            text_id: None,
+            reasoning_delta: None,
+            tool_call: Some(crate::types::ToolCall {
+                id: "call_2".to_string(),
+                name: "two".to_string(),
+                arguments: json!({"b": 2}),
+                raw_arguments: None,
+            }),
+            finish_reason: None,
+            usage: None,
+            response: None,
+            error: None,
+            raw: None,
+        });
+        acc.process(&StreamEvent {
+            event_type: StreamEventTypeOrString::Known(StreamEventType::ToolCallStart),
+            delta: None,
+            text_id: None,
+            reasoning_delta: None,
+            tool_call: Some(crate::types::ToolCall {
+                id: "call_1".to_string(),
+                name: "one".to_string(),
+                arguments: json!({"a": 1}),
+                raw_arguments: None,
+            }),
+            finish_reason: None,
+            usage: None,
+            response: None,
+            error: None,
+            raw: None,
+        });
+        let response = acc.response();
+        let tool_calls = response.tool_calls();
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0].id, "call_2");
+        assert_eq!(tool_calls[1].id, "call_1");
+        assert_eq!(response.reasoning().as_deref(), Some("think"));
+    }
+
+    #[test]
+    fn passthrough_response_takes_priority_over_accumulation() {
+        let seed = ResponseSeed {
+            id: "resp".to_string(),
+            model: "model".to_string(),
+            provider: "provider".to_string(),
+        };
+        let mut acc = StreamAccumulator::new(seed);
+        let expected = Response {
+            id: "provider_resp".to_string(),
+            model: "provider_model".to_string(),
+            provider: "provider".to_string(),
+            message: Message::assistant("direct"),
+            finish_reason: FinishReason {
+                reason: "stop".to_string(),
+                raw: None,
+            },
+            usage: Usage {
+                input_tokens: 1,
+                output_tokens: 1,
+                total_tokens: 2,
+                reasoning_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                raw: None,
+            },
+            raw: None,
+            warnings: vec![],
+            rate_limit: None,
+        };
+        acc.process(&StreamEvent {
+            event_type: StreamEventTypeOrString::Known(StreamEventType::Finish),
+            delta: None,
+            text_id: None,
+            reasoning_delta: None,
+            tool_call: None,
+            finish_reason: None,
+            usage: None,
+            response: Some(expected.clone()),
+            error: None,
+            raw: None,
+        });
+        assert_eq!(acc.response(), expected);
     }
 }

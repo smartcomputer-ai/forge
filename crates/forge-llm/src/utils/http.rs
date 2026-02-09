@@ -16,7 +16,10 @@ pub struct HttpClient {
 }
 
 impl HttpClient {
-    pub fn new(timeout: AdapterTimeout, default_headers: HeaderMap) -> Result<Self, reqwest::Error> {
+    pub fn new(
+        timeout: AdapterTimeout,
+        default_headers: HeaderMap,
+    ) -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .connect_timeout(Duration::from_secs_f64(timeout.connect))
             .timeout(Duration::from_secs_f64(timeout.request))

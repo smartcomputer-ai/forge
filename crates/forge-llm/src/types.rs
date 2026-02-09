@@ -496,7 +496,10 @@ impl Add for Usage {
             total_tokens: self.total_tokens + rhs.total_tokens,
             reasoning_tokens: Usage::sum_optional(self.reasoning_tokens, rhs.reasoning_tokens),
             cache_read_tokens: Usage::sum_optional(self.cache_read_tokens, rhs.cache_read_tokens),
-            cache_write_tokens: Usage::sum_optional(self.cache_write_tokens, rhs.cache_write_tokens),
+            cache_write_tokens: Usage::sum_optional(
+                self.cache_write_tokens,
+                rhs.cache_write_tokens,
+            ),
             raw: None,
         }
     }

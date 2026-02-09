@@ -4,8 +4,8 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
 
 /// Shared error message and cause payload.
@@ -310,7 +310,10 @@ pub fn map_http_status(status: u16) -> Option<HttpErrorClassification> {
             ProviderErrorKind::AccessDenied,
             false,
         )),
-        404 => Some(HttpErrorClassification::Provider(ProviderErrorKind::NotFound, false)),
+        404 => Some(HttpErrorClassification::Provider(
+            ProviderErrorKind::NotFound,
+            false,
+        )),
         408 => Some(HttpErrorClassification::RequestTimeout(true)),
         413 => Some(HttpErrorClassification::Provider(
             ProviderErrorKind::ContextLength,
@@ -320,7 +323,10 @@ pub fn map_http_status(status: u16) -> Option<HttpErrorClassification> {
             ProviderErrorKind::InvalidRequest,
             false,
         )),
-        429 => Some(HttpErrorClassification::Provider(ProviderErrorKind::RateLimit, true)),
+        429 => Some(HttpErrorClassification::Provider(
+            ProviderErrorKind::RateLimit,
+            true,
+        )),
         500 | 502 | 503 | 504 => Some(HttpErrorClassification::Provider(
             ProviderErrorKind::Server,
             true,
@@ -543,11 +549,17 @@ mod tests {
         );
         assert_eq!(
             map_http_status(429),
-            Some(HttpErrorClassification::Provider(ProviderErrorKind::RateLimit, true))
+            Some(HttpErrorClassification::Provider(
+                ProviderErrorKind::RateLimit,
+                true
+            ))
         );
         assert_eq!(
             map_http_status(504),
-            Some(HttpErrorClassification::Provider(ProviderErrorKind::Server, true))
+            Some(HttpErrorClassification::Provider(
+                ProviderErrorKind::Server,
+                true
+            ))
         );
         assert_eq!(
             map_http_status(408),
