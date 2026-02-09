@@ -1,8 +1,8 @@
 use crate::{
     AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
     ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
-    SessionError, SessionEvent, ToolDispatchOptions, ToolResultTurn, ToolResultsTurn, Turn,
-    UserTurn,
+    SessionError, SessionEvent, SteeringTurn, ToolDispatchOptions, ToolResultTurn, ToolResultsTurn,
+    Turn, UserTurn,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCallData, ToolChoice,
@@ -10,6 +10,7 @@ use forge_llm::{
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{self, Display};
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -201,6 +202,21 @@ impl Session {
         Ok(())
     }
 
+    pub fn set_reasoning_effort(
+        &mut self,
+        reasoning_effort: Option<String>,
+    ) -> Result<(), AgentError> {
+        if let Some(value) = reasoning_effort.as_deref() {
+            validate_reasoning_effort(value)?;
+        }
+        self.config.reasoning_effort = reasoning_effort.map(|value| value.to_ascii_lowercase());
+        Ok(())
+    }
+
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        self.config.reasoning_effort.as_deref()
+    }
+
     pub fn pop_steering_message(&mut self) -> Option<String> {
         self.steering_queue.pop_front()
     }
@@ -218,17 +234,31 @@ impl Session {
     }
 
     pub async fn submit(&mut self, user_input: impl Into<String>) -> Result<(), AgentError> {
+        let mut pending_inputs = VecDeque::from([user_input.into()]);
+
+        while let Some(next_input) = pending_inputs.pop_front() {
+            let completed_naturally = self.submit_single(next_input).await?;
+            if completed_naturally {
+                while let Some(follow_up) = self.pop_followup_message() {
+                    pending_inputs.push_back(follow_up);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn submit_single(&mut self, user_input: String) -> Result<bool, AgentError> {
         if self.state == SessionState::Closed {
             return Err(AgentError::session_closed());
         }
 
         if self.abort_requested {
             self.transition_to(SessionState::Closed)?;
-            return Ok(());
+            return Ok(false);
         }
 
         self.transition_to(SessionState::Processing)?;
-        let user_input = user_input.into();
         self.push_turn(Turn::User(UserTurn::new(
             user_input.clone(),
             current_timestamp(),
@@ -237,12 +267,14 @@ impl Session {
             EventKind::UserInput,
             EventData::from_serializable(serde_json::json!({ "content": user_input }))?,
         )?;
+        self.drain_steering_queue()?;
 
         let mut round_count = 0usize;
+        let mut completed_naturally = false;
         loop {
             if self.abort_requested {
                 self.transition_to(SessionState::Closed)?;
-                return Ok(());
+                return Ok(false);
             }
 
             if round_count >= self.config.max_tool_rounds_per_input {
@@ -291,6 +323,7 @@ impl Session {
             ))?;
 
             if tool_calls.is_empty() {
+                completed_naturally = true;
                 break;
             }
 
@@ -324,12 +357,14 @@ impl Session {
                 result_turns,
                 current_timestamp(),
             )));
+            self.drain_steering_queue()?;
+            self.inject_loop_detection_warning_if_needed()?;
         }
 
         if self.state != SessionState::Closed {
             self.transition_to(SessionState::Idle)?;
         }
-        Ok(())
+        Ok(completed_naturally)
     }
 
     pub fn close(&mut self) -> Result<(), AgentError> {
@@ -354,6 +389,47 @@ impl Session {
             self.id.clone(),
             self.state.to_string(),
         ))
+    }
+
+    fn drain_steering_queue(&mut self) -> Result<(), AgentError> {
+        while let Some(content) = self.pop_steering_message() {
+            self.push_turn(Turn::Steering(SteeringTurn::new(
+                content.clone(),
+                current_timestamp(),
+            )));
+            self.event_emitter
+                .emit(SessionEvent::steering_injected(self.id.clone(), content))?;
+        }
+        Ok(())
+    }
+
+    fn inject_loop_detection_warning_if_needed(&mut self) -> Result<(), AgentError> {
+        if !self.config.enable_loop_detection {
+            return Ok(());
+        }
+
+        if !detect_loop(&self.history, self.config.loop_detection_window) {
+            return Ok(());
+        }
+
+        let warning = format!(
+            "Loop detected: the last {} tool calls follow a repeating pattern. Try a different approach.",
+            self.config.loop_detection_window
+        );
+        if matches!(
+            self.history.last(),
+            Some(Turn::Steering(turn)) if turn.content == warning
+        ) {
+            return Ok(());
+        }
+
+        self.push_turn(Turn::Steering(SteeringTurn::new(
+            warning.clone(),
+            current_timestamp(),
+        )));
+        self.event_emitter
+            .emit(SessionEvent::loop_detection(self.id.clone(), warning))?;
+        Ok(())
     }
 
     fn build_request(&self) -> Request {
@@ -494,6 +570,80 @@ fn current_date_yyyy_mm_dd() -> String {
     "1970-01-01".to_string()
 }
 
+fn validate_reasoning_effort(value: &str) -> Result<(), AgentError> {
+    let normalized = value.to_ascii_lowercase();
+    match normalized.as_str() {
+        "low" | "medium" | "high" => Ok(()),
+        _ => Err(SessionError::InvalidConfiguration(format!(
+            "reasoning_effort must be one of: low, medium, high (received '{}')",
+            value
+        ))
+        .into()),
+    }
+}
+
+fn detect_loop(history: &[Turn], window_size: usize) -> bool {
+    if window_size == 0 {
+        return false;
+    }
+
+    let signatures: Vec<u64> = history
+        .iter()
+        .filter_map(|turn| {
+            if let Turn::Assistant(turn) = turn {
+                Some(
+                    turn.tool_calls
+                        .iter()
+                        .map(tool_call_signature)
+                        .collect::<Vec<u64>>(),
+                )
+            } else {
+                None
+            }
+        })
+        .flatten()
+        .collect();
+
+    if signatures.len() < window_size {
+        return false;
+    }
+
+    let recent = &signatures[signatures.len() - window_size..];
+    for pattern_len in 1..=3 {
+        if window_size % pattern_len != 0 {
+            continue;
+        }
+
+        let pattern = &recent[0..pattern_len];
+        let mut all_match = true;
+        for chunk in recent.chunks(pattern_len).skip(1) {
+            if chunk != pattern {
+                all_match = false;
+                break;
+            }
+        }
+        if all_match {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn tool_call_signature(tool_call: &forge_llm::ToolCall) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    tool_call.name.hash(&mut hasher);
+    if let Ok(serialized) = serde_json::to_string(&tool_call.arguments) {
+        serialized.hash(&mut hasher);
+    } else {
+        tool_call.arguments.to_string().hash(&mut hasher);
+    }
+    if let Some(raw_arguments) = &tool_call.raw_arguments {
+        raw_arguments.hash(&mut hasher);
+    }
+    hasher.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,31 +761,37 @@ mod tests {
     }
 
     fn tool_registry_with_echo() -> Arc<ToolRegistry> {
+        tool_registry_with_named_echoes(&["echo_tool"])
+    }
+
+    fn tool_registry_with_named_echoes(names: &[&str]) -> Arc<ToolRegistry> {
         let mut tool_registry = ToolRegistry::default();
-        let executor: ToolExecutor = Arc::new(|args, _env| {
-            Box::pin(async move {
-                let output = args
-                    .get("value")
-                    .and_then(Value::as_str)
-                    .unwrap_or("missing")
-                    .to_string();
-                Ok(output)
-            })
-        });
-        tool_registry.register(RegisteredTool {
-            definition: forge_llm::ToolDefinition {
-                name: "echo_tool".to_string(),
-                description: "echo".to_string(),
-                parameters: serde_json::json!({
-                    "type": "object",
-                    "required": ["value"],
-                    "properties": {
-                        "value": { "type": "string" }
-                    }
-                }),
-            },
-            executor,
-        });
+        for name in names {
+            let executor: ToolExecutor = Arc::new(|args, _env| {
+                Box::pin(async move {
+                    let output = args
+                        .get("value")
+                        .and_then(Value::as_str)
+                        .unwrap_or("missing")
+                        .to_string();
+                    Ok(output)
+                })
+            });
+            tool_registry.register(RegisteredTool {
+                definition: forge_llm::ToolDefinition {
+                    name: (*name).to_string(),
+                    description: "echo".to_string(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "required": ["value"],
+                        "properties": {
+                            "value": { "type": "string" }
+                        }
+                    }),
+                },
+                executor,
+            });
+        }
         Arc::new(tool_registry)
     }
 
@@ -886,5 +1042,177 @@ mod tests {
         assert!(matches!(session.history()[2], Turn::User(_)));
         assert!(matches!(session.history()[3], Turn::Assistant(_)));
         assert_eq!(requests.lock().expect("requests mutex").len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn steering_messages_are_injected_into_history_and_next_request() {
+        let (client, requests) = build_test_client(vec![text_response("resp-1", "done")]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+        session
+            .steer("Use concise output")
+            .expect("steer should queue");
+
+        session
+            .submit("hello")
+            .await
+            .expect("submit should succeed");
+
+        assert!(matches!(session.history()[1], Turn::Steering(_)));
+        let requests = requests.lock().expect("requests mutex");
+        let first_request = &requests[0];
+        assert!(first_request
+            .messages
+            .iter()
+            .any(|message| message.role == Role::User && message.text() == "Use concise output"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn follow_up_queue_triggers_new_processing_cycle_after_completion() {
+        let (client, requests) = build_test_client(vec![
+            text_response("resp-1", "first"),
+            text_response("resp-2", "second"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+        session
+            .follow_up("second input")
+            .expect("follow-up should queue");
+
+        session
+            .submit("first input")
+            .await
+            .expect("submit should succeed");
+
+        assert_eq!(session.history().len(), 4);
+        assert!(matches!(&session.history()[0], Turn::User(turn) if turn.content == "first input"));
+        assert!(
+            matches!(&session.history()[2], Turn::User(turn) if turn.content == "second input")
+        );
+        assert_eq!(requests.lock().expect("requests mutex").len(), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn loop_detection_injects_warning_steering_turn_and_event() {
+        let (client, requests) = build_test_client(vec![
+            tool_call_response(
+                "resp-1",
+                "call-1",
+                "tool_a",
+                serde_json::json!({ "value": "a" }),
+            ),
+            tool_call_response(
+                "resp-2",
+                "call-2",
+                "tool_b",
+                serde_json::json!({ "value": "b" }),
+            ),
+            tool_call_response(
+                "resp-3",
+                "call-3",
+                "tool_a",
+                serde_json::json!({ "value": "a" }),
+            ),
+            tool_call_response(
+                "resp-4",
+                "call-4",
+                "tool_b",
+                serde_json::json!({ "value": "b" }),
+            ),
+            text_response("resp-5", "done"),
+        ]);
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: tool_registry_with_named_echoes(&["tool_a", "tool_b"]),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut config = SessionConfig::default();
+        config.loop_detection_window = 4;
+        let mut session = Session::new_with_emitter(profile, env, client, config, emitter.clone())
+            .expect("new session");
+
+        session
+            .submit("start")
+            .await
+            .expect("submit should succeed");
+
+        assert!(session.history().iter().any(|turn| matches!(
+            turn,
+            Turn::Steering(turn) if turn.content.contains("Loop detected")
+        )));
+        assert!(
+            emitter
+                .snapshot()
+                .iter()
+                .any(|event| event.kind == EventKind::LoopDetection)
+        );
+
+        let requests = requests.lock().expect("requests mutex");
+        assert!(requests[4].messages.iter().any(|message| {
+            message.role == Role::User && message.text().contains("Loop detected")
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reasoning_effort_updates_apply_to_next_llm_call() {
+        let (client, requests) = build_test_client(vec![
+            text_response("resp-1", "first"),
+            text_response("resp-2", "second"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        session
+            .set_reasoning_effort(Some("low".to_string()))
+            .expect("low should be valid");
+        session.submit("one").await.expect("first submit");
+        session
+            .set_reasoning_effort(Some("high".to_string()))
+            .expect("high should be valid");
+        session.submit("two").await.expect("second submit");
+
+        let requests = requests.lock().expect("requests mutex");
+        assert_eq!(requests[0].reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(requests[1].reasoning_effort.as_deref(), Some("high"));
+
+        let err = session
+            .set_reasoning_effort(Some("ultra".to_string()))
+            .expect_err("invalid value should be rejected");
+        assert!(matches!(
+            err,
+            AgentError::Session(SessionError::InvalidConfiguration(_))
+        ));
     }
 }

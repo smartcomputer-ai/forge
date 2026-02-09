@@ -12,7 +12,7 @@ This matrix is populated as implementation milestones complete.
 - [x] Per-input round limits enforced (`crates/forge-agent/src/session.rs`)
 - [x] Session-level turn limits enforced (`crates/forge-agent/src/session.rs`)
 - [x] Abort handling closes loop and transitions state (`crates/forge-agent/src/session.rs`)
-- [ ] Loop detection warning steering turn
+- [x] Loop detection warning steering turn (`crates/forge-agent/src/session.rs`)
 - [x] Multiple sequential inputs supported (`crates/forge-agent/src/session.rs`)
 
 ## 9.2 Provider Profiles
@@ -47,15 +47,15 @@ This matrix is populated as implementation milestones complete.
 - [x] Limits overridable via config (`crates/forge-agent/src/config.rs`)
 
 ## 9.6 Steering
-- [ ] `steer()` queue injection between tool rounds
-- [ ] `follow_up()` queue processed post-completion
-- [ ] Steering turns persisted in history
-- [ ] Steering turns converted to user-role messages
+- [x] `steer()` queue injection between tool rounds (`crates/forge-agent/src/session.rs`)
+- [x] `follow_up()` queue processed post-completion (`crates/forge-agent/src/session.rs`)
+- [x] Steering turns persisted in history (`crates/forge-agent/src/session.rs`)
+- [x] Steering turns converted to user-role messages (`crates/forge-agent/src/session.rs`)
 
 ## 9.7 Reasoning Effort
 - [x] `reasoning_effort` passed to request (`crates/forge-agent/src/session.rs`)
-- [ ] Mid-session changes apply on next call
-- [ ] Supported values covered by validation/tests
+- [x] Mid-session changes apply on next call (`crates/forge-agent/src/session.rs`)
+- [x] Supported values covered by validation/tests (`crates/forge-agent/src/session.rs`)
 
 ## 9.8 System Prompts
 - [ ] Includes provider base instructions
