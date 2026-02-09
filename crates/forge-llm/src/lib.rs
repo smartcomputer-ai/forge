@@ -6,6 +6,8 @@
 pub mod catalog;
 pub mod client;
 pub mod errors;
+pub mod high_level;
+pub mod openai;
 pub mod provider;
 pub mod stream;
 pub mod types;
@@ -17,6 +19,10 @@ pub use catalog::*;
 pub use client::*;
 #[allow(unused_imports)]
 pub use errors::*;
+#[allow(unused_imports)]
+pub use high_level::*;
+#[allow(unused_imports)]
+pub use openai::*;
 #[allow(unused_imports)]
 pub use provider::*;
 #[allow(unused_imports)]

@@ -72,6 +72,8 @@ impl Client {
     }
 
     pub fn from_env() -> Result<Self, SDKError> {
+        crate::openai::ensure_openai_factory_registered();
+
         let mut providers = HashMap::new();
         let mut default_provider = None;
 
