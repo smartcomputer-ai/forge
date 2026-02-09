@@ -89,22 +89,22 @@ This matrix is populated as implementation milestones complete.
 ## 9.12 Cross-Provider Parity Matrix
 - [x] Simple file creation task (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Read then edit task (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [ ] Multi-file edit flow
+- [x] Multi-file edit flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Shell execution flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Shell timeout handling (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Grep + glob discovery flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Multi-step read/analyze/edit
-- [ ] Large-output truncation behavior
+- [x] Large-output truncation behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Parallel tool calls (where supported) (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [ ] Mid-task steering behavior
-- [ ] Reasoning effort change behavior
+- [x] Mid-task steering behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
+- [x] Reasoning effort change behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Subagent spawn and wait flow (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [ ] Loop detection warning behavior
-- [ ] Error recovery after tool failure
+- [x] Loop detection warning behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
+- [x] Error recovery after tool failure (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Provider-native editing format behavior (`crates/forge-agent/tests/conformance_matrix.rs`)
 
 ## 9.13 Integration Smoke Test
-- [x] OpenAI smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [x] Anthropic smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [x] Gemini smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] OpenAI smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/events_integration.rs`)
+- [x] Anthropic smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
+- [x] Gemini smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [ ] Real-key run notes captured
