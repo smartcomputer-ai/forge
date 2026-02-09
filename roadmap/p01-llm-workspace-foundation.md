@@ -23,3 +23,6 @@ Establish the workspace layout and a standalone `forge-llm` crate as the primary
 - `cargo build` succeeds for the workspace.
 - `forge-llm` compiles with empty stubs and no warnings.
 - Module layout matches the four-layer architecture in `spec/01-unified-llm-spec.md`.
+
+**Status**
+- Done (2026-02-09)

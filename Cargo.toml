@@ -1,6 +1,5 @@
-[package]
-name = "forge"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
+[workspace]
+members = [
+    "crates/forge-llm",
+]
+resolver = "2"

@@ -1,6 +1,6 @@
 # AGENTS
 
-## Entry
+## Specifications
 Primary specs live in `spec/`:
 
 - `spec/00-vision.md` — vision + principles + techniques
@@ -9,6 +9,11 @@ Primary specs live in `spec/`:
 - `spec/03-attractor-spec.md` — attractor spec
 
 When making changes, align behavior and terminology to these documents first.
+
+## Code Structure
+- Workspace root: `Cargo.toml` (workspace only)
+- Crates:
+  - `crates/forge-llm/` — unified LLM client library (primary target for spec/01-unified-llm-spec.md)
 
 ## Test Strategy (Concise, Deterministic)
 
@@ -24,7 +29,10 @@ When making changes, align behavior and terminology to these documents first.
 ## Important
 When modifying specs or architecture:
 1. Update the relevant spec files in `spec/`
-2. Update this file (AGENTS.md or CLAUDE.md) if the high-level architecture changes
-3. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
+2. Whenever a roadmap file is complete or partially complete mark what has been done. When the file is done mark the entire file as compelte below the main title.
+3. Update this file (AGENTS.md or CLAUDE.md) if the high-level architecture changes
+4. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
 
 The specs in `spec/` are the source of truth. This file is just an index.
+
+
