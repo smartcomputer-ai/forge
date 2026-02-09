@@ -1,7 +1,8 @@
 # P14: Agent Workspace + Crate Foundation
+_Complete_
 
 **Status**
-- Planned (2026-02-09)
+- Done (2026-02-09)
 
 **Goal**
 Create a new `forge-agent` crate in the workspace as the dedicated implementation target for `spec/02-coding-agent-loop-spec.md`.
@@ -27,3 +28,16 @@ Create a new `forge-agent` crate in the workspace as the dedicated implementatio
 - `cargo build` succeeds for workspace with `forge-agent` included.
 - `forge-agent` exports compile with no dead-end type holes.
 - Module naming aligns to Sections 2-7 in `spec/02-coding-agent-loop-spec.md`.
+
+**Implemented**
+- Added new workspace member: `crates/forge-agent`.
+- Added crate manifest and baseline dependencies including `forge-llm`.
+- Added compile-safe module skeleton:
+  - `config`, `errors`, `events`, `execution`, `profiles`, `session`, `tools`, `truncation`, `turn`
+- Added public re-export surface in `crates/forge-agent/src/lib.rs`.
+- Added crate README with module intent and build command.
+- Updated `AGENTS.md` architecture index to include `forge-agent`.
+
+**Validation**
+- `cargo build` (workspace) passed.
+- `cargo test -p forge-agent` passed.
