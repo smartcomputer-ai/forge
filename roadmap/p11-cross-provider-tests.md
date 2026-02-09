@@ -38,3 +38,6 @@ Validate parity across providers and ensure the Definition of Done checklist is 
 5. Added additional live Responses checks for:
    - stream truncation path (`length` finish reason under low token caps),
    - required tool-choice path producing tool calls (`finish_reason = tool_calls`).
+6. Added tool-usage depth tests:
+   - live streaming tool-call event coverage (`ToolCallStart`/`ToolCallEnd`) with argument extraction checks,
+   - mocked high-level `generate()` tool-loop integration asserting `function_call_output` round-trip to Responses API.

@@ -442,15 +442,15 @@ async fn openai_live_stream_required_tool_choice_emits_tool_call_events() {
                         == StreamEventTypeOrString::Known(StreamEventType::ToolCallStart)
                     {
                         saw_tool_start = true;
-                        if let Some(tool_call) = event.tool_call {
-                            start_name = Some(tool_call.name);
+                        if let Some(tool_call) = event.tool_call.as_ref() {
+                            start_name = Some(tool_call.name.clone());
                         }
                     }
                     if event.event_type
                         == StreamEventTypeOrString::Known(StreamEventType::ToolCallEnd)
                     {
                         saw_tool_end = true;
-                        if let Some(tool_call) = event.tool_call {
+                        if let Some(tool_call) = event.tool_call.as_ref() {
                             end_arguments_value = tool_call
                                 .arguments
                                 .get("value")

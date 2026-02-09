@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::thread;
 
 use forge_llm::{
-    Client, Message, OpenAIAdapter, OpenAIAdapterConfig, OpenAICompatibleAdapter,
-    OpenAICompatibleAdapterConfig, Request, StreamEventType, StreamEventTypeOrString,
+    Client, GenerateOptions, Message, OpenAIAdapter, OpenAIAdapterConfig, OpenAICompatibleAdapter,
+    OpenAICompatibleAdapterConfig, Request, StreamEventType, StreamEventTypeOrString, Tool,
+    generate,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -54,6 +55,69 @@ fn spawn_single_response_server(
             .write_all(response.as_bytes())
             .expect("write response");
         socket.flush().expect("flush");
+    });
+
+    format!("http://{}", address)
+}
+
+struct MockResponsePlan {
+    status: u16,
+    content_type: &'static str,
+    body: String,
+    must_contain: Vec<&'static str>,
+}
+
+fn spawn_sequence_response_server(
+    expected_path: &'static str,
+    plans: Vec<MockResponsePlan>,
+) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind listener");
+    let address = listener.local_addr().expect("listener addr");
+
+    thread::spawn(move || {
+        for plan in plans {
+            let (mut socket, _) = listener.accept().expect("accept");
+            let mut buffer = vec![0_u8; 65536];
+            let read = socket.read(&mut buffer).expect("read request");
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let first_line = request.lines().next().unwrap_or_default().to_string();
+            assert!(
+                first_line.contains(expected_path),
+                "expected path '{}', first line: {}",
+                expected_path,
+                first_line
+            );
+            for expected in &plan.must_contain {
+                assert!(
+                    request.contains(expected),
+                    "expected request to contain '{}', request: {}",
+                    expected,
+                    request
+                );
+            }
+
+            let status_text = match plan.status {
+                200 => "OK",
+                400 => "Bad Request",
+                401 => "Unauthorized",
+                404 => "Not Found",
+                429 => "Too Many Requests",
+                500 => "Internal Server Error",
+                _ => "OK",
+            };
+            let response = format!(
+                "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                plan.status,
+                status_text,
+                plan.content_type,
+                plan.body.len(),
+                plan.body
+            );
+            socket
+                .write_all(response.as_bytes())
+                .expect("write response");
+            socket.flush().expect("flush");
+        }
     });
 
     format!("http://{}", address)
@@ -202,4 +266,99 @@ async fn client_complete_openai_compatible_adapter_returns_response() {
     assert_eq!(response.provider, "openai-compatible");
     assert_eq!(response.text(), "hello from compatible");
     assert_eq!(response.usage.total_tokens, 7);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generate_executes_tool_and_sends_function_call_output_to_openai_responses() {
+    let first_body = json!({
+        "id": "resp_tool_1",
+        "model": "gpt-5.2",
+        "status": "completed",
+        "output": [{
+            "id": "fc_1",
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "calc",
+            "arguments": "{\"x\":2,\"y\":2}"
+        }],
+        "usage": {
+            "input_tokens": 8,
+            "output_tokens": 5,
+            "total_tokens": 13
+        }
+    })
+    .to_string();
+    let second_body = json!({
+        "id": "resp_tool_2",
+        "model": "gpt-5.2",
+        "status": "completed",
+        "output": [{
+            "id": "msg_2",
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "The sum is 4." }]
+        }],
+        "usage": {
+            "input_tokens": 12,
+            "output_tokens": 6,
+            "total_tokens": 18
+        }
+    })
+    .to_string();
+
+    let base_url = spawn_sequence_response_server(
+        "/responses",
+        vec![
+            MockResponsePlan {
+                status: 200,
+                content_type: "application/json",
+                body: first_body,
+                must_contain: vec!["\"type\":\"function\"", "\"name\":\"calc\""],
+            },
+            MockResponsePlan {
+                status: 200,
+                content_type: "application/json",
+                body: second_body,
+                must_contain: vec!["\"type\":\"function_call_output\"", "\"call_id\":\"call_1\""],
+            },
+        ],
+    );
+    let mut config = OpenAIAdapterConfig::new("test-key");
+    config.base_url = base_url;
+    let adapter = OpenAIAdapter::new(config).expect("adapter");
+
+    let mut client = Client::default();
+    client.register_provider(Arc::new(adapter));
+
+    let mut options = GenerateOptions::new("gpt-5.2");
+    options.provider = Some("openai".to_string());
+    options.prompt = Some("What is 2 + 2? Use the tool.".to_string());
+    options.max_tool_rounds = 2;
+    options.client = Some(Arc::new(client));
+    options.tools = vec![Tool::with_execute(
+        "calc",
+        "Add two numbers",
+        json!({
+            "type": "object",
+            "properties": {
+                "x": { "type": "number" },
+                "y": { "type": "number" }
+            },
+            "required": ["x", "y"]
+        }),
+        |arguments| async move {
+            let x = arguments.get("x").and_then(|value| value.as_i64()).unwrap_or(0);
+            let y = arguments.get("y").and_then(|value| value.as_i64()).unwrap_or(0);
+            Ok(json!({ "sum": x + y }))
+        },
+    )];
+
+    let result = generate(options).await.expect("generate");
+    assert_eq!(result.text, "The sum is 4.");
+    assert_eq!(result.steps.len(), 2);
+    assert_eq!(result.steps[0].tool_calls.len(), 1);
+    assert_eq!(result.steps[0].tool_calls[0].name, "calc");
+    assert_eq!(result.steps[0].tool_results.len(), 1);
+    assert!(result.steps[1].tool_calls.is_empty());
+    assert!(result.steps[1].tool_results.is_empty());
 }
