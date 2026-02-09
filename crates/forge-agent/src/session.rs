@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
@@ -78,6 +80,8 @@ pub struct Session {
     id: String,
     provider_profile: Arc<dyn ProviderProfile>,
     execution_env: Arc<dyn ExecutionEnvironment>,
+    environment_context: EnvironmentContext,
+    project_docs: Vec<ProjectDocument>,
     history: Vec<Turn>,
     event_emitter: Arc<dyn EventEmitter>,
     config: SessionConfig,
@@ -112,10 +116,19 @@ impl Session {
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
     ) -> Result<Self, AgentError> {
+        let environment_context =
+            build_environment_context_snapshot(provider_profile.as_ref(), execution_env.as_ref());
+        let project_docs = discover_project_documents(
+            execution_env.working_directory(),
+            provider_profile.as_ref(),
+        );
+
         let session = Self {
             id: Uuid::new_v4().to_string(),
             provider_profile,
             execution_env,
+            environment_context,
+            project_docs,
             history: Vec::new(),
             event_emitter,
             config,
@@ -461,16 +474,17 @@ impl Session {
     }
 
     fn build_request(&self) -> Request {
-        let environment = self.build_environment_context();
-        let project_docs: Vec<ProjectDocument> = Vec::new();
-        let system_prompt = self
-            .provider_profile
-            .build_system_prompt(&environment, &project_docs);
+        let tools = self.provider_profile.tools();
+        let system_prompt = self.provider_profile.build_system_prompt(
+            &self.environment_context,
+            &tools,
+            &self.project_docs,
+            self.config.system_prompt_override.as_deref(),
+        );
 
         let mut messages = vec![Message::system(system_prompt)];
         messages.extend(convert_history_to_messages(&self.history));
 
-        let tools = self.provider_profile.tools();
         let tools = if tools.is_empty() { None } else { Some(tools) };
         let tool_choice = tools.as_ref().map(|_| ToolChoice {
             mode: "auto".to_string(),
@@ -491,22 +505,6 @@ impl Session {
             reasoning_effort: self.config.reasoning_effort.clone(),
             metadata: None,
             provider_options: self.provider_profile.provider_options(),
-        }
-    }
-
-    fn build_environment_context(&self) -> EnvironmentContext {
-        let working_directory = self.execution_env.working_directory();
-        let is_git_repository = working_directory.join(".git").exists();
-
-        EnvironmentContext {
-            working_directory: working_directory.to_string_lossy().to_string(),
-            platform: self.execution_env.platform().to_string(),
-            os_version: self.execution_env.os_version().to_string(),
-            is_git_repository,
-            git_branch: None,
-            date_yyyy_mm_dd: current_date_yyyy_mm_dd(),
-            model: self.provider_profile.model().to_string(),
-            knowledge_cutoff: None,
         }
     }
 }
@@ -596,6 +594,230 @@ fn current_date_yyyy_mm_dd() -> String {
     }
 
     "1970-01-01".to_string()
+}
+
+fn build_environment_context_snapshot(
+    provider_profile: &dyn ProviderProfile,
+    execution_env: &dyn ExecutionEnvironment,
+) -> EnvironmentContext {
+    let working_directory = canonicalize_or_fallback(execution_env.working_directory());
+    let repository_root = find_git_repository_root(&working_directory);
+    let (git_branch, git_status_summary, git_recent_commits) = if let Some(root) = &repository_root
+    {
+        (
+            git_current_branch(root),
+            git_status_summary(root),
+            git_recent_commits(root, 5),
+        )
+    } else {
+        (None, None, Vec::new())
+    };
+
+    EnvironmentContext {
+        working_directory: working_directory.to_string_lossy().to_string(),
+        repository_root: repository_root
+            .as_ref()
+            .map(|root| root.to_string_lossy().to_string()),
+        platform: execution_env.platform().to_string(),
+        os_version: execution_env.os_version().to_string(),
+        is_git_repository: repository_root.is_some(),
+        git_branch,
+        git_status_summary,
+        git_recent_commits,
+        date_yyyy_mm_dd: current_date_yyyy_mm_dd(),
+        model: provider_profile.model().to_string(),
+        knowledge_cutoff: provider_profile.knowledge_cutoff().map(str::to_string),
+    }
+}
+
+fn discover_project_documents(
+    working_directory: &Path,
+    provider_profile: &dyn ProviderProfile,
+) -> Vec<ProjectDocument> {
+    const PROJECT_DOC_BYTE_BUDGET: usize = 32 * 1024;
+    let working_directory = canonicalize_or_fallback(working_directory);
+    let root =
+        find_git_repository_root(&working_directory).unwrap_or_else(|| working_directory.clone());
+    let directories = path_chain_from_root_to_cwd(&root, &working_directory);
+    let instruction_files = provider_profile.project_instruction_files();
+
+    let mut docs = Vec::new();
+    for directory in directories {
+        for instruction_file in &instruction_files {
+            let candidate = directory.join(instruction_file);
+            if !candidate.is_file() {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&candidate) else {
+                continue;
+            };
+            let relative = candidate
+                .strip_prefix(&root)
+                .unwrap_or(&candidate)
+                .to_string_lossy()
+                .replace('\\', "/");
+            docs.push(ProjectDocument {
+                path: relative,
+                content,
+            });
+        }
+    }
+
+    truncate_project_documents_to_budget(docs, PROJECT_DOC_BYTE_BUDGET)
+}
+
+fn truncate_project_documents_to_budget(
+    docs: Vec<ProjectDocument>,
+    byte_budget: usize,
+) -> Vec<ProjectDocument> {
+    let total_bytes: usize = docs
+        .iter()
+        .map(|document| document.content.as_bytes().len())
+        .sum();
+    if total_bytes <= byte_budget {
+        return docs;
+    }
+
+    let mut used = 0usize;
+    let mut truncated_docs = Vec::new();
+    for document in docs {
+        if used >= byte_budget {
+            break;
+        }
+
+        let document_bytes = document.content.as_bytes().len();
+        if used + document_bytes <= byte_budget {
+            used += document_bytes;
+            truncated_docs.push(document);
+            continue;
+        }
+
+        let remaining = byte_budget.saturating_sub(used);
+        let visible = truncate_str_to_byte_limit(&document.content, remaining);
+        let content = if visible.is_empty() {
+            crate::profiles::PROJECT_DOC_TRUNCATION_MARKER.to_string()
+        } else {
+            format!(
+                "{}\n{}",
+                visible,
+                crate::profiles::PROJECT_DOC_TRUNCATION_MARKER
+            )
+        };
+        truncated_docs.push(ProjectDocument {
+            path: document.path,
+            content,
+        });
+        break;
+    }
+
+    truncated_docs
+}
+
+fn truncate_str_to_byte_limit(input: &str, max_bytes: usize) -> String {
+    if input.as_bytes().len() <= max_bytes {
+        return input.to_string();
+    }
+    if max_bytes == 0 {
+        return String::new();
+    }
+
+    let mut end = max_bytes.min(input.len());
+    while end > 0 && !input.is_char_boundary(end) {
+        end -= 1;
+    }
+    input[..end].to_string()
+}
+
+fn find_git_repository_root(start: &Path) -> Option<PathBuf> {
+    let canonical = canonicalize_or_fallback(start);
+    for ancestor in canonical.ancestors() {
+        if ancestor.join(".git").exists() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+fn path_chain_from_root_to_cwd(root: &Path, cwd: &Path) -> Vec<PathBuf> {
+    let root = canonicalize_or_fallback(root);
+    let cwd = canonicalize_or_fallback(cwd);
+    if root == cwd {
+        return vec![cwd];
+    }
+    if !cwd.starts_with(&root) {
+        return vec![cwd];
+    }
+
+    let mut chain = Vec::new();
+    let mut current = cwd.as_path();
+    loop {
+        chain.push(current.to_path_buf());
+        if current == root {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            return vec![cwd];
+        };
+        current = parent;
+    }
+    chain.reverse();
+    chain
+}
+
+fn canonicalize_or_fallback(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+fn git_current_branch(repository_root: &Path) -> Option<String> {
+    run_git_command(repository_root, &["rev-parse", "--abbrev-ref", "HEAD"])
+}
+
+fn git_status_summary(repository_root: &Path) -> Option<String> {
+    let output = run_git_command(repository_root, &["status", "--porcelain"])?;
+    let mut modified = 0usize;
+    let mut untracked = 0usize;
+    for line in output.lines().filter(|line| !line.trim().is_empty()) {
+        if line.starts_with("??") {
+            untracked += 1;
+        } else {
+            modified += 1;
+        }
+    }
+    Some(format!("modified: {modified}, untracked: {untracked}"))
+}
+
+fn git_recent_commits(repository_root: &Path, limit: usize) -> Vec<String> {
+    run_git_command(
+        repository_root,
+        &["log", "--oneline", "-n", &limit.to_string()],
+    )
+    .map(|output| {
+        output
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::to_string)
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repository_root)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if text.is_empty() {
+        return Some(String::new());
+    }
+    Some(text)
 }
 
 fn validate_reasoning_effort(value: &str) -> Result<(), AgentError> {
@@ -713,8 +935,8 @@ fn total_chars_in_history(history: &[Turn]) -> usize {
 mod tests {
     use super::*;
     use crate::{
-        BufferedEventEmitter, LocalExecutionEnvironment, ProviderCapabilities, RegisteredTool,
-        StaticProviderProfile, ToolExecutor, ToolRegistry,
+        BufferedEventEmitter, LocalExecutionEnvironment, PROJECT_DOC_TRUNCATION_MARKER,
+        ProviderCapabilities, RegisteredTool, StaticProviderProfile, ToolExecutor, ToolRegistry,
     };
     use async_trait::async_trait;
     use forge_llm::{
@@ -724,8 +946,11 @@ mod tests {
     use futures::{StreamExt, executor::block_on};
     use serde_json::Value;
     use std::collections::VecDeque;
+    use std::fs;
+    use std::path::Path;
     use std::path::PathBuf;
     use std::sync::Mutex;
+    use tempfile::tempdir;
 
     #[derive(Clone)]
     struct SequenceAdapter {
@@ -858,6 +1083,13 @@ mod tests {
             });
         }
         Arc::new(tool_registry)
+    }
+
+    fn write_test_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("parent directory should be created");
+        }
+        fs::write(path, content).expect("file should be written");
     }
 
     #[test]
@@ -1354,5 +1586,70 @@ mod tests {
             event.kind == EventKind::Error
                 && event.data.get_str("category") == Some("context_usage")
         }));
+    }
+
+    #[test]
+    fn discover_project_documents_respects_provider_filter_and_precedence() {
+        let tmp = tempdir().expect("temp dir should be created");
+        let root = tmp.path();
+        let nested = root.join("apps/service");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::create_dir_all(root.join(".git")).expect(".git marker dir should be created");
+
+        write_test_file(&root.join("AGENTS.md"), "root agents");
+        write_test_file(&root.join("CLAUDE.md"), "root claude");
+        write_test_file(&root.join(".codex/instructions.md"), "root codex");
+        write_test_file(&root.join("apps/AGENTS.md"), "apps agents");
+        write_test_file(&root.join("apps/CLAUDE.md"), "apps claude");
+        write_test_file(&root.join("apps/service/AGENTS.md"), "service agents");
+
+        let profile = StaticProviderProfile {
+            id: "anthropic".to_string(),
+            model: "claude".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        };
+
+        let docs = discover_project_documents(&nested, &profile);
+        let paths: Vec<String> = docs.iter().map(|doc| doc.path.clone()).collect();
+        assert_eq!(
+            paths,
+            vec![
+                "AGENTS.md".to_string(),
+                "CLAUDE.md".to_string(),
+                "apps/AGENTS.md".to_string(),
+                "apps/CLAUDE.md".to_string(),
+                "apps/service/AGENTS.md".to_string()
+            ]
+        );
+        assert!(docs.iter().all(|doc| doc.path != ".codex/instructions.md"));
+    }
+
+    #[test]
+    fn discover_project_documents_truncates_to_32kb_with_marker() {
+        let tmp = tempdir().expect("temp dir should be created");
+        let root = tmp.path();
+        let nested = root.join("workspace");
+        fs::create_dir_all(&nested).expect("nested dir should be created");
+        fs::create_dir_all(root.join(".git")).expect(".git marker dir should be created");
+
+        let oversized = "A".repeat(40 * 1024);
+        write_test_file(&root.join("AGENTS.md"), &oversized);
+
+        let profile = StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        };
+
+        let docs = discover_project_documents(&nested, &profile);
+        assert_eq!(docs.len(), 1);
+        assert!(docs[0].content.contains(PROJECT_DOC_TRUNCATION_MARKER));
+        assert!(docs[0].content.len() <= (32 * 1024) + PROJECT_DOC_TRUNCATION_MARKER.len() + 1);
     }
 }

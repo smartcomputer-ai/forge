@@ -45,10 +45,13 @@ impl ToolRegistry {
     }
 
     pub fn definitions(&self) -> Vec<ToolDefinition> {
-        self.tools
+        let mut definitions: Vec<ToolDefinition> = self
+            .tools
             .values()
             .map(|tool| tool.definition.clone())
-            .collect()
+            .collect();
+        definitions.sort_by(|a, b| a.name.cmp(&b.name));
+        definitions
     }
 
     pub fn names(&self) -> Vec<String> {
@@ -329,6 +332,34 @@ mod tests {
             .get("read_file")
             .expect("tool should be present after replacement");
         assert_eq!(registered.definition.description, "second");
+    }
+
+    #[test]
+    fn tool_registry_definitions_are_sorted_by_name() {
+        let mut registry = ToolRegistry::default();
+        registry.register(RegisteredTool {
+            definition: ToolDefinition {
+                name: "zeta".to_string(),
+                description: "z".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            executor: dummy_executor(),
+        });
+        registry.register(RegisteredTool {
+            definition: ToolDefinition {
+                name: "alpha".to_string(),
+                description: "a".to_string(),
+                parameters: serde_json::json!({ "type": "object" }),
+            },
+            executor: dummy_executor(),
+        });
+
+        let names: Vec<String> = registry
+            .definitions()
+            .into_iter()
+            .map(|definition| definition.name)
+            .collect();
+        assert_eq!(names, vec!["alpha".to_string(), "zeta".to_string()]);
     }
 
     struct TestExecutionEnvironment {

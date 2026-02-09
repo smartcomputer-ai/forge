@@ -8,6 +8,7 @@ pub struct SessionConfig {
     pub default_command_timeout_ms: u64,
     pub max_command_timeout_ms: u64,
     pub reasoning_effort: Option<String>,
+    pub system_prompt_override: Option<String>,
     pub tool_output_limits: HashMap<String, usize>,
     pub tool_line_limits: HashMap<String, usize>,
     pub enable_loop_detection: bool,
@@ -23,6 +24,7 @@ impl Default for SessionConfig {
             default_command_timeout_ms: 10_000,
             max_command_timeout_ms: 600_000,
             reasoning_effort: None,
+            system_prompt_override: None,
             tool_output_limits: default_tool_output_limits(),
             tool_line_limits: default_tool_line_limits(),
             enable_loop_detection: true,
@@ -64,6 +66,7 @@ mod tests {
         assert_eq!(config.max_tool_rounds_per_input, 200);
         assert_eq!(config.default_command_timeout_ms, 10_000);
         assert_eq!(config.max_command_timeout_ms, 600_000);
+        assert_eq!(config.system_prompt_override, None);
         assert_eq!(config.loop_detection_window, 10);
         assert_eq!(config.max_subagent_depth, 1);
     }
