@@ -1,4 +1,7 @@
-use crate::ToolRegistry;
+use crate::{
+    ToolRegistry, build_anthropic_tool_registry, build_gemini_tool_registry,
+    build_openai_tool_registry,
+};
 use forge_llm::ToolDefinition;
 use serde_json::Value;
 use std::sync::Arc;
@@ -164,6 +167,10 @@ pub struct OpenAiProviderProfile {
 }
 
 impl OpenAiProviderProfile {
+    pub fn with_default_tools(model: impl Into<String>) -> Self {
+        Self::new(model, Arc::new(build_openai_tool_registry()))
+    }
+
     pub fn new(model: impl Into<String>, tool_registry: Arc<ToolRegistry>) -> Self {
         Self {
             model: model.into(),
@@ -264,6 +271,10 @@ pub struct AnthropicProviderProfile {
 }
 
 impl AnthropicProviderProfile {
+    pub fn with_default_tools(model: impl Into<String>) -> Self {
+        Self::new(model, Arc::new(build_anthropic_tool_registry()))
+    }
+
     pub fn new(model: impl Into<String>, tool_registry: Arc<ToolRegistry>) -> Self {
         Self {
             model: model.into(),
@@ -361,6 +372,10 @@ pub struct GeminiProviderProfile {
 }
 
 impl GeminiProviderProfile {
+    pub fn with_default_tools(model: impl Into<String>) -> Self {
+        Self::new(model, Arc::new(build_gemini_tool_registry()))
+    }
+
     pub fn new(model: impl Into<String>, tool_registry: Arc<ToolRegistry>) -> Self {
         Self {
             model: model.into(),
@@ -604,6 +619,30 @@ mod tests {
             default_project_instruction_files_for_profile("custom"),
             vec!["AGENTS.md".to_string()]
         );
+    }
+
+    #[test]
+    fn provider_default_tool_registries_match_profile_variants() {
+        let openai = OpenAiProviderProfile::with_default_tools("gpt-5.2-codex");
+        let anthropic = AnthropicProviderProfile::with_default_tools("claude-sonnet-4.5");
+        let gemini = GeminiProviderProfile::with_default_tools("gemini-2.5-pro");
+
+        let openai_tools = openai.tool_registry().names();
+        let anthropic_tools = anthropic.tool_registry().names();
+        let gemini_tools = gemini.tool_registry().names();
+
+        assert!(openai_tools.contains(&"apply_patch".to_string()));
+        assert!(!openai_tools.contains(&"edit_file".to_string()));
+        assert!(openai_tools.contains(&"read_file".to_string()));
+        assert!(openai_tools.contains(&"write_file".to_string()));
+        assert!(openai_tools.contains(&"shell".to_string()));
+        assert!(openai_tools.contains(&"grep".to_string()));
+        assert!(openai_tools.contains(&"glob".to_string()));
+
+        assert!(anthropic_tools.contains(&"edit_file".to_string()));
+        assert!(!anthropic_tools.contains(&"apply_patch".to_string()));
+        assert!(gemini_tools.contains(&"edit_file".to_string()));
+        assert!(!gemini_tools.contains(&"apply_patch".to_string()));
     }
 
     #[test]

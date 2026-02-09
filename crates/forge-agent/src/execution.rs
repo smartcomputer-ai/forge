@@ -53,6 +53,8 @@ pub trait ExecutionEnvironment: Send + Sync {
     ) -> Result<String, AgentError>;
 
     async fn write_file(&self, path: &str, content: &str) -> Result<(), AgentError>;
+    async fn delete_file(&self, path: &str) -> Result<(), AgentError>;
+    async fn move_file(&self, from: &str, to: &str) -> Result<(), AgentError>;
     async fn file_exists(&self, path: &str) -> Result<bool, AgentError>;
     async fn list_directory(&self, path: &str, depth: usize) -> Result<Vec<DirEntry>, AgentError>;
 
@@ -226,6 +228,42 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
                 error
             ))
         })
+    }
+
+    async fn delete_file(&self, path: &str) -> Result<(), AgentError> {
+        let path = self.resolve_path(path);
+        tokio::fs::remove_file(&path).await.map_err(|error| {
+            AgentError::ExecutionEnvironment(format!(
+                "failed to delete '{}': {}",
+                path.display(),
+                error
+            ))
+        })
+    }
+
+    async fn move_file(&self, from: &str, to: &str) -> Result<(), AgentError> {
+        let from_path = self.resolve_path(from);
+        let to_path = self.resolve_path(to);
+        if let Some(parent) = to_path.parent() {
+            tokio::fs::create_dir_all(parent).await.map_err(|error| {
+                AgentError::ExecutionEnvironment(format!(
+                    "failed to create directory '{}': {}",
+                    parent.display(),
+                    error
+                ))
+            })?;
+        }
+
+        tokio::fs::rename(&from_path, &to_path)
+            .await
+            .map_err(|error| {
+                AgentError::ExecutionEnvironment(format!(
+                    "failed to move '{}' to '{}': {}",
+                    from_path.display(),
+                    to_path.display(),
+                    error
+                ))
+            })
     }
 
     async fn file_exists(&self, path: &str) -> Result<bool, AgentError> {

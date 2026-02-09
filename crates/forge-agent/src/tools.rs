@@ -1,10 +1,10 @@
 use crate::{
-    AgentError, EventEmitter, ExecutionEnvironment, SessionConfig, SessionEvent, ToolError,
-    truncate_tool_output,
+    AgentError, EventEmitter, ExecutionEnvironment, GrepOptions, SessionConfig, SessionEvent,
+    ToolError, truncate_tool_output,
 };
 use forge_llm::{ToolCall, ToolDefinition, ToolResult};
 use futures::future::join_all;
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
@@ -175,6 +175,688 @@ impl ToolRegistry {
     }
 }
 
+pub const READ_FILE_TOOL: &str = "read_file";
+pub const WRITE_FILE_TOOL: &str = "write_file";
+pub const EDIT_FILE_TOOL: &str = "edit_file";
+pub const APPLY_PATCH_TOOL: &str = "apply_patch";
+pub const SHELL_TOOL: &str = "shell";
+pub const GREP_TOOL: &str = "grep";
+pub const GLOB_TOOL: &str = "glob";
+
+pub fn build_openai_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    registry.register(apply_patch_tool());
+    registry
+}
+
+pub fn build_anthropic_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    registry.register(edit_file_tool());
+    registry
+}
+
+pub fn build_gemini_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    registry.register(edit_file_tool());
+    registry
+}
+
+pub fn register_shared_core_tools(registry: &mut ToolRegistry) {
+    registry.register(read_file_tool());
+    registry.register(write_file_tool());
+    registry.register(shell_tool());
+    registry.register(grep_tool());
+    registry.register(glob_tool());
+}
+
+fn read_file_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: READ_FILE_TOOL.to_string(),
+            description: "Read a file from the filesystem. Returns line-numbered content."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["file_path"],
+                "properties": {
+                    "file_path": { "type": "string" },
+                    "offset": { "type": "integer" },
+                    "limit": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let file_path = required_string_argument(&args, "file_path")?;
+                let offset = optional_usize_argument(&args, "offset")?;
+                let limit = optional_usize_argument(&args, "limit")?;
+
+                let content = env.read_file(&file_path, offset, limit).await?;
+                Ok(format_line_numbered_content(&content, offset.unwrap_or(1)))
+            })
+        }),
+    }
+}
+
+fn write_file_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: WRITE_FILE_TOOL.to_string(),
+            description:
+                "Write content to a file. Creates the file and parent directories if needed."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["file_path", "content"],
+                "properties": {
+                    "file_path": { "type": "string" },
+                    "content": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let file_path = required_string_argument(&args, "file_path")?;
+                let content = required_string_argument(&args, "content")?;
+                env.write_file(&file_path, &content).await?;
+                Ok(format!(
+                    "Wrote {} bytes to {}",
+                    content.as_bytes().len(),
+                    file_path
+                ))
+            })
+        }),
+    }
+}
+
+fn shell_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: SHELL_TOOL.to_string(),
+            description: "Execute a shell command. Returns stdout, stderr, and exit code."
+                .to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["command"],
+                "properties": {
+                    "command": { "type": "string" },
+                    "timeout_ms": { "type": "integer" },
+                    "description": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let command = required_string_argument(&args, "command")?;
+                let timeout_ms = optional_u64_argument(&args, "timeout_ms")?.unwrap_or(0);
+                let result = env.exec_command(&command, timeout_ms, None, None).await?;
+                Ok(format_exec_result(&result))
+            })
+        }),
+    }
+}
+
+fn grep_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: GREP_TOOL.to_string(),
+            description: "Search file contents using regex patterns.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["pattern"],
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" },
+                    "glob_filter": { "type": "string" },
+                    "case_insensitive": { "type": "boolean" },
+                    "max_results": { "type": "integer" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let pattern = required_string_argument(&args, "pattern")?;
+                let path = optional_string_argument(&args, "path")?.unwrap_or(".".to_string());
+                let options = GrepOptions {
+                    glob_filter: optional_string_argument(&args, "glob_filter")?,
+                    case_insensitive: optional_bool_argument(&args, "case_insensitive")?
+                        .unwrap_or(false),
+                    max_results: optional_usize_argument(&args, "max_results")?.or(Some(100)),
+                };
+
+                let output = env.grep(&pattern, &path, options).await?;
+                if output.trim().is_empty() {
+                    Ok("No matches found".to_string())
+                } else {
+                    Ok(output)
+                }
+            })
+        }),
+    }
+}
+
+fn glob_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: GLOB_TOOL.to_string(),
+            description: "Find files matching a glob pattern.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["pattern"],
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "path": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let pattern = required_string_argument(&args, "pattern")?;
+                let path = optional_string_argument(&args, "path")?.unwrap_or(".".to_string());
+                let matches = env.glob(&pattern, &path).await?;
+                if matches.is_empty() {
+                    Ok("No files matched".to_string())
+                } else {
+                    Ok(matches.join("\n"))
+                }
+            })
+        }),
+    }
+}
+
+fn edit_file_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: EDIT_FILE_TOOL.to_string(),
+            description: "Replace an exact string occurrence in a file.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["file_path", "old_string", "new_string"],
+                "properties": {
+                    "file_path": { "type": "string" },
+                    "old_string": { "type": "string" },
+                    "new_string": { "type": "string" },
+                    "replace_all": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let file_path = required_string_argument(&args, "file_path")?;
+                let old_string = required_string_argument(&args, "old_string")?;
+                let new_string = required_string_argument(&args, "new_string")?;
+                let replace_all = optional_bool_argument(&args, "replace_all")?.unwrap_or(false);
+                if old_string.is_empty() {
+                    return Err(
+                        ToolError::Execution("old_string must not be empty".to_string()).into(),
+                    );
+                }
+
+                let content = env.read_file(&file_path, None, None).await?;
+                let replacement_count = content.match_indices(&old_string).count();
+                if replacement_count == 0 {
+                    return Err(ToolError::Execution(format!(
+                        "old_string not found in '{}'",
+                        file_path
+                    ))
+                    .into());
+                }
+                if replacement_count > 1 && !replace_all {
+                    return Err(ToolError::Execution(format!(
+                        "old_string is not unique in '{}': found {} matches; provide more context or set replace_all=true",
+                        file_path, replacement_count
+                    ))
+                    .into());
+                }
+
+                let next_content = if replace_all {
+                    content.replace(&old_string, &new_string)
+                } else {
+                    content.replacen(&old_string, &new_string, 1)
+                };
+                env.write_file(&file_path, &next_content).await?;
+
+                Ok(format!(
+                    "Updated {} ({} replacement{})",
+                    file_path,
+                    replacement_count,
+                    if replacement_count == 1 { "" } else { "s" }
+                ))
+            })
+        }),
+    }
+}
+
+fn apply_patch_tool() -> RegisteredTool {
+    RegisteredTool {
+        definition: ToolDefinition {
+            name: APPLY_PATCH_TOOL.to_string(),
+            description: "Apply code changes using the patch format. Supports creating, deleting, and modifying files in a single operation.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "required": ["patch"],
+                "properties": {
+                    "patch": { "type": "string" }
+                },
+                "additionalProperties": false
+            }),
+        },
+        executor: Arc::new(|args, env| {
+            Box::pin(async move {
+                let patch = required_string_argument(&args, "patch")?;
+                let operations = parse_apply_patch(&patch)?;
+                apply_patch_operations(&operations, env).await
+            })
+        }),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PatchOperation {
+    AddFile {
+        path: String,
+        lines: Vec<String>,
+    },
+    DeleteFile {
+        path: String,
+    },
+    UpdateFile {
+        path: String,
+        move_to: Option<String>,
+        hunks: Vec<PatchHunk>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PatchHunk {
+    header: String,
+    lines: Vec<PatchHunkLine>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PatchHunkLine {
+    Context(String),
+    Delete(String),
+    Add(String),
+    EndOfFile,
+}
+
+fn parse_apply_patch(patch: &str) -> Result<Vec<PatchOperation>, ToolError> {
+    let lines: Vec<&str> = patch.lines().collect();
+    if lines.first().copied() != Some("*** Begin Patch") {
+        return Err(ToolError::Validation(
+            "apply_patch payload must start with '*** Begin Patch'".to_string(),
+        ));
+    }
+    if lines.last().copied() != Some("*** End Patch") {
+        return Err(ToolError::Validation(
+            "apply_patch payload must end with '*** End Patch'".to_string(),
+        ));
+    }
+
+    let mut operations = Vec::new();
+    let mut idx = 1usize;
+    let end = lines.len().saturating_sub(1);
+    while idx < end {
+        let line = lines[idx];
+        if line.trim().is_empty() {
+            idx += 1;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Add File: ") {
+            idx += 1;
+            let mut added = Vec::new();
+            while idx < end && !is_patch_operation_start(lines[idx]) {
+                let Some(payload) = lines[idx].strip_prefix('+') else {
+                    return Err(ToolError::Validation(format!(
+                        "invalid add-file line: '{}'",
+                        lines[idx]
+                    )));
+                };
+                added.push(payload.to_string());
+                idx += 1;
+            }
+            operations.push(PatchOperation::AddFile {
+                path: path.to_string(),
+                lines: added,
+            });
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Delete File: ") {
+            operations.push(PatchOperation::DeleteFile {
+                path: path.to_string(),
+            });
+            idx += 1;
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("*** Update File: ") {
+            idx += 1;
+            let mut move_to = None;
+            if idx < end {
+                if let Some(target) = lines[idx].strip_prefix("*** Move to: ") {
+                    move_to = Some(target.to_string());
+                    idx += 1;
+                }
+            }
+
+            let mut hunks = Vec::new();
+            while idx < end && !is_patch_operation_start(lines[idx]) {
+                let header = lines[idx];
+                if !header.starts_with("@@") {
+                    return Err(ToolError::Validation(format!(
+                        "invalid hunk header in update '{}': '{}'",
+                        path, header
+                    )));
+                }
+                idx += 1;
+
+                let mut hunk_lines = Vec::new();
+                while idx < end
+                    && !is_patch_operation_start(lines[idx])
+                    && !lines[idx].starts_with("@@")
+                {
+                    let hunk_line = lines[idx];
+                    if hunk_line == "*** End of File" {
+                        hunk_lines.push(PatchHunkLine::EndOfFile);
+                        idx += 1;
+                        continue;
+                    }
+                    let Some(prefix) = hunk_line.chars().next() else {
+                        return Err(ToolError::Validation(
+                            "empty hunk line is not allowed".to_string(),
+                        ));
+                    };
+                    let value = hunk_line[1..].to_string();
+                    let parsed = match prefix {
+                        ' ' => PatchHunkLine::Context(value),
+                        '-' => PatchHunkLine::Delete(value),
+                        '+' => PatchHunkLine::Add(value),
+                        _ => {
+                            return Err(ToolError::Validation(format!(
+                                "invalid hunk line prefix '{}' in '{}'",
+                                prefix, hunk_line
+                            )));
+                        }
+                    };
+                    hunk_lines.push(parsed);
+                    idx += 1;
+                }
+
+                if hunk_lines.is_empty() {
+                    return Err(ToolError::Validation(format!(
+                        "empty hunk in update '{}'",
+                        path
+                    )));
+                }
+                hunks.push(PatchHunk {
+                    header: header.to_string(),
+                    lines: hunk_lines,
+                });
+            }
+
+            if hunks.is_empty() {
+                return Err(ToolError::Validation(format!(
+                    "update operation for '{}' must include at least one hunk",
+                    path
+                )));
+            }
+
+            operations.push(PatchOperation::UpdateFile {
+                path: path.to_string(),
+                move_to,
+                hunks,
+            });
+            continue;
+        }
+
+        return Err(ToolError::Validation(format!(
+            "unknown patch operation line: '{}'",
+            line
+        )));
+    }
+
+    if operations.is_empty() {
+        return Err(ToolError::Validation(
+            "patch must contain at least one operation".to_string(),
+        ));
+    }
+
+    Ok(operations)
+}
+
+fn is_patch_operation_start(line: &str) -> bool {
+    line.starts_with("*** Add File: ")
+        || line.starts_with("*** Delete File: ")
+        || line.starts_with("*** Update File: ")
+}
+
+async fn apply_patch_operations(
+    operations: &[PatchOperation],
+    env: Arc<dyn ExecutionEnvironment>,
+) -> Result<String, AgentError> {
+    let mut summaries = Vec::new();
+    for operation in operations {
+        match operation {
+            PatchOperation::AddFile { path, lines } => {
+                if env.file_exists(path).await? {
+                    return Err(
+                        ToolError::Execution(format!("file already exists: '{}'", path)).into(),
+                    );
+                }
+                env.write_file(path, &lines.join("\n")).await?;
+                summaries.push(format!("A {}", path));
+            }
+            PatchOperation::DeleteFile { path } => {
+                if !env.file_exists(path).await? {
+                    return Err(ToolError::Execution(format!("file not found: '{}'", path)).into());
+                }
+                env.delete_file(path).await?;
+                summaries.push(format!("D {}", path));
+            }
+            PatchOperation::UpdateFile {
+                path,
+                move_to,
+                hunks,
+            } => {
+                if !env.file_exists(path).await? {
+                    return Err(ToolError::Execution(format!(
+                        "cannot update missing file '{}'",
+                        path
+                    ))
+                    .into());
+                }
+
+                let original = env.read_file(path, None, None).await?;
+                let updated = apply_hunks_to_content(&original, hunks).map_err(AgentError::from)?;
+
+                let move_target = move_to.as_deref().filter(|target| *target != path.as_str());
+                if let Some(target_path) = move_target {
+                    if env.file_exists(target_path).await? {
+                        return Err(ToolError::Execution(format!(
+                            "move target already exists: '{}'",
+                            target_path
+                        ))
+                        .into());
+                    }
+                    env.write_file(path, &updated).await?;
+                    env.move_file(path, target_path).await?;
+                    summaries.push(format!("R {} -> {}", path, target_path));
+                } else {
+                    env.write_file(path, &updated).await?;
+                    summaries.push(format!("M {}", path));
+                }
+            }
+        }
+    }
+
+    Ok(format!("Applied patch:\n{}", summaries.join("\n")))
+}
+
+fn apply_hunks_to_content(content: &str, hunks: &[PatchHunk]) -> Result<String, ToolError> {
+    let mut lines = split_content_lines(content);
+    let had_trailing_newline = content.ends_with('\n');
+    let mut search_from = 0usize;
+
+    for hunk in hunks {
+        let (old_lines, new_lines) = hunk_old_new_lines(hunk);
+        if old_lines.is_empty() {
+            let insert_at = search_from.min(lines.len());
+            lines.splice(insert_at..insert_at, new_lines.clone());
+            search_from = insert_at + new_lines.len();
+            continue;
+        }
+
+        let position = find_subsequence(&lines, &old_lines, search_from)
+            .or_else(|| find_subsequence(&lines, &old_lines, 0))
+            .ok_or_else(|| {
+                ToolError::Execution(format!("failed to match hunk '{}'", hunk.header))
+            })?;
+        let end = position + old_lines.len();
+        lines.splice(position..end, new_lines.clone());
+        search_from = position + new_lines.len();
+    }
+
+    let mut updated = lines.join("\n");
+    if had_trailing_newline {
+        updated.push('\n');
+    }
+    Ok(updated)
+}
+
+fn split_content_lines(content: &str) -> Vec<String> {
+    if content.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
+    if content.ends_with('\n') && lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines
+}
+
+fn hunk_old_new_lines(hunk: &PatchHunk) -> (Vec<String>, Vec<String>) {
+    let mut old_lines = Vec::new();
+    let mut new_lines = Vec::new();
+    for line in &hunk.lines {
+        match line {
+            PatchHunkLine::Context(value) => {
+                old_lines.push(value.clone());
+                new_lines.push(value.clone());
+            }
+            PatchHunkLine::Delete(value) => old_lines.push(value.clone()),
+            PatchHunkLine::Add(value) => new_lines.push(value.clone()),
+            PatchHunkLine::EndOfFile => {}
+        }
+    }
+    (old_lines, new_lines)
+}
+
+fn find_subsequence(haystack: &[String], needle: &[String], start: usize) -> Option<usize> {
+    if needle.is_empty() {
+        return Some(start.min(haystack.len()));
+    }
+    if start >= haystack.len() || needle.len() > haystack.len() {
+        return None;
+    }
+
+    let limit = haystack.len().saturating_sub(needle.len());
+    for idx in start..=limit {
+        if haystack[idx..idx + needle.len()] == *needle {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn required_string_argument(arguments: &Value, key: &str) -> Result<String, ToolError> {
+    optional_string_argument(arguments, key)?
+        .ok_or_else(|| ToolError::Validation(format!("missing required argument '{}'", key)))
+}
+
+fn optional_string_argument(arguments: &Value, key: &str) -> Result<Option<String>, ToolError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_str() else {
+        return Err(ToolError::Validation(format!(
+            "argument '{}' must be a string",
+            key
+        )));
+    };
+    Ok(Some(value.to_string()))
+}
+
+fn optional_bool_argument(arguments: &Value, key: &str) -> Result<Option<bool>, ToolError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_bool() else {
+        return Err(ToolError::Validation(format!(
+            "argument '{}' must be a boolean",
+            key
+        )));
+    };
+    Ok(Some(value))
+}
+
+fn optional_u64_argument(arguments: &Value, key: &str) -> Result<Option<u64>, ToolError> {
+    let Some(value) = arguments.get(key) else {
+        return Ok(None);
+    };
+    let Some(value) = value.as_u64() else {
+        return Err(ToolError::Validation(format!(
+            "argument '{}' must be a positive integer",
+            key
+        )));
+    };
+    Ok(Some(value))
+}
+
+fn optional_usize_argument(arguments: &Value, key: &str) -> Result<Option<usize>, ToolError> {
+    Ok(optional_u64_argument(arguments, key)?.map(|value| value as usize))
+}
+
+fn format_line_numbered_content(content: &str, start_line: usize) -> String {
+    if content.is_empty() {
+        return String::new();
+    }
+    content
+        .lines()
+        .enumerate()
+        .map(|(idx, line)| format!("{} | {}", start_line + idx, line))
+        .collect::<Vec<String>>()
+        .join("\n")
+}
+
+fn format_exec_result(result: &crate::ExecResult) -> String {
+    let mut output = format!(
+        "exit_code: {}\nduration_ms: {}",
+        result.exit_code, result.duration_ms
+    );
+    if !result.stdout.is_empty() {
+        output.push_str("\nstdout:\n");
+        output.push_str(&result.stdout);
+    }
+    if !result.stderr.is_empty() {
+        output.push_str("\nstderr:\n");
+        output.push_str(&result.stderr);
+    }
+    output
+}
+
 fn tool_error_result(tool_call_id: String, message: String) -> ToolResult {
     ToolResult {
         tool_call_id,
@@ -293,11 +975,12 @@ fn json_type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferedEventEmitter, EventKind, NoopEventEmitter};
+    use crate::{BufferedEventEmitter, EventKind, LocalExecutionEnvironment, NoopEventEmitter};
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::tempdir;
     use tokio::time::{Duration, Instant, sleep};
 
     fn dummy_executor() -> ToolExecutor {
@@ -387,6 +1070,14 @@ mod tests {
 
         async fn write_file(&self, _path: &str, _content: &str) -> Result<(), AgentError> {
             Err(AgentError::NotImplemented("write_file".to_string()))
+        }
+
+        async fn delete_file(&self, _path: &str) -> Result<(), AgentError> {
+            Err(AgentError::NotImplemented("delete_file".to_string()))
+        }
+
+        async fn move_file(&self, _from: &str, _to: &str) -> Result<(), AgentError> {
+            Err(AgentError::NotImplemented("move_file".to_string()))
         }
 
         async fn file_exists(&self, _path: &str) -> Result<bool, AgentError> {
@@ -741,5 +1432,193 @@ mod tests {
             .expect("output field should be present");
         assert_eq!(event_output.chars().count(), 40_000);
         assert!(event_output.chars().all(|ch| ch == 'x'));
+    }
+
+    #[test]
+    fn build_openai_registry_uses_apply_patch_variant() {
+        let openai = build_openai_tool_registry();
+        let anthropic = build_anthropic_tool_registry();
+        let gemini = build_gemini_tool_registry();
+
+        assert!(openai.names().contains(&APPLY_PATCH_TOOL.to_string()));
+        assert!(!openai.names().contains(&EDIT_FILE_TOOL.to_string()));
+        assert!(anthropic.names().contains(&EDIT_FILE_TOOL.to_string()));
+        assert!(!anthropic.names().contains(&APPLY_PATCH_TOOL.to_string()));
+        assert!(gemini.names().contains(&EDIT_FILE_TOOL.to_string()));
+        assert!(!gemini.names().contains(&APPLY_PATCH_TOOL.to_string()));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn edit_file_returns_ambiguity_error_when_match_is_not_unique() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("target.txt", "alpha\nalpha\n")
+            .await
+            .expect("seed file should write");
+
+        let registry = build_anthropic_tool_registry();
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: EDIT_FILE_TOOL.to_string(),
+                    arguments: json!({
+                        "file_path": "target.txt",
+                        "old_string": "alpha",
+                        "new_string": "beta"
+                    }),
+                    raw_arguments: None,
+                }],
+                env,
+                &SessionConfig::default(),
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(results[0].is_error);
+        assert!(
+            results[0]
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("not unique")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_patch_returns_parse_error_for_invalid_hunk_header() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("target.txt", "one\n")
+            .await
+            .expect("seed file should write");
+
+        let registry = build_openai_tool_registry();
+        let patch = "*** Begin Patch\n*** Update File: target.txt\nnot-a-hunk\n*** End Patch";
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: APPLY_PATCH_TOOL.to_string(),
+                    arguments: json!({
+                        "patch": patch
+                    }),
+                    raw_arguments: None,
+                }],
+                env,
+                &SessionConfig::default(),
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(results[0].is_error);
+        assert!(
+            results[0]
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("invalid hunk header")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_patch_supports_successful_multi_file_operations() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("a.txt", "line1\nline2\n")
+            .await
+            .expect("seed a.txt");
+        env.write_file("old_name.txt", "use old_dep;\n")
+            .await
+            .expect("seed old_name");
+        env.write_file("delete_me.txt", "bye\n")
+            .await
+            .expect("seed delete_me");
+
+        let registry = build_openai_tool_registry();
+        let patch = "\
+*** Begin Patch
+*** Add File: new_file.txt
++alpha
++beta
+*** Update File: a.txt
+@@ replace line
+ line1
+-line2
++line-two
+*** Update File: old_name.txt
+*** Move to: new_name.txt
+@@ rename import
+-use old_dep;
++use new_dep;
+*** Delete File: delete_me.txt
+*** End Patch";
+
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: APPLY_PATCH_TOOL.to_string(),
+                    arguments: json!({
+                        "patch": patch
+                    }),
+                    raw_arguments: None,
+                }],
+                env.clone(),
+                &SessionConfig::default(),
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!results[0].is_error);
+        let summary = results[0].content.as_str().unwrap_or_default();
+        assert!(summary.contains("A new_file.txt"));
+        assert!(summary.contains("M a.txt"));
+        assert!(summary.contains("R old_name.txt -> new_name.txt"));
+        assert!(summary.contains("D delete_me.txt"));
+
+        let updated_a = env
+            .read_file("a.txt", None, None)
+            .await
+            .expect("updated a.txt should read");
+        assert_eq!(updated_a, "line1\nline-two\n");
+
+        let new_file = env
+            .read_file("new_file.txt", None, None)
+            .await
+            .expect("new file should read");
+        assert_eq!(new_file, "alpha\nbeta");
+
+        let renamed = env
+            .read_file("new_name.txt", None, None)
+            .await
+            .expect("renamed file should read");
+        assert_eq!(renamed, "use new_dep;\n");
+
+        assert!(
+            !env.file_exists("old_name.txt")
+                .await
+                .expect("old name existence should be checked")
+        );
+        assert!(
+            !env.file_exists("delete_me.txt")
+                .await
+                .expect("delete target existence should be checked")
+        );
     }
 }
