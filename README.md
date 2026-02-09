@@ -25,64 +25,15 @@ Forge is organized around spec-first layers:
 3. `forge-agent` runs a provider-aligned agent loop (`LLM call -> tool execution -> repeat`) with events, truncation, steering, and subagents.
 4. Conformance tests validate cross-provider runtime behavior using deterministic mocked adapters.
 
-## `forge-agent` orchestration APIs
-
-`forge-agent` now exposes a few APIs intended for higher-level runtimes (like an Attractor codergen backend):
-
-- Per-submit request overrides (`submit_with_options`) for provider/model/reasoning/system prompt changes.
-- Structured submit result (`submit_with_result`) to avoid replaying full history for outcome mapping.
-- Session checkpoint/restore (`checkpoint` / `from_checkpoint`) plus thread-key continuity metadata.
-
-Example (simplified):
-
-```rust
-use forge_agent::{Session, SubmitOptions};
-
-// 1) Per-node submit overrides
-session.submit_with_options(
-    "Plan next change",
-    SubmitOptions {
-        provider: Some("openai".to_string()),
-        model: Some("gpt-5.2-codex".to_string()),
-        reasoning_effort: Some("high".to_string()),
-        system_prompt_override: Some("Stage: plan".to_string()),
-        ..Default::default()
-    },
-).await?;
-
-// 2) Structured result for backend mapping
-let result = session.submit_with_result(
-    "Implement the plan",
-    SubmitOptions::default(),
-).await?;
-// result.assistant_text
-// result.tool_call_ids
-// result.tool_error_count
-// result.usage
-// result.thread_key
-
-// 3) Checkpoint and restore
-let snapshot = session.checkpoint()?;
-let restored = Session::from_checkpoint(
-    snapshot,
-    provider_profile,
-    execution_env,
-    llm_client,
-    event_emitter,
-)?;
-```
 
 ## Current status
 
 - `spec/01` implementation: largely complete in `forge-llm`
 - `spec/02` implementation: largely complete in `forge-agent`
-- DoD conformance matrix (`roadmap/p24-dod-matrix.md`): in progress
 - `spec/03` Attractor pipeline runner (DOT DSL engine): not implemented yet in this repository
 
-## What still needs to be done
+**What still needs to be done**
 
-- Complete remaining `spec/02` DoD items and deferred conformance scenarios in `roadmap/p24-dod-matrix.md`
-- Add real-key smoke run notes for provider parity validation
 - Implement `spec/03-attractor-spec.md` runtime components (DOT parser/executor, node handlers, checkpoint/resume, HITL flows)
 - Add a public-facing executable surface (CLI/service) once the runtime layer is in place
 

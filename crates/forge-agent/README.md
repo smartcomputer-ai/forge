@@ -42,3 +42,51 @@ RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --
 
 Live Anthropic tests require `ANTHROPIC_API_KEY` (read from env or project-root `.env`).
 Optional overrides: `ANTHROPIC_LIVE_MODEL`, `ANTHROPIC_BASE_URL`.
+
+
+## `forge-agent` orchestration APIs
+
+`forge-agent` now exposes a few APIs intended for higher-level runtimes (like an Attractor codergen backend):
+
+- Per-submit request overrides (`submit_with_options`) for provider/model/reasoning/system prompt changes.
+- Structured submit result (`submit_with_result`) to avoid replaying full history for outcome mapping.
+- Session checkpoint/restore (`checkpoint` / `from_checkpoint`) plus thread-key continuity metadata.
+
+Example (simplified):
+
+```rust
+use forge_agent::{Session, SubmitOptions};
+
+// 1) Per-node submit overrides
+session.submit_with_options(
+    "Plan next change",
+    SubmitOptions {
+        provider: Some("openai".to_string()),
+        model: Some("gpt-5.2-codex".to_string()),
+        reasoning_effort: Some("high".to_string()),
+        system_prompt_override: Some("Stage: plan".to_string()),
+        ..Default::default()
+    },
+).await?;
+
+// 2) Structured result for backend mapping
+let result = session.submit_with_result(
+    "Implement the plan",
+    SubmitOptions::default(),
+).await?;
+// result.assistant_text
+// result.tool_call_ids
+// result.tool_error_count
+// result.usage
+// result.thread_key
+
+// 3) Checkpoint and restore
+let snapshot = session.checkpoint()?;
+let restored = Session::from_checkpoint(
+    snapshot,
+    provider_profile,
+    execution_env,
+    llm_client,
+    event_emitter,
+)?;
+```
