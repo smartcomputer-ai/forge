@@ -146,8 +146,9 @@ impl ProviderAdapter for OpenAIAdapter {
         let headers = response.headers().clone();
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            let retry_after = parse_retry_after(response.headers());
             let raw = response.text().await.unwrap_or_default();
-            return Err(build_provider_error("openai", status, &raw));
+            return Err(build_provider_error("openai", status, &raw, retry_after));
         }
 
         let raw_json = response
@@ -169,8 +170,9 @@ impl ProviderAdapter for OpenAIAdapter {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            let retry_after = parse_retry_after(response.headers());
             let raw = response.text().await.unwrap_or_default();
-            return Err(build_provider_error("openai", status, &raw));
+            return Err(build_provider_error("openai", status, &raw, retry_after));
         }
 
         let mut byte_stream = response.bytes_stream();
@@ -286,8 +288,14 @@ impl ProviderAdapter for OpenAICompatibleAdapter {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            let retry_after = parse_retry_after(response.headers());
             let raw = response.text().await.unwrap_or_default();
-            return Err(build_provider_error("openai-compatible", status, &raw));
+            return Err(build_provider_error(
+                "openai-compatible",
+                status,
+                &raw,
+                retry_after,
+            ));
         }
 
         let raw_json = response
@@ -309,8 +317,14 @@ impl ProviderAdapter for OpenAICompatibleAdapter {
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
+            let retry_after = parse_retry_after(response.headers());
             let raw = response.text().await.unwrap_or_default();
-            return Err(build_provider_error("openai-compatible", status, &raw));
+            return Err(build_provider_error(
+                "openai-compatible",
+                status,
+                &raw,
+                retry_after,
+            ));
         }
 
         let mut byte_stream = response.bytes_stream();
@@ -1030,6 +1044,9 @@ fn build_responses_body(request: &Request, stream: bool) -> Result<Value, SDKErr
     if let Some(metadata) = &request.metadata {
         body["metadata"] = json!(metadata);
     }
+    if let Some(response_format) = &request.response_format {
+        apply_responses_response_format(&mut body, response_format)?;
+    }
     if let Some(provider_options) = &request.provider_options {
         if let Some(openai_options) = provider_options.get("openai") {
             if let Some(object) = openai_options.as_object() {
@@ -1085,6 +1102,9 @@ fn build_chat_completions_body(request: &Request, stream: bool) -> Result<Value,
     if let Some(metadata) = &request.metadata {
         body["metadata"] = json!(metadata);
     }
+    if let Some(response_format) = &request.response_format {
+        apply_chat_completions_response_format(&mut body, response_format)?;
+    }
     if let Some(provider_options) = &request.provider_options {
         if let Some(openai_options) = provider_options.get("openai") {
             if let Some(object) = openai_options.as_object() {
@@ -1095,6 +1115,76 @@ fn build_chat_completions_body(request: &Request, stream: bool) -> Result<Value,
         }
     }
     Ok(body)
+}
+
+fn apply_responses_response_format(
+    body: &mut Value,
+    response_format: &crate::types::ResponseFormat,
+) -> Result<(), SDKError> {
+    match response_format.r#type.as_str() {
+        "text" => {}
+        "json" => {
+            body["text"] = json!({
+                "format": { "type": "json_object" }
+            });
+        }
+        "json_schema" => {
+            let schema = response_format.json_schema.clone().ok_or_else(|| {
+                SDKError::Configuration(ConfigurationError::new(
+                    "response_format type 'json_schema' requires json_schema",
+                ))
+            })?;
+            body["text"] = json!({
+                "format": {
+                    "type": "json_schema",
+                    "name": "output",
+                    "schema": schema,
+                    "strict": response_format.strict
+                }
+            });
+        }
+        other => {
+            return Err(SDKError::Configuration(ConfigurationError::new(format!(
+                "unsupported response_format type '{}'",
+                other
+            ))));
+        }
+    }
+    Ok(())
+}
+
+fn apply_chat_completions_response_format(
+    body: &mut Value,
+    response_format: &crate::types::ResponseFormat,
+) -> Result<(), SDKError> {
+    match response_format.r#type.as_str() {
+        "text" => {}
+        "json" => {
+            body["response_format"] = json!({ "type": "json_object" });
+        }
+        "json_schema" => {
+            let schema = response_format.json_schema.clone().ok_or_else(|| {
+                SDKError::Configuration(ConfigurationError::new(
+                    "response_format type 'json_schema' requires json_schema",
+                ))
+            })?;
+            body["response_format"] = json!({
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "output",
+                    "schema": schema,
+                    "strict": response_format.strict
+                }
+            });
+        }
+        other => {
+            return Err(SDKError::Configuration(ConfigurationError::new(format!(
+                "unsupported response_format type '{}'",
+                other
+            ))));
+        }
+    }
+    Ok(())
 }
 
 fn translate_messages_to_responses_input(
@@ -1572,7 +1662,12 @@ fn map_finish_reason(raw: Option<&str>) -> FinishReason {
     }
 }
 
-fn build_provider_error(provider: &str, status: u16, body_text: &str) -> SDKError {
+fn build_provider_error(
+    provider: &str,
+    status: u16,
+    body_text: &str,
+    retry_after: Option<f64>,
+) -> SDKError {
     let raw_json = serde_json::from_str::<Value>(body_text).ok();
     let message = raw_json
         .as_ref()
@@ -1615,7 +1710,7 @@ fn build_provider_error(provider: &str, status: u16, body_text: &str) -> SDKErro
                     .and_then(Value::as_str)
                     .map(ToString::to_string),
                 retryable,
-                retry_after: None,
+                retry_after,
                 raw: raw_json,
             })
         }
@@ -1626,10 +1721,17 @@ fn build_provider_error(provider: &str, status: u16, body_text: &str) -> SDKErro
             status_code: Some(status),
             error_code: None,
             retryable: true,
-            retry_after: None,
+            retry_after,
             raw: raw_json,
         }),
     }
+}
+
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<f64> {
+    headers
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<f64>().ok())
 }
 
 fn parse_rate_limit_info(headers: &reqwest::header::HeaderMap) -> Option<RateLimitInfo> {
@@ -1882,5 +1984,48 @@ mod tests {
             .expect("complete");
         assert_eq!(response.text(), "hello from compatible");
         assert_eq!(response.usage.total_tokens, 7);
+    }
+
+    #[test]
+    fn build_responses_body_includes_json_schema_response_format() {
+        let mut request = minimal_request("openai");
+        request.response_format = Some(crate::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            })),
+            strict: true,
+        });
+
+        let body = build_responses_body(&request, false).expect("body");
+        assert_eq!(
+            body.get("text")
+                .and_then(|value| value.get("format"))
+                .and_then(|value| value.get("type"))
+                .and_then(Value::as_str),
+            Some("json_schema")
+        );
+    }
+
+    #[test]
+    fn build_provider_error_captures_retry_after_header() {
+        let error = build_provider_error(
+            "openai",
+            429,
+            "{\"error\":{\"message\":\"rate limited\"}}",
+            Some(12.5),
+        );
+
+        match error {
+            SDKError::Provider(provider) => {
+                assert_eq!(provider.kind, ProviderErrorKind::RateLimit);
+                assert_eq!(provider.retry_after, Some(12.5));
+            }
+            other => panic!("expected provider error, got {:?}", other),
+        }
     }
 }

@@ -782,6 +782,7 @@ fn build_messages_body(
                 .collect(),
         );
     }
+    apply_response_format_hint(&mut body, request.response_format.as_ref());
 
     let translated_messages = translate_messages_to_anthropic(&request.messages)?;
     body["messages"] = Value::Array(translated_messages);
@@ -1067,6 +1068,44 @@ fn translate_tool_choice(choice: &crate::types::ToolChoice) -> Option<Value> {
             .map(|name| json!({ "type": "tool", "name": name })),
         "none" => None,
         _ => None,
+    }
+}
+
+fn apply_response_format_hint(
+    body: &mut Value,
+    response_format: Option<&crate::types::ResponseFormat>,
+) {
+    let Some(response_format) = response_format else {
+        return;
+    };
+
+    let hint = match response_format.r#type.as_str() {
+        "text" => None,
+        "json" => Some(
+            "Return only valid JSON. Do not wrap the JSON in markdown or add any explanatory text."
+                .to_string(),
+        ),
+        "json_schema" => response_format.json_schema.as_ref().map(|schema| {
+            format!(
+                "Return only valid JSON that strictly matches this schema: {}",
+                schema
+            )
+        }),
+        _ => None,
+    };
+
+    let Some(hint) = hint else {
+        return;
+    };
+
+    if body.get("system").is_none() {
+        body["system"] = Value::Array(Vec::new());
+    }
+    if let Some(system) = body.get_mut("system").and_then(Value::as_array_mut) {
+        system.push(json!({
+            "type": "text",
+            "text": hint,
+        }));
     }
 }
 
@@ -1720,6 +1759,36 @@ mod tests {
         assert_eq!(
             redacted.thinking.as_ref().map(|t| t.text.as_str()),
             Some("opaque")
+        );
+    }
+
+    #[test]
+    fn build_messages_body_adds_json_schema_hint_to_system() {
+        let mut request = base_request();
+        request.response_format = Some(crate::types::ResponseFormat {
+            r#type: "json_schema".to_string(),
+            json_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            })),
+            strict: true,
+        });
+
+        let prepared = build_messages_body(&request, false).expect("body");
+        let system = prepared
+            .body
+            .get("system")
+            .and_then(Value::as_array)
+            .expect("system");
+        assert!(
+            system.iter().any(|entry| entry
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .contains("strictly matches this schema"))
         );
     }
 

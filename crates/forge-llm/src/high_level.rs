@@ -13,14 +13,17 @@ use futures::stream;
 use serde_json::{Value, json};
 
 use crate::client::{Client, default_client};
-use crate::errors::{NoObjectGeneratedError, RetryPolicy, SDKError, compute_backoff_delay};
+use crate::errors::{
+    AbortError, AbortSignal, NoObjectGeneratedError, RequestTimeoutError, RetryPolicy, SDKError,
+    TimeoutConfig, compute_backoff_delay,
+};
 use crate::stream::{StreamEvent, StreamEventStream, StreamEventTypeOrString};
 use crate::types::{
     Message, Request, Response, ResponseFormat, ToolCall, ToolChoice, ToolDefinition, Usage,
     Warning,
 };
-use crate::utils::require_object_schema;
 use crate::utils::{ResponseSeed, StreamAccumulator};
+use crate::utils::{is_object_schema, require_object_schema};
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<Value, SDKError>> + Send>>;
 type ToolExecutor = Arc<dyn Fn(Value) -> ToolFuture + Send + Sync>;
@@ -134,6 +137,8 @@ pub struct GenerateOptions {
     pub provider: Option<String>,
     pub provider_options: Option<Value>,
     pub retry_policy: RetryPolicy,
+    pub timeout: Option<TimeoutConfig>,
+    pub abort_signal: Option<AbortSignal>,
     pub client: Option<Arc<Client>>,
 }
 
@@ -160,6 +165,8 @@ impl std::fmt::Debug for GenerateOptions {
             .field("provider", &self.provider)
             .field("provider_options", &self.provider_options)
             .field("retry_policy", &self.retry_policy)
+            .field("timeout", &self.timeout)
+            .field("abort_signal", &self.abort_signal.is_some())
             .field("has_client_override", &self.client.is_some())
             .finish()
     }
@@ -186,6 +193,8 @@ impl GenerateOptions {
             provider: None,
             provider_options: None,
             retry_policy: RetryPolicy::default(),
+            timeout: None,
+            abort_signal: None,
             client: None,
         }
     }
@@ -267,6 +276,8 @@ pub struct StreamObjectResult {
 
 pub async fn generate(options: GenerateOptions) -> Result<GenerateResult, SDKError> {
     let client = resolve_client(options.client.clone())?;
+    validate_tools(&options.tools)?;
+    let started = tokio::time::Instant::now();
     let mut conversation = standardize_messages(
         options.prompt.as_deref(),
         options.messages.clone(),
@@ -296,7 +307,15 @@ pub async fn generate(options: GenerateOptions) -> Result<GenerateResult, SDKErr
             provider_options: options.provider_options.clone(),
         };
 
-        let response = complete_with_retry(client.clone(), request, &options.retry_policy).await?;
+        let response = complete_with_retry(
+            client.clone(),
+            request,
+            &options.retry_policy,
+            options.timeout,
+            started,
+            options.abort_signal.as_ref(),
+        )
+        .await?;
         total_usage += response.usage.clone();
         let tool_calls = response.tool_calls();
 
@@ -307,7 +326,8 @@ pub async fn generate(options: GenerateOptions) -> Result<GenerateResult, SDKErr
             && executed_tool_rounds < options.max_tool_rounds;
 
         if should_execute_tools {
-            tool_results = execute_tool_calls(&tool_map, &tool_calls).await;
+            tool_results =
+                execute_tool_calls(&tool_map, &tool_calls, options.abort_signal.as_ref()).await;
             executed_tool_rounds += 1;
 
             conversation.push(response.message.clone());
@@ -364,6 +384,8 @@ pub async fn generate(options: GenerateOptions) -> Result<GenerateResult, SDKErr
 
 pub async fn stream(options: GenerateOptions) -> Result<StreamResult, SDKError> {
     let client = resolve_client(options.client.clone())?;
+    validate_tools(&options.tools)?;
+    let started = tokio::time::Instant::now();
     let conversation = standardize_messages(
         options.prompt.as_deref(),
         options.messages.clone(),
@@ -398,16 +420,22 @@ pub async fn stream(options: GenerateOptions) -> Result<StreamResult, SDKError> 
                 provider_options: options_for_task.provider_options.clone(),
             };
 
-            let mut provider_stream =
-                match stream_with_retry(client.clone(), request, &options_for_task.retry_policy)
-                    .await
-                {
-                    Ok(stream) => stream,
-                    Err(error) => {
-                        let _ = tx.unbounded_send(Err(error));
-                        return;
-                    }
-                };
+            let mut provider_stream = match stream_with_retry(
+                client.clone(),
+                request,
+                &options_for_task.retry_policy,
+                options_for_task.timeout,
+                started,
+                options_for_task.abort_signal.as_ref(),
+            )
+            .await
+            {
+                Ok(stream) => stream,
+                Err(error) => {
+                    let _ = tx.unbounded_send(Err(error));
+                    return;
+                }
+            };
 
             let provider_name = options_for_task
                 .provider
@@ -420,6 +448,14 @@ pub async fn stream(options: GenerateOptions) -> Result<StreamResult, SDKError> 
             });
 
             while let Some(item) = provider_stream.next().await {
+                if let Some(signal) = options_for_task.abort_signal.as_ref() {
+                    if signal.is_aborted() {
+                        let _ = tx.unbounded_send(Err(SDKError::Abort(AbortError::new(
+                            "operation aborted",
+                        ))));
+                        return;
+                    }
+                }
                 match item {
                     Ok(event) => {
                         accumulator.process(&event);
@@ -445,7 +481,12 @@ pub async fn stream(options: GenerateOptions) -> Result<StreamResult, SDKError> 
                 && executed_tool_rounds < options_for_task.max_tool_rounds;
 
             if should_execute_tools {
-                let tool_results = execute_tool_calls(&tool_map, &tool_calls).await;
+                let tool_results = execute_tool_calls(
+                    &tool_map,
+                    &tool_calls,
+                    options_for_task.abort_signal.as_ref(),
+                )
+                .await;
                 executed_tool_rounds += 1;
                 conversation.push(response.message.clone());
                 for result in &tool_results {
@@ -611,6 +652,37 @@ fn to_tool_definitions(tools: &[Tool]) -> Option<Vec<ToolDefinition>> {
     }
 }
 
+fn validate_tools(tools: &[Tool]) -> Result<(), SDKError> {
+    for tool in tools {
+        let name = &tool.definition.name;
+        if name.is_empty()
+            || name.len() > 64
+            || !name
+                .chars()
+                .next()
+                .map(|first| first.is_ascii_alphabetic())
+                .unwrap_or(false)
+            || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        {
+            return Err(SDKError::Configuration(
+                crate::errors::ConfigurationError::new(format!(
+                    "invalid tool name '{}': expected [a-zA-Z][a-zA-Z0-9_]* with max length 64",
+                    name
+                )),
+            ));
+        }
+        if !is_object_schema(&tool.definition.parameters) {
+            return Err(SDKError::Configuration(
+                crate::errors::ConfigurationError::new(format!(
+                    "tool '{}' parameters schema root must be an object",
+                    name
+                )),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn to_tool_map(tools: &[Tool]) -> HashMap<String, Tool> {
     tools
         .iter()
@@ -633,17 +705,29 @@ fn zero_usage() -> Usage {
 async fn execute_tool_calls(
     tool_map: &HashMap<String, Tool>,
     tool_calls: &[ToolCall],
+    abort_signal: Option<&AbortSignal>,
 ) -> Vec<ToolResult> {
     let futures = tool_calls
         .iter()
-        .map(|tool_call| execute_single_tool_call(tool_map, tool_call));
+        .map(|tool_call| execute_single_tool_call(tool_map, tool_call, abort_signal));
     join_all(futures).await
 }
 
 async fn execute_single_tool_call(
     tool_map: &HashMap<String, Tool>,
     tool_call: &ToolCall,
+    abort_signal: Option<&AbortSignal>,
 ) -> ToolResult {
+    if let Some(signal) = abort_signal {
+        if signal.is_aborted() {
+            return ToolResult {
+                tool_call_id: tool_call.id.clone(),
+                content: json!({ "error": "operation aborted" }),
+                is_error: true,
+            };
+        }
+    }
+
     let Some(tool) = tool_map.get(&tool_call.name) else {
         return ToolResult {
             tool_call_id: tool_call.id.clone(),
@@ -677,6 +761,22 @@ async fn execute_single_tool_call(
         tool_call.arguments.clone()
     };
 
+    if !arguments.is_object() {
+        return ToolResult {
+            tool_call_id: tool_call.id.clone(),
+            content: json!({ "error": "tool arguments must be a JSON object" }),
+            is_error: true,
+        };
+    }
+
+    if let Some(error) = validate_tool_arguments(&tool.definition.parameters, &arguments) {
+        return ToolResult {
+            tool_call_id: tool_call.id.clone(),
+            content: json!({ "error": error }),
+            is_error: true,
+        };
+    }
+
     match execute(arguments).await {
         Ok(content) => ToolResult {
             tool_call_id: tool_call.id.clone(),
@@ -695,11 +795,33 @@ async fn complete_with_retry(
     client: Arc<Client>,
     request: Request,
     policy: &RetryPolicy,
+    timeout: Option<TimeoutConfig>,
+    started: tokio::time::Instant,
+    abort_signal: Option<&AbortSignal>,
 ) -> Result<Response, SDKError> {
     let mut attempt = 0usize;
 
     loop {
-        match client.complete(request.clone()).await {
+        if let Some(signal) = abort_signal {
+            if signal.is_aborted() {
+                return Err(SDKError::Abort(AbortError::new("operation aborted")));
+            }
+        }
+
+        let step_timeout = compute_effective_step_timeout(timeout, started)?;
+        let complete_future = client.complete(request.clone());
+        let attempt_result = if let Some(limit) = step_timeout {
+            match tokio::time::timeout(Duration::from_secs_f64(limit), complete_future).await {
+                Ok(result) => result,
+                Err(_) => Err(SDKError::RequestTimeout(RequestTimeoutError::new(
+                    "request timed out",
+                ))),
+            }
+        } else {
+            complete_future.await
+        };
+
+        match attempt_result {
             Ok(response) => return Ok(response),
             Err(error) => {
                 if !error.retryable() || attempt >= policy.max_retries {
@@ -729,11 +851,33 @@ async fn stream_with_retry(
     client: Arc<Client>,
     request: Request,
     policy: &RetryPolicy,
+    timeout: Option<TimeoutConfig>,
+    started: tokio::time::Instant,
+    abort_signal: Option<&AbortSignal>,
 ) -> Result<StreamEventStream, SDKError> {
     let mut attempt = 0usize;
 
     loop {
-        match client.stream(request.clone()).await {
+        if let Some(signal) = abort_signal {
+            if signal.is_aborted() {
+                return Err(SDKError::Abort(AbortError::new("operation aborted")));
+            }
+        }
+
+        let step_timeout = compute_effective_step_timeout(timeout, started)?;
+        let stream_future = client.stream(request.clone());
+        let attempt_result = if let Some(limit) = step_timeout {
+            match tokio::time::timeout(Duration::from_secs_f64(limit), stream_future).await {
+                Ok(result) => result,
+                Err(_) => Err(SDKError::RequestTimeout(RequestTimeoutError::new(
+                    "stream connection timed out",
+                ))),
+            }
+        } else {
+            stream_future.await
+        };
+
+        match attempt_result {
             Ok(stream) => return Ok(stream),
             Err(error) => {
                 if !error.retryable() || attempt >= policy.max_retries {
@@ -754,6 +898,101 @@ async fn stream_with_retry(
                 attempt += 1;
             }
         }
+    }
+}
+
+fn compute_effective_step_timeout(
+    timeout: Option<TimeoutConfig>,
+    started: tokio::time::Instant,
+) -> Result<Option<f64>, SDKError> {
+    let Some(timeout) = timeout else {
+        return Ok(None);
+    };
+
+    let per_step = timeout.per_step;
+    let total_remaining = timeout.total.map(|total| {
+        let elapsed = started.elapsed().as_secs_f64();
+        total - elapsed
+    });
+
+    if let Some(remaining) = total_remaining {
+        if remaining <= 0.0 {
+            return Err(SDKError::RequestTimeout(RequestTimeoutError::new(
+                "total timeout exceeded",
+            )));
+        }
+    }
+
+    let effective = match (per_step, total_remaining) {
+        (Some(step), Some(remaining)) => Some(step.min(remaining)),
+        (Some(step), None) => Some(step),
+        (None, Some(remaining)) => Some(remaining),
+        (None, None) => None,
+    };
+    Ok(effective.filter(|value| *value > 0.0))
+}
+
+fn validate_tool_arguments(schema: &Value, arguments: &Value) -> Option<String> {
+    let object = arguments.as_object()?;
+    if !is_object_schema(schema) {
+        return Some("tool schema root must be an object".to_string());
+    }
+
+    if let Some(required) = schema.get("required").and_then(Value::as_array) {
+        for key in required.iter().filter_map(Value::as_str) {
+            if !object.contains_key(key) {
+                return Some(format!("missing required argument '{}'", key));
+            }
+        }
+    }
+
+    let properties = schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+
+    for (key, value) in object {
+        if let Some(property) = properties.get(key) {
+            if let Some(type_name) = property.get("type").and_then(Value::as_str) {
+                let is_valid = match type_name {
+                    "string" => value.is_string(),
+                    "number" => value.is_number(),
+                    "integer" => value.as_i64().is_some() || value.as_u64().is_some(),
+                    "boolean" => value.is_boolean(),
+                    "array" => value.is_array(),
+                    "object" => value.is_object(),
+                    "null" => value.is_null(),
+                    _ => true,
+                };
+                if !is_valid {
+                    return Some(format!(
+                        "argument '{}' expected type '{}' but received '{}'",
+                        key,
+                        type_name,
+                        json_type_name(value)
+                    ));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+fn json_type_name(value: &Value) -> &'static str {
+    if value.is_null() {
+        "null"
+    } else if value.is_boolean() {
+        "boolean"
+    } else if value.is_string() {
+        "string"
+    } else if value.is_number() {
+        "number"
+    } else if value.is_array() {
+        "array"
+    } else {
+        "object"
     }
 }
 
@@ -819,6 +1058,7 @@ mod tests {
         name: String,
         responses: Arc<Mutex<Vec<Response>>>,
         complete_calls: Arc<AtomicUsize>,
+        delay_ms: u64,
     }
 
     impl QueueAdapter {
@@ -827,6 +1067,7 @@ mod tests {
                 name: name.to_string(),
                 responses: Arc::new(Mutex::new(responses)),
                 complete_calls: Arc::new(AtomicUsize::new(0)),
+                delay_ms: 0,
             }
         }
     }
@@ -839,6 +1080,9 @@ mod tests {
 
         async fn complete(&self, _request: Request) -> Result<Response, SDKError> {
             self.complete_calls.fetch_add(1, Ordering::SeqCst);
+            if self.delay_ms > 0 {
+                tokio::time::sleep(Duration::from_millis(self.delay_ms)).await;
+            }
             let mut responses = self.responses.lock().expect("responses");
             if responses.is_empty() {
                 return Err(SDKError::Configuration(
@@ -1069,5 +1313,42 @@ mod tests {
             .await
             .expect_err("expected no-object-generated error");
         assert!(matches!(error, SDKError::NoObjectGenerated(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generate_rejects_invalid_tool_name() {
+        let adapter = Arc::new(QueueAdapter::new("test", vec![response_with_text("ok")]));
+        let mut options = GenerateOptions::new("model");
+        options.prompt = Some("hello".to_string());
+        options.client = Some(build_client(adapter));
+        options.tools = vec![Tool::passive(
+            "invalid-name",
+            "bad name",
+            json!({ "type": "object" }),
+        )];
+
+        let error = generate(options)
+            .await
+            .expect_err("expected invalid tool name error");
+        assert!(matches!(error, SDKError::Configuration(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generate_honors_per_step_timeout() {
+        let mut delayed = QueueAdapter::new("test", vec![response_with_text("ok")]);
+        delayed.delay_ms = 30;
+        let adapter = Arc::new(delayed);
+
+        let mut options = GenerateOptions::new("model");
+        options.prompt = Some("hello".to_string());
+        options.client = Some(build_client(adapter));
+        options.timeout = Some(TimeoutConfig {
+            total: None,
+            per_step: Some(0.01),
+        });
+        options.retry_policy.max_retries = 0;
+
+        let error = generate(options).await.expect_err("expected timeout");
+        assert!(matches!(error, SDKError::RequestTimeout(_)));
     }
 }
