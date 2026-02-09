@@ -87,24 +87,24 @@ This matrix is populated as implementation milestones complete.
 - [ ] Graceful shutdown sequence implemented
 
 ## 9.12 Cross-Provider Parity Matrix
-- [ ] Simple file creation task
-- [ ] Read then edit task
+- [x] Simple file creation task (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] Read then edit task (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Multi-file edit flow
-- [ ] Shell execution flow
-- [ ] Shell timeout handling
-- [ ] Grep + glob discovery flow
+- [x] Shell execution flow (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] Shell timeout handling (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] Grep + glob discovery flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Multi-step read/analyze/edit
 - [ ] Large-output truncation behavior
-- [ ] Parallel tool calls (where supported)
+- [x] Parallel tool calls (where supported) (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Mid-task steering behavior
 - [ ] Reasoning effort change behavior
-- [ ] Subagent spawn and wait flow
+- [x] Subagent spawn and wait flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Loop detection warning behavior
 - [ ] Error recovery after tool failure
-- [ ] Provider-native editing format behavior
+- [x] Provider-native editing format behavior (`crates/forge-agent/tests/conformance_matrix.rs`)
 
 ## 9.13 Integration Smoke Test
-- [ ] OpenAI smoke scenario complete
-- [ ] Anthropic smoke scenario complete
-- [ ] Gemini smoke scenario complete
+- [x] OpenAI smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] Anthropic smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
+- [x] Gemini smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [ ] Real-key run notes captured
