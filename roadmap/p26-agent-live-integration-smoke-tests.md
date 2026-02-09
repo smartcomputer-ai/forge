@@ -30,7 +30,7 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Add shared live-test harness for `forge-agent`
+### [x] G1. Add shared live-test harness for `forge-agent`
 - Work:
   - Add helper utilities for:
     - env or `.env` variable resolution
@@ -44,8 +44,11 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
   - `crates/forge-agent/tests/support/mod.rs` (wire live helpers)
 - DoD:
   - OpenAI and Anthropic live tests share one helper path for env/retry/bootstrap.
+- Completed:
+  - Added shared live-test helpers in `crates/forge-agent/tests/support/live.rs`.
+  - Added env/`.env` resolution, enable flags, retry wrapper, submit timeouts, temp workspace bootstrap, and helper assertions for tool/event checks.
 
-### [ ] G2. OpenAI live smoke tests (default ignored)
+### [x] G2. OpenAI live smoke tests (default ignored)
 - Work:
   - Add `crates/forge-agent/tests/openai_live.rs`.
   - Gate with `RUN_LIVE_OPENAI_TESTS=1` and `OPENAI_API_KEY` (env or `.env`).
@@ -57,8 +60,11 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
   - submit-options smoke (assert provider/model/reasoning overrides applied end-to-end)
 - DoD:
   - `cargo test -p forge-agent --test openai_live -- --ignored` passes with valid key.
+- Completed:
+  - Added `crates/forge-agent/tests/openai_live.rs` with create/edit, truncation, shell-timeout, and submit-options smoke cases.
+  - Tests are `#[ignore]`, env-gated, and use shared retry/timeout/bootstrap helpers.
 
-### [ ] G3. Anthropic live smoke tests (default ignored)
+### [x] G3. Anthropic live smoke tests (default ignored)
 - Work:
   - Add `crates/forge-agent/tests/anthropic_live.rs`.
   - Gate with `RUN_LIVE_ANTHROPIC_TESTS=1` and `ANTHROPIC_API_KEY` (env or `.env`).
@@ -67,6 +73,9 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
   - same minimal smoke set as OpenAI, using Anthropic profile/tool conventions
 - DoD:
   - `cargo test -p forge-agent --test anthropic_live -- --ignored` passes with valid key.
+- Completed:
+  - Added `crates/forge-agent/tests/anthropic_live.rs` with the same smoke matrix as OpenAI.
+  - Tests are `#[ignore]`, env-gated, and use shared retry/timeout/bootstrap helpers.
 
 ### [ ] G4. Real-key run notes + DoD matrix closure
 - Work:
@@ -76,6 +85,17 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
   - Add crate-level run instructions for live tests in `crates/forge-agent/README.md`.
 - DoD:
   - 9.13 real-key item is checked with traceable run notes.
+- Progress:
+  - Added live-test run instructions to `crates/forge-agent/README.md`.
+  - OpenAI real-key smoke run executed on 2026-02-09:
+    - command: `RUN_LIVE_OPENAI_TESTS=1 cargo test -p forge-agent --test openai_live -- --ignored`
+    - result: 4 passed, 0 failed
+    - note: fixed `submit_with_options` live case to avoid unsupported OpenAI request keys in `provider_options`.
+  - Anthropic real-key smoke run executed on 2026-02-09:
+    - command: `RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --ignored`
+    - result: 4 passed, 0 failed
+    - note: adjusted live `submit_with_options` metadata usage to Anthropic-compatible shape.
+  - Remaining for full closure: Gemini real-key run notes and final DoD matrix check decision.
 
 ## Priority 1 (Follow-up)
 

@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod live;
+
 use async_trait::async_trait;
 use forge_agent::{
     AnthropicProviderProfile, AssistantTurn, GeminiProviderProfile, OpenAiProviderProfile,
