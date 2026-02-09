@@ -6,7 +6,7 @@ use crate::{
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
-    ToolResult,
+    ToolResult, Usage,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -31,12 +31,15 @@ pub struct SubmitOptions {
     pub metadata: Option<HashMap<String, String>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SubmitResult {
     pub final_state: SessionState,
     pub assistant_text: String,
     pub tool_call_count: usize,
+    pub tool_call_ids: Vec<String>,
     pub tool_error_count: usize,
+    pub usage: Option<Usage>,
+    pub thread_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -47,6 +50,7 @@ pub struct SessionCheckpoint {
     pub steering_queue: Vec<String>,
     pub followup_queue: Vec<String>,
     pub config: SessionConfig,
+    pub thread_key: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -337,6 +341,7 @@ pub struct Session {
     abort_requested: Arc<AtomicBool>,
     abort_notify: Arc<Notify>,
     tool_call_hook: Option<Arc<dyn ToolCallHook>>,
+    thread_key: Option<String>,
 }
 
 #[derive(Clone)]
@@ -393,6 +398,7 @@ impl Session {
         event_emitter: Arc<dyn EventEmitter>,
         subagent_depth: usize,
     ) -> Result<Self, AgentError> {
+        let thread_key = config.thread_key.clone();
         let session = Self {
             id: Uuid::new_v4().to_string(),
             provider_profiles: HashMap::from([(
@@ -414,6 +420,7 @@ impl Session {
             abort_requested: Arc::new(AtomicBool::new(false)),
             abort_notify: Arc::new(Notify::new()),
             tool_call_hook: None,
+            thread_key,
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
         Ok(session)
@@ -467,6 +474,15 @@ impl Session {
 
     pub fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>) {
         self.tool_call_hook = hook;
+    }
+
+    pub fn thread_key(&self) -> Option<&str> {
+        self.thread_key.as_deref()
+    }
+
+    pub fn set_thread_key(&mut self, thread_key: Option<String>) {
+        self.thread_key = thread_key.clone();
+        self.config.thread_key = thread_key;
     }
 
     pub fn execution_env(&self) -> Arc<dyn ExecutionEnvironment> {
@@ -572,7 +588,9 @@ impl Session {
         self.submit_with_options(user_input, options).await?;
         let mut assistant_text = String::new();
         let mut tool_call_count = 0usize;
+        let mut tool_call_ids = Vec::new();
         let mut tool_error_count = 0usize;
+        let mut usage: Option<Usage> = None;
         for turn in self.history.iter().skip(baseline_turns) {
             match turn {
                 Turn::Assistant(turn) => {
@@ -580,6 +598,11 @@ impl Session {
                         assistant_text = turn.content.clone();
                     }
                     tool_call_count += turn.tool_calls.len();
+                    tool_call_ids.extend(turn.tool_calls.iter().map(|call| call.id.clone()));
+                    usage = Some(match usage.take() {
+                        Some(acc) => acc + turn.usage.clone(),
+                        None => turn.usage.clone(),
+                    });
                 }
                 Turn::ToolResults(results) => {
                     tool_error_count += results
@@ -596,7 +619,10 @@ impl Session {
             final_state: self.state.clone(),
             assistant_text,
             tool_call_count,
+            tool_call_ids,
             tool_error_count,
+            usage,
+            thread_key: self.thread_key.clone(),
         })
     }
 
@@ -1265,6 +1291,7 @@ impl Session {
             steering_queue: self.steering_queue.iter().cloned().collect(),
             followup_queue: self.followup_queue.iter().cloned().collect(),
             config: self.config.clone(),
+            thread_key: self.thread_key.clone(),
         })
     }
 
@@ -1289,6 +1316,8 @@ impl Session {
         session.steering_queue = VecDeque::from(checkpoint.steering_queue);
         session.followup_queue = VecDeque::from(checkpoint.followup_queue);
         session.config = checkpoint.config;
+        session.thread_key = checkpoint.thread_key;
+        session.config.thread_key = session.thread_key.clone();
         session.provider_profiles =
             HashMap::from([(provider_profile.id().to_string(), provider_profile)]);
         Ok(session)
@@ -3308,6 +3337,44 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn submit_with_result_returns_tool_ids_usage_and_thread_key() {
+        let (client, _requests) = build_test_client(vec![
+            tool_call_response(
+                "resp-1",
+                "call-read",
+                "read_file",
+                serde_json::json!({ "file_path": "Cargo.toml" }),
+            ),
+            text_response("resp-2", "done"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "test-model".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(build_openai_tool_registry()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut config = SessionConfig::default();
+        config.thread_key = Some("thread-main".to_string());
+        let mut session = Session::new(profile, env, client, config).expect("new session");
+
+        let result = session
+            .submit_with_result("run tool", SubmitOptions::default())
+            .await
+            .expect("submit should succeed");
+        assert_eq!(result.final_state, SessionState::Idle);
+        assert_eq!(result.assistant_text, "done");
+        assert_eq!(result.tool_call_count, 1);
+        assert_eq!(result.tool_call_ids, vec!["call-read".to_string()]);
+        assert_eq!(result.tool_error_count, 0);
+        assert_eq!(result.thread_key.as_deref(), Some("thread-main"));
+        let usage = result.usage.expect("usage should exist");
+        assert!(usage.total_tokens > 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn checkpoint_round_trip_restores_history_and_queues() {
         let (client, _requests) = build_test_client(vec![
             text_response("resp-1", "first"),
@@ -3336,6 +3403,7 @@ mod tests {
         session
             .follow_up("queued followup")
             .expect("followup queued");
+        session.set_thread_key(Some("thread-restore".to_string()));
 
         let checkpoint = session.checkpoint().expect("checkpoint should succeed");
         let mut restored =
@@ -3352,6 +3420,8 @@ mod tests {
             restored.pop_followup_message().as_deref(),
             Some("queued followup")
         );
+        assert_eq!(restored.thread_key(), Some("thread-restore"));
+        assert_eq!(checkpoint.thread_key.as_deref(), Some("thread-restore"));
 
         restored
             .submit("second input")

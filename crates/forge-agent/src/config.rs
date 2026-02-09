@@ -16,6 +16,7 @@ pub struct SessionConfig {
     pub loop_detection_window: usize,
     pub max_subagent_depth: usize,
     pub tool_hook_strict: bool,
+    pub thread_key: Option<String>,
 }
 
 impl Default for SessionConfig {
@@ -33,6 +34,7 @@ impl Default for SessionConfig {
             loop_detection_window: 10,
             max_subagent_depth: 1,
             tool_hook_strict: false,
+            thread_key: None,
         }
     }
 }
@@ -76,5 +78,6 @@ mod tests {
         assert_eq!(config.loop_detection_window, 10);
         assert_eq!(config.max_subagent_depth, 1);
         assert!(!config.tool_hook_strict);
+        assert_eq!(config.thread_key, None);
     }
 }

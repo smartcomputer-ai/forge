@@ -141,3 +141,86 @@ async fn tool_call_end_event_carries_full_output_when_tool_result_is_truncated()
     assert!(full_output.contains("abcdefghijklmnopqrstuvwxyz"));
     assert!(full_output.len() > tool_result.len());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn tool_call_events_include_arguments_and_duration_metadata() {
+    let dir = tempdir().expect("temp dir should be created");
+    let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+    env.write_file("demo.txt", "alpha\n")
+        .await
+        .expect("seed file should write");
+
+    let (client, responses, _requests) = client_with_adapter("openai");
+    let profile = forge_agent::OpenAiProviderProfile::with_default_tools("gpt-5.2-codex");
+    let emitter = Arc::new(BufferedEventEmitter::default());
+    let mut session = Session::new_with_emitter(
+        Arc::new(profile),
+        env,
+        client,
+        SessionConfig::default(),
+        emitter.clone(),
+    )
+    .expect("session should initialize");
+
+    enqueue(
+        &responses,
+        tool_call_response(
+            "openai",
+            "gpt-5.2-codex",
+            "resp-1",
+            vec![(
+                "call-read",
+                "read_file",
+                serde_json::json!({ "file_path": "demo.txt", "offset": 1, "limit": 20 }),
+            )],
+        ),
+    );
+    enqueue(
+        &responses,
+        text_response("openai", "gpt-5.2-codex", "resp-2", "done"),
+    );
+
+    session
+        .submit("run tool then finish")
+        .await
+        .expect("submit");
+
+    let events = emitter.snapshot();
+    let start = events
+        .iter()
+        .find(|event| {
+            event.kind == EventKind::ToolCallStart
+                && event.data.get_str("call_id") == Some("call-read")
+        })
+        .expect("tool start should exist");
+    let args = start
+        .data
+        .get("arguments")
+        .and_then(serde_json::Value::as_object)
+        .expect("start event should include arguments");
+    assert_eq!(
+        args.get("file_path").and_then(serde_json::Value::as_str),
+        Some("demo.txt")
+    );
+
+    let end = events
+        .iter()
+        .find(|event| {
+            event.kind == EventKind::ToolCallEnd
+                && event.data.get_str("call_id") == Some("call-read")
+                && event.data.get_str("output").is_some()
+        })
+        .expect("tool end should exist");
+    assert!(
+        end.data
+            .get("duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .is_some()
+    );
+    assert_eq!(
+        end.data
+            .get("is_error")
+            .and_then(serde_json::Value::as_bool),
+        Some(false)
+    );
+}

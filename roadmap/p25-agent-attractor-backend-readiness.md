@@ -1,7 +1,8 @@
 # P25: Agent Backend Readiness for Attractor (Spec 03)
+_Complete_
 
 **Status**
-- In progress (2026-02-09)
+- Done (2026-02-09)
 
 **Goal**
 Close `forge-agent` integration gaps that block or complicate a faithful implementation of `spec/03-attractor-spec.md` codergen backend behavior.
@@ -106,7 +107,7 @@ Close `forge-agent` integration gaps that block or complicate a faithful impleme
 
 ## Priority 1 (Strongly recommended to reduce adapter glue)
 
-### [ ] G4. Add structured submit outcome API
+### [x] G4. Add structured submit outcome API
 - Spec refs: 4.5 codergen backend contract, 5.2 Outcome, Appendix C status contract
 - Current gap:
   - `submit(...)` returns `Result<(), AgentError>`; callers must inspect history/events to infer last output.
@@ -123,8 +124,12 @@ Close `forge-agent` integration gaps that block or complicate a faithful impleme
   - `crates/forge-agent/tests/events_integration.rs`
 - DoD:
   - Codergen backend can map `SubmitResult` to Attractor `Outcome` without replaying entire history.
+- Completed:
+  - Added `SubmitResult` and `Session::submit_with_result(...)`.
+  - `SubmitResult` now includes terminal state, assistant text, tool call counts, tool call IDs, tool error count, usage aggregate, and thread key.
+  - Added unit coverage for `submit_with_result(...)` contract fields.
 
-### [ ] G5. Enrich tool-call event payloads for external orchestration
+### [x] G5. Enrich tool-call event payloads for external orchestration
 - Spec refs: 9.6 events, 9.7 tool hook metadata needs
 - Current gap:
   - `TOOL_CALL_START` includes only name + call id; no arguments payload.
@@ -140,10 +145,14 @@ Close `forge-agent` integration gaps that block or complicate a faithful impleme
   - `crates/forge-agent/tests/events_integration.rs`
 - DoD:
   - Attractor runtime can project agent events into stage telemetry without parsing freeform text.
+- Completed:
+  - `TOOL_CALL_START` payload now includes optional `arguments`.
+  - `TOOL_CALL_END` payload now includes `duration_ms` and `is_error`.
+  - Added integration coverage asserting argument and duration/error metadata presence.
 
 ## Priority 2 (Nice-to-have hardening)
 
-### [ ] G6. Add session thread key metadata for `full` fidelity interop
+### [x] G6. Add session thread key metadata for `full` fidelity interop
 - Spec refs: 5.4 thread resolution
 - Current gap:
   - Thread/session reuse key is implicit in session instance identity; no explicit external thread key.
@@ -156,13 +165,18 @@ Close `forge-agent` integration gaps that block or complicate a faithful impleme
   - `crates/forge-agent/tests/conformance_runtime_behaviors.rs`
 - DoD:
   - Attractor can persist and reason about thread continuity across node runs.
+- Completed:
+  - Added `SessionConfig.thread_key` with defaults and serde support.
+  - Added session thread-key accessors/mutator.
+  - Thread key now carries through `SubmitResult` and `SessionCheckpoint`.
+  - Added checkpoint/thread-key round-trip coverage.
 
 ## Test additions (cross-cutting)
-- [ ] Add regression tests for hook execution order and skip/fail behavior.
-- [ ] Add per-submit override tests for model/provider/reasoning/system prompt.
-- [ ] Add checkpoint round-trip tests (including restored queues).
-- [ ] Add submit-result contract tests.
-- [ ] Add event payload backward-compatibility tests (existing consumers unaffected).
+- [x] Add regression tests for hook execution order and skip/fail behavior.
+- [x] Add per-submit override tests for model/provider/reasoning/system prompt.
+- [x] Add checkpoint round-trip tests (including restored queues).
+- [x] Add submit-result contract tests.
+- [x] Add event payload backward-compatibility tests (existing consumers unaffected).
 
 ## Execution order
 1. G1 tool hooks
