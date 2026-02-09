@@ -1,4 +1,9 @@
 # P10: Gemini Adapter (GenerateContent API)
+_Skipped_
+
+**Status**
+- Skipped (2026-02-09)
+- Reason: not needed for current project scope/priorities.
 
 **Goal**
 Implement the Gemini adapter using the native GenerateContent API with streaming support.

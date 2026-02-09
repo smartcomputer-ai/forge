@@ -1,19 +1,21 @@
 # P11: Cross-Provider Tests and DoD Matrix
+_Complete_
 
 **Status**
-- In progress (2026-02-09)
+- Done (2026-02-09)
 
 **Goal**
 Validate parity across providers and ensure the Definition of Done checklist is executable.
 
 **Scope**
 - Unit tests for request/response translation and error mapping.
-- Integration tests using mocked HTTP servers for OpenAI, Anthropic, and Gemini.
+- Integration tests using mocked HTTP servers for OpenAI and Anthropic.
 - Streaming tests for event ordering and accumulation.
 - Conformance tests for tool loops and structured output.
 
 **Out of Scope**
 - Live API integration tests requiring real keys (these can be optional or gated by env vars).
+- Gemini adapter integration coverage while `roadmap/p10-gemini-adapter.md` remains skipped.
 
 **Deliverables**
 - `tests/` integration suite with deterministic fixtures.
@@ -23,7 +25,7 @@ Validate parity across providers and ensure the Definition of Done checklist is 
 - All tests run in parallel safely and deterministically.
 - DoD items are represented as tests or checklist entries with clear mapping.
 
-**Completed (Partial)**
+**Completed**
 1. Added crate-level integration test suite path at `crates/forge-llm/tests/`.
 2. Added mocked OpenAI integration tests at `crates/forge-llm/tests/openai_integration_mocked.rs` covering:
    - OpenAI Responses complete path through `Client`.
@@ -41,3 +43,12 @@ Validate parity across providers and ensure the Definition of Done checklist is 
 6. Added tool-usage depth tests:
    - live streaming tool-call event coverage (`ToolCallStart`/`ToolCallEnd`) with argument extraction checks,
    - mocked high-level `generate()` tool-loop integration asserting `function_call_output` round-trip to Responses API.
+7. Added mocked Anthropic integration tests at `crates/forge-llm/tests/anthropic_integration_mocked.rs` covering:
+   - Anthropic complete path through `Client` with thinking + tool-use response mapping,
+   - Anthropic stream path through `Client` with reasoning/tool events and terminal finish,
+   - Anthropic request translation checks for strict alternation merging, tool-result user blocks, beta headers, and default `max_tokens=4096`.
+8. Added cross-provider conformance tests at `crates/forge-llm/tests/cross_provider_conformance.rs` for OpenAI + Anthropic covering:
+   - deterministic tool-loop behavior (`generate()` request/response turn progression),
+   - stream event ordering invariants (`StreamStart -> TextStart -> TextDelta* -> TextEnd -> Finish`),
+   - structured output schema conformance via `generate_object()`.
+9. Added a DoD mapping artifact at `roadmap/p11-dod-matrix.md` linking section-8 checklist areas to concrete tests/files, with Gemini rows explicitly deferred.
