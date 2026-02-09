@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+pub mod live;
+
 use async_trait::async_trait;
 use forge_agent::{
     AnthropicProviderProfile, AssistantTurn, GeminiProviderProfile, OpenAiProviderProfile,
@@ -80,7 +82,11 @@ impl FixtureKind {
 }
 
 pub fn all_fixtures() -> [FixtureKind; 3] {
-    [FixtureKind::OpenAi, FixtureKind::Anthropic, FixtureKind::Gemini]
+    [
+        FixtureKind::OpenAi,
+        FixtureKind::Anthropic,
+        FixtureKind::Gemini,
+    ]
 }
 
 pub fn usage() -> Usage {
@@ -180,7 +186,10 @@ pub fn enqueue(responses: &Arc<Mutex<VecDeque<Response>>>, response: Response) {
         .push_back(response);
 }
 
-pub fn tool_result_by_call_id<'a>(history: &'a [Turn], call_id: &str) -> Option<&'a ToolResultTurn> {
+pub fn tool_result_by_call_id<'a>(
+    history: &'a [Turn],
+    call_id: &str,
+) -> Option<&'a ToolResultTurn> {
     history.iter().find_map(|turn| {
         if let Turn::ToolResults(ToolResultsTurn { results, .. }) = turn {
             return results.iter().find(|result| result.tool_call_id == call_id);

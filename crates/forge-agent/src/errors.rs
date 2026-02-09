@@ -11,6 +11,8 @@ pub enum SessionError {
     InvalidStateTransition { from: String, to: String },
     #[error("event payload serialization failed: {0}")]
     EventSerialization(String),
+    #[error("checkpoint not supported: {0}")]
+    CheckpointUnsupported(String),
 }
 
 /// Tool-level failures in lookup, validation, and execution.

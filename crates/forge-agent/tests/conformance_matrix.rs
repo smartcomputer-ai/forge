@@ -1,12 +1,12 @@
 mod support;
 
+use forge_agent::{ExecutionEnvironment, LocalExecutionEnvironment, Session, SessionConfig};
+use serde_json::json;
+use std::sync::Arc;
 use support::{
     FixtureKind, all_fixtures, client_with_adapter, enqueue, last_assistant_text, text_response,
     tool_call_response, tool_result_by_call_id,
 };
-use forge_agent::{ExecutionEnvironment, LocalExecutionEnvironment, Session, SessionConfig};
-use serde_json::json;
-use std::sync::Arc;
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "current_thread")]
@@ -63,7 +63,11 @@ async fn cross_profile_file_creation_read_edit_and_native_variant() {
             .submit("create note")
             .await
             .expect("create submit should succeed");
-        assert!(env.file_exists("note.txt").await.expect("exists should work"));
+        assert!(
+            env.file_exists("note.txt")
+                .await
+                .expect("exists should work")
+        );
 
         // Step 2: read then provider-native edit.
         let edit_tool = fixture.edit_tool_name();
@@ -194,11 +198,12 @@ async fn cross_profile_shell_search_and_timeout_flows() {
 
         let glob = tool_result_by_call_id(session.history(), "call-glob")
             .expect("glob result should exist");
-        assert!(glob
-            .content
-            .as_str()
-            .unwrap_or_default()
-            .contains("main.txt"));
+        assert!(
+            glob.content
+                .as_str()
+                .unwrap_or_default()
+                .contains("main.txt")
+        );
 
         enqueue(
             &responses,
@@ -224,11 +229,13 @@ async fn cross_profile_shell_search_and_timeout_flows() {
 
         let timeout_result = tool_result_by_call_id(session.history(), "call-timeout")
             .expect("timeout result should exist");
-        assert!(timeout_result
-            .content
-            .as_str()
-            .unwrap_or_default()
-            .contains("Command timed out"));
+        assert!(
+            timeout_result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("Command timed out")
+        );
     }
 }
 
@@ -295,7 +302,12 @@ async fn cross_profile_parallel_tool_calls_and_subagent_spawn_wait() {
         );
         enqueue(
             &responses,
-            text_response(fixture.id(), fixture.model(), "resp-child-1", "child finished"),
+            text_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-child-1",
+                "child finished",
+            ),
         );
         enqueue(
             &responses,
@@ -442,5 +454,101 @@ async fn cross_profile_multi_file_edit_flow() {
             assert!(tool_result_by_call_id(session.history(), "call-edit-a").is_some());
             assert!(tool_result_by_call_id(session.history(), "call-edit-b").is_some());
         }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cross_profile_multi_step_read_analyze_edit_flow() {
+    for fixture in [FixtureKind::OpenAi, FixtureKind::Anthropic] {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("draft.txt", "one\ntwo\n")
+            .await
+            .expect("seed file should write");
+
+        let (client, responses, _requests) = client_with_adapter(fixture.id());
+        let profile = fixture.profile();
+        let mut session = Session::new(profile, env.clone(), client, SessionConfig::default())
+            .expect("session should initialize");
+
+        enqueue(
+            &responses,
+            tool_call_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-1",
+                vec![(
+                    "call-read",
+                    "read_file",
+                    json!({ "file_path": "draft.txt", "offset": 1, "limit": 200 }),
+                )],
+            ),
+        );
+
+        let (edit_tool, edit_args) = match fixture {
+            FixtureKind::OpenAi => (
+                "apply_patch",
+                json!({
+                    "patch": "*** Begin Patch\n*** Update File: draft.txt\n@@\n one\n two\n+three\n*** End Patch"
+                }),
+            ),
+            FixtureKind::Anthropic => (
+                "edit_file",
+                json!({
+                    "file_path": "draft.txt",
+                    "old_string": "one\ntwo",
+                    "new_string": "one\ntwo\nthree",
+                    "replace_all": false
+                }),
+            ),
+            FixtureKind::Gemini => unreachable!("fixture list is scoped to openai/anthropic"),
+        };
+
+        enqueue(
+            &responses,
+            tool_call_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-2",
+                vec![("call-edit", edit_tool, edit_args)],
+            ),
+        );
+        enqueue(
+            &responses,
+            text_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-3",
+                "analyzed and edited",
+            ),
+        );
+
+        session
+            .submit("read draft, analyze content, and add a third line")
+            .await
+            .expect("multi-step submit should succeed");
+
+        let read_result = tool_result_by_call_id(session.history(), "call-read")
+            .expect("read tool result should exist");
+        assert!(!read_result.is_error);
+        assert!(
+            read_result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("one")
+        );
+
+        let edit_result = tool_result_by_call_id(session.history(), "call-edit")
+            .expect("edit tool result should exist");
+        assert!(!edit_result.is_error);
+
+        let content = env
+            .read_file("draft.txt", None, None)
+            .await
+            .expect("read back should succeed");
+        assert!(content.contains("one"));
+        assert!(content.contains("two"));
+        assert!(content.contains("three"));
     }
 }

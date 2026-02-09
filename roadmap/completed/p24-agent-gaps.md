@@ -1,7 +1,7 @@
 # P24 Gap Closure Plan (Spec 02)
 
 **Status**
-- Open (2026-02-09)
+- Complete (2026-02-09)
 - Note: Gemini Priority 1 gap work is deferred for now.
 
 **Goal**
@@ -84,7 +84,7 @@
 
 ## Priority 1 (Spec parity)
 
-### G4. Emit all declared event kinds at correct times
+### [x] G4. Emit all declared event kinds at correct times
 - Spec refs: 2.9, 9.10
 - Current gap:
   - `ASSISTANT_TEXT_DELTA` and `TOOL_CALL_OUTPUT_DELTA` kinds exist but are not emitted.
@@ -98,6 +98,11 @@
   - `crates/forge-agent/tests/events_integration.rs`
 - DoD:
   - 9.10 row in `roadmap/p24-dod-matrix.md` can be marked complete with tests.
+- Completed:
+  - Added `ASSISTANT_TEXT_DELTA` emission during assistant responses.
+  - Added `TOOL_CALL_OUTPUT_DELTA` emission during tool execution output publication.
+  - Introduced explicit warning event semantics for context-usage threshold events.
+  - Added/updated event integration tests to cover delta and warning behavior.
 
 ### [deferred] G5. Complete Gemini profile tool parity
 - Spec refs: 3.6, 9.2
@@ -116,7 +121,7 @@
   - Team decision: skip Gemini work for current Priority 1 closure.
   - Track this under a follow-up roadmap item after OpenAI/Anthropic parity items are complete.
 
-### G6. Implement `AWAITING_INPUT` runtime transition logic
+### [x] G6. Implement `AWAITING_INPUT` runtime transition logic
 - Spec refs: 2.3, 9.1
 - Current gap:
   - State exists but runtime loop never transitions into it.
@@ -128,10 +133,15 @@
   - `crates/forge-agent/tests/conformance_runtime_behaviors.rs`
 - DoD:
   - Test asserts explicit state transitions for question/answer flow.
+- Completed:
+  - Added deterministic question detection (`?`-terminated natural-language prompt heuristic).
+  - Runtime now transitions `PROCESSING -> AWAITING_INPUT` when the model asks a user question.
+  - Next `submit()` transitions `AWAITING_INPUT -> PROCESSING` and returns to `IDLE` on completion.
+  - Added unit + cross-provider runtime tests for question/answer state transitions.
 
 ## Priority 2 (Quality and edge cases)
 
-### G7. Improve `read_file` multimodal/binary behavior
+### [x] G7. Improve `read_file` multimodal/binary behavior
 - Spec refs: 3.3 `read_file`
 - Current gap:
   - `read_file` assumes UTF-8 text and fails on binary/image files.
@@ -143,8 +153,13 @@
   - tests in `crates/forge-agent/src/execution.rs` and/or integration
 - DoD:
   - Binary/image read path is deterministic and tested.
+- Completed:
+  - Switched `LocalExecutionEnvironment::read_file` to byte-based reads with UTF-8 decoding.
+  - Added deterministic binary-file detection and structured error payloads (`[BINARY_FILE]` with path/mime/bytes).
+  - Added mime detection for common image binaries (PNG/JPEG/GIF/WEBP/BMP) for clearer model-facing errors.
+  - Added unit tests covering generic binary files and PNG image binaries.
 
-### G8. Add fuzzy fallback for `edit_file` / `apply_patch` mismatch recovery
+### [x] G8. Add fuzzy fallback for `edit_file` / `apply_patch` mismatch recovery
 - Spec refs: 3.3 `edit_file` behavior, Appendix A hunk matching
 - Current gap:
   - Matching is exact only.
@@ -156,9 +171,20 @@
   - `crates/forge-agent/tests/conformance_runtime_behaviors.rs`
 - DoD:
   - Fuzzy fallback succeeds on targeted fixtures without regressing exact-match determinism.
+- Completed:
+  - Added a dedicated `src/patch/` module and moved patch/edit core logic out of `tools.rs`.
+  - Implemented bounded fuzzy fallback for `edit_file` when exact `old_string` matching fails:
+    - whitespace-tolerant matching,
+    - Unicode quote/dash equivalence handling,
+    - deterministic ambiguity errors when multiple fuzzy matches exist.
+  - Implemented bounded fuzzy fallback for `apply_patch` hunk matching:
+    - exact match first,
+    - normalized-line fallback (whitespace + Unicode punctuation normalization),
+    - explicit ambiguity/failure errors.
+  - Added regression tests for `edit_file` fuzzy whitespace recovery and `apply_patch` fuzzy hunk recovery.
 
 ## Cross-provider test gaps to add
-- Add missing parity case from 9.12:
+- [x] Added missing parity case from 9.12:
   - Multi-step task (`read -> analyze -> edit`) across OpenAI/Anthropic.
 - File:
   - `crates/forge-agent/tests/conformance_matrix.rs`
@@ -176,4 +202,4 @@
 ## Exit criteria for this file
 - `roadmap/p24-dod-matrix.md` has no unchecked items except explicitly deferred real-key smoke notes.
 - `cargo test -p forge-agent` passes with added conformance coverage.
-- This file marked complete once all non-deferred gaps are closed.
+- [x] This file marked complete once all non-deferred gaps are closed.

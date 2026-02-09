@@ -74,7 +74,7 @@ This matrix is populated as implementation milestones complete.
 - [x] `send_input`, `wait`, `close_agent` implemented (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`)
 
 ## 9.10 Event System
-- [ ] All Section 2.9 event kinds emitted
+- [x] All Section 2.9 event kinds emitted (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/tools.rs`, `crates/forge-agent/tests/events_integration.rs`)
 - [x] Events consumable via async stream/iterator (`crates/forge-agent/src/events.rs`)
 - [x] `TOOL_CALL_END` carries full output (`crates/forge-agent/src/tools.rs`)
 - [x] `SESSION_START` and `SESSION_END` emitted correctly (`crates/forge-agent/src/session.rs`)
@@ -94,7 +94,7 @@ This matrix is populated as implementation milestones complete.
 - [x] Shell execution flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Shell timeout handling (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Grep + glob discovery flow (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [ ] Multi-step read/analyze/edit
+- [x] Multi-step read/analyze/edit (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Large-output truncation behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Parallel tool calls (where supported) (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Mid-task steering behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
@@ -108,4 +108,9 @@ This matrix is populated as implementation milestones complete.
 - [x] OpenAI smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/events_integration.rs`)
 - [x] Anthropic smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Gemini smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
-- [ ] Real-key run notes captured
+- [x] Default-ignored live smoke suites added for OpenAI/Anthropic (`crates/forge-agent/tests/openai_live.rs`, `crates/forge-agent/tests/anthropic_live.rs`, `crates/forge-agent/tests/support/live.rs`)
+- [x] Real-key run notes captured (OpenAI/Anthropic complete for current scope; Gemini deferred)
+- Progress note (2026-02-09):
+  - `RUN_LIVE_OPENAI_TESTS=1 cargo test -p forge-agent --test openai_live -- --ignored` passed (4/4)
+  - `RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --ignored` passed (4/4)
+  - Gemini real-key notes deferred for this phase.
