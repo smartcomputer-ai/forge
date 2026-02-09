@@ -109,8 +109,8 @@ This matrix is populated as implementation milestones complete.
 - [x] Anthropic smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Gemini smoke scenario complete (mocked) (`crates/forge-agent/tests/conformance_matrix.rs`, `crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Default-ignored live smoke suites added for OpenAI/Anthropic (`crates/forge-agent/tests/openai_live.rs`, `crates/forge-agent/tests/anthropic_live.rs`, `crates/forge-agent/tests/support/live.rs`)
-- [ ] Real-key run notes captured
+- [x] Real-key run notes captured (OpenAI/Anthropic complete for current scope; Gemini deferred)
 - Progress note (2026-02-09):
   - `RUN_LIVE_OPENAI_TESTS=1 cargo test -p forge-agent --test openai_live -- --ignored` passed (4/4)
   - `RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --ignored` passed (4/4)
-  - Gemini real-key notes pending.
+  - Gemini real-key notes deferred for this phase.

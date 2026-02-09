@@ -1,7 +1,8 @@
 # P26: Agent Live Integration Smoke Tests (Spec 02 §9.13)
+_Complete_
 
 **Status**
-- In progress (2026-02-09)
+- Done (2026-02-09)
 
 **Goal**
 Add a small, default-ignored live integration suite for `forge-agent` that validates real provider behavior without replacing deterministic mocked conformance tests.
@@ -77,7 +78,7 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
   - Added `crates/forge-agent/tests/anthropic_live.rs` with the same smoke matrix as OpenAI.
   - Tests are `#[ignore]`, env-gated, and use shared retry/timeout/bootstrap helpers.
 
-### [ ] G4. Real-key run notes + DoD matrix closure
+### [x] G4. Real-key run notes + DoD matrix closure
 - Work:
   - Record one real-key run summary (date, provider, model, command, pass/fail notes, known flakes).
   - Update `roadmap/p24-dod-matrix.md`:
@@ -95,7 +96,10 @@ Add a small, default-ignored live integration suite for `forge-agent` that valid
     - command: `RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --ignored`
     - result: 4 passed, 0 failed
     - note: adjusted live `submit_with_options` metadata usage to Anthropic-compatible shape.
-  - Remaining for full closure: Gemini real-key run notes and final DoD matrix check decision.
+- Completed:
+  - `roadmap/p24-dod-matrix.md` updated with dated OpenAI/Anthropic real-key notes.
+  - 9.13 real-key notes checkbox closed for current scope.
+  - Gemini real-key run is explicitly deferred for this phase.
 
 ## Priority 1 (Follow-up)
 
