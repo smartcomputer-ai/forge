@@ -72,6 +72,7 @@ impl Client {
     }
 
     pub fn from_env() -> Result<Self, SDKError> {
+        crate::anthropic::ensure_anthropic_factory_registered();
         crate::openai::ensure_openai_factory_registered();
 
         let mut providers = HashMap::new();
