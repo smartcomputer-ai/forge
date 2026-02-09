@@ -34,5 +34,6 @@ When modifying specs or architecture:
 2. Whenever a roadmap file is complete or partially complete mark what has been done. When the file is done mark the entire file as compelte below the main title.
 3. Update this file (AGENTS.md or CLAUDE.md) if the high-level architecture changes
 4. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
+5. When asked how many lines of code, use `cloc $(git ls-files)`
 
 The specs in `spec/` are the source of truth. This file is just an index.
