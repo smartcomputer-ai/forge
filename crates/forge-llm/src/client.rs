@@ -55,12 +55,17 @@ impl Client {
         }
     }
 
-    pub fn register_provider(&mut self, provider: Arc<dyn ProviderAdapter>) {
+    pub fn register_provider(
+        &mut self,
+        provider: Arc<dyn ProviderAdapter>,
+    ) -> Result<(), SDKError> {
+        provider.initialize()?;
         let name = provider.name().to_string();
         if self.default_provider.is_none() {
             self.default_provider = Some(name.clone());
         }
         self.providers.insert(name, provider);
+        Ok(())
     }
 
     pub fn set_default_provider(&mut self, provider: impl Into<String>) {
@@ -80,6 +85,7 @@ impl Client {
 
         for factory in registered_factories() {
             if let Some(adapter) = factory.from_env() {
+                adapter.initialize()?;
                 let name = adapter.name().to_string();
                 if default_provider.is_none() {
                     default_provider = Some(name.clone());
@@ -155,6 +161,13 @@ impl Client {
         });
 
         handler(request).await
+    }
+
+    pub fn close(&self) -> Result<(), SDKError> {
+        for adapter in self.providers.values() {
+            adapter.close()?;
+        }
+        Ok(())
     }
 
     fn resolve_provider(&self, request: &Request) -> Result<String, SDKError> {
@@ -398,7 +411,7 @@ mod tests {
             name: "test".to_string(),
         });
         let mut client = Client::new(HashMap::new(), Some("test".to_string()), vec![]);
-        client.register_provider(adapter);
+        client.register_provider(adapter).unwrap();
 
         let mut request = base_request();
         request.provider = Some("test".to_string());

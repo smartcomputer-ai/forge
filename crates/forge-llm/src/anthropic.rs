@@ -172,19 +172,36 @@ impl ProviderAdapter for AnthropicAdapter {
 
         let mut byte_stream = response.bytes_stream();
         let (tx, rx) = mpsc::unbounded::<Result<StreamEvent, SDKError>>();
+        let stream_read_timeout = Duration::from_secs_f64(self.config.timeout.stream_read);
 
         tokio::spawn(async move {
             let mut parser = SseParser::new();
             let mut state = AnthropicStreamState::default();
             let mut tx = tx;
 
-            while let Some(item) = byte_stream.next().await {
+            loop {
+                let next_item = match tokio::time::timeout(stream_read_timeout, byte_stream.next())
+                    .await
+                {
+                    Ok(item) => item,
+                    Err(_) => {
+                        let _ = send_terminal_stream_error(
+                            &mut tx,
+                            SDKError::Stream(StreamError::new("Anthropic stream read timed out")),
+                        );
+                        return;
+                    }
+                };
+                let Some(item) = next_item else {
+                    break;
+                };
                 let bytes = match item {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(
-                            error.to_string(),
-                        ))));
+                        let _ = send_terminal_stream_error(
+                            &mut tx,
+                            SDKError::Stream(StreamError::new(error.to_string())),
+                        );
                         return;
                     }
                 };
@@ -203,6 +220,10 @@ impl ProviderAdapter for AnthropicAdapter {
         });
 
         Ok(Box::pin(rx))
+    }
+
+    fn supports_tool_choice(&self, mode: &str) -> bool {
+        matches!(mode, "auto" | "none" | "required" | "named")
     }
 }
 
@@ -265,10 +286,13 @@ fn process_anthropic_sse_events(
         let payload: Value = match serde_json::from_str(data) {
             Ok(value) => value,
             Err(error) => {
-                let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(format!(
-                    "invalid Anthropic SSE JSON: {}",
-                    error
-                )))));
+                let _ = send_terminal_stream_error(
+                    tx,
+                    SDKError::Stream(StreamError::new(format!(
+                        "invalid Anthropic SSE JSON: {}",
+                        error
+                    ))),
+                );
                 return Err(());
             }
         };
@@ -662,7 +686,7 @@ fn process_anthropic_sse_events(
                     .and_then(Value::as_str)
                     .unwrap_or("Anthropic stream error")
                     .to_string();
-                let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(message))));
+                let _ = send_terminal_stream_error(tx, SDKError::Stream(StreamError::new(message)));
                 return Err(());
             }
             _ => {
@@ -756,6 +780,16 @@ fn simple_stream_event(kind: StreamEventType) -> StreamEvent {
         error: None,
         raw: None,
     }
+}
+
+fn send_terminal_stream_error(
+    tx: &mut mpsc::UnboundedSender<Result<StreamEvent, SDKError>>,
+    error: SDKError,
+) -> Result<(), ()> {
+    tx.unbounded_send(Ok(StreamEvent::error(error.clone())))
+        .map_err(|_| ())?;
+    let _ = error;
+    Ok(())
 }
 
 fn build_messages_body(
@@ -1783,13 +1817,13 @@ mod tests {
             .get("system")
             .and_then(Value::as_array)
             .expect("system");
-        assert!(
-            system.iter().any(|entry| entry
+        assert!(system.iter().any(|entry| {
+            entry
                 .get("text")
                 .and_then(Value::as_str)
                 .unwrap_or_default()
-                .contains("strictly matches this schema"))
-        );
+                .contains("strictly matches this schema")
+        }));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1869,5 +1903,32 @@ mod tests {
         let _ = adapter.complete(request).await.expect("complete");
         let captured = rx.recv().expect("captured request");
         assert!(captured.contains("anthropic-beta: interleaved-thinking-2025-05-14"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_stream_emits_error_event_and_then_closes() {
+        let sse_body =
+            "event: message_start\ndata: {\"type\":\"message_start\"}\n\ndata: {not-json}\n\n"
+                .to_string();
+        let base_url =
+            spawn_single_response_server(200, "text/event-stream", sse_body, "/messages");
+        let mut config = AnthropicAdapterConfig::new("test-key");
+        config.base_url = base_url;
+        let adapter = AnthropicAdapter::new(config).expect("adapter");
+
+        let mut stream = adapter.stream(base_request()).await.expect("stream");
+        let mut saw_error_event = false;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(event) => {
+                    if event.event_type == StreamEventTypeOrString::Known(StreamEventType::Error) {
+                        saw_error_event = true;
+                    }
+                }
+                Err(_) => panic!("did not expect terminal Err after error event"),
+            }
+        }
+
+        assert!(saw_error_event);
     }
 }

@@ -34,11 +34,22 @@ Close the remaining implementation gaps after the first pass of `spec/01-unified
    - high-level timeout enforcement and tool-name validation,
    - OpenAI response_format mapping and retry-after propagation,
    - Anthropic response-format schema hint injection.
+9. Added a public low-level async retry helper (`retry_async`) in the SDK error/retry layer for callers using low-level `Client` methods directly.
+10. Enforced adapter `stream_read` timeouts in OpenAI/OpenAI-compatible/Anthropic streaming paths.
+11. Normalized stream-failure behavior to emit `StreamEventType::Error` as the canonical stream error signal.
+12. Added optional provider lifecycle/capability hooks in the adapter contract (`initialize`, `close`, `supports_tool_choice`) and integrated registration-time initialization in `Client`.
+13. Updated `stream_object()` to consume real streaming deltas and replay real stream events instead of synthesizing a single text chunk from `generate_object()`.
+14. Added README guidance for low-level retry usage and stream error-event handling.
 
 **Files Changed**
 - `crates/forge-llm/src/high_level.rs`
 - `crates/forge-llm/src/openai.rs`
 - `crates/forge-llm/src/anthropic.rs`
+- `crates/forge-llm/src/errors.rs`
+- `crates/forge-llm/src/stream.rs`
+- `crates/forge-llm/src/provider.rs`
+- `crates/forge-llm/src/client.rs`
+- `crates/forge-llm/README.md`
 
 **Validation**
 - `cargo test -p forge-llm` passed after changes.

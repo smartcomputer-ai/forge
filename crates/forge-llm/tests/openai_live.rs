@@ -100,7 +100,9 @@ fn build_live_client() -> Option<Client> {
     let adapter = OpenAIAdapter::new(config).ok()?;
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
     Some(client)
 }
 

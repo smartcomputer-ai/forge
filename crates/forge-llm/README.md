@@ -48,6 +48,25 @@ Example keys already supported:
 - Anthropic defaults `max_tokens` to `4096` if unset.
 - Prompt caching for Anthropic is auto-injected unless opted out.
 - Streaming returns normalized unified events (`StreamStart`, `TextDelta`, `ToolCall*`, `Finish`, etc.).
+- Streaming errors are emitted as `StreamEventType::Error` events before the stream closes.
+
+## Low-level retries
+
+When building your own loop on top of `Client.complete()` / `Client.stream()`, use the SDK retry helper:
+
+```rust
+use forge_llm::errors::{RetryPolicy, retry_async};
+
+let policy = RetryPolicy::default();
+let response = retry_async(&policy, || {
+    let client = client.clone();
+    let request = request.clone();
+    async move { client.complete(request).await }
+})
+.await?;
+```
+
+This keeps retry behavior consistent with SDK defaults (retryable errors + backoff + retry-after handling).
 
 ## Executable references
 

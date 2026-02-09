@@ -18,6 +18,21 @@ pub trait ProviderAdapter: Send + Sync {
     async fn complete(&self, request: Request) -> Result<Response, SDKError>;
 
     async fn stream(&self, request: Request) -> Result<StreamEventStream, SDKError>;
+
+    /// Optional lifecycle hook called by `Client` when registering providers.
+    fn initialize(&self) -> Result<(), SDKError> {
+        Ok(())
+    }
+
+    /// Optional lifecycle hook called by `Client::close()`.
+    fn close(&self) -> Result<(), SDKError> {
+        Ok(())
+    }
+
+    /// Optional capability hook for tool choice support.
+    fn supports_tool_choice(&self, _mode: &str) -> bool {
+        false
+    }
 }
 
 /// Factory for building adapters from environment variables.

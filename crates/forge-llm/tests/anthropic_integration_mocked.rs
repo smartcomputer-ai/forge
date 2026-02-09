@@ -148,7 +148,9 @@ async fn client_complete_anthropic_adapter_returns_thinking_and_tool_use() {
     let adapter = AnthropicAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let response = client
         .complete(minimal_request("anthropic"))
@@ -191,7 +193,9 @@ async fn client_stream_anthropic_adapter_emits_reasoning_tool_and_finish() {
     let adapter = AnthropicAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let mut saw_reasoning_delta = false;
     let mut saw_tool_end = false;
@@ -236,7 +240,9 @@ async fn client_complete_anthropic_adapter_sends_tool_results_as_user_and_merges
     let adapter = AnthropicAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let mut request = minimal_request("anthropic");
     request.max_tokens = None;

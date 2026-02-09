@@ -4,6 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use thiserror::Error;
@@ -455,6 +456,44 @@ pub fn compute_backoff_delay(
     }
 }
 
+/// Retry an async operation according to the provided retry policy.
+///
+/// Retries are attempted only for retryable errors. When a provider error
+/// includes `retry_after`, it is respected by `compute_backoff_delay`.
+pub async fn retry_async<T, Op, Fut>(policy: &RetryPolicy, mut operation: Op) -> Result<T, SDKError>
+where
+    Op: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, SDKError>>,
+{
+    let mut attempt = 0usize;
+
+    loop {
+        match operation().await {
+            Ok(value) => return Ok(value),
+            Err(error) => {
+                if !error.retryable() || attempt >= policy.max_retries {
+                    return Err(error);
+                }
+
+                let retry_after = match &error {
+                    SDKError::Provider(provider_error) => provider_error.retry_after,
+                    _ => None,
+                };
+                let Some(delay) = compute_backoff_delay(policy, attempt, retry_after) else {
+                    return Err(error);
+                };
+
+                if let Some(on_retry) = &policy.on_retry {
+                    on_retry(&error, attempt, delay);
+                }
+
+                tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+                attempt += 1;
+            }
+        }
+    }
+}
+
 fn jitter_factor(attempt: usize) -> f64 {
     // Deterministic +/-50% jitter derived from attempt.
     let mut x = (attempt as u64).wrapping_add(0x9e3779b97f4a7c15);
@@ -618,5 +657,40 @@ mod tests {
         let policy = RetryPolicy::default();
         let delay = compute_backoff_delay(&policy, 1, Some(120.0));
         assert!(delay.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retry_async_retries_retryable_error_and_succeeds() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let attempts = AtomicUsize::new(0);
+        let policy = RetryPolicy {
+            max_retries: 2,
+            jitter: false,
+            ..RetryPolicy::default()
+        };
+
+        let result = retry_async(&policy, || {
+            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+            async move {
+                if attempt == 0 {
+                    Err(SDKError::Provider(ProviderError {
+                        info: ErrorInfo::new("rate limited"),
+                        provider: "openai".to_string(),
+                        kind: ProviderErrorKind::RateLimit,
+                        status_code: Some(429),
+                        error_code: None,
+                        retryable: true,
+                        retry_after: Some(0.0),
+                        raw: None,
+                    }))
+                } else {
+                    Ok("ok")
+                }
+            }
+        })
+        .await;
+
+        assert_eq!(result.expect("result"), "ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
     }
 }

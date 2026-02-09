@@ -168,7 +168,9 @@ async fn client_complete_openai_responses_adapter_returns_response() {
     let adapter = OpenAIAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
     let response = client
         .complete(minimal_request("openai"))
         .await
@@ -199,7 +201,9 @@ async fn client_stream_openai_responses_adapter_emits_finish_event() {
     let adapter = OpenAIAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let mut stream = client
         .stream(minimal_request("openai"))
@@ -258,7 +262,9 @@ async fn client_complete_openai_compatible_adapter_returns_response() {
     let adapter = OpenAICompatibleAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let response = client
         .complete(minimal_request("openai-compatible"))
@@ -333,7 +339,9 @@ async fn generate_executes_tool_and_sends_function_call_output_to_openai_respons
     let adapter = OpenAIAdapter::new(config).expect("adapter");
 
     let mut client = Client::default();
-    client.register_provider(Arc::new(adapter));
+    client
+        .register_provider(Arc::new(adapter))
+        .expect("register provider");
 
     let mut options = GenerateOptions::new("gpt-5.2");
     options.provider = Some("openai".to_string());

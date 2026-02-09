@@ -12,6 +12,9 @@
 - [x] OpenAI response_format translation (`text`/`json`/`json_schema`): `crates/forge-llm/src/openai.rs`
 - [x] OpenAI `Retry-After` propagation to `ProviderError.retry_after`: `crates/forge-llm/src/openai.rs`
 - [x] Anthropic structured-output fallback hinting for `response_format`: `crates/forge-llm/src/anthropic.rs`
+- [x] Provider adapter optional lifecycle/capability hooks (`initialize`, `close`, `supports_tool_choice`): `crates/forge-llm/src/provider.rs`, `crates/forge-llm/src/client.rs`
+- [x] Canonical stream error signaling via `StreamEventType::Error`: `crates/forge-llm/src/stream.rs`, `crates/forge-llm/src/openai.rs`, `crates/forge-llm/src/anthropic.rs`
+- [x] `stream_object()` now uses real streaming deltas/events path: `crates/forge-llm/src/high_level.rs`
 
 ## 8.1 Provider Adapter Coverage
 - [x] OpenAI native Responses API adapter exists: `crates/forge-llm/src/openai.rs`

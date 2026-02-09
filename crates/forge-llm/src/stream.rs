@@ -88,3 +88,20 @@ pub struct StreamEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw: Option<serde_json::Value>,
 }
+
+impl StreamEvent {
+    pub fn error(error: SDKError) -> Self {
+        Self {
+            event_type: StreamEventTypeOrString::Known(StreamEventType::Error),
+            delta: None,
+            text_id: None,
+            reasoning_delta: None,
+            tool_call: None,
+            finish_reason: None,
+            usage: None,
+            response: None,
+            error: Some(error),
+            raw: None,
+        }
+    }
+}

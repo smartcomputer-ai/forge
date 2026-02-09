@@ -458,6 +458,17 @@ pub async fn stream(options: GenerateOptions) -> Result<StreamResult, SDKError> 
                 }
                 match item {
                     Ok(event) => {
+                        if event.event_type
+                            == StreamEventTypeOrString::Known(crate::stream::StreamEventType::Error)
+                        {
+                            let error = event.error.clone().unwrap_or_else(|| {
+                                SDKError::Stream(crate::errors::StreamError::new(
+                                    "stream terminated with error event",
+                                ))
+                            });
+                            let _ = tx.unbounded_send(Err(error));
+                            return;
+                        }
                         accumulator.process(&event);
                         let _ = tx.unbounded_send(Ok(event));
                     }
@@ -545,61 +556,66 @@ pub async fn stream_object(options: GenerateObjectOptions) -> Result<StreamObjec
         SDKError::NoObjectGenerated(NoObjectGeneratedError::new(error.to_string()))
     })?;
 
-    let result = generate_object(options).await?;
-    let text = result.text.clone();
-    let partial_objects = incremental_parse_objects(&text);
-    let object = result.output.clone().ok_or_else(|| {
-        SDKError::NoObjectGenerated(NoObjectGeneratedError::new(
-            "generate_object returned no output object",
-        ))
-    })?;
-    let response = result.response.clone();
-    let events = vec![
-        StreamEvent {
-            event_type: StreamEventTypeOrString::Known(crate::stream::StreamEventType::StreamStart),
-            delta: None,
-            text_id: None,
-            reasoning_delta: None,
-            tool_call: None,
-            finish_reason: None,
-            usage: None,
-            response: None,
-            error: None,
-            raw: None,
-        },
-        StreamEvent {
-            event_type: StreamEventTypeOrString::Known(crate::stream::StreamEventType::TextDelta),
-            delta: Some(text),
-            text_id: Some("text_0".to_string()),
-            reasoning_delta: None,
-            tool_call: None,
-            finish_reason: None,
-            usage: None,
-            response: None,
-            error: None,
-            raw: None,
-        },
-        StreamEvent {
-            event_type: StreamEventTypeOrString::Known(crate::stream::StreamEventType::Finish),
-            delta: None,
-            text_id: None,
-            reasoning_delta: None,
-            tool_call: None,
-            finish_reason: Some(response.finish_reason.clone()),
-            usage: Some(response.usage.clone()),
-            response: Some(response.clone()),
-            error: None,
-            raw: None,
-        },
-    ];
+    let mut generate_options = options.generate.clone();
+    generate_options.response_format = Some(ResponseFormat {
+        r#type: "json_schema".to_string(),
+        json_schema: Some(options.schema.clone()),
+        strict: options.strict,
+    });
+
+    let streamed = stream(generate_options).await?;
+    let mut provider_events = streamed.into_events();
+    let mut replay_items: Vec<Result<StreamEvent, SDKError>> = Vec::new();
+    let mut text_buffer = String::new();
+    let mut partial_objects = Vec::new();
+    let mut last_partial: Option<Value> = None;
+    let mut final_response: Option<Response> = None;
+
+    while let Some(item) = provider_events.next().await {
+        match &item {
+            Ok(event) => {
+                if event.event_type
+                    == StreamEventTypeOrString::Known(crate::stream::StreamEventType::TextDelta)
+                {
+                    if let Some(delta) = &event.delta {
+                        text_buffer.push_str(delta);
+                        for parsed in incremental_parse_objects(&text_buffer) {
+                            if last_partial.as_ref() != Some(&parsed) {
+                                last_partial = Some(parsed.clone());
+                                partial_objects.push(parsed);
+                            }
+                        }
+                    }
+                }
+                if event.event_type
+                    == StreamEventTypeOrString::Known(crate::stream::StreamEventType::Finish)
+                {
+                    final_response = event.response.clone();
+                }
+            }
+            Err(error) => return Err(error.clone()),
+        }
+        replay_items.push(item);
+    }
+
+    let response = if let Some(response) = final_response {
+        response
+    } else {
+        return Err(SDKError::NoObjectGenerated(NoObjectGeneratedError::new(
+            "stream ended without a final response",
+        )));
+    };
+
+    let object = parse_and_validate_object(&response.text(), &options.schema)?;
     let state = Arc::new(Mutex::new(StreamState {
         response: Some(response.clone()),
         partial_response: Some(response),
     }));
     let stream = StreamResult {
-        events: Box::pin(stream::iter(events.into_iter().map(Ok))),
+        events: Box::pin(stream::iter(replay_items.into_iter())),
         state,
     };
+
     Ok(StreamObjectResult {
         stream,
         partial_objects,
@@ -1072,6 +1088,11 @@ mod tests {
         }
     }
 
+    struct StreamingAdapter {
+        name: String,
+        events: Arc<Mutex<Vec<Result<StreamEvent, SDKError>>>>,
+    }
+
     #[async_trait]
     impl ProviderAdapter for QueueAdapter {
         fn name(&self) -> &str {
@@ -1099,7 +1120,31 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl ProviderAdapter for StreamingAdapter {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        async fn complete(&self, _request: Request) -> Result<Response, SDKError> {
+            Err(SDKError::Configuration(
+                crate::errors::ConfigurationError::new("not used in stream-object test"),
+            ))
+        }
+
+        async fn stream(&self, _request: Request) -> Result<StreamEventStream, SDKError> {
+            let items = self.events.lock().expect("events").clone();
+            Ok(Box::pin(stream::iter(items.into_iter())))
+        }
+    }
+
     fn build_client(adapter: Arc<QueueAdapter>) -> Arc<Client> {
+        let mut providers: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
+        providers.insert(adapter.name().to_string(), adapter);
+        Arc::new(Client::new(providers, Some("test".to_string()), Vec::new()))
+    }
+
+    fn build_stream_client(adapter: Arc<StreamingAdapter>) -> Arc<Client> {
         let mut providers: HashMap<String, Arc<dyn ProviderAdapter>> = HashMap::new();
         providers.insert(adapter.name().to_string(), adapter);
         Arc::new(Client::new(providers, Some("test".to_string()), Vec::new()))
@@ -1350,5 +1395,118 @@ mod tests {
 
         let error = generate(options).await.expect_err("expected timeout");
         assert!(matches!(error, SDKError::RequestTimeout(_)));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_object_replays_real_stream_deltas_and_parses_output() {
+        let response = Response {
+            id: "resp_obj".to_string(),
+            model: "model".to_string(),
+            provider: "test".to_string(),
+            message: Message::assistant("{\"name\":\"alice\"}"),
+            finish_reason: FinishReason {
+                reason: "stop".to_string(),
+                raw: None,
+            },
+            usage: usage(),
+            raw: None,
+            warnings: vec![],
+            rate_limit: None,
+        };
+        let events = vec![
+            Ok(StreamEvent {
+                event_type: StreamEventTypeOrString::Known(
+                    crate::stream::StreamEventType::StreamStart,
+                ),
+                delta: None,
+                text_id: None,
+                reasoning_delta: None,
+                tool_call: None,
+                finish_reason: None,
+                usage: None,
+                response: None,
+                error: None,
+                raw: None,
+            }),
+            Ok(StreamEvent {
+                event_type: StreamEventTypeOrString::Known(
+                    crate::stream::StreamEventType::TextDelta,
+                ),
+                delta: Some("{\"name\":".to_string()),
+                text_id: Some("text_0".to_string()),
+                reasoning_delta: None,
+                tool_call: None,
+                finish_reason: None,
+                usage: None,
+                response: None,
+                error: None,
+                raw: None,
+            }),
+            Ok(StreamEvent {
+                event_type: StreamEventTypeOrString::Known(
+                    crate::stream::StreamEventType::TextDelta,
+                ),
+                delta: Some("\"alice\"}".to_string()),
+                text_id: Some("text_0".to_string()),
+                reasoning_delta: None,
+                tool_call: None,
+                finish_reason: None,
+                usage: None,
+                response: None,
+                error: None,
+                raw: None,
+            }),
+            Ok(StreamEvent {
+                event_type: StreamEventTypeOrString::Known(crate::stream::StreamEventType::Finish),
+                delta: None,
+                text_id: None,
+                reasoning_delta: None,
+                tool_call: None,
+                finish_reason: Some(FinishReason {
+                    reason: "stop".to_string(),
+                    raw: None,
+                }),
+                usage: Some(usage()),
+                response: Some(response.clone()),
+                error: None,
+                raw: None,
+            }),
+        ];
+        let adapter = Arc::new(StreamingAdapter {
+            name: "test".to_string(),
+            events: Arc::new(Mutex::new(events)),
+        });
+
+        let mut generate_options = GenerateOptions::new("model");
+        generate_options.prompt = Some("hello".to_string());
+        generate_options.client = Some(build_stream_client(adapter));
+        let options = GenerateObjectOptions {
+            generate: generate_options,
+            schema: json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "required": ["name"]
+            }),
+            strict: true,
+        };
+
+        let result = stream_object(options).await.expect("stream_object");
+        assert_eq!(
+            result.object.get("name").and_then(Value::as_str),
+            Some("alice")
+        );
+        assert!(!result.partial_objects.is_empty());
+
+        let mut replay = result.stream.into_events();
+        let mut text_deltas = 0usize;
+        while let Some(item) = replay.next().await {
+            let event = item.expect("event");
+            if event.event_type
+                == StreamEventTypeOrString::Known(crate::stream::StreamEventType::TextDelta)
+            {
+                text_deltas += 1;
+            }
+        }
+        assert_eq!(text_deltas, 2);
     }
 }

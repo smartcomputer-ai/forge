@@ -177,18 +177,34 @@ impl ProviderAdapter for OpenAIAdapter {
 
         let mut byte_stream = response.bytes_stream();
         let (tx, rx) = mpsc::unbounded::<Result<StreamEvent, SDKError>>();
+        let stream_read_timeout = Duration::from_secs_f64(self.config.timeout.stream_read);
         tokio::spawn(async move {
             let mut parser = SseParser::new();
             let mut state = OpenAIStreamState::default();
             let mut tx = tx;
 
-            while let Some(item) = byte_stream.next().await {
+            loop {
+                let next_item =
+                    match tokio::time::timeout(stream_read_timeout, byte_stream.next()).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            let _ = send_terminal_stream_error(
+                                &mut tx,
+                                SDKError::Stream(StreamError::new("OpenAI stream read timed out")),
+                            );
+                            return;
+                        }
+                    };
+                let Some(item) = next_item else {
+                    break;
+                };
                 let bytes = match item {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(
-                            error.to_string(),
-                        ))));
+                        let _ = send_terminal_stream_error(
+                            &mut tx,
+                            SDKError::Stream(StreamError::new(error.to_string())),
+                        );
                         return;
                     }
                 };
@@ -205,6 +221,10 @@ impl ProviderAdapter for OpenAIAdapter {
         });
 
         Ok(Box::pin(rx))
+    }
+
+    fn supports_tool_choice(&self, mode: &str) -> bool {
+        matches!(mode, "auto" | "none" | "required" | "named")
     }
 }
 
@@ -329,17 +349,35 @@ impl ProviderAdapter for OpenAICompatibleAdapter {
 
         let mut byte_stream = response.bytes_stream();
         let (tx, rx) = mpsc::unbounded::<Result<StreamEvent, SDKError>>();
+        let stream_read_timeout = Duration::from_secs_f64(self.config.timeout.stream_read);
         tokio::spawn(async move {
             let mut parser = SseParser::new();
             let mut state = CompatibleStreamState::default();
             let mut tx = tx;
-            while let Some(item) = byte_stream.next().await {
+            loop {
+                let next_item =
+                    match tokio::time::timeout(stream_read_timeout, byte_stream.next()).await {
+                        Ok(item) => item,
+                        Err(_) => {
+                            let _ = send_terminal_stream_error(
+                                &mut tx,
+                                SDKError::Stream(StreamError::new(
+                                    "OpenAI-compatible stream read timed out",
+                                )),
+                            );
+                            return;
+                        }
+                    };
+                let Some(item) = next_item else {
+                    break;
+                };
                 let bytes = match item {
                     Ok(bytes) => bytes,
                     Err(error) => {
-                        let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(
-                            error.to_string(),
-                        ))));
+                        let _ = send_terminal_stream_error(
+                            &mut tx,
+                            SDKError::Stream(StreamError::new(error.to_string())),
+                        );
                         return;
                     }
                 };
@@ -356,6 +394,10 @@ impl ProviderAdapter for OpenAICompatibleAdapter {
         });
 
         Ok(Box::pin(rx))
+    }
+
+    fn supports_tool_choice(&self, mode: &str) -> bool {
+        matches!(mode, "auto" | "none" | "required" | "named")
     }
 }
 
@@ -393,10 +435,13 @@ fn process_openai_sse_events(
         let payload: Value = match serde_json::from_str(&event.data) {
             Ok(value) => value,
             Err(error) => {
-                let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(format!(
-                    "invalid OpenAI SSE event JSON: {}",
-                    error
-                )))));
+                let _ = send_terminal_stream_error(
+                    tx,
+                    SDKError::Stream(StreamError::new(format!(
+                        "invalid OpenAI SSE event JSON: {}",
+                        error
+                    ))),
+                );
                 return Err(());
             }
         };
@@ -659,7 +704,7 @@ fn process_openai_sse_events(
                 let parsed = match parse_responses_api_response(response_object, "openai", None) {
                     Ok(response) => response,
                     Err(error) => {
-                        let _ = tx.unbounded_send(Err(error));
+                        let _ = send_terminal_stream_error(tx, error);
                         return Err(());
                     }
                 };
@@ -725,10 +770,13 @@ fn process_compatible_sse_events(
         let payload: Value = match serde_json::from_str(data) {
             Ok(value) => value,
             Err(error) => {
-                let _ = tx.unbounded_send(Err(SDKError::Stream(StreamError::new(format!(
-                    "invalid compatible SSE JSON: {}",
-                    error
-                )))));
+                let _ = send_terminal_stream_error(
+                    tx,
+                    SDKError::Stream(StreamError::new(format!(
+                        "invalid compatible SSE JSON: {}",
+                        error
+                    ))),
+                );
                 return Err(());
             }
         };
@@ -994,6 +1042,16 @@ fn stream_event(kind: StreamEventType) -> StreamEvent {
         error: None,
         raw: None,
     }
+}
+
+fn send_terminal_stream_error(
+    tx: &mut mpsc::UnboundedSender<Result<StreamEvent, SDKError>>,
+    error: SDKError,
+) -> Result<(), ()> {
+    tx.unbounded_send(Ok(StreamEvent::error(error.clone())))
+        .map_err(|_| ())?;
+    let _ = error;
+    Ok(())
 }
 
 fn build_responses_body(request: &Request, stream: bool) -> Result<Value, SDKError> {
@@ -1984,6 +2042,37 @@ mod tests {
             .expect("complete");
         assert_eq!(response.text(), "hello from compatible");
         assert_eq!(response.usage.total_tokens, 7);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_stream_emits_error_event_and_then_closes() {
+        let sse_body = "event: response.created\ndata: {\"type\":\"response.created\"}\n\ndata: {not-json}\n\n"
+            .to_string();
+        let base_url =
+            spawn_single_response_server(200, "text/event-stream", sse_body, "/responses");
+        let mut config = OpenAIAdapterConfig::new("test-key");
+        config.base_url = base_url;
+        let adapter = OpenAIAdapter::new(config).expect("adapter");
+
+        let mut stream = adapter
+            .stream(minimal_request("openai"))
+            .await
+            .expect("stream");
+
+        // First event can be STREAM_START; advance until we hit error behavior.
+        let mut saw_error_event = false;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(event) => {
+                    if event.event_type == StreamEventTypeOrString::Known(StreamEventType::Error) {
+                        saw_error_event = true;
+                    }
+                }
+                Err(_) => panic!("did not expect terminal Err after error event"),
+            }
+        }
+
+        assert!(saw_error_event);
     }
 
     #[test]
