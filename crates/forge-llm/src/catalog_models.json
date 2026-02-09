@@ -39,9 +39,9 @@
     "aliases": ["gpt5", "gpt-5"]
   },
   {
-    "id": "gpt-5.2-mini",
+    "id": "gpt-5-mini",
     "provider": "openai",
-    "display_name": "GPT-5.2 Mini",
+    "display_name": "GPT-5 Mini",
     "context_window": 1047576,
     "max_output": null,
     "supports_tools": true,

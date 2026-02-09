@@ -1,5 +1,8 @@
 # P11: Cross-Provider Tests and DoD Matrix
 
+**Status**
+- In progress (2026-02-09)
+
 **Goal**
 Validate parity across providers and ensure the Definition of Done checklist is executable.
 
@@ -19,3 +22,19 @@ Validate parity across providers and ensure the Definition of Done checklist is 
 **Acceptance**
 - All tests run in parallel safely and deterministically.
 - DoD items are represented as tests or checklist entries with clear mapping.
+
+**Completed (Partial)**
+1. Added crate-level integration test suite path at `crates/forge-llm/tests/`.
+2. Added mocked OpenAI integration tests at `crates/forge-llm/tests/openai_integration_mocked.rs` covering:
+   - OpenAI Responses complete path through `Client`.
+   - OpenAI Responses stream path through `Client`.
+   - OpenAI-compatible Chat Completions complete path through `Client`.
+3. Added optional live OpenAI integration tests at `crates/forge-llm/tests/openai_live.rs` with `#[ignore]` + env gating (`RUN_LIVE_OPENAI_TESTS=1`, `OPENAI_API_KEY`).
+4. Expanded live OpenAI Responses coverage with:
+   - reasoning token usage field assertions,
+   - low `max_output_tokens` truncation -> finish reason mapping,
+   - stream text-delta + terminal finish assertions (with transient retry handling),
+   - invalid-model error mapping assertions (`400` + `model_not_found` + `InvalidRequest`).
+5. Added additional live Responses checks for:
+   - stream truncation path (`length` finish reason under low token caps),
+   - required tool-choice path producing tool calls (`finish_reason = tool_calls`).
