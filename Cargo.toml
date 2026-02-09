@@ -1,5 +1,6 @@
 [workspace]
 members = [
     "crates/forge-llm",
+    "crates/forge-agent",
 ]
 resolver = "2"

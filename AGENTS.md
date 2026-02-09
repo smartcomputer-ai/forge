@@ -14,6 +14,7 @@ When making changes, align behavior and terminology to these documents first.
 - Workspace root: `Cargo.toml` (workspace only)
 - Crates:
   - `crates/forge-llm/` — unified LLM client library (primary target for spec/01-unified-llm-spec.md)
+  - `crates/forge-agent/` — coding agent loop library (primary target for spec/02-coding-agent-loop-spec.md)
 
 ## Test Strategy (Concise, Deterministic)
 
@@ -34,5 +35,4 @@ When modifying specs or architecture:
 4. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
 
 The specs in `spec/` are the source of truth. This file is just an index.
-
 
