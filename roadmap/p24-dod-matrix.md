@@ -1,50 +1,50 @@
 # P24 DoD Matrix (Spec Section 9)
 
 **Status**
-- Planned (2026-02-09)
+- In progress (2026-02-09)
 
 This matrix is populated as implementation milestones complete.
 
 ## 9.1 Core Loop
-- [ ] Session creation with ProviderProfile + ExecutionEnvironment
-- [ ] `process_input()` loop implemented (LLM call -> tool execution -> repeat)
-- [ ] Natural completion on text-only response
-- [ ] Per-input round limits enforced
-- [ ] Session-level turn limits enforced
-- [ ] Abort handling closes loop and transitions state
+- [x] Session creation with ProviderProfile + ExecutionEnvironment (`crates/forge-agent/src/session.rs`)
+- [x] `process_input()` loop implemented (LLM call -> tool execution -> repeat) (`crates/forge-agent/src/session.rs`)
+- [x] Natural completion on text-only response (`crates/forge-agent/src/session.rs`)
+- [x] Per-input round limits enforced (`crates/forge-agent/src/session.rs`)
+- [x] Session-level turn limits enforced (`crates/forge-agent/src/session.rs`)
+- [x] Abort handling closes loop and transitions state (`crates/forge-agent/src/session.rs`)
 - [ ] Loop detection warning steering turn
-- [ ] Multiple sequential inputs supported
+- [x] Multiple sequential inputs supported (`crates/forge-agent/src/session.rs`)
 
 ## 9.2 Provider Profiles
 - [ ] OpenAI profile with codex-aligned tools (`apply_patch`)
 - [ ] Anthropic profile with Claude-aligned tools (`edit_file`)
 - [ ] Gemini profile with gemini-cli-aligned tools
 - [ ] Provider-specific base system prompts in place
-- [ ] Custom tool extension supported
-- [ ] Tool name collision behavior is latest-wins
+- [x] Custom tool extension supported (`crates/forge-agent/src/tools.rs`, `crates/forge-agent/src/profiles.rs`)
+- [x] Tool name collision behavior is latest-wins (`crates/forge-agent/src/tools.rs`)
 
 ## 9.3 Tool Execution
-- [ ] Registry-based dispatch
-- [ ] Unknown tools returned as tool error results
-- [ ] JSON argument parsing + schema validation
-- [ ] Tool execution exceptions returned as `is_error=true`
-- [ ] Parallel execution works where supported
+- [x] Registry-based dispatch (`crates/forge-agent/src/tools.rs`)
+- [x] Unknown tools returned as tool error results (`crates/forge-agent/src/tools.rs`)
+- [x] JSON argument parsing + schema validation (`crates/forge-agent/src/tools.rs`)
+- [x] Tool execution exceptions returned as `is_error=true` (`crates/forge-agent/src/tools.rs`)
+- [x] Parallel execution works where supported (`crates/forge-agent/src/tools.rs`)
 
 ## 9.4 Execution Environment
-- [ ] LocalExecutionEnvironment implements required operations
-- [ ] Default timeout is 10s
-- [ ] Per-call timeout override supported
-- [ ] Timeout escalation SIGTERM -> 2s wait -> SIGKILL
-- [ ] Sensitive env var filtering defaults applied
-- [ ] Custom environment implementations possible via interface
+- [x] LocalExecutionEnvironment implements required operations (`crates/forge-agent/src/execution.rs`)
+- [x] Default timeout is 10s (`crates/forge-agent/src/execution.rs`)
+- [x] Per-call timeout override supported (`crates/forge-agent/src/execution.rs`)
+- [x] Timeout escalation SIGTERM -> 2s wait -> SIGKILL (`crates/forge-agent/src/execution.rs`)
+- [x] Sensitive env var filtering defaults applied (`crates/forge-agent/src/execution.rs`)
+- [x] Custom environment implementations possible via interface (`crates/forge-agent/src/execution.rs`)
 
 ## 9.5 Tool Output Truncation
-- [ ] Character truncation runs first for all outputs
-- [ ] Line truncation runs second when configured
-- [ ] Warning marker includes removed amount
-- [ ] `TOOL_CALL_END` includes full untruncated output
-- [ ] Default tool character limits match spec
-- [ ] Limits overridable via config
+- [x] Character truncation runs first for all outputs (`crates/forge-agent/src/truncation.rs`)
+- [x] Line truncation runs second when configured (`crates/forge-agent/src/truncation.rs`)
+- [x] Warning marker includes removed amount (`crates/forge-agent/src/truncation.rs`)
+- [x] `TOOL_CALL_END` includes full untruncated output (`crates/forge-agent/src/tools.rs`)
+- [x] Default tool character limits match spec (`crates/forge-agent/src/config.rs`)
+- [x] Limits overridable via config (`crates/forge-agent/src/config.rs`)
 
 ## 9.6 Steering
 - [ ] `steer()` queue injection between tool rounds
@@ -53,7 +53,7 @@ This matrix is populated as implementation milestones complete.
 - [ ] Steering turns converted to user-role messages
 
 ## 9.7 Reasoning Effort
-- [ ] `reasoning_effort` passed to request
+- [x] `reasoning_effort` passed to request (`crates/forge-agent/src/session.rs`)
 - [ ] Mid-session changes apply on next call
 - [ ] Supported values covered by validation/tests
 
@@ -75,14 +75,14 @@ This matrix is populated as implementation milestones complete.
 
 ## 9.10 Event System
 - [ ] All Section 2.9 event kinds emitted
-- [ ] Events consumable via async stream/iterator
-- [ ] `TOOL_CALL_END` carries full output
-- [ ] `SESSION_START` and `SESSION_END` emitted correctly
+- [x] Events consumable via async stream/iterator (`crates/forge-agent/src/events.rs`)
+- [x] `TOOL_CALL_END` carries full output (`crates/forge-agent/src/tools.rs`)
+- [x] `SESSION_START` and `SESSION_END` emitted correctly (`crates/forge-agent/src/session.rs`)
 
 ## 9.11 Error Handling
-- [ ] Tool errors return recoverable tool results
-- [ ] Transient provider errors rely on SDK retry layer
-- [ ] Authentication errors close session without retry
+- [x] Tool errors return recoverable tool results (`crates/forge-agent/src/tools.rs`)
+- [x] Transient provider errors rely on SDK retry layer (`crates/forge-agent/src/session.rs`, `crates/forge-llm/src/client.rs`)
+- [x] Authentication errors close session without retry (`crates/forge-agent/src/session.rs`)
 - [ ] Context usage warnings emitted
 - [ ] Graceful shutdown sequence implemented
 
