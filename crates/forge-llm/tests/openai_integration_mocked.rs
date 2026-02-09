@@ -193,8 +193,7 @@ async fn client_stream_openai_responses_adapter_emits_finish_event() {
     )
     .to_string();
 
-    let base_url =
-        spawn_single_response_server(200, "text/event-stream", sse_body, "/responses");
+    let base_url = spawn_single_response_server(200, "text/event-stream", sse_body, "/responses");
     let mut config = OpenAIAdapterConfig::new("test-key");
     config.base_url = base_url;
     let adapter = OpenAIAdapter::new(config).expect("adapter");
@@ -218,7 +217,11 @@ async fn client_stream_openai_responses_adapter_emits_finish_event() {
         if event.event_type == StreamEventTypeOrString::Known(StreamEventType::Finish) {
             saw_finish = true;
             assert_eq!(
-                event.response.as_ref().map(|response| response.text()).as_deref(),
+                event
+                    .response
+                    .as_ref()
+                    .map(|response| response.text())
+                    .as_deref(),
                 Some("Hello")
             );
             break;
@@ -250,8 +253,7 @@ async fn client_complete_openai_compatible_adapter_returns_response() {
     })
     .to_string();
 
-    let base_url =
-        spawn_single_response_server(200, "application/json", body, "/chat/completions");
+    let base_url = spawn_single_response_server(200, "application/json", body, "/chat/completions");
     let config = OpenAICompatibleAdapterConfig::new("test-key", base_url);
     let adapter = OpenAICompatibleAdapter::new(config).expect("adapter");
 
@@ -319,7 +321,10 @@ async fn generate_executes_tool_and_sends_function_call_output_to_openai_respons
                 status: 200,
                 content_type: "application/json",
                 body: second_body,
-                must_contain: vec!["\"type\":\"function_call_output\"", "\"call_id\":\"call_1\""],
+                must_contain: vec![
+                    "\"type\":\"function_call_output\"",
+                    "\"call_id\":\"call_1\"",
+                ],
             },
         ],
     );
@@ -347,8 +352,14 @@ async fn generate_executes_tool_and_sends_function_call_output_to_openai_respons
             "required": ["x", "y"]
         }),
         |arguments| async move {
-            let x = arguments.get("x").and_then(|value| value.as_i64()).unwrap_or(0);
-            let y = arguments.get("y").and_then(|value| value.as_i64()).unwrap_or(0);
+            let x = arguments
+                .get("x")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
+            let y = arguments
+                .get("y")
+                .and_then(|value| value.as_i64())
+                .unwrap_or(0);
             Ok(json!({ "sum": x + y }))
         },
     )];

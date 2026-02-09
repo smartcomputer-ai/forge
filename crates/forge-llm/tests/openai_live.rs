@@ -51,14 +51,13 @@ fn parse_dotenv_value(contents: &str, key: &str) -> Option<String> {
             continue;
         }
         let value = value.trim();
-        let unquoted =
-            if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
-                || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
-            {
-                &value[1..value.len() - 1]
-            } else {
-                value
-            };
+        let unquoted = if (value.starts_with('"') && value.ends_with('"') && value.len() >= 2)
+            || (value.starts_with('\'') && value.ends_with('\'') && value.len() >= 2)
+        {
+            &value[1..value.len() - 1]
+        } else {
+            value
+        };
         if !unquoted.is_empty() {
             return Some(unquoted.to_string());
         }
@@ -178,7 +177,10 @@ async fn complete_with_retries(client: &Client, request: Request) -> Result<Resp
     }))
 }
 
-async fn stream_finish_with_retries(client: &Client, request: Request) -> Result<(bool, Response), SDKError> {
+async fn stream_finish_with_retries(
+    client: &Client,
+    request: Request,
+) -> Result<(bool, Response), SDKError> {
     let mut last_error: Option<SDKError> = None;
 
     for attempt in 0..LIVE_RETRIES {
@@ -198,7 +200,11 @@ async fn stream_finish_with_retries(client: &Client, request: Request) -> Result
         loop {
             let next = timeout(Duration::from_secs(90), stream.next())
                 .await
-                .map_err(|_| SDKError::Stream(forge_llm::StreamError::new("timed out waiting for live stream event")))?;
+                .map_err(|_| {
+                    SDKError::Stream(forge_llm::StreamError::new(
+                        "timed out waiting for live stream event",
+                    ))
+                })?;
 
             let Some(event_result) = next else {
                 break;
@@ -211,9 +217,7 @@ async fn stream_finish_with_retries(client: &Client, request: Request) -> Result
                     {
                         saw_text_delta = true;
                     }
-                    if event.event_type
-                        == StreamEventTypeOrString::Known(StreamEventType::Finish)
-                    {
+                    if event.event_type == StreamEventTypeOrString::Known(StreamEventType::Finish) {
                         if let Some(response) = event.response {
                             return Ok((saw_text_delta, response));
                         }
@@ -349,9 +353,10 @@ async fn openai_live_stream_low_max_tokens_maps_length_finish_reason() {
         return;
     };
 
-    let (_saw_text_delta, response) = stream_finish_with_retries(&client, low_token_long_output_request(16))
-        .await
-        .expect("openai live stream with low max tokens");
+    let (_saw_text_delta, response) =
+        stream_finish_with_retries(&client, low_token_long_output_request(16))
+            .await
+            .expect("openai live stream with low max tokens");
 
     assert_eq!(response.provider, "openai");
     assert_eq!(response.finish_reason.reason, "length");
@@ -458,9 +463,7 @@ async fn openai_live_stream_required_tool_choice_emits_tool_call_events() {
                                 .map(ToString::to_string);
                         }
                     }
-                    if event.event_type
-                        == StreamEventTypeOrString::Known(StreamEventType::Finish)
-                    {
+                    if event.event_type == StreamEventTypeOrString::Known(StreamEventType::Finish) {
                         saw_finish = true;
                         break;
                     }
