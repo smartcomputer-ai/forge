@@ -159,7 +159,7 @@
   - Added mime detection for common image binaries (PNG/JPEG/GIF/WEBP/BMP) for clearer model-facing errors.
   - Added unit tests covering generic binary files and PNG image binaries.
 
-### G8. Add fuzzy fallback for `edit_file` / `apply_patch` mismatch recovery
+### [x] G8. Add fuzzy fallback for `edit_file` / `apply_patch` mismatch recovery
 - Spec refs: 3.3 `edit_file` behavior, Appendix A hunk matching
 - Current gap:
   - Matching is exact only.
@@ -171,6 +171,17 @@
   - `crates/forge-agent/tests/conformance_runtime_behaviors.rs`
 - DoD:
   - Fuzzy fallback succeeds on targeted fixtures without regressing exact-match determinism.
+- Completed:
+  - Added a dedicated `src/patch/` module and moved patch/edit core logic out of `tools.rs`.
+  - Implemented bounded fuzzy fallback for `edit_file` when exact `old_string` matching fails:
+    - whitespace-tolerant matching,
+    - Unicode quote/dash equivalence handling,
+    - deterministic ambiguity errors when multiple fuzzy matches exist.
+  - Implemented bounded fuzzy fallback for `apply_patch` hunk matching:
+    - exact match first,
+    - normalized-line fallback (whitespace + Unicode punctuation normalization),
+    - explicit ambiguity/failure errors.
+  - Added regression tests for `edit_file` fuzzy whitespace recovery and `apply_patch` fuzzy hunk recovery.
 
 ## Cross-provider test gaps to add
 - Add missing parity case from 9.12:
