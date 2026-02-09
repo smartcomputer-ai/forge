@@ -83,7 +83,7 @@ This matrix is populated as implementation milestones complete.
 - [x] Tool errors return recoverable tool results (`crates/forge-agent/src/tools.rs`)
 - [x] Transient provider errors rely on SDK retry layer (`crates/forge-agent/src/session.rs`, `crates/forge-llm/src/client.rs`)
 - [x] Authentication errors close session without retry (`crates/forge-agent/src/session.rs`)
-- [ ] Context usage warnings emitted
+- [x] Context usage warnings emitted (`crates/forge-agent/src/session.rs`, `crates/forge-agent/src/events.rs`)
 - [ ] Graceful shutdown sequence implemented
 
 ## 9.12 Cross-Provider Parity Matrix

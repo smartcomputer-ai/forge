@@ -662,4 +662,53 @@ mod tests {
         assert_eq!(events[1].data.get_str("call_id"), Some("call-1"));
         assert_eq!(events[1].data.get_str("output"), Some("done"));
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn dispatch_returns_truncated_result_to_llm_but_emits_full_output_event() {
+        let full_output = "x".repeat(40_000);
+        let mut registry = ToolRegistry::default();
+        registry.register(command_tool(Arc::new(move |_args, _env| {
+            let full_output = full_output.clone();
+            Box::pin(async move { Ok(full_output) })
+        })));
+
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: "shell".to_string(),
+                    arguments: serde_json::json!({"command": "echo hi"}),
+                    raw_arguments: None,
+                }],
+                Arc::new(TestExecutionEnvironment::default()),
+                &SessionConfig::default(),
+                emitter.clone(),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        let llm_output = results[0]
+            .content
+            .as_str()
+            .expect("output should be a string");
+        assert!(llm_output.contains("[WARNING: Tool output was truncated."));
+        assert!(llm_output.chars().count() < 40_000);
+
+        let events = emitter.snapshot();
+        let end_event = events
+            .iter()
+            .find(|event| event.kind == EventKind::ToolCallEnd)
+            .expect("tool end event should be present");
+        let event_output = end_event
+            .data
+            .get_str("output")
+            .expect("output field should be present");
+        assert_eq!(event_output.chars().count(), 40_000);
+        assert!(event_output.chars().all(|ch| ch == 'x'));
+    }
 }

@@ -271,6 +271,7 @@ impl Session {
 
         let mut round_count = 0usize;
         let mut completed_naturally = false;
+        let mut context_warning_emitted = false;
         loop {
             if self.abort_requested {
                 self.transition_to(SessionState::Closed)?;
@@ -291,6 +292,10 @@ impl Session {
                     }))?,
                 )?;
                 break;
+            }
+
+            if !context_warning_emitted {
+                context_warning_emitted = self.emit_context_usage_warning_if_needed()?;
             }
 
             let request = self.build_request();
@@ -430,6 +435,29 @@ impl Session {
         self.event_emitter
             .emit(SessionEvent::loop_detection(self.id.clone(), warning))?;
         Ok(())
+    }
+
+    fn emit_context_usage_warning_if_needed(&self) -> Result<bool, AgentError> {
+        let context_window_size = self.provider_profile.capabilities().context_window_size;
+        if context_window_size == 0 {
+            return Ok(false);
+        }
+
+        let approx_tokens = approximate_context_tokens(&self.history);
+        let warning_threshold = context_window_size.saturating_mul(8) / 10;
+        if approx_tokens <= warning_threshold {
+            return Ok(false);
+        }
+
+        let usage_percent = ((approx_tokens as f64 / context_window_size as f64) * 100.0).round();
+        self.event_emitter
+            .emit(SessionEvent::context_usage_warning(
+                self.id.clone(),
+                approx_tokens,
+                context_window_size,
+                usage_percent as usize,
+            ))?;
+        Ok(true)
     }
 
     fn build_request(&self) -> Request {
@@ -642,6 +670,43 @@ fn tool_call_signature(tool_call: &forge_llm::ToolCall) -> u64 {
         raw_arguments.hash(&mut hasher);
     }
     hasher.finish()
+}
+
+fn approximate_context_tokens(history: &[Turn]) -> usize {
+    total_chars_in_history(history) / 4
+}
+
+fn total_chars_in_history(history: &[Turn]) -> usize {
+    history
+        .iter()
+        .map(|turn| match turn {
+            Turn::User(turn) => turn.content.chars().count(),
+            Turn::Assistant(turn) => {
+                let mut chars = turn.content.chars().count();
+                if let Some(reasoning) = &turn.reasoning {
+                    chars += reasoning.chars().count();
+                }
+                for tool_call in &turn.tool_calls {
+                    chars += tool_call.id.chars().count();
+                    chars += tool_call.name.chars().count();
+                    chars += tool_call.arguments.to_string().chars().count();
+                    if let Some(raw) = &tool_call.raw_arguments {
+                        chars += raw.chars().count();
+                    }
+                }
+                chars
+            }
+            Turn::ToolResults(turn) => turn
+                .results
+                .iter()
+                .map(|result| {
+                    result.tool_call_id.chars().count() + result.content.to_string().chars().count()
+                })
+                .sum(),
+            Turn::System(turn) => turn.content.chars().count(),
+            Turn::Steering(turn) => turn.content.chars().count(),
+        })
+        .sum()
 }
 
 #[cfg(test)]
@@ -1214,5 +1279,80 @@ mod tests {
             err,
             AgentError::Session(SessionError::InvalidConfiguration(_))
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submit_emits_context_usage_warning_event_when_history_exceeds_threshold() {
+        let (client, _requests) = build_test_client(vec![text_response("resp-1", "done")]);
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities {
+                context_window_size: 10,
+                ..ProviderCapabilities::default()
+            },
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session = Session::new_with_emitter(
+            profile,
+            env,
+            client,
+            SessionConfig::default(),
+            emitter.clone(),
+        )
+        .expect("new session");
+
+        session
+            .submit("x".repeat(64))
+            .await
+            .expect("submit should succeed");
+
+        let events = emitter.snapshot();
+        let warning = events
+            .iter()
+            .find(|event| {
+                event.kind == EventKind::Error
+                    && event.data.get_str("category") == Some("context_usage")
+            })
+            .expect("context usage warning event should be emitted");
+        assert_eq!(warning.data.get_str("severity"), Some("warning"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submit_does_not_emit_context_usage_warning_when_usage_is_below_threshold() {
+        let (client, _requests) = build_test_client(vec![text_response("resp-1", "done")]);
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "system".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities {
+                context_window_size: 8_000,
+                ..ProviderCapabilities::default()
+            },
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session = Session::new_with_emitter(
+            profile,
+            env,
+            client,
+            SessionConfig::default(),
+            emitter.clone(),
+        )
+        .expect("new session");
+
+        session.submit("hi").await.expect("submit should succeed");
+
+        let events = emitter.snapshot();
+        assert!(!events.iter().any(|event| {
+            event.kind == EventKind::Error
+                && event.data.get_str("category") == Some("context_usage")
+        }));
     }
 }

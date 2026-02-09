@@ -204,6 +204,25 @@ impl SessionEvent {
         data.insert_string("message", message);
         Self::new(EventKind::Error, session_id, data)
     }
+
+    pub fn context_usage_warning(
+        session_id: impl Into<String>,
+        approx_tokens: usize,
+        context_window_size: usize,
+        usage_percent: usize,
+    ) -> Self {
+        let mut data = EventData::new();
+        data.insert_string(
+            "message",
+            format!("Context usage at ~{}% of context window", usage_percent),
+        );
+        data.insert_string("severity", "warning");
+        data.insert_string("category", "context_usage");
+        data.insert_u64("approx_tokens", approx_tokens as u64);
+        data.insert_u64("context_window_size", context_window_size as u64);
+        data.insert_u64("usage_percent", usage_percent as u64);
+        Self::new(EventKind::Error, session_id, data)
+    }
 }
 
 pub trait EventEmitter: Send + Sync {
@@ -343,6 +362,11 @@ mod tests {
         let text = SessionEvent::assistant_text_end("s1", "done", Some("analysis"));
         assert_eq!(text.data.get_str("text"), Some("done"));
         assert_eq!(text.data.get_str("reasoning"), Some("analysis"));
+
+        let warning = SessionEvent::context_usage_warning("s1", 100, 128_000, 81);
+        assert_eq!(warning.kind, EventKind::Error);
+        assert_eq!(warning.data.get_str("severity"), Some("warning"));
+        assert_eq!(warning.data.get_str("category"), Some("context_usage"));
     }
 
     #[test]
