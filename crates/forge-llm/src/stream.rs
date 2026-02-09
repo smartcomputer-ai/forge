@@ -2,10 +2,16 @@
 //!
 //! Implemented in P02 and P04.
 
+use std::pin::Pin;
+
+use futures::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::errors::SDKError;
 use crate::types::{FinishReason, Response, ToolCall, Usage};
+
+/// Stream of unified events returned by provider adapters.
+pub type StreamEventStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, SDKError>> + Send>>;
 
 /// Stream event type discriminator.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

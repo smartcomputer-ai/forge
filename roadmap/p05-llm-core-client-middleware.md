@@ -1,5 +1,8 @@
 # P05: Core Client + Middleware
 
+**Status**
+- Done (2026-02-09)
+
 **Goal**
 Implement the provider routing client and middleware system.
 
