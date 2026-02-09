@@ -1,5 +1,8 @@
 # P04: Provider Utilities
 
+**Status**
+- Done (2026-02-09)
+
 **Goal**
 Build shared utilities required by provider adapters and streaming.
 
