@@ -1,5 +1,8 @@
 # P02: Core Data Model
 
+**Status**
+- Done (2026-02-09)
+
 **Goal**
 Implement the unified data model types that form the stable contract across providers.
 

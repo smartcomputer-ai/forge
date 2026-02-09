@@ -1,5 +1,7 @@
 # P01: LLM Workspace + Crate Foundation
 
+_Complete_
+
 **Goal**
 Establish the workspace layout and a standalone `forge-llm` crate as the primary implementation target for the unified LLM spec.
 
