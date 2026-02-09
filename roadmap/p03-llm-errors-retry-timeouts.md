@@ -1,5 +1,8 @@
 # P03: Errors, Retry, Timeouts
 
+**Status**
+- Done (2026-02-09)
+
 **Goal**
 Implement the unified error taxonomy, retry policy, and timeout structures as specified.
 
