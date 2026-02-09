@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -225,11 +226,20 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
         limit: Option<usize>,
     ) -> Result<String, AgentError> {
         let path = self.resolve_path(path);
-        let content = tokio::fs::read_to_string(&path).await.map_err(|error| {
+        let raw = tokio::fs::read(&path).await.map_err(|error| {
             AgentError::ExecutionEnvironment(format!(
                 "failed to read '{}': {}",
                 path.display(),
                 error
+            ))
+        })?;
+        let content = String::from_utf8(raw.clone()).map_err(|_| {
+            let mime = detect_binary_mime_type(&path, &raw);
+            AgentError::ExecutionEnvironment(format!(
+                "[BINARY_FILE] path='{}' mime='{}' bytes={}. read_file supports UTF-8 text files only.",
+                path.display(),
+                mime,
+                raw.len()
             ))
         })?;
 
@@ -564,6 +574,35 @@ impl ExecutionEnvironment for LocalExecutionEnvironment {
         }
         Ok(())
     }
+}
+
+fn detect_binary_mime_type(path: &Path, bytes: &[u8]) -> &'static str {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+        || path.extension() == Some(OsStr::new("png"))
+    {
+        return "image/png";
+    }
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || path.extension() == Some(OsStr::new("jpg"))
+        || path.extension() == Some(OsStr::new("jpeg"))
+    {
+        return "image/jpeg";
+    }
+    if bytes.starts_with(b"GIF87a")
+        || bytes.starts_with(b"GIF89a")
+        || path.extension() == Some(OsStr::new("gif"))
+    {
+        return "image/gif";
+    }
+    if bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP"
+        || path.extension() == Some(OsStr::new("webp"))
+    {
+        return "image/webp";
+    }
+    if bytes.starts_with(b"BM") || path.extension() == Some(OsStr::new("bmp")) {
+        return "image/bmp";
+    }
+    "application/octet-stream"
 }
 
 #[cfg(unix)]
@@ -923,6 +962,47 @@ mod tests {
         assert!(result.timed_out);
         assert!(result.stdout.contains("begin"));
         assert!(result.stderr.contains("Command timed out after 150ms"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_file_returns_structured_error_for_binary_content() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = LocalExecutionEnvironment::new(dir.path());
+        let path = dir.path().join("blob.bin");
+        tokio::fs::write(&path, [0x00_u8, 0xFF, 0x10, 0x80])
+            .await
+            .expect("binary file should be written");
+
+        let err = env
+            .read_file("blob.bin", None, None)
+            .await
+            .expect_err("binary read should fail");
+        let message = err.to_string();
+        assert!(message.contains("[BINARY_FILE]"));
+        assert!(message.contains("application/octet-stream"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn read_file_returns_image_mime_for_png_binary_content() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = LocalExecutionEnvironment::new(dir.path());
+        let path = dir.path().join("pixel.png");
+        tokio::fs::write(
+            &path,
+            [
+                0x89_u8, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0xFF, 0x00,
+            ],
+        )
+        .await
+        .expect("png bytes should be written");
+
+        let err = env
+            .read_file("pixel.png", None, None)
+            .await
+            .expect_err("png read should fail as non-utf8");
+        let message = err.to_string();
+        assert!(message.contains("[BINARY_FILE]"));
+        assert!(message.contains("image/png"));
     }
 
     #[test]

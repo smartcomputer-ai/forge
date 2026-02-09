@@ -141,7 +141,7 @@
 
 ## Priority 2 (Quality and edge cases)
 
-### G7. Improve `read_file` multimodal/binary behavior
+### [x] G7. Improve `read_file` multimodal/binary behavior
 - Spec refs: 3.3 `read_file`
 - Current gap:
   - `read_file` assumes UTF-8 text and fails on binary/image files.
@@ -153,6 +153,11 @@
   - tests in `crates/forge-agent/src/execution.rs` and/or integration
 - DoD:
   - Binary/image read path is deterministic and tested.
+- Completed:
+  - Switched `LocalExecutionEnvironment::read_file` to byte-based reads with UTF-8 decoding.
+  - Added deterministic binary-file detection and structured error payloads (`[BINARY_FILE]` with path/mime/bytes).
+  - Added mime detection for common image binaries (PNG/JPEG/GIF/WEBP/BMP) for clearer model-facing errors.
+  - Added unit tests covering generic binary files and PNG image binaries.
 
 ### G8. Add fuzzy fallback for `edit_file` / `apply_patch` mismatch recovery
 - Spec refs: 3.3 `edit_file` behavior, Appendix A hunk matching
