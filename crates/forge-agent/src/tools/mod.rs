@@ -12,7 +12,10 @@ use crate::{SessionConfig, ToolError};
 use forge_llm::{ToolCall, ToolResult};
 use serde_json::Value;
 
-pub use registry::{RegisteredTool, ToolDispatchOptions, ToolExecutor, ToolFuture, ToolRegistry};
+pub use registry::{
+    RegisteredTool, ToolCallHook, ToolDispatchOptions, ToolExecutor, ToolFuture, ToolHookContext,
+    ToolPostHookContext, ToolPreHookOutcome, ToolRegistry,
+};
 
 pub const READ_FILE_TOOL: &str = "read_file";
 pub const WRITE_FILE_TOOL: &str = "write_file";
@@ -600,6 +603,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -646,6 +651,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -692,6 +699,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -769,6 +778,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: true,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -807,6 +818,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -849,6 +862,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -899,6 +914,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -933,6 +950,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -987,6 +1006,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1029,6 +1050,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1068,6 +1091,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1132,6 +1157,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1208,6 +1235,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await

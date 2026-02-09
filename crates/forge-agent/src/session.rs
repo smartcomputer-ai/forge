@@ -1,8 +1,8 @@
 use crate::{
     AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
     ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
-    SessionError, SessionEvent, SteeringTurn, ToolDispatchOptions, ToolError, ToolResultTurn,
-    ToolResultsTurn, Turn, UserTurn, truncate_tool_output,
+    SessionError, SessionEvent, SteeringTurn, ToolCallHook, ToolDispatchOptions, ToolError,
+    ToolResultTurn, ToolResultsTurn, Turn, UserTurn, truncate_tool_output,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
@@ -20,6 +20,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SubmitOptions {
+    pub provider: Option<String>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub system_prompt_override: Option<String>,
+    pub provider_options: Option<Value>,
+    pub metadata: Option<HashMap<String, String>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubmitResult {
+    pub final_state: SessionState,
+    pub assistant_text: String,
+    pub tool_call_count: usize,
+    pub tool_error_count: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SessionCheckpoint {
+    pub session_id: String,
+    pub state: SessionState,
+    pub history: Vec<Turn>,
+    pub steering_queue: Vec<String>,
+    pub followup_queue: Vec<String>,
+    pub config: SessionConfig,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -294,9 +322,8 @@ pub struct SubAgentResult {
 pub struct Session {
     id: String,
     provider_profile: Arc<dyn ProviderProfile>,
+    provider_profiles: HashMap<String, Arc<dyn ProviderProfile>>,
     execution_env: Arc<dyn ExecutionEnvironment>,
-    environment_context: EnvironmentContext,
-    project_docs: Vec<ProjectDocument>,
     history: Vec<Turn>,
     event_emitter: Arc<dyn EventEmitter>,
     config: SessionConfig,
@@ -309,6 +336,7 @@ pub struct Session {
     subagent_depth: usize,
     abort_requested: Arc<AtomicBool>,
     abort_notify: Arc<Notify>,
+    tool_call_hook: Option<Arc<dyn ToolCallHook>>,
 }
 
 #[derive(Clone)]
@@ -365,19 +393,14 @@ impl Session {
         event_emitter: Arc<dyn EventEmitter>,
         subagent_depth: usize,
     ) -> Result<Self, AgentError> {
-        let environment_context =
-            build_environment_context_snapshot(provider_profile.as_ref(), execution_env.as_ref());
-        let project_docs = discover_project_documents(
-            execution_env.working_directory(),
-            provider_profile.as_ref(),
-        );
-
         let session = Self {
             id: Uuid::new_v4().to_string(),
+            provider_profiles: HashMap::from([(
+                provider_profile.id().to_string(),
+                provider_profile.clone(),
+            )]),
             provider_profile,
             execution_env,
-            environment_context,
-            project_docs,
             history: Vec::new(),
             event_emitter,
             config,
@@ -390,6 +413,7 @@ impl Session {
             subagent_depth,
             abort_requested: Arc::new(AtomicBool::new(false)),
             abort_notify: Arc::new(Notify::new()),
+            tool_call_hook: None,
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
         Ok(session)
@@ -434,6 +458,15 @@ impl Session {
 
     pub fn provider_profile(&self) -> Arc<dyn ProviderProfile> {
         self.provider_profile.clone()
+    }
+
+    pub fn register_provider_profile(&mut self, profile: Arc<dyn ProviderProfile>) {
+        self.provider_profiles
+            .insert(profile.id().to_string(), profile);
+    }
+
+    pub fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>) {
+        self.tool_call_hook = hook;
     }
 
     pub fn execution_env(&self) -> Arc<dyn ExecutionEnvironment> {
@@ -507,10 +540,19 @@ impl Session {
     }
 
     pub async fn submit(&mut self, user_input: impl Into<String>) -> Result<(), AgentError> {
+        self.submit_with_options(user_input, SubmitOptions::default())
+            .await
+    }
+
+    pub async fn submit_with_options(
+        &mut self,
+        user_input: impl Into<String>,
+        options: SubmitOptions,
+    ) -> Result<(), AgentError> {
         let mut pending_inputs = VecDeque::from([user_input.into()]);
 
         while let Some(next_input) = pending_inputs.pop_front() {
-            let completed_naturally = self.submit_single(next_input).await?;
+            let completed_naturally = self.submit_single(next_input, &options).await?;
             if completed_naturally {
                 while let Some(follow_up) = self.pop_followup_message() {
                     pending_inputs.push_back(follow_up);
@@ -521,7 +563,48 @@ impl Session {
         Ok(())
     }
 
-    async fn submit_single(&mut self, user_input: String) -> Result<bool, AgentError> {
+    pub async fn submit_with_result(
+        &mut self,
+        user_input: impl Into<String>,
+        options: SubmitOptions,
+    ) -> Result<SubmitResult, AgentError> {
+        let baseline_turns = self.history.len();
+        self.submit_with_options(user_input, options).await?;
+        let mut assistant_text = String::new();
+        let mut tool_call_count = 0usize;
+        let mut tool_error_count = 0usize;
+        for turn in self.history.iter().skip(baseline_turns) {
+            match turn {
+                Turn::Assistant(turn) => {
+                    if !turn.content.is_empty() {
+                        assistant_text = turn.content.clone();
+                    }
+                    tool_call_count += turn.tool_calls.len();
+                }
+                Turn::ToolResults(results) => {
+                    tool_error_count += results
+                        .results
+                        .iter()
+                        .filter(|result| result.is_error)
+                        .count();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(SubmitResult {
+            final_state: self.state.clone(),
+            assistant_text,
+            tool_call_count,
+            tool_error_count,
+        })
+    }
+
+    async fn submit_single(
+        &mut self,
+        user_input: String,
+        options: &SubmitOptions,
+    ) -> Result<bool, AgentError> {
         if self.state == SessionState::Closed {
             return Err(AgentError::session_closed());
         }
@@ -582,7 +665,7 @@ impl Session {
                 context_warning_emitted = self.emit_context_usage_warning_if_needed()?;
             }
 
-            let request = self.build_request();
+            let request = self.build_request(options)?;
             self.emit(EventKind::AssistantTextStart, EventData::new())?;
             let response = {
                 let llm_client = self.llm_client.clone();
@@ -642,7 +725,7 @@ impl Session {
             }
 
             round_count += 1;
-            let results = self.execute_tool_calls(tool_calls).await?;
+            let results = self.execute_tool_calls(tool_calls, options).await?;
             let result_turns = results
                 .into_iter()
                 .map(|result| ToolResultTurn {
@@ -669,7 +752,12 @@ impl Session {
     async fn execute_tool_calls(
         &mut self,
         tool_calls: Vec<ToolCall>,
+        options: &SubmitOptions,
     ) -> Result<Vec<ToolResult>, AgentError> {
+        let supports_parallel = self
+            .resolve_provider_profile(options.provider.as_deref())?
+            .capabilities()
+            .supports_parallel_tool_calls;
         if tool_calls
             .iter()
             .all(|tool_call| !is_subagent_tool(&tool_call.name))
@@ -684,10 +772,9 @@ impl Session {
                     self.event_emitter.clone(),
                     ToolDispatchOptions {
                         session_id: self.id.clone(),
-                        supports_parallel_tool_calls: self
-                            .provider_profile
-                            .capabilities()
-                            .supports_parallel_tool_calls,
+                        supports_parallel_tool_calls: supports_parallel,
+                        hook: self.tool_call_hook.clone(),
+                        hook_strict: self.config.tool_hook_strict,
                     },
                 )
                 .await;
@@ -711,6 +798,8 @@ impl Session {
                     ToolDispatchOptions {
                         session_id: self.id.clone(),
                         supports_parallel_tool_calls: false,
+                        hook: self.tool_call_hook.clone(),
+                        hook_strict: self.config.tool_hook_strict,
                     },
                 )
                 .await?;
@@ -726,13 +815,104 @@ impl Session {
         &mut self,
         tool_call: ToolCall,
     ) -> Result<ToolResult, AgentError> {
+        let start_time = std::time::Instant::now();
+        let arguments = parse_tool_call_arguments(&tool_call)?;
         self.event_emitter.emit(SessionEvent::tool_call_start(
             self.id.clone(),
             tool_call.name.clone(),
             tool_call.id.clone(),
+            Some(arguments.clone()),
         ))?;
 
-        let arguments = parse_tool_call_arguments(&tool_call)?;
+        if let Some(hook) = &self.tool_call_hook {
+            let hook_context = crate::ToolHookContext {
+                session_id: self.id.clone(),
+                call_id: tool_call.id.clone(),
+                tool_name: tool_call.name.clone(),
+                arguments: arguments.clone(),
+            };
+            match hook.before_tool_call(&hook_context).await {
+                Ok(crate::ToolPreHookOutcome::Continue) => {}
+                Ok(crate::ToolPreHookOutcome::Skip { message, is_error }) => {
+                    let duration_ms = start_time.elapsed().as_millis();
+                    self.event_emitter.emit(SessionEvent::warning(
+                        self.id.clone(),
+                        format!("tool pre-hook skipped '{}': {}", tool_call.name, message),
+                    ))?;
+                    self.event_emitter.emit(SessionEvent::tool_call_end(
+                        self.id.clone(),
+                        tool_call.id.clone(),
+                        if is_error {
+                            None
+                        } else {
+                            Some(message.clone())
+                        },
+                        if is_error {
+                            Some(message.clone())
+                        } else {
+                            None
+                        },
+                        duration_ms,
+                        is_error,
+                    ))?;
+                    return Ok(ToolResult {
+                        tool_call_id: tool_call.id,
+                        content: Value::String(message),
+                        is_error,
+                    });
+                }
+                Ok(crate::ToolPreHookOutcome::Fail { message }) => {
+                    let duration_ms = start_time.elapsed().as_millis();
+                    self.event_emitter.emit(SessionEvent::error(
+                        self.id.clone(),
+                        format!("tool pre-hook failed '{}': {}", tool_call.name, message),
+                    ))?;
+                    self.event_emitter.emit(SessionEvent::tool_call_end(
+                        self.id.clone(),
+                        tool_call.id.clone(),
+                        Option::<String>::None,
+                        Some(message.clone()),
+                        duration_ms,
+                        true,
+                    ))?;
+                    return Ok(ToolResult {
+                        tool_call_id: tool_call.id,
+                        content: Value::String(message),
+                        is_error: true,
+                    });
+                }
+                Err(error) => {
+                    if self.config.tool_hook_strict {
+                        let message =
+                            format!("tool pre-hook error for '{}': {}", tool_call.name, error);
+                        let duration_ms = start_time.elapsed().as_millis();
+                        self.event_emitter
+                            .emit(SessionEvent::error(self.id.clone(), message.clone()))?;
+                        self.event_emitter.emit(SessionEvent::tool_call_end(
+                            self.id.clone(),
+                            tool_call.id.clone(),
+                            Option::<String>::None,
+                            Some(message.clone()),
+                            duration_ms,
+                            true,
+                        ))?;
+                        return Ok(ToolResult {
+                            tool_call_id: tool_call.id,
+                            content: Value::String(message),
+                            is_error: true,
+                        });
+                    }
+                    self.event_emitter.emit(SessionEvent::warning(
+                        self.id.clone(),
+                        format!(
+                            "tool pre-hook error for '{}': {}; continuing",
+                            tool_call.name, error
+                        ),
+                    ))?;
+                }
+            }
+        }
+
         let output = match tool_call.name.as_str() {
             "spawn_agent" => self.handle_spawn_agent(arguments).await,
             "send_input" => self.handle_send_input(arguments).await,
@@ -743,11 +923,48 @@ impl Session {
 
         match output {
             Ok(raw_output) => {
-                self.event_emitter.emit(SessionEvent::tool_call_end_output(
+                let duration_ms = start_time.elapsed().as_millis();
+                self.event_emitter.emit(SessionEvent::tool_call_end(
                     self.id.clone(),
                     tool_call.id.clone(),
-                    raw_output.clone(),
+                    Some(raw_output.clone()),
+                    Option::<String>::None,
+                    duration_ms,
+                    false,
                 ))?;
+                if let Some(hook) = &self.tool_call_hook {
+                    let hook_context = crate::ToolPostHookContext {
+                        tool: crate::ToolHookContext {
+                            session_id: self.id.clone(),
+                            call_id: tool_call.id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            arguments: parse_tool_call_arguments(&tool_call)?,
+                        },
+                        duration_ms,
+                        output: Some(raw_output.clone()),
+                        error: None,
+                        is_error: false,
+                    };
+                    if let Err(error) = hook.after_tool_call(&hook_context).await {
+                        if self.config.tool_hook_strict {
+                            return Ok(ToolResult {
+                                tool_call_id: tool_call.id,
+                                content: Value::String(format!(
+                                    "tool post-hook error for '{}': {}",
+                                    tool_call.name, error
+                                )),
+                                is_error: true,
+                            });
+                        }
+                        self.event_emitter.emit(SessionEvent::warning(
+                            self.id.clone(),
+                            format!(
+                                "tool post-hook error for '{}': {}; continuing",
+                                tool_call.name, error
+                            ),
+                        ))?;
+                    }
+                }
                 let truncated = truncate_tool_output(&raw_output, &tool_call.name, &self.config);
                 Ok(ToolResult {
                     tool_call_id: tool_call.id,
@@ -757,11 +974,48 @@ impl Session {
             }
             Err(error) => {
                 let message = error.to_string();
-                self.event_emitter.emit(SessionEvent::tool_call_end_error(
+                let duration_ms = start_time.elapsed().as_millis();
+                self.event_emitter.emit(SessionEvent::tool_call_end(
                     self.id.clone(),
                     tool_call.id.clone(),
-                    message.clone(),
+                    Option::<String>::None,
+                    Some(message.clone()),
+                    duration_ms,
+                    true,
                 ))?;
+                if let Some(hook) = &self.tool_call_hook {
+                    let hook_context = crate::ToolPostHookContext {
+                        tool: crate::ToolHookContext {
+                            session_id: self.id.clone(),
+                            call_id: tool_call.id.clone(),
+                            tool_name: tool_call.name.clone(),
+                            arguments: parse_tool_call_arguments(&tool_call)?,
+                        },
+                        duration_ms,
+                        output: None,
+                        error: Some(message.clone()),
+                        is_error: true,
+                    };
+                    if let Err(error) = hook.after_tool_call(&hook_context).await {
+                        if self.config.tool_hook_strict {
+                            return Ok(ToolResult {
+                                tool_call_id: tool_call.id,
+                                content: Value::String(format!(
+                                    "tool post-hook error for '{}': {}",
+                                    tool_call.name, error
+                                )),
+                                is_error: true,
+                            });
+                        }
+                        self.event_emitter.emit(SessionEvent::warning(
+                            self.id.clone(),
+                            format!(
+                                "tool post-hook error for '{}': {}; continuing",
+                                tool_call.name, error
+                            ),
+                        ))?;
+                    }
+                }
                 Ok(ToolResult {
                     tool_call_id: tool_call.id,
                     content: Value::String(message),
@@ -992,6 +1246,54 @@ impl Session {
         self.transition_to(SessionState::Closed)
     }
 
+    pub fn checkpoint(&self) -> Result<SessionCheckpoint, AgentError> {
+        if self
+            .subagent_records
+            .values()
+            .any(|record| record.active_task.is_some())
+        {
+            return Err(SessionError::CheckpointUnsupported(
+                "cannot checkpoint while subagents are still running".to_string(),
+            )
+            .into());
+        }
+
+        Ok(SessionCheckpoint {
+            session_id: self.id.clone(),
+            state: self.state.clone(),
+            history: self.history.clone(),
+            steering_queue: self.steering_queue.iter().cloned().collect(),
+            followup_queue: self.followup_queue.iter().cloned().collect(),
+            config: self.config.clone(),
+        })
+    }
+
+    pub fn from_checkpoint(
+        checkpoint: SessionCheckpoint,
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        event_emitter: Arc<dyn EventEmitter>,
+    ) -> Result<Self, AgentError> {
+        let mut session = Self::new_with_depth(
+            provider_profile.clone(),
+            execution_env,
+            llm_client,
+            checkpoint.config.clone(),
+            event_emitter,
+            0,
+        )?;
+        session.id = checkpoint.session_id;
+        session.state = checkpoint.state;
+        session.history = checkpoint.history;
+        session.steering_queue = VecDeque::from(checkpoint.steering_queue);
+        session.followup_queue = VecDeque::from(checkpoint.followup_queue);
+        session.config = checkpoint.config;
+        session.provider_profiles =
+            HashMap::from([(provider_profile.id().to_string(), provider_profile)]);
+        Ok(session)
+    }
+
     pub fn subagents(&self) -> &HashMap<String, SubAgentHandle> {
         &self.subagents
     }
@@ -1092,13 +1394,37 @@ impl Session {
         Ok(true)
     }
 
-    fn build_request(&self) -> Request {
-        let tools = self.provider_profile.tools();
-        let system_prompt = self.provider_profile.build_system_prompt(
-            &self.environment_context,
+    fn build_request(&self, options: &SubmitOptions) -> Result<Request, AgentError> {
+        let mut provider_profile = self.resolve_provider_profile(options.provider.as_deref())?;
+        if let Some(model_override) = options
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            provider_profile = Arc::new(ModelOverrideProviderProfile::new(
+                provider_profile,
+                model_override.to_string(),
+            ));
+        }
+
+        let tools = provider_profile.tools();
+        let environment_context = build_environment_context_snapshot(
+            provider_profile.as_ref(),
+            self.execution_env.as_ref(),
+        );
+        let project_docs = discover_project_documents(
+            self.execution_env.working_directory(),
+            provider_profile.as_ref(),
+        );
+        let system_prompt = provider_profile.build_system_prompt(
+            &environment_context,
             &tools,
-            &self.project_docs,
-            self.config.system_prompt_override.as_deref(),
+            &project_docs,
+            options
+                .system_prompt_override
+                .as_deref()
+                .or(self.config.system_prompt_override.as_deref()),
         );
 
         let mut messages = vec![Message::system(system_prompt)];
@@ -1110,10 +1436,24 @@ impl Session {
             tool_name: None,
         });
 
-        Request {
-            model: self.provider_profile.model().to_string(),
+        if let Some(value) = options.reasoning_effort.as_deref() {
+            validate_reasoning_effort(value)?;
+        }
+        let reasoning_effort = options
+            .reasoning_effort
+            .as_ref()
+            .map(|value| value.to_ascii_lowercase())
+            .or_else(|| self.config.reasoning_effort.clone());
+
+        let provider_options = options
+            .provider_options
+            .clone()
+            .or_else(|| provider_profile.provider_options());
+
+        Ok(Request {
+            model: provider_profile.model().to_string(),
             messages,
-            provider: Some(self.provider_profile.id().to_string()),
+            provider: Some(provider_profile.id().to_string()),
             tools,
             tool_choice,
             response_format: None,
@@ -1121,14 +1461,36 @@ impl Session {
             top_p: None,
             max_tokens: None,
             stop_sequences: None,
-            reasoning_effort: self.config.reasoning_effort.clone(),
-            metadata: None,
-            provider_options: self.provider_profile.provider_options(),
-        }
+            reasoning_effort,
+            metadata: options.metadata.clone(),
+            provider_options,
+        })
     }
 
     fn is_abort_requested(&self) -> bool {
         self.abort_requested.load(Ordering::SeqCst)
+    }
+
+    fn resolve_provider_profile(
+        &self,
+        provider_override: Option<&str>,
+    ) -> Result<Arc<dyn ProviderProfile>, AgentError> {
+        let Some(provider_id) = provider_override
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(self.provider_profile.clone());
+        };
+        self.provider_profiles
+            .get(provider_id)
+            .cloned()
+            .ok_or_else(|| {
+                SessionError::InvalidConfiguration(format!(
+                    "unknown provider override '{}'; register profile before use",
+                    provider_id
+                ))
+                .into()
+            })
     }
 
     async fn shutdown_to_closed(&mut self) -> Result<(), AgentError> {
@@ -1694,8 +2056,8 @@ mod tests {
     use super::*;
     use crate::{
         BufferedEventEmitter, LocalExecutionEnvironment, PROJECT_DOC_TRUNCATION_MARKER,
-        ProviderCapabilities, RegisteredTool, StaticProviderProfile, ToolExecutor, ToolRegistry,
-        build_openai_tool_registry,
+        ProviderCapabilities, RegisteredTool, StaticProviderProfile, ToolCallHook, ToolExecutor,
+        ToolPreHookOutcome, ToolRegistry, build_openai_tool_registry,
     };
     use async_trait::async_trait;
     use forge_llm::{
@@ -1704,7 +2066,7 @@ mod tests {
     };
     use futures::{StreamExt, executor::block_on};
     use serde_json::Value;
-    use std::collections::VecDeque;
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
     use std::path::Path;
     use std::path::PathBuf;
@@ -1740,6 +2102,48 @@ mod tests {
 
         async fn stream(&self, _request: Request) -> Result<StreamEventStream, SDKError> {
             Ok(Box::pin(futures::stream::empty()))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingHook {
+        pre_calls: Mutex<Vec<String>>,
+        post_calls: Mutex<Vec<String>>,
+        skip_tool_name: Option<String>,
+    }
+
+    #[async_trait]
+    impl ToolCallHook for RecordingHook {
+        async fn before_tool_call(
+            &self,
+            context: &crate::ToolHookContext,
+        ) -> Result<ToolPreHookOutcome, AgentError> {
+            self.pre_calls
+                .lock()
+                .expect("pre hook mutex")
+                .push(context.tool_name.clone());
+            if self
+                .skip_tool_name
+                .as_deref()
+                .is_some_and(|name| name == context.tool_name)
+            {
+                return Ok(ToolPreHookOutcome::Skip {
+                    message: format!("skipped {}", context.tool_name),
+                    is_error: true,
+                });
+            }
+            Ok(ToolPreHookOutcome::Continue)
+        }
+
+        async fn after_tool_call(
+            &self,
+            context: &crate::ToolPostHookContext,
+        ) -> Result<(), AgentError> {
+            self.post_calls
+                .lock()
+                .expect("post hook mutex")
+                .push(context.tool.tool_name.clone());
+            Ok(())
         }
     }
 
@@ -2836,5 +3240,224 @@ mod tests {
             session.subagents.get(agent_id).map(|h| &h.status),
             Some(SubAgentStatus::Failed)
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submit_with_options_overrides_provider_model_and_reasoning() {
+        let (client, requests) = build_test_client(vec![text_response("resp-1", "done")]);
+        let base_profile = Arc::new(StaticProviderProfile {
+            id: "base".to_string(),
+            model: "base-model".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let alt_profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "alt-model".to_string(),
+            base_system_prompt: "alt".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(base_profile, env, client, SessionConfig::default()).expect("new session");
+        session.register_provider_profile(alt_profile);
+
+        let mut metadata = HashMap::new();
+        metadata.insert("node".to_string(), "plan".to_string());
+        session
+            .submit_with_options(
+                "hello",
+                SubmitOptions {
+                    provider: Some("test".to_string()),
+                    model: Some("override-model".to_string()),
+                    reasoning_effort: Some("low".to_string()),
+                    system_prompt_override: Some("node override".to_string()),
+                    provider_options: Some(serde_json::json!({ "x": 1 })),
+                    metadata: Some(metadata.clone()),
+                },
+            )
+            .await
+            .expect("submit should succeed");
+
+        let seen = requests.lock().expect("requests mutex");
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].provider.as_deref(), Some("test"));
+        assert_eq!(seen[0].model, "override-model");
+        assert_eq!(seen[0].reasoning_effort.as_deref(), Some("low"));
+        assert_eq!(seen[0].metadata.as_ref(), Some(&metadata));
+        assert_eq!(
+            seen[0].provider_options,
+            Some(serde_json::json!({ "x": 1 }))
+        );
+        assert!(
+            seen[0]
+                .messages
+                .first()
+                .expect("system message")
+                .content
+                .iter()
+                .any(|part| part
+                    .text
+                    .as_deref()
+                    .is_some_and(|text| text.contains("node override")))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkpoint_round_trip_restores_history_and_queues() {
+        let (client, _requests) = build_test_client(vec![
+            text_response("resp-1", "first"),
+            text_response("resp-2", "second"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "test-model".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let mut session = Session::new_with_emitter(
+            profile.clone(),
+            env.clone(),
+            client.clone(),
+            SessionConfig::default(),
+            emitter.clone(),
+        )
+        .expect("new session");
+        session.submit("first input").await.expect("first submit");
+        session.steer("queued steering").expect("steer queued");
+        session
+            .follow_up("queued followup")
+            .expect("followup queued");
+
+        let checkpoint = session.checkpoint().expect("checkpoint should succeed");
+        let mut restored =
+            Session::from_checkpoint(checkpoint.clone(), profile, env, client, emitter)
+                .expect("restore should succeed");
+        assert_eq!(restored.id(), checkpoint.session_id);
+        assert_eq!(restored.state(), &checkpoint.state);
+        assert_eq!(restored.history(), checkpoint.history.as_slice());
+        assert_eq!(
+            restored.pop_steering_message().as_deref(),
+            Some("queued steering")
+        );
+        assert_eq!(
+            restored.pop_followup_message().as_deref(),
+            Some("queued followup")
+        );
+
+        restored
+            .submit("second input")
+            .await
+            .expect("second submit");
+        assert!(restored.history().iter().any(|turn| {
+            matches!(turn, Turn::Assistant(assistant) if assistant.content == "second")
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn checkpoint_fails_when_subagent_task_is_running() {
+        let (client, _requests) = build_test_client(vec![]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "test-model".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let active_task = tokio::spawn(async {
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            panic!("task should be aborted by test");
+        });
+        session.subagent_records.insert(
+            "agent-1".to_string(),
+            SubAgentRecord {
+                session: None,
+                active_task: Some(active_task),
+                result: None,
+            },
+        );
+
+        let error = session.checkpoint().expect_err("checkpoint should fail");
+        assert!(matches!(
+            error,
+            AgentError::Session(SessionError::CheckpointUnsupported(_))
+        ));
+        if let Some(record) = session.subagent_records.get_mut("agent-1") {
+            if let Some(task) = record.active_task.take() {
+                task.abort();
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tool_hook_runs_for_regular_and_subagent_tools() {
+        let (client, _requests) = build_test_client(vec![
+            tool_call_response(
+                "resp-1",
+                "call-read",
+                "read_file",
+                serde_json::json!({"file_path":"Cargo.toml"}),
+            ),
+            text_response("resp-2", "done"),
+        ]);
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "test-model".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(build_openai_tool_registry()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        let hook = Arc::new(RecordingHook {
+            pre_calls: Mutex::new(Vec::new()),
+            post_calls: Mutex::new(Vec::new()),
+            skip_tool_name: Some("spawn_agent".to_string()),
+        });
+        session.set_tool_call_hook(Some(hook.clone()));
+        session
+            .submit("run read")
+            .await
+            .expect("submit should work");
+        let skipped = session
+            .execute_subagent_tool_call(build_tool_call(
+                "call-sub",
+                "spawn_agent",
+                serde_json::json!({"task":"should skip"}),
+            ))
+            .await
+            .expect("subagent call should return");
+        assert!(skipped.is_error);
+        assert!(
+            skipped
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("skipped spawn_agent")
+        );
+        assert!(session.subagents().is_empty());
+
+        let pre_calls = hook.pre_calls.lock().expect("pre lock").clone();
+        let post_calls = hook.post_calls.lock().expect("post lock").clone();
+        assert!(pre_calls.iter().any(|name| name == "read_file"));
+        assert!(pre_calls.iter().any(|name| name == "spawn_agent"));
+        assert!(post_calls.iter().any(|name| name == "read_file"));
+        assert!(!post_calls.iter().any(|name| name == "spawn_agent"));
     }
 }

@@ -159,21 +159,35 @@ impl SessionEvent {
         session_id: impl Into<String>,
         tool_name: impl Into<String>,
         call_id: impl Into<String>,
+        arguments: Option<Value>,
     ) -> Self {
         let mut data = EventData::new();
         data.insert_string("tool_name", tool_name);
         data.insert_string("call_id", call_id);
+        if let Some(arguments) = arguments {
+            data.insert_value("arguments", arguments);
+        }
         Self::new(EventKind::ToolCallStart, session_id, data)
     }
 
-    pub fn tool_call_end_output(
+    pub fn tool_call_end(
         session_id: impl Into<String>,
         call_id: impl Into<String>,
-        output: impl Into<String>,
+        output: Option<String>,
+        error: Option<String>,
+        duration_ms: u128,
+        is_error: bool,
     ) -> Self {
         let mut data = EventData::new();
         data.insert_string("call_id", call_id);
-        data.insert_string("output", output);
+        if let Some(output) = output {
+            data.insert_string("output", output);
+        }
+        if let Some(error) = error {
+            data.insert_string("error", error);
+        }
+        data.insert_u64("duration_ms", duration_ms as u64);
+        data.insert_bool("is_error", is_error);
         Self::new(EventKind::ToolCallEnd, session_id, data)
     }
 
@@ -193,10 +207,29 @@ impl SessionEvent {
         call_id: impl Into<String>,
         error: impl Into<String>,
     ) -> Self {
-        let mut data = EventData::new();
-        data.insert_string("call_id", call_id);
-        data.insert_string("error", error);
-        Self::new(EventKind::ToolCallEnd, session_id, data)
+        Self::tool_call_end(
+            session_id,
+            call_id,
+            Option::<String>::None,
+            Some(error.into()),
+            0,
+            true,
+        )
+    }
+
+    pub fn tool_call_end_output(
+        session_id: impl Into<String>,
+        call_id: impl Into<String>,
+        output: impl Into<String>,
+    ) -> Self {
+        Self::tool_call_end(
+            session_id,
+            call_id,
+            Some(output.into()),
+            Option::<String>::None,
+            0,
+            false,
+        )
     }
 
     pub fn steering_injected(session_id: impl Into<String>, content: impl Into<String>) -> Self {
@@ -221,6 +254,13 @@ impl SessionEvent {
         let mut data = EventData::new();
         data.insert_string("message", message);
         Self::new(EventKind::Error, session_id, data)
+    }
+
+    pub fn warning(session_id: impl Into<String>, message: impl Into<String>) -> Self {
+        let mut data = EventData::new();
+        data.insert_string("message", message);
+        data.insert_string("severity", "warning");
+        Self::new(EventKind::Warning, session_id, data)
     }
 
     pub fn context_usage_warning(
