@@ -1,18 +1,58 @@
 use crate::{
-    AgentError, EventData, EventEmitter, EventKind, ExecutionEnvironment, NoopEventEmitter,
-    ProviderProfile, SessionConfig, SessionEvent, Turn,
+    AgentError, EventData, EventEmitter, EventKind, EventStream, ExecutionEnvironment,
+    NoopEventEmitter, ProviderProfile, SessionConfig, SessionError, SessionEvent, Turn,
 };
 use forge_llm::Client;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
+use std::fmt::{self, Display};
 use std::sync::Arc;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum SessionState {
     Idle,
     Processing,
     AwaitingInput,
     Closed,
+}
+
+impl SessionState {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Idle => "IDLE",
+            Self::Processing => "PROCESSING",
+            Self::AwaitingInput => "AWAITING_INPUT",
+            Self::Closed => "CLOSED",
+        }
+    }
+
+    pub fn can_transition_to(&self, next: &SessionState) -> bool {
+        if self == next {
+            return true;
+        }
+
+        if *next == SessionState::Closed {
+            return true;
+        }
+
+        match self {
+            SessionState::Idle => matches!(next, SessionState::Processing),
+            SessionState::Processing => matches!(
+                next,
+                SessionState::Processing | SessionState::AwaitingInput | SessionState::Idle
+            ),
+            SessionState::AwaitingInput => matches!(next, SessionState::Processing),
+            SessionState::Closed => false,
+        }
+    }
+}
+
+impl Display for SessionState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -90,8 +130,28 @@ impl Session {
         &self.state
     }
 
-    pub fn set_state(&mut self, state: SessionState) {
-        self.state = state;
+    pub fn set_state(&mut self, state: SessionState) -> Result<(), AgentError> {
+        self.transition_to(state)
+    }
+
+    pub fn transition_to(&mut self, next_state: SessionState) -> Result<(), AgentError> {
+        if !self.state.can_transition_to(&next_state) {
+            return Err(SessionError::InvalidStateTransition {
+                from: self.state.to_string(),
+                to: next_state.to_string(),
+            }
+            .into());
+        }
+
+        if self.state == next_state {
+            return Ok(());
+        }
+
+        self.state = next_state;
+        if self.state == SessionState::Closed {
+            self.emit_session_end()?;
+        }
+        Ok(())
     }
 
     pub fn config(&self) -> &SessionConfig {
@@ -120,7 +180,7 @@ impl Session {
 
     pub fn steer(&mut self, message: impl Into<String>) -> Result<(), AgentError> {
         if self.state == SessionState::Closed {
-            return Err(AgentError::SessionClosed);
+            return Err(AgentError::session_closed());
         }
         self.steering_queue.push_back(message.into());
         Ok(())
@@ -128,7 +188,7 @@ impl Session {
 
     pub fn follow_up(&mut self, message: impl Into<String>) -> Result<(), AgentError> {
         if self.state == SessionState::Closed {
-            return Err(AgentError::SessionClosed);
+            return Err(AgentError::session_closed());
         }
         self.followup_queue.push_back(message.into());
         Ok(())
@@ -143,31 +203,28 @@ impl Session {
     }
 
     pub fn close(&mut self) -> Result<(), AgentError> {
-        self.state = SessionState::Closed;
-        self.emit(EventKind::SessionEnd, EventData::new())
+        self.transition_to(SessionState::Closed)
     }
 
     pub fn subagents(&self) -> &HashMap<String, SubAgentHandle> {
         &self.subagents
     }
 
-    pub fn emit(&self, kind: EventKind, data: EventData) -> Result<(), AgentError> {
-        self.event_emitter.emit(SessionEvent {
-            kind,
-            timestamp: current_timestamp(),
-            session_id: self.id.clone(),
-            data,
-        })
+    pub fn subscribe_events(&self) -> EventStream {
+        self.event_emitter.subscribe()
     }
-}
 
-fn current_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    pub fn emit(&self, kind: EventKind, data: EventData) -> Result<(), AgentError> {
+        self.event_emitter
+            .emit(SessionEvent::new(kind, self.id.clone(), data))
+    }
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", now.as_secs())
+    fn emit_session_end(&self) -> Result<(), AgentError> {
+        self.event_emitter.emit(SessionEvent::session_end(
+            self.id.clone(),
+            self.state.to_string(),
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -178,6 +235,7 @@ mod tests {
         StaticProviderProfile, ToolRegistry,
     };
     use forge_llm::Client;
+    use futures::{StreamExt, executor::block_on};
     use std::path::PathBuf;
 
     #[test]
@@ -225,6 +283,107 @@ mod tests {
         session.close().expect("close should succeed");
 
         let err = session.steer("halt").expect_err("steer should fail");
-        assert!(matches!(err, AgentError::SessionClosed));
+        assert!(matches!(err, AgentError::Session(SessionError::Closed)));
+    }
+
+    #[test]
+    fn session_state_enforces_spec_transitions() {
+        let profile = Arc::new(StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let client = Arc::new(Client::default());
+        let mut session =
+            Session::new(profile, env, client, SessionConfig::default()).expect("new session");
+
+        session
+            .transition_to(SessionState::Processing)
+            .expect("idle -> processing should work");
+        session
+            .transition_to(SessionState::AwaitingInput)
+            .expect("processing -> awaiting_input should work");
+        session
+            .transition_to(SessionState::Processing)
+            .expect("awaiting_input -> processing should work");
+        session
+            .transition_to(SessionState::Idle)
+            .expect("processing -> idle should work");
+
+        let err = session
+            .transition_to(SessionState::AwaitingInput)
+            .expect_err("idle -> awaiting_input should fail");
+        assert!(matches!(
+            err,
+            AgentError::Session(SessionError::InvalidStateTransition { .. })
+        ));
+    }
+
+    #[test]
+    fn closing_session_emits_session_end_once_with_final_state() {
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let profile = Arc::new(StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let client = Arc::new(Client::default());
+        let mut session = Session::new_with_emitter(
+            profile,
+            env,
+            client,
+            SessionConfig::default(),
+            emitter.clone(),
+        )
+        .expect("session should initialize");
+
+        session.close().expect("close should succeed");
+        session.close().expect("second close should be a no-op");
+
+        let events = emitter.snapshot();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, EventKind::SessionStart);
+        assert_eq!(events[1].kind, EventKind::SessionEnd);
+        assert_eq!(events[1].data.get_str("final_state"), Some("CLOSED"));
+    }
+
+    #[test]
+    fn session_exposes_async_event_subscription() {
+        let emitter = Arc::new(BufferedEventEmitter::default());
+        let profile = Arc::new(StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let client = Arc::new(Client::default());
+        let session =
+            Session::new_with_emitter(profile, env, client, SessionConfig::default(), emitter)
+                .expect("session should initialize");
+
+        let mut stream = session.subscribe_events();
+        session
+            .emit(
+                EventKind::UserInput,
+                EventData::from_serializable(serde_json::json!({ "content": "hi" }))
+                    .expect("valid object payload"),
+            )
+            .expect("emit should succeed");
+
+        let first = block_on(stream.next()).expect("session start should arrive");
+        assert_eq!(first.kind, EventKind::SessionStart);
+        let second = block_on(stream.next()).expect("user input should arrive");
+        assert_eq!(second.kind, EventKind::UserInput);
     }
 }
