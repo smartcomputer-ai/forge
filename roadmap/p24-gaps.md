@@ -1,7 +1,7 @@
 # P24 Gap Closure Plan (Spec 02)
 
 **Status**
-- Open (2026-02-09)
+- Complete (2026-02-09)
 - Note: Gemini Priority 1 gap work is deferred for now.
 
 **Goal**
@@ -184,7 +184,7 @@
   - Added regression tests for `edit_file` fuzzy whitespace recovery and `apply_patch` fuzzy hunk recovery.
 
 ## Cross-provider test gaps to add
-- Add missing parity case from 9.12:
+- [x] Added missing parity case from 9.12:
   - Multi-step task (`read -> analyze -> edit`) across OpenAI/Anthropic.
 - File:
   - `crates/forge-agent/tests/conformance_matrix.rs`
@@ -202,4 +202,4 @@
 ## Exit criteria for this file
 - `roadmap/p24-dod-matrix.md` has no unchecked items except explicitly deferred real-key smoke notes.
 - `cargo test -p forge-agent` passes with added conformance coverage.
-- This file marked complete once all non-deferred gaps are closed.
+- [x] This file marked complete once all non-deferred gaps are closed.

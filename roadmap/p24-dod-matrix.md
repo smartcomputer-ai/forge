@@ -94,7 +94,7 @@ This matrix is populated as implementation milestones complete.
 - [x] Shell execution flow (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Shell timeout handling (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Grep + glob discovery flow (`crates/forge-agent/tests/conformance_matrix.rs`)
-- [ ] Multi-step read/analyze/edit
+- [x] Multi-step read/analyze/edit (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Large-output truncation behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
 - [x] Parallel tool calls (where supported) (`crates/forge-agent/tests/conformance_matrix.rs`)
 - [x] Mid-task steering behavior (`crates/forge-agent/tests/conformance_runtime_behaviors.rs`)
