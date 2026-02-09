@@ -7,6 +7,7 @@ Primary specs live in `spec/`:
 - `spec/01-unified-llm-spec.md` — unified LLM spec
 - `spec/02-coding-agent-loop-spec.md` — coding agent loop spec
 - `spec/03-attractor-spec.md` — attractor spec
+- `spec/04-cxdb-integration-spec.md` — CXDB turn-store integration extension
 
 When making changes, align behavior and terminology to these documents first.
 
@@ -35,4 +36,3 @@ When modifying specs or architecture:
 4. Note: CLAUDE.md is a symlink to AGENTS.md - they are the same file
 
 The specs in `spec/` are the source of truth. This file is just an index.
-
