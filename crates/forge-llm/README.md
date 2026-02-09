@@ -29,3 +29,15 @@ Optional live-test settings:
 - `OPENAI_BASE_URL`
 - `OPENAI_ORG_ID`
 - `OPENAI_PROJECT_ID`
+
+Run live Anthropic integration tests (ignored by default):
+
+```
+RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-llm --test anthropic_live -- --ignored
+```
+
+Live Anthropic tests require `ANTHROPIC_API_KEY` (read from environment or from project-root `.env`).
+Optional live-test settings:
+
+- `ANTHROPIC_LIVE_MODEL` (default: `claude-sonnet-4-5`)
+- `ANTHROPIC_BASE_URL`
