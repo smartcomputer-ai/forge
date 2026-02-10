@@ -2,6 +2,7 @@
 
 **Status**
 - Planned (2026-02-09)
+- In progress (2026-02-10)
 
 **Goal**
 Close the Attractor implementation loop with a comprehensive DoD matrix, deterministic conformance coverage, integration smoke tests, and documentation updates.
@@ -30,7 +31,7 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Add Attractor DoD matrix tracker
+### [x] G1. Add Attractor DoD matrix tracker
 - Work:
   - Create roadmap matrix file mirroring spec/03 Section 11 checklist structure.
   - Map each matrix row to concrete files/tests.
@@ -39,8 +40,12 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
   - `roadmap/p31-dod-matrix.md` (new)
 - DoD:
   - Every Section 11 item has an explicit check state and traceable implementation reference.
+- Completed:
+  - Added `roadmap/p31-dod-matrix.md` with item-by-item mapping for spec/03 Section 11.
+  - Marked each checklist row with explicit `[x]` / `[ ]` state and test/file references.
+  - Captured current known deltas (for example exact terminal-node-count semantics and deferred live smoke coverage).
 
-### [ ] G2. Deterministic conformance suite (parse -> validate -> execute -> resume)
+### [x] G2. Deterministic conformance suite (parse -> validate -> execute -> resume)
 - Work:
   - Build full matrix-aligned deterministic tests covering:
     - parsing/validation
@@ -58,8 +63,17 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
   - `crates/forge-attractor/tests/conformance_stylesheet.rs`
 - DoD:
   - Section 11 cross-feature parity matrix is fully automated and green.
+- Completed:
+  - Added new conformance suites:
+    - `crates/forge-attractor/tests/conformance_parsing.rs`
+    - `crates/forge-attractor/tests/conformance_runtime.rs`
+    - `crates/forge-attractor/tests/conformance_state.rs`
+    - `crates/forge-attractor/tests/conformance_stylesheet.rs`
+  - Confirmed deterministic coverage across parse/validate/runtime/state/stylesheet-transform domains, including interviewer + mocked codergen flows.
+  - Executed suites with both in-memory and filesystem turnstore backends in runtime/state conformance tests.
+  - Incorporated and credited existing coverage already added across P28-P30 test files (`execution_core.rs`, `state_and_resume.rs`, `conditions.rs`, `parallel.rs`, `stylesheet.rs`, `hitl.rs`, `events.rs`, `queries.rs`).
 
-### [ ] G3. End-to-end integration smoke test (spec-style scenario)
+### [x] G3. End-to-end integration smoke test (spec-style scenario)
 - Work:
   - Add spec-inspired pipeline smoke test:
     - `plan -> implement -> review -> done`
@@ -71,8 +85,16 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
   - `crates/forge-attractor/tests/integration_smoke.rs`
 - DoD:
   - Spec Section 11.13 smoke scenario is reproducible in CI without live keys.
+- Completed:
+  - Added deterministic spec-style smoke test in `crates/forge-attractor/tests/integration_smoke.rs`:
+    - `plan -> implement -> review -> done` flow
+    - fail/success routing path coverage (`implement -> plan` retry route)
+    - goal-gate stage completion assertion
+    - checkpoint assertions
+    - artifact assertions for `prompt.md`, `response.md`, `status.json`
+    - context continuity assertions
 
-### [ ] G4. Documentation and workspace integration updates
+### [x] G4. Documentation and workspace integration updates
 - Work:
   - Update workspace `README.md` to include Attractor crate and status.
   - Add `crates/forge-attractor/README.md` with:
@@ -86,6 +108,10 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
   - `AGENTS.md` (if architecture index changes materially)
 - DoD:
   - Documentation reflects new crate capabilities and test strategy.
+- Completed:
+  - Updated workspace docs in `README.md` to include Attractor + CLI host status, usage, and test commands.
+  - Added `crates/forge-attractor/README.md` documenting architecture/layering, run/test commands, known deferred gaps, and roadmap links.
+  - `AGENTS.md` architecture index already reflected current crate layout; no material architecture-index change required.
 
 ## Priority 1 (Strongly recommended)
 

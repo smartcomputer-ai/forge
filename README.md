@@ -1,79 +1,72 @@
 # Forge
 
-Forge is a Rust implementation effort of the external Attractor specification ecosystem from strongDM:
+Forge is a Rust workspace implementing a spec-first software factory stack centered on Attractor-style orchestration.
 
-- Attractor spec source: https://github.com/strongdm/attractor
-- Software factory vision: https://factory.strongdm.ai/
+Upstream spec references:
 
-The goal is to be a faithful implementation of the Attractor-oriented specs, with deterministic behavior and strong conformance coverage.
+- Attractor ecosystem source: https://github.com/strongdm/attractor
+- Factory vision: https://factory.strongdm.ai/
 
-## What Forge currently does
+## Workspace crates
 
-This repository currently implements two core layers:
-
-- `forge-llm` (`crates/forge-llm`): unified multi-provider LLM client aligned to `spec/01-unified-llm-spec.md`
-- `forge-agent` (`crates/forge-agent`): coding-agent loop aligned to `spec/02-coding-agent-loop-spec.md`
-
-Today, Forge is a library workspace, not a runnable product. There is no top-level CLI or daemon entrypoint yet.
-
-## How it works
-
-Forge is organized around spec-first layers:
-
-1. Specs in `spec/` define behavior and terminology.
-2. `forge-llm` provides normalized request/response/tool abstractions across providers.
-3. `forge-agent` runs a provider-aligned agent loop (`LLM call -> tool execution -> repeat`) with events, truncation, steering, and subagents.
-4. Conformance tests validate cross-provider runtime behavior using deterministic mocked adapters.
-
+- `forge-llm` (`crates/forge-llm`): unified multi-provider LLM client (`spec/01-unified-llm-spec.md`).
+- `forge-agent` (`crates/forge-agent`): coding-agent loop (`spec/02-coding-agent-loop-spec.md`).
+- `forge-attractor` (`crates/forge-attractor`): DOT pipeline parser/runtime (`spec/03-attractor-spec.md`).
+- `forge-cli` (`crates/forge-cli`): in-process CLI host for running/resuming/inspecting Attractor pipelines.
+- `forge-turnstore` (`crates/forge-turnstore`): turn-store abstractions and local backends used by agent/attractor persistence.
 
 ## Current status
 
-- `spec/01` implementation: largely complete in `forge-llm`
-- `spec/02` implementation: largely complete in `forge-agent`
-- `spec/03` Attractor pipeline runner (DOT DSL engine): not implemented yet in this repository
+- `spec/01` and `spec/02` core layers are implemented with deterministic test coverage.
+- `spec/03` Attractor runtime core, host surfaces, and conformance suites are implemented for headless and CLI-first operation.
+- HTTP server mode and CXDB adapter rollout are intentionally deferred to later roadmap phases.
 
-**What still needs to be done**
-
-- Implement `spec/03-attractor-spec.md` runtime components (DOT parser/executor, node handlers, checkpoint/resume, HITL flows)
-- Add a public-facing executable surface (CLI/service) once the runtime layer is in place
-
-## Getting started
-
-### Prerequisites
-
-- Rust stable toolchain (`rustup` + `cargo`)
-
-### Build
+## Build
 
 ```bash
 cargo build
 ```
 
-### Run tests
+## Test
 
 ```bash
-# Workspace tests
+# Full workspace
 cargo test
 
-# Crate-specific runs
+# Targeted crates
 cargo test -p forge-llm
 cargo test -p forge-agent
+cargo test -p forge-attractor --tests
+cargo test -p forge-cli --tests
 ```
 
-`forge-llm` also includes optional live-provider tests (ignored by default) that require API keys.
+Optional live-provider tests remain ignored by default and require credentials.
 
 ```bash
 RUN_LIVE_OPENAI_TESTS=1 cargo test -p forge-llm --test openai_live -- --ignored
 RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-llm --test anthropic_live -- --ignored
 ```
 
+## CLI host usage (in-process)
+
+```bash
+# Run from DOT file
+cargo run -p forge-cli -- run --dot-file examples/01-linear-foundation.dot --backend mock
+
+# Resume from checkpoint
+cargo run -p forge-cli -- resume --dot-file examples/01-linear-foundation.dot --checkpoint /path/to/checkpoint.json --backend mock
+
+# Inspect checkpoint
+cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.json --json
+```
+
 ## Project layout
 
-- `spec/`: source-of-truth specs
-- `roadmap/`: implementation milestones and DoD tracking
-- `crates/forge-llm/`: unified LLM client
-- `crates/forge-agent/`: coding-agent loop
+- `spec/`: source-of-truth specifications
+- `roadmap/`: milestone plans and completion tracking
+- `examples/`: sample DOT graphs
+- `crates/forge-llm/`, `crates/forge-agent/`, `crates/forge-attractor/`, `crates/forge-cli/`, `crates/forge-turnstore/`
 
 ## Contributing
 
-See `CONTRIBUTING.md` and `AGENTS.md` for contribution rules and spec alignment requirements.
+See `CONTRIBUTING.md` and `AGENTS.md` for coding standards, test expectations, and spec-alignment requirements.
