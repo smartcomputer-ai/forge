@@ -1,4 +1,5 @@
 # P30: Attractor Observability, HITL Surfaces, and In-Process CLI Host (Spec 03 §6, §9)
+**Complete:** Yes (2026-02-10)
 
 **Status**
 - Planned (2026-02-09)
@@ -101,7 +102,7 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - Integrated interviewer-backed human-gate behavior selection via CLI (`--interviewer auto|console|queue` + `--human-answer` for queue mode) while keeping runtime transport-agnostic.
   - Added codergen backend selection for host runs with `--backend agent|mock`, defaulting to `agent` in CLI usage and reserving `mock` for deterministic smoke/local simulation paths.
 
-### [ ] G4. Storage-backed host query surfaces
+### [x] G4. Storage-backed host query surfaces
 - Work:
   - Expose host-facing query helpers for:
     - run metadata
@@ -114,10 +115,18 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/src/storage/mod.rs`
 - DoD:
   - Host query behavior is stable regardless of selected storage backend.
+- Completed:
+  - Added backend-agnostic read-side storage contract (`AttractorStorageReader`) in `crates/forge-attractor/src/storage/mod.rs` with blanket `TurnStore` implementation.
+  - Added typed host query APIs in `crates/forge-attractor/src/queries.rs`:
+    - `query_run_metadata`
+    - `query_stage_timeline`
+    - `query_latest_checkpoint_snapshot`
+    - `query_stage_to_agent_linkage`
+  - Exported query surfaces from crate root (`crates/forge-attractor/src/lib.rs`) for direct host consumption.
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Tool hook bridge integration (pre/post) for codergen paths
+### [x] G5. Tool hook bridge integration (pre/post) for codergen paths
 - Work:
   - Pass `tool_hooks.pre` / `tool_hooks.post` from graph/node attrs into codergen backend calls.
   - Use `forge-agent` hook extension seams added in P25.
@@ -127,8 +136,16 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/src/hooks.rs`
 - DoD:
   - Tool hooks are observable and policy-enforceable without breaking core loop determinism.
+- Completed:
+  - Added tool hook bridge module `crates/forge-attractor/src/hooks.rs` with:
+    - graph/node attr resolution for `tool_hooks.pre` / `tool_hooks.post` (including underscore compatibility keys)
+    - shell-backed pre/post hook execution bridge implementing `forge-agent::ToolCallHook`
+    - structured hook event capture and summary (`ToolHookEvent`, `ToolHookSummary`)
+  - Extended codergen backend boundary to include graph context so graph-level hook attrs can be resolved (`crates/forge-attractor/src/handlers/codergen.rs`).
+  - Wired `ForgeAgentSessionBackend` to install/remove hook bridges per stage and include hook summaries in stage outcome notes + context updates (`tool_hooks.summary`) in `crates/forge-attractor/src/backends/forge_agent.rs`.
+  - Added backend tests covering hook summary propagation and command resolution behavior.
 
-### [ ] G6. Integration tests for event/HITL/CLI/query behavior
+### [x] G6. Integration tests for event/HITL/CLI/query behavior
 - Work:
   - Add tests for event ordering and payload shape.
   - Add tests for queue/callback interviewer flows.
@@ -141,11 +158,19 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/tests/queries.rs`
 - DoD:
   - Host integration surfaces are stable and deterministic in test runs.
-- Partial completion:
-  - Added CLI host smoke integration coverage in `crates/forge-cli/tests/smoke.rs` for:
-    - `run` from DOT file with event JSON streaming
-    - `resume` from checkpoint with in-process host path
-    - `inspect-checkpoint --json` output shape checks
+- Completed:
+  - Added event integration coverage in `crates/forge-attractor/tests/events.rs`:
+    - sequence ordering and retry event assertions
+    - serialized payload tag shape assertions (`category`, `kind`)
+  - Added HITL integration coverage in `crates/forge-attractor/tests/hitl.rs`:
+    - queue interviewer branch selection flow
+    - callback interviewer branch selection flow
+  - Added storage query parity integration coverage in `crates/forge-attractor/tests/queries.rs`:
+    - run metadata, stage timeline, checkpoint snapshot, and stage-to-agent linkage queries
+    - parity checks across in-memory and filesystem turnstore backends
+  - Expanded CLI host smoke coverage in `crates/forge-cli/tests/smoke.rs`:
+    - existing `run`/`resume`/`inspect-checkpoint` paths retained
+    - added queue interviewer answer path for interactive human-gate routing (`--interviewer queue --human-answer`)
 
 ## Deliverables
 - Event stream contract for UI/logging integration.

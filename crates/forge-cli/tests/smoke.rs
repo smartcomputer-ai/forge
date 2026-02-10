@@ -19,6 +19,24 @@ fn write_dot_file(path: &Path) {
     std::fs::write(path, source).expect("dot file write should succeed");
 }
 
+fn write_hitl_dot_file(path: &Path) {
+    let source = r#"
+        digraph G {
+            start [shape=Mdiamond]
+            gate [shape=hexagon, label="Review"]
+            yes
+            no
+            exit [shape=Msquare]
+            start -> gate
+            gate -> yes [label="[Y] Yes"]
+            gate -> no [label="[N] No"]
+            yes -> exit
+            no -> exit
+        }
+    "#;
+    std::fs::write(path, source).expect("dot file write should succeed");
+}
+
 fn write_resume_checkpoint(path: &Path) {
     let graph = parse_dot(
         r#"
@@ -186,4 +204,38 @@ fn inspect_checkpoint_json_expected_metadata_fields() {
             .map(ToOwned::to_owned),
         Some("plan".to_string())
     );
+}
+
+#[test]
+fn run_command_queue_interviewer_expected_human_answer_branch_selected() {
+    let temp = TempDir::new().expect("tempdir should create");
+    let dot_file = temp.path().join("pipeline.dot");
+    write_hitl_dot_file(&dot_file);
+
+    let output = run_cli(
+        &[
+            "run",
+            "--dot-file",
+            dot_file.to_str().expect("dot file path should be utf8"),
+            "--backend",
+            "mock",
+            "--interviewer",
+            "queue",
+            "--human-answer",
+            "N",
+            "--no-stream-events",
+        ],
+        temp.path(),
+    );
+
+    assert!(
+        output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8(output.stdout).expect("stdout should be utf8");
+    assert!(stdout.contains("status: success"));
+    assert!(stdout.contains("completed_nodes: start, gate, no"));
 }

@@ -17,6 +17,7 @@ pub trait CodergenBackend: Send + Sync {
         node: &Node,
         prompt: &str,
         context: &RuntimeContext,
+        graph: &Graph,
     ) -> Result<CodergenBackendResult, AttractorError>;
 }
 
@@ -30,6 +31,7 @@ impl CodergenBackend for NoopCodergenBackend {
         _node: &Node,
         _prompt: &str,
         _context: &RuntimeContext,
+        _graph: &Graph,
     ) -> Result<CodergenBackendResult, AttractorError> {
         Ok(CodergenBackendResult::Text(String::new()))
     }
@@ -66,7 +68,7 @@ impl NodeHandler for CodergenHandler {
         }
 
         let (response_text, outcome) = if let Some(backend) = self.backend.as_ref() {
-            match backend.run(node, &prompt, context).await {
+            match backend.run(node, &prompt, context, graph).await {
                 Ok(CodergenBackendResult::Outcome(outcome)) => {
                     (outcome.notes.clone().unwrap_or_default(), outcome)
                 }
@@ -160,6 +162,7 @@ mod tests {
             _node: &Node,
             prompt: &str,
             _context: &RuntimeContext,
+            _graph: &Graph,
         ) -> Result<CodergenBackendResult, AttractorError> {
             Ok(CodergenBackendResult::Text(format!("reply::{prompt}")))
         }
@@ -200,6 +203,7 @@ mod tests {
                 _node: &Node,
                 _prompt: &str,
                 _context: &RuntimeContext,
+                _graph: &Graph,
             ) -> Result<CodergenBackendResult, AttractorError> {
                 Ok(CodergenBackendResult::Outcome(NodeOutcome::failure(
                     "backend fail",

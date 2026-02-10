@@ -30,6 +30,7 @@ impl CodergenBackend for EchoBackend {
         _node: &forge_attractor::Node,
         prompt: &str,
         _context: &RuntimeContext,
+        _graph: &forge_attractor::Graph,
     ) -> Result<CodergenBackendResult, forge_attractor::AttractorError> {
         Ok(CodergenBackendResult::Text(format!("echo::{prompt}")))
     }
@@ -187,6 +188,7 @@ async fn codergen_backend_outcome_passthrough_expected_fail_status() {
             _node: &forge_attractor::Node,
             _prompt: &str,
             _context: &RuntimeContext,
+            _graph: &forge_attractor::Graph,
         ) -> Result<CodergenBackendResult, forge_attractor::AttractorError> {
             Ok(CodergenBackendResult::Outcome(NodeOutcome::failure(
                 "backend fail",

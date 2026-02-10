@@ -2,9 +2,10 @@ use crate::{
     AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node,
     NodeOutcome, NodeStatus, RuntimeContext,
     handlers::codergen::{CodergenBackend, CodergenBackendResult},
+    hooks::{ToolHookBridge, ToolHookSummary, resolve_tool_hook_commands},
 };
 use async_trait::async_trait;
-use forge_agent::{AgentError, Session, SubmitOptions, SubmitResult};
+use forge_agent::{AgentError, Session, SubmitOptions, SubmitResult, ToolCallHook};
 use forge_turnstore::{ContextId, TurnId, attractor_idempotency_key};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -25,6 +26,8 @@ pub trait AgentSubmitter: Send {
     fn set_thread_key(&mut self, thread_key: Option<String>);
 
     fn session_id(&self) -> &str;
+
+    fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>);
 }
 
 #[async_trait]
@@ -47,6 +50,10 @@ impl AgentSubmitter for Session {
 
     fn session_id(&self) -> &str {
         Session::id(self)
+    }
+
+    fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>) {
+        Session::set_tool_call_hook(self, hook);
     }
 }
 
@@ -176,12 +183,40 @@ impl CodergenBackend for ForgeAgentSessionBackend {
         node: &Node,
         prompt: &str,
         context: &RuntimeContext,
+        graph: &Graph,
     ) -> Result<CodergenBackendResult, AttractorError> {
         let stage_attempt_id = context
             .get("stage_attempt_id")
             .and_then(Value::as_str)
             .unwrap_or("attempt:1");
+        let run_id = context
+            .get("internal.lineage.root_run_id")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .or_else(|| {
+                context
+                    .get("run_id")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_else(|| "unknown-run".to_string());
+        let hook_commands = resolve_tool_hook_commands(node, graph);
         let mut submitter = self.submitter.lock().await;
+        let hook_bridge = if hook_commands.is_empty() {
+            None
+        } else {
+            Some(Arc::new(ToolHookBridge::new(
+                run_id,
+                node.id.clone(),
+                stage_attempt_id.to_string(),
+                hook_commands,
+            )))
+        };
+        submitter.set_tool_call_hook(
+            hook_bridge
+                .as_ref()
+                .map(|bridge| bridge.clone() as Arc<dyn ToolCallHook>),
+        );
         let outcome = self
             .adapter
             .execute_prompt_with_submitter(
@@ -192,6 +227,12 @@ impl CodergenBackend for ForgeAgentSessionBackend {
                 stage_attempt_id,
             )
             .await?;
+        submitter.set_tool_call_hook(None);
+        let outcome = if let Some(bridge) = hook_bridge.as_ref() {
+            apply_tool_hook_summary(outcome, bridge.summary())
+        } else {
+            outcome
+        };
         Ok(CodergenBackendResult::Outcome(outcome))
     }
 }
@@ -325,6 +366,27 @@ fn map_submit_result_to_outcome(
     }
 }
 
+fn apply_tool_hook_summary(mut outcome: NodeOutcome, summary: ToolHookSummary) -> NodeOutcome {
+    let summary_json = serde_json::to_value(&summary).unwrap_or_else(|_| Value::Null);
+    outcome
+        .context_updates
+        .insert("tool_hooks.summary".to_string(), summary_json);
+    let summary_suffix = format!(
+        "hooks(pre ok={}, pre skip={}, pre error={}, post ok={}, post non_zero={}, post error={})",
+        summary.pre_ok,
+        summary.pre_skip,
+        summary.pre_error,
+        summary.post_ok,
+        summary.post_non_zero,
+        summary.post_error
+    );
+    outcome.notes = Some(match outcome.notes.take() {
+        Some(notes) if !notes.trim().is_empty() => format!("{notes}; {summary_suffix}"),
+        _ => summary_suffix,
+    });
+    outcome
+}
+
 fn truncate(input: &str, max_len: usize) -> String {
     input.chars().take(max_len).collect()
 }
@@ -347,7 +409,7 @@ mod tests {
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
         AttractorStageEventRecord, parse_dot,
     };
-    use forge_agent::SessionState;
+    use forge_agent::{SessionState, ToolCallHook};
     use forge_turnstore::{StoreContext, StoredTurn, TurnStoreError};
     use serde_json::json;
 
@@ -356,6 +418,7 @@ mod tests {
         last_input: Option<String>,
         last_options: Option<SubmitOptions>,
         result: SubmitResult,
+        hook_set_calls: usize,
     }
 
     #[async_trait]
@@ -380,6 +443,12 @@ mod tests {
 
         fn session_id(&self) -> &str {
             "session-1"
+        }
+
+        fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>) {
+            if hook.is_some() {
+                self.hook_set_calls += 1;
+            }
         }
     }
 
@@ -510,6 +579,7 @@ mod tests {
                 usage: None,
                 thread_key: Some("thread-main".to_string()),
             },
+            hook_set_calls: 0,
         };
         let adapter = ForgeAgentCodergenAdapter::default();
         let outcome = adapter
@@ -545,18 +615,70 @@ mod tests {
                 usage: None,
                 thread_key: None,
             },
+            hook_set_calls: 0,
         };
         let backend = ForgeAgentSessionBackend::new(
             ForgeAgentCodergenAdapter::default(),
             Box::new(submitter),
         );
         let result = backend
-            .run(node, "hello", &RuntimeContext::new())
+            .run(node, "hello", &RuntimeContext::new(), &graph)
             .await
             .expect("backend run should succeed");
         match result {
             CodergenBackendResult::Outcome(outcome) => {
                 assert_eq!(outcome.status, NodeStatus::Success);
+            }
+            CodergenBackendResult::Text(_) => panic!("expected outcome variant"),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn forge_agent_session_backend_run_with_tool_hooks_expected_summary_in_notes_and_context()
+    {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                graph [tool_hooks_pre="echo pre", tool_hooks_post="echo post"]
+                n1 [prompt="hi"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("n1").expect("node");
+        let submitter = StubSubmitter {
+            thread_key: None,
+            last_input: None,
+            last_options: None,
+            result: SubmitResult {
+                final_state: SessionState::Idle,
+                assistant_text: "done".to_string(),
+                tool_call_count: 0,
+                tool_call_ids: vec![],
+                tool_error_count: 0,
+                usage: None,
+                thread_key: None,
+            },
+            hook_set_calls: 0,
+        };
+        let backend = ForgeAgentSessionBackend::new(
+            ForgeAgentCodergenAdapter::default(),
+            Box::new(submitter),
+        );
+        let result = backend
+            .run(node, "hello", &RuntimeContext::new(), &graph)
+            .await
+            .expect("backend run should succeed");
+        match result {
+            CodergenBackendResult::Outcome(outcome) => {
+                assert!(
+                    outcome
+                        .notes
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("hooks(")
+                );
+                assert!(outcome.context_updates.contains_key("tool_hooks.summary"));
             }
             CodergenBackendResult::Text(_) => panic!("expected outcome variant"),
         }
