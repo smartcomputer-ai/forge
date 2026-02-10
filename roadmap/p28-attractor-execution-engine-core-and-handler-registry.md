@@ -4,14 +4,18 @@
 - Planned (2026-02-09)
 
 **Goal**
-Implement the runtime traversal engine, deterministic edge routing, retry/failure logic, and core handler registry needed to execute normalized Attractor graphs.
+Implement the runtime traversal engine, deterministic edge routing, retry/failure logic, and core handler registry needed to execute normalized Attractor graphs, built on the pre-established storage abstractions.
 
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 3, 4, 10, 11.3, 11.4, 11.5, 11.6, 11.9)
-- Agent integration prerequisite: `roadmap/completed/p25-agent-attractor-backend-readiness.md`
+- Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 2, 3.3, 4.4, 5.1, 5.3)
+- Prerequisites:
+  - `roadmap/p27.1-turnstore-foundation-and-agent-persistence.md`
+  - `roadmap/completed/p25-agent-attractor-backend-readiness.md`
 
 **Context**
 - P27 provides parse/transform/lint and normalized graph IR.
+- P27.1 provides storage contracts and shared correlation metadata types.
 - Runtime should remain headless and event-driven.
 - Codergen execution should use backend injection so `forge-agent` can be plugged in without coupling execution core to provider details.
 
@@ -22,26 +26,30 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `start`, `exit`, `codergen`, `conditional`, `wait.human`, `tool`
 - Implement retry/backoff and failure routing semantics.
 - Implement condition expression evaluator.
+- Wire runtime record emission through storage abstractions (no CXDB requirement).
 
 ## Out of Scope
 - Full checkpoint/resume fidelity semantics.
 - Artifact store/file threshold behavior.
 - Parallel/fan-in/manager-loop advanced handlers.
 - HTTP server mode.
-- CXDB store adapter.
+- CXDB adapter implementation.
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Runtime engine skeleton and run lifecycle
+### [ ] G1. Runtime engine skeleton and run lifecycle (storage-aware)
 - Work:
   - Implement `PipelineRunner::run(graph, config)` with deterministic control flow.
   - Implement lifecycle phases: initialize -> execute -> finalize.
   - Wire terminal-node behavior and goal-gate checks at exit.
+  - Emit run/stage lifecycle records through Attractor storage interfaces.
 - Files:
   - `crates/forge-attractor/src/runner.rs`
   - `crates/forge-attractor/src/runtime.rs`
+  - `crates/forge-attractor/src/storage/mod.rs`
 - DoD:
   - Engine can execute a simple linear graph from start to exit.
+  - Store-disabled and store-enabled behavior are functionally equivalent.
 
 ### [ ] G2. Edge selection + condition language evaluator
 - Work:
@@ -93,7 +101,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `codergen` handler:
     - prompt resolution with fallback to label
     - `$goal` expansion integration
-    - writes prompt/response/status to stage directory
+    - emits stage records and status outcomes via storage interfaces
     - backend contract (`String | Outcome`)
   - `conditional` pass-through handler.
   - `wait.human` handler with interviewer interface integration and choice derivation from outgoing edges.
@@ -114,6 +122,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 - Work:
   - Implement an adapter that maps node model/provider/reasoning overrides into `forge-agent::SubmitOptions`.
   - Map `SubmitResult` and tool error summaries into Attractor `Outcome`.
+  - Emit stage-to-agent linkage metadata through storage interfaces.
   - Thread-key continuity support for upcoming fidelity work.
 - Files:
   - `crates/forge-attractor/src/backends/forge_agent.rs`
@@ -124,6 +133,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 - Work:
   - Add runtime tests for linear/branching/retry/goal-gate/human-gate behavior.
   - Add deterministic tests for condition parser/evaluator.
+  - Validate runtime behavior with store sink off and with in-memory store sink on.
 - Files:
   - `crates/forge-attractor/tests/execution_core.rs`
   - `crates/forge-attractor/tests/handlers_core.rs`
@@ -149,5 +159,5 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 ## Exit criteria for this file
 - End-to-end execution works for linear and branching pipelines.
 - Core handlers and routing behavior match spec semantics.
+- Runtime is storage-first and does not depend on concrete CXDB code.
 - Codergen backend contract is implemented and integration-ready.
-

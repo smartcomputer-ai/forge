@@ -4,26 +4,28 @@
 - Planned (2026-02-09)
 
 **Goal**
-Implement production-grade runtime state behavior: context/artifacts, checkpoint/resume semantics, fidelity/thread resolution, and advanced handlers (`parallel`, `fan_in`, `stack.manager_loop`).
+Implement production-grade runtime state behavior: context/artifacts, checkpoint/resume semantics, fidelity/thread resolution, and advanced handlers (`parallel`, `fan_in`, `stack.manager_loop`) on top of storage abstractions.
 
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 4.8-4.11, 5, 11.6, 11.7)
-- Extension compatibility: `spec/04-cxdb-integration-spec.md` (Phase 1 filesystem-authoritative)
+- Storage extension: `spec/04-cxdb-integration-spec.md` (Sections 3.3, 3.4, 5.1, 5.2)
 
 **Context**
 - P28 delivers core execution and baseline handlers.
+- P27.1 provides `forge-turnstore` abstractions and deterministic local backends.
 - This phase hardens state and recovery behavior, which is required for unattended factory loops.
-- Filesystem run directory and checkpoint artifacts remain authoritative in this phase.
+- CXDB adapter is still optional and deferred to post-P31 milestones.
 
 ## Scope
 - Implement context and artifact store behavior.
-- Implement checkpoint serialization and resume logic.
+- Implement checkpoint serialization and resume logic through storage contracts.
 - Implement fidelity resolution and full->summary degrade-on-resume rule.
 - Implement advanced handlers:
   - `parallel`
   - `parallel.fan_in`
   - `stack.manager_loop`
 - Implement loop restart behavior.
+- Persist run graph metadata (DOT source hash/ref + normalized snapshot ref) through storage layer.
 
 ## Out of Scope
 - HTTP server mode and remote host orchestration UX.
@@ -46,7 +48,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - Context updates propagate correctly across stages.
   - Large artifacts are file-backed with stable references.
 
-### [ ] G2. Checkpoint save/load and resume semantics
+### [ ] G2. Checkpoint save/load and resume semantics (store-aware)
 - Work:
   - Implement checkpoint model:
     - current node
@@ -55,7 +57,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
     - retry counters
     - metadata timestamps/ids
   - Save checkpoint after each completed node.
-  - Implement resume flow from checkpoint file.
+  - Implement resume flow through storage abstraction.
   - Enforce fidelity degrade on first resumed hop if prior node was `full`.
 - Files:
   - `crates/forge-attractor/src/checkpoint.rs`
@@ -99,13 +101,13 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
 - DoD:
   - Parallel + fan-in + manager loop behavior satisfies Section 11.6 coverage expectations.
 
-### [ ] G5. Loop restart and run directory lifecycle hardening
+### [ ] G5. Loop restart and run lineage hardening
 - Work:
   - Implement `loop_restart=true` edge behavior:
     - stop current run
-    - start a fresh run directory
-    - maintain run lineage metadata
-  - Harden run directory layout and artifact durability guarantees.
+    - start a fresh run lineage attempt
+    - persist lineage metadata through storage interfaces
+  - Harden artifact durability guarantees.
 - Files:
   - `crates/forge-attractor/src/runner.rs`
   - `crates/forge-attractor/src/runtime.rs`
@@ -122,6 +124,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
     - fidelity degrade-on-resume
     - artifact threshold behavior
     - parallel/fan-in join policies
+  - Run tests against in-memory and filesystem storage backends.
 - Files:
   - `crates/forge-attractor/tests/state_and_resume.rs`
   - `crates/forge-attractor/tests/fidelity.rs`
@@ -147,4 +150,4 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
 - Runtime can recover from interruption using checkpoint state.
 - Fidelity and thread reuse behavior follows spec precedence rules.
 - Parallel and supervisory flows are stable and test-backed.
-
+- Storage-backed run lineage metadata is available for post-P31 CXDB projection.

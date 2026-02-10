@@ -8,16 +8,19 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
 
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Section 11 and Appendix references)
+- Storage extension: `spec/04-cxdb-integration-spec.md` (pre-CXDB phases)
 - Workspace docs baseline: `README.md`, `crates/forge-agent/README.md`
 
 **Context**
-- P27-P30 deliver implementation slices.
+- P27.1 and P28-P30 deliver implementation slices.
 - This phase enforces completeness against spec/03 Section 11 and provides clear audit evidence of conformance.
+- CXDB adapter work remains intentionally deferred until after this closure milestone.
 
 ## Scope
 - Create and maintain a Section 11 DoD matrix roadmap tracker.
 - Add deterministic conformance test suites mapped to each DoD section.
 - Add an optional default-ignored live smoke path for codergen backend integration.
+- Validate deterministic parity across supported local storage backends (in-memory/filesystem).
 - Update workspace/crate docs for Attractor usage and test execution.
 
 ## Out of Scope
@@ -47,6 +50,7 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
     - condition language
     - stylesheet/transforms
   - Use queue interviewer and mocked codergen backend for deterministic behavior.
+  - Run suites with in-memory and filesystem storage backends.
 - Files:
   - `crates/forge-attractor/tests/conformance_parsing.rs`
   - `crates/forge-attractor/tests/conformance_runtime.rs`
@@ -112,6 +116,5 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
 
 ## Exit criteria for this file
 - Section 11 checklist is fully represented and statused in roadmap.
-- Deterministic conformance tests pass in CI.
+- Deterministic conformance tests pass in CI (both memory and filesystem storage backends).
 - Project documentation accurately reflects Attractor implementation and usage.
-
