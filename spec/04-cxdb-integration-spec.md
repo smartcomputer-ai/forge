@@ -122,19 +122,20 @@ After P37 closure:
 
 ### 3.1 Mapping Principles
 
-- One CXDB context represents one logical execution thread.
-- Every durable runtime event is an immutable CXDB turn.
-- Parent-child turn relationships mirror causality.
-- Branching/fan-out/fan-in are represented explicitly via context forks and linkage records.
-- Attractor and agent timelines MUST be correlated by stable identifiers.
+- Contexts represent execution threads, not graph nodes.
+- Every durable runtime fact is an immutable CXDB turn with explicit type/version.
+- Parent-child turn relationships (`parent_turn_id`) are the primary in-context causality mechanism.
+- Cross-context causality is represented via explicit linkage records, not duplicated graph metadata.
+- Runtime payloads MUST stay lean: event-local fields only; avoid copying metadata that can be recovered from parent turns/context lineage.
 
 ### 3.2 Agent Mapping (`02-coding-agent-loop-spec.md`)
 
 Recommended mapping:
-- agent session root -> CXDB context,
-- `UserTurn`, `AssistantTurn`, `ToolResultsTurn`, `SteeringTurn`, `SystemTurn` -> CXDB turns,
+- agent session/thread root -> CXDB context,
+- transcript turns -> CXDB turns (`UserTurn`, `AssistantTurn`, `ToolResultsTurn`, `SteeringTurn`, `SystemTurn`),
+- operational lifecycle turns are separate from transcript turns,
 - subagent spawn -> forked context from triggering parent turn,
-- session lifecycle events MAY be separate event turns.
+- tool lifecycle events join via `call_id`.
 
 Recommended `type_id` namespace:
 - `forge.agent.user_turn`
@@ -142,24 +143,27 @@ Recommended `type_id` namespace:
 - `forge.agent.tool_results_turn`
 - `forge.agent.steering_turn`
 - `forge.agent.system_turn`
-- `forge.agent.event`
+- `forge.agent.session_lifecycle`
+- `forge.agent.tool_call_lifecycle`
 - `forge.link.subagent_spawn`
 
 ### 3.3 Attractor Mapping (`03-attractor-spec.md`)
 
 Recommended mapping:
-- pipeline run root -> CXDB context,
-- stage lifecycle events -> turns,
-- interview/human-gate lifecycle -> turns,
-- checkpoint save -> turn with checkpoint pointer/hash and minimal state summary,
-- route decisions and retries -> turns with explicit routing metadata,
-- DOT source and normalized graph snapshot -> turns with inline payload and/or artifact refs.
+- run context (one per run attempt) is the orchestration spine,
+- stage lifecycle facts -> typed turns on run context,
+- interview/human-gate lifecycle -> typed turns on run context,
+- checkpoint save -> typed turn with checkpoint pointer/hash and compact state summary,
+- route decisions and retries -> typed turns with explicit routing metadata,
+- DOT source and normalized graph snapshot -> typed turns with inline small metadata and artifact refs for large bytes,
+- stages that invoke coding-agent flows MUST emit stage->agent linkage into the run context.
 
 Recommended `type_id` namespace:
-- `forge.attractor.run_event`
-- `forge.attractor.stage_event`
-- `forge.attractor.interview_event`
-- `forge.attractor.checkpoint_event`
+- `forge.attractor.run_lifecycle`
+- `forge.attractor.stage_lifecycle`
+- `forge.attractor.parallel_lifecycle`
+- `forge.attractor.interview_lifecycle`
+- `forge.attractor.checkpoint_saved`
 - `forge.attractor.route_decision`
 - `forge.attractor.dot_source`
 - `forge.attractor.graph_snapshot`
@@ -167,50 +171,48 @@ Recommended `type_id` namespace:
 
 ### 3.4 Cross-layer Correlation Requirements
 
-Persisted records SHOULD include:
+Context topology contract:
+- Run context: one context per attractor run attempt.
+- Thread context: one context per resolved Attractor thread key when fidelity resolves to `full`; reused across nodes/attempts only under that policy.
+- Attempt/branch contexts: forked divergence contexts for semantic alternatives (parallel branches, retry attempts, optional strategy forks), not baseline linear traversal.
+
+Fork trigger policy:
+- parallel fan-out: fork one context per branch from a pre-fan-out base turn,
+- retry: fork each retry attempt from a stable node-entry base turn,
+- wait.human alternatives: fork only when precomputing multiple alternatives; normal selected-edge progression remains linear.
+
+Persisted records SHOULD include only required correlation fields:
 - `run_id`
 - `pipeline_context_id`
 - `node_id`
 - `stage_attempt_id`
-- `agent_session_id` (if stage invokes agent)
+- `agent_session_id` (if stage invokes agent/thread context)
 - `agent_context_id`
 - `agent_head_turn_id` (optional)
-- `parent_turn_id`
-- `sequence_no` (monotonic within logical stream)
+- `sequence_no` (monotonic within logical stream when used)
 
-A `forge.link.stage_to_agent` record MUST be emitted when a stage creates or attaches to an agent session.
+Lineage/provenance rule:
+- the first turn in a newly created/forked context MUST include enough provenance fields to recover lineage without replaying unrelated payloads.
 
-### 3.5 Envelope Requirements
+Payload minimization rule:
+- do not repeat stable metadata in every turn when parent/context lineage already carries it; include only deltas and event-local facts.
 
-Persisted runtime payloads SHOULD use a stable envelope:
+A `forge.link.stage_to_agent` record MUST be emitted when a stage creates or attaches to an agent/thread context.
 
-```
-RECORD StoredTurnEnvelope:
-    schema_version    : Integer
-    event_kind        : String
-    timestamp         : Timestamp
-    correlation       : Object
-    payload           : Object
-```
+### 3.5 Typed Record Requirements (P39+)
+
+Persisted runtime payloads SHOULD use concrete typed records (per `type_id` family), not a generic envelope-over-turn requirement.
 
 Rules:
-- `schema_version` MUST be present.
-- `correlation` MUST include enough keys for attractor <-> agent traversal.
-- `payload` SHOULD avoid non-deterministic fields unless explicitly marked diagnostic.
-- large data SHOULD be referenced as artifacts (`blob_hash`, `size`, optional `mime_type`) instead of inlining all bytes.
+- each runtime record MUST declare `type_id` and `type_version`,
+- schemas MUST define stable numeric msgpack tags per type family,
+- no mandatory `payload_json` field in runtime schemas,
+- `event_kind` is valid only when it is actual domain data for a type family, not as a generic wrapper requirement,
+- payload fields SHOULD be minimal and query-oriented,
+- large values SHOULD be stored as blobs and referenced by hash/ref fields (plus size/mime when needed).
 
-Forge P36 baseline (v1 runtime envelope wire format):
-- envelope bytes are msgpack with stable numeric tags (write path no longer persists JSON envelope bytes),
-- required envelope tags:
-  - `1 schema_version`
-  - `2 run_id`
-  - `3 session_id`
-  - `4 node_id`
-  - `5 stage_attempt_id`
-  - `6 event_kind`
-  - `7 timestamp`
-  - `8 payload_json` (JSON string form of payload object)
-  - `9..18` correlation fields (`corr_run_id`, `corr_pipeline_context_id`, `corr_node_id`, `corr_stage_attempt_id`, `corr_agent_session_id`, `corr_agent_context_id`, `corr_agent_head_turn_id`, `corr_parent_turn_id`, `corr_sequence_no`, `corr_thread_key`)
+Historical note:
+- pre-P39 runtime used a generic envelope-oriented v1 wire model; P39+ moves to typed record families as the active contract.
 
 ### 3.6 Filesystem Lineage Requirements (`fstree`)
 
@@ -235,15 +237,19 @@ For typed projections:
 - unknown tags/fields MUST be forward-compatible for readers.
 
 Runtime bundle publication policy:
-- Forge runtime bootstrap paths SHOULD publish the relevant Forge bundle (`forge.agent.runtime.v1`, `forge.attractor.runtime.v1`) before first append for `required` mode sessions/runs.
+- Forge runtime bootstrap paths SHOULD publish the relevant Forge bundle for the active schema generation (for example `forge.agent.runtime.v2`, `forge.attractor.runtime.v2`) before first append for `required` mode sessions/runs.
 - bundle publication SHOULD be idempotent (safe to retry and safe when already present).
 - field-tag evolution MUST follow type-registry rules (never reuse tags; bump `type_version` on descriptor changes).
 
 ### 3.8 Branch Context Policy
 
-- Agent: one context per session thread; each subagent gets a forked context.
-- Attractor: parallel fan-out branches SHOULD run in forked contexts from a pre-branch turn.
+- Agent: one context per session/thread; each subagent gets a forked context.
+- Attractor: run lifecycle and stage lifecycle facts stay on the run context spine.
+- Attractor thread contexts are used for `fidelity=full` memory continuity, keyed by resolved thread key.
+- Parallel fan-out branches SHOULD run in forked branch contexts from a pre-branch turn.
+- Retry attempts SHOULD run in forked attempt contexts from a stable node-entry base turn.
 - Fan-in turns SHOULD reference all source branch contexts and terminal turn IDs.
+- Implementation sequencing: policy is part of the contract now; full runtime enforcement for true branch execution is delivered in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`.
 
 ---
 
@@ -365,7 +371,7 @@ Preferred snapshot flow:
 1. capture workspace snapshot via `fstree::capture(root, options)`
 2. upload tree/file/symlink blobs via `snapshot.upload(ctx, client)`
 3. append turn with `fs_root_hash` (preferred) or attach after append
-4. store lineage metadata (`fs_root_hash`, policy, stats) in envelope payload
+4. store lineage metadata (`fs_root_hash`, policy, stats) in typed turn payload fields
 
 Rules:
 - snapshot tree entries are sorted by name for deterministic hashing,
@@ -396,9 +402,13 @@ Minimum test tiers:
 Runtime execution still uses a filesystem workspace for tools and local reproducibility.
 
 CXDB persistence SHOULD capture:
-- small metadata directly in turn payloads,
+- small event-local metadata directly in turn payloads,
 - large artifacts via blob refs,
 - full workspace lineage via fs root attachment at configured boundaries.
+
+Payload discipline:
+- prefer compact payloads and fetch broader context from lineage/parent turns when needed,
+- avoid copying unchanged run/stage metadata across every record unless required for query locality.
 
 ### 5.3 Ordering and Retry Guarantees
 
@@ -410,8 +420,10 @@ CXDB persistence SHOULD capture:
 ### 5.4 Branching and Fan-in
 
 - subagents and parallel branches SHOULD fork from explicit pre-branch turns,
+- retries SHOULD fork from stable node-entry base turns for comparability,
 - fan-in/merge events MUST reference all contributing branch contexts,
 - branch lineage MUST remain queryable through correlation metadata.
+- true branch-subflow runtime execution is tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`; this spec defines the required data model regardless of rollout phase.
 
 ### 5.5 Privacy and Retention
 

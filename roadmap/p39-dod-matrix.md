@@ -10,7 +10,7 @@ Legend:
 - [ ] Persisted event/type names map to Forge runtime semantics (Attractor `Pipeline/Stage/Parallel/Interview/Checkpoint`, Agent transcript + lifecycle), not external schema imports. Refs: `crates/forge-attractor/src/events.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-agent/src/session.rs`
 - [ ] Attractor stage-attempt lifecycle is first-class (`node_id`, `stage_attempt_id`, `attempt`, status/retry fields). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/storage/types.rs`
 - [ ] Agent transcript turns remain distinct from agent operational lifecycle telemetry. Refs: `crates/forge-agent/src/session.rs`
-- [ ] Context topology follows run-spine + agent-session model; no default one-context-per-node writes. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
+- [ ] Context topology follows run-spine + thread/agent-context model; no default one-context-per-node writes. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
 - [ ] Context classes are explicit and enforced: run context, thread context (`fidelity=full`), attempt/branch contexts (divergence only). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`
 
 ## Data Model
@@ -24,8 +24,7 @@ Legend:
 - [ ] Cross-context linkage remains explicit and minimal (`pipeline_context_id`, `agent_context_id`, `agent_head_turn_id`). Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/storage/types.rs`
 - [ ] Run-stage events stay on attractor run context spine; agent turns stay on agent-session contexts; joins occur via typed link records. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
 - [ ] Thread-context reuse is keyed by resolved thread key only under `fidelity=full`; non-full fidelity does not reuse thread context. Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/runner.rs`
-- [ ] Parallel fan-out uses one forked context per branch from a pre-fan-out base turn. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/handlers/parallel.rs`
-- [ ] Retry attempts fork from a stable node-entry base turn so attempts are comparable and isolated. Refs: `crates/forge-attractor/src/runner.rs`
+- [ ] Parallel/retry fork policy is frozen in schemas/lineage contract; full runtime enforcement is tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`. Refs: `spec/04-cxdb-integration-spec.md`, `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
 
 ## Registry and Projection
 - [ ] New runtime registry bundles represent typed schemas for all v2 families (clean break). Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/runner.rs`

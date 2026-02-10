@@ -69,6 +69,10 @@ Forge-domain fields (payload/typed fields):
 - agent session/tool lifecycle details
 - cross-context link keys (`agent_context_id`, `agent_head_turn_id`) where needed
 
+Payload simplicity rule:
+- keep record payloads compact and event-local,
+- avoid repeating stable metadata already available from parent turns/context lineage unless needed for practical query locality.
+
 ## Scope
 - Replace generic envelope encoding with typed record schemas per Forge semantic family.
 - Align Attractor persistence with runtime event categories already defined in code.
@@ -78,6 +82,10 @@ Forge-domain fields (payload/typed fields):
 - Use CXDB `parent_turn_id` as canonical in-context causality.
 - Keep only cross-context linkage metadata as explicit typed fields.
 - Update query surfaces to projection-first typed reads.
+
+Implementation phasing note:
+- P39 freezes the context/fork data-model contract and typed schemas.
+- Full runtime enforcement of true branch/attempt fork execution semantics is implemented in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`.
 
 ## Out of Scope
 - Backward compatibility for old envelope payloads.

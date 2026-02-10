@@ -3,6 +3,7 @@
 **Status**
 - Planned (2026-02-10)
 - Rebaselined on post-migration CXDB-first architecture (2026-02-10)
+- Carries P39-deferred runtime enforcement for branch/attempt fork semantics (2026-02-10)
 
 **Goal**
 Replace synthetic parallel summaries with true branch execution semantics, deterministic join/fan-in behavior, and stable branch-level state/event/query contracts for complex DAG orchestration.
@@ -22,6 +23,9 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
 - Existing `parallel` and `parallel.fan_in` behavior is useful but does not yet represent full branch pipeline execution.
 - Large factory graphs need real fan-out/fan-in with deterministic branch lineage, retries, checkpoints, and observability.
 - We need semantics that stay deterministic in single-process mode and remain portable to future distributed coordination.
+- P39 freezes the context topology/data-model contract; this milestone implements the deferred runtime behavior for:
+  - one forked context per fan-out branch,
+  - retry attempts forked from stable node-entry base turns.
 
 ## Scope
 - Implement true branch execution for `parallel` nodes.
@@ -43,6 +47,7 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
   - Preserve parent context isolation with deterministic per-branch clones.
   - Define max concurrency policy and deterministic scheduling order.
   - Emit branch run identity metadata (`branch_id`, `branch_run_id`, lineage refs).
+  - Enforce P39 context-fork policy for branch execution on runtime paths.
 - Files:
   - `crates/forge-attractor/src/handlers/parallel.rs`
   - `crates/forge-attractor/src/runner.rs`
@@ -69,6 +74,7 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
   - Extend checkpoint model to record branch execution state and fan-in readiness.
   - Resume in-progress parallel phases without re-running completed branches.
   - Ensure one-hop fidelity and retry semantics remain correct in branch resumes.
+  - Enforce retry attempt fork-parent policy (stable node-entry base turn) across resume boundaries.
 - Files:
   - `crates/forge-attractor/src/checkpoint.rs`
   - `crates/forge-attractor/src/resume.rs`
