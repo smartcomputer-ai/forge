@@ -455,6 +455,25 @@ fn registry_bundle_bytes(bundle_id: &str, type_id: &str) -> Vec<u8> {
     .expect("bundle json should serialize")
 }
 
+fn value_bundle_bytes(bundle_id: &str, type_id: &str) -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "registry_version": 1,
+        "bundle_id": bundle_id,
+        "types": {
+            type_id: {
+                "versions": {
+                    "1": {
+                        "fields": {
+                            "1": {"name": "value", "type": "string"}
+                        }
+                    }
+                }
+            }
+        }
+    }))
+    .expect("bundle json should serialize")
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct LiveTypedPayload {
     value: String,
@@ -648,6 +667,87 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
         .expect("list should succeed");
     assert!(turns.iter().any(|turn| turn.turn_id == t1.turn_id));
     assert!(turns.iter().any(|turn| turn.turn_id == t2.turn_id));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "live test; requires running CXDB instance"]
+async fn live_binary_typed_projection_data_expected_non_empty_map() {
+    let http_client = LiveHttpClient::from_env();
+    let _ = http_client
+        .get_text("/healthz")
+        .await
+        .expect("healthz endpoint should be reachable");
+
+    let binary_addr = binary_addr_from_env();
+    let binary_client = CxdbSdkBinaryClient::connect(&binary_addr).unwrap_or_else(|error| {
+        panic!("failed to connect CXDB binary endpoint at {binary_addr}: {error}")
+    });
+    let store = CxdbStoreAdapter::new(binary_client, http_client.clone());
+
+    let bundle_id = unique_bundle_id();
+    let type_id = "forge.test.live_binary_projection_payload";
+    store
+        .publish_registry_bundle(RegistryBundle {
+            bundle_id: bundle_id.clone(),
+            bundle_json: value_bundle_bytes(&bundle_id, type_id),
+        })
+        .await
+        .expect("registry bundle publish should succeed");
+
+    let context = store
+        .create_context(None)
+        .await
+        .expect("context create over binary should succeed");
+
+    store
+        .append_turn(AppendTurnRequest {
+            context_id: context.context_id.clone(),
+            parent_turn_id: None,
+            type_id: type_id.to_string(),
+            type_version: 1,
+            payload: rmp_serde::to_vec_named(&json!({ "1": "hello" }))
+                .expect("msgpack payload should encode"),
+            idempotency_key: "live-binary-projection-k1".to_string(),
+            fs_root_hash: None,
+        })
+        .await
+        .expect("binary append should succeed");
+
+    let payload = http_client
+        .get_json(&format!(
+            "/v1/contexts/{}/turns?limit=20&view=typed",
+            context.context_id
+        ))
+        .await
+        .expect("typed projection request should succeed");
+
+    let turns = payload
+        .get("turns")
+        .and_then(Value::as_array)
+        .expect("turns array should exist");
+    let projected = turns
+        .iter()
+        .find(|turn| {
+            turn.get("declared_type")
+                .and_then(|decl| decl.get("type_id"))
+                .and_then(Value::as_str)
+                == Some(type_id)
+        })
+        .expect("projected turn for type should exist");
+
+    let data = projected
+        .get("data")
+        .and_then(Value::as_object)
+        .expect("projected data should be an object");
+    assert!(
+        !data.is_empty(),
+        "expected typed projection data to be populated, got empty object"
+    );
+    assert_eq!(
+        data.get("value").and_then(Value::as_str),
+        Some("hello"),
+        "typed projection should resolve numeric tag 1 -> field name 'value'"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

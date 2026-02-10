@@ -79,8 +79,73 @@ struct ToolCallLifecycleRecord {
     snapshot_stats: Option<FsSnapshotStatsRecord>,
 }
 
-fn encode_typed_record<T: Serialize>(record: &T) -> Result<Vec<u8>, SessionError> {
-    rmp_serde::to_vec_named(record)
+fn type_field_tags(type_id: &str) -> &'static [(&'static str, &'static str)] {
+    const TURN_FIELDS: [(&str, &str); 8] = [
+        ("session_id", "1"),
+        ("timestamp", "2"),
+        ("turn", "3"),
+        ("sequence_no", "4"),
+        ("thread_key", "5"),
+        ("fs_root_hash", "6"),
+        ("snapshot_policy_id", "7"),
+        ("snapshot_stats", "8"),
+    ];
+    const SESSION_LIFECYCLE_FIELDS: [(&str, &str); 9] = [
+        ("session_id", "1"),
+        ("kind", "2"),
+        ("timestamp", "3"),
+        ("final_state", "4"),
+        ("sequence_no", "5"),
+        ("thread_key", "6"),
+        ("fs_root_hash", "7"),
+        ("snapshot_policy_id", "8"),
+        ("snapshot_stats", "9"),
+    ];
+    const TOOL_CALL_LIFECYCLE_FIELDS: [(&str, &str); 13] = [
+        ("session_id", "1"),
+        ("kind", "2"),
+        ("timestamp", "3"),
+        ("call_id", "4"),
+        ("tool_name", "5"),
+        ("arguments", "6"),
+        ("output", "7"),
+        ("is_error", "8"),
+        ("sequence_no", "9"),
+        ("thread_key", "10"),
+        ("fs_root_hash", "11"),
+        ("snapshot_policy_id", "12"),
+        ("snapshot_stats", "13"),
+    ];
+    match type_id {
+        "forge.agent.user_turn"
+        | "forge.agent.assistant_turn"
+        | "forge.agent.tool_results_turn"
+        | "forge.agent.system_turn"
+        | "forge.agent.steering_turn"
+        | "forge.link.subagent_spawn" => &TURN_FIELDS,
+        "forge.agent.session_lifecycle" => &SESSION_LIFECYCLE_FIELDS,
+        "forge.agent.tool_call_lifecycle" => &TOOL_CALL_LIFECYCLE_FIELDS,
+        _ => &[],
+    }
+}
+
+fn encode_typed_record<T: Serialize>(type_id: &str, record: &T) -> Result<Vec<u8>, SessionError> {
+    let value = serde_json::to_value(record)
+        .map_err(|err| SessionError::Persistence(format!("json encode failed: {err}")))?;
+
+    let Some(object) = value.as_object() else {
+        return rmp_serde::to_vec_named(record)
+            .map_err(|err| SessionError::Persistence(format!("msgpack encode failed: {err}")));
+    };
+
+    let mut encoded = object.clone();
+    for (field_name, tag) in type_field_tags(type_id) {
+        if let Some(field_value) = object.get(*field_name) {
+            encoded.insert((*tag).to_string(), field_value.clone());
+        }
+    }
+
+    rmp_serde::to_vec_named(&encoded)
         .map_err(|err| SessionError::Persistence(format!("msgpack encode failed: {err}")))
 }
 
@@ -1055,7 +1120,7 @@ impl Session {
             snapshot_policy_id,
             snapshot_stats,
         };
-        let payload_bytes = encode_typed_record(&record)?;
+        let payload_bytes = encode_typed_record("forge.agent.session_lifecycle", &record)?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
@@ -1268,7 +1333,7 @@ impl Session {
             self.thread_key.clone(),
             snapshot_capture.as_ref(),
         )?;
-        let payload_bytes = encode_typed_record(&record)?;
+        let payload_bytes = encode_typed_record(type_id, &record)?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
@@ -3099,7 +3164,8 @@ mod tests {
             }),
         };
 
-        let bytes = encode_typed_record(&record).expect("encode should succeed");
+        let bytes =
+            encode_typed_record("forge.agent.tool_call_lifecycle", &record).expect("encode should succeed");
         let decoded: ToolCallLifecycleRecord =
             decode_typed_record(&bytes).expect("decode should succeed");
         assert_eq!(decoded, record);

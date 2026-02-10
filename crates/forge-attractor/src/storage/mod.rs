@@ -465,7 +465,7 @@ where
     H: CxdbHttpClient + Send + Sync,
     R: Serialize,
 {
-    let payload = encode_typed_record(&record)?;
+    let payload = encode_typed_record(type_id, &record)?;
     let head = store.get_head(context_id).await.map_err(cxdb_error_to_storage)?;
     let parent_turn_id = if head.turn_id == "0" {
         None
@@ -510,8 +510,147 @@ fn cxdb_error_to_storage(error: CxdbClientError) -> StorageError {
     }
 }
 
-pub(crate) fn encode_typed_record<T: Serialize>(record: &T) -> Result<Vec<u8>, StorageError> {
-    rmp_serde::to_vec_named(record)
+fn type_field_tags(type_id: &str) -> &'static [(&'static str, &'static str)] {
+    const RUN_LIFECYCLE_FIELDS: [(&str, &str); 14] = [
+        ("kind", "1"),
+        ("timestamp", "2"),
+        ("run_id", "3"),
+        ("graph_id", "4"),
+        ("lineage_root_run_id", "5"),
+        ("lineage_attempt", "6"),
+        ("status", "7"),
+        ("reason", "8"),
+        ("restart_target", "9"),
+        ("dot_source_hash", "10"),
+        ("dot_source_ref", "11"),
+        ("graph_snapshot_hash", "12"),
+        ("graph_snapshot_ref", "13"),
+        ("sequence_no", "14"),
+    ];
+    const STAGE_LIFECYCLE_FIELDS: [(&str, &str); 12] = [
+        ("kind", "1"),
+        ("timestamp", "2"),
+        ("run_id", "3"),
+        ("node_id", "4"),
+        ("stage_attempt_id", "5"),
+        ("attempt", "6"),
+        ("status", "7"),
+        ("notes", "8"),
+        ("will_retry", "9"),
+        ("next_attempt", "10"),
+        ("delay_ms", "11"),
+        ("sequence_no", "12"),
+    ];
+    const PARALLEL_LIFECYCLE_FIELDS: [(&str, &str); 13] = [
+        ("kind", "1"),
+        ("timestamp", "2"),
+        ("run_id", "3"),
+        ("node_id", "4"),
+        ("branch_count", "5"),
+        ("branch_id", "6"),
+        ("branch_index", "7"),
+        ("target_node", "8"),
+        ("status", "9"),
+        ("notes", "10"),
+        ("success_count", "11"),
+        ("failure_count", "12"),
+        ("sequence_no", "13"),
+    ];
+    const INTERVIEW_LIFECYCLE_FIELDS: [(&str, &str); 7] = [
+        ("kind", "1"),
+        ("timestamp", "2"),
+        ("run_id", "3"),
+        ("node_id", "4"),
+        ("selected", "5"),
+        ("default_selected", "6"),
+        ("sequence_no", "7"),
+    ];
+    const CHECKPOINT_SAVED_FIELDS: [(&str, &str); 8] = [
+        ("timestamp", "1"),
+        ("run_id", "2"),
+        ("node_id", "3"),
+        ("stage_attempt_id", "4"),
+        ("checkpoint_id", "5"),
+        ("state_summary", "6"),
+        ("checkpoint_hash", "7"),
+        ("sequence_no", "8"),
+    ];
+    const ROUTE_DECISION_FIELDS: [(&str, &str); 9] = [
+        ("timestamp", "1"),
+        ("run_id", "2"),
+        ("node_id", "3"),
+        ("stage_attempt_id", "4"),
+        ("selected_edge", "5"),
+        ("loop_restart", "6"),
+        ("terminated_status", "7"),
+        ("terminated_reason", "8"),
+        ("sequence_no", "9"),
+    ];
+    const STAGE_TO_AGENT_FIELDS: [(&str, &str); 11] = [
+        ("timestamp", "1"),
+        ("run_id", "2"),
+        ("pipeline_context_id", "3"),
+        ("node_id", "4"),
+        ("stage_attempt_id", "5"),
+        ("agent_session_id", "6"),
+        ("agent_context_id", "7"),
+        ("agent_head_turn_id", "8"),
+        ("parent_turn_id", "9"),
+        ("sequence_no", "10"),
+        ("thread_key", "11"),
+    ];
+    const DOT_SOURCE_FIELDS: [(&str, &str); 7] = [
+        ("timestamp", "1"),
+        ("run_id", "2"),
+        ("dot_source", "3"),
+        ("artifact_blob_hash", "4"),
+        ("content_hash", "5"),
+        ("size_bytes", "6"),
+        ("sequence_no", "7"),
+    ];
+    const GRAPH_SNAPSHOT_FIELDS: [(&str, &str); 7] = [
+        ("timestamp", "1"),
+        ("run_id", "2"),
+        ("graph_snapshot", "3"),
+        ("artifact_blob_hash", "4"),
+        ("content_hash", "5"),
+        ("size_bytes", "6"),
+        ("sequence_no", "7"),
+    ];
+    match type_id {
+        types::ATTRACTOR_RUN_LIFECYCLE_TYPE_ID => &RUN_LIFECYCLE_FIELDS,
+        types::ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID => &STAGE_LIFECYCLE_FIELDS,
+        types::ATTRACTOR_PARALLEL_LIFECYCLE_TYPE_ID => &PARALLEL_LIFECYCLE_FIELDS,
+        types::ATTRACTOR_INTERVIEW_LIFECYCLE_TYPE_ID => &INTERVIEW_LIFECYCLE_FIELDS,
+        types::ATTRACTOR_CHECKPOINT_SAVED_TYPE_ID => &CHECKPOINT_SAVED_FIELDS,
+        types::ATTRACTOR_ROUTE_DECISION_TYPE_ID => &ROUTE_DECISION_FIELDS,
+        types::ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID => &STAGE_TO_AGENT_FIELDS,
+        types::ATTRACTOR_DOT_SOURCE_TYPE_ID => &DOT_SOURCE_FIELDS,
+        types::ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID => &GRAPH_SNAPSHOT_FIELDS,
+        _ => &[],
+    }
+}
+
+pub(crate) fn encode_typed_record<T: Serialize>(
+    type_id: &str,
+    record: &T,
+) -> Result<Vec<u8>, StorageError> {
+    let value = serde_json::to_value(record)
+        .map_err(|err| StorageError::Serialization(format!("json encode failed: {err}")))?;
+
+    let Some(object) = value.as_object() else {
+        return rmp_serde::to_vec_named(record)
+            .map_err(|err| StorageError::Serialization(format!("msgpack encode failed: {err}")));
+    };
+
+    let mut encoded = object.clone();
+    for (field_name, tag) in type_field_tags(type_id) {
+        if let Some(field_value) = object.get(*field_name) {
+            encoded.insert((*tag).to_string(), field_value.clone());
+        }
+    }
+
+    rmp_serde::to_vec_named(&encoded)
         .map_err(|err| StorageError::Serialization(format!("msgpack encode failed: {err}")))
 }
 
@@ -542,7 +681,8 @@ mod tests {
             detail: "ok".to_string(),
         };
 
-        let bytes = encode_typed_record(&record).expect("encode should succeed");
+        let bytes =
+            encode_typed_record(types::ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID, &record).expect("encode should succeed");
         let decoded: TestRecord = decode_typed_record(&bytes).expect("decode should succeed");
         assert_eq!(decoded, record);
     }
