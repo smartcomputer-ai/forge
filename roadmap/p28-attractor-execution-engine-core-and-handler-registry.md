@@ -1,7 +1,8 @@
 # P28: Attractor Execution Engine Core and Handler Registry (Spec 03 §§3-4,10)
+_Complete_
 
 **Status**
-- In progress (2026-02-10)
+- Completed (2026-02-10)
 
 **Goal**
 Implement the runtime traversal engine, deterministic edge routing, retry/failure logic, and core handler registry needed to execute normalized Attractor graphs, built on the pre-established storage abstractions.
@@ -172,7 +173,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - Added stage-to-agent linkage emission helper writing `forge.link.stage_to_agent` records via Attractor storage interface.
   - Added deterministic unit tests for options mapping, outcome mapping, thread-key precedence, and link-record emission.
 
-### [ ] G7. Execution tests for Sections 11.3/11.4/11.5/11.6/11.9
+### [x] G7. Execution tests for Sections 11.3/11.4/11.5/11.6/11.9
 - Work:
   - Add runtime tests for linear/branching/retry/goal-gate/human-gate behavior.
   - Add deterministic tests for condition parser/evaluator.
@@ -183,6 +184,14 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/tests/conditions.rs`
 - DoD:
   - Core execution semantics are covered by deterministic test cases.
+- Completed:
+  - Added deterministic integration tests for core execution semantics in:
+    - `crates/forge-attractor/tests/execution_core.rs`
+    - `crates/forge-attractor/tests/handlers_core.rs`
+    - `crates/forge-attractor/tests/conditions.rs`
+  - Added runtime tests for linear/branching/retry/goal-gate/store parity behavior.
+  - Added handler-matrix tests for start/exit/codergen/conditional/wait.human/tool behavior.
+  - Added condition parser/evaluator/routing tests as integration-level checks.
 
 ## Deliverables
 - Runtime traversal engine with deterministic routing/retry behavior.
