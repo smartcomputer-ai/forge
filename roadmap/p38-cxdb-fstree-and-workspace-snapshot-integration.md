@@ -1,4 +1,4 @@
-# P35: CXDB FSTree and Workspace Snapshot Integration
+# P38: CXDB FSTree and Workspace Snapshot Integration
 
 **Status**
 - Planned (2026-02-10)
