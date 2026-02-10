@@ -370,6 +370,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "forge-turnstore-cxdb",
  "serde",
  "serde_json",
  "tempfile",

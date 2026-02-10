@@ -1,10 +1,14 @@
 # P32: CXDB Adapter and Dual-level Persistence Activation (Spec 04 post-P31)
 
+**Complete** (2026-02-10)
+
 **Status**
-- In progress (2026-02-10)
+- Completed (2026-02-10)
 - G1 completed (2026-02-10)
 - G2 completed (2026-02-10)
 - G3 completed (2026-02-10)
+- G4 completed (2026-02-10)
+- G5 completed (2026-02-10)
 
 **Goal**
 Implement CXDB-backed turnstore adapter and activate dual-level persistence for Attractor and Agent timelines, including stage-to-agent drill-down.
@@ -103,7 +107,7 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G4. Cross-backend parity and resilience suite
+### [x] G4. Cross-backend parity and resilience suite
 - Work:
   - Add integration tests comparing outcomes/order/idempotency across memory/fs/cxdb backends.
   - Add failure-mode tests for `off`, `best_effort`, `required` store modes.
@@ -114,8 +118,16 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - `crates/forge-agent/tests/cxdb_parity.rs`
 - DoD:
   - CXDB-backed runs preserve deterministic semantics versus pre-existing backends.
+- Completed:
+  - Added `crates/forge-turnstore/tests/parity.rs` with parity tests across memory/fs/cxdb adapter backends.
+  - Added protocol-contract coverage in turnstore parity tests for:
+    - idempotency TTL expiry behavior
+    - `GET_LAST` chronological ordering (oldest -> newest)
+    - HTTP paging parity via `before_turn_id`
+  - Added `crates/forge-agent/tests/cxdb_parity.rs` covering CXDB-backed session persistence parity and store mode behavior (`off`, `best_effort`, `required`).
+  - Added `crates/forge-attractor/tests/cxdb_parity.rs` covering cross-backend deterministic outcome parity and runtime storage mode resilience (`off`, `best_effort`, `required`) with CXDB-backed store wiring.
 
-### [ ] G5. Operational hardening and runbook docs
+### [x] G5. Operational hardening and runbook docs
 - Work:
   - Document endpoint topology (binary write path, HTTP projection path).
   - Document binary protocol trust-boundary requirements and TLS/network controls.
@@ -126,6 +138,10 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - `spec/04-cxdb-integration-spec.md` (if rollout details change)
 - DoD:
   - Deployment and troubleshooting path is documented and reproducible.
+- Completed:
+  - Updated root `README.md` with CXDB crate inclusion, CXDB test targets, and operational topology summary.
+  - Added `crates/forge-turnstore-cxdb/README.md` runbook covering endpoint topology, trust boundaries, TLS/network guidance, security/redaction expectations, retention hooks, and troubleshooting.
+  - Updated `spec/04-cxdb-integration-spec.md` Phase C notes with implemented rollout details (storage modes, linkage emission, DOT/snapshot persistence model).
 
 ## Deliverables
 - `forge-turnstore-cxdb` adapter crate.

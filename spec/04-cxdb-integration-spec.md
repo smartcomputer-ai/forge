@@ -406,6 +406,13 @@ Renderer loading/execution is a host/UI concern, not a core runtime concern:
 - Dual-write runtime events/turns in `best_effort` mode.
 - Add projection browsing for stage<->agent drill-down.
 
+Phase C implementation notes (2026-02-10):
+- `forge-turnstore-cxdb` crate is present and maps trait operations to CXDB binary/HTTP responsibilities per Section 4.7.
+- Agent bootstrap exposes CXDB constructor wiring and persistence snapshots for stage/agent linkage traversal.
+- Attractor runtime supports storage failure modes (`off`, `best_effort`, `required`) while keeping `best_effort` as default.
+- Stage-to-agent link records are emitted from forge-agent backend execution when pipeline context metadata is available.
+- DOT source and normalized graph snapshots persist with content hash + size, with optional artifact-blob references for CAS-backed payloads.
+
 ### Phase D: CXDB-authoritative and distributed coordination (opt-in)
 - Restore checkpoint/session state from CXDB when enabled.
 - Add conformance tests for replay parity (filesystem vs CXDB-backed).

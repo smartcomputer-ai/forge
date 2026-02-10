@@ -14,12 +14,13 @@ Upstream spec references:
 - `forge-attractor` (`crates/forge-attractor`): DOT pipeline parser/runtime (`spec/03-attractor-spec.md`).
 - `forge-cli` (`crates/forge-cli`): in-process CLI host for running/resuming/inspecting Attractor pipelines.
 - `forge-turnstore` (`crates/forge-turnstore`): turn-store abstractions and local backends used by agent/attractor persistence.
+- `forge-turnstore-cxdb` (`crates/forge-turnstore-cxdb`): CXDB adapter implementing binary write path + HTTP projection path.
 
 ## Current status
 
 - `spec/01` and `spec/02` core layers are implemented with deterministic test coverage.
 - `spec/03` Attractor runtime core, host surfaces, and conformance suites are implemented for headless and CLI-first operation.
-- HTTP server mode and CXDB adapter rollout are intentionally deferred to later roadmap phases.
+- CXDB adapter rollout is active behind optional configuration; local deterministic memory/fs backends remain first-class for tests.
 
 ## Build
 
@@ -38,6 +39,8 @@ cargo test -p forge-llm
 cargo test -p forge-agent
 cargo test -p forge-attractor --tests
 cargo test -p forge-cli --tests
+cargo test -p forge-turnstore
+cargo test -p forge-turnstore-cxdb
 ```
 
 Optional live-provider tests remain ignored by default and require credentials.
@@ -65,7 +68,13 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.js
 - `spec/`: source-of-truth specifications
 - `roadmap/`: milestone plans and completion tracking
 - `examples/`: sample DOT graphs
-- `crates/forge-llm/`, `crates/forge-agent/`, `crates/forge-attractor/`, `crates/forge-cli/`, `crates/forge-turnstore/`
+- `crates/forge-llm/`, `crates/forge-agent/`, `crates/forge-attractor/`, `crates/forge-cli/`, `crates/forge-turnstore/`, `crates/forge-turnstore-cxdb/`
+
+## CXDB operations
+
+- Binary (`:9009`) is the default write-heavy path for runtime appends and artifacts.
+- HTTP (`:9010`) is the default read/projection path for paging and registry APIs.
+- Production deployments should keep binary endpoints on trusted private networks with TLS/network controls and place HTTP behind authenticated gateways.
 
 ## Contributing
 
