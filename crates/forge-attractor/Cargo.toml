@@ -7,7 +7,7 @@ edition = "2024"
 async-trait = "0.1"
 blake3 = "1"
 forge-agent = { path = "../forge-agent" }
-forge-turnstore = { path = "../forge-turnstore" }
+
 forge-cxdb-runtime = { path = "../forge-cxdb-runtime" }
 graphviz-rust = { version = "0.9.6", default-features = false }
 serde = { version = "1", features = ["derive"] }

@@ -3,25 +3,23 @@ use forge_attractor::handlers::codergen::{CodergenBackend, CodergenBackendResult
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
 use forge_attractor::handlers::wait_human::{HumanAnswer, QueueInterviewer, WaitHumanHandler};
 use forge_attractor::{
-    AttractorError, AttractorStorageWriter, Graph, Node, NodeOutcome, NodeStatus, PipelineRunner,
-    PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorError, AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeOutcome,
+    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
-use forge_turnstore::{FsTurnStore, MemoryTurnStore};
+use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 
 #[derive(Clone)]
 enum StorageHarness {
-    Memory(Arc<MemoryTurnStore>),
-    Fs(Arc<FsTurnStore>),
+    Cxdb(Arc<CxdbRuntimeStore<Arc<MockCxdb>, Arc<MockCxdb>>>),
 }
 
 impl StorageHarness {
     fn writer(&self) -> Arc<dyn AttractorStorageWriter> {
         match self {
-            Self::Memory(store) => store.clone(),
-            Self::Fs(store) => store.clone(),
+            Self::Cxdb(store) => store.clone(),
         }
     }
 }
@@ -93,12 +91,17 @@ fn spec_like_graph() -> forge_attractor::Graph {
 
 #[tokio::test(flavor = "current_thread")]
 async fn conformance_runtime_memory_and_fs_expected_routing_retry_goal_gate_and_hitl() {
-    let fs_temp = TempDir::new().expect("tempdir should create");
+    let backend_a = Arc::new(MockCxdb::default());
+    let backend_b = Arc::new(MockCxdb::default());
     let harnesses = vec![
-        StorageHarness::Memory(Arc::new(MemoryTurnStore::new())),
-        StorageHarness::Fs(Arc::new(
-            FsTurnStore::new(fs_temp.path()).expect("fs store should init"),
-        )),
+        StorageHarness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+            backend_a.clone(),
+            backend_a.clone(),
+        ))),
+        StorageHarness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+            backend_b.clone(),
+            backend_b.clone(),
+        ))),
     ];
 
     for harness in harnesses {
@@ -119,6 +122,7 @@ async fn conformance_runtime_memory_and_fs_expected_routing_retry_goal_gate_and_
                     run_id: Some("conformance-runtime".to_string()),
                     logs_root: Some(logs_root.path().to_path_buf()),
                     storage: Some(harness.writer()),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
                     executor: Arc::new(RegistryNodeExecutor::new(registry)),
                     ..RunConfig::default()
                 },

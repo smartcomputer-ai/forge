@@ -1,31 +1,27 @@
 use forge_attractor::{
-    AttractorStageToAgentLinkRecord, AttractorStorageReader, AttractorStorageWriter,
-    CxdbPersistenceMode, PipelineRunner, PipelineStatus, RunConfig, parse_dot,
-    query_latest_checkpoint_snapshot, query_run_metadata, query_stage_timeline,
+    AttractorStageToAgentLinkRecord, AttractorStorageReader, AttractorStorageWriter, ContextId,
+    CxdbPersistenceMode, PipelineRunner, PipelineStatus, RunConfig, attractor_idempotency_key,
+    parse_dot, query_latest_checkpoint_snapshot, query_run_metadata, query_stage_timeline,
     query_stage_to_agent_linkage,
 };
-use forge_turnstore::{ContextId, FsTurnStore, MemoryTurnStore, attractor_idempotency_key};
+use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use std::sync::Arc;
-use tempfile::TempDir;
 
 #[derive(Clone)]
 enum Harness {
-    Memory(Arc<MemoryTurnStore>),
-    Fs(Arc<FsTurnStore>),
+    Cxdb(Arc<CxdbRuntimeStore<Arc<MockCxdb>, Arc<MockCxdb>>>),
 }
 
 impl Harness {
     fn writer(&self) -> Arc<dyn AttractorStorageWriter> {
         match self {
-            Self::Memory(store) => store.clone(),
-            Self::Fs(store) => store.clone(),
+            Self::Cxdb(store) => store.clone(),
         }
     }
 
     fn reader(&self) -> Arc<dyn AttractorStorageReader> {
         match self {
-            Self::Memory(store) => store.clone(),
-            Self::Fs(store) => store.clone(),
+            Self::Cxdb(store) => store.clone(),
         }
     }
 
@@ -46,13 +42,7 @@ impl Harness {
         let key =
             attractor_idempotency_key(run_id, "plan", "plan:attempt:1", "stage_to_agent_link", 999);
         match self {
-            Self::Memory(store) => {
-                store
-                    .append_stage_to_agent_link(context_id, record, key)
-                    .await
-                    .expect("append link should succeed");
-            }
-            Self::Fs(store) => {
+            Self::Cxdb(store) => {
                 store
                     .append_stage_to_agent_link(context_id, record, key)
                     .await
@@ -78,12 +68,17 @@ fn graph_under_test() -> forge_attractor::Graph {
 
 #[tokio::test(flavor = "current_thread")]
 async fn storage_queries_memory_and_fs_expected_parity() {
-    let fs_tmp = TempDir::new().expect("tempdir should create");
+    let backend_a = Arc::new(MockCxdb::default());
+    let backend_b = Arc::new(MockCxdb::default());
     let harnesses = [
-        Harness::Memory(Arc::new(MemoryTurnStore::new())),
-        Harness::Fs(Arc::new(
-            FsTurnStore::new(fs_tmp.path()).expect("fs turnstore should initialize"),
-        )),
+        Harness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+            backend_a.clone(),
+            backend_a.clone(),
+        ))),
+        Harness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+            backend_b.clone(),
+            backend_b.clone(),
+        ))),
     ];
 
     let mut stage_event_kinds_by_backend = Vec::new();

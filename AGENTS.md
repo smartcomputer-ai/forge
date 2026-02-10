@@ -23,8 +23,7 @@ When making changes, align behavior and terminology to these documents first.
 - Transitioning persistence layering (see roadmap/spec 04, p33-p37):
   - CXDB-first runtime contracts are the target architecture for `forge-agent` and `forge-attractor`.
   - Runtime persistence policy is a CXDB enablement toggle: `off` or `required` (no `best_effort` mode).
-  - `crates/forge-turnstore/` is transitional and may be removed or retained only as a compatibility/test shim after the migration completes.
-  - `crates/forge-turnstore-cxdb/` is now a compatibility shim that re-exports `forge-cxdb-runtime`.
+  - Legacy turnstore crates were removed; new persistence work must target `forge-cxdb-runtime` contracts directly.
 
 ## Test Strategy (Concise, Deterministic)
 

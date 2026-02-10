@@ -2,16 +2,15 @@ use async_trait::async_trait;
 use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
+    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StoreContext, StoredTurn, TurnId,
+    TurnStoreError, parse_dot,
 };
 use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
     CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore, HttpStoredTurn, MockCxdb,
 };
-use forge_turnstore::{ContextId, FsTurnStore, StoreContext, StoredTurn, TurnId, TurnStoreError};
 use std::sync::{Arc, Mutex};
-use tempfile::tempdir;
 
 fn graph_under_test() -> Graph {
     parse_dot(
@@ -46,52 +45,39 @@ impl NodeExecutor for AlwaysSuccessExecutor {
 async fn cxdb_memory_fs_parity_expected_equivalent_status_and_nodes() {
     let graph = graph_under_test();
 
-    let memory_store = Arc::new(forge_turnstore::MemoryTurnStore::new());
-    let memory = PipelineRunner
+    let backend_a = Arc::new(MockCxdb::default());
+    let first_store = Arc::new(CxdbRuntimeStore::new(backend_a.clone(), backend_a.clone()));
+    let first = PipelineRunner
         .run(
             &graph,
             RunConfig {
-                storage: Some(memory_store),
+                storage: Some(first_store),
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 executor: Arc::new(AlwaysSuccessExecutor),
                 ..RunConfig::default()
             },
         )
         .await
-        .expect("memory run should succeed");
+        .expect("first run should succeed");
 
-    let tmp = tempdir().expect("tempdir should create");
-    let fs_store = Arc::new(FsTurnStore::new(tmp.path()).expect("fs store should create"));
-    let fs = PipelineRunner
+    let backend_b = Arc::new(MockCxdb::default());
+    let second_store = Arc::new(CxdbRuntimeStore::new(backend_b.clone(), backend_b.clone()));
+    let second = PipelineRunner
         .run(
             &graph,
             RunConfig {
-                storage: Some(fs_store),
+                storage: Some(second_store),
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 executor: Arc::new(AlwaysSuccessExecutor),
                 ..RunConfig::default()
             },
         )
         .await
-        .expect("fs run should succeed");
+        .expect("second run should succeed");
 
-    let cxdb_backend = Arc::new(MockCxdb::default());
-    let cxdb_store = Arc::new(CxdbRuntimeStore::new(cxdb_backend.clone(), cxdb_backend));
-    let cxdb = PipelineRunner
-        .run(
-            &graph,
-            RunConfig {
-                storage: Some(cxdb_store),
-                executor: Arc::new(AlwaysSuccessExecutor),
-                ..RunConfig::default()
-            },
-        )
-        .await
-        .expect("cxdb run should succeed");
-
-    assert_eq!(memory.status, PipelineStatus::Success);
-    assert_eq!(memory.status, fs.status);
-    assert_eq!(memory.status, cxdb.status);
-    assert_eq!(memory.completed_nodes, fs.completed_nodes);
-    assert_eq!(memory.completed_nodes, cxdb.completed_nodes);
+    assert_eq!(first.status, PipelineStatus::Success);
+    assert_eq!(first.status, second.status);
+    assert_eq!(first.completed_nodes, second.completed_nodes);
 }
 
 #[derive(Default)]

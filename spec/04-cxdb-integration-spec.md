@@ -41,7 +41,7 @@ Implications:
 - `forge-agent` and `forge-attractor` persist runtime events via CXDB-facing contracts.
 - `forge-llm` remains CXDB-independent.
 - `forge-cxdb-runtime` is the runtime CXDB integration crate.
-- `forge-turnstore` and `forge-turnstore-cxdb` are transitional compatibility artifacts and are not the long-term runtime contract.
+- legacy turnstore crates are removed from active runtime architecture.
 
 ### 1.3 Goals
 
@@ -83,13 +83,11 @@ Rules:
 
 Current workspace includes:
 - `crates/forge-cxdb` (vendored CXDB client and fstree helpers),
-- `crates/forge-cxdb-runtime` (CXDB runtime integration contracts and deterministic fakes),
-- `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` (transitional compatibility path).
+- `crates/forge-cxdb-runtime` (CXDB runtime integration contracts and deterministic fakes).
 
 Target direction:
 - runtime cores (`forge-agent`, `forge-attractor`) use CXDB-first persistence contracts,
 - `forge-cxdb-runtime` remains the shared runtime CXDB boundary,
-- turnstore crates are either removed or retained only as explicitly deprecated compatibility/test shims,
 - host/bootstrap layers own endpoint/wiring policy.
 
 ### 2.4 CXDB Protocol Usage Policy

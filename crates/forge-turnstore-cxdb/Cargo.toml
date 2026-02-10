@@ -1,7 +1,0 @@
-[package]
-name = "forge-turnstore-cxdb"
-version = "0.1.0"
-edition = "2024"
-
-[dependencies]
-forge-cxdb-runtime = { path = "../forge-cxdb-runtime" }

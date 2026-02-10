@@ -517,12 +517,12 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{StoreContext, StoredTurn, TurnStoreError};
     use crate::{
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
         AttractorStageEventRecord, parse_dot,
     };
     use forge_agent::{SessionState, ToolCallHook};
-    use forge_turnstore::{StoreContext, StoredTurn, TurnStoreError};
     use serde_json::json;
 
     struct StubSubmitter {

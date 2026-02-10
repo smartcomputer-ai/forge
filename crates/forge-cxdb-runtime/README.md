@@ -5,9 +5,9 @@ CXDB-backed implementation of Forge turnstore interfaces.
 ## Scope
 
 This crate provides:
-- `TurnStore` mapping to CXDB binary + HTTP operations
-- `TypedTurnStore` mapping to CXDB registry HTTP APIs
-- `ArtifactStore` mapping to CXDB blob/file attachment binary APIs
+- runtime context/turn contracts over CXDB binary + HTTP operations
+- registry bundle publication/read helpers over CXDB HTTP APIs
+- blob/file attachment helpers over CXDB binary APIs
 
 ## Endpoint topology
 

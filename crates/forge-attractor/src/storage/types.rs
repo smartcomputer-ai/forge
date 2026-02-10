@@ -1,4 +1,4 @@
-use forge_turnstore::{BlobHash, ContextId, CorrelationMetadata, StoredTurnEnvelope, TurnId};
+use crate::storage::{BlobHash, ContextId, CorrelationMetadata, StoredTurnEnvelope, TurnId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 

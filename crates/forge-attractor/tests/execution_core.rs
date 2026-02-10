@@ -2,12 +2,11 @@ use async_trait::async_trait;
 use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
+    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StoreContext,
+    StoredTurn, TurnId, TurnStoreError, parse_dot,
 };
-use forge_turnstore::{
-    ContextId, MemoryTurnStore, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
-};
+use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
 
 #[derive(Default)]
@@ -244,7 +243,8 @@ async fn execution_store_enabled_memory_turnstore_expected_persisted_turns() {
         }
         "#,
     );
-    let store = Arc::new(MemoryTurnStore::new());
+    let backend = Arc::new(MockCxdb::default());
+    let store = Arc::new(CxdbRuntimeStore::new(backend.clone(), backend.clone()));
 
     let result = PipelineRunner
         .run(

@@ -1,13 +1,13 @@
 # P37: Turnstore Sunset and CXDB Hardening Completion
 
 **Status**
-- Planned (2026-02-10)
 - In progress (2026-02-10)
-- Partial progress (2026-02-10):
-  - Introduced `crates/forge-cxdb-runtime` as the CXDB runtime integration crate.
-  - Migrated `forge-agent`, `forge-attractor`, and `forge-cli` dependencies from `forge-turnstore-cxdb` to `forge-cxdb-runtime`.
-  - Converted `forge-turnstore-cxdb` into a compatibility shim re-exporting `forge-cxdb-runtime`.
-  - Removed stale runtime constructor aliases containing `turn_store` in `forge-agent`.
+- G1 completed (2026-02-10)
+- G2 in progress (2026-02-10)
+- Progress update (2026-02-10):
+  - Removed `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` from workspace membership and source tree.
+  - Migrated runtime crates to `crates/forge-cxdb-runtime` contracts only.
+  - Rebased `forge-attractor` storage contracts to local CXDB-first types/errors with no turnstore crate dependency.
 
 **Goal**
 Complete the CXDB-first migration by retiring `forge-turnstore` abstraction dependencies from runtime cores, finalizing crate/workspace cleanup, and hardening CXDB operational guarantees.
@@ -35,7 +35,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Runtime dependency cleanup and turnstore sunset
+### [x] G1. Runtime dependency cleanup and turnstore sunset
 - Work:
   - Remove `forge-turnstore` runtime dependencies from `forge-agent` and `forge-attractor`.
   - Decide final disposition:

@@ -1,9 +1,9 @@
 #![doc = r#"
-CXDB-backed adapter for `forge-turnstore` traits.
+CXDB runtime integration contracts and clients.
 
 Operation mapping (spec cross-check):
 
-| Forge trait method | CXDB API | Spec section |
+| Runtime method | CXDB API | Spec section |
 | --- | --- | --- |
 | `TurnStore::create_context` | binary `CTX_CREATE` | `spec/cxdb/protocol.md` "2. CTX_CREATE" |
 | `TurnStore::fork_context` | binary `CTX_FORK` | `spec/cxdb/protocol.md` "3. CTX_FORK" |

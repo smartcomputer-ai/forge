@@ -1,5 +1,5 @@
 use crate::Diagnostic;
-use forge_turnstore::TurnStoreError;
+use crate::storage::TurnStoreError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]

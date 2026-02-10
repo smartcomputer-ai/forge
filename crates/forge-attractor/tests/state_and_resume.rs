@@ -2,9 +2,9 @@ use async_trait::async_trait;
 use forge_attractor::{
     AttractorError, AttractorStorageWriter, CheckpointMetadata, CheckpointNodeOutcome,
     CheckpointState, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome, PipelineRunner,
-    PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    PipelineStatus, RunConfig, RuntimeContext, StoredTurn, parse_dot,
 };
-use forge_turnstore::{FsTurnStore, MemoryTurnStore, StoredTurn, TurnStore};
+use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -12,29 +12,36 @@ use tempfile::TempDir;
 
 #[derive(Clone)]
 enum StoreHarness {
-    Memory(Arc<MemoryTurnStore>),
-    Fs(Arc<FsTurnStore>),
+    Cxdb(Arc<CxdbRuntimeStore<Arc<MockCxdb>, Arc<MockCxdb>>>),
 }
 
 impl StoreHarness {
     fn writer(&self) -> Arc<dyn AttractorStorageWriter> {
         match self {
-            Self::Memory(store) => store.clone(),
-            Self::Fs(store) => store.clone(),
+            Self::Cxdb(store) => store.clone(),
         }
     }
 
     async fn list_turns(&self, context_id: &str) -> Vec<StoredTurn> {
         let context_id = context_id.to_string();
         match self {
-            Self::Memory(store) => store
+            Self::Cxdb(store) => store
                 .list_turns(&context_id, None, 200)
                 .await
-                .expect("memory turns should list"),
-            Self::Fs(store) => store
-                .list_turns(&context_id, None, 200)
-                .await
-                .expect("fs turns should list"),
+                .expect("turns should list")
+                .into_iter()
+                .map(|turn| StoredTurn {
+                    context_id: turn.context_id,
+                    turn_id: turn.turn_id,
+                    parent_turn_id: turn.parent_turn_id,
+                    depth: turn.depth,
+                    type_id: turn.type_id,
+                    type_version: turn.type_version,
+                    payload: turn.payload,
+                    idempotency_key: turn.idempotency_key,
+                    content_hash: turn.content_hash,
+                })
+                .collect(),
         }
     }
 }
@@ -85,16 +92,20 @@ fn graph_under_test() -> Graph {
 async fn checkpoint_roundtrip_and_resume_parity_memory_and_fs_expected_deterministic_continuation()
 {
     for harness in [
-        StoreHarness::Memory(Arc::new(MemoryTurnStore::new())),
-        StoreHarness::Fs(Arc::new(
-            FsTurnStore::new(
-                TempDir::new()
-                    .expect("temp dir should create")
-                    .path()
-                    .to_path_buf(),
-            )
-            .expect("fs turnstore should initialize"),
-        )),
+        {
+            let backend = Arc::new(MockCxdb::default());
+            StoreHarness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+                backend.clone(),
+                backend.clone(),
+            )))
+        },
+        {
+            let backend = Arc::new(MockCxdb::default());
+            StoreHarness::Cxdb(Arc::new(CxdbRuntimeStore::new(
+                backend.clone(),
+                backend.clone(),
+            )))
+        },
     ] {
         let logs_root = TempDir::new().expect("temp dir should create");
         let graph = graph_under_test();

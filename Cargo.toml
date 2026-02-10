@@ -3,10 +3,8 @@ members = [
     "crates/forge-llm",
     "crates/forge-agent",
     "crates/forge-attractor",
-    "crates/forge-cli",
-    "crates/forge-turnstore",
-    "crates/forge-cxdb-runtime",
-    "crates/forge-turnstore-cxdb",
     "crates/forge-cxdb",
+    "crates/forge-cxdb-runtime",
+    "crates/forge-cli",
 ]
 resolver = "2"

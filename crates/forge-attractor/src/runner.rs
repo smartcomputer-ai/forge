@@ -1488,6 +1488,7 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
     use crate::{
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorStorageWriter,
         CheckpointMetadata, CheckpointNodeOutcome, CheckpointState, NodeExecutor, NodeOutcome,
@@ -1495,7 +1496,6 @@ mod tests {
         runtime_event_channel, storage::SharedAttractorStorageWriter,
     };
     use async_trait::async_trait;
-    use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
     use serde_json::{Value, json};
     use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
     use tempfile::TempDir;
