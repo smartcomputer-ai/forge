@@ -5,7 +5,10 @@ use std::sync::Arc;
 pub mod codergen;
 pub mod conditional;
 pub mod exit;
+pub mod parallel;
+pub mod parallel_fan_in;
 pub mod registry;
+pub mod stack_manager_loop;
 pub mod start;
 pub mod tool;
 pub mod wait_human;
@@ -57,6 +60,15 @@ pub fn core_registry_with_codergen_backend(
         Arc::new(wait_human::WaitHumanHandler::new(Arc::new(
             wait_human::AutoApproveInterviewer,
         ))),
+    );
+    registry.register_type("parallel", Arc::new(parallel::ParallelHandler));
+    registry.register_type(
+        "parallel.fan_in",
+        Arc::new(parallel_fan_in::ParallelFanInHandler),
+    );
+    registry.register_type(
+        "stack.manager_loop",
+        Arc::new(stack_manager_loop::StackManagerLoopHandler),
     );
     registry.register_type("tool", Arc::new(tool::ToolHandler));
     registry

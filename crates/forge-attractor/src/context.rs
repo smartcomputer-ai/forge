@@ -116,7 +116,9 @@ impl ContextStore {
 
 pub fn validate_context_key(key: &str) -> Result<(), AttractorError> {
     if key.is_empty() {
-        return Err(AttractorError::Runtime("context key cannot be empty".to_string()));
+        return Err(AttractorError::Runtime(
+            "context key cannot be empty".to_string(),
+        ));
     }
     if key.len() > MAX_KEY_LENGTH {
         return Err(AttractorError::Runtime(format!(
@@ -228,8 +230,14 @@ mod tests {
             .set("context.key", Value::String("clone".to_string()))
             .expect("set on clone should succeed");
 
-        assert_eq!(original.get("context.key").expect("get should succeed"), Some(json!("original")));
-        assert_eq!(cloned.get("context.key").expect("get should succeed"), Some(json!("clone")));
+        assert_eq!(
+            original.get("context.key").expect("get should succeed"),
+            Some(json!("original"))
+        );
+        assert_eq!(
+            cloned.get("context.key").expect("get should succeed"),
+            Some(json!("clone"))
+        );
     }
 
     #[test]

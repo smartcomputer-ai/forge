@@ -58,6 +58,14 @@ pub struct CheckpointState {
     pub current_node_fidelity: Option<String>,
     pub terminal_status: Option<String>,
     pub terminal_failure_reason: Option<String>,
+    #[serde(default)]
+    pub graph_dot_source_hash: Option<String>,
+    #[serde(default)]
+    pub graph_dot_source_ref: Option<String>,
+    #[serde(default)]
+    pub graph_snapshot_hash: Option<String>,
+    #[serde(default)]
+    pub graph_snapshot_ref: Option<String>,
 }
 
 impl CheckpointState {
@@ -170,6 +178,10 @@ mod tests {
             current_node_fidelity: Some("full".to_string()),
             terminal_status: None,
             terminal_failure_reason: None,
+            graph_dot_source_hash: Some("dot-hash".to_string()),
+            graph_dot_source_ref: Some("artifact://dot".to_string()),
+            graph_snapshot_hash: Some("snapshot-hash".to_string()),
+            graph_snapshot_ref: Some("artifact://snapshot".to_string()),
         };
 
         checkpoint

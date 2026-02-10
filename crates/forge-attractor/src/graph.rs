@@ -141,6 +141,8 @@ pub struct Graph {
     pub attrs: Attributes,
     pub nodes: BTreeMap<String, Node>,
     pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing, skip_deserializing)]
+    pub source_dot: Option<String>,
 }
 
 impl Graph {
@@ -150,6 +152,7 @@ impl Graph {
             attrs: Attributes::new(),
             nodes: BTreeMap::new(),
             edges: Vec::new(),
+            source_dot: None,
         }
     }
 

@@ -40,7 +40,10 @@ pub struct ArtifactStore {
 }
 
 impl ArtifactStore {
-    pub fn new(base_dir: Option<PathBuf>, file_backing_threshold_bytes: usize) -> Result<Self, AttractorError> {
+    pub fn new(
+        base_dir: Option<PathBuf>,
+        file_backing_threshold_bytes: usize,
+    ) -> Result<Self, AttractorError> {
         let threshold = if file_backing_threshold_bytes == 0 {
             DEFAULT_FILE_BACKING_THRESHOLD_BYTES
         } else {
@@ -87,7 +90,8 @@ impl ArtifactStore {
             ))
         })?;
         let size_bytes = serialized.len();
-        let should_file_back = self.base_dir.is_some() && size_bytes > self.file_backing_threshold_bytes;
+        let should_file_back =
+            self.base_dir.is_some() && size_bytes > self.file_backing_threshold_bytes;
 
         let storage = if should_file_back {
             let file_path = self.file_path_for_id(&artifact_id)?;
@@ -136,9 +140,7 @@ impl ArtifactStore {
                 .map_err(|_| AttractorError::Runtime("artifact read lock poisoned".to_string()))?;
             entries.get(artifact_id).cloned()
         }
-        .ok_or_else(|| {
-            AttractorError::Runtime(format!("artifact '{}' not found", artifact_id))
-        })?;
+        .ok_or_else(|| AttractorError::Runtime(format!("artifact '{}' not found", artifact_id)))?;
 
         match entry.storage {
             ArtifactStorage::Inline(value) => Ok(value),

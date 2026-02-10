@@ -23,10 +23,11 @@ pub fn resolve_resume_state(
     let next_node_id = if terminal_status.is_some() {
         None
     } else {
-        checkpoint
-            .next_node
-            .clone()
-            .or_else(|| infer_next_node_from_checkpoint(graph, &checkpoint).ok().flatten())
+        checkpoint.next_node.clone().or_else(|| {
+            infer_next_node_from_checkpoint(graph, &checkpoint)
+                .ok()
+                .flatten()
+        })
     };
 
     if let Some(next_node) = next_node_id.as_deref() {
@@ -137,8 +138,10 @@ pub fn infer_next_node_from_checkpoint(
     };
     let runtime_outcome = outcome.to_runtime()?;
 
-    Ok(select_next_edge(graph, current, &runtime_outcome, &checkpoint.context_values)
-        .map(|edge| edge.to.clone()))
+    Ok(
+        select_next_edge(graph, current, &runtime_outcome, &checkpoint.context_values)
+            .map(|edge| edge.to.clone()),
+    )
 }
 
 #[cfg(test)]
@@ -205,6 +208,10 @@ mod tests {
                 current_node_fidelity: Some("full".to_string()),
                 terminal_status: None,
                 terminal_failure_reason: None,
+                graph_dot_source_hash: None,
+                graph_dot_source_ref: None,
+                graph_snapshot_hash: None,
+                graph_snapshot_ref: None,
             },
         );
 

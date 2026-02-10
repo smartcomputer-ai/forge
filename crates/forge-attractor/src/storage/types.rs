@@ -6,6 +6,8 @@ pub const ATTRACTOR_RUN_EVENT_TYPE_ID: &str = "forge.attractor.run_event";
 pub const ATTRACTOR_STAGE_EVENT_TYPE_ID: &str = "forge.attractor.stage_event";
 pub const ATTRACTOR_CHECKPOINT_EVENT_TYPE_ID: &str = "forge.attractor.checkpoint_event";
 pub const ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID: &str = "forge.link.stage_to_agent";
+pub const ATTRACTOR_DOT_SOURCE_TYPE_ID: &str = "forge.attractor.dot_source";
+pub const ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID: &str = "forge.attractor.graph_snapshot";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttractorCorrelation {
@@ -75,6 +77,24 @@ pub struct StageToAgentLinkRecord {
     pub parent_turn_id: Option<TurnId>,
     pub sequence_no: u64,
     pub thread_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DotSourceRecord {
+    pub timestamp: String,
+    pub dot_source: String,
+    pub content_hash: BlobHash,
+    pub size_bytes: u64,
+    pub correlation: AttractorCorrelation,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GraphSnapshotRecord {
+    pub timestamp: String,
+    pub graph_snapshot: Value,
+    pub content_hash: BlobHash,
+    pub size_bytes: u64,
+    pub correlation: AttractorCorrelation,
 }
 
 impl StageToAgentLinkRecord {
@@ -162,6 +182,42 @@ pub fn stage_to_agent_link_envelope(record: StageToAgentLinkRecord) -> StoredTur
             "thread_key": record.thread_key,
         }),
         correlation,
+    }
+}
+
+pub fn dot_source_envelope(record: DotSourceRecord) -> StoredTurnEnvelope {
+    StoredTurnEnvelope {
+        schema_version: 1,
+        run_id: Some(record.correlation.run_id.clone()),
+        session_id: None,
+        node_id: record.correlation.node_id.clone(),
+        stage_attempt_id: record.correlation.stage_attempt_id.clone(),
+        event_kind: "dot_source_persisted".to_string(),
+        timestamp: record.timestamp,
+        payload: serde_json::json!({
+            "dot_source": record.dot_source,
+            "content_hash": record.content_hash,
+            "size_bytes": record.size_bytes,
+        }),
+        correlation: record.correlation.to_store_correlation(),
+    }
+}
+
+pub fn graph_snapshot_envelope(record: GraphSnapshotRecord) -> StoredTurnEnvelope {
+    StoredTurnEnvelope {
+        schema_version: 1,
+        run_id: Some(record.correlation.run_id.clone()),
+        session_id: None,
+        node_id: record.correlation.node_id.clone(),
+        stage_attempt_id: record.correlation.stage_attempt_id.clone(),
+        event_kind: "graph_snapshot_persisted".to_string(),
+        timestamp: record.timestamp,
+        payload: serde_json::json!({
+            "graph_snapshot": record.graph_snapshot,
+            "content_hash": record.content_hash,
+            "size_bytes": record.size_bytes,
+        }),
+        correlation: record.correlation.to_store_correlation(),
     }
 }
 

@@ -1,18 +1,29 @@
 use crate::{
-    AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorError,
-    AttractorRunEventRecord, AttractorStageEventRecord, CheckpointMetadata, CheckpointNodeOutcome,
-    CheckpointState, ContextStore, Graph, Node, NodeOutcome, NodeStatus, PipelineRunResult,
-    PipelineStatus, RetryPolicy, RunConfig, RuntimeContext, apply_resume_fidelity_override,
+    AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorDotSourceRecord,
+    AttractorError, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
+    AttractorStageEventRecord, CheckpointMetadata, CheckpointNodeOutcome, CheckpointState,
+    ContextStore, Graph, Node, NodeOutcome, NodeStatus, PipelineRunResult, PipelineStatus,
+    RetryPolicy, RunConfig, RuntimeContext, apply_resume_fidelity_override,
     build_resume_runtime_state, build_retry_policy, checkpoint_path_for_run, delay_for_attempt_ms,
-    find_incoming_edge, finalize_retry_exhausted, resolve_fidelity_mode, resolve_thread_key,
+    finalize_retry_exhausted, find_incoming_edge, resolve_fidelity_mode, resolve_thread_key,
     select_next_edge, should_retry_outcome, validate_or_raise,
 };
 use forge_turnstore::{ContextId, attractor_idempotency_key};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone, Debug, Default)]
+struct PersistedRunGraphMetadata {
+    dot_source_hash: Option<String>,
+    dot_source_ref: Option<String>,
+    graph_snapshot_hash: Option<String>,
+    graph_snapshot_ref: Option<String>,
+}
 
 #[derive(Debug, Default)]
 pub struct PipelineRunner;
@@ -25,263 +36,384 @@ impl PipelineRunner {
     ) -> Result<PipelineRunResult, AttractorError> {
         validate_or_raise(graph, &[])?;
 
-        let run_id = config
+        let lineage_root_run_id = config
             .run_id
             .take()
             .unwrap_or_else(|| format!("{}-run", graph.id));
-        let checkpoint_path = checkpoint_path_for_run(
-            config.logs_root.as_deref(),
-            config.resume_from_checkpoint.as_deref(),
-        );
-        let mut context_store = ContextStore::from_values(mirror_graph_attributes(graph));
-        if let Some(logs_root) = config.logs_root.as_ref() {
-            context_store.set(
-                "runtime.logs_root",
-                Value::String(logs_root.to_string_lossy().to_string()),
-            )?;
-        }
-        let mut completed_nodes: Vec<String> = Vec::new();
-        let mut node_outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
-        let mut node_retry_counts: BTreeMap<String, u32> = BTreeMap::new();
-        let mut current_node_id = resolve_start_node(graph)?.id.clone();
-        let mut terminal_failure: Option<String> = None;
-        let mut forced_terminal_status: Option<PipelineStatus> = None;
-        let mut resume_fidelity_degrade_pending = false;
+        let mut storage_writer = config.storage.take();
+        let mut base_turn_id = config.base_turn_id.take();
+        let mut resume_path_for_attempt = config.resume_from_checkpoint.take();
+        let mut restart_start_node: Option<String> = None;
+        let mut lineage_attempt = 1u32;
 
-        if let Some(resume_path) = config.resume_from_checkpoint.as_ref() {
-            let resume = build_resume_runtime_state(graph, resume_path)?;
-            if run_id != resume.checkpoint_run_id() {
-                return Err(AttractorError::Runtime(format!(
-                    "resume run_id mismatch: config run_id '{}' vs checkpoint run_id '{}'",
-                    run_id,
-                    resume.checkpoint_run_id()
-                )));
-            }
-            context_store = ContextStore::from_values(resume.context);
-            if let Some(logs_root) = config.logs_root.as_ref() {
+        loop {
+            let active_run_id = if lineage_attempt == 1 {
+                lineage_root_run_id.clone()
+            } else {
+                format!("{}:attempt:{}", lineage_root_run_id, lineage_attempt)
+            };
+            let attempt_logs_root =
+                prepare_attempt_logs_root(config.logs_root.as_ref(), lineage_attempt)?;
+            let checkpoint_path = checkpoint_path_for_run(
+                attempt_logs_root.as_deref(),
+                resume_path_for_attempt.as_deref(),
+            );
+
+            let mut context_store = ContextStore::from_values(mirror_graph_attributes(graph));
+            if let Some(logs_root) = attempt_logs_root.as_ref() {
                 context_store.set(
                     "runtime.logs_root",
                     Value::String(logs_root.to_string_lossy().to_string()),
                 )?;
-            }
-
-            completed_nodes = resume.completed_nodes;
-            node_outcomes = resume.node_outcomes;
-            node_retry_counts = resume.node_retries;
-            terminal_failure = resume.terminal_failure_reason;
-            forced_terminal_status = resume.terminal_status;
-            resume_fidelity_degrade_pending = resume.degrade_fidelity_once;
-            apply_resume_fidelity_override(&context_store, resume_fidelity_degrade_pending)?;
-            if let Some(next_node_id) = resume.next_node_id {
-                current_node_id = next_node_id;
-            } else if forced_terminal_status.is_none() {
-                return Err(AttractorError::Runtime(
-                    "resume checkpoint has no next node and no terminal status".to_string(),
-                ));
-            }
-        }
-
-        let mut storage = RunStorage::new(
-            config.storage.take(),
-            run_id.clone(),
-            config.base_turn_id.take(),
-        )
-        .await?;
-
-        storage
-            .append_run_event("run_initialized", json!({ "graph_id": graph.id }))
-            .await?;
-        if config.resume_from_checkpoint.is_some() {
-            storage
-                .append_run_event("run_resumed", json!({ "graph_id": graph.id }))
-                .await?;
-        }
-
-        while forced_terminal_status.is_none() {
-            let node = graph.nodes.get(&current_node_id).ok_or_else(|| {
-                AttractorError::InvalidGraph(format!(
-                    "runtime traversal reached unknown node '{}'",
-                    current_node_id
-                ))
-            })?;
-            context_store.set("current_node", Value::String(node.id.clone()))?;
-            let previous_node_id = completed_nodes.last().cloned();
-            let incoming_edge = find_incoming_edge(graph, &node.id, previous_node_id.as_deref());
-            let mut effective_fidelity = resolve_fidelity_mode(graph, &node.id, incoming_edge);
-            if let Some(resume_override) = context_store
-                .get("internal.resume.fidelity_override_once")?
-                .and_then(|value| value.as_str().map(ToOwned::to_owned))
-            {
-                effective_fidelity = resume_override;
+                context_store.set(
+                    "runtime.artifacts_dir",
+                    Value::String(logs_root.join("artifacts").to_string_lossy().to_string()),
+                )?;
             }
             context_store.set(
-                "internal.fidelity.mode",
-                Value::String(effective_fidelity.clone()),
+                "internal.lineage.root_run_id",
+                Value::String(lineage_root_run_id.clone()),
             )?;
-            context_store.set("fidelity", Value::String(effective_fidelity.clone()))?;
-            if effective_fidelity == "full" {
-                let thread_key =
-                    resolve_thread_key(graph, &node.id, incoming_edge, previous_node_id.as_deref());
-                if let Some(thread_key) = thread_key {
-                    context_store.set("thread_key", Value::String(thread_key.clone()))?;
+            context_store.set(
+                "internal.lineage.attempt",
+                Value::Number((lineage_attempt as u64).into()),
+            )?;
+            if lineage_attempt > 1 {
+                context_store.set(
+                    "internal.lineage.parent_run_id",
+                    Value::String(format!(
+                        "{}:attempt:{}",
+                        lineage_root_run_id,
+                        lineage_attempt - 1
+                    )),
+                )?;
+            }
+
+            let mut completed_nodes: Vec<String> = Vec::new();
+            let mut node_outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
+            let mut node_retry_counts: BTreeMap<String, u32> = BTreeMap::new();
+            let mut current_node_id = restart_start_node
+                .clone()
+                .unwrap_or(resolve_start_node(graph)?.id.clone());
+            let mut terminal_failure: Option<String> = None;
+            let mut forced_terminal_status: Option<PipelineStatus> = None;
+            let mut resume_fidelity_degrade_pending = false;
+            let mut restart_target: Option<String> = None;
+
+            if let Some(resume_path) = resume_path_for_attempt.as_ref() {
+                let resume = build_resume_runtime_state(graph, resume_path)?;
+                if active_run_id != resume.checkpoint_run_id() {
+                    return Err(AttractorError::Runtime(format!(
+                        "resume run_id mismatch: config run_id '{}' vs checkpoint run_id '{}'",
+                        active_run_id,
+                        resume.checkpoint_run_id()
+                    )));
+                }
+                context_store = ContextStore::from_values(resume.context);
+                if let Some(logs_root) = attempt_logs_root.as_ref() {
                     context_store.set(
-                        "internal.fidelity.thread_key",
-                        Value::String(thread_key),
+                        "runtime.logs_root",
+                        Value::String(logs_root.to_string_lossy().to_string()),
                     )?;
+                    context_store.set(
+                        "runtime.artifacts_dir",
+                        Value::String(logs_root.join("artifacts").to_string_lossy().to_string()),
+                    )?;
+                }
+                context_store.set(
+                    "internal.lineage.root_run_id",
+                    Value::String(lineage_root_run_id.clone()),
+                )?;
+                context_store.set(
+                    "internal.lineage.attempt",
+                    Value::Number((lineage_attempt as u64).into()),
+                )?;
+
+                completed_nodes = resume.completed_nodes;
+                node_outcomes = resume.node_outcomes;
+                node_retry_counts = resume.node_retries;
+                terminal_failure = resume.terminal_failure_reason;
+                forced_terminal_status = resume.terminal_status;
+                resume_fidelity_degrade_pending = resume.degrade_fidelity_once;
+                apply_resume_fidelity_override(&context_store, resume_fidelity_degrade_pending)?;
+                if let Some(next_node_id) = resume.next_node_id {
+                    current_node_id = next_node_id;
+                } else if forced_terminal_status.is_none() {
+                    return Err(AttractorError::Runtime(
+                        "resume checkpoint has no next node and no terminal status".to_string(),
+                    ));
+                }
+            }
+
+            let mut storage = RunStorage::new(
+                storage_writer.take(),
+                active_run_id.clone(),
+                base_turn_id.take(),
+            )
+            .await?;
+            let graph_metadata = storage.persist_run_graph_metadata(graph).await?;
+
+            storage
+                .append_run_event(
+                    "run_initialized",
+                    json!({
+                        "graph_id": graph.id,
+                        "lineage_root_run_id": lineage_root_run_id,
+                        "lineage_attempt": lineage_attempt,
+                        "dot_source_hash": graph_metadata.dot_source_hash,
+                        "dot_source_ref": graph_metadata.dot_source_ref,
+                        "graph_snapshot_hash": graph_metadata.graph_snapshot_hash,
+                        "graph_snapshot_ref": graph_metadata.graph_snapshot_ref,
+                    }),
+                )
+                .await?;
+            if resume_path_for_attempt.is_some() {
+                storage
+                    .append_run_event(
+                        "run_resumed",
+                        json!({
+                            "graph_id": graph.id,
+                            "lineage_root_run_id": lineage_root_run_id,
+                            "lineage_attempt": lineage_attempt,
+                        }),
+                    )
+                    .await?;
+            }
+
+            while forced_terminal_status.is_none() {
+                let node = graph.nodes.get(&current_node_id).ok_or_else(|| {
+                    AttractorError::InvalidGraph(format!(
+                        "runtime traversal reached unknown node '{}'",
+                        current_node_id
+                    ))
+                })?;
+                context_store.set("current_node", Value::String(node.id.clone()))?;
+                let previous_node_id = completed_nodes.last().cloned();
+                let incoming_edge =
+                    find_incoming_edge(graph, &node.id, previous_node_id.as_deref());
+                let mut effective_fidelity = resolve_fidelity_mode(graph, &node.id, incoming_edge);
+                if let Some(resume_override) = context_store
+                    .get("internal.resume.fidelity_override_once")?
+                    .and_then(|value| value.as_str().map(ToOwned::to_owned))
+                {
+                    effective_fidelity = resume_override;
+                }
+                context_store.set(
+                    "internal.fidelity.mode",
+                    Value::String(effective_fidelity.clone()),
+                )?;
+                context_store.set("fidelity", Value::String(effective_fidelity.clone()))?;
+                if effective_fidelity == "full" {
+                    let thread_key = resolve_thread_key(
+                        graph,
+                        &node.id,
+                        incoming_edge,
+                        previous_node_id.as_deref(),
+                    );
+                    if let Some(thread_key) = thread_key {
+                        context_store.set("thread_key", Value::String(thread_key.clone()))?;
+                        context_store
+                            .set("internal.fidelity.thread_key", Value::String(thread_key))?;
+                    } else {
+                        context_store.remove("thread_key")?;
+                        context_store.remove("internal.fidelity.thread_key")?;
+                    }
                 } else {
                     context_store.remove("thread_key")?;
                     context_store.remove("internal.fidelity.thread_key")?;
                 }
-            } else {
-                context_store.remove("thread_key")?;
-                context_store.remove("internal.fidelity.thread_key")?;
-            }
 
-            if is_terminal_node(node) {
-                if let Some(failed_gate_id) = first_unsatisfied_goal_gate(graph, &node_outcomes) {
-                    if let Some(retry_target) = resolve_retry_target(graph, &failed_gate_id) {
-                        current_node_id = retry_target;
-                        continue;
+                if is_terminal_node(node) {
+                    if let Some(failed_gate_id) = first_unsatisfied_goal_gate(graph, &node_outcomes)
+                    {
+                        if let Some(retry_target) = resolve_retry_target(graph, &failed_gate_id) {
+                            current_node_id = retry_target;
+                            continue;
+                        }
+                        terminal_failure = Some(format!(
+                            "goal gate node '{}' did not reach success and no retry target is configured",
+                            failed_gate_id
+                        ));
+                        break;
                     }
-                    terminal_failure = Some(format!(
-                        "goal gate node '{}' did not reach success and no retry target is configured",
-                        failed_gate_id
-                    ));
                     break;
                 }
-                break;
-            }
 
-            let retry_policy = build_retry_policy(node, graph, config.retry_backoff.clone());
-            let context_snapshot = context_store.snapshot()?;
-            let (outcome, attempts_used) = execute_with_retry(
-                node,
-                graph,
-                &context_snapshot.values,
-                &*config.executor,
-                &retry_policy,
-                &mut storage,
-                &run_id,
-            )
-            .await?;
-
-            completed_nodes.push(node.id.clone());
-            node_outcomes.insert(node.id.clone(), outcome.clone());
-            let retries_used = attempts_used.saturating_sub(1);
-            node_retry_counts.insert(node.id.clone(), retries_used);
-            context_store.set(
-                format!("internal.retry_count.{}", node.id),
-                Value::Number(serde_json::Number::from(retries_used as u64)),
-            )?;
-            apply_outcome_to_context(&context_store, &outcome)?;
-
-            let route_decision =
-                decide_route_after_outcome(graph, node, &outcome, &context_store.snapshot()?.values);
-            let checkpoint_terminal_status = match &route_decision {
-                RouteDecision::TerminateSuccess => Some("success".to_string()),
-                RouteDecision::TerminateFail(_) => Some("fail".to_string()),
-                RouteDecision::Next(_) => None,
-            };
-            let checkpoint_terminal_failure_reason = match &route_decision {
-                RouteDecision::TerminateFail(reason) => Some(reason.clone()),
-                _ => None,
-            };
-            let checkpoint_next_node = match &route_decision {
-                RouteDecision::Next(next) => Some(next.clone()),
-                _ => None,
-            };
-            if let Some(path) = checkpoint_path.as_ref() {
+                let retry_policy = build_retry_policy(node, graph, config.retry_backoff.clone());
                 let context_snapshot = context_store.snapshot()?;
-                let checkpoint = CheckpointState {
-                    metadata: CheckpointMetadata {
-                        schema_version: 1,
-                        run_id: run_id.clone(),
-                        checkpoint_id: format!("cp-{}", completed_nodes.len()),
-                        sequence_no: completed_nodes.len() as u64,
-                        timestamp: timestamp_now(),
-                    },
-                    current_node: node.id.clone(),
-                    next_node: checkpoint_next_node.clone(),
-                    completed_nodes: completed_nodes.clone(),
-                    node_retries: node_retry_counts.clone(),
-                    node_outcomes: node_outcomes
-                        .iter()
-                        .map(|(node_id, node_outcome)| {
-                            (
-                                node_id.clone(),
-                                CheckpointNodeOutcome::from_runtime(node_outcome),
-                            )
-                        })
-                        .collect(),
-                    context_values: context_snapshot.values.clone(),
-                    logs: context_snapshot.logs,
-                    current_node_fidelity: Some(effective_fidelity.clone()),
-                    terminal_status: checkpoint_terminal_status.clone(),
-                    terminal_failure_reason: checkpoint_terminal_failure_reason.clone(),
-                };
-                checkpoint.save_to_path(path)?;
-            }
-
-            storage
-                .append_checkpoint_event(
-                    &node.id,
-                    &stage_attempt_id(node, attempts_used),
-                    json!({
-                        "current_node_id": node.id,
-                        "next_node_id": checkpoint_next_node,
-                        "completed_nodes_count": completed_nodes.len(),
-                        "context_keys_count": context_store.snapshot()?.values.len(),
-                        "retry_counter_count": node_retry_counts.len(),
-                    }),
+                let (outcome, attempts_used) = execute_with_retry(
+                    node,
+                    graph,
+                    &context_snapshot.values,
+                    &*config.executor,
+                    &retry_policy,
+                    &mut storage,
+                    &active_run_id,
                 )
                 .await?;
 
-            if resume_fidelity_degrade_pending {
-                resume_fidelity_degrade_pending = false;
-                apply_resume_fidelity_override(&context_store, false)?;
+                completed_nodes.push(node.id.clone());
+                node_outcomes.insert(node.id.clone(), outcome.clone());
+                let retries_used = attempts_used.saturating_sub(1);
+                node_retry_counts.insert(node.id.clone(), retries_used);
+                context_store.set(
+                    format!("internal.retry_count.{}", node.id),
+                    Value::Number(serde_json::Number::from(retries_used as u64)),
+                )?;
+                apply_outcome_to_context(&context_store, &outcome)?;
+
+                let route_decision = decide_route_after_outcome(
+                    graph,
+                    node,
+                    &outcome,
+                    &context_store.snapshot()?.values,
+                );
+                let checkpoint_terminal_status = match &route_decision {
+                    RouteDecision::TerminateSuccess => Some("success".to_string()),
+                    RouteDecision::TerminateFail(_) => Some("fail".to_string()),
+                    RouteDecision::Next { .. } => None,
+                };
+                let checkpoint_terminal_failure_reason = match &route_decision {
+                    RouteDecision::TerminateFail(reason) => Some(reason.clone()),
+                    _ => None,
+                };
+                let checkpoint_next_node = match &route_decision {
+                    RouteDecision::Next { node_id, .. } => Some(node_id.clone()),
+                    _ => None,
+                };
+                if let Some(path) = checkpoint_path.as_ref() {
+                    let context_snapshot = context_store.snapshot()?;
+                    let checkpoint = CheckpointState {
+                        metadata: CheckpointMetadata {
+                            schema_version: 1,
+                            run_id: active_run_id.clone(),
+                            checkpoint_id: format!("cp-{}", completed_nodes.len()),
+                            sequence_no: completed_nodes.len() as u64,
+                            timestamp: timestamp_now(),
+                        },
+                        current_node: node.id.clone(),
+                        next_node: checkpoint_next_node.clone(),
+                        completed_nodes: completed_nodes.clone(),
+                        node_retries: node_retry_counts.clone(),
+                        node_outcomes: node_outcomes
+                            .iter()
+                            .map(|(node_id, node_outcome)| {
+                                (
+                                    node_id.clone(),
+                                    CheckpointNodeOutcome::from_runtime(node_outcome),
+                                )
+                            })
+                            .collect(),
+                        context_values: context_snapshot.values.clone(),
+                        logs: context_snapshot.logs,
+                        current_node_fidelity: Some(effective_fidelity.clone()),
+                        terminal_status: checkpoint_terminal_status.clone(),
+                        terminal_failure_reason: checkpoint_terminal_failure_reason.clone(),
+                        graph_dot_source_hash: graph_metadata.dot_source_hash.clone(),
+                        graph_dot_source_ref: graph_metadata.dot_source_ref.clone(),
+                        graph_snapshot_hash: graph_metadata.graph_snapshot_hash.clone(),
+                        graph_snapshot_ref: graph_metadata.graph_snapshot_ref.clone(),
+                    };
+                    checkpoint.save_to_path(path)?;
+                }
+
+                storage
+                    .append_checkpoint_event(
+                        &node.id,
+                        &stage_attempt_id(node, attempts_used),
+                        json!({
+                            "current_node_id": node.id,
+                            "next_node_id": checkpoint_next_node,
+                            "completed_nodes_count": completed_nodes.len(),
+                            "context_keys_count": context_store.snapshot()?.values.len(),
+                            "retry_counter_count": node_retry_counts.len(),
+                            "dot_source_hash": graph_metadata.dot_source_hash,
+                            "dot_source_ref": graph_metadata.dot_source_ref,
+                            "graph_snapshot_hash": graph_metadata.graph_snapshot_hash,
+                            "graph_snapshot_ref": graph_metadata.graph_snapshot_ref,
+                        }),
+                    )
+                    .await?;
+
+                if resume_fidelity_degrade_pending {
+                    resume_fidelity_degrade_pending = false;
+                    apply_resume_fidelity_override(&context_store, false)?;
+                }
+
+                match route_decision {
+                    RouteDecision::Next {
+                        node_id,
+                        loop_restart,
+                    } => {
+                        if loop_restart {
+                            restart_target = Some(node_id);
+                            break;
+                        }
+                        current_node_id = node_id;
+                    }
+                    RouteDecision::TerminateSuccess => break,
+                    RouteDecision::TerminateFail(reason) => {
+                        terminal_failure = Some(reason);
+                        break;
+                    }
+                }
             }
 
-            match route_decision {
-                RouteDecision::Next(next_node_id) => {
-                    current_node_id = next_node_id;
-                }
-                RouteDecision::TerminateSuccess => break,
-                RouteDecision::TerminateFail(reason) => {
-                    terminal_failure = Some(reason);
-                    break;
-                }
-            }
-        }
-
-        let status = forced_terminal_status.unwrap_or_else(|| {
-            if terminal_failure.is_some() {
-                PipelineStatus::Fail
-            } else {
+            let status = if restart_target.is_some() {
                 PipelineStatus::Success
+            } else {
+                forced_terminal_status.unwrap_or_else(|| {
+                    if terminal_failure.is_some() {
+                        PipelineStatus::Fail
+                    } else {
+                        PipelineStatus::Success
+                    }
+                })
+            };
+
+            storage
+                .append_run_event(
+                    "run_finalized",
+                    json!({
+                        "graph_id": graph.id,
+                        "status": if restart_target.is_some() {
+                            "restarted"
+                        } else {
+                            match status {
+                                PipelineStatus::Success => "success",
+                                PipelineStatus::Fail => "fail",
+                            }
+                        },
+                        "lineage_root_run_id": lineage_root_run_id,
+                        "lineage_attempt": lineage_attempt,
+                        "restart_target": restart_target,
+                    }),
+                )
+                .await?;
+            storage_writer = storage.take_writer();
+
+            if let Some(target) = restart_target {
+                if lineage_attempt >= config.max_loop_restarts {
+                    return Err(AttractorError::Runtime(format!(
+                        "loop_restart exceeded max_loop_restarts={}",
+                        config.max_loop_restarts
+                    )));
+                }
+                lineage_attempt += 1;
+                restart_start_node = Some(target);
+                resume_path_for_attempt = None;
+                continue;
             }
-        });
 
-        storage
-            .append_run_event(
-                "run_finalized",
-                json!({
-                    "graph_id": graph.id,
-                    "status": match status {
-                        PipelineStatus::Success => "success",
-                        PipelineStatus::Fail => "fail",
-                    },
-                }),
-            )
-            .await?;
-
-        Ok(PipelineRunResult {
-            run_id,
-            status,
-            failure_reason: terminal_failure,
-            completed_nodes,
-            node_outcomes,
-            context: context_store.snapshot()?.values,
-        })
+            return Ok(PipelineRunResult {
+                run_id: active_run_id,
+                status,
+                failure_reason: terminal_failure,
+                completed_nodes,
+                node_outcomes,
+                context: context_store.snapshot()?.values,
+            });
+        }
     }
 }
 
@@ -343,7 +475,7 @@ fn resolve_node_failure_target(graph: &Graph, node: &Node) -> Option<String> {
 }
 
 enum RouteDecision {
-    Next(String),
+    Next { node_id: String, loop_restart: bool },
     TerminateSuccess,
     TerminateFail(String),
 }
@@ -356,10 +488,16 @@ fn decide_route_after_outcome(
 ) -> RouteDecision {
     if outcome.status == NodeStatus::Fail {
         if let Some(edge) = select_fail_edge(graph, &node.id) {
-            return RouteDecision::Next(edge.to.clone());
+            return RouteDecision::Next {
+                node_id: edge.to.clone(),
+                loop_restart: edge.attrs.get_bool("loop_restart") == Some(true),
+            };
         }
         if let Some(target) = resolve_node_failure_target(graph, node) {
-            return RouteDecision::Next(target);
+            return RouteDecision::Next {
+                node_id: target,
+                loop_restart: false,
+            };
         }
         return RouteDecision::TerminateFail(
             outcome
@@ -372,7 +510,10 @@ fn decide_route_after_outcome(
     let Some(next_edge) = select_next_edge(graph, &node.id, outcome, context) else {
         return RouteDecision::TerminateSuccess;
     };
-    RouteDecision::Next(next_edge.to.clone())
+    RouteDecision::Next {
+        node_id: next_edge.to.clone(),
+        loop_restart: next_edge.attrs.get_bool("loop_restart") == Some(true),
+    }
 }
 
 fn select_fail_edge<'a>(graph: &'a Graph, node_id: &'a str) -> Option<&'a crate::Edge> {
@@ -402,7 +543,10 @@ fn edge_weight(edge: &crate::Edge) -> i64 {
         .unwrap_or(0)
 }
 
-fn apply_outcome_to_context(context: &ContextStore, outcome: &NodeOutcome) -> Result<(), AttractorError> {
+fn apply_outcome_to_context(
+    context: &ContextStore,
+    outcome: &NodeOutcome,
+) -> Result<(), AttractorError> {
     context.apply_updates(&outcome.context_updates)?;
     context.set(
         "outcome",
@@ -412,6 +556,28 @@ fn apply_outcome_to_context(context: &ContextStore, outcome: &NodeOutcome) -> Re
         context.set("preferred_label", Value::String(label.clone()))?;
     }
     Ok(())
+}
+
+fn prepare_attempt_logs_root(
+    base_logs_root: Option<&PathBuf>,
+    lineage_attempt: u32,
+) -> Result<Option<PathBuf>, AttractorError> {
+    let Some(base) = base_logs_root else {
+        return Ok(None);
+    };
+    let path = if lineage_attempt <= 1 {
+        base.clone()
+    } else {
+        base.join(format!("attempt-{lineage_attempt}"))
+    };
+    fs::create_dir_all(path.join("artifacts")).map_err(|error| {
+        AttractorError::Runtime(format!(
+            "failed to prepare attempt logs root '{}': {}",
+            path.display(),
+            error
+        ))
+    })?;
+    Ok(Some(path))
 }
 
 fn mirror_graph_attributes(graph: &Graph) -> RuntimeContext {
@@ -688,9 +854,118 @@ impl RunStorage {
         Ok(())
     }
 
+    async fn persist_run_graph_metadata(
+        &mut self,
+        graph: &Graph,
+    ) -> Result<PersistedRunGraphMetadata, AttractorError> {
+        let Some(writer) = self.writer.as_ref().cloned() else {
+            return Ok(PersistedRunGraphMetadata::default());
+        };
+        let Some(context_id) = self.context_id.as_ref().cloned() else {
+            return Ok(PersistedRunGraphMetadata::default());
+        };
+
+        let mut metadata = PersistedRunGraphMetadata::default();
+        if let Some(dot_source) = graph.source_dot.as_deref() {
+            let dot_bytes = dot_source.as_bytes();
+            let dot_hash = blake3::hash(dot_bytes).to_hex().to_string();
+            let sequence_no = self.next_sequence_no();
+            let correlation = AttractorCorrelation {
+                run_id: self.run_id.clone(),
+                pipeline_context_id: Some(context_id.clone()),
+                node_id: None,
+                stage_attempt_id: None,
+                parent_turn_id: None,
+                sequence_no,
+                agent_session_id: None,
+                agent_context_id: None,
+                agent_head_turn_id: None,
+            };
+            let idempotency_key = attractor_idempotency_key(
+                &self.run_id,
+                "__run__",
+                "__run__",
+                "dot_source_persisted",
+                sequence_no,
+            );
+            let stored_turn = writer
+                .append_dot_source(
+                    &context_id,
+                    AttractorDotSourceRecord {
+                        timestamp: timestamp_now(),
+                        dot_source: dot_source.to_string(),
+                        content_hash: dot_hash.clone(),
+                        size_bytes: dot_bytes.len() as u64,
+                        correlation,
+                    },
+                    idempotency_key,
+                )
+                .await?;
+            metadata.dot_source_hash = Some(dot_hash);
+            metadata.dot_source_ref = Some(format!(
+                "turnstore://{}/{}",
+                stored_turn.context_id, stored_turn.turn_id
+            ));
+        }
+
+        let snapshot_json = serde_json::to_value(graph).map_err(|error| {
+            AttractorError::Runtime(format!(
+                "failed to encode normalized graph snapshot: {error}"
+            ))
+        })?;
+        let snapshot_bytes = serde_json::to_vec(&snapshot_json).map_err(|error| {
+            AttractorError::Runtime(format!(
+                "failed to serialize normalized graph snapshot bytes: {error}"
+            ))
+        })?;
+        let snapshot_hash = blake3::hash(&snapshot_bytes).to_hex().to_string();
+        let sequence_no = self.next_sequence_no();
+        let correlation = AttractorCorrelation {
+            run_id: self.run_id.clone(),
+            pipeline_context_id: Some(context_id.clone()),
+            node_id: None,
+            stage_attempt_id: None,
+            parent_turn_id: None,
+            sequence_no,
+            agent_session_id: None,
+            agent_context_id: None,
+            agent_head_turn_id: None,
+        };
+        let idempotency_key = attractor_idempotency_key(
+            &self.run_id,
+            "__run__",
+            "__run__",
+            "graph_snapshot_persisted",
+            sequence_no,
+        );
+        let stored_turn = writer
+            .append_graph_snapshot(
+                &context_id,
+                AttractorGraphSnapshotRecord {
+                    timestamp: timestamp_now(),
+                    graph_snapshot: snapshot_json,
+                    content_hash: snapshot_hash.clone(),
+                    size_bytes: snapshot_bytes.len() as u64,
+                    correlation,
+                },
+                idempotency_key,
+            )
+            .await?;
+        metadata.graph_snapshot_hash = Some(snapshot_hash);
+        metadata.graph_snapshot_ref = Some(format!(
+            "turnstore://{}/{}",
+            stored_turn.context_id, stored_turn.turn_id
+        ));
+        Ok(metadata)
+    }
+
     fn next_sequence_no(&mut self) -> u64 {
         self.sequence_no += 1;
         self.sequence_no
+    }
+
+    fn take_writer(&mut self) -> Option<crate::storage::SharedAttractorStorageWriter> {
+        self.writer.take()
     }
 }
 
@@ -709,9 +984,9 @@ fn timestamp_now() -> String {
 mod tests {
     use super::*;
     use crate::{
-        AttractorStorageWriter, CheckpointMetadata, CheckpointNodeOutcome, CheckpointState,
-        NodeExecutor, NodeOutcome, NodeStatus, parse_dot,
-        storage::SharedAttractorStorageWriter,
+        AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorStorageWriter,
+        CheckpointMetadata, CheckpointNodeOutcome, CheckpointState, NodeExecutor, NodeOutcome,
+        NodeStatus, parse_dot, storage::SharedAttractorStorageWriter,
     };
     use async_trait::async_trait;
     use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
@@ -826,6 +1101,52 @@ mod tests {
             Err(TurnStoreError::Unsupported(
                 "stage_to_agent_link is unused in this test".to_string(),
             ))
+        }
+
+        async fn append_dot_source(
+            &self,
+            context_id: &ContextId,
+            _record: AttractorDotSourceRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, TurnStoreError> {
+            self.events
+                .lock()
+                .expect("events mutex should lock")
+                .push((context_id.clone(), "dot_source_persisted".to_string()));
+            Ok(StoredTurn {
+                context_id: context_id.clone(),
+                turn_id: "4".to_string(),
+                parent_turn_id: "0".to_string(),
+                depth: 1,
+                type_id: "forge.attractor.dot_source".to_string(),
+                type_version: 1,
+                payload: Vec::new(),
+                idempotency_key: None,
+                content_hash: None,
+            })
+        }
+
+        async fn append_graph_snapshot(
+            &self,
+            context_id: &ContextId,
+            _record: AttractorGraphSnapshotRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, TurnStoreError> {
+            self.events
+                .lock()
+                .expect("events mutex should lock")
+                .push((context_id.clone(), "graph_snapshot_persisted".to_string()));
+            Ok(StoredTurn {
+                context_id: context_id.clone(),
+                turn_id: "5".to_string(),
+                parent_turn_id: "0".to_string(),
+                depth: 1,
+                type_id: "forge.attractor.graph_snapshot".to_string(),
+                type_version: 1,
+                payload: Vec::new(),
+                idempotency_key: None,
+                content_hash: None,
+            })
         }
     }
 
@@ -1444,6 +1765,10 @@ mod tests {
             current_node_fidelity: Some("compact".to_string()),
             terminal_status: None,
             terminal_failure_reason: None,
+            graph_dot_source_hash: None,
+            graph_dot_source_ref: None,
+            graph_snapshot_hash: None,
+            graph_snapshot_ref: None,
         }
         .save_to_path(&checkpoint_path)
         .expect("checkpoint save should succeed");
@@ -1513,6 +1838,10 @@ mod tests {
             current_node_fidelity: Some("full".to_string()),
             terminal_status: None,
             terminal_failure_reason: None,
+            graph_dot_source_hash: None,
+            graph_dot_source_ref: None,
+            graph_snapshot_hash: None,
+            graph_snapshot_ref: None,
         }
         .save_to_path(&checkpoint_path)
         .expect("checkpoint save should succeed");
@@ -1550,7 +1879,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_fidelity_thread_resolution_expected_deterministic_precedence_and_full_only_threads() {
+    async fn run_fidelity_thread_resolution_expected_deterministic_precedence_and_full_only_threads()
+     {
         let graph = parse_dot(
             r#"
             digraph G {
@@ -1606,5 +1936,48 @@ mod tests {
             Some("truncate")
         );
         assert_eq!(calls[2].1.get("thread_key"), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_loop_restart_expected_fresh_lineage_attempt_and_logs_root() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                plan
+                restart
+                exit [shape=Msquare]
+                start -> plan
+                plan -> restart [loop_restart=true]
+                restart -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    logs_root: Some(temp.path().to_path_buf()),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        assert_eq!(result.run_id, "G-run:attempt:2".to_string());
+        assert_eq!(result.completed_nodes, vec!["restart".to_string()]);
+        assert_eq!(
+            result
+                .context
+                .get("internal.lineage.attempt")
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+        assert!(temp.path().join("attempt-2").exists());
+        assert!(temp.path().join("attempt-2").join("artifacts").exists());
     }
 }

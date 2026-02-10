@@ -1,7 +1,8 @@
 # P29: Attractor State, Checkpoint/Fidelity, and Advanced Handlers (Spec 03 §5 + advanced §4)
+_Complete_
 
 **Status**
-- In Progress (2026-02-10)
+- Completed (2026-02-10)
 
 **Goal**
 Implement production-grade runtime state behavior: context/artifacts, checkpoint/resume semantics, fidelity/thread resolution, and advanced handlers (`parallel`, `fan_in`, `stack.manager_loop`) on top of storage abstractions.
@@ -111,7 +112,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - Updated `forge_agent` adapter thread continuity behavior to honor resolved fidelity context (`full` only) and clear thread when fidelity is non-`full`.
   - Added deterministic unit coverage for resolver precedence and runner/backend integration behavior.
 
-### [ ] G4. Advanced handlers: `parallel`, `parallel.fan_in`, `stack.manager_loop`
+### [x] G4. Advanced handlers: `parallel`, `parallel.fan_in`, `stack.manager_loop`
 - Work:
   - `parallel`:
     - branch context cloning
@@ -130,8 +131,24 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - `crates/forge-attractor/src/handlers/stack_manager_loop.rs`
 - DoD:
   - Parallel + fan-in + manager loop behavior satisfies Section 11.6 coverage expectations.
+- Completed:
+  - Added `parallel` handler (`crates/forge-attractor/src/handlers/parallel.rs`) with:
+    - branch-context cloning semantics
+    - bounded batch concurrency model (`max_parallel`)
+    - join policies: `all_success`, `any_success`, `quorum`, `ignore`
+    - deterministic `parallel.results` and branch summary context updates
+  - Added `parallel.fan_in` handler (`crates/forge-attractor/src/handlers/parallel_fan_in.rs`) with:
+    - candidate aggregation from `parallel.results`
+    - deterministic ranking/selection (status rank -> score -> id)
+    - best-candidate context projection (`parallel.fan_in.*`)
+  - Added `stack.manager_loop` handler (`crates/forge-attractor/src/handlers/stack_manager_loop.rs`) with:
+    - observe/steer/wait action model
+    - stop-condition evaluation via condition engine
+    - polling interval + max-cycle timeout semantics
+  - Registered all advanced handlers in core registry wiring (`crates/forge-attractor/src/handlers/mod.rs`).
+  - Added deterministic unit tests for parallel, fan-in, and manager-loop behavior.
 
-### [ ] G5. Loop restart and run lineage hardening
+### [x] G5. Loop restart and run lineage hardening
 - Work:
   - Implement `loop_restart=true` edge behavior:
     - stop current run
@@ -143,10 +160,21 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - `crates/forge-attractor/src/runtime.rs`
 - DoD:
   - Loop restart behavior is deterministic and visible in logs/events.
+- Completed:
+  - Implemented `loop_restart=true` edge handling in runner:
+    - current attempt finalizes with `status="restarted"` event payload
+    - runner launches a fresh lineage attempt beginning at the edge target node
+  - Added lineage-aware run attempts:
+    - root run id + per-attempt run id suffix (`:attempt:N`)
+    - lineage context metadata (`internal.lineage.root_run_id`, `internal.lineage.attempt`, `internal.lineage.parent_run_id`)
+    - lineage metadata emitted through storage-backed run events
+  - Added restart safety limit via `RunConfig.max_loop_restarts` to avoid unbounded restart loops.
+  - Hardened artifact/log durability setup by preparing per-attempt fresh log directories and `artifacts/` directories before execution.
+  - Added deterministic runtime test for loop-restart lineage behavior and fresh attempt log-root creation.
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G6. Resume/fidelity/parallel regression suite (Section 11.7 focus)
+### [x] G6. Resume/fidelity/parallel regression suite (Section 11.7 focus)
 - Work:
   - Add deterministic tests for:
     - checkpoint round-trip
@@ -161,6 +189,19 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - `crates/forge-attractor/tests/parallel.rs`
 - DoD:
   - State and resume semantics are robust under repeated runs.
+- Completed:
+  - Added integration regression suite files:
+    - `crates/forge-attractor/tests/state_and_resume.rs`
+    - `crates/forge-attractor/tests/fidelity.rs`
+    - `crates/forge-attractor/tests/parallel.rs`
+  - Added deterministic checkpoint/resume parity coverage with manual checkpoint continuation validation.
+  - Added fidelity regression coverage for precedence resolution and resume first-hop degrade behavior.
+  - Added parallel/fan-in join-policy and aggregation regression coverage.
+  - Executed state/resume storage-path coverage against both in-memory and filesystem turnstore backends.
+  - Persisted run graph metadata through storage abstraction:
+    - `forge.attractor.dot_source` turns with content hash + size metadata.
+    - `forge.attractor.graph_snapshot` turns with normalized graph snapshot hash + size metadata.
+  - Added checkpoint metadata fields carrying DOT/source and normalized snapshot hash/ref pointers for resume/query continuity.
 
 ## Deliverables
 - Stable state layer: context, artifacts, checkpoint/resume.

@@ -91,6 +91,7 @@ pub struct RunConfig {
     pub retry_backoff: crate::RetryBackoffConfig,
     pub logs_root: Option<PathBuf>,
     pub resume_from_checkpoint: Option<PathBuf>,
+    pub max_loop_restarts: u32,
 }
 
 impl Default for RunConfig {
@@ -105,6 +106,7 @@ impl Default for RunConfig {
             retry_backoff: crate::RetryBackoffConfig::default(),
             logs_root: None,
             resume_from_checkpoint: None,
+            max_loop_restarts: 16,
         }
     }
 }

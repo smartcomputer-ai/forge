@@ -1,8 +1,10 @@
 use crate::storage::types::{
-    ATTRACTOR_CHECKPOINT_EVENT_TYPE_ID, ATTRACTOR_RUN_EVENT_TYPE_ID, ATTRACTOR_STAGE_EVENT_TYPE_ID,
-    ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID, CheckpointEventRecord, RunEventRecord, StageEventRecord,
-    StageToAgentLinkRecord, checkpoint_event_envelope, run_event_envelope, stage_event_envelope,
-    stage_to_agent_link_envelope,
+    ATTRACTOR_CHECKPOINT_EVENT_TYPE_ID, ATTRACTOR_DOT_SOURCE_TYPE_ID,
+    ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID, ATTRACTOR_RUN_EVENT_TYPE_ID, ATTRACTOR_STAGE_EVENT_TYPE_ID,
+    ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID, CheckpointEventRecord, DotSourceRecord,
+    GraphSnapshotRecord, RunEventRecord, StageEventRecord, StageToAgentLinkRecord,
+    checkpoint_event_envelope, dot_source_envelope, graph_snapshot_envelope, run_event_envelope,
+    stage_event_envelope, stage_to_agent_link_envelope,
 };
 use forge_turnstore::{
     AppendTurnRequest, ContextId, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
@@ -13,7 +15,9 @@ pub mod types;
 
 pub use types::{
     AttractorCorrelation, CheckpointEventRecord as AttractorCheckpointEventRecord,
-    RunEventRecord as AttractorRunEventRecord, StageEventRecord as AttractorStageEventRecord,
+    DotSourceRecord as AttractorDotSourceRecord,
+    GraphSnapshotRecord as AttractorGraphSnapshotRecord, RunEventRecord as AttractorRunEventRecord,
+    StageEventRecord as AttractorStageEventRecord,
     StageToAgentLinkRecord as AttractorStageToAgentLinkRecord,
 };
 
@@ -51,6 +55,20 @@ pub trait AttractorStorageWriter: Send + Sync {
         &self,
         context_id: &ContextId,
         record: StageToAgentLinkRecord,
+        idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError>;
+
+    async fn append_dot_source(
+        &self,
+        context_id: &ContextId,
+        record: DotSourceRecord,
+        idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError>;
+
+    async fn append_graph_snapshot(
+        &self,
+        context_id: &ContextId,
+        record: GraphSnapshotRecord,
         idempotency_key: String,
     ) -> Result<StoredTurn, TurnStoreError>;
 }
@@ -136,6 +154,44 @@ where
             context_id: context_id.clone(),
             parent_turn_id: None,
             type_id: ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID.to_string(),
+            type_version: 1,
+            payload,
+            idempotency_key,
+        })
+        .await
+    }
+
+    async fn append_dot_source(
+        &self,
+        context_id: &ContextId,
+        record: DotSourceRecord,
+        idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError> {
+        let payload = serde_json::to_vec(&dot_source_envelope(record))
+            .map_err(|err| TurnStoreError::Serialization(err.to_string()))?;
+        self.append_turn(AppendTurnRequest {
+            context_id: context_id.clone(),
+            parent_turn_id: None,
+            type_id: ATTRACTOR_DOT_SOURCE_TYPE_ID.to_string(),
+            type_version: 1,
+            payload,
+            idempotency_key,
+        })
+        .await
+    }
+
+    async fn append_graph_snapshot(
+        &self,
+        context_id: &ContextId,
+        record: GraphSnapshotRecord,
+        idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError> {
+        let payload = serde_json::to_vec(&graph_snapshot_envelope(record))
+            .map_err(|err| TurnStoreError::Serialization(err.to_string()))?;
+        self.append_turn(AppendTurnRequest {
+            context_id: context_id.clone(),
+            parent_turn_id: None,
+            type_id: ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID.to_string(),
             type_version: 1,
             payload,
             idempotency_key,

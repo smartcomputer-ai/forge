@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use forge_attractor::{
-    AttractorCheckpointEventRecord, AttractorRunEventRecord, AttractorStageEventRecord,
-    AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node, NodeExecutor,
-    NodeOutcome, NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
+    AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
+    AttractorStorageWriter, Graph, Node, NodeExecutor, NodeOutcome, NodeStatus, PipelineRunner,
+    PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
 use forge_turnstore::{
     ContextId, MemoryTurnStore, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
@@ -67,6 +68,32 @@ impl AttractorStorageWriter for RecordingStorage {
         _idempotency_key: String,
     ) -> Result<StoredTurn, TurnStoreError> {
         Err(TurnStoreError::Unsupported("unused".to_string()))
+    }
+
+    async fn append_dot_source(
+        &self,
+        _context_id: &ContextId,
+        record: AttractorDotSourceRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError> {
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("dot_source:{}", record.content_hash));
+        Ok(stub_turn("forge.attractor.dot_source"))
+    }
+
+    async fn append_graph_snapshot(
+        &self,
+        _context_id: &ContextId,
+        record: AttractorGraphSnapshotRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, TurnStoreError> {
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("graph_snapshot:{}", record.content_hash));
+        Ok(stub_turn("forge.attractor.graph_snapshot"))
     }
 }
 
@@ -194,6 +221,12 @@ async fn execution_linear_store_off_and_on_expected_equivalent_status() {
     assert_eq!(off.status, on.status);
     assert_eq!(off.completed_nodes, on.completed_nodes);
     let events = storage.events.lock().expect("mutex");
+    assert!(events.iter().any(|kind| kind.starts_with("dot_source:")));
+    assert!(
+        events
+            .iter()
+            .any(|kind| kind.starts_with("graph_snapshot:"))
+    );
     assert!(events.iter().any(|kind| kind == "run_initialized"));
     assert!(events.iter().any(|kind| kind == "run_finalized"));
 }
@@ -233,6 +266,16 @@ async fn execution_store_enabled_memory_turnstore_expected_persisted_turns() {
         turns
             .iter()
             .any(|turn| turn.type_id == "forge.attractor.run_event")
+    );
+    assert!(
+        turns
+            .iter()
+            .any(|turn| turn.type_id == "forge.attractor.dot_source")
+    );
+    assert!(
+        turns
+            .iter()
+            .any(|turn| turn.type_id == "forge.attractor.graph_snapshot")
     );
 }
 

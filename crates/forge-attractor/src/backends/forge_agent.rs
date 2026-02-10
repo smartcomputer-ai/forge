@@ -343,7 +343,10 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AttractorRunEventRecord, AttractorStageEventRecord, parse_dot};
+    use crate::{
+        AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
+        AttractorStageEventRecord, parse_dot,
+    };
     use forge_agent::SessionState;
     use forge_turnstore::{StoreContext, StoredTurn, TurnStoreError};
     use serde_json::json;
@@ -443,6 +446,24 @@ mod tests {
                 idempotency_key: None,
                 content_hash: None,
             })
+        }
+
+        async fn append_dot_source(
+            &self,
+            _context_id: &ContextId,
+            _record: AttractorDotSourceRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, TurnStoreError> {
+            Err(TurnStoreError::Unsupported("unused".to_string()))
+        }
+
+        async fn append_graph_snapshot(
+            &self,
+            _context_id: &ContextId,
+            _record: AttractorGraphSnapshotRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, TurnStoreError> {
+            Err(TurnStoreError::Unsupported("unused".to_string()))
         }
     }
 

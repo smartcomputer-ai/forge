@@ -32,7 +32,9 @@ pub fn parse_dot(source: &str) -> Result<Graph, AttractorError> {
 
     let normalized = normalize_duration_literals(source);
     let dot_graph = graphviz_rust::parse(&normalized).map_err(AttractorError::DotParse)?;
-    convert_graph(dot_graph)
+    let mut graph = convert_graph(dot_graph)?;
+    graph.source_dot = Some(source.to_string());
+    Ok(graph)
 }
 
 fn convert_graph(graph: DotGraph) -> Result<Graph, AttractorError> {
