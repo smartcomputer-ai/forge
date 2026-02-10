@@ -1,8 +1,9 @@
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorError,
-    AttractorRunEventRecord, AttractorStageEventRecord, ContextStore, Graph, Node, NodeOutcome,
-    NodeStatus, PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig, RuntimeContext,
-    build_retry_policy,
+    AttractorRunEventRecord, AttractorStageEventRecord, CheckpointMetadata, CheckpointNodeOutcome,
+    CheckpointState, ContextStore, Graph, Node, NodeOutcome, NodeStatus, PipelineRunResult,
+    PipelineStatus, RetryPolicy, RunConfig, RuntimeContext, apply_resume_fidelity_override,
+    build_resume_runtime_state, build_retry_policy, checkpoint_path_for_run, effective_node_fidelity,
     delay_for_attempt_ms, finalize_retry_exhausted, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
@@ -28,15 +29,58 @@ impl PipelineRunner {
             .run_id
             .take()
             .unwrap_or_else(|| format!("{}-run", graph.id));
-        let context_store = ContextStore::from_values(mirror_graph_attributes(graph));
+        let checkpoint_path = checkpoint_path_for_run(
+            config.logs_root.as_deref(),
+            config.resume_from_checkpoint.as_deref(),
+        );
+        let mut context_store = ContextStore::from_values(mirror_graph_attributes(graph));
         if let Some(logs_root) = config.logs_root.as_ref() {
             context_store.set(
                 "runtime.logs_root",
                 Value::String(logs_root.to_string_lossy().to_string()),
             )?;
         }
-        let mut completed_nodes = Vec::new();
-        let mut node_outcomes = BTreeMap::new();
+        let mut completed_nodes: Vec<String> = Vec::new();
+        let mut node_outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
+        let mut node_retry_counts: BTreeMap<String, u32> = BTreeMap::new();
+        let mut current_node_id = resolve_start_node(graph)?.id.clone();
+        let mut terminal_failure: Option<String> = None;
+        let mut forced_terminal_status: Option<PipelineStatus> = None;
+        let mut resume_fidelity_degrade_pending = false;
+
+        if let Some(resume_path) = config.resume_from_checkpoint.as_ref() {
+            let resume = build_resume_runtime_state(graph, resume_path)?;
+            if run_id != resume.checkpoint_run_id() {
+                return Err(AttractorError::Runtime(format!(
+                    "resume run_id mismatch: config run_id '{}' vs checkpoint run_id '{}'",
+                    run_id,
+                    resume.checkpoint_run_id()
+                )));
+            }
+            context_store = ContextStore::from_values(resume.context);
+            if let Some(logs_root) = config.logs_root.as_ref() {
+                context_store.set(
+                    "runtime.logs_root",
+                    Value::String(logs_root.to_string_lossy().to_string()),
+                )?;
+            }
+
+            completed_nodes = resume.completed_nodes;
+            node_outcomes = resume.node_outcomes;
+            node_retry_counts = resume.node_retries;
+            terminal_failure = resume.terminal_failure_reason;
+            forced_terminal_status = resume.terminal_status;
+            resume_fidelity_degrade_pending = resume.degrade_fidelity_once;
+            apply_resume_fidelity_override(&context_store, resume_fidelity_degrade_pending)?;
+            if let Some(next_node_id) = resume.next_node_id {
+                current_node_id = next_node_id;
+            } else if forced_terminal_status.is_none() {
+                return Err(AttractorError::Runtime(
+                    "resume checkpoint has no next node and no terminal status".to_string(),
+                ));
+            }
+        }
+
         let mut storage = RunStorage::new(
             config.storage.take(),
             run_id.clone(),
@@ -47,12 +91,13 @@ impl PipelineRunner {
         storage
             .append_run_event("run_initialized", json!({ "graph_id": graph.id }))
             .await?;
+        if config.resume_from_checkpoint.is_some() {
+            storage
+                .append_run_event("run_resumed", json!({ "graph_id": graph.id }))
+                .await?;
+        }
 
-        let start = resolve_start_node(graph)?;
-        let mut current_node_id = start.id.clone();
-        let mut terminal_failure: Option<String> = None;
-
-        loop {
+        while forced_terminal_status.is_none() {
             let node = graph.nodes.get(&current_node_id).ok_or_else(|| {
                 AttractorError::InvalidGraph(format!(
                     "runtime traversal reached unknown node '{}'",
@@ -89,9 +134,67 @@ impl PipelineRunner {
             )
             .await?;
 
+            let previous_node_id = completed_nodes.last().cloned();
             completed_nodes.push(node.id.clone());
             node_outcomes.insert(node.id.clone(), outcome.clone());
+            let retries_used = attempts_used.saturating_sub(1);
+            node_retry_counts.insert(node.id.clone(), retries_used);
+            context_store.set(
+                format!("internal.retry_count.{}", node.id),
+                Value::Number(serde_json::Number::from(retries_used as u64)),
+            )?;
             apply_outcome_to_context(&context_store, &outcome)?;
+
+            let route_decision =
+                decide_route_after_outcome(graph, node, &outcome, &context_store.snapshot()?.values);
+            let checkpoint_terminal_status = match &route_decision {
+                RouteDecision::TerminateSuccess => Some("success".to_string()),
+                RouteDecision::TerminateFail(_) => Some("fail".to_string()),
+                RouteDecision::Next(_) => None,
+            };
+            let checkpoint_terminal_failure_reason = match &route_decision {
+                RouteDecision::TerminateFail(reason) => Some(reason.clone()),
+                _ => None,
+            };
+            let checkpoint_next_node = match &route_decision {
+                RouteDecision::Next(next) => Some(next.clone()),
+                _ => None,
+            };
+            if let Some(path) = checkpoint_path.as_ref() {
+                let context_snapshot = context_store.snapshot()?;
+                let checkpoint = CheckpointState {
+                    metadata: CheckpointMetadata {
+                        schema_version: 1,
+                        run_id: run_id.clone(),
+                        checkpoint_id: format!("cp-{}", completed_nodes.len()),
+                        sequence_no: completed_nodes.len() as u64,
+                        timestamp: timestamp_now(),
+                    },
+                    current_node: node.id.clone(),
+                    next_node: checkpoint_next_node.clone(),
+                    completed_nodes: completed_nodes.clone(),
+                    node_retries: node_retry_counts.clone(),
+                    node_outcomes: node_outcomes
+                        .iter()
+                        .map(|(node_id, node_outcome)| {
+                            (
+                                node_id.clone(),
+                                CheckpointNodeOutcome::from_runtime(node_outcome),
+                            )
+                        })
+                        .collect(),
+                    context_values: context_snapshot.values.clone(),
+                    logs: context_snapshot.logs,
+                    current_node_fidelity: Some(effective_node_fidelity(
+                        graph,
+                        &node.id,
+                        previous_node_id.as_deref(),
+                    )),
+                    terminal_status: checkpoint_terminal_status.clone(),
+                    terminal_failure_reason: checkpoint_terminal_failure_reason.clone(),
+                };
+                checkpoint.save_to_path(path)?;
+            }
 
             storage
                 .append_checkpoint_event(
@@ -99,44 +202,38 @@ impl PipelineRunner {
                     &stage_attempt_id(node, attempts_used),
                     json!({
                         "current_node_id": node.id,
+                        "next_node_id": checkpoint_next_node,
                         "completed_nodes_count": completed_nodes.len(),
                         "context_keys_count": context_store.snapshot()?.values.len(),
+                        "retry_counter_count": node_retry_counts.len(),
                     }),
                 )
                 .await?;
 
-            if outcome.status == NodeStatus::Fail {
-                if let Some(edge) = select_fail_edge(graph, &node.id) {
-                    current_node_id = edge.to.clone();
-                    continue;
-                }
-                if let Some(target) = resolve_node_failure_target(graph, node) {
-                    current_node_id = target;
-                    continue;
-                }
-                terminal_failure = Some(
-                    outcome
-                        .notes
-                        .clone()
-                        .unwrap_or_else(|| "stage failed with no routing target".to_string()),
-                );
-                break;
+            if resume_fidelity_degrade_pending {
+                resume_fidelity_degrade_pending = false;
+                apply_resume_fidelity_override(&context_store, false)?;
             }
 
-            let routing_context = context_store.snapshot()?;
-            let Some(next_edge) =
-                select_next_edge(graph, &node.id, &outcome, &routing_context.values)
-            else {
-                break;
-            };
-            current_node_id = next_edge.to.clone();
+            match route_decision {
+                RouteDecision::Next(next_node_id) => {
+                    current_node_id = next_node_id;
+                }
+                RouteDecision::TerminateSuccess => break,
+                RouteDecision::TerminateFail(reason) => {
+                    terminal_failure = Some(reason);
+                    break;
+                }
+            }
         }
 
-        let status = if terminal_failure.is_some() {
-            PipelineStatus::Fail
-        } else {
-            PipelineStatus::Success
-        };
+        let status = forced_terminal_status.unwrap_or_else(|| {
+            if terminal_failure.is_some() {
+                PipelineStatus::Fail
+            } else {
+                PipelineStatus::Success
+            }
+        });
 
         storage
             .append_run_event(
@@ -217,6 +314,39 @@ fn resolve_node_failure_target(graph: &Graph, node: &Node) -> Option<String> {
         }
     }
     None
+}
+
+enum RouteDecision {
+    Next(String),
+    TerminateSuccess,
+    TerminateFail(String),
+}
+
+fn decide_route_after_outcome(
+    graph: &Graph,
+    node: &Node,
+    outcome: &NodeOutcome,
+    context: &RuntimeContext,
+) -> RouteDecision {
+    if outcome.status == NodeStatus::Fail {
+        if let Some(edge) = select_fail_edge(graph, &node.id) {
+            return RouteDecision::Next(edge.to.clone());
+        }
+        if let Some(target) = resolve_node_failure_target(graph, node) {
+            return RouteDecision::Next(target);
+        }
+        return RouteDecision::TerminateFail(
+            outcome
+                .notes
+                .clone()
+                .unwrap_or_else(|| "stage failed with no routing target".to_string()),
+        );
+    }
+
+    let Some(next_edge) = select_next_edge(graph, &node.id, outcome, context) else {
+        return RouteDecision::TerminateSuccess;
+    };
+    RouteDecision::Next(next_edge.to.clone())
 }
 
 fn select_fail_edge<'a>(graph: &'a Graph, node_id: &'a str) -> Option<&'a crate::Edge> {
@@ -553,12 +683,15 @@ fn timestamp_now() -> String {
 mod tests {
     use super::*;
     use crate::{
-        AttractorStorageWriter, NodeExecutor, NodeOutcome, NodeStatus, parse_dot,
+        AttractorStorageWriter, CheckpointMetadata, CheckpointNodeOutcome, CheckpointState,
+        NodeExecutor, NodeOutcome, NodeStatus, parse_dot,
         storage::SharedAttractorStorageWriter,
     };
     use async_trait::async_trait;
     use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
+    use serde_json::{Value, json};
     use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
+    use tempfile::TempDir;
 
     #[derive(Default)]
     struct RecordingStorage {
@@ -1217,5 +1350,176 @@ mod tests {
 
         assert_eq!(result.status, PipelineStatus::Fail);
         assert!(result.failure_reason.is_some());
+    }
+
+    #[derive(Default)]
+    struct RecordingExecutor {
+        calls: Mutex<Vec<(String, RuntimeContext)>>,
+    }
+
+    #[async_trait]
+    impl NodeExecutor for RecordingExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            self.calls
+                .lock()
+                .expect("calls mutex should lock")
+                .push((node.id.clone(), context.clone()));
+            Ok(NodeOutcome::success())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_resume_from_checkpoint_expected_continuation_without_reexecuting_completed_node() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                plan
+                review
+                exit [shape=Msquare]
+                start -> plan -> review -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let checkpoint_path = crate::checkpoint_file_path(temp.path());
+        CheckpointState {
+            metadata: CheckpointMetadata {
+                schema_version: 1,
+                run_id: "G-run".to_string(),
+                checkpoint_id: "cp-2".to_string(),
+                sequence_no: 2,
+                timestamp: "1.000Z".to_string(),
+            },
+            current_node: "plan".to_string(),
+            next_node: Some("review".to_string()),
+            completed_nodes: vec!["start".to_string(), "plan".to_string()],
+            node_retries: BTreeMap::new(),
+            node_outcomes: BTreeMap::from([(
+                "plan".to_string(),
+                CheckpointNodeOutcome {
+                    status: "success".to_string(),
+                    notes: None,
+                    preferred_label: None,
+                    suggested_next_ids: vec![],
+                },
+            )]),
+            context_values: BTreeMap::from([
+                ("graph.goal".to_string(), json!("ship")),
+                ("outcome".to_string(), json!("success")),
+            ]),
+            logs: vec!["plan completed".to_string()],
+            current_node_fidelity: Some("compact".to_string()),
+            terminal_status: None,
+            terminal_failure_reason: None,
+        }
+        .save_to_path(&checkpoint_path)
+        .expect("checkpoint save should succeed");
+
+        let executor = Arc::new(RecordingExecutor::default());
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: executor.clone(),
+                    logs_root: Some(temp.path().to_path_buf()),
+                    resume_from_checkpoint: Some(checkpoint_path),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        let calls = executor.calls.lock().expect("calls mutex should lock");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].0, "review");
+        assert!(result.completed_nodes.iter().any(|node| node == "plan"));
+        assert!(result.completed_nodes.iter().any(|node| node == "review"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_resume_full_fidelity_expected_degrade_marker_first_hop_only() {
+        let temp = TempDir::new().expect("temp dir should be created");
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                review
+                synth
+                verify
+                exit [shape=Msquare]
+                start -> review -> synth -> verify -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let checkpoint_path = crate::checkpoint_file_path(temp.path());
+        CheckpointState {
+            metadata: CheckpointMetadata {
+                schema_version: 1,
+                run_id: "G-run".to_string(),
+                checkpoint_id: "cp-2".to_string(),
+                sequence_no: 2,
+                timestamp: "1.000Z".to_string(),
+            },
+            current_node: "review".to_string(),
+            next_node: Some("synth".to_string()),
+            completed_nodes: vec!["start".to_string(), "review".to_string()],
+            node_retries: BTreeMap::new(),
+            node_outcomes: BTreeMap::from([(
+                "review".to_string(),
+                CheckpointNodeOutcome {
+                    status: "success".to_string(),
+                    notes: None,
+                    preferred_label: None,
+                    suggested_next_ids: vec![],
+                },
+            )]),
+            context_values: BTreeMap::new(),
+            logs: vec![],
+            current_node_fidelity: Some("full".to_string()),
+            terminal_status: None,
+            terminal_failure_reason: None,
+        }
+        .save_to_path(&checkpoint_path)
+        .expect("checkpoint save should succeed");
+
+        let executor = Arc::new(RecordingExecutor::default());
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: executor.clone(),
+                    logs_root: Some(temp.path().to_path_buf()),
+                    resume_from_checkpoint: Some(checkpoint_path),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+        assert_eq!(result.status, PipelineStatus::Success);
+
+        let calls = executor.calls.lock().expect("calls mutex should lock");
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "synth");
+        assert_eq!(calls[1].0, "verify");
+        assert_eq!(
+            calls[0]
+                .1
+                .get("internal.resume.fidelity_override_once")
+                .and_then(Value::as_str),
+            Some("summary:high")
+        );
+        assert_eq!(
+            calls[1].1.get("internal.resume.fidelity_override_once"),
+            None
+        );
     }
 }

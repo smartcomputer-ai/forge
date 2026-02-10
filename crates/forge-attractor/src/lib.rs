@@ -5,6 +5,7 @@
 
 pub mod backends;
 pub mod artifacts;
+pub mod checkpoint;
 pub mod condition;
 pub mod context;
 pub mod diagnostics;
@@ -16,6 +17,7 @@ pub mod outcome;
 pub mod parse;
 pub mod retry;
 pub mod routing;
+pub mod resume;
 pub mod runner;
 pub mod runtime;
 pub mod storage;
@@ -24,6 +26,7 @@ pub mod transforms;
 
 pub use backends::*;
 pub use artifacts::*;
+pub use checkpoint::*;
 pub use condition::*;
 pub use context::*;
 pub use diagnostics::*;
@@ -34,6 +37,7 @@ pub use lint::*;
 pub use parse::*;
 pub use retry::*;
 pub use routing::*;
+pub use resume::*;
 pub use runner::*;
 pub use runtime::*;
 pub use storage::*;

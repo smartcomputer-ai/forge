@@ -74,6 +74,15 @@ impl ContextStore {
         Ok(())
     }
 
+    pub fn remove(&self, key: &str) -> Result<(), AttractorError> {
+        let mut state = self
+            .inner
+            .write()
+            .map_err(|_| AttractorError::Runtime("context write lock poisoned".to_string()))?;
+        state.values.remove(key);
+        Ok(())
+    }
+
     pub fn append_log(&self, entry: impl Into<String>) -> Result<(), AttractorError> {
         let mut state = self
             .inner

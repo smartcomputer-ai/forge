@@ -90,6 +90,7 @@ pub struct RunConfig {
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
     pub logs_root: Option<PathBuf>,
+    pub resume_from_checkpoint: Option<PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -103,6 +104,7 @@ impl Default for RunConfig {
             )),
             retry_backoff: crate::RetryBackoffConfig::default(),
             logs_root: None,
+            resume_from_checkpoint: None,
         }
     }
 }

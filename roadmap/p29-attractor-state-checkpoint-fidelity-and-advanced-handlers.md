@@ -53,7 +53,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - Wired runtime traversal to use `ContextStore` snapshots and mutation APIs so context propagation remains deterministic across stage boundaries.
   - Added deterministic unit tests covering context snapshot/clone behavior and artifact threshold/file lifecycle behavior.
 
-### [ ] G2. Checkpoint save/load and resume semantics (store-aware)
+### [x] G2. Checkpoint save/load and resume semantics (store-aware)
 - Work:
   - Implement checkpoint model:
     - current node
@@ -70,6 +70,19 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - `crates/forge-attractor/src/runner.rs`
 - DoD:
   - Crash/restart resume reproduces deterministic continuation behavior.
+- Completed:
+  - Added checkpoint model + persistence module (`checkpoint.rs`) including:
+    - current node and next node
+    - completed node order
+    - per-node retry counters
+    - serialized context/log snapshots
+    - node outcome metadata and terminal status/failure metadata
+    - checkpoint metadata IDs/timestamps/sequence
+  - Added resume module (`resume.rs`) to load checkpoint state, rebuild runtime state, and validate resume targets.
+  - Extended runtime config with `resume_from_checkpoint` and wired runner resume flow through storage-aware lifecycle events.
+  - Runner now persists full checkpoint snapshots to checkpoint file paths after each completed node and emits enriched checkpoint event summaries through storage abstraction.
+  - Implemented first-hop fidelity degrade marker on resume when prior checkpointed node fidelity was `full` (`summary:high` override marker in context for one hop).
+  - Added deterministic tests for checkpoint round-trip, resume continuation parity, and one-hop degrade marker behavior.
 
 ### [ ] G3. Fidelity and thread resolution engine
 - Work:
