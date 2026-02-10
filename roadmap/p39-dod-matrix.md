@@ -34,7 +34,7 @@ Legend:
 
 ## Registry and Projection
 - [x] New runtime registry bundles represent typed schemas for all v2 families (clean break). Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/runner.rs`
-- [ ] Query paths consume typed projection fields directly without nested payload reparsing. Refs: `crates/forge-attractor/src/queries.rs`, `crates/forge-cxdb-runtime/src/adapter.rs`
+- [x] Query paths consume typed projection fields directly without nested payload reparsing. Refs: `crates/forge-attractor/src/queries.rs`, `crates/forge-cxdb-runtime/src/adapter.rs`, `crates/forge-cxdb-runtime/src/runtime.rs`
 - [ ] Semantic hints are used for time/duration fields where useful (`unix_ms`, `duration_ms`, etc.). Refs: `spec/04-cxdb-integration-spec.md`, `crates/forge-cxdb/docs/type-registry.md`
 
 ## Runtime Behavior

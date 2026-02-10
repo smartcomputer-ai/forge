@@ -464,6 +464,7 @@ dependencies = [
  "blake3",
  "cxdb",
  "reqwest",
+ "rmp-serde",
  "serde",
  "serde_json",
  "tempfile",

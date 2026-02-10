@@ -1,6 +1,7 @@
 use crate::{
     BinaryAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, HttpStoredTurn,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -111,6 +112,15 @@ where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
+    pub fn decode_typed_payload<T: DeserializeOwned>(payload: &[u8]) -> Result<T, CxdbClientError> {
+        if let Ok(projected) = serde_json::from_slice::<T>(payload) {
+            return Ok(projected);
+        }
+        rmp_serde::from_slice(payload).map_err(|error| {
+            CxdbClientError::Backend(format!("typed payload decode failed: {error}"))
+        })
+    }
+
     pub async fn create_context(
         &self,
         base_turn_id: Option<TurnId>,
@@ -260,6 +270,26 @@ where
             .list_turns(context_id_u64, before_turn_id_u64, limit)
             .await?;
         Ok(turns.into_iter().map(stored_turn_from_http).collect())
+    }
+
+    pub async fn list_typed_records<T: DeserializeOwned>(
+        &self,
+        context_id: &ContextId,
+        before_turn_id: Option<&TurnId>,
+        limit: usize,
+    ) -> Result<Vec<(StoredTurn, T)>, CxdbClientError> {
+        let turns = self.list_turns(context_id, before_turn_id, limit).await?;
+        let mut records = Vec::with_capacity(turns.len());
+        for turn in turns {
+            let record = Self::decode_typed_payload::<T>(&turn.payload).map_err(|error| {
+                CxdbClientError::Backend(format!(
+                    "typed payload decode failed for context={} turn={} type={} v{}: {}",
+                    turn.context_id, turn.turn_id, turn.type_id, turn.type_version, error
+                ))
+            })?;
+            records.push((turn, record));
+        }
+        Ok(records)
     }
 
     pub async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError> {

@@ -233,7 +233,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Stage-to-agent linkage retains explicit cross-context references (`pipeline_context_id`, `agent_context_id`, `agent_head_turn_id`, optional `parent_turn_id`) as intended.
   - Fork policy contract remains frozen in spec; full true-branch execution enforcement stays tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`.
 
-### [ ] G6. Typed projection-first queries
+### [x] G6. Typed projection-first queries
 - Work:
   - Rewrite query helpers to consume typed fields directly.
   - Remove envelope decoding and nested payload reparsing.
@@ -244,6 +244,19 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `crates/forge-cxdb-runtime/src/runtime.rs`
 - DoD:
   - Query paths are projection-native and schema-driven.
+- Completed:
+  - Attractor query helpers decode typed records directly from turn payloads with no envelope or nested payload reparsing:
+    - `query_run_metadata`
+    - `query_stage_timeline`
+    - `query_latest_checkpoint_snapshot`
+    - `query_stage_to_agent_linkage`
+    - file: `crates/forge-attractor/src/queries.rs`
+  - `forge-cxdb-runtime` now exposes projection-first typed decoding/list helpers for both runtime and adapter surfaces:
+    - `decode_typed_payload`
+    - `list_typed_records`
+    - files:
+      - `crates/forge-cxdb-runtime/src/runtime.rs`
+      - `crates/forge-cxdb-runtime/src/adapter.rs`
 
 ## Priority 1 (Strongly recommended)
 

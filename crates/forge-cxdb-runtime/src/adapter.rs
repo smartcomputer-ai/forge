@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use base64::Engine;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::sync::Arc;
 
@@ -664,6 +665,14 @@ where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
+    pub fn decode_typed_payload<T: DeserializeOwned>(payload: &[u8]) -> CxdbRuntimeResult<T> {
+        if let Ok(projected) = serde_json::from_slice::<T>(payload) {
+            return Ok(projected);
+        }
+        rmp_serde::from_slice(payload)
+            .map_err(|error| CxdbRuntimeError::Serialization(format!("typed payload decode failed: {error}")))
+    }
+
     fn parse_context_id(context_id: &ContextId) -> CxdbRuntimeResult<u64> {
         context_id.parse::<u64>().map_err(|_| {
             CxdbRuntimeError::InvalidInput(format!(
@@ -723,6 +732,26 @@ where
             idempotency_key: turn.idempotency_key,
             content_hash: Some(Self::hash_hex(turn.content_hash)),
         }
+    }
+
+    pub async fn list_typed_records<T: DeserializeOwned>(
+        &self,
+        context_id: &ContextId,
+        before_turn_id: Option<&TurnId>,
+        limit: usize,
+    ) -> CxdbRuntimeResult<Vec<(StoredTurn, T)>> {
+        let turns = self.list_turns(context_id, before_turn_id, limit).await?;
+        let mut records = Vec::with_capacity(turns.len());
+        for turn in turns {
+            let record = Self::decode_typed_payload::<T>(&turn.payload).map_err(|error| {
+                CxdbRuntimeError::Serialization(format!(
+                    "typed payload decode failed for context={} turn={} type={} v{}: {}",
+                    turn.context_id, turn.turn_id, turn.type_id, turn.type_version, error
+                ))
+            })?;
+            records.push((turn, record));
+        }
+        Ok(records)
     }
 }
 
