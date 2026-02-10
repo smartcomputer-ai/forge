@@ -5,11 +5,11 @@ use forge_attractor::{
     AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
     PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
-use forge_turnstore::{ContextId, FsTurnStore, StoreContext, StoredTurn, TurnId, TurnStoreError};
-use forge_turnstore_cxdb::{
+use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
-    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbTurnStore, HttpStoredTurn, MockCxdb,
+    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore, HttpStoredTurn, MockCxdb,
 };
+use forge_turnstore::{ContextId, FsTurnStore, StoreContext, StoredTurn, TurnId, TurnStoreError};
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
 
@@ -74,7 +74,7 @@ async fn cxdb_memory_fs_parity_expected_equivalent_status_and_nodes() {
         .expect("fs run should succeed");
 
     let cxdb_backend = Arc::new(MockCxdb::default());
-    let cxdb_store = Arc::new(CxdbTurnStore::new(cxdb_backend.clone(), cxdb_backend));
+    let cxdb_store = Arc::new(CxdbRuntimeStore::new(cxdb_backend.clone(), cxdb_backend));
     let cxdb = PipelineRunner
         .run(
             &graph,
@@ -289,7 +289,7 @@ async fn cxdb_required_failure_from_write_path_expected_error() {
     }
 
     let graph = graph_under_test();
-    let failing = Arc::new(CxdbTurnStore::new(
+    let failing = Arc::new(CxdbRuntimeStore::new(
         Arc::new(FailAfterCreate),
         Arc::new(FailAfterCreate),
     ));

@@ -2,6 +2,12 @@
 
 **Status**
 - Planned (2026-02-10)
+- In progress (2026-02-10)
+- Partial progress (2026-02-10):
+  - Introduced `crates/forge-cxdb-runtime` as the CXDB runtime integration crate.
+  - Migrated `forge-agent`, `forge-attractor`, and `forge-cli` dependencies from `forge-turnstore-cxdb` to `forge-cxdb-runtime`.
+  - Converted `forge-turnstore-cxdb` into a compatibility shim re-exporting `forge-cxdb-runtime`.
+  - Removed stale runtime constructor aliases containing `turn_store` in `forge-agent`.
 
 **Goal**
 Complete the CXDB-first migration by retiring `forge-turnstore` abstraction dependencies from runtime cores, finalizing crate/workspace cleanup, and hardening CXDB operational guarantees.
@@ -45,7 +51,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - DoD:
   - Runtime cores are CXDB-first with no legacy abstraction coupling.
 
-### [ ] G2. Contract and naming cleanup
+### [~] G2. Contract and naming cleanup
 - Work:
   - Remove stale terminology (`turnstore`) from runtime-facing APIs/config where no longer accurate.
   - Keep migration aliases only where necessary and explicitly deprecated.

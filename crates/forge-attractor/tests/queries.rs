@@ -1,7 +1,8 @@
 use forge_attractor::{
     AttractorStageToAgentLinkRecord, AttractorStorageReader, AttractorStorageWriter,
-    PipelineRunner, PipelineStatus, RunConfig, parse_dot, query_latest_checkpoint_snapshot,
-    query_run_metadata, query_stage_timeline, query_stage_to_agent_linkage,
+    CxdbPersistenceMode, PipelineRunner, PipelineStatus, RunConfig, parse_dot,
+    query_latest_checkpoint_snapshot, query_run_metadata, query_stage_timeline,
+    query_stage_to_agent_linkage,
 };
 use forge_turnstore::{ContextId, FsTurnStore, MemoryTurnStore, attractor_idempotency_key};
 use std::sync::Arc;
@@ -93,6 +94,7 @@ async fn storage_queries_memory_and_fs_expected_parity() {
                 RunConfig {
                     run_id: Some("run-q".to_string()),
                     storage: Some(harness.writer()),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
                     ..RunConfig::default()
                 },
             )

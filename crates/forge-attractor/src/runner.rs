@@ -11,7 +11,7 @@ use crate::{
     resolve_fidelity_mode, resolve_thread_key, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
-use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbRuntimeStore};
+use forge_cxdb_runtime::{CxdbBinaryClient, CxdbHttpClient, CxdbRuntimeStore};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -1843,6 +1843,7 @@ mod tests {
                 &graph,
                 RunConfig {
                     storage: Some(storage.clone() as SharedAttractorStorageWriter),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
                     ..RunConfig::default()
                 },
             )

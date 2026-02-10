@@ -19,10 +19,12 @@ When making changes, align behavior and terminology to these documents first.
   - `crates/forge-attractor/` — Attractor DOT front-end and runtime target (primary target for spec/03-attractor-spec.md)
   - `crates/forge-cli/` — in-process CLI host for Attractor runtime surfaces (primary target for roadmap P30 host milestones)
   - `crates/forge-cxdb/` — vendored CXDB Rust client (binary protocol, fs helpers, reconnecting client)
+  - `crates/forge-cxdb-runtime/` — CXDB runtime integration crate (binary/HTTP client traits, runtime store, deterministic fake)
 - Transitioning persistence layering (see roadmap/spec 04, p33-p37):
   - CXDB-first runtime contracts are the target architecture for `forge-agent` and `forge-attractor`.
   - Runtime persistence policy is a CXDB enablement toggle: `off` or `required` (no `best_effort` mode).
-  - `crates/forge-turnstore/` and `crates/forge-turnstore-cxdb/` are transitional and may be removed or retained only as compatibility/test shims after the migration completes.
+  - `crates/forge-turnstore/` is transitional and may be removed or retained only as a compatibility/test shim after the migration completes.
+  - `crates/forge-turnstore-cxdb/` is now a compatibility shim that re-exports `forge-cxdb-runtime`.
 
 ## Test Strategy (Concise, Deterministic)
 

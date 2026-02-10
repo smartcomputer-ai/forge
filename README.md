@@ -14,7 +14,8 @@ Upstream spec references:
 - `forge-attractor` (`crates/forge-attractor`): DOT pipeline parser/runtime (`spec/03-attractor-spec.md`).
 - `forge-cli` (`crates/forge-cli`): in-process CLI host for running/resuming/inspecting Attractor pipelines.
 - `forge-turnstore` (`crates/forge-turnstore`): transitional compatibility/test shim while runtime cores migrate to CXDB-first contracts.
-- `forge-turnstore-cxdb` (`crates/forge-turnstore-cxdb`): transitional adapter crate for CXDB write/projection integration during migration.
+- `forge-cxdb-runtime` (`crates/forge-cxdb-runtime`): CXDB runtime and host integration contracts (binary/HTTP clients, runtime store, deterministic fake).
+- `forge-turnstore-cxdb` (`crates/forge-turnstore-cxdb`): compatibility shim that re-exports `forge-cxdb-runtime` during migration.
 
 ## Current status
 
@@ -40,6 +41,7 @@ cargo test -p forge-agent
 cargo test -p forge-attractor --tests
 cargo test -p forge-cli --tests
 cargo test -p forge-turnstore
+cargo test -p forge-cxdb-runtime
 cargo test -p forge-turnstore-cxdb
 ```
 
@@ -68,7 +70,7 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.js
 - `spec/`: source-of-truth specifications
 - `roadmap/`: milestone plans and completion tracking
 - `examples/`: sample DOT graphs
-- `crates/forge-llm/`, `crates/forge-agent/`, `crates/forge-attractor/`, `crates/forge-cli/`, `crates/forge-turnstore/`, `crates/forge-turnstore-cxdb/`
+- `crates/forge-llm/`, `crates/forge-agent/`, `crates/forge-attractor/`, `crates/forge-cli/`, `crates/forge-cxdb-runtime/`, `crates/forge-turnstore/`, `crates/forge-turnstore-cxdb/`
 
 ## CXDB operations
 

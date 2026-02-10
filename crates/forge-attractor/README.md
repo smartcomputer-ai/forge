@@ -14,7 +14,7 @@
 Related crates:
 
 - `forge-agent`: coding-agent loop used by codergen backend integration.
-- `forge-turnstore-cxdb`: CXDB client/runtime contracts used for direct runtime persistence.
+- `forge-cxdb-runtime`: CXDB client/runtime contracts used for direct runtime persistence.
 - `forge-cli`: in-process host surface for run/resume/inspect workflows.
 
 ## Key capabilities

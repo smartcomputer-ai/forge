@@ -4,14 +4,11 @@ use crate::storage::types::{
     graph_snapshot_envelope, run_event_envelope, stage_event_envelope,
     stage_to_agent_link_envelope,
 };
-use forge_turnstore::{
-    AppendTurnRequest, ArtifactStore, FsTurnStore, MemoryTurnStore, TurnStore, TurnStoreError,
-};
-pub use forge_turnstore::{BlobHash, ContextId, StoreContext, StoredTurn, StoredTurnRef, TurnId};
-use forge_turnstore_cxdb::{
+use forge_cxdb_runtime::{
     CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
-    CxdbTurnStore,
 };
+use forge_turnstore::{AppendTurnRequest, FsTurnStore, MemoryTurnStore, TurnStore, TurnStoreError};
+pub use forge_turnstore::{BlobHash, ContextId, StoreContext, StoredTurn, StoredTurnRef, TurnId};
 use std::sync::Arc;
 
 pub mod types;
@@ -504,147 +501,6 @@ impl AttractorStorageReader for FsTurnStore {
     }
 }
 
-#[async_trait::async_trait]
-impl<B, H> AttractorStorageWriter for CxdbTurnStore<B, H>
-where
-    B: CxdbBinaryClient + Send + Sync,
-    H: CxdbHttpClient + Send + Sync,
-{
-    async fn create_run_context(
-        &self,
-        base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError> {
-        TurnStore::create_context(self, base_turn_id).await
-    }
-
-    async fn append_run_event(
-        &self,
-        context_id: &ContextId,
-        record: RunEventRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_RUN_EVENT_TYPE_ID,
-            run_event_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn append_stage_event(
-        &self,
-        context_id: &ContextId,
-        record: StageEventRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_STAGE_EVENT_TYPE_ID,
-            stage_event_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn append_checkpoint_event(
-        &self,
-        context_id: &ContextId,
-        record: CheckpointEventRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_CHECKPOINT_EVENT_TYPE_ID,
-            checkpoint_event_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn append_stage_to_agent_link(
-        &self,
-        context_id: &ContextId,
-        record: StageToAgentLinkRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID,
-            stage_to_agent_link_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn append_dot_source(
-        &self,
-        context_id: &ContextId,
-        record: DotSourceRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_DOT_SOURCE_TYPE_ID,
-            dot_source_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-
-    async fn append_graph_snapshot(
-        &self,
-        context_id: &ContextId,
-        record: GraphSnapshotRecord,
-        idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        append_record_turnstore(
-            self,
-            context_id,
-            types::ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID,
-            graph_snapshot_envelope(record),
-            idempotency_key,
-        )
-        .await
-    }
-}
-
-#[async_trait::async_trait]
-impl<B, H> AttractorStorageReader for CxdbTurnStore<B, H>
-where
-    B: CxdbBinaryClient + Send + Sync,
-    H: CxdbHttpClient + Send + Sync,
-{
-    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, TurnStoreError> {
-        TurnStore::get_head(self, context_id).await
-    }
-
-    async fn list_turns(
-        &self,
-        context_id: &ContextId,
-        before_turn_id: Option<&TurnId>,
-        limit: usize,
-    ) -> Result<Vec<StoredTurn>, TurnStoreError> {
-        TurnStore::list_turns(self, context_id, before_turn_id, limit).await
-    }
-}
-
-#[async_trait::async_trait]
-impl<B, H> AttractorArtifactWriter for CxdbTurnStore<B, H>
-where
-    B: CxdbBinaryClient + Send + Sync,
-    H: CxdbHttpClient + Send + Sync,
-{
-    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, TurnStoreError> {
-        ArtifactStore::put_blob(self, raw_bytes).await
-    }
-}
-
 async fn append_record_runtime<B, H>(
     store: &CxdbRuntimeStore<B, H>,
     context_id: &ContextId,
@@ -693,7 +549,7 @@ async fn append_record_turnstore<T: TurnStore + Send + Sync>(
         .await
 }
 
-fn runtime_to_stored_turn(turn: forge_turnstore_cxdb::CxdbStoredTurn) -> StoredTurn {
+fn runtime_to_stored_turn(turn: forge_cxdb_runtime::CxdbStoredTurn) -> StoredTurn {
     StoredTurn {
         context_id: turn.context_id,
         turn_id: turn.turn_id,

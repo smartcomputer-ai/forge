@@ -5,13 +5,13 @@ use crate::{
     ToolDispatchOptions, ToolError, ToolResultTurn, ToolResultsTurn, Turn, UserTurn,
     truncate_tool_output,
 };
+use forge_cxdb_runtime::{
+    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
+    CxdbStoreContext, CxdbStoredTurn, CxdbStoredTurnRef, CxdbTurnId,
+};
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
     ToolResult, Usage,
-};
-use forge_turnstore_cxdb::{
-    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
-    CxdbStoreContext, CxdbStoredTurn, CxdbStoredTurnRef, CxdbTurnId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -505,25 +505,6 @@ impl Session {
         )
     }
 
-    #[allow(dead_code)]
-    pub fn new_with_cxdb_turn_store(
-        provider_profile: Arc<dyn ProviderProfile>,
-        execution_env: Arc<dyn ExecutionEnvironment>,
-        llm_client: Arc<Client>,
-        config: SessionConfig,
-        binary_client: Arc<dyn CxdbBinaryClient>,
-        http_client: Arc<dyn CxdbHttpClient>,
-    ) -> Result<Self, AgentError> {
-        Self::new_with_cxdb_persistence(
-            provider_profile,
-            execution_env,
-            llm_client,
-            config,
-            binary_client,
-            http_client,
-        )
-    }
-
     pub fn new_with_emitter(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
@@ -557,42 +538,6 @@ impl Session {
             event_emitter,
             persistence_writer,
             0,
-        )
-    }
-
-    #[allow(dead_code)]
-    pub fn new_with_turn_store(
-        provider_profile: Arc<dyn ProviderProfile>,
-        execution_env: Arc<dyn ExecutionEnvironment>,
-        llm_client: Arc<Client>,
-        config: SessionConfig,
-        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
-    ) -> Result<Self, AgentError> {
-        Self::new_with_persistence(
-            provider_profile,
-            execution_env,
-            llm_client,
-            config,
-            persistence_writer,
-        )
-    }
-
-    #[allow(dead_code)]
-    pub fn new_with_emitter_and_turn_store(
-        provider_profile: Arc<dyn ProviderProfile>,
-        execution_env: Arc<dyn ExecutionEnvironment>,
-        llm_client: Arc<Client>,
-        config: SessionConfig,
-        event_emitter: Arc<dyn EventEmitter>,
-        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
-    ) -> Result<Self, AgentError> {
-        Self::new_with_emitter_and_persistence(
-            provider_profile,
-            execution_env,
-            llm_client,
-            config,
-            event_emitter,
-            persistence_writer,
         )
     }
 

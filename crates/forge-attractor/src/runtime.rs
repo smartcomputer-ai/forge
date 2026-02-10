@@ -1,7 +1,7 @@
 use crate::storage::AttractorArtifactWriter;
 use crate::{AttractorError, Graph, Node, RuntimeContext, handlers};
 use async_trait::async_trait;
-use forge_turnstore_cxdb::CxdbTurnId as TurnId;
+use forge_cxdb_runtime::CxdbTurnId as TurnId;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

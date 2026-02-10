@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, Graph, Node, NodeExecutor, NodeOutcome, NodeStatus, PipelineRunner,
-    PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
+    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
 use forge_turnstore::{
     ContextId, MemoryTurnStore, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
@@ -212,6 +212,7 @@ async fn execution_linear_store_off_and_on_expected_equivalent_status() {
             &graph,
             RunConfig {
                 storage: Some(storage.clone()),
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 ..RunConfig::default()
             },
         )
@@ -250,6 +251,7 @@ async fn execution_store_enabled_memory_turnstore_expected_persisted_turns() {
             &graph,
             RunConfig {
                 storage: Some(store.clone()),
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 ..RunConfig::default()
             },
         )

@@ -405,8 +405,8 @@ name = "forge-agent"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "forge-cxdb-runtime",
  "forge-llm",
- "forge-turnstore-cxdb",
  "futures",
  "glob",
  "nix",
@@ -428,9 +428,9 @@ dependencies = [
  "blake3",
  "dotenvy",
  "forge-agent",
+ "forge-cxdb-runtime",
  "forge-llm",
  "forge-turnstore",
- "forge-turnstore-cxdb",
  "graphviz-rust",
  "serde",
  "serde_json",
@@ -447,10 +447,27 @@ dependencies = [
  "dotenvy",
  "forge-agent",
  "forge-attractor",
+ "forge-cxdb-runtime",
  "forge-llm",
- "forge-turnstore-cxdb",
  "serde_json",
  "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "forge-cxdb-runtime"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "blake3",
+ "cxdb",
+ "forge-turnstore",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
  "tokio",
 ]
 
@@ -488,17 +505,7 @@ dependencies = [
 name = "forge-turnstore-cxdb"
 version = "0.1.0"
 dependencies = [
- "async-trait",
- "base64",
- "blake3",
- "cxdb",
- "forge-turnstore",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror 1.0.69",
- "tokio",
+ "forge-cxdb-runtime",
 ]
 
 [[package]]

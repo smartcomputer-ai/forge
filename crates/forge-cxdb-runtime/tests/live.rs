@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use base64::Engine;
-use forge_turnstore::{AppendTurnRequest, RegistryBundle, TurnStore, TypedTurnStore};
-use forge_turnstore_cxdb::{
+use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
     CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbSdkBinaryClient, CxdbTurnStore,
     HttpStoredTurn,
 };
+use forge_turnstore::{AppendTurnRequest, RegistryBundle, TurnStore, TypedTurnStore};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 

@@ -2,7 +2,7 @@ mod support;
 
 use async_trait::async_trait;
 use forge_agent::{CxdbPersistenceMode, LocalExecutionEnvironment, Session, SessionConfig};
-use forge_turnstore_cxdb::{
+use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
     CxdbBinaryClient, CxdbClientError, CxdbHttpClient, HttpStoredTurn, MockCxdb,
 };

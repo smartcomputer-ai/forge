@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use forge_attractor::{
     AttractorError, AttractorStorageWriter, CheckpointMetadata, CheckpointNodeOutcome,
-    CheckpointState, Graph, Node, NodeExecutor, NodeOutcome, PipelineRunner, PipelineStatus,
-    RunConfig, RuntimeContext, parse_dot,
+    CheckpointState, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome, PipelineRunner,
+    PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
 use forge_turnstore::{FsTurnStore, MemoryTurnStore, StoredTurn, TurnStore};
 use serde_json::{Value, json};
@@ -106,6 +106,7 @@ async fn checkpoint_roundtrip_and_resume_parity_memory_and_fs_expected_determini
                     run_id: Some("run-1".to_string()),
                     logs_root: Some(logs_root.path().to_path_buf()),
                     storage: Some(harness.writer()),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
                     executor: Arc::new(RecordingExecutor {
                         calls: Mutex::new(Vec::new()),
                     }),
@@ -170,6 +171,7 @@ async fn checkpoint_roundtrip_and_resume_parity_memory_and_fs_expected_determini
                     logs_root: Some(logs_root.path().to_path_buf()),
                     resume_from_checkpoint: Some(manual_checkpoint_path),
                     storage: Some(harness.writer()),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
                     executor: recorder.clone(),
                     ..RunConfig::default()
                 },

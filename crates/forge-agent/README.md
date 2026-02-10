@@ -57,7 +57,7 @@ Optional overrides: `ANTHROPIC_LIVE_MODEL`, `ANTHROPIC_BASE_URL`.
 - `required`: write failures are terminal; use for strict persistence assertions.
 
 Integration tests can wire a CXDB backend with `Session::new_with_cxdb_persistence(...)`:
-- deterministic in-process fake backend (`forge_turnstore_cxdb::MockCxdb`)
+- deterministic in-process fake backend (`forge_cxdb_runtime::MockCxdb`)
 - live CXDB endpoints (binary + HTTP) when environment is configured
 
 The dedicated suite `tests/cxdb_persistence_integration.rs` demonstrates:

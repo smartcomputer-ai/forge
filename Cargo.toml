@@ -5,6 +5,7 @@ members = [
     "crates/forge-attractor",
     "crates/forge-cli",
     "crates/forge-turnstore",
+    "crates/forge-cxdb-runtime",
     "crates/forge-turnstore-cxdb",
     "crates/forge-cxdb",
 ]

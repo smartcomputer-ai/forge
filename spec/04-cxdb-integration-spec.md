@@ -40,7 +40,8 @@ Forge adopts a CXDB-first persistence architecture for runtime write and read pa
 Implications:
 - `forge-agent` and `forge-attractor` persist runtime events via CXDB-facing contracts.
 - `forge-llm` remains CXDB-independent.
-- `forge-turnstore` and `forge-turnstore-cxdb` are transitional artifacts and are not the long-term runtime contract.
+- `forge-cxdb-runtime` is the runtime CXDB integration crate.
+- `forge-turnstore` and `forge-turnstore-cxdb` are transitional compatibility artifacts and are not the long-term runtime contract.
 
 ### 1.3 Goals
 
@@ -82,10 +83,12 @@ Rules:
 
 Current workspace includes:
 - `crates/forge-cxdb` (vendored CXDB client and fstree helpers),
-- `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` (transitional abstraction path).
+- `crates/forge-cxdb-runtime` (CXDB runtime integration contracts and deterministic fakes),
+- `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` (transitional compatibility path).
 
 Target direction:
 - runtime cores (`forge-agent`, `forge-attractor`) use CXDB-first persistence contracts,
+- `forge-cxdb-runtime` remains the shared runtime CXDB boundary,
 - turnstore crates are either removed or retained only as explicitly deprecated compatibility/test shims,
 - host/bootstrap layers own endpoint/wiring policy.
 
