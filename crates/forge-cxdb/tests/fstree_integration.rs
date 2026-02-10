@@ -7,11 +7,9 @@ use cxdb::{dial, encode_msgpack, AppendRequest, RequestContext};
 use serde_json::Value;
 
 #[test]
+#[ignore = "live integration test; requires running CXDB on CXDB_TEST_ADDR and CXDB_TEST_HTTP_ADDR"]
 fn integration_fstree_snapshot_http() {
-    if std::env::var("CXDB_INTEGRATION").is_err() {
-        eprintln!("CXDB_INTEGRATION not set; skipping integration test");
-        return;
-    }
+    let _ = dotenvy::dotenv();
 
     let addr = std::env::var("CXDB_TEST_ADDR").unwrap_or_else(|_| "127.0.0.1:9009".to_string());
     let http_base = std::env::var("CXDB_TEST_HTTP_ADDR")

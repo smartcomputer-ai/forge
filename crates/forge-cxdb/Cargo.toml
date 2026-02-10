@@ -32,6 +32,7 @@ uuid = { version = "1", features = ["v4"] }
 whoami = "1.5"
 
 [dev-dependencies]
+dotenvy = "0.15"
 hex = "0.4"
 serde_json = "1"
 tempfile = "3"

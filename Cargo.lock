@@ -295,6 +295,7 @@ dependencies = [
  "blake3",
  "byteorder",
  "crossbeam-channel",
+ "dotenvy",
  "glob",
  "hex",
  "once_cell",

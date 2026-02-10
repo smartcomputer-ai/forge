@@ -4,11 +4,9 @@
 use cxdb::{dial, RequestContext};
 
 #[test]
+#[ignore = "live integration test; requires running CXDB on CXDB_TEST_ADDR"]
 fn integration_create_context_smoke() {
-    if std::env::var("CXDB_INTEGRATION").is_err() {
-        eprintln!("CXDB_INTEGRATION not set; skipping integration test");
-        return;
-    }
+    let _ = dotenvy::dotenv();
 
     let addr = std::env::var("CXDB_TEST_ADDR").unwrap_or_else(|_| "127.0.0.1:9009".to_string());
     let client = dial(&addr, Vec::new()).expect("dial failed");
