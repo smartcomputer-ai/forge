@@ -184,6 +184,18 @@ fn agent_idempotency_key(session_id: &str, local_turn_index: u64, event_kind: &s
 }
 
 const AGENT_REGISTRY_BUNDLE_ID: &str = "forge.agent.runtime.v2";
+const AGENT_TRANSCRIPT_TYPE_VERSION: u32 = 2;
+
+fn agent_type_version(type_id: &str) -> u32 {
+    match type_id {
+        "forge.agent.user_turn"
+        | "forge.agent.assistant_turn"
+        | "forge.agent.tool_results_turn"
+        | "forge.agent.system_turn"
+        | "forge.agent.steering_turn" => AGENT_TRANSCRIPT_TYPE_VERSION,
+        _ => 1,
+    }
+}
 
 fn run_cxdb_future_blocking<F, T>(operation: &str, future: F) -> Result<T, CxdbClientError>
 where
@@ -235,11 +247,11 @@ fn agent_registry_bundle_json() -> Result<Vec<u8>, AgentError> {
         "registry_version": 1,
         "bundle_id": AGENT_REGISTRY_BUNDLE_ID,
         "types": {
-            "forge.agent.user_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
-            "forge.agent.assistant_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
-            "forge.agent.tool_results_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
-            "forge.agent.system_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
-            "forge.agent.steering_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.user_turn": { "versions": { "2": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.assistant_turn": { "versions": { "2": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.tool_results_turn": { "versions": { "2": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.system_turn": { "versions": { "2": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.steering_turn": { "versions": { "2": { "fields": turn_fields_descriptor() } } },
             "forge.agent.session_lifecycle": { "versions": { "1": { "fields": session_lifecycle_fields_descriptor() } } },
             "forge.agent.tool_call_lifecycle": { "versions": { "1": { "fields": tool_call_lifecycle_fields_descriptor() } } }
         }
@@ -1049,7 +1061,7 @@ impl Session {
             context_id,
             parent_turn_id: self.persistence_parent_turn_id.clone(),
             type_id: "forge.agent.session_lifecycle".to_string(),
-            type_version: 1,
+            type_version: agent_type_version("forge.agent.session_lifecycle"),
             payload: payload_bytes,
             idempotency_key,
             fs_root_hash: snapshot_capture
@@ -1262,7 +1274,7 @@ impl Session {
             context_id,
             parent_turn_id: self.persistence_parent_turn_id.clone(),
             type_id: type_id.to_string(),
-            type_version: 1,
+            type_version: agent_type_version(type_id),
             payload: payload_bytes,
             idempotency_key,
             fs_root_hash: snapshot_capture

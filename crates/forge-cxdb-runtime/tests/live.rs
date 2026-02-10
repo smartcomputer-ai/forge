@@ -615,7 +615,8 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
             parent_turn_id: None,
             type_id: type_id.to_string(),
             type_version: 1,
-            payload: b"first".to_vec(),
+            payload: rmp_serde::to_vec_named(&json!({ "value": "first" }))
+                .expect("msgpack payload should encode"),
             idempotency_key: "live-binary-k1".to_string(),
             fs_root_hash: None,
         })
@@ -627,7 +628,8 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
             parent_turn_id: None,
             type_id: type_id.to_string(),
             type_version: 1,
-            payload: b"second".to_vec(),
+            payload: rmp_serde::to_vec_named(&json!({ "value": "second" }))
+                .expect("msgpack payload should encode"),
             idempotency_key: "live-binary-k2".to_string(),
             fs_root_hash: None,
         })
