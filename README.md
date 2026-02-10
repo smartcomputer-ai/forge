@@ -76,6 +76,12 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.js
 - HTTP (`:9010`) is the default read/projection path for paging and registry APIs.
 - Production deployments should keep binary endpoints on trusted private networks with TLS/network controls and place HTTP behind authenticated gateways.
 
+## CXDB host config
+
+- `FORGE_CXDB_PERSISTENCE`: `off` or `required` (default: `off`)
+- `FORGE_CXDB_BINARY_ADDR`: CXDB binary endpoint (default: `127.0.0.1:9009`)
+- `FORGE_CXDB_HTTP_BASE_URL`: CXDB HTTP endpoint (default: `http://127.0.0.1:9010`)
+
 ## Contributing
 
 See `CONTRIBUTING.md` and `AGENTS.md` for coding standards, test expectations, and spec-alignment requirements.

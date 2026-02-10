@@ -1,19 +1,17 @@
+use crate::storage::{AttractorArtifactWriter, ContextId, TurnId};
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorDotSourceRecord,
     AttractorError, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
     AttractorStageEventRecord, CheckpointEvent, CheckpointMetadata, CheckpointNodeOutcome,
-    CheckpointState, ContextStore, Graph, InterviewEvent, Node, NodeOutcome, NodeStatus,
-    ParallelEvent, PipelineEvent, PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig,
-    RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent, StorageWriteMode,
+    CheckpointState, ContextStore, CxdbPersistenceMode, Graph, InterviewEvent, Node, NodeOutcome,
+    NodeStatus, ParallelEvent, PipelineEvent, PipelineRunResult, PipelineStatus, RetryPolicy,
+    RunConfig, RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent,
     apply_resume_fidelity_override, build_resume_runtime_state, build_retry_policy,
     checkpoint_path_for_run, delay_for_attempt_ms, finalize_retry_exhausted, find_incoming_edge,
     resolve_fidelity_mode, resolve_thread_key, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
-use forge_turnstore::{
-    ArtifactStore, ContextId, TurnId, TurnStoreError, attractor_idempotency_key,
-};
-use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbTurnStore};
+use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbRuntimeStore};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -38,7 +36,14 @@ pub fn cxdb_storage_writer(
     binary_client: Arc<dyn CxdbBinaryClient>,
     http_client: Arc<dyn CxdbHttpClient>,
 ) -> crate::storage::SharedAttractorStorageWriter {
-    Arc::new(CxdbTurnStore::new(binary_client, http_client))
+    Arc::new(CxdbRuntimeStore::new(binary_client, http_client))
+}
+
+pub fn cxdb_artifact_writer(
+    binary_client: Arc<dyn CxdbBinaryClient>,
+    http_client: Arc<dyn CxdbHttpClient>,
+) -> Arc<dyn AttractorArtifactWriter> {
+    Arc::new(CxdbRuntimeStore::new(binary_client, http_client))
 }
 
 impl PipelineRunner {
@@ -163,7 +168,7 @@ impl PipelineRunner {
             let mut storage = RunStorage::new(
                 storage_writer.take(),
                 config.artifacts.clone(),
-                config.storage_mode,
+                config.cxdb_persistence,
                 active_run_id.clone(),
                 base_turn_id.take(),
             )
@@ -880,6 +885,27 @@ fn hash_run_node(run_id: &str, node_id: &str) -> u64 {
     h
 }
 
+fn encode_idempotency_part(part: &str) -> String {
+    format!("{}:{}", part.len(), part)
+}
+
+fn attractor_idempotency_key(
+    run_id: &str,
+    node_id: &str,
+    stage_attempt_id: &str,
+    event_kind: &str,
+    sequence_no: u64,
+) -> String {
+    format!(
+        "forge-attractor:v1|{}|{}|{}|{}|{}",
+        encode_idempotency_part(run_id),
+        encode_idempotency_part(node_id),
+        encode_idempotency_part(stage_attempt_id),
+        encode_idempotency_part(event_kind),
+        sequence_no
+    )
+}
+
 fn emit_runtime_event(sink: &RuntimeEventSink, sequence_no: &mut u64, kind: RuntimeEventKind) {
     if !sink.is_enabled() {
         return;
@@ -1100,8 +1126,7 @@ fn infer_node_handler_type(node: &Node) -> &'static str {
 
 struct RunStorage {
     writer: Option<crate::storage::SharedAttractorStorageWriter>,
-    artifacts: Option<Arc<dyn ArtifactStore>>,
-    write_mode: StorageWriteMode,
+    artifacts: Option<Arc<dyn AttractorArtifactWriter>>,
     run_id: String,
     context_id: Option<ContextId>,
     sequence_no: u64,
@@ -1111,16 +1136,15 @@ struct RunStorage {
 impl RunStorage {
     async fn new(
         writer: Option<crate::storage::SharedAttractorStorageWriter>,
-        artifacts: Option<Arc<dyn ArtifactStore>>,
-        write_mode: StorageWriteMode,
+        artifacts: Option<Arc<dyn AttractorArtifactWriter>>,
+        persistence_mode: CxdbPersistenceMode,
         run_id: String,
         base_turn_id: Option<String>,
     ) -> Result<Self, AttractorError> {
-        if write_mode == StorageWriteMode::Off {
+        if persistence_mode == CxdbPersistenceMode::Off {
             return Ok(Self {
                 writer: None,
                 artifacts: None,
-                write_mode,
                 run_id,
                 context_id: None,
                 sequence_no: 0,
@@ -1128,43 +1152,24 @@ impl RunStorage {
             });
         }
 
-        if let Some(writer_ref) = writer.as_ref() {
-            match writer_ref.create_run_context(base_turn_id).await {
-                Ok(store_context) => {
-                    let head = if store_context.head_turn_id == "0" {
-                        None
-                    } else {
-                        Some(store_context.head_turn_id.clone())
-                    };
-                    return Ok(Self {
-                        writer,
-                        artifacts,
-                        write_mode,
-                        run_id,
-                        context_id: Some(store_context.context_id),
-                        sequence_no: 0,
-                        last_turn_id: head,
-                    });
-                }
-                Err(error) => {
-                    if write_mode == StorageWriteMode::Required {
-                        return Err(error.into());
-                    }
-                }
-            }
-        }
+        let writer = writer.ok_or_else(|| {
+            AttractorError::Runtime(
+                "cxdb_persistence=required requires a configured CXDB writer".to_string(),
+            )
+        })?;
+        let store_context = writer.create_run_context(base_turn_id).await?;
+        let head = if store_context.head_turn_id == "0" {
+            None
+        } else {
+            Some(store_context.head_turn_id.clone())
+        };
         Ok(Self {
-            writer: None,
-            artifacts: if write_mode == StorageWriteMode::Required {
-                artifacts
-            } else {
-                None
-            },
-            write_mode,
+            writer: Some(writer),
+            artifacts,
             run_id,
-            context_id: None,
+            context_id: Some(store_context.context_id),
             sequence_no: 0,
-            last_turn_id: None,
+            last_turn_id: head,
         })
     }
 
@@ -1193,7 +1198,7 @@ impl RunStorage {
         };
         let idempotency_key =
             attractor_idempotency_key(&self.run_id, "__run__", "__run__", event_kind, sequence_no);
-        match writer
+        let turn = writer
             .append_run_event(
                 &context_id,
                 AttractorRunEventRecord {
@@ -1204,11 +1209,8 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await
-        {
-            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
-            Err(error) => self.handle_store_error(error)?,
-        }
+            .await?;
+        self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
 
@@ -1244,7 +1246,7 @@ impl RunStorage {
             event_kind,
             sequence_no,
         );
-        match writer
+        let turn = writer
             .append_stage_event(
                 &context_id,
                 AttractorStageEventRecord {
@@ -1255,11 +1257,8 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await
-        {
-            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
-            Err(error) => self.handle_store_error(error)?,
-        }
+            .await?;
+        self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
 
@@ -1295,7 +1294,7 @@ impl RunStorage {
             "checkpoint_saved",
             sequence_no,
         );
-        match writer
+        let turn = writer
             .append_checkpoint_event(
                 &context_id,
                 AttractorCheckpointEventRecord {
@@ -1307,11 +1306,8 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await
-        {
-            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
-            Err(error) => self.handle_store_error(error)?,
-        }
+            .await?;
+        self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
 
@@ -1369,10 +1365,7 @@ impl RunStorage {
                 .await
             {
                 Ok(turn) => turn,
-                Err(error) => {
-                    self.handle_store_error(error)?;
-                    return Ok(metadata);
-                }
+                Err(error) => return Err(error.into()),
             };
             self.last_turn_id = Some(stored_turn.turn_id.clone());
             metadata.dot_source_hash = Some(dot_hash);
@@ -1380,7 +1373,7 @@ impl RunStorage {
                 Some(format!("blob://{}", blob_hash))
             } else {
                 Some(format!(
-                    "turnstore://{}/{}",
+                    "cxdb://{}/{}",
                     stored_turn.context_id, stored_turn.turn_id
                 ))
             };
@@ -1436,10 +1429,7 @@ impl RunStorage {
             .await
         {
             Ok(turn) => turn,
-            Err(error) => {
-                self.handle_store_error(error)?;
-                return Ok(metadata);
-            }
+            Err(error) => return Err(error.into()),
         };
         self.last_turn_id = Some(stored_turn.turn_id.clone());
         metadata.graph_snapshot_hash = Some(snapshot_hash);
@@ -1447,7 +1437,7 @@ impl RunStorage {
             Some(format!("blob://{}", blob_hash))
         } else {
             Some(format!(
-                "turnstore://{}/{}",
+                "cxdb://{}/{}",
                 stored_turn.context_id, stored_turn.turn_id
             ))
         };
@@ -1471,37 +1461,12 @@ impl RunStorage {
         self.last_turn_id.as_ref()
     }
 
-    fn handle_store_error(&mut self, error: TurnStoreError) -> Result<(), AttractorError> {
-        match self.write_mode {
-            StorageWriteMode::Off | StorageWriteMode::BestEffort => {
-                self.writer = None;
-                Ok(())
-            }
-            StorageWriteMode::Required => Err(error.into()),
-        }
-    }
-
-    fn handle_artifact_error(&mut self, error: TurnStoreError) -> Result<(), AttractorError> {
-        match self.write_mode {
-            StorageWriteMode::Off | StorageWriteMode::BestEffort => {
-                self.artifacts = None;
-                Ok(())
-            }
-            StorageWriteMode::Required => Err(error.into()),
-        }
-    }
-
     async fn persist_blob(&mut self, bytes: &[u8]) -> Result<Option<String>, AttractorError> {
         let Some(artifacts) = self.artifacts.as_ref().cloned() else {
             return Ok(None);
         };
-        match artifacts.put_blob(bytes).await {
-            Ok(hash) => Ok(Some(hash)),
-            Err(error) => {
-                self.handle_artifact_error(error)?;
-                Ok(None)
-            }
-        }
+        let hash = artifacts.put_blob(bytes).await?;
+        Ok(Some(hash))
     }
 
     fn take_writer(&mut self) -> Option<crate::storage::SharedAttractorStorageWriter> {

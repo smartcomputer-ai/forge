@@ -3,11 +3,13 @@ use base64::Engine;
 use forge_turnstore::{AppendTurnRequest, RegistryBundle, TurnStore, TypedTurnStore};
 use forge_turnstore_cxdb::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
-    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbTurnStore, HttpStoredTurn,
+    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbSdkBinaryClient, CxdbTurnStore,
+    HttpStoredTurn,
 };
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const DEFAULT_CXDB_BINARY_ADDR: &str = "127.0.0.1:9009";
 const DEFAULT_CXDB_HTTP_BASE_URL: &str = "http://127.0.0.1:9010";
 
 #[derive(Clone)]
@@ -19,9 +21,14 @@ struct LiveHttpClient {
 
 impl LiveHttpClient {
     fn from_env() -> Self {
-        let base_url = std::env::var("CXDB_HTTP_BASE_URL")
+        let base_url = std::env::var("FORGE_CXDB_HTTP_BASE_URL")
             .ok()
             .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                std::env::var("CXDB_HTTP_BASE_URL")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            })
             .unwrap_or_else(|| DEFAULT_CXDB_HTTP_BASE_URL.to_string());
         Self {
             client: reqwest::Client::new(),
@@ -197,6 +204,23 @@ impl LiveHttpClient {
             content_hash,
         })
     }
+}
+
+fn binary_addr_from_env() -> String {
+    std::env::var("FORGE_CXDB_BINARY_ADDR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::env::var("CXDB_ADDR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .or_else(|| {
+            std::env::var("CXDB_BINARY_ADDR")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .unwrap_or_else(|| DEFAULT_CXDB_BINARY_ADDR.to_string())
 }
 
 #[derive(Clone)]
@@ -542,6 +566,74 @@ async fn live_create_append_list_and_paging_against_running_cxdb() {
         .await
         .expect("paged list should succeed");
     assert!(older.iter().any(|turn| turn.turn_id == t1.turn_id));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "live test; requires running CXDB instance"]
+async fn live_binary_create_append_list_and_head_against_running_cxdb() {
+    let http_client = LiveHttpClient::from_env();
+    let _ = http_client
+        .get_text("/healthz")
+        .await
+        .expect("healthz endpoint should be reachable");
+
+    let binary_addr = binary_addr_from_env();
+    let binary_client = CxdbSdkBinaryClient::connect(&binary_addr).unwrap_or_else(|error| {
+        panic!("failed to connect CXDB binary endpoint at {binary_addr}: {error}")
+    });
+    let store = CxdbTurnStore::new(binary_client, http_client.clone());
+
+    let bundle_id = unique_bundle_id();
+    let type_id = "forge.test.live_binary_payload";
+    let bundle_json = registry_bundle_bytes(&bundle_id, type_id);
+    store
+        .publish_registry_bundle(RegistryBundle {
+            bundle_id,
+            bundle_json,
+        })
+        .await
+        .expect("registry bundle publish should succeed");
+
+    let context = store
+        .create_context(None)
+        .await
+        .expect("context create over binary should succeed");
+
+    let t1 = store
+        .append_turn(AppendTurnRequest {
+            context_id: context.context_id.clone(),
+            parent_turn_id: None,
+            type_id: type_id.to_string(),
+            type_version: 1,
+            payload: b"first".to_vec(),
+            idempotency_key: "live-binary-k1".to_string(),
+        })
+        .await
+        .expect("append 1 over binary should succeed");
+    let t2 = store
+        .append_turn(AppendTurnRequest {
+            context_id: context.context_id.clone(),
+            parent_turn_id: None,
+            type_id: type_id.to_string(),
+            type_version: 1,
+            payload: b"second".to_vec(),
+            idempotency_key: "live-binary-k2".to_string(),
+        })
+        .await
+        .expect("append 2 over binary should succeed");
+
+    let head = store
+        .get_head(&context.context_id)
+        .await
+        .expect("head lookup over binary should succeed");
+    assert_eq!(head.turn_id, t2.turn_id);
+
+    let turns = store
+        .list_turns(&context.context_id, None, 10)
+        .await
+        .expect("list should succeed");
+    assert!(turns.iter().any(|turn| turn.turn_id == t1.turn_id));
+    assert!(turns.iter().any(|turn| turn.turn_id == t2.turn_id));
 }
 
 #[tokio::test(flavor = "current_thread")]

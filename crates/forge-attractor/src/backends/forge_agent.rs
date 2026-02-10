@@ -1,6 +1,7 @@
+use crate::storage::{ContextId, TurnId};
 use crate::{
-    AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node,
-    NodeOutcome, NodeStatus, RuntimeContext, StorageWriteMode,
+    AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageWriter, CxdbPersistenceMode,
+    Graph, Node, NodeOutcome, NodeStatus, RuntimeContext,
     handlers::codergen::{CodergenBackend, CodergenBackendResult},
     hooks::{ToolHookBridge, ToolHookSummary, resolve_tool_hook_commands},
 };
@@ -8,7 +9,6 @@ use async_trait::async_trait;
 use forge_agent::{
     AgentError, Session, SessionPersistenceSnapshot, SubmitOptions, SubmitResult, ToolCallHook,
 };
-use forge_turnstore::{ContextId, TurnId, attractor_idempotency_key};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -176,7 +176,7 @@ pub struct ForgeAgentSessionBackend {
 #[derive(Clone)]
 struct StageLinkConfig {
     writer: Arc<dyn AttractorStorageWriter>,
-    mode: StorageWriteMode,
+    mode: CxdbPersistenceMode,
 }
 
 impl ForgeAgentSessionBackend {
@@ -194,7 +194,7 @@ impl ForgeAgentSessionBackend {
     pub fn with_stage_link_writer(
         mut self,
         writer: Arc<dyn AttractorStorageWriter>,
-        mode: StorageWriteMode,
+        mode: CxdbPersistenceMode,
     ) -> Self {
         self.stage_link = Some(StageLinkConfig { writer, mode });
         self
@@ -263,7 +263,7 @@ impl CodergenBackend for ForgeAgentSessionBackend {
             )
             .await
             {
-                if stage_link.mode == StorageWriteMode::Required {
+                if stage_link.mode == CxdbPersistenceMode::Required {
                     submitter.set_tool_call_hook(None);
                     return Err(error);
                 }
@@ -291,6 +291,27 @@ pub struct StageLinkEmission<'a> {
     pub parent_turn_id: Option<TurnId>,
     pub sequence_no: u64,
     pub thread_key: Option<String>,
+}
+
+fn encode_idempotency_part(part: &str) -> String {
+    format!("{}:{}", part.len(), part)
+}
+
+fn attractor_idempotency_key(
+    run_id: &str,
+    node_id: &str,
+    stage_attempt_id: &str,
+    event_kind: &str,
+    sequence_no: u64,
+) -> String {
+    format!(
+        "forge-attractor:v1|{}|{}|{}|{}|{}",
+        encode_idempotency_part(run_id),
+        encode_idempotency_part(node_id),
+        encode_idempotency_part(stage_attempt_id),
+        encode_idempotency_part(event_kind),
+        sequence_no
+    )
 }
 
 pub async fn emit_stage_to_agent_link(
@@ -838,7 +859,7 @@ mod tests {
             ForgeAgentCodergenAdapter::default(),
             Box::new(submitter),
         )
-        .with_stage_link_writer(writer.clone(), StorageWriteMode::BestEffort);
+        .with_stage_link_writer(writer.clone(), CxdbPersistenceMode::Off);
         let mut context = RuntimeContext::new();
         context.insert(
             "pipeline_context_id".to_string(),

@@ -25,9 +25,17 @@ Implementation notes:
 "#]
 
 pub mod adapter;
+pub mod runtime;
+pub mod testing;
 
 pub use adapter::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
     CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbReqwestHttpClient, CxdbSdkBinaryClient,
     CxdbTurnStore, DEFAULT_CXDB_BINARY_ADDR, DEFAULT_CXDB_HTTP_BASE_URL, HttpStoredTurn,
 };
+pub use runtime::{
+    AppendTurnRequest as CxdbAppendTurnRequest, BlobHash as CxdbBlobHash,
+    ContextId as CxdbContextId, CxdbRuntimeStore, StoreContext as CxdbStoreContext,
+    StoredTurn as CxdbStoredTurn, StoredTurnRef as CxdbStoredTurnRef, TurnId as CxdbTurnId,
+};
+pub use testing::MockCxdb;

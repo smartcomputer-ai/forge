@@ -1,6 +1,7 @@
+use crate::storage::AttractorArtifactWriter;
 use crate::{AttractorError, Graph, Node, RuntimeContext, handlers};
 use async_trait::async_trait;
-use forge_turnstore::{ArtifactStore, TurnId};
+use forge_turnstore_cxdb::CxdbTurnId as TurnId;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,8 +88,8 @@ pub struct RunConfig {
     pub run_id: Option<String>,
     pub base_turn_id: Option<TurnId>,
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
-    pub artifacts: Option<Arc<dyn ArtifactStore>>,
-    pub storage_mode: StorageWriteMode,
+    pub artifacts: Option<Arc<dyn AttractorArtifactWriter>>,
+    pub cxdb_persistence: CxdbPersistenceMode,
     pub events: crate::RuntimeEventSink,
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
@@ -98,9 +99,8 @@ pub struct RunConfig {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StorageWriteMode {
+pub enum CxdbPersistenceMode {
     Off,
-    BestEffort,
     Required,
 }
 
@@ -111,7 +111,7 @@ impl Default for RunConfig {
             base_turn_id: None,
             storage: None,
             artifacts: None,
-            storage_mode: StorageWriteMode::BestEffort,
+            cxdb_persistence: CxdbPersistenceMode::Off,
             events: crate::RuntimeEventSink::default(),
             executor: Arc::new(handlers::registry::RegistryNodeExecutor::new(
                 handlers::core_registry(),

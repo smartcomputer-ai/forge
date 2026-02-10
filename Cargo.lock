@@ -406,7 +406,6 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "forge-llm",
- "forge-turnstore",
  "forge-turnstore-cxdb",
  "futures",
  "glob",
@@ -449,6 +448,7 @@ dependencies = [
  "forge-agent",
  "forge-attractor",
  "forge-llm",
+ "forge-turnstore-cxdb",
  "serde_json",
  "tempfile",
  "tokio",

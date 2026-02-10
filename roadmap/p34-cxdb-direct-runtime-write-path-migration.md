@@ -1,7 +1,14 @@
 # P34: CXDB-Direct Runtime Write-Path Migration (Agent + Attractor)
+**Complete** (2026-02-10)
 
 **Status**
-- Planned (2026-02-10)
+- Complete (2026-02-10)
+- G1 completed (2026-02-10)
+- G2 completed (2026-02-10)
+- G3 completed (2026-02-10)
+- G4 completed (2026-02-10)
+- G5 completed (2026-02-10)
+- G6 completed (2026-02-10)
 
 **Goal**
 Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based interfaces to direct CXDB-facing contracts, preserving deterministic behavior and a simple CXDB enabled/disabled persistence policy.
@@ -29,7 +36,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Agent persistence migration to CXDB-direct contracts
+### [x] G1. Agent persistence migration to CXDB-direct contracts
 - Work:
   - Replace `Arc<dyn TurnStore>` session persistence dependency with CXDB writer contract(s).
   - Migrate context creation, append, and head lookup to direct CXDB contract calls.
@@ -43,7 +50,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 - DoD:
   - Agent runtime persistence no longer requires `forge-turnstore` traits.
 
-### [ ] G2. Attractor runtime write path migration to CXDB-direct contracts
+### [x] G2. Attractor runtime write path migration to CXDB-direct contracts
 - Work:
   - Replace `AttractorStorageWriter` blanket implementation over `TurnStore` with explicit CXDB-targeted writer contract.
   - Migrate run/stage/checkpoint/link append paths to direct CXDB calls.
@@ -57,7 +64,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 - DoD:
   - Attractor runtime writes are CXDB-direct and do not depend on `forge-turnstore` contracts.
 
-### [ ] G3. Host/bootstrap wiring migration
+### [x] G3. Host/bootstrap wiring migration
 - Work:
   - Move CXDB wiring responsibility to host/bootstrap layers with explicit binary+HTTP endpoint config.
   - Remove duplicate constructor paths that only differ by adapter wrappers.
@@ -70,7 +77,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 - DoD:
   - Runtime construction path is direct and unambiguous.
 
-### [ ] G4. Correctness fixes uncovered by abstraction removal
+### [x] G4. Correctness fixes uncovered by abstraction removal
 - Work:
   - Fix deterministic idempotency fallback key parent-resolution behavior.
   - Ensure returned parent turn metadata reflects committed parent semantics.
@@ -84,7 +91,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Deterministic fake-CXDB contract test harness
+### [x] G5. Deterministic fake-CXDB contract test harness
 - Work:
   - Add shared fake CXDB client harness for agent/attractor tests.
   - Remove backend portability assumptions from tests and assert direct CXDB behavior contracts instead.
@@ -95,7 +102,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 - DoD:
   - Unit/integration tests stay deterministic without requiring live CXDB.
 
-### [ ] G6. Live CXDB smoke and resilience coverage update
+### [x] G6. Live CXDB smoke and resilience coverage update
 - Work:
   - Expand live tests to validate binary write path specifically (not HTTP-only fallbacks).
   - Cover toggle behavior: `off` skips writes, `required` fails deterministically under endpoint failures.

@@ -25,10 +25,10 @@ Run deterministic unit/integration tests:
 cargo test -p forge-agent
 ```
 
-Run the turnstore integration suite only:
+Run the CXDB persistence integration suite only:
 
 ```bash
-cargo test -p forge-agent --test turnstore_integration
+cargo test -p forge-agent --test cxdb_persistence_integration
 ```
 
 Run default-ignored live smoke tests (OpenAI):
@@ -51,21 +51,19 @@ Optional overrides: `ANTHROPIC_LIVE_MODEL`, `ANTHROPIC_BASE_URL`.
 
 ## Persistence In Tests
 
-`SessionConfig.turn_store_mode` controls persistence behavior:
+`SessionConfig.cxdb_persistence` controls persistence behavior:
 
-- `off`: no turnstore calls; useful for baseline behavior tests.
-- `best_effort`: write failures emit warnings and execution continues.
+- `off`: no CXDB calls; useful for baseline behavior tests.
 - `required`: write failures are terminal; use for strict persistence assertions.
 
-Integration tests can wire a concrete backend with `Session::new_with_turn_store(...)`:
+Integration tests can wire a CXDB backend with `Session::new_with_cxdb_persistence(...)`:
+- deterministic in-process fake backend (`forge_turnstore_cxdb::MockCxdb`)
+- live CXDB endpoints (binary + HTTP) when environment is configured
 
-- in-memory backend (`forge_turnstore::MemoryTurnStore`) for fast deterministic tests
-- filesystem backend (`forge_turnstore::FsTurnStore`) for reopen/persistence parity tests
+The dedicated suite `tests/cxdb_persistence_integration.rs` demonstrates:
 
-The dedicated suite `tests/turnstore_integration.rs` demonstrates:
-
-- enabling persistence with `required` mode for memory/fs backends
-- querying persisted turns from the selected backend
+- enabling persistence with `required` mode for CXDB-backed runs
+- querying persisted turns from the configured CXDB backend
 - disabling persistence with `off` mode
 
 

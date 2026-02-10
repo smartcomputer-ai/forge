@@ -2,276 +2,16 @@ use async_trait::async_trait;
 use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, Graph, Node, NodeExecutor, NodeOutcome, PipelineRunner, PipelineStatus,
-    RunConfig, RuntimeContext, StorageWriteMode, parse_dot,
+    AttractorStorageWriter, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
+    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
 use forge_turnstore::{ContextId, FsTurnStore, StoreContext, StoredTurn, TurnId, TurnStoreError};
 use forge_turnstore_cxdb::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
-    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbTurnStore, HttpStoredTurn,
+    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbTurnStore, HttpStoredTurn, MockCxdb,
 };
-use serde_json::Value;
-use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use tempfile::tempdir;
-
-#[derive(Clone, Debug, Default)]
-struct MockCxdb {
-    inner: Arc<Mutex<MockCxdbState>>,
-}
-
-#[derive(Clone, Debug, Default)]
-struct MockCxdbState {
-    next_context_id: u64,
-    next_turn_id: u64,
-    contexts: BTreeMap<u64, (u64, u32)>,
-    turns: BTreeMap<u64, BinaryStoredTurn>,
-    idempotency: BTreeMap<String, u64>,
-}
-
-#[async_trait]
-impl CxdbBinaryClient for MockCxdb {
-    async fn ctx_create(&self, base_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
-        let mut state = self.inner.lock().expect("mutex");
-        if state.next_context_id == 0 {
-            state.next_context_id = 1;
-        }
-        let context_id = state.next_context_id;
-        state.next_context_id += 1;
-        let (head, depth) = if base_turn_id == 0 {
-            (0, 0)
-        } else {
-            let turn = state
-                .turns
-                .get(&base_turn_id)
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "turn",
-                    id: base_turn_id.to_string(),
-                })?;
-            (turn.turn_id, turn.depth)
-        };
-        state.contexts.insert(context_id, (head, depth));
-        Ok(BinaryContextHead {
-            context_id,
-            head_turn_id: head,
-            head_depth: depth,
-        })
-    }
-
-    async fn ctx_fork(&self, from_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
-        self.ctx_create(from_turn_id).await
-    }
-
-    async fn append_turn(
-        &self,
-        request: BinaryAppendTurnRequest,
-    ) -> Result<BinaryAppendTurnResponse, CxdbClientError> {
-        let mut state = self.inner.lock().expect("mutex");
-        let (head, _) = state
-            .contexts
-            .get(&request.context_id)
-            .copied()
-            .ok_or_else(|| CxdbClientError::NotFound {
-                resource: "context",
-                id: request.context_id.to_string(),
-            })?;
-
-        let id_key = format!("{}|{}", request.context_id, request.idempotency_key);
-        if let Some(existing) = state.idempotency.get(&id_key).copied() {
-            let turn = state.turns.get(&existing).ok_or_else(|| {
-                CxdbClientError::Backend("idempotency index corrupted".to_string())
-            })?;
-            return Ok(BinaryAppendTurnResponse {
-                context_id: turn.context_id,
-                new_turn_id: turn.turn_id,
-                new_depth: turn.depth,
-                content_hash: turn.content_hash,
-            });
-        }
-
-        if state.next_turn_id == 0 {
-            state.next_turn_id = 1;
-        }
-        let turn_id = state.next_turn_id;
-        state.next_turn_id += 1;
-        let parent_turn_id = if request.parent_turn_id == 0 {
-            head
-        } else {
-            request.parent_turn_id
-        };
-        let parent_depth = if parent_turn_id == 0 {
-            0
-        } else {
-            state
-                .turns
-                .get(&parent_turn_id)
-                .map(|turn| turn.depth)
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "turn",
-                    id: parent_turn_id.to_string(),
-                })?
-        };
-
-        let content_hash = *blake3::hash(&request.payload).as_bytes();
-        let turn = BinaryStoredTurn {
-            context_id: request.context_id,
-            turn_id,
-            parent_turn_id,
-            depth: parent_depth + 1,
-            type_id: request.type_id,
-            type_version: request.type_version,
-            payload: request.payload,
-            idempotency_key: Some(request.idempotency_key),
-            content_hash,
-        };
-        state.turns.insert(turn_id, turn.clone());
-        state
-            .contexts
-            .insert(turn.context_id, (turn.turn_id, turn.depth));
-        if let Some(key) = turn.idempotency_key {
-            state
-                .idempotency
-                .insert(format!("{}|{}", turn.context_id, key), turn.turn_id);
-        }
-
-        Ok(BinaryAppendTurnResponse {
-            context_id: turn.context_id,
-            new_turn_id: turn.turn_id,
-            new_depth: turn.depth,
-            content_hash,
-        })
-    }
-
-    async fn get_head(&self, context_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
-        let state = self.inner.lock().expect("mutex");
-        let (head, depth) =
-            state
-                .contexts
-                .get(&context_id)
-                .copied()
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "context",
-                    id: context_id.to_string(),
-                })?;
-        Ok(BinaryContextHead {
-            context_id,
-            head_turn_id: head,
-            head_depth: depth,
-        })
-    }
-
-    async fn get_last(
-        &self,
-        context_id: u64,
-        limit: usize,
-        _include_payload: bool,
-    ) -> Result<Vec<BinaryStoredTurn>, CxdbClientError> {
-        let state = self.inner.lock().expect("mutex");
-        let (head, _) =
-            state
-                .contexts
-                .get(&context_id)
-                .copied()
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "context",
-                    id: context_id.to_string(),
-                })?;
-        let mut cursor = head;
-        let mut turns = Vec::new();
-        while cursor != 0 && turns.len() < limit {
-            let turn = state
-                .turns
-                .get(&cursor)
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "turn",
-                    id: cursor.to_string(),
-                })?;
-            turns.push(turn.clone());
-            cursor = turn.parent_turn_id;
-        }
-        turns.reverse();
-        Ok(turns)
-    }
-
-    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<String, CxdbClientError> {
-        Ok(blake3::hash(raw_bytes).to_hex().to_string())
-    }
-
-    async fn get_blob(&self, _content_hash: &String) -> Result<Option<Vec<u8>>, CxdbClientError> {
-        Ok(None)
-    }
-
-    async fn attach_fs(
-        &self,
-        _turn_id: u64,
-        _fs_root_hash: &String,
-    ) -> Result<(), CxdbClientError> {
-        Ok(())
-    }
-}
-
-#[async_trait]
-impl CxdbHttpClient for MockCxdb {
-    async fn list_turns(
-        &self,
-        context_id: u64,
-        before_turn_id: Option<u64>,
-        limit: usize,
-    ) -> Result<Vec<HttpStoredTurn>, CxdbClientError> {
-        let state = self.inner.lock().expect("mutex");
-        let (head, _) =
-            state
-                .contexts
-                .get(&context_id)
-                .copied()
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "context",
-                    id: context_id.to_string(),
-                })?;
-        let mut cursor = before_turn_id
-            .and_then(|turn| state.turns.get(&turn).map(|t| t.parent_turn_id))
-            .unwrap_or(head);
-        let mut turns = Vec::new();
-        while cursor != 0 && turns.len() < limit {
-            let turn = state
-                .turns
-                .get(&cursor)
-                .ok_or_else(|| CxdbClientError::NotFound {
-                    resource: "turn",
-                    id: cursor.to_string(),
-                })?;
-            turns.push(HttpStoredTurn {
-                context_id: turn.context_id,
-                turn_id: turn.turn_id,
-                parent_turn_id: turn.parent_turn_id,
-                depth: turn.depth,
-                type_id: turn.type_id.clone(),
-                type_version: turn.type_version,
-                payload: turn.payload.clone(),
-                idempotency_key: turn.idempotency_key.clone(),
-                content_hash: turn.content_hash,
-            });
-            cursor = turn.parent_turn_id;
-        }
-        turns.reverse();
-        Ok(turns)
-    }
-
-    async fn publish_registry_bundle(
-        &self,
-        _bundle_id: &str,
-        _bundle_json: &[u8],
-    ) -> Result<(), CxdbClientError> {
-        Ok(())
-    }
-
-    async fn get_registry_bundle(
-        &self,
-        _bundle_id: &str,
-    ) -> Result<Option<Vec<u8>>, CxdbClientError> {
-        Ok(None)
-    }
-}
 
 fn graph_under_test() -> Graph {
     parse_dot(
@@ -425,7 +165,7 @@ impl AttractorStorageWriter for FailingStorageWriter {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn storage_mode_off_ignores_failing_store_expected_success() {
+async fn cxdb_persistence_off_ignores_failing_store_expected_success() {
     let graph = graph_under_test();
     let failing = Arc::new(FailingStorageWriter::default());
     let result = PipelineRunner
@@ -433,7 +173,7 @@ async fn storage_mode_off_ignores_failing_store_expected_success() {
             &graph,
             RunConfig {
                 storage: Some(failing.clone()),
-                storage_mode: StorageWriteMode::Off,
+                cxdb_persistence: CxdbPersistenceMode::Off,
                 executor: Arc::new(AlwaysSuccessExecutor),
                 ..RunConfig::default()
             },
@@ -446,27 +186,7 @@ async fn storage_mode_off_ignores_failing_store_expected_success() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn storage_mode_best_effort_tolerates_failing_store_expected_success() {
-    let graph = graph_under_test();
-    let failing = Arc::new(FailingStorageWriter::default());
-    let result = PipelineRunner
-        .run(
-            &graph,
-            RunConfig {
-                storage: Some(failing),
-                storage_mode: StorageWriteMode::BestEffort,
-                executor: Arc::new(AlwaysSuccessExecutor),
-                ..RunConfig::default()
-            },
-        )
-        .await
-        .expect("best_effort should succeed");
-
-    assert_eq!(result.status, PipelineStatus::Success);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn storage_mode_required_failing_store_expected_error() {
+async fn cxdb_persistence_required_failing_store_expected_error() {
     let graph = graph_under_test();
     let failing = Arc::new(FailingStorageWriter::default());
     let error = PipelineRunner
@@ -474,7 +194,7 @@ async fn storage_mode_required_failing_store_expected_error() {
             &graph,
             RunConfig {
                 storage: Some(failing),
-                storage_mode: StorageWriteMode::Required,
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 executor: Arc::new(AlwaysSuccessExecutor),
                 ..RunConfig::default()
             },
@@ -486,7 +206,7 @@ async fn storage_mode_required_failing_store_expected_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn cxdb_best_effort_failure_from_write_path_expected_success() {
+async fn cxdb_required_failure_from_write_path_expected_error() {
     struct FailAfterCreate;
     #[async_trait]
     impl CxdbBinaryClient for FailAfterCreate {
@@ -512,7 +232,11 @@ async fn cxdb_best_effort_failure_from_write_path_expected_success() {
             ))
         }
         async fn get_head(&self, _context_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
-            Err(CxdbClientError::Backend("unused".to_string()))
+            Ok(BinaryContextHead {
+                context_id: 1,
+                head_turn_id: 0,
+                head_depth: 0,
+            })
         }
         async fn get_last(
             &self,
@@ -523,7 +247,7 @@ async fn cxdb_best_effort_failure_from_write_path_expected_success() {
             Err(CxdbClientError::Backend("unused".to_string()))
         }
         async fn put_blob(&self, _raw_bytes: &[u8]) -> Result<String, CxdbClientError> {
-            Err(CxdbClientError::Backend("unused".to_string()))
+            Ok("blob-hash".to_string())
         }
         async fn get_blob(
             &self,
@@ -574,21 +298,12 @@ async fn cxdb_best_effort_failure_from_write_path_expected_success() {
             &graph,
             RunConfig {
                 storage: Some(failing),
-                storage_mode: StorageWriteMode::BestEffort,
+                cxdb_persistence: CxdbPersistenceMode::Required,
                 executor: Arc::new(AlwaysSuccessExecutor),
                 ..RunConfig::default()
             },
         )
-        .await
-        .expect("best_effort should continue on append failures");
-
-    assert_eq!(result.status, PipelineStatus::Success);
-    assert_eq!(
-        result
-            .context
-            .get("graph.goal")
-            .cloned()
-            .unwrap_or(Value::Null),
-        Value::Null
-    );
+        .await;
+    let error = result.expect_err("required mode should fail on append errors");
+    assert!(error.to_string().contains("forced append failure"));
 }

@@ -1,7 +1,7 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use forge_agent::{
-    AnthropicProviderProfile, LocalExecutionEnvironment, OpenAiProviderProfile, ProviderProfile,
-    Session, SessionConfig,
+    AnthropicProviderProfile, CxdbPersistenceMode as AgentCxdbPersistenceMode,
+    LocalExecutionEnvironment, OpenAiProviderProfile, ProviderProfile, Session, SessionConfig,
 };
 use forge_attractor::forge_agent::{ForgeAgentCodergenAdapter, ForgeAgentSessionBackend};
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
@@ -9,10 +9,15 @@ use forge_attractor::handlers::wait_human::{
     AutoApproveInterviewer, ConsoleInterviewer, HumanAnswer, QueueInterviewer, WaitHumanHandler,
 };
 use forge_attractor::{
-    CheckpointState, PipelineRunResult, PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent,
-    RuntimeEventKind, RuntimeEventSink, parse_dot, runtime_event_channel,
+    CheckpointState, CxdbPersistenceMode as AttractorCxdbPersistenceMode, PipelineRunResult,
+    PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent, RuntimeEventKind, RuntimeEventSink,
+    parse_dot, runtime_event_channel,
 };
 use forge_llm::Client;
+use forge_turnstore_cxdb::{
+    CxdbBinaryClient, CxdbHttpClient, CxdbReqwestHttpClient, CxdbSdkBinaryClient,
+    DEFAULT_CXDB_BINARY_ADDR, DEFAULT_CXDB_HTTP_BASE_URL,
+};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -100,6 +105,13 @@ enum BackendMode {
     Mock,
 }
 
+#[derive(Clone, Debug)]
+struct CxdbHostConfig {
+    persistence: AttractorCxdbPersistenceMode,
+    binary_addr: String,
+    http_base_url: String,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
     load_env_files();
@@ -124,13 +136,93 @@ fn load_env_files() {
     let _ = dotenvy::from_filename(".env");
 }
 
+fn first_non_empty_env(keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        std::env::var(key)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn cxdb_host_config_from_env() -> Result<CxdbHostConfig, String> {
+    let persistence_raw = first_non_empty_env(&["FORGE_CXDB_PERSISTENCE", "CXDB_PERSISTENCE_MODE"])
+        .unwrap_or_else(|| "off".to_string())
+        .to_ascii_lowercase();
+    let persistence = match persistence_raw.as_str() {
+        "off" => AttractorCxdbPersistenceMode::Off,
+        "required" => AttractorCxdbPersistenceMode::Required,
+        _ => {
+            return Err(format!(
+                "invalid FORGE_CXDB_PERSISTENCE value '{}'; expected 'off' or 'required'",
+                persistence_raw
+            ));
+        }
+    };
+
+    let binary_addr =
+        first_non_empty_env(&["FORGE_CXDB_BINARY_ADDR", "CXDB_BINARY_ADDR", "CXDB_ADDR"])
+            .unwrap_or_else(|| DEFAULT_CXDB_BINARY_ADDR.to_string());
+    let http_base_url = first_non_empty_env(&["FORGE_CXDB_HTTP_BASE_URL", "CXDB_HTTP_BASE_URL"])
+        .unwrap_or_else(|| DEFAULT_CXDB_HTTP_BASE_URL.to_string());
+
+    Ok(CxdbHostConfig {
+        persistence,
+        binary_addr,
+        http_base_url,
+    })
+}
+
+fn build_cxdb_clients(
+    cxdb: &CxdbHostConfig,
+) -> Result<(Arc<dyn CxdbBinaryClient>, Arc<dyn CxdbHttpClient>), String> {
+    let binary: Arc<dyn CxdbBinaryClient> = Arc::new(
+        CxdbSdkBinaryClient::connect(&cxdb.binary_addr).map_err(|error| {
+            format!(
+                "failed to connect CXDB binary '{}': {error}",
+                cxdb.binary_addr
+            )
+        })?,
+    );
+    let http: Arc<dyn CxdbHttpClient> =
+        Arc::new(CxdbReqwestHttpClient::new(cxdb.http_base_url.clone()));
+    Ok((binary, http))
+}
+
+fn build_runtime_persistence(
+    cxdb: &CxdbHostConfig,
+) -> Result<
+    (
+        Option<forge_attractor::SharedAttractorStorageWriter>,
+        Option<Arc<dyn forge_attractor::AttractorArtifactWriter>>,
+    ),
+    String,
+> {
+    if cxdb.persistence == AttractorCxdbPersistenceMode::Off {
+        return Ok((None, None));
+    }
+
+    let (binary, http) = build_cxdb_clients(cxdb)?;
+    let storage = forge_attractor::cxdb_storage_writer(binary.clone(), http.clone());
+    let artifacts = forge_attractor::cxdb_artifact_writer(binary, http);
+    Ok((Some(storage), Some(artifacts)))
+}
+
 async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
     let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let cxdb = cxdb_host_config_from_env()?;
+    let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 
     let (event_sink, event_task) = event_stream(!args.no_stream_events, args.event_json);
 
-    let executor = build_executor(args.interviewer, args.backend, args.human_answers)?;
+    let executor = build_executor(
+        args.interviewer,
+        args.backend,
+        args.human_answers,
+        &cxdb,
+        storage.clone(),
+    )?;
     let run_result = PipelineRunner
         .run(
             &graph,
@@ -139,6 +231,9 @@ async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
                 logs_root: args.logs_root,
                 events: event_sink,
                 executor,
+                storage,
+                artifacts,
+                cxdb_persistence: cxdb.persistence,
                 ..RunConfig::default()
             },
         )
@@ -156,10 +251,18 @@ async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
 async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
     let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let cxdb = cxdb_host_config_from_env()?;
+    let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 
     let (event_sink, event_task) = event_stream(!args.no_stream_events, args.event_json);
 
-    let executor = build_executor(args.interviewer, args.backend, args.human_answers)?;
+    let executor = build_executor(
+        args.interviewer,
+        args.backend,
+        args.human_answers,
+        &cxdb,
+        storage.clone(),
+    )?;
     let run_result = PipelineRunner
         .run(
             &graph,
@@ -169,6 +272,9 @@ async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
                 resume_from_checkpoint: Some(args.checkpoint),
                 events: event_sink,
                 executor,
+                storage,
+                artifacts,
+                cxdb_persistence: cxdb.persistence,
                 ..RunConfig::default()
             },
         )
@@ -255,6 +361,8 @@ fn build_executor(
     mode: InterviewerMode,
     backend_mode: BackendMode,
     human_answers: Vec<String>,
+    cxdb: &CxdbHostConfig,
+    stage_link_writer: Option<forge_attractor::SharedAttractorStorageWriter>,
 ) -> Result<Arc<dyn forge_attractor::NodeExecutor>, String> {
     let interviewer: Arc<dyn forge_attractor::Interviewer> = match mode {
         InterviewerMode::Auto => {
@@ -273,7 +381,7 @@ fn build_executor(
 
     let codergen_backend = match backend_mode {
         BackendMode::Mock => None,
-        BackendMode::Agent => Some(build_agent_codergen_backend()?),
+        BackendMode::Agent => Some(build_agent_codergen_backend(cxdb, stage_link_writer)?),
     };
     let mut registry =
         forge_attractor::handlers::core_registry_with_codergen_backend(codergen_backend);
@@ -326,8 +434,10 @@ fn is_interactive_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
-fn build_agent_codergen_backend()
--> Result<Arc<dyn forge_attractor::handlers::codergen::CodergenBackend>, String> {
+fn build_agent_codergen_backend(
+    cxdb: &CxdbHostConfig,
+    stage_link_writer: Option<forge_attractor::SharedAttractorStorageWriter>,
+) -> Result<Arc<dyn forge_attractor::handlers::codergen::CodergenBackend>, String> {
     let provider_profile = select_provider_profile_from_env()?;
     let llm_client =
         Arc::new(Client::from_env().map_err(|error| {
@@ -336,16 +446,36 @@ fn build_agent_codergen_backend()
     let cwd = std::env::current_dir()
         .map_err(|error| format!("failed to resolve current directory for agent env: {error}"))?;
     let execution_env = Arc::new(LocalExecutionEnvironment::new(cwd));
-    let session = Session::new(
-        provider_profile,
-        execution_env,
-        llm_client,
-        SessionConfig::default(),
-    )
+    let mut session_config = SessionConfig::default();
+    session_config.cxdb_persistence = if cxdb.persistence == AttractorCxdbPersistenceMode::Required
+    {
+        AgentCxdbPersistenceMode::Required
+    } else {
+        AgentCxdbPersistenceMode::Off
+    };
+
+    let session = if cxdb.persistence == AttractorCxdbPersistenceMode::Required {
+        let (binary_client, http_client) = build_cxdb_clients(cxdb)?;
+        Session::new_with_cxdb_persistence(
+            provider_profile,
+            execution_env,
+            llm_client,
+            session_config,
+            binary_client,
+            http_client,
+        )
+    } else {
+        Session::new(provider_profile, execution_env, llm_client, session_config)
+    }
     .map_err(|error| format!("failed to initialize forge-agent session: {error}"))?;
 
     let backend =
         ForgeAgentSessionBackend::new(ForgeAgentCodergenAdapter::default(), Box::new(session));
+    let backend = if let Some(writer) = stage_link_writer {
+        backend.with_stage_link_writer(writer, cxdb.persistence)
+    } else {
+        backend
+    };
     Ok(Arc::new(backend))
 }
 

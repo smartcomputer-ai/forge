@@ -685,7 +685,7 @@ where
         let idempotency_key = if request.idempotency_key.is_empty() {
             Self::deterministic_idempotency_key(
                 context_id,
-                parent_turn_id,
+                resolved_parent_turn_id,
                 &request.type_id,
                 request.type_version,
                 &content_hash_hex,
@@ -712,10 +712,26 @@ where
             .await
             .map_err(CxdbClientError::into_turnstore_error)?;
 
+        let committed_parent_turn_id = if parent_turn_id == 0 {
+            self.binary_client
+                .get_last(context_id, 1, false)
+                .await
+                .ok()
+                .and_then(|turns| {
+                    turns
+                        .into_iter()
+                        .find(|turn| turn.turn_id == appended.new_turn_id)
+                })
+                .map(|turn| turn.parent_turn_id)
+                .unwrap_or(resolved_parent_turn_id)
+        } else {
+            parent_turn_id
+        };
+
         Ok(StoredTurn {
             context_id: Self::context_id_string(appended.context_id),
             turn_id: Self::turn_id_string(appended.new_turn_id),
-            parent_turn_id: Self::turn_id_string(resolved_parent_turn_id),
+            parent_turn_id: Self::turn_id_string(committed_parent_turn_id),
             depth: appended.new_depth,
             type_id: request_type_id,
             type_version: request_type_version,
@@ -1541,7 +1557,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn append_turn_empty_idempotency_key_expected_deterministic_fallback() {
+    async fn append_turn_empty_idempotency_key_expected_head_relative_fallback() {
         let mock_backend = MockCxdbBackend::default();
         let store = CxdbTurnStore::new(mock_backend.clone(), mock_backend);
         let context = store
@@ -1567,9 +1583,17 @@ mod tests {
             .await
             .expect("second append should be deduplicated");
 
-        assert_eq!(first.turn_id, second.turn_id);
+        assert_ne!(first.turn_id, second.turn_id);
+        assert_eq!(second.parent_turn_id, first.turn_id);
+        assert_ne!(first.idempotency_key, second.idempotency_key);
         assert!(
             first
+                .idempotency_key
+                .as_deref()
+                .is_some_and(|value| value.starts_with("forge-cxdb:v1|"))
+        );
+        assert!(
+            second
                 .idempotency_key
                 .as_deref()
                 .is_some_and(|value| value.starts_with("forge-cxdb:v1|"))

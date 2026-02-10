@@ -14,7 +14,7 @@
 Related crates:
 
 - `forge-agent`: coding-agent loop used by codergen backend integration.
-- `forge-turnstore`: storage abstraction used for run/event persistence and query parity.
+- `forge-turnstore-cxdb`: CXDB client/runtime contracts used for direct runtime persistence.
 - `forge-cli`: in-process host surface for run/resume/inspect workflows.
 
 ## Key capabilities
@@ -22,7 +22,7 @@ Related crates:
 - Parse/validate Attractor DOT pipelines and execute deterministically.
 - Support handlers: `start`, `exit`, `codergen`, `wait.human`, `conditional`, `parallel`, `parallel.fan_in`, `tool`, `stack.manager_loop`.
 - Emit typed runtime events for pipeline/stage/parallel/interview/checkpoint lifecycles.
-- Persist run/stage/checkpoint/linkage events via turnstore-backed storage.
+- Persist run/stage/checkpoint/linkage events via CXDB-backed runtime contracts.
 - Query run metadata, stage timelines, checkpoint snapshots, and stage-to-agent linkage records.
 
 ## Run tests

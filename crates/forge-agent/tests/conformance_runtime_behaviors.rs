@@ -1,13 +1,14 @@
 mod support;
 
 use forge_agent::{
-    BufferedEventEmitter, EventKind, ExecutionEnvironment, LocalExecutionEnvironment, Session,
-    SessionConfig, SessionState, Turn, TurnStoreWriteMode,
+    BufferedEventEmitter, CxdbPersistenceMode, EventKind, ExecutionEnvironment,
+    LocalExecutionEnvironment, Session, SessionConfig, SessionPersistenceWriter, SessionState,
+    Turn,
 };
 use forge_llm::Role;
-use forge_turnstore::{
-    AppendTurnRequest, ContextId, StoreContext, StoredTurn, StoredTurnEnvelope, StoredTurnRef,
-    TurnId, TurnStore, TurnStoreError,
+use forge_turnstore_cxdb::{
+    CxdbAppendTurnRequest, CxdbClientError, CxdbStoreContext, CxdbStoredTurn, CxdbStoredTurnRef,
+    CxdbTurnId,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -18,15 +19,20 @@ use support::{
 };
 use tempfile::tempdir;
 
-#[derive(Default)]
-struct RecordingTurnStore {
-    next_context: Mutex<u64>,
-    next_turn: Mutex<u64>,
-    appended: Mutex<Vec<AppendTurnRequest>>,
+#[derive(serde::Deserialize)]
+struct PersistedEnvelope {
+    payload: serde_json::Value,
 }
 
-impl RecordingTurnStore {
-    fn appended(&self) -> Vec<AppendTurnRequest> {
+#[derive(Default)]
+struct RecordingPersistence {
+    next_context: Mutex<u64>,
+    next_turn: Mutex<u64>,
+    appended: Mutex<Vec<CxdbAppendTurnRequest>>,
+}
+
+impl RecordingPersistence {
+    fn appended(&self) -> Vec<CxdbAppendTurnRequest> {
         self.appended
             .lock()
             .expect("append mutex should lock")
@@ -35,25 +41,28 @@ impl RecordingTurnStore {
 }
 
 #[async_trait::async_trait]
-impl TurnStore for RecordingTurnStore {
+impl SessionPersistenceWriter for RecordingPersistence {
     async fn create_context(
         &self,
-        _base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError> {
+        _base_turn_id: Option<CxdbTurnId>,
+    ) -> Result<CxdbStoreContext, CxdbClientError> {
         let mut next = self.next_context.lock().expect("context mutex should lock");
         if *next == 0 {
             *next = 1;
         }
         let context_id = next.to_string();
         *next += 1;
-        Ok(StoreContext {
+        Ok(CxdbStoreContext {
             context_id,
             head_turn_id: "0".to_string(),
             head_depth: 0,
         })
     }
 
-    async fn append_turn(&self, request: AppendTurnRequest) -> Result<StoredTurn, TurnStoreError> {
+    async fn append_turn(
+        &self,
+        request: CxdbAppendTurnRequest,
+    ) -> Result<CxdbStoredTurn, CxdbClientError> {
         self.appended
             .lock()
             .expect("append mutex should lock")
@@ -64,7 +73,7 @@ impl TurnStore for RecordingTurnStore {
         }
         let turn_id = next.to_string();
         *next += 1;
-        Ok(StoredTurn {
+        Ok(CxdbStoredTurn {
             context_id: request.context_id,
             turn_id,
             parent_turn_id: request.parent_turn_id.unwrap_or_else(|| "0".to_string()),
@@ -77,29 +86,12 @@ impl TurnStore for RecordingTurnStore {
         })
     }
 
-    async fn fork_context(&self, from_turn_id: TurnId) -> Result<StoreContext, TurnStoreError> {
-        Ok(StoreContext {
-            context_id: "fork".to_string(),
-            head_turn_id: from_turn_id,
-            head_depth: 1,
-        })
-    }
-
-    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, TurnStoreError> {
-        Ok(StoredTurnRef {
+    async fn get_head(&self, context_id: &String) -> Result<CxdbStoredTurnRef, CxdbClientError> {
+        Ok(CxdbStoredTurnRef {
             context_id: context_id.clone(),
             turn_id: "1".to_string(),
             depth: 1,
         })
-    }
-
-    async fn list_turns(
-        &self,
-        _context_id: &ContextId,
-        _before_turn_id: Option<&TurnId>,
-        _limit: usize,
-    ) -> Result<Vec<StoredTurn>, TurnStoreError> {
-        Ok(Vec::new())
     }
 }
 
@@ -471,11 +463,11 @@ async fn cross_profile_subagent_spawn_persists_link_record() {
         let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
         let (client, responses, _requests) = client_with_adapter(fixture.id());
         let profile = fixture.profile();
-        let store = Arc::new(RecordingTurnStore::default());
+        let store = Arc::new(RecordingPersistence::default());
         let mut config = SessionConfig::default();
-        config.turn_store_mode = TurnStoreWriteMode::Required;
+        config.cxdb_persistence = CxdbPersistenceMode::Required;
         let mut session =
-            Session::new_with_turn_store(profile, env, client, config, Some(store.clone()))
+            Session::new_with_persistence(profile, env, client, config, Some(store.clone()))
                 .expect("session should initialize");
 
         enqueue(
@@ -506,11 +498,11 @@ async fn cross_profile_subagent_spawn_persists_link_record() {
             .expect("submit should succeed");
 
         let appended = store.appended();
-        let spawn_links: Vec<StoredTurnEnvelope> = appended
+        let spawn_links: Vec<PersistedEnvelope> = appended
             .iter()
             .filter(|request| request.type_id == "forge.link.subagent_spawn")
             .filter_map(|request| {
-                serde_json::from_slice::<StoredTurnEnvelope>(&request.payload).ok()
+                serde_json::from_slice::<PersistedEnvelope>(&request.payload).ok()
             })
             .collect();
 

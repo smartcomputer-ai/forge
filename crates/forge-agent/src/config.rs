@@ -3,9 +3,8 @@ use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TurnStoreWriteMode {
+pub enum CxdbPersistenceMode {
     Off,
-    BestEffort,
     Required,
 }
 
@@ -25,7 +24,7 @@ pub struct SessionConfig {
     pub max_subagent_depth: usize,
     pub tool_hook_strict: bool,
     pub thread_key: Option<String>,
-    pub turn_store_mode: TurnStoreWriteMode,
+    pub cxdb_persistence: CxdbPersistenceMode,
 }
 
 impl Default for SessionConfig {
@@ -44,7 +43,7 @@ impl Default for SessionConfig {
             max_subagent_depth: 1,
             tool_hook_strict: false,
             thread_key: None,
-            turn_store_mode: TurnStoreWriteMode::BestEffort,
+            cxdb_persistence: CxdbPersistenceMode::Off,
         }
     }
 }
@@ -89,6 +88,6 @@ mod tests {
         assert_eq!(config.max_subagent_depth, 1);
         assert!(!config.tool_hook_strict);
         assert_eq!(config.thread_key, None);
-        assert_eq!(config.turn_store_mode, TurnStoreWriteMode::BestEffort);
+        assert_eq!(config.cxdb_persistence, CxdbPersistenceMode::Off);
     }
 }

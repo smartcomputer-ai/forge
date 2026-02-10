@@ -1,18 +1,18 @@
 use crate::{
-    AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
-    ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
-    SessionError, SessionEvent, SteeringTurn, ToolCallHook, ToolDispatchOptions, ToolError,
-    ToolResultTurn, ToolResultsTurn, Turn, TurnStoreWriteMode, UserTurn, truncate_tool_output,
+    AgentError, AssistantTurn, CxdbPersistenceMode, EnvironmentContext, EventData, EventEmitter,
+    EventKind, EventStream, ExecutionEnvironment, NoopEventEmitter, ProjectDocument,
+    ProviderProfile, SessionConfig, SessionError, SessionEvent, SteeringTurn, ToolCallHook,
+    ToolDispatchOptions, ToolError, ToolResultTurn, ToolResultsTurn, Turn, UserTurn,
+    truncate_tool_output,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
     ToolResult, Usage,
 };
-use forge_turnstore::{
-    AppendTurnRequest, CorrelationMetadata, StoredTurnEnvelope, TurnId, TurnStore,
-    agent_idempotency_key,
+use forge_turnstore_cxdb::{
+    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
+    CxdbStoreContext, CxdbStoredTurn, CxdbStoredTurnRef, CxdbTurnId,
 };
-use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbTurnStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -25,6 +25,86 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use uuid::Uuid;
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+struct CorrelationMetadata {
+    run_id: Option<String>,
+    pipeline_context_id: Option<String>,
+    node_id: Option<String>,
+    stage_attempt_id: Option<String>,
+    agent_session_id: Option<String>,
+    agent_context_id: Option<String>,
+    agent_head_turn_id: Option<String>,
+    parent_turn_id: Option<String>,
+    sequence_no: Option<u64>,
+    thread_key: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct StoredTurnEnvelope {
+    schema_version: u32,
+    run_id: Option<String>,
+    session_id: Option<String>,
+    node_id: Option<String>,
+    stage_attempt_id: Option<String>,
+    event_kind: String,
+    timestamp: String,
+    payload: Value,
+    correlation: CorrelationMetadata,
+}
+
+fn encode_idempotency_part(part: &str) -> String {
+    format!("{}:{}", part.len(), part)
+}
+
+fn agent_idempotency_key(session_id: &str, local_turn_index: u64, event_kind: &str) -> String {
+    format!(
+        "forge-agent:v1|{}|{}|{}",
+        encode_idempotency_part(session_id),
+        local_turn_index,
+        encode_idempotency_part(event_kind)
+    )
+}
+
+#[async_trait::async_trait]
+pub trait SessionPersistenceWriter: Send + Sync {
+    async fn create_context(
+        &self,
+        base_turn_id: Option<CxdbTurnId>,
+    ) -> Result<CxdbStoreContext, CxdbClientError>;
+
+    async fn append_turn(
+        &self,
+        request: CxdbAppendTurnRequest,
+    ) -> Result<CxdbStoredTurn, CxdbClientError>;
+
+    async fn get_head(&self, context_id: &String) -> Result<CxdbStoredTurnRef, CxdbClientError>;
+}
+
+#[async_trait::async_trait]
+impl<B, H> SessionPersistenceWriter for CxdbRuntimeStore<B, H>
+where
+    B: CxdbBinaryClient + Send + Sync,
+    H: CxdbHttpClient + Send + Sync,
+{
+    async fn create_context(
+        &self,
+        base_turn_id: Option<CxdbTurnId>,
+    ) -> Result<CxdbStoreContext, CxdbClientError> {
+        CxdbRuntimeStore::create_context(self, base_turn_id).await
+    }
+
+    async fn append_turn(
+        &self,
+        request: CxdbAppendTurnRequest,
+    ) -> Result<CxdbStoredTurn, CxdbClientError> {
+        CxdbRuntimeStore::append_turn(self, request).await
+    }
+
+    async fn get_head(&self, context_id: &String) -> Result<CxdbStoredTurnRef, CxdbClientError> {
+        CxdbRuntimeStore::get_head(self, context_id).await
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SubmitOptions {
@@ -62,7 +142,7 @@ pub struct SessionCheckpoint {
 pub struct SessionPersistenceSnapshot {
     pub session_id: String,
     pub context_id: Option<String>,
-    pub head_turn_id: Option<TurnId>,
+    pub head_turn_id: Option<CxdbTurnId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -354,10 +434,10 @@ pub struct Session {
     abort_notify: Arc<Notify>,
     tool_call_hook: Option<Arc<dyn ToolCallHook>>,
     thread_key: Option<String>,
-    turn_store: Option<Arc<dyn TurnStore>>,
-    turn_store_context_id: Option<String>,
-    turn_store_sequence_no: u64,
-    turn_store_mode: TurnStoreWriteMode,
+    persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
+    persistence_context_id: Option<String>,
+    persistence_sequence_no: u64,
+    persistence_mode: CxdbPersistenceMode,
 }
 
 #[derive(Clone)]
@@ -389,23 +469,43 @@ impl Session {
         )
     }
 
-    pub fn new_with_turn_store(
+    pub fn new_with_persistence(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
         llm_client: Arc<Client>,
         config: SessionConfig,
-        turn_store: Option<Arc<dyn TurnStore>>,
+        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
     ) -> Result<Self, AgentError> {
-        Self::new_with_emitter_and_turn_store(
+        Self::new_with_emitter_and_persistence(
             provider_profile,
             execution_env,
             llm_client,
             config,
             Arc::new(NoopEventEmitter),
-            turn_store,
+            persistence_writer,
         )
     }
 
+    pub fn new_with_cxdb_persistence(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        binary_client: Arc<dyn CxdbBinaryClient>,
+        http_client: Arc<dyn CxdbHttpClient>,
+    ) -> Result<Self, AgentError> {
+        let store: Arc<dyn SessionPersistenceWriter> =
+            Arc::new(CxdbRuntimeStore::new(binary_client, http_client));
+        Self::new_with_persistence(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            Some(store),
+        )
+    }
+
+    #[allow(dead_code)]
     pub fn new_with_cxdb_turn_store(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
@@ -414,13 +514,13 @@ impl Session {
         binary_client: Arc<dyn CxdbBinaryClient>,
         http_client: Arc<dyn CxdbHttpClient>,
     ) -> Result<Self, AgentError> {
-        let store: Arc<dyn TurnStore> = Arc::new(CxdbTurnStore::new(binary_client, http_client));
-        Self::new_with_turn_store(
+        Self::new_with_cxdb_persistence(
             provider_profile,
             execution_env,
             llm_client,
             config,
-            Some(store),
+            binary_client,
+            http_client,
         )
     }
 
@@ -431,7 +531,7 @@ impl Session {
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
     ) -> Result<Self, AgentError> {
-        Self::new_with_emitter_and_turn_store(
+        Self::new_with_emitter_and_persistence(
             provider_profile,
             execution_env,
             llm_client,
@@ -441,13 +541,13 @@ impl Session {
         )
     }
 
-    pub fn new_with_emitter_and_turn_store(
+    pub fn new_with_emitter_and_persistence(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
         llm_client: Arc<Client>,
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
-        turn_store: Option<Arc<dyn TurnStore>>,
+        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
     ) -> Result<Self, AgentError> {
         Self::new_with_depth(
             provider_profile,
@@ -455,8 +555,44 @@ impl Session {
             llm_client,
             config,
             event_emitter,
-            turn_store,
+            persistence_writer,
             0,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn new_with_turn_store(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
+    ) -> Result<Self, AgentError> {
+        Self::new_with_persistence(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            persistence_writer,
+        )
+    }
+
+    #[allow(dead_code)]
+    pub fn new_with_emitter_and_turn_store(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        event_emitter: Arc<dyn EventEmitter>,
+        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
+    ) -> Result<Self, AgentError> {
+        Self::new_with_emitter_and_persistence(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            event_emitter,
+            persistence_writer,
         )
     }
 
@@ -466,10 +602,16 @@ impl Session {
         llm_client: Arc<Client>,
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
-        turn_store: Option<Arc<dyn TurnStore>>,
+        persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
         subagent_depth: usize,
     ) -> Result<Self, AgentError> {
-        let turn_store_mode = config.turn_store_mode;
+        let persistence_mode = config.cxdb_persistence;
+        if persistence_mode == CxdbPersistenceMode::Required && persistence_writer.is_none() {
+            return Err(SessionError::InvalidConfiguration(
+                "cxdb_persistence=required requires a configured CXDB writer".to_string(),
+            )
+            .into());
+        }
         let thread_key = config.thread_key.clone();
         let mut session = Self {
             id: Uuid::new_v4().to_string(),
@@ -493,10 +635,10 @@ impl Session {
             abort_notify: Arc::new(Notify::new()),
             tool_call_hook: None,
             thread_key,
-            turn_store,
-            turn_store_context_id: None,
-            turn_store_sequence_no: 0,
-            turn_store_mode,
+            persistence_writer,
+            persistence_context_id: None,
+            persistence_sequence_no: 0,
+            persistence_mode,
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
         session.persist_session_event_blocking("session_start", serde_json::json!({}))?;
@@ -578,20 +720,20 @@ impl Session {
         self.history.push(turn);
     }
 
-    fn next_turn_store_sequence(&mut self) -> u64 {
-        let current = self.turn_store_sequence_no;
-        self.turn_store_sequence_no = self.turn_store_sequence_no.saturating_add(1);
+    fn next_persistence_sequence(&mut self) -> u64 {
+        let current = self.persistence_sequence_no;
+        self.persistence_sequence_no = self.persistence_sequence_no.saturating_add(1);
         current
     }
 
     fn persistence_enabled(&self) -> bool {
-        self.turn_store.is_some() && self.turn_store_mode != TurnStoreWriteMode::Off
+        self.persistence_writer.is_some() && self.persistence_mode != CxdbPersistenceMode::Off
     }
 
     pub async fn persistence_snapshot(&mut self) -> Result<SessionPersistenceSnapshot, AgentError> {
         let mut snapshot = SessionPersistenceSnapshot {
             session_id: self.id.clone(),
-            context_id: self.turn_store_context_id.clone(),
+            context_id: self.persistence_context_id.clone(),
             head_turn_id: None,
         };
 
@@ -599,12 +741,13 @@ impl Session {
             return Ok(snapshot);
         }
 
-        self.ensure_turn_store_context().await?;
-        snapshot.context_id = self.turn_store_context_id.clone();
+        self.ensure_persistence_context().await?;
+        snapshot.context_id = self.persistence_context_id.clone();
 
-        if let (Some(store), Some(context_id)) =
-            (self.turn_store.clone(), self.turn_store_context_id.clone())
-        {
+        if let (Some(store), Some(context_id)) = (
+            self.persistence_writer.clone(),
+            self.persistence_context_id.clone(),
+        ) {
             match store.get_head(&context_id).await {
                 Ok(head) => snapshot.head_turn_id = Some(head.turn_id),
                 Err(error) => self.handle_persistence_error(error, "get_head")?,
@@ -627,34 +770,27 @@ impl Session {
 
     fn handle_persistence_error(
         &self,
-        error: forge_turnstore::TurnStoreError,
+        error: CxdbClientError,
         operation: &str,
     ) -> Result<(), AgentError> {
-        match self.turn_store_mode {
-            TurnStoreWriteMode::Off => Ok(()),
-            TurnStoreWriteMode::BestEffort => {
-                let _ = self.event_emitter.emit(SessionEvent::warning(
-                    self.id.clone(),
-                    format!("turnstore {} failed: {}", operation, error),
-                ));
-                Ok(())
-            }
-            TurnStoreWriteMode::Required => {
+        match self.persistence_mode {
+            CxdbPersistenceMode::Off => Ok(()),
+            CxdbPersistenceMode::Required => {
                 Err(SessionError::Persistence(format!("{} failed: {}", operation, error)).into())
             }
         }
     }
 
-    async fn ensure_turn_store_context(&mut self) -> Result<(), AgentError> {
-        if !self.persistence_enabled() || self.turn_store_context_id.is_some() {
+    async fn ensure_persistence_context(&mut self) -> Result<(), AgentError> {
+        if !self.persistence_enabled() || self.persistence_context_id.is_some() {
             return Ok(());
         }
-        let Some(store) = self.turn_store.clone() else {
+        let Some(store) = self.persistence_writer.clone() else {
             return Ok(());
         };
         match store.create_context(None).await {
             Ok(context) => {
-                self.turn_store_context_id = Some(context.context_id);
+                self.persistence_context_id = Some(context.context_id);
                 Ok(())
             }
             Err(error) => self.handle_persistence_error(error, "create_context"),
@@ -729,15 +865,15 @@ impl Session {
         if !self.persistence_enabled() {
             return Ok(());
         }
-        self.ensure_turn_store_context().await?;
-        let Some(store) = self.turn_store.clone() else {
+        self.ensure_persistence_context().await?;
+        let Some(store) = self.persistence_writer.clone() else {
             return Ok(());
         };
-        let Some(context_id) = self.turn_store_context_id.clone() else {
+        let Some(context_id) = self.persistence_context_id.clone() else {
             return Ok(());
         };
 
-        let sequence_no = self.next_turn_store_sequence();
+        let sequence_no = self.next_persistence_sequence();
         let envelope = StoredTurnEnvelope {
             schema_version: 1,
             run_id: None,
@@ -758,7 +894,7 @@ impl Session {
         let payload_bytes = serde_json::to_vec(&envelope)
             .map_err(|err| SessionError::Persistence(err.to_string()))?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
-        let request = AppendTurnRequest {
+        let request = CxdbAppendTurnRequest {
             context_id,
             parent_turn_id: None,
             type_id: type_id.to_string(),
@@ -1423,16 +1559,17 @@ impl Session {
             self.llm_client.clone(),
             child_config,
             self.event_emitter.clone(),
-            self.turn_store.clone(),
+            self.persistence_writer.clone(),
             self.subagent_depth + 1,
         )?;
 
         let mut parent_turn_id: Option<String> = None;
         if self.persistence_enabled() {
-            self.ensure_turn_store_context().await?;
-            if let (Some(store), Some(context_id)) =
-                (self.turn_store.clone(), self.turn_store_context_id.clone())
-            {
+            self.ensure_persistence_context().await?;
+            if let (Some(store), Some(context_id)) = (
+                self.persistence_writer.clone(),
+                self.persistence_context_id.clone(),
+            ) {
                 match store.get_head(&context_id).await {
                     Ok(head) => parent_turn_id = Some(head.turn_id),
                     Err(error) => self.handle_persistence_error(error, "get_head")?,
@@ -1440,15 +1577,15 @@ impl Session {
             }
         }
 
-        if child_session.persistence_enabled() && child_session.turn_store_context_id.is_none() {
-            if let Some(store) = child_session.turn_store.clone() {
+        if child_session.persistence_enabled() && child_session.persistence_context_id.is_none() {
+            if let Some(store) = child_session.persistence_writer.clone() {
                 let base_turn = parent_turn_id
                     .as_ref()
                     .filter(|turn_id| turn_id.as_str() != "0")
                     .cloned();
                 match store.create_context(base_turn).await {
                     Ok(context) => {
-                        child_session.turn_store_context_id = Some(context.context_id);
+                        child_session.persistence_context_id = Some(context.context_id);
                     }
                     Err(error) => {
                         child_session.handle_persistence_error(error, "create_context")?
@@ -1457,7 +1594,7 @@ impl Session {
             }
         }
 
-        let child_context_id = child_session.turn_store_context_id.clone();
+        let child_context_id = child_session.persistence_context_id.clone();
         let session_id = self.id.clone();
         let thread_key = self.thread_key.clone();
         let child_session_id = child_session.id.clone();
@@ -2466,11 +2603,6 @@ mod tests {
         Client, ConfigurationError, ContentPart, FinishReason, Message, ProviderAdapter, Request,
         Response, SDKError, StreamEventStream, ToolCallData, Usage,
     };
-    use forge_turnstore::{
-        AppendTurnRequest as StoreAppendTurnRequest, ContextId as StoreContextId, StoreContext,
-        StoredTurn, StoredTurnEnvelope, StoredTurnRef, TurnId as StoreTurnId, TurnStore,
-        TurnStoreError,
-    };
     use futures::{StreamExt, executor::block_on};
     use serde_json::Value;
     use std::collections::{HashMap, VecDeque};
@@ -2520,15 +2652,15 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct RecordingTurnStore {
+    struct RecordingPersistence {
         next_context_id: Mutex<u64>,
         next_turn_id: Mutex<u64>,
-        append_requests: Mutex<Vec<StoreAppendTurnRequest>>,
+        append_requests: Mutex<Vec<CxdbAppendTurnRequest>>,
         fail_create: bool,
         fail_append: bool,
     }
 
-    impl RecordingTurnStore {
+    impl RecordingPersistence {
         fn with_failures(fail_create: bool, fail_append: bool) -> Self {
             Self {
                 next_context_id: Mutex::new(1),
@@ -2539,7 +2671,7 @@ mod tests {
             }
         }
 
-        fn appended(&self) -> Vec<StoreAppendTurnRequest> {
+        fn appended(&self) -> Vec<CxdbAppendTurnRequest> {
             self.append_requests
                 .lock()
                 .expect("append requests mutex")
@@ -2548,18 +2680,20 @@ mod tests {
     }
 
     #[async_trait]
-    impl TurnStore for RecordingTurnStore {
+    impl SessionPersistenceWriter for RecordingPersistence {
         async fn create_context(
             &self,
-            _base_turn_id: Option<StoreTurnId>,
-        ) -> Result<StoreContext, TurnStoreError> {
+            _base_turn_id: Option<CxdbTurnId>,
+        ) -> Result<CxdbStoreContext, CxdbClientError> {
             if self.fail_create {
-                return Err(TurnStoreError::Backend("forced create failure".to_string()));
+                return Err(CxdbClientError::Backend(
+                    "forced create failure".to_string(),
+                ));
             }
             let mut next = self.next_context_id.lock().expect("next context mutex");
             let context_id = next.to_string();
             *next += 1;
-            Ok(StoreContext {
+            Ok(CxdbStoreContext {
                 context_id,
                 head_turn_id: "0".to_string(),
                 head_depth: 0,
@@ -2568,10 +2702,12 @@ mod tests {
 
         async fn append_turn(
             &self,
-            request: StoreAppendTurnRequest,
-        ) -> Result<StoredTurn, TurnStoreError> {
+            request: CxdbAppendTurnRequest,
+        ) -> Result<CxdbStoredTurn, CxdbClientError> {
             if self.fail_append {
-                return Err(TurnStoreError::Backend("forced append failure".to_string()));
+                return Err(CxdbClientError::Backend(
+                    "forced append failure".to_string(),
+                ));
             }
             self.append_requests
                 .lock()
@@ -2580,7 +2716,7 @@ mod tests {
             let mut next = self.next_turn_id.lock().expect("next turn mutex");
             let turn_id = next.to_string();
             *next += 1;
-            Ok(StoredTurn {
+            Ok(CxdbStoredTurn {
                 context_id: request.context_id,
                 turn_id,
                 parent_turn_id: request.parent_turn_id.unwrap_or_else(|| "0".to_string()),
@@ -2593,35 +2729,15 @@ mod tests {
             })
         }
 
-        async fn fork_context(
-            &self,
-            from_turn_id: StoreTurnId,
-        ) -> Result<StoreContext, TurnStoreError> {
-            Ok(StoreContext {
-                context_id: "fork-ctx".to_string(),
-                head_turn_id: from_turn_id,
-                head_depth: 1,
-            })
-        }
-
         async fn get_head(
             &self,
-            context_id: &StoreContextId,
-        ) -> Result<StoredTurnRef, TurnStoreError> {
-            Ok(StoredTurnRef {
+            context_id: &String,
+        ) -> Result<CxdbStoredTurnRef, CxdbClientError> {
+            Ok(CxdbStoredTurnRef {
                 context_id: context_id.clone(),
                 turn_id: "0".to_string(),
                 depth: 0,
             })
-        }
-
-        async fn list_turns(
-            &self,
-            _context_id: &StoreContextId,
-            _before_turn_id: Option<&StoreTurnId>,
-            _limit: usize,
-        ) -> Result<Vec<StoredTurn>, TurnStoreError> {
-            Ok(Vec::new())
         }
     }
 
@@ -2809,7 +2925,7 @@ mod tests {
     }
 
     #[test]
-    fn session_new_with_required_turnstore_failure_returns_error() {
+    fn session_new_with_required_cxdb_failure_returns_error() {
         let profile = Arc::new(StaticProviderProfile {
             id: "openai".to_string(),
             model: "gpt-5.2-codex".to_string(),
@@ -2821,17 +2937,17 @@ mod tests {
         let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
         let client = Arc::new(Client::default());
         let mut config = SessionConfig::default();
-        config.turn_store_mode = TurnStoreWriteMode::Required;
-        let store = Arc::new(RecordingTurnStore::with_failures(true, false));
+        config.cxdb_persistence = CxdbPersistenceMode::Required;
+        let store = Arc::new(RecordingPersistence::with_failures(true, false));
 
-        let error = Session::new_with_turn_store(profile, env, client, config, Some(store))
+        let error = Session::new_with_persistence(profile, env, client, config, Some(store))
             .err()
-            .expect("required turnstore create failure should fail constructor");
-        assert!(error.to_string().contains("turnstore persistence failed"));
+            .expect("required cxdb create failure should fail constructor");
+        assert!(error.to_string().contains("cxdb persistence failed"));
     }
 
     #[test]
-    fn session_new_with_best_effort_turnstore_failure_succeeds() {
+    fn session_new_with_off_cxdb_failure_succeeds() {
         let profile = Arc::new(StaticProviderProfile {
             id: "openai".to_string(),
             model: "gpt-5.2-codex".to_string(),
@@ -2843,15 +2959,15 @@ mod tests {
         let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
         let client = Arc::new(Client::default());
         let config = SessionConfig::default();
-        let store = Arc::new(RecordingTurnStore::with_failures(true, false));
+        let store = Arc::new(RecordingPersistence::with_failures(true, false));
 
-        let session = Session::new_with_turn_store(profile, env, client, config, Some(store))
-            .expect("best effort should keep constructor successful");
+        let session = Session::new_with_persistence(profile, env, client, config, Some(store))
+            .expect("off mode should keep constructor successful");
         assert_eq!(session.state(), &SessionState::Idle);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn submit_with_turnstore_persists_turns_and_tool_events() {
+    async fn submit_with_cxdb_persistence_persists_turns_and_tool_events() {
         let profile = Arc::new(StaticProviderProfile {
             id: "test".to_string(),
             model: "gpt-5.2-codex".to_string(),
@@ -2871,16 +2987,16 @@ mod tests {
             text_response("resp-2", "done"),
         ]);
         let mut config = SessionConfig::default();
-        config.turn_store_mode = TurnStoreWriteMode::Required;
-        let store = Arc::new(RecordingTurnStore::default());
+        config.cxdb_persistence = CxdbPersistenceMode::Required;
+        let store = Arc::new(RecordingPersistence::default());
         let mut session =
-            Session::new_with_turn_store(profile, env, client, config, Some(store.clone()))
+            Session::new_with_persistence(profile, env, client, config, Some(store.clone()))
                 .expect("session should initialize");
 
         session
             .submit("hi")
             .await
-            .expect("submit should succeed with turnstore");
+            .expect("submit should succeed with cxdb persistence");
         session.close().expect("close should succeed");
 
         let appended = store.appended();
