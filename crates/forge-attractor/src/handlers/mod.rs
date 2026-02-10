@@ -38,10 +38,19 @@ where
 }
 
 pub fn core_registry() -> registry::HandlerRegistry {
+    core_registry_with_codergen_backend(None)
+}
+
+pub fn core_registry_with_codergen_backend(
+    backend: Option<Arc<dyn codergen::CodergenBackend>>,
+) -> registry::HandlerRegistry {
     let mut registry = registry::HandlerRegistry::new();
     registry.register_type("start", Arc::new(start::StartHandler));
     registry.register_type("exit", Arc::new(exit::ExitHandler));
-    registry.register_type("codergen", Arc::new(codergen::CodergenHandler::new(None)));
+    registry.register_type(
+        "codergen",
+        Arc::new(codergen::CodergenHandler::new(backend)),
+    );
     registry.register_type("conditional", Arc::new(conditional::ConditionalHandler));
     registry.register_type(
         "wait.human",

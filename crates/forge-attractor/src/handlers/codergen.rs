@@ -2,8 +2,8 @@ use crate::{
     AttractorError, Graph, Node, NodeOutcome, NodeStatus, RuntimeContext, handlers::NodeHandler,
 };
 use async_trait::async_trait;
-use serde_json::Value;
-use std::sync::Arc;
+use serde_json::{Value, json};
+use std::{fs, path::PathBuf, sync::Arc};
 
 pub enum CodergenBackendResult {
     Text(String),
@@ -65,21 +65,64 @@ impl NodeHandler for CodergenHandler {
             prompt = prompt.replace("$goal", goal);
         }
 
-        if let Some(backend) = self.backend.as_ref() {
+        let (response_text, outcome) = if let Some(backend) = self.backend.as_ref() {
             match backend.run(node, &prompt, context).await {
-                Ok(CodergenBackendResult::Outcome(outcome)) => return Ok(outcome),
-                Ok(CodergenBackendResult::Text(response)) => {
-                    return Ok(simulated_success(node, response));
+                Ok(CodergenBackendResult::Outcome(outcome)) => {
+                    (outcome.notes.clone().unwrap_or_default(), outcome)
                 }
-                Err(error) => return Ok(NodeOutcome::failure(error.to_string())),
+                Ok(CodergenBackendResult::Text(response)) => {
+                    let outcome = simulated_success(node, response.clone());
+                    (response, outcome)
+                }
+                Err(error) => {
+                    let outcome = NodeOutcome::failure(error.to_string());
+                    (error.to_string(), outcome)
+                }
             }
-        }
+        } else {
+            let response = format!("[Simulated] Response for stage: {}", node.id);
+            let outcome = simulated_success(node, response.clone());
+            (response, outcome)
+        };
 
-        Ok(simulated_success(
-            node,
-            format!("[Simulated] Response for stage: {}", node.id),
-        ))
+        write_artifacts_if_configured(node, context, &prompt, &response_text, &outcome)?;
+        Ok(outcome)
     }
+}
+
+fn write_artifacts_if_configured(
+    node: &Node,
+    context: &RuntimeContext,
+    prompt: &str,
+    response_text: &str,
+    outcome: &NodeOutcome,
+) -> Result<(), AttractorError> {
+    let Some(logs_root) = context.get("runtime.logs_root").and_then(Value::as_str) else {
+        return Ok(());
+    };
+
+    let stage_dir = PathBuf::from(logs_root).join(&node.id);
+    fs::create_dir_all(&stage_dir).map_err(io_error)?;
+    fs::write(stage_dir.join("prompt.md"), prompt).map_err(io_error)?;
+    fs::write(stage_dir.join("response.md"), response_text).map_err(io_error)?;
+
+    let status = json!({
+        "status": outcome.status.as_str(),
+        "notes": outcome.notes,
+        "context_updates": outcome.context_updates,
+        "preferred_label": outcome.preferred_label,
+        "suggested_next_ids": outcome.suggested_next_ids,
+    });
+    let payload = serde_json::to_vec_pretty(&status).map_err(|error| {
+        AttractorError::Runtime(format!("status serialization failed: {error}"))
+    })?;
+    fs::write(stage_dir.join("status.json"), payload).map_err(io_error)?;
+
+    Ok(())
+}
+
+fn io_error(error: std::io::Error) -> AttractorError {
+    AttractorError::Runtime(format!("codergen artifact I/O error: {error}"))
 }
 
 fn simulated_success(node: &Node, response_text: String) -> NodeOutcome {
@@ -106,6 +149,7 @@ fn truncate(input: &str, max_len: usize) -> String {
 mod tests {
     use super::*;
     use crate::parse_dot;
+    use tempfile::tempdir;
 
     struct RecordingBackend;
 
@@ -172,5 +216,32 @@ mod tests {
             .await
             .expect("execution should succeed");
         assert_eq!(outcome.status, NodeStatus::Fail);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codergen_handler_with_logs_root_expected_writes_prompt_response_status_files() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1 [shape=box, prompt="p"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("n1").expect("node should exist");
+        let handler = CodergenHandler::new(None);
+        let dir = tempdir().expect("tempdir");
+        let mut context = RuntimeContext::new();
+        context.insert(
+            "runtime.logs_root".to_string(),
+            Value::String(dir.path().to_string_lossy().to_string()),
+        );
+        handler
+            .execute(node, &context, &graph)
+            .await
+            .expect("execute");
+        assert!(dir.path().join("n1").join("prompt.md").exists());
+        assert!(dir.path().join("n1").join("response.md").exists());
+        assert!(dir.path().join("n1").join("status.json").exists());
     }
 }

@@ -2,7 +2,7 @@ use crate::{AttractorError, Graph, Node, handlers};
 use async_trait::async_trait;
 use forge_turnstore::TurnId;
 use serde_json::Value;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 pub type RuntimeContext = BTreeMap<String, Value>;
 
@@ -92,6 +92,7 @@ pub struct RunConfig {
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
+    pub logs_root: Option<PathBuf>,
 }
 
 impl Default for RunConfig {
@@ -104,6 +105,7 @@ impl Default for RunConfig {
                 handlers::core_registry(),
             )),
             retry_backoff: crate::RetryBackoffConfig::default(),
+            logs_root: None,
         }
     }
 }

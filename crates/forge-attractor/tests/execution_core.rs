@@ -1,10 +1,12 @@
 use async_trait::async_trait;
 use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorRunEventRecord, AttractorStageEventRecord,
-    AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node, NodeExecutor, NodeOutcome,
-    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
+    AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node, NodeExecutor,
+    NodeOutcome, NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, parse_dot,
 };
-use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
+use forge_turnstore::{
+    ContextId, MemoryTurnStore, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
+};
 use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
 
 #[derive(Default)]
@@ -194,6 +196,44 @@ async fn execution_linear_store_off_and_on_expected_equivalent_status() {
     let events = storage.events.lock().expect("mutex");
     assert!(events.iter().any(|kind| kind == "run_initialized"));
     assert!(events.iter().any(|kind| kind == "run_finalized"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execution_store_enabled_memory_turnstore_expected_persisted_turns() {
+    let graph = parse(
+        r#"
+        digraph G {
+            start [shape=Mdiamond]
+            plan [shape=box, prompt="Plan"]
+            exit [shape=Msquare]
+            start -> plan -> exit
+        }
+        "#,
+    );
+    let store = Arc::new(MemoryTurnStore::new());
+
+    let result = PipelineRunner
+        .run(
+            &graph,
+            RunConfig {
+                storage: Some(store.clone()),
+                ..RunConfig::default()
+            },
+        )
+        .await
+        .expect("run should succeed");
+
+    assert_eq!(result.status, PipelineStatus::Success);
+    let turns = store
+        .list_turns(&"1".to_string(), None, 128)
+        .await
+        .expect("turns should be queryable");
+    assert!(!turns.is_empty());
+    assert!(
+        turns
+            .iter()
+            .any(|turn| turn.type_id == "forge.attractor.run_event")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

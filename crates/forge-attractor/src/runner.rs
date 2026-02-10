@@ -28,6 +28,12 @@ impl PipelineRunner {
             .take()
             .unwrap_or_else(|| format!("{}-run", graph.id));
         let mut context = mirror_graph_attributes(graph);
+        if let Some(logs_root) = config.logs_root.as_ref() {
+            context.insert(
+                "runtime.logs_root".to_string(),
+                Value::String(logs_root.to_string_lossy().to_string()),
+            );
+        }
         let mut completed_nodes = Vec::new();
         let mut node_outcomes = BTreeMap::new();
         let mut storage = RunStorage::new(
@@ -280,6 +286,11 @@ async fn execute_with_retry(
 ) -> Result<(NodeOutcome, u32), AttractorError> {
     for attempt in 1..=retry_policy.max_attempts {
         let stage_attempt_id = stage_attempt_id(node, attempt);
+        let mut attempt_context = context.clone();
+        attempt_context.insert(
+            "stage_attempt_id".to_string(),
+            Value::String(stage_attempt_id.clone()),
+        );
         storage
             .append_stage_event(
                 &node.id,
@@ -289,7 +300,7 @@ async fn execute_with_retry(
             )
             .await?;
 
-        let outcome = match executor.execute(node, context, graph).await {
+        let outcome = match executor.execute(node, &attempt_context, graph).await {
             Ok(outcome) => outcome,
             Err(error) => NodeOutcome::failure(error.to_string()),
         };

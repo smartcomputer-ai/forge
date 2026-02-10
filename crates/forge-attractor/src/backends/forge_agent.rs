@@ -1,6 +1,7 @@
 use crate::{
     AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node,
     NodeOutcome, NodeStatus, RuntimeContext,
+    handlers::codergen::{CodergenBackend, CodergenBackendResult},
 };
 use async_trait::async_trait;
 use forge_agent::{AgentError, Session, SubmitOptions, SubmitResult};
@@ -9,9 +10,10 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex;
 
 #[async_trait]
-pub trait AgentSubmitter {
+pub trait AgentSubmitter: Send {
     async fn submit_with_result(
         &mut self,
         user_input: String,
@@ -104,7 +106,7 @@ impl ForgeAgentCodergenAdapter {
 
     pub async fn execute_with_submitter(
         &self,
-        submitter: &mut dyn AgentSubmitter,
+        submitter: &mut (dyn AgentSubmitter + Send),
         node: &Node,
         context: &RuntimeContext,
         graph: &Graph,
@@ -126,6 +128,75 @@ impl ForgeAgentCodergenAdapter {
             )),
             Err(error) => Ok(NodeOutcome::failure(error.to_string())),
         }
+    }
+
+    pub async fn execute_prompt_with_submitter(
+        &self,
+        submitter: &mut (dyn AgentSubmitter + Send),
+        node: &Node,
+        context: &RuntimeContext,
+        prompt: String,
+        stage_attempt_id: &str,
+    ) -> Result<NodeOutcome, AttractorError> {
+        if let Some(thread_key) = resolve_thread_key(node, context) {
+            submitter.set_thread_key(Some(thread_key));
+        }
+
+        let mut options = self.submit_options_for_node(node);
+        options.metadata = Some(stage_metadata(node, stage_attempt_id));
+
+        match submitter.submit_with_result(prompt, options).await {
+            Ok(result) => Ok(map_submit_result_to_outcome(
+                node,
+                submitter.thread_key(),
+                result,
+            )),
+            Err(error) => Ok(NodeOutcome::failure(error.to_string())),
+        }
+    }
+}
+
+pub struct ForgeAgentSessionBackend {
+    adapter: ForgeAgentCodergenAdapter,
+    submitter: Mutex<Box<dyn AgentSubmitter + Send>>,
+}
+
+impl ForgeAgentSessionBackend {
+    pub fn new(
+        adapter: ForgeAgentCodergenAdapter,
+        submitter: Box<dyn AgentSubmitter + Send>,
+    ) -> Self {
+        Self {
+            adapter,
+            submitter: Mutex::new(submitter),
+        }
+    }
+}
+
+#[async_trait]
+impl CodergenBackend for ForgeAgentSessionBackend {
+    async fn run(
+        &self,
+        node: &Node,
+        prompt: &str,
+        context: &RuntimeContext,
+    ) -> Result<CodergenBackendResult, AttractorError> {
+        let stage_attempt_id = context
+            .get("stage_attempt_id")
+            .and_then(Value::as_str)
+            .unwrap_or("attempt:1");
+        let mut submitter = self.submitter.lock().await;
+        let outcome = self
+            .adapter
+            .execute_prompt_with_submitter(
+                submitter.as_mut(),
+                node,
+                context,
+                prompt.to_string(),
+                stage_attempt_id,
+            )
+            .await?;
+        Ok(CodergenBackendResult::Outcome(outcome))
     }
 }
 
@@ -418,6 +489,40 @@ mod tests {
             .cloned()
             .unwrap_or_default();
         assert_eq!(metadata.get("node_id").map(String::as_str), Some("n1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn forge_agent_session_backend_run_expected_codergen_outcome_variant() {
+        let graph = parse_dot("digraph G { n1 [prompt=\"hi\"] }").expect("graph should parse");
+        let node = graph.nodes.get("n1").expect("node");
+        let submitter = StubSubmitter {
+            thread_key: None,
+            last_input: None,
+            last_options: None,
+            result: SubmitResult {
+                final_state: SessionState::Idle,
+                assistant_text: "done".to_string(),
+                tool_call_count: 0,
+                tool_call_ids: vec![],
+                tool_error_count: 0,
+                usage: None,
+                thread_key: None,
+            },
+        };
+        let backend = ForgeAgentSessionBackend::new(
+            ForgeAgentCodergenAdapter::default(),
+            Box::new(submitter),
+        );
+        let result = backend
+            .run(node, "hello", &RuntimeContext::new())
+            .await
+            .expect("backend run should succeed");
+        match result {
+            CodergenBackendResult::Outcome(outcome) => {
+                assert_eq!(outcome.status, NodeStatus::Success);
+            }
+            CodergenBackendResult::Text(_) => panic!("expected outcome variant"),
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
