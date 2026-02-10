@@ -1,8 +1,10 @@
 # P39: CXDB-Native Turn Model and Forge Runtime Semantics Rebase
+**Complete (2026-02-10)**
 
 **Status**
 - Planned (2026-02-10)
 - In Progress (2026-02-10)
+- Completed (2026-02-10)
 
 **Goal**
 Move Forge persistence from envelope-over-turn records to Forge-native typed turns that match actual Agent and Attractor runtime semantics, while relying on CXDB turn graph primitives for lineage.
@@ -260,7 +262,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G7. Deterministic and live conformance refresh
+### [x] G7. Deterministic and live conformance refresh
 - Work:
   - Replace envelope-oriented tests with typed-schema conformance tests.
   - Validate stage/agent linkage and route-decision queries under new schemas.
@@ -270,8 +272,20 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `crates/forge-cxdb-runtime/tests/live.rs`
 - DoD:
   - Deterministic and live test suites cover new semantic families.
+- Completed:
+  - Deterministic test suites pass for updated typed schema families:
+    - `cargo test -p forge-agent`
+    - `cargo test -p forge-attractor`
+    - `cargo test -p forge-cxdb-runtime`
+  - Added explicit typed projection helper coverage in runtime unit tests:
+    - `crates/forge-cxdb-runtime/src/runtime.rs`
+  - Extended parity/query assertions for typed-family expectations:
+    - `crates/forge-agent/tests/cxdb_parity.rs` (session lifecycle type + no legacy `forge.agent.event`)
+    - `crates/forge-attractor/tests/queries.rs` (route decision type + no legacy `forge.attractor.event`)
+  - Extended env-gated CXDB live coverage with typed projection list/decode path:
+    - `crates/forge-cxdb-runtime/tests/live.rs` (`live_typed_projection_list_expected_decoded_records`)
 
-### [ ] G8. Docs and operator model update
+### [x] G8. Docs and operator model update
 - Work:
   - Document CXDB-native vs Forge-domain field ownership.
   - Document how to read agent transcript vs attractor stage lifecycle traces.
@@ -283,6 +297,14 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `AGENTS.md` (if architecture index wording changes)
 - DoD:
   - Docs reflect Forge-native schema families and CXDB DAG-first modeling.
+- Completed:
+  - Updated workspace and crate docs for v2 typed runtime bundles and trace interpretation:
+    - `README.md`
+    - `crates/forge-agent/README.md`
+    - `crates/forge-attractor/README.md`
+    - `crates/forge-cli/README.md`
+  - Updated architecture index wording for the typed-family + DAG-first persistence model:
+    - `AGENTS.md`
 
 ## Deliverables
 - Clean-break typed runtime schema families aligned to Forge semantics.

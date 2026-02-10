@@ -296,6 +296,7 @@ For typed projections:
 - Forge-owned schemas SHOULD use stable numeric msgpack tags,
 - runtime writers SHOULD encode deterministic msgpack bytes directly,
 - registry bundles SHOULD be published before or alongside first writes for new schema versions,
+- time/duration numeric fields SHOULD carry semantic hints when available (for example `semantic=duration_ms` on retry delay fields),
 - unknown tags/fields MUST be forward-compatible for readers.
 
 Runtime bundle publication policy:

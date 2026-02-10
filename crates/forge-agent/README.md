@@ -66,14 +66,18 @@ The dedicated suite `tests/cxdb_persistence_integration.rs` demonstrates:
 - querying persisted turns from the configured CXDB backend
 - disabling persistence with `off` mode
 
-## CXDB runtime envelope + registry contract
+## CXDB runtime typed-record + registry contract
 
 When `cxdb_persistence=required` and session persistence is constructed via
 `Session::new_with_cxdb_persistence(...)`, the session bootstrap path publishes
-the Forge agent registry bundle (`forge.agent.runtime.v1`) before writes.
+the Forge agent registry bundle (`forge.agent.runtime.v2`) before writes.
 
 Persisted turn payloads use deterministic msgpack bytes with stable numeric tags.
 Typed query surfaces should read these records through CXDB HTTP projection APIs.
+
+Persistence families:
+- Transcript: `forge.agent.user_turn`, `forge.agent.assistant_turn`, `forge.agent.tool_results_turn`, `forge.agent.system_turn`, `forge.agent.steering_turn`
+- Operational lifecycle: `forge.agent.session_lifecycle`, `forge.agent.tool_call_lifecycle`
 
 
 ## `forge-agent` orchestration APIs

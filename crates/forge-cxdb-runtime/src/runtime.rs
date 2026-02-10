@@ -472,3 +472,101 @@ fn deterministic_idempotency_key(
 fn encode_part(part: &str) -> String {
     format!("{}:{}", part.len(), part)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::MockCxdb;
+    use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
+
+    #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+    struct TestRecord {
+        name: String,
+        count: u32,
+    }
+
+    #[test]
+    fn decode_typed_payload_msgpack_expected_record() {
+        let payload = rmp_serde::to_vec_named(&TestRecord {
+            name: "alpha".to_string(),
+            count: 3,
+        })
+        .expect("msgpack encoding should succeed");
+
+        let decoded: TestRecord =
+            CxdbRuntimeStore::<Arc<MockCxdb>, Arc<MockCxdb>>::decode_typed_payload(&payload)
+                .expect("typed decode should succeed");
+
+        assert_eq!(
+            decoded,
+            TestRecord {
+                name: "alpha".to_string(),
+                count: 3
+            }
+        );
+    }
+
+    #[test]
+    fn decode_typed_payload_json_projection_expected_record() {
+        let payload = serde_json::to_vec(&TestRecord {
+            name: "beta".to_string(),
+            count: 7,
+        })
+        .expect("json encoding should succeed");
+
+        let decoded: TestRecord =
+            CxdbRuntimeStore::<Arc<MockCxdb>, Arc<MockCxdb>>::decode_typed_payload(&payload)
+                .expect("typed decode should succeed");
+
+        assert_eq!(
+            decoded,
+            TestRecord {
+                name: "beta".to_string(),
+                count: 7
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_typed_records_msgpack_payload_expected_decoded_records() {
+        let backend = Arc::new(MockCxdb::default());
+        let store = CxdbRuntimeStore::new(backend.clone(), backend);
+        let created = store
+            .create_context(None)
+            .await
+            .expect("context creation should succeed");
+
+        let payload = rmp_serde::to_vec_named(&TestRecord {
+            name: "gamma".to_string(),
+            count: 11,
+        })
+        .expect("msgpack encoding should succeed");
+        store
+            .append_turn(AppendTurnRequest {
+                context_id: created.context_id.clone(),
+                parent_turn_id: None,
+                type_id: "forge.test.record".to_string(),
+                type_version: 1,
+                payload,
+                idempotency_key: "test-record-1".to_string(),
+                fs_root_hash: None,
+            })
+            .await
+            .expect("append should succeed");
+
+        let records = store
+            .list_typed_records::<TestRecord>(&created.context_id, None, 8)
+            .await
+            .expect("typed list should succeed");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].0.type_id, "forge.test.record");
+        assert_eq!(
+            records[0].1,
+            TestRecord {
+                name: "gamma".to_string(),
+                count: 11
+            }
+        );
+    }
+}

@@ -28,10 +28,19 @@ Related crates:
 ## CXDB projection contract
 
 The CXDB bootstrap helper (`cxdb_storage_writer`) now publishes the Forge
-attractor registry bundle (`forge.attractor.runtime.v1`) before durable writes.
+attractor registry bundle (`forge.attractor.runtime.v2`) before durable writes.
 Attractor runtime records are encoded as msgpack with stable numeric tags, and
 query surfaces are designed to consume CXDB HTTP typed projections with explicit
 cursor paging semantics.
+
+Attractor persistence families include:
+- `forge.attractor.run_lifecycle`
+- `forge.attractor.stage_lifecycle`
+- `forge.attractor.parallel_lifecycle`
+- `forge.attractor.interview_lifecycle`
+- `forge.attractor.checkpoint_saved`
+- `forge.attractor.route_decision`
+- `forge.link.stage_to_agent`
 
 ## Run tests
 

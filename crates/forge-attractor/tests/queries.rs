@@ -131,6 +131,22 @@ async fn storage_queries_memory_and_fs_expected_parity() {
         assert_eq!(links.len(), 1);
         assert_eq!(links[0].node_id, "plan");
 
+        let turns = harness
+            .reader()
+            .list_turns(&context_id, None, 128)
+            .await
+            .expect("raw turn listing should succeed");
+        assert!(
+            turns
+                .iter()
+                .any(|turn| turn.type_id == "forge.attractor.route_decision")
+        );
+        assert!(
+            turns
+                .iter()
+                .all(|turn| turn.type_id != "forge.attractor.event")
+        );
+
         stage_event_kinds_by_backend.push(event_kinds);
     }
 

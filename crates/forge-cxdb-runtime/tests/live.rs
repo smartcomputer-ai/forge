@@ -8,6 +8,7 @@ use forge_cxdb_runtime::{
     CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbSdkBinaryClient, CxdbStoreAdapter,
     HttpStoredTurn,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -454,6 +455,11 @@ fn registry_bundle_bytes(bundle_id: &str, type_id: &str) -> Vec<u8> {
     .expect("bundle json should serialize")
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct LiveTypedPayload {
+    value: String,
+}
+
 async fn build_live_harness() -> LiveHarness {
     let mut client = LiveHttpClient::from_env();
     let _ = client
@@ -640,6 +646,58 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
         .expect("list should succeed");
     assert!(turns.iter().any(|turn| turn.turn_id == t1.turn_id));
     assert!(turns.iter().any(|turn| turn.turn_id == t2.turn_id));
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "live test; requires running CXDB instance"]
+async fn live_typed_projection_list_expected_decoded_records() {
+    let harness = build_live_harness().await;
+    if !harness.supports_context_write_routes {
+        eprintln!(
+            "skipping: this CXDB HTTP API build does not expose context create/append routes; write-path coverage requires binary protocol"
+        );
+        return;
+    }
+    let store = harness.store;
+
+    let bundle_id = unique_bundle_id();
+    let type_id = "forge.test.live_typed_projection_payload";
+    let bundle_json = registry_bundle_bytes(&bundle_id, type_id);
+    store
+        .publish_registry_bundle(RegistryBundle {
+            bundle_id,
+            bundle_json,
+        })
+        .await
+        .expect("registry bundle publish should succeed");
+
+    let context = store
+        .create_context(None)
+        .await
+        .expect("context create should succeed");
+
+    store
+        .append_turn(AppendTurnRequest {
+            context_id: context.context_id.clone(),
+            parent_turn_id: None,
+            type_id: type_id.to_string(),
+            type_version: 1,
+            payload: serde_json::to_vec(&LiveTypedPayload {
+                value: "typed".to_string(),
+            })
+            .expect("json encode should succeed"),
+            idempotency_key: "live-typed-projection-k1".to_string(),
+            fs_root_hash: None,
+        })
+        .await
+        .expect("append should succeed");
+
+    let records = store
+        .list_typed_records::<LiveTypedPayload>(&context.context_id, None, 8)
+        .await
+        .expect("typed list should succeed");
+    assert!(!records.is_empty());
+    assert_eq!(records[records.len() - 1].1.value, "typed");
 }
 
 #[tokio::test(flavor = "current_thread")]

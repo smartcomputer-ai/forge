@@ -20,5 +20,5 @@
 - Keep binary endpoints private and protected with TLS/network controls.
 - Put HTTP endpoints behind authenticated gateways.
 - Ensure Forge registry bundles are published before new schema-version writes:
-  - `forge.agent.runtime.v1`
-  - `forge.attractor.runtime.v1`
+  - `forge.agent.runtime.v2`
+  - `forge.attractor.runtime.v2`

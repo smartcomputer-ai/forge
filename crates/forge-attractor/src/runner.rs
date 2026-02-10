@@ -262,7 +262,7 @@ fn stage_lifecycle_fields_descriptor() -> serde_json::Value {
         "8": { "name": "notes", "type": "string", "optional": true },
         "9": { "name": "will_retry", "type": "bool", "optional": true },
         "10": { "name": "next_attempt", "type": "u32", "optional": true },
-        "11": { "name": "delay_ms", "type": "u64", "optional": true },
+        "11": { "name": "delay_ms", "type": "u64", "semantic": "duration_ms", "optional": true },
         "12": { "name": "sequence_no", "type": "u64" }
     })
 }

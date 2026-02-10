@@ -72,8 +72,16 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.js
 
 - Binary (`:9009`) is the default write-heavy path for runtime appends and artifacts.
 - HTTP (`:9010`) is the default typed read/projection path for turn listing/paging and registry APIs.
-- Forge runtime envelopes are persisted as msgpack with stable numeric tags and published registry bundles (`forge.agent.runtime.v1`, `forge.attractor.runtime.v1`).
+- Forge runtime typed records are persisted as msgpack with stable numeric tags and published registry bundles (`forge.agent.runtime.v2`, `forge.attractor.runtime.v2`).
 - Production deployments should keep binary endpoints on trusted private networks with TLS/network controls and place HTTP behind authenticated gateways.
+
+## CXDB field ownership and trace model
+
+- CXDB-native lineage fields (`context_id`, `turn_id`, `parent_turn_id`, `depth`, `type_id`, `type_version`, append/content-hash metadata) are the source of truth for causality.
+- Forge payload fields carry domain semantics (`run_id`, `node_id`, `stage_attempt_id`, `attempt`, routing/human-gate outcomes, tool/session lifecycle details).
+- Cross-context joins are explicit typed link facts (for example `forge.link.stage_to_agent`), not mirrored CXDB lineage fields.
+- Attractor traces should be read as run/stage/parallel/interview/checkpoint lifecycle records on the run context spine.
+- Agent traces should be read as transcript turn families plus separate operational lifecycle records (`forge.agent.session_lifecycle`, `forge.agent.tool_call_lifecycle`).
 
 ## CXDB trust boundaries
 
