@@ -25,6 +25,12 @@ Run deterministic unit/integration tests:
 cargo test -p forge-agent
 ```
 
+Run the CXDB persistence integration suite only:
+
+```bash
+cargo test -p forge-agent --test cxdb_persistence_integration
+```
+
 Run default-ignored live smoke tests (OpenAI):
 
 ```bash
@@ -42,6 +48,36 @@ RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --
 
 Live Anthropic tests require `ANTHROPIC_API_KEY` (read from env or project-root `.env`).
 Optional overrides: `ANTHROPIC_LIVE_MODEL`, `ANTHROPIC_BASE_URL`.
+
+## Persistence In Tests
+
+`SessionConfig.cxdb_persistence` controls persistence behavior:
+
+- `off`: no CXDB calls; useful for baseline behavior tests.
+- `required`: write failures are terminal; use for strict persistence assertions.
+
+Integration tests can wire a CXDB backend with `Session::new_with_cxdb_persistence(...)`:
+- deterministic in-process fake backend (`forge_cxdb_runtime::MockCxdb`)
+- live CXDB endpoints (binary + HTTP) when environment is configured
+
+The dedicated suite `tests/cxdb_persistence_integration.rs` demonstrates:
+
+- enabling persistence with `required` mode for CXDB-backed runs
+- querying persisted turns from the configured CXDB backend
+- disabling persistence with `off` mode
+
+## CXDB runtime typed-record + registry contract
+
+When `cxdb_persistence=required` and session persistence is constructed via
+`Session::new_with_cxdb_persistence(...)`, the session bootstrap path publishes
+the Forge agent registry bundle (`forge.agent.runtime.v2`) before writes.
+
+Persisted turn payloads use deterministic msgpack bytes with stable numeric tags.
+Typed query surfaces should read these records through CXDB HTTP projection APIs.
+
+Persistence families:
+- Transcript: `forge.agent.user_turn`, `forge.agent.assistant_turn`, `forge.agent.tool_results_turn`, `forge.agent.system_turn`, `forge.agent.steering_turn`
+- Operational lifecycle: `forge.agent.session_lifecycle`, `forge.agent.tool_call_lifecycle`
 
 
 ## `forge-agent` orchestration APIs

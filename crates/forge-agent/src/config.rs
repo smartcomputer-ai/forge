@@ -1,5 +1,13 @@
+use forge_cxdb_runtime::CxdbFsSnapshotPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CxdbPersistenceMode {
+    Off,
+    Required,
+}
 
 /// Runtime configuration for a coding-agent session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -17,6 +25,8 @@ pub struct SessionConfig {
     pub max_subagent_depth: usize,
     pub tool_hook_strict: bool,
     pub thread_key: Option<String>,
+    pub cxdb_persistence: CxdbPersistenceMode,
+    pub fs_snapshot_policy: Option<CxdbFsSnapshotPolicy>,
 }
 
 impl Default for SessionConfig {
@@ -35,6 +45,8 @@ impl Default for SessionConfig {
             max_subagent_depth: 1,
             tool_hook_strict: false,
             thread_key: None,
+            cxdb_persistence: CxdbPersistenceMode::Off,
+            fs_snapshot_policy: None,
         }
     }
 }
@@ -79,5 +91,7 @@ mod tests {
         assert_eq!(config.max_subagent_depth, 1);
         assert!(!config.tool_hook_strict);
         assert_eq!(config.thread_key, None);
+        assert_eq!(config.cxdb_persistence, CxdbPersistenceMode::Off);
+        assert_eq!(config.fs_snapshot_policy, None);
     }
 }
