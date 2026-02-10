@@ -1,7 +1,8 @@
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorError,
     AttractorRunEventRecord, AttractorStageEventRecord, Graph, Node, NodeOutcome, NodeStatus,
-    PipelineRunResult, PipelineStatus, RunConfig, RuntimeContext, validate_or_raise,
+    PipelineRunResult, PipelineStatus, RunConfig, RuntimeContext, select_next_edge,
+    validate_or_raise,
 };
 use forge_turnstore::{ContextId, attractor_idempotency_key};
 use serde_json::{Value, json};
@@ -113,7 +114,7 @@ impl PipelineRunner {
                 )
                 .await?;
 
-            let Some(next_edge) = select_next_edge(graph, &node.id) else {
+            let Some(next_edge) = select_next_edge(graph, &node.id, &outcome, &context) else {
                 if outcome.status == NodeStatus::Fail {
                     terminal_failure = Some(
                         outcome
@@ -167,12 +168,6 @@ fn resolve_start_node(graph: &Graph) -> Result<&Node, AttractorError> {
 fn is_terminal_node(node: &Node) -> bool {
     node.attrs.get_str("shape") == Some("Msquare")
         || matches!(node.id.to_ascii_lowercase().as_str(), "exit" | "end")
-}
-
-fn select_next_edge<'a>(graph: &'a Graph, from_node_id: &'a str) -> Option<&'a crate::Edge> {
-    graph
-        .outgoing_edges(from_node_id)
-        .min_by(|left, right| left.to.cmp(&right.to))
 }
 
 fn first_unsatisfied_goal_gate(

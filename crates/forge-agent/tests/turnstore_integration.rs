@@ -1,9 +1,7 @@
 mod support;
 
 use async_trait::async_trait;
-use forge_agent::{
-    LocalExecutionEnvironment, Session, SessionConfig, TurnStoreWriteMode,
-};
+use forge_agent::{LocalExecutionEnvironment, Session, SessionConfig, TurnStoreWriteMode};
 use forge_turnstore::{
     AppendTurnRequest, ContextId, FsTurnStore, MemoryTurnStore, StoreContext, StoredTurn,
     StoredTurnEnvelope, StoredTurnRef, TurnId, TurnStore, TurnStoreError,

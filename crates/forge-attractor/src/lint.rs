@@ -1,4 +1,6 @@
-use crate::{Diagnostic, Graph, Severity, ValidationError, parse_stylesheet};
+use crate::{
+    Diagnostic, Graph, Severity, ValidationError, parse_stylesheet, validate_condition_expression,
+};
 use std::collections::{BTreeSet, VecDeque};
 
 pub trait LintRule {
@@ -358,47 +360,6 @@ fn rule_prompt_on_llm_nodes(graph: &Graph) -> Vec<Diagnostic> {
     }
 
     diagnostics
-}
-
-fn validate_condition_expression(condition: &str) -> Result<(), String> {
-    for clause in condition.split("&&") {
-        let clause = clause.trim();
-        if clause.is_empty() {
-            continue;
-        }
-
-        let (key, value_opt) = if let Some((left, right)) = clause.split_once("!=") {
-            (left.trim(), Some(right.trim()))
-        } else if let Some((left, right)) = clause.split_once('=') {
-            (left.trim(), Some(right.trim()))
-        } else {
-            (clause, None)
-        };
-
-        if key.is_empty() {
-            return Err(format!("condition clause '{clause}' has empty key"));
-        }
-        if !is_condition_key(key) {
-            return Err(format!("condition key '{key}' is invalid"));
-        }
-
-        if let Some(value) = value_opt {
-            if value.is_empty() {
-                return Err(format!("condition clause '{clause}' has empty value"));
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn is_condition_key(key: &str) -> bool {
-    let mut chars = key.chars();
-    match chars.next() {
-        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
-        _ => return false,
-    }
-    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
 fn known_types() -> BTreeSet<&'static str> {

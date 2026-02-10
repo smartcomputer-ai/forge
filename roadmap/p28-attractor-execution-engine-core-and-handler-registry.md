@@ -56,7 +56,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - Added storage-aware lifecycle emission for run/stage/checkpoint records via `AttractorStorageWriter`.
   - Added deterministic runtime tests covering linear graph execution and store-off/store-on equivalence.
 
-### [ ] G2. Edge selection + condition language evaluator
+### [x] G2. Edge selection + condition language evaluator
 - Work:
   - Implement 5-step edge selection priority:
     1) condition match
@@ -70,6 +70,11 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/src/condition.rs`
 - DoD:
   - Routing is deterministic and matches spec examples.
+- Completed:
+  - Added `condition` module with parser/validator/evaluator for `=`, `!=`, `&&`, and keys `outcome`, `preferred_label`, `context.*`.
+  - Added `routing` module implementing deterministic 5-step edge selection priority.
+  - Wired runner traversal to routing engine so runtime execution now uses condition-aware edge selection.
+  - Added deterministic unit tests for condition evaluation and routing priority behavior.
 
 ### [ ] G3. Retry policy, backoff, and failure routing
 - Work:

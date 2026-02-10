@@ -54,10 +54,16 @@ async fn exercise_fork_and_list<T: TurnStore>(store: &T) -> TurnStoreResult<()> 
     Ok(())
 }
 
-async fn exercise_artifact_roundtrip<T: TurnStore + ArtifactStore>(store: &T) -> TurnStoreResult<()> {
+async fn exercise_artifact_roundtrip<T: TurnStore + ArtifactStore>(
+    store: &T,
+) -> TurnStoreResult<()> {
     let context = store.create_context(None).await?;
     let turn = store
-        .append_turn(append_request(&context.context_id, b"payload", "artifact-k1"))
+        .append_turn(append_request(
+            &context.context_id,
+            b"payload",
+            "artifact-k1",
+        ))
         .await?;
 
     let blob = b"immutable-blob-bytes";
