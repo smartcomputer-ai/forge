@@ -17,6 +17,7 @@ When making changes, align behavior and terminology to these documents first.
   - `crates/forge-llm/` — unified LLM client library (primary target for spec/01-unified-llm-spec.md)
   - `crates/forge-agent/` — coding agent loop library (primary target for spec/02-coding-agent-loop-spec.md)
   - `crates/forge-attractor/` — Attractor DOT front-end and runtime target (primary target for spec/03-attractor-spec.md)
+  - `crates/forge-cli/` — in-process CLI host for Attractor runtime surfaces (primary target for roadmap P30 host milestones)
 - Planned storage layering (see roadmap/spec 04):
   - `crates/forge-turnstore/` — storage interfaces + shared turn envelope/correlation types
   - `crates/forge-turnstore-cxdb/` — CXDB adapter implementation

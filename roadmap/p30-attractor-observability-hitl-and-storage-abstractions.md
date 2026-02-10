@@ -79,7 +79,7 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - Updated `wait.human` to consume shared interviewer types and added support for node-configured timeout (`human.timeout_seconds`) and default choice fallback (`human.default_choice`/`human_default_choice`).
   - Added deterministic timeout/default-choice tests in `crates/forge-attractor/src/handlers/wait_human.rs` and interviewer implementation tests in `crates/forge-attractor/src/interviewer.rs`.
 
-### [ ] G3. In-process CLI host surface
+### [x] G3. In-process CLI host surface
 - Work:
   - Add CLI host entrypoint that directly invokes Attractor runtime/library APIs.
   - Support initial command surface for:
@@ -90,10 +90,15 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
     - provide human answers through interviewer-backed flows
   - Keep runtime modules transport-agnostic; CLI adapter owns presentation/IO.
 - Files:
-  - `crates/forge-attractor/src/host_cli.rs`
-  - `crates/forge-attractor/src/bin/forge-attractor.rs`
+  - `crates/forge-cli/src/main.rs`
 - DoD:
   - Runtime is operable end-to-end through an embedded CLI process with no external service dependency.
+- Completed:
+  - Added dedicated host crate `crates/forge-cli/` and wired it into workspace membership.
+  - Implemented `forge-cli run` to execute pipelines from `--dot-file` or `--dot-source`, with optional typed runtime event streaming (`--event-json`, `--no-stream-events`).
+  - Implemented `forge-cli resume` to continue from `--checkpoint` using the same in-process runtime entrypoints.
+  - Implemented `forge-cli inspect-checkpoint` for checkpoint/context/run-status inspection (human-readable and JSON output modes).
+  - Integrated interviewer-backed human-gate behavior selection via CLI (`--interviewer auto|console|queue` + `--human-answer` for queue mode) while keeping runtime transport-agnostic.
 
 ### [ ] G4. Storage-backed host query surfaces
 - Work:
