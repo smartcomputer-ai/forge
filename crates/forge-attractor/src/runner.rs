@@ -4,17 +4,21 @@ use crate::{
     AttractorStageEventRecord, CheckpointEvent, CheckpointMetadata, CheckpointNodeOutcome,
     CheckpointState, ContextStore, Graph, InterviewEvent, Node, NodeOutcome, NodeStatus,
     ParallelEvent, PipelineEvent, PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig,
-    RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent,
+    RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent, StorageWriteMode,
     apply_resume_fidelity_override, build_resume_runtime_state, build_retry_policy,
     checkpoint_path_for_run, delay_for_attempt_ms, finalize_retry_exhausted, find_incoming_edge,
     resolve_fidelity_mode, resolve_thread_key, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
-use forge_turnstore::{ContextId, attractor_idempotency_key};
+use forge_turnstore::{
+    ArtifactStore, ContextId, TurnId, TurnStoreError, attractor_idempotency_key,
+};
+use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbTurnStore};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,6 +33,13 @@ struct PersistedRunGraphMetadata {
 
 #[derive(Debug, Default)]
 pub struct PipelineRunner;
+
+pub fn cxdb_storage_writer(
+    binary_client: Arc<dyn CxdbBinaryClient>,
+    http_client: Arc<dyn CxdbHttpClient>,
+) -> crate::storage::SharedAttractorStorageWriter {
+    Arc::new(CxdbTurnStore::new(binary_client, http_client))
+}
 
 impl PipelineRunner {
     pub async fn run(
@@ -151,10 +162,23 @@ impl PipelineRunner {
 
             let mut storage = RunStorage::new(
                 storage_writer.take(),
+                config.artifacts.clone(),
+                config.storage_mode,
                 active_run_id.clone(),
                 base_turn_id.take(),
             )
             .await?;
+            if let Some(pipeline_context_id) = storage.context_id().cloned() {
+                context_store.set(
+                    "pipeline_context_id",
+                    Value::String(pipeline_context_id.clone()),
+                )?;
+                context_store.set(
+                    "internal.pipeline_context_id",
+                    Value::String(pipeline_context_id),
+                )?;
+            }
+            context_store.set("run_id", Value::String(active_run_id.clone()))?;
             let graph_metadata = storage.persist_run_graph_metadata(graph).await?;
 
             emit_runtime_event(
@@ -717,6 +741,23 @@ async fn execute_with_retry(
             "stage_attempt_id".to_string(),
             Value::String(stage_attempt_id.clone()),
         );
+        if let Some(pipeline_context_id) = storage.context_id().cloned() {
+            attempt_context.insert(
+                "pipeline_context_id".to_string(),
+                Value::String(pipeline_context_id),
+            );
+        }
+        if let Some(parent_turn_id) = storage.last_turn_id().cloned() {
+            attempt_context.insert(
+                "pipeline_parent_turn_id".to_string(),
+                Value::String(parent_turn_id),
+            );
+        }
+        let stage_link_sequence_no = storage.reserve_sequence_no();
+        attempt_context.insert(
+            "pipeline_stage_link_sequence_no".to_string(),
+            Value::Number(stage_link_sequence_no.into()),
+        );
         emit_runtime_event(
             event_sink,
             event_sequence_no,
@@ -1059,31 +1100,71 @@ fn infer_node_handler_type(node: &Node) -> &'static str {
 
 struct RunStorage {
     writer: Option<crate::storage::SharedAttractorStorageWriter>,
+    artifacts: Option<Arc<dyn ArtifactStore>>,
+    write_mode: StorageWriteMode,
     run_id: String,
     context_id: Option<ContextId>,
     sequence_no: u64,
+    last_turn_id: Option<TurnId>,
 }
 
 impl RunStorage {
     async fn new(
         writer: Option<crate::storage::SharedAttractorStorageWriter>,
+        artifacts: Option<Arc<dyn ArtifactStore>>,
+        write_mode: StorageWriteMode,
         run_id: String,
         base_turn_id: Option<String>,
     ) -> Result<Self, AttractorError> {
-        if let Some(writer_ref) = writer.as_ref() {
-            let store_context = writer_ref.create_run_context(base_turn_id).await?;
+        if write_mode == StorageWriteMode::Off {
             return Ok(Self {
-                writer,
+                writer: None,
+                artifacts: None,
+                write_mode,
                 run_id,
-                context_id: Some(store_context.context_id),
+                context_id: None,
                 sequence_no: 0,
+                last_turn_id: None,
             });
+        }
+
+        if let Some(writer_ref) = writer.as_ref() {
+            match writer_ref.create_run_context(base_turn_id).await {
+                Ok(store_context) => {
+                    let head = if store_context.head_turn_id == "0" {
+                        None
+                    } else {
+                        Some(store_context.head_turn_id.clone())
+                    };
+                    return Ok(Self {
+                        writer,
+                        artifacts,
+                        write_mode,
+                        run_id,
+                        context_id: Some(store_context.context_id),
+                        sequence_no: 0,
+                        last_turn_id: head,
+                    });
+                }
+                Err(error) => {
+                    if write_mode == StorageWriteMode::Required {
+                        return Err(error.into());
+                    }
+                }
+            }
         }
         Ok(Self {
             writer: None,
+            artifacts: if write_mode == StorageWriteMode::Required {
+                artifacts
+            } else {
+                None
+            },
+            write_mode,
             run_id,
             context_id: None,
             sequence_no: 0,
+            last_turn_id: None,
         })
     }
 
@@ -1112,7 +1193,7 @@ impl RunStorage {
         };
         let idempotency_key =
             attractor_idempotency_key(&self.run_id, "__run__", "__run__", event_kind, sequence_no);
-        writer
+        match writer
             .append_run_event(
                 &context_id,
                 AttractorRunEventRecord {
@@ -1123,7 +1204,11 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await?;
+            .await
+        {
+            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
+            Err(error) => self.handle_store_error(error)?,
+        }
         Ok(())
     }
 
@@ -1159,7 +1244,7 @@ impl RunStorage {
             event_kind,
             sequence_no,
         );
-        writer
+        match writer
             .append_stage_event(
                 &context_id,
                 AttractorStageEventRecord {
@@ -1170,7 +1255,11 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await?;
+            .await
+        {
+            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
+            Err(error) => self.handle_store_error(error)?,
+        }
         Ok(())
     }
 
@@ -1206,7 +1295,7 @@ impl RunStorage {
             "checkpoint_saved",
             sequence_no,
         );
-        writer
+        match writer
             .append_checkpoint_event(
                 &context_id,
                 AttractorCheckpointEventRecord {
@@ -1218,7 +1307,11 @@ impl RunStorage {
                 },
                 idempotency_key,
             )
-            .await?;
+            .await
+        {
+            Ok(turn) => self.last_turn_id = Some(turn.turn_id),
+            Err(error) => self.handle_store_error(error)?,
+        }
         Ok(())
     }
 
@@ -1237,6 +1330,7 @@ impl RunStorage {
         if let Some(dot_source) = graph.source_dot.as_deref() {
             let dot_bytes = dot_source.as_bytes();
             let dot_hash = blake3::hash(dot_bytes).to_hex().to_string();
+            let dot_blob_hash = self.persist_blob(dot_bytes).await?;
             let sequence_no = self.next_sequence_no();
             let correlation = AttractorCorrelation {
                 run_id: self.run_id.clone(),
@@ -1256,24 +1350,40 @@ impl RunStorage {
                 "dot_source_persisted",
                 sequence_no,
             );
-            let stored_turn = writer
+            let stored_turn = match writer
                 .append_dot_source(
                     &context_id,
                     AttractorDotSourceRecord {
                         timestamp: timestamp_now(),
-                        dot_source: dot_source.to_string(),
+                        dot_source: dot_blob_hash
+                            .as_ref()
+                            .map(|_| None)
+                            .unwrap_or_else(|| Some(dot_source.to_string())),
+                        artifact_blob_hash: dot_blob_hash.clone(),
                         content_hash: dot_hash.clone(),
                         size_bytes: dot_bytes.len() as u64,
                         correlation,
                     },
                     idempotency_key,
                 )
-                .await?;
+                .await
+            {
+                Ok(turn) => turn,
+                Err(error) => {
+                    self.handle_store_error(error)?;
+                    return Ok(metadata);
+                }
+            };
+            self.last_turn_id = Some(stored_turn.turn_id.clone());
             metadata.dot_source_hash = Some(dot_hash);
-            metadata.dot_source_ref = Some(format!(
-                "turnstore://{}/{}",
-                stored_turn.context_id, stored_turn.turn_id
-            ));
+            metadata.dot_source_ref = if let Some(blob_hash) = dot_blob_hash {
+                Some(format!("blob://{}", blob_hash))
+            } else {
+                Some(format!(
+                    "turnstore://{}/{}",
+                    stored_turn.context_id, stored_turn.turn_id
+                ))
+            };
         }
 
         let snapshot_json = serde_json::to_value(graph).map_err(|error| {
@@ -1287,6 +1397,7 @@ impl RunStorage {
             ))
         })?;
         let snapshot_hash = blake3::hash(&snapshot_bytes).to_hex().to_string();
+        let snapshot_blob_hash = self.persist_blob(&snapshot_bytes).await?;
         let sequence_no = self.next_sequence_no();
         let correlation = AttractorCorrelation {
             run_id: self.run_id.clone(),
@@ -1306,30 +1417,91 @@ impl RunStorage {
             "graph_snapshot_persisted",
             sequence_no,
         );
-        let stored_turn = writer
+        let stored_turn = match writer
             .append_graph_snapshot(
                 &context_id,
                 AttractorGraphSnapshotRecord {
                     timestamp: timestamp_now(),
-                    graph_snapshot: snapshot_json,
+                    graph_snapshot: snapshot_blob_hash
+                        .as_ref()
+                        .map(|_| None)
+                        .unwrap_or_else(|| Some(snapshot_json)),
+                    artifact_blob_hash: snapshot_blob_hash.clone(),
                     content_hash: snapshot_hash.clone(),
                     size_bytes: snapshot_bytes.len() as u64,
                     correlation,
                 },
                 idempotency_key,
             )
-            .await?;
+            .await
+        {
+            Ok(turn) => turn,
+            Err(error) => {
+                self.handle_store_error(error)?;
+                return Ok(metadata);
+            }
+        };
+        self.last_turn_id = Some(stored_turn.turn_id.clone());
         metadata.graph_snapshot_hash = Some(snapshot_hash);
-        metadata.graph_snapshot_ref = Some(format!(
-            "turnstore://{}/{}",
-            stored_turn.context_id, stored_turn.turn_id
-        ));
+        metadata.graph_snapshot_ref = if let Some(blob_hash) = snapshot_blob_hash {
+            Some(format!("blob://{}", blob_hash))
+        } else {
+            Some(format!(
+                "turnstore://{}/{}",
+                stored_turn.context_id, stored_turn.turn_id
+            ))
+        };
         Ok(metadata)
     }
 
     fn next_sequence_no(&mut self) -> u64 {
         self.sequence_no += 1;
         self.sequence_no
+    }
+
+    fn reserve_sequence_no(&mut self) -> u64 {
+        self.next_sequence_no()
+    }
+
+    fn context_id(&self) -> Option<&ContextId> {
+        self.context_id.as_ref()
+    }
+
+    fn last_turn_id(&self) -> Option<&TurnId> {
+        self.last_turn_id.as_ref()
+    }
+
+    fn handle_store_error(&mut self, error: TurnStoreError) -> Result<(), AttractorError> {
+        match self.write_mode {
+            StorageWriteMode::Off | StorageWriteMode::BestEffort => {
+                self.writer = None;
+                Ok(())
+            }
+            StorageWriteMode::Required => Err(error.into()),
+        }
+    }
+
+    fn handle_artifact_error(&mut self, error: TurnStoreError) -> Result<(), AttractorError> {
+        match self.write_mode {
+            StorageWriteMode::Off | StorageWriteMode::BestEffort => {
+                self.artifacts = None;
+                Ok(())
+            }
+            StorageWriteMode::Required => Err(error.into()),
+        }
+    }
+
+    async fn persist_blob(&mut self, bytes: &[u8]) -> Result<Option<String>, AttractorError> {
+        let Some(artifacts) = self.artifacts.as_ref().cloned() else {
+            return Ok(None);
+        };
+        match artifacts.put_blob(bytes).await {
+            Ok(hash) => Ok(Some(hash)),
+            Err(error) => {
+                self.handle_artifact_error(error)?;
+                Ok(None)
+            }
+        }
     }
 
     fn take_writer(&mut self) -> Option<crate::storage::SharedAttractorStorageWriter> {

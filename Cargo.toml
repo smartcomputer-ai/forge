@@ -5,5 +5,6 @@ members = [
     "crates/forge-attractor",
     "crates/forge-cli",
     "crates/forge-turnstore",
+    "crates/forge-turnstore-cxdb",
 ]
 resolver = "2"

@@ -1,0 +1,1119 @@
+use async_trait::async_trait;
+use forge_turnstore::{
+    AppendTurnRequest, ArtifactStore, BlobHash, ContextId, RegistryBundle, StoreContext,
+    StoredTurn, StoredTurnRef, TurnId, TurnStore, TurnStoreError, TurnStoreResult, TypedTurnStore,
+};
+#[cfg(test)]
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, thiserror::Error)]
+pub enum CxdbClientError {
+    #[error("resource not found: {resource} ({id})")]
+    NotFound { resource: &'static str, id: String },
+    #[error("conflict: {0}")]
+    Conflict(String),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("backend failure: {0}")]
+    Backend(String),
+}
+
+impl CxdbClientError {
+    fn into_turnstore_error(self) -> TurnStoreError {
+        match self {
+            Self::NotFound { resource, id } => TurnStoreError::NotFound { resource, id },
+            Self::Conflict(message) => TurnStoreError::Conflict(message),
+            Self::InvalidInput(message) => TurnStoreError::InvalidInput(message),
+            Self::Backend(message) => TurnStoreError::Backend(message),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryContextHead {
+    pub context_id: u64,
+    pub head_turn_id: u64,
+    pub head_depth: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryAppendTurnRequest {
+    pub context_id: u64,
+    pub parent_turn_id: u64,
+    pub type_id: String,
+    pub type_version: u32,
+    pub payload: Vec<u8>,
+    pub idempotency_key: String,
+    pub content_hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryAppendTurnResponse {
+    pub context_id: u64,
+    pub new_turn_id: u64,
+    pub new_depth: u32,
+    pub content_hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BinaryStoredTurn {
+    pub context_id: u64,
+    pub turn_id: u64,
+    pub parent_turn_id: u64,
+    pub depth: u32,
+    pub type_id: String,
+    pub type_version: u32,
+    pub payload: Vec<u8>,
+    pub idempotency_key: Option<String>,
+    pub content_hash: [u8; 32],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpStoredTurn {
+    pub context_id: u64,
+    pub turn_id: u64,
+    pub parent_turn_id: u64,
+    pub depth: u32,
+    pub type_id: String,
+    pub type_version: u32,
+    pub payload: Vec<u8>,
+    pub idempotency_key: Option<String>,
+    pub content_hash: [u8; 32],
+}
+
+#[async_trait]
+pub trait CxdbBinaryClient: Send + Sync {
+    async fn ctx_create(&self, base_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError>;
+    async fn ctx_fork(&self, from_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError>;
+    async fn append_turn(
+        &self,
+        request: BinaryAppendTurnRequest,
+    ) -> Result<BinaryAppendTurnResponse, CxdbClientError>;
+    async fn get_head(&self, context_id: u64) -> Result<BinaryContextHead, CxdbClientError>;
+    async fn get_last(
+        &self,
+        context_id: u64,
+        limit: usize,
+        include_payload: bool,
+    ) -> Result<Vec<BinaryStoredTurn>, CxdbClientError>;
+    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError>;
+    async fn get_blob(&self, content_hash: &BlobHash) -> Result<Option<Vec<u8>>, CxdbClientError>;
+    async fn attach_fs(&self, turn_id: u64, fs_root_hash: &BlobHash)
+    -> Result<(), CxdbClientError>;
+}
+
+#[async_trait]
+impl<T> CxdbBinaryClient for std::sync::Arc<T>
+where
+    T: CxdbBinaryClient + ?Sized,
+{
+    async fn ctx_create(&self, base_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        (**self).ctx_create(base_turn_id).await
+    }
+
+    async fn ctx_fork(&self, from_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        (**self).ctx_fork(from_turn_id).await
+    }
+
+    async fn append_turn(
+        &self,
+        request: BinaryAppendTurnRequest,
+    ) -> Result<BinaryAppendTurnResponse, CxdbClientError> {
+        (**self).append_turn(request).await
+    }
+
+    async fn get_head(&self, context_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        (**self).get_head(context_id).await
+    }
+
+    async fn get_last(
+        &self,
+        context_id: u64,
+        limit: usize,
+        include_payload: bool,
+    ) -> Result<Vec<BinaryStoredTurn>, CxdbClientError> {
+        (**self).get_last(context_id, limit, include_payload).await
+    }
+
+    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError> {
+        (**self).put_blob(raw_bytes).await
+    }
+
+    async fn get_blob(&self, content_hash: &BlobHash) -> Result<Option<Vec<u8>>, CxdbClientError> {
+        (**self).get_blob(content_hash).await
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: u64,
+        fs_root_hash: &BlobHash,
+    ) -> Result<(), CxdbClientError> {
+        (**self).attach_fs(turn_id, fs_root_hash).await
+    }
+}
+
+#[async_trait]
+pub trait CxdbHttpClient: Send + Sync {
+    async fn list_turns(
+        &self,
+        context_id: u64,
+        before_turn_id: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HttpStoredTurn>, CxdbClientError>;
+
+    async fn publish_registry_bundle(
+        &self,
+        bundle_id: &str,
+        bundle_json: &[u8],
+    ) -> Result<(), CxdbClientError>;
+
+    async fn get_registry_bundle(
+        &self,
+        bundle_id: &str,
+    ) -> Result<Option<Vec<u8>>, CxdbClientError>;
+}
+
+#[async_trait]
+impl<T> CxdbHttpClient for std::sync::Arc<T>
+where
+    T: CxdbHttpClient + ?Sized,
+{
+    async fn list_turns(
+        &self,
+        context_id: u64,
+        before_turn_id: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HttpStoredTurn>, CxdbClientError> {
+        (**self).list_turns(context_id, before_turn_id, limit).await
+    }
+
+    async fn publish_registry_bundle(
+        &self,
+        bundle_id: &str,
+        bundle_json: &[u8],
+    ) -> Result<(), CxdbClientError> {
+        (**self)
+            .publish_registry_bundle(bundle_id, bundle_json)
+            .await
+    }
+
+    async fn get_registry_bundle(
+        &self,
+        bundle_id: &str,
+    ) -> Result<Option<Vec<u8>>, CxdbClientError> {
+        (**self).get_registry_bundle(bundle_id).await
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct CxdbTurnStore<B, H> {
+    binary_client: B,
+    http_client: H,
+}
+
+impl<B, H> CxdbTurnStore<B, H> {
+    pub fn new(binary_client: B, http_client: H) -> Self {
+        Self {
+            binary_client,
+            http_client,
+        }
+    }
+}
+
+impl<B, H> CxdbTurnStore<B, H>
+where
+    B: CxdbBinaryClient,
+    H: CxdbHttpClient,
+{
+    fn parse_context_id(context_id: &ContextId) -> TurnStoreResult<u64> {
+        context_id.parse::<u64>().map_err(|_| {
+            TurnStoreError::InvalidInput(format!(
+                "context_id must be a u64-compatible string: {context_id}"
+            ))
+        })
+    }
+
+    fn parse_turn_id(turn_id: &TurnId) -> TurnStoreResult<u64> {
+        turn_id.parse::<u64>().map_err(|_| {
+            TurnStoreError::InvalidInput(format!(
+                "turn_id must be a u64-compatible string: {turn_id}"
+            ))
+        })
+    }
+
+    fn turn_id_string(turn_id: u64) -> TurnId {
+        turn_id.to_string()
+    }
+
+    fn context_id_string(context_id: u64) -> ContextId {
+        context_id.to_string()
+    }
+
+    fn hash_hex(hash: [u8; 32]) -> BlobHash {
+        let mut hex = String::with_capacity(64);
+        for byte in hash {
+            use std::fmt::Write;
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        hex
+    }
+
+    fn deterministic_idempotency_key(
+        context_id: u64,
+        parent_turn_id: u64,
+        type_id: &str,
+        type_version: u32,
+        content_hash_hex: &str,
+    ) -> String {
+        format!(
+            "forge-cxdb:v1|ctx={context_id}|parent={parent_turn_id}|type={}:{}|hash={content_hash_hex}",
+            encode_part(type_id),
+            type_version
+        )
+    }
+
+    fn as_stored_turn(turn: BinaryStoredTurn) -> StoredTurn {
+        StoredTurn {
+            context_id: Self::context_id_string(turn.context_id),
+            turn_id: Self::turn_id_string(turn.turn_id),
+            parent_turn_id: Self::turn_id_string(turn.parent_turn_id),
+            depth: turn.depth,
+            type_id: turn.type_id,
+            type_version: turn.type_version,
+            payload: turn.payload,
+            idempotency_key: turn.idempotency_key,
+            content_hash: Some(Self::hash_hex(turn.content_hash)),
+        }
+    }
+
+    fn as_stored_turn_from_http(turn: HttpStoredTurn) -> StoredTurn {
+        StoredTurn {
+            context_id: Self::context_id_string(turn.context_id),
+            turn_id: Self::turn_id_string(turn.turn_id),
+            parent_turn_id: Self::turn_id_string(turn.parent_turn_id),
+            depth: turn.depth,
+            type_id: turn.type_id,
+            type_version: turn.type_version,
+            payload: turn.payload,
+            idempotency_key: turn.idempotency_key,
+            content_hash: Some(Self::hash_hex(turn.content_hash)),
+        }
+    }
+}
+
+#[async_trait]
+impl<B, H> TurnStore for CxdbTurnStore<B, H>
+where
+    B: CxdbBinaryClient,
+    H: CxdbHttpClient,
+{
+    async fn create_context(&self, base_turn_id: Option<TurnId>) -> TurnStoreResult<StoreContext> {
+        let base_turn_id = match base_turn_id {
+            Some(turn_id) if turn_id != "0" => Self::parse_turn_id(&turn_id)?,
+            _ => 0,
+        };
+
+        let created = self
+            .binary_client
+            .ctx_create(base_turn_id)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)?;
+
+        Ok(StoreContext {
+            context_id: Self::context_id_string(created.context_id),
+            head_turn_id: Self::turn_id_string(created.head_turn_id),
+            head_depth: created.head_depth,
+        })
+    }
+
+    async fn append_turn(&self, request: AppendTurnRequest) -> TurnStoreResult<StoredTurn> {
+        let context_id = Self::parse_context_id(&request.context_id)?;
+
+        let parent_turn_id = match request.parent_turn_id.as_ref() {
+            Some(turn_id) if turn_id != "0" => Self::parse_turn_id(turn_id)?,
+            _ => 0,
+        };
+
+        let resolved_parent_turn_id = if parent_turn_id == 0 {
+            self.binary_client
+                .get_head(context_id)
+                .await
+                .map_err(CxdbClientError::into_turnstore_error)?
+                .head_turn_id
+        } else {
+            parent_turn_id
+        };
+
+        let content_hash = *blake3::hash(&request.payload).as_bytes();
+        let content_hash_hex = Self::hash_hex(content_hash);
+        let idempotency_key = if request.idempotency_key.is_empty() {
+            Self::deterministic_idempotency_key(
+                context_id,
+                parent_turn_id,
+                &request.type_id,
+                request.type_version,
+                &content_hash_hex,
+            )
+        } else {
+            request.idempotency_key.clone()
+        };
+
+        let request_payload = request.payload;
+        let request_type_id = request.type_id;
+        let request_type_version = request.type_version;
+
+        let appended = self
+            .binary_client
+            .append_turn(BinaryAppendTurnRequest {
+                context_id,
+                parent_turn_id,
+                type_id: request_type_id.clone(),
+                type_version: request_type_version,
+                payload: request_payload.clone(),
+                idempotency_key: idempotency_key.clone(),
+                content_hash,
+            })
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)?;
+
+        Ok(StoredTurn {
+            context_id: Self::context_id_string(appended.context_id),
+            turn_id: Self::turn_id_string(appended.new_turn_id),
+            parent_turn_id: Self::turn_id_string(resolved_parent_turn_id),
+            depth: appended.new_depth,
+            type_id: request_type_id,
+            type_version: request_type_version,
+            payload: request_payload,
+            idempotency_key: Some(idempotency_key),
+            content_hash: Some(Self::hash_hex(appended.content_hash)),
+        })
+    }
+
+    async fn fork_context(&self, from_turn_id: TurnId) -> TurnStoreResult<StoreContext> {
+        let from_turn_id = Self::parse_turn_id(&from_turn_id)?;
+        let forked = self
+            .binary_client
+            .ctx_fork(from_turn_id)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)?;
+
+        Ok(StoreContext {
+            context_id: Self::context_id_string(forked.context_id),
+            head_turn_id: Self::turn_id_string(forked.head_turn_id),
+            head_depth: forked.head_depth,
+        })
+    }
+
+    async fn get_head(&self, context_id: &ContextId) -> TurnStoreResult<StoredTurnRef> {
+        let context_id_u64 = Self::parse_context_id(context_id)?;
+        let head = self
+            .binary_client
+            .get_head(context_id_u64)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)?;
+
+        Ok(StoredTurnRef {
+            context_id: Self::context_id_string(head.context_id),
+            turn_id: Self::turn_id_string(head.head_turn_id),
+            depth: head.head_depth,
+        })
+    }
+
+    async fn list_turns(
+        &self,
+        context_id: &ContextId,
+        before_turn_id: Option<&TurnId>,
+        limit: usize,
+    ) -> TurnStoreResult<Vec<StoredTurn>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let context_id_u64 = Self::parse_context_id(context_id)?;
+
+        if let Some(turn_id) = before_turn_id {
+            if turn_id == "0" {
+                return Ok(Vec::new());
+            }
+            let before_turn_id_u64 = Self::parse_turn_id(turn_id)?;
+            let turns = self
+                .http_client
+                .list_turns(context_id_u64, Some(before_turn_id_u64), limit)
+                .await
+                .map_err(CxdbClientError::into_turnstore_error)?;
+            return Ok(turns
+                .into_iter()
+                .map(Self::as_stored_turn_from_http)
+                .collect());
+        }
+
+        let turns = self
+            .binary_client
+            .get_last(context_id_u64, limit, true)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)?;
+
+        Ok(turns.into_iter().map(Self::as_stored_turn).collect())
+    }
+}
+
+#[async_trait]
+impl<B, H> TypedTurnStore for CxdbTurnStore<B, H>
+where
+    B: CxdbBinaryClient,
+    H: CxdbHttpClient,
+{
+    async fn publish_registry_bundle(&self, bundle: RegistryBundle) -> TurnStoreResult<()> {
+        self.http_client
+            .publish_registry_bundle(&bundle.bundle_id, &bundle.bundle_json)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)
+    }
+
+    async fn get_registry_bundle(&self, bundle_id: &str) -> TurnStoreResult<Option<Vec<u8>>> {
+        self.http_client
+            .get_registry_bundle(bundle_id)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)
+    }
+}
+
+#[async_trait]
+impl<B, H> ArtifactStore for CxdbTurnStore<B, H>
+where
+    B: CxdbBinaryClient,
+    H: CxdbHttpClient,
+{
+    async fn put_blob(&self, raw_bytes: &[u8]) -> TurnStoreResult<BlobHash> {
+        self.binary_client
+            .put_blob(raw_bytes)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)
+    }
+
+    async fn get_blob(&self, content_hash: &BlobHash) -> TurnStoreResult<Option<Vec<u8>>> {
+        self.binary_client
+            .get_blob(content_hash)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)
+    }
+
+    async fn attach_fs(&self, turn_id: &TurnId, fs_root_hash: &BlobHash) -> TurnStoreResult<()> {
+        let turn_id_u64 = Self::parse_turn_id(turn_id)?;
+        self.binary_client
+            .attach_fs(turn_id_u64, fs_root_hash)
+            .await
+            .map_err(CxdbClientError::into_turnstore_error)
+    }
+}
+
+fn encode_part(part: &str) -> String {
+    format!("{}:{}", part.len(), part)
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+struct MockCxdbBackend {
+    inner: Arc<Mutex<MockCxdbState>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default)]
+struct MockCxdbState {
+    next_context_id: u64,
+    next_turn_id: u64,
+    contexts: BTreeMap<u64, MockContextState>,
+    turns: BTreeMap<u64, BinaryStoredTurn>,
+    idempotency: BTreeMap<String, u64>,
+    blobs: BTreeMap<BlobHash, Vec<u8>>,
+    turn_fs_roots: BTreeMap<u64, BlobHash>,
+    registry_bundles: BTreeMap<String, Vec<u8>>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug)]
+struct MockContextState {
+    head_turn_id: u64,
+    head_depth: u32,
+}
+
+#[cfg(test)]
+impl Default for MockContextState {
+    fn default() -> Self {
+        Self {
+            head_turn_id: 0,
+            head_depth: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+impl MockCxdbState {
+    fn allocate_context_id(&mut self) -> u64 {
+        if self.next_context_id == 0 {
+            self.next_context_id = 1;
+        }
+        let id = self.next_context_id;
+        self.next_context_id += 1;
+        id
+    }
+
+    fn allocate_turn_id(&mut self) -> u64 {
+        if self.next_turn_id == 0 {
+            self.next_turn_id = 1;
+        }
+        let id = self.next_turn_id;
+        self.next_turn_id += 1;
+        id
+    }
+
+    fn turn_depth(&self, turn_id: u64) -> Option<u32> {
+        self.turns.get(&turn_id).map(|turn| turn.depth)
+    }
+
+    fn context_has_turn(&self, context: &MockContextState, turn_id: u64) -> bool {
+        if turn_id == 0 {
+            return true;
+        }
+        let mut cursor = context.head_turn_id;
+        while cursor != 0 {
+            if cursor == turn_id {
+                return true;
+            }
+            let Some(turn) = self.turns.get(&cursor) else {
+                return false;
+            };
+            cursor = turn.parent_turn_id;
+        }
+        false
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl CxdbBinaryClient for MockCxdbBackend {
+    async fn ctx_create(&self, base_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let (head_turn_id, head_depth) = if base_turn_id == 0 {
+            (0, 0)
+        } else {
+            let Some(depth) = state.turn_depth(base_turn_id) else {
+                return Err(CxdbClientError::NotFound {
+                    resource: "turn",
+                    id: base_turn_id.to_string(),
+                });
+            };
+            (base_turn_id, depth)
+        };
+
+        let context_id = state.allocate_context_id();
+        state.contexts.insert(
+            context_id,
+            MockContextState {
+                head_turn_id,
+                head_depth,
+            },
+        );
+
+        Ok(BinaryContextHead {
+            context_id,
+            head_turn_id,
+            head_depth,
+        })
+    }
+
+    async fn ctx_fork(&self, from_turn_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        self.ctx_create(from_turn_id).await
+    }
+
+    async fn append_turn(
+        &self,
+        request: BinaryAppendTurnRequest,
+    ) -> Result<BinaryAppendTurnResponse, CxdbClientError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let context_snapshot = state
+            .contexts
+            .get(&request.context_id)
+            .cloned()
+            .ok_or_else(|| CxdbClientError::NotFound {
+                resource: "context",
+                id: request.context_id.to_string(),
+            })?;
+
+        if !request.idempotency_key.is_empty() {
+            let key = format!("{}|{}", request.context_id, request.idempotency_key);
+            if let Some(existing_turn_id) = state.idempotency.get(&key).copied() {
+                let existing_turn = state.turns.get(&existing_turn_id).ok_or_else(|| {
+                    CxdbClientError::Backend("idempotency index corrupted".to_string())
+                })?;
+                return Ok(BinaryAppendTurnResponse {
+                    context_id: existing_turn.context_id,
+                    new_turn_id: existing_turn.turn_id,
+                    new_depth: existing_turn.depth,
+                    content_hash: existing_turn.content_hash,
+                });
+            }
+        }
+
+        let parent_turn_id = if request.parent_turn_id == 0 {
+            context_snapshot.head_turn_id
+        } else {
+            request.parent_turn_id
+        };
+
+        let parent_depth = if parent_turn_id == 0 {
+            0
+        } else {
+            state
+                .turn_depth(parent_turn_id)
+                .ok_or_else(|| CxdbClientError::NotFound {
+                    resource: "turn",
+                    id: parent_turn_id.to_string(),
+                })?
+        };
+
+        let content_hash = *blake3::hash(&request.payload).as_bytes();
+        if content_hash != request.content_hash {
+            return Err(CxdbClientError::InvalidInput(
+                "content hash mismatch for append payload".to_string(),
+            ));
+        }
+
+        let turn_id = state.allocate_turn_id();
+        let turn = BinaryStoredTurn {
+            context_id: request.context_id,
+            turn_id,
+            parent_turn_id,
+            depth: parent_depth + 1,
+            type_id: request.type_id,
+            type_version: request.type_version,
+            payload: request.payload,
+            idempotency_key: if request.idempotency_key.is_empty() {
+                None
+            } else {
+                Some(request.idempotency_key.clone())
+            },
+            content_hash,
+        };
+
+        state.turns.insert(turn_id, turn.clone());
+        if !request.idempotency_key.is_empty() {
+            let key = format!("{}|{}", request.context_id, request.idempotency_key);
+            state.idempotency.insert(key, turn_id);
+        }
+
+        let context = state.contexts.get_mut(&request.context_id).ok_or_else(|| {
+            CxdbClientError::NotFound {
+                resource: "context",
+                id: request.context_id.to_string(),
+            }
+        })?;
+        context.head_turn_id = turn.turn_id;
+        context.head_depth = turn.depth;
+
+        Ok(BinaryAppendTurnResponse {
+            context_id: turn.context_id,
+            new_turn_id: turn.turn_id,
+            new_depth: turn.depth,
+            content_hash,
+        })
+    }
+
+    async fn get_head(&self, context_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let context = state
+            .contexts
+            .get(&context_id)
+            .ok_or_else(|| CxdbClientError::NotFound {
+                resource: "context",
+                id: context_id.to_string(),
+            })?;
+
+        Ok(BinaryContextHead {
+            context_id,
+            head_turn_id: context.head_turn_id,
+            head_depth: context.head_depth,
+        })
+    }
+
+    async fn get_last(
+        &self,
+        context_id: u64,
+        limit: usize,
+        include_payload: bool,
+    ) -> Result<Vec<BinaryStoredTurn>, CxdbClientError> {
+        if !include_payload {
+            return Err(CxdbClientError::InvalidInput(
+                "mock backend requires include_payload=true".to_string(),
+            ));
+        }
+
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let context = state
+            .contexts
+            .get(&context_id)
+            .ok_or_else(|| CxdbClientError::NotFound {
+                resource: "context",
+                id: context_id.to_string(),
+            })?;
+
+        let mut cursor = context.head_turn_id;
+        let mut turns = Vec::new();
+        while cursor != 0 && turns.len() < limit {
+            let turn = state
+                .turns
+                .get(&cursor)
+                .ok_or_else(|| CxdbClientError::NotFound {
+                    resource: "turn",
+                    id: cursor.to_string(),
+                })?;
+            turns.push(turn.clone());
+            cursor = turn.parent_turn_id;
+        }
+
+        turns.reverse();
+        Ok(turns)
+    }
+
+    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let hash = blake3::hash(raw_bytes).to_hex().to_string();
+        state
+            .blobs
+            .entry(hash.clone())
+            .or_insert_with(|| raw_bytes.to_vec());
+        Ok(hash)
+    }
+
+    async fn get_blob(&self, content_hash: &BlobHash) -> Result<Option<Vec<u8>>, CxdbClientError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+        Ok(state.blobs.get(content_hash).cloned())
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: u64,
+        fs_root_hash: &BlobHash,
+    ) -> Result<(), CxdbClientError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        if !state.turns.contains_key(&turn_id) {
+            return Err(CxdbClientError::NotFound {
+                resource: "turn",
+                id: turn_id.to_string(),
+            });
+        }
+        if !state.blobs.contains_key(fs_root_hash) {
+            return Err(CxdbClientError::NotFound {
+                resource: "blob",
+                id: fs_root_hash.clone(),
+            });
+        }
+        state.turn_fs_roots.insert(turn_id, fs_root_hash.clone());
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+#[async_trait]
+impl CxdbHttpClient for MockCxdbBackend {
+    async fn list_turns(
+        &self,
+        context_id: u64,
+        before_turn_id: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<HttpStoredTurn>, CxdbClientError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+
+        let context = state
+            .contexts
+            .get(&context_id)
+            .ok_or_else(|| CxdbClientError::NotFound {
+                resource: "context",
+                id: context_id.to_string(),
+            })?;
+
+        let mut cursor = if let Some(before_turn_id) = before_turn_id {
+            if before_turn_id == 0 {
+                return Ok(Vec::new());
+            }
+            if !state.context_has_turn(context, before_turn_id) {
+                return Err(CxdbClientError::InvalidInput(format!(
+                    "turn {before_turn_id} is not reachable from context {context_id} head"
+                )));
+            }
+            let turn =
+                state
+                    .turns
+                    .get(&before_turn_id)
+                    .ok_or_else(|| CxdbClientError::NotFound {
+                        resource: "turn",
+                        id: before_turn_id.to_string(),
+                    })?;
+            turn.parent_turn_id
+        } else {
+            context.head_turn_id
+        };
+
+        let mut turns = Vec::new();
+        while cursor != 0 && turns.len() < limit {
+            let turn = state
+                .turns
+                .get(&cursor)
+                .ok_or_else(|| CxdbClientError::NotFound {
+                    resource: "turn",
+                    id: cursor.to_string(),
+                })?;
+            turns.push(HttpStoredTurn {
+                context_id: turn.context_id,
+                turn_id: turn.turn_id,
+                parent_turn_id: turn.parent_turn_id,
+                depth: turn.depth,
+                type_id: turn.type_id.clone(),
+                type_version: turn.type_version,
+                payload: turn.payload.clone(),
+                idempotency_key: turn.idempotency_key.clone(),
+                content_hash: turn.content_hash,
+            });
+            cursor = turn.parent_turn_id;
+        }
+
+        turns.reverse();
+        Ok(turns)
+    }
+
+    async fn publish_registry_bundle(
+        &self,
+        bundle_id: &str,
+        bundle_json: &[u8],
+    ) -> Result<(), CxdbClientError> {
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+        state
+            .registry_bundles
+            .insert(bundle_id.to_string(), bundle_json.to_vec());
+        Ok(())
+    }
+
+    async fn get_registry_bundle(
+        &self,
+        bundle_id: &str,
+    ) -> Result<Option<Vec<u8>>, CxdbClientError> {
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| CxdbClientError::Backend("mock backend mutex poisoned".to_string()))?;
+        Ok(state.registry_bundles.get(bundle_id).cloned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use forge_turnstore::{FsTurnStore, MemoryTurnStore};
+
+    fn append_request(context_id: &str, payload: &[u8], key: &str) -> AppendTurnRequest {
+        AppendTurnRequest {
+            context_id: context_id.to_string(),
+            parent_turn_id: None,
+            type_id: "forge.agent.user_turn".to_string(),
+            type_version: 1,
+            payload: payload.to_vec(),
+            idempotency_key: key.to_string(),
+        }
+    }
+
+    async fn exercise_idempotent_append<T: TurnStore>(store: &T) -> TurnStoreResult<()> {
+        let context = store.create_context(None).await?;
+        let first = store
+            .append_turn(append_request(&context.context_id, b"hello", "append-1"))
+            .await?;
+        let second = store
+            .append_turn(append_request(&context.context_id, b"hello", "append-1"))
+            .await?;
+        assert_eq!(first.turn_id, second.turn_id);
+
+        let turns = store.list_turns(&context.context_id, None, 10).await?;
+        assert_eq!(turns.len(), 1);
+        Ok(())
+    }
+
+    async fn exercise_fork_and_list<T: TurnStore>(store: &T) -> TurnStoreResult<()> {
+        let root = store.create_context(None).await?;
+        let t1 = store
+            .append_turn(append_request(&root.context_id, b"turn-1", "k1"))
+            .await?;
+        let t2 = store
+            .append_turn(append_request(&root.context_id, b"turn-2", "k2"))
+            .await?;
+
+        let fork = store.fork_context(t1.turn_id.clone()).await?;
+        let fork_head = store.get_head(&fork.context_id).await?;
+        assert_eq!(fork_head.turn_id, t1.turn_id);
+
+        let root_turns = store.list_turns(&root.context_id, None, 10).await?;
+        assert_eq!(root_turns.len(), 2);
+        assert_eq!(root_turns[0].turn_id, t1.turn_id);
+        assert_eq!(root_turns[1].turn_id, t2.turn_id);
+
+        let older = store
+            .list_turns(&root.context_id, Some(&t2.turn_id), 10)
+            .await?;
+        assert_eq!(older.len(), 1);
+        assert_eq!(older[0].turn_id, t1.turn_id);
+        Ok(())
+    }
+
+    async fn exercise_artifact_roundtrip<T: TurnStore + ArtifactStore>(
+        store: &T,
+    ) -> TurnStoreResult<()> {
+        let context = store.create_context(None).await?;
+        let turn = store
+            .append_turn(append_request(
+                &context.context_id,
+                b"payload",
+                "artifact-k1",
+            ))
+            .await?;
+
+        let blob = b"immutable-blob-bytes";
+        let hash = store.put_blob(blob).await?;
+        let fetched = store.get_blob(&hash).await?;
+        assert_eq!(fetched.as_deref(), Some(blob.as_slice()));
+
+        store.attach_fs(&turn.turn_id, &hash).await?;
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cxdb_adapter_contract_matches_memory_and_fs_backends() {
+        let memory = MemoryTurnStore::new();
+        exercise_idempotent_append(&memory)
+            .await
+            .expect("memory idempotent append should succeed");
+        exercise_fork_and_list(&memory)
+            .await
+            .expect("memory fork/list should succeed");
+        exercise_artifact_roundtrip(&memory)
+            .await
+            .expect("memory artifact roundtrip should succeed");
+
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let fs = FsTurnStore::new(tmp.path()).expect("fs store should initialize");
+        exercise_idempotent_append(&fs)
+            .await
+            .expect("fs idempotent append should succeed");
+        exercise_fork_and_list(&fs)
+            .await
+            .expect("fs fork/list should succeed");
+        exercise_artifact_roundtrip(&fs)
+            .await
+            .expect("fs artifact roundtrip should succeed");
+
+        let mock_backend = MockCxdbBackend::default();
+        let cxdb = CxdbTurnStore::new(mock_backend.clone(), mock_backend);
+        exercise_idempotent_append(&cxdb)
+            .await
+            .expect("cxdb idempotent append should succeed");
+        exercise_fork_and_list(&cxdb)
+            .await
+            .expect("cxdb fork/list should succeed");
+        exercise_artifact_roundtrip(&cxdb)
+            .await
+            .expect("cxdb artifact roundtrip should succeed");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn append_turn_empty_idempotency_key_expected_deterministic_fallback() {
+        let mock_backend = MockCxdbBackend::default();
+        let store = CxdbTurnStore::new(mock_backend.clone(), mock_backend);
+        let context = store
+            .create_context(None)
+            .await
+            .expect("context should be created");
+
+        let request = AppendTurnRequest {
+            context_id: context.context_id,
+            parent_turn_id: None,
+            type_id: "forge.agent.user_turn".to_string(),
+            type_version: 1,
+            payload: b"same".to_vec(),
+            idempotency_key: String::new(),
+        };
+
+        let first = store
+            .append_turn(request.clone())
+            .await
+            .expect("first append should succeed");
+        let second = store
+            .append_turn(request)
+            .await
+            .expect("second append should be deduplicated");
+
+        assert_eq!(first.turn_id, second.turn_id);
+        assert!(
+            first
+                .idempotency_key
+                .as_deref()
+                .is_some_and(|value| value.starts_with("forge-cxdb:v1|"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn typed_registry_roundtrip_expected_bundle_bytes() {
+        let mock_backend = MockCxdbBackend::default();
+        let store = CxdbTurnStore::new(mock_backend.clone(), mock_backend);
+
+        store
+            .publish_registry_bundle(RegistryBundle {
+                bundle_id: "bundle-1".to_string(),
+                bundle_json: br#"{"registry_version":1}"#.to_vec(),
+            })
+            .await
+            .expect("bundle should publish");
+
+        let bundle = store
+            .get_registry_bundle("bundle-1")
+            .await
+            .expect("bundle lookup should succeed");
+
+        assert_eq!(bundle, Some(br#"{"registry_version":1}"#.to_vec()));
+    }
+}

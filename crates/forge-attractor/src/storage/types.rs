@@ -82,7 +82,8 @@ pub struct StageToAgentLinkRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DotSourceRecord {
     pub timestamp: String,
-    pub dot_source: String,
+    pub dot_source: Option<String>,
+    pub artifact_blob_hash: Option<BlobHash>,
     pub content_hash: BlobHash,
     pub size_bytes: u64,
     pub correlation: AttractorCorrelation,
@@ -91,7 +92,8 @@ pub struct DotSourceRecord {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct GraphSnapshotRecord {
     pub timestamp: String,
-    pub graph_snapshot: Value,
+    pub graph_snapshot: Option<Value>,
+    pub artifact_blob_hash: Option<BlobHash>,
     pub content_hash: BlobHash,
     pub size_bytes: u64,
     pub correlation: AttractorCorrelation,
@@ -196,6 +198,7 @@ pub fn dot_source_envelope(record: DotSourceRecord) -> StoredTurnEnvelope {
         timestamp: record.timestamp,
         payload: serde_json::json!({
             "dot_source": record.dot_source,
+            "artifact_blob_hash": record.artifact_blob_hash,
             "content_hash": record.content_hash,
             "size_bytes": record.size_bytes,
         }),
@@ -214,6 +217,7 @@ pub fn graph_snapshot_envelope(record: GraphSnapshotRecord) -> StoredTurnEnvelop
         timestamp: record.timestamp,
         payload: serde_json::json!({
             "graph_snapshot": record.graph_snapshot,
+            "artifact_blob_hash": record.artifact_blob_hash,
             "content_hash": record.content_hash,
             "size_bytes": record.size_bytes,
         }),

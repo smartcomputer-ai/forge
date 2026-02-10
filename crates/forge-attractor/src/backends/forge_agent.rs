@@ -1,11 +1,13 @@
 use crate::{
     AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageWriter, Graph, Node,
-    NodeOutcome, NodeStatus, RuntimeContext,
+    NodeOutcome, NodeStatus, RuntimeContext, StorageWriteMode,
     handlers::codergen::{CodergenBackend, CodergenBackendResult},
     hooks::{ToolHookBridge, ToolHookSummary, resolve_tool_hook_commands},
 };
 use async_trait::async_trait;
-use forge_agent::{AgentError, Session, SubmitOptions, SubmitResult, ToolCallHook};
+use forge_agent::{
+    AgentError, Session, SessionPersistenceSnapshot, SubmitOptions, SubmitResult, ToolCallHook,
+};
 use forge_turnstore::{ContextId, TurnId, attractor_idempotency_key};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -28,6 +30,8 @@ pub trait AgentSubmitter: Send {
     fn session_id(&self) -> &str;
 
     fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>);
+
+    async fn persistence_snapshot(&mut self) -> Result<SessionPersistenceSnapshot, AgentError>;
 }
 
 #[async_trait]
@@ -54,6 +58,10 @@ impl AgentSubmitter for Session {
 
     fn set_tool_call_hook(&mut self, hook: Option<Arc<dyn ToolCallHook>>) {
         Session::set_tool_call_hook(self, hook);
+    }
+
+    async fn persistence_snapshot(&mut self) -> Result<SessionPersistenceSnapshot, AgentError> {
+        Session::persistence_snapshot(self).await
     }
 }
 
@@ -162,6 +170,13 @@ impl ForgeAgentCodergenAdapter {
 pub struct ForgeAgentSessionBackend {
     adapter: ForgeAgentCodergenAdapter,
     submitter: Mutex<Box<dyn AgentSubmitter + Send>>,
+    stage_link: Option<StageLinkConfig>,
+}
+
+#[derive(Clone)]
+struct StageLinkConfig {
+    writer: Arc<dyn AttractorStorageWriter>,
+    mode: StorageWriteMode,
 }
 
 impl ForgeAgentSessionBackend {
@@ -172,7 +187,17 @@ impl ForgeAgentSessionBackend {
         Self {
             adapter,
             submitter: Mutex::new(submitter),
+            stage_link: None,
         }
+    }
+
+    pub fn with_stage_link_writer(
+        mut self,
+        writer: Arc<dyn AttractorStorageWriter>,
+        mode: StorageWriteMode,
+    ) -> Self {
+        self.stage_link = Some(StageLinkConfig { writer, mode });
+        self
     }
 }
 
@@ -206,7 +231,7 @@ impl CodergenBackend for ForgeAgentSessionBackend {
             None
         } else {
             Some(Arc::new(ToolHookBridge::new(
-                run_id,
+                run_id.clone(),
                 node.id.clone(),
                 stage_attempt_id.to_string(),
                 hook_commands,
@@ -227,6 +252,23 @@ impl CodergenBackend for ForgeAgentSessionBackend {
                 stage_attempt_id,
             )
             .await?;
+        if let Some(stage_link) = self.stage_link.as_ref() {
+            if let Err(error) = emit_stage_link_if_available(
+                stage_link,
+                submitter.as_mut(),
+                context,
+                run_id.as_str(),
+                node.id.as_str(),
+                stage_attempt_id,
+            )
+            .await
+            {
+                if stage_link.mode == StorageWriteMode::Required {
+                    submitter.set_tool_call_hook(None);
+                    return Err(error);
+                }
+            }
+        }
         submitter.set_tool_call_hook(None);
         let outcome = if let Some(bridge) = hook_bridge.as_ref() {
             apply_tool_hook_summary(outcome, bridge.summary())
@@ -279,6 +321,55 @@ pub async fn emit_stage_to_agent_link(
         .append_stage_to_agent_link(request.context_id, record, key)
         .await?;
     Ok(())
+}
+
+async fn emit_stage_link_if_available(
+    config: &StageLinkConfig,
+    submitter: &mut (dyn AgentSubmitter + Send),
+    context: &RuntimeContext,
+    run_id: &str,
+    node_id: &str,
+    stage_attempt_id: &str,
+) -> Result<(), AttractorError> {
+    let Some(pipeline_context_id) = context
+        .get("pipeline_context_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return Ok(());
+    };
+
+    let snapshot = submitter
+        .persistence_snapshot()
+        .await
+        .map_err(|error| AttractorError::Runtime(error.to_string()))?;
+    let Some(agent_context_id) = snapshot.context_id else {
+        return Ok(());
+    };
+
+    let parent_turn_id = context
+        .get("pipeline_parent_turn_id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let sequence_no = context
+        .get("pipeline_stage_link_sequence_no")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    emit_stage_to_agent_link(StageLinkEmission {
+        writer: config.writer.clone(),
+        context_id: &pipeline_context_id,
+        run_id,
+        node_id,
+        stage_attempt_id,
+        agent_session_id: submitter.session_id(),
+        agent_context_id: &agent_context_id,
+        agent_head_turn_id: snapshot.head_turn_id,
+        parent_turn_id,
+        sequence_no,
+        thread_key: submitter.thread_key().map(ToOwned::to_owned),
+    })
+    .await
 }
 
 fn stage_metadata(node: &Node, stage_attempt_id: &str) -> HashMap<String, String> {
@@ -419,6 +510,7 @@ mod tests {
         last_options: Option<SubmitOptions>,
         result: SubmitResult,
         hook_set_calls: usize,
+        persistence_snapshot: SessionPersistenceSnapshot,
     }
 
     #[async_trait]
@@ -449,6 +541,10 @@ mod tests {
             if hook.is_some() {
                 self.hook_set_calls += 1;
             }
+        }
+
+        async fn persistence_snapshot(&mut self) -> Result<SessionPersistenceSnapshot, AgentError> {
+            Ok(self.persistence_snapshot.clone())
         }
     }
 
@@ -580,6 +676,7 @@ mod tests {
                 thread_key: Some("thread-main".to_string()),
             },
             hook_set_calls: 0,
+            persistence_snapshot: SessionPersistenceSnapshot::default(),
         };
         let adapter = ForgeAgentCodergenAdapter::default();
         let outcome = adapter
@@ -616,6 +713,7 @@ mod tests {
                 thread_key: None,
             },
             hook_set_calls: 0,
+            persistence_snapshot: SessionPersistenceSnapshot::default(),
         };
         let backend = ForgeAgentSessionBackend::new(
             ForgeAgentCodergenAdapter::default(),
@@ -660,6 +758,7 @@ mod tests {
                 thread_key: None,
             },
             hook_set_calls: 0,
+            persistence_snapshot: SessionPersistenceSnapshot::default(),
         };
         let backend = ForgeAgentSessionBackend::new(
             ForgeAgentCodergenAdapter::default(),
@@ -707,6 +806,70 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].run_id, "run-1");
         assert_eq!(calls[0].node_id, "plan");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn forge_agent_session_backend_with_stage_link_writer_emits_link_when_context_available()
+    {
+        let graph = parse_dot("digraph G { n1 [prompt=\"hi\"] }").expect("graph should parse");
+        let node = graph.nodes.get("n1").expect("node");
+        let submitter = StubSubmitter {
+            thread_key: Some("thread-main".to_string()),
+            last_input: None,
+            last_options: None,
+            result: SubmitResult {
+                final_state: SessionState::Idle,
+                assistant_text: "done".to_string(),
+                tool_call_count: 0,
+                tool_call_ids: vec![],
+                tool_error_count: 0,
+                usage: None,
+                thread_key: None,
+            },
+            hook_set_calls: 0,
+            persistence_snapshot: SessionPersistenceSnapshot {
+                session_id: "session-1".to_string(),
+                context_id: Some("agent-ctx".to_string()),
+                head_turn_id: Some("9".to_string()),
+            },
+        };
+        let writer = Arc::new(LinkRecordingWriter::default());
+        let backend = ForgeAgentSessionBackend::new(
+            ForgeAgentCodergenAdapter::default(),
+            Box::new(submitter),
+        )
+        .with_stage_link_writer(writer.clone(), StorageWriteMode::BestEffort);
+        let mut context = RuntimeContext::new();
+        context.insert(
+            "pipeline_context_id".to_string(),
+            Value::String("pipeline-ctx".to_string()),
+        );
+        context.insert(
+            "pipeline_parent_turn_id".to_string(),
+            Value::String("3".to_string()),
+        );
+        context.insert(
+            "pipeline_stage_link_sequence_no".to_string(),
+            Value::Number(7_u64.into()),
+        );
+        context.insert(
+            "stage_attempt_id".to_string(),
+            Value::String("n1:attempt:1".to_string()),
+        );
+        context.insert(
+            "internal.lineage.root_run_id".to_string(),
+            Value::String("run-1".to_string()),
+        );
+
+        let _ = backend
+            .run(node, "hello", &context, &graph)
+            .await
+            .expect("backend run should succeed");
+
+        let calls = writer.calls.lock().expect("mutex");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].agent_context_id, "agent-ctx");
+        assert_eq!(calls[0].pipeline_context_id, "pipeline-ctx");
     }
 
     #[test]

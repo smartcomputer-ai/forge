@@ -301,6 +301,7 @@ dependencies = [
  "async-trait",
  "forge-llm",
  "forge-turnstore",
+ "forge-turnstore-cxdb",
  "futures",
  "glob",
  "nix",
@@ -324,6 +325,7 @@ dependencies = [
  "forge-agent",
  "forge-llm",
  "forge-turnstore",
+ "forge-turnstore-cxdb",
  "graphviz-rust",
  "serde",
  "serde_json",
@@ -368,6 +370,21 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "blake3",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
+name = "forge-turnstore-cxdb"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "base64",
+ "blake3",
+ "forge-turnstore",
  "serde",
  "serde_json",
  "tempfile",

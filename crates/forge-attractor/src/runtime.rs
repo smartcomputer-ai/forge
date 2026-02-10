@@ -1,6 +1,6 @@
 use crate::{AttractorError, Graph, Node, RuntimeContext, handlers};
 use async_trait::async_trait;
-use forge_turnstore::TurnId;
+use forge_turnstore::{ArtifactStore, TurnId};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -87,6 +87,8 @@ pub struct RunConfig {
     pub run_id: Option<String>,
     pub base_turn_id: Option<TurnId>,
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
+    pub artifacts: Option<Arc<dyn ArtifactStore>>,
+    pub storage_mode: StorageWriteMode,
     pub events: crate::RuntimeEventSink,
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
@@ -95,12 +97,21 @@ pub struct RunConfig {
     pub max_loop_restarts: u32,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageWriteMode {
+    Off,
+    BestEffort,
+    Required,
+}
+
 impl Default for RunConfig {
     fn default() -> Self {
         Self {
             run_id: None,
             base_turn_id: None,
             storage: None,
+            artifacts: None,
+            storage_mode: StorageWriteMode::BestEffort,
             events: crate::RuntimeEventSink::default(),
             executor: Arc::new(handlers::registry::RegistryNodeExecutor::new(
                 handlers::core_registry(),

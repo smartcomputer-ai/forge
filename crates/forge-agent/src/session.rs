@@ -9,8 +9,10 @@ use forge_llm::{
     ToolResult, Usage,
 };
 use forge_turnstore::{
-    AppendTurnRequest, CorrelationMetadata, StoredTurnEnvelope, TurnStore, agent_idempotency_key,
+    AppendTurnRequest, CorrelationMetadata, StoredTurnEnvelope, TurnId, TurnStore,
+    agent_idempotency_key,
 };
+use forge_turnstore_cxdb::{CxdbBinaryClient, CxdbHttpClient, CxdbTurnStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -54,6 +56,13 @@ pub struct SessionCheckpoint {
     pub followup_queue: Vec<String>,
     pub config: SessionConfig,
     pub thread_key: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionPersistenceSnapshot {
+    pub session_id: String,
+    pub context_id: Option<String>,
+    pub head_turn_id: Option<TurnId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -397,6 +406,24 @@ impl Session {
         )
     }
 
+    pub fn new_with_cxdb_turn_store(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        binary_client: Arc<dyn CxdbBinaryClient>,
+        http_client: Arc<dyn CxdbHttpClient>,
+    ) -> Result<Self, AgentError> {
+        let store: Arc<dyn TurnStore> = Arc::new(CxdbTurnStore::new(binary_client, http_client));
+        Self::new_with_turn_store(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            Some(store),
+        )
+    }
+
     pub fn new_with_emitter(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
@@ -559,6 +586,32 @@ impl Session {
 
     fn persistence_enabled(&self) -> bool {
         self.turn_store.is_some() && self.turn_store_mode != TurnStoreWriteMode::Off
+    }
+
+    pub async fn persistence_snapshot(&mut self) -> Result<SessionPersistenceSnapshot, AgentError> {
+        let mut snapshot = SessionPersistenceSnapshot {
+            session_id: self.id.clone(),
+            context_id: self.turn_store_context_id.clone(),
+            head_turn_id: None,
+        };
+
+        if !self.persistence_enabled() {
+            return Ok(snapshot);
+        }
+
+        self.ensure_turn_store_context().await?;
+        snapshot.context_id = self.turn_store_context_id.clone();
+
+        if let (Some(store), Some(context_id)) =
+            (self.turn_store.clone(), self.turn_store_context_id.clone())
+        {
+            match store.get_head(&context_id).await {
+                Ok(head) => snapshot.head_turn_id = Some(head.turn_id),
+                Err(error) => self.handle_persistence_error(error, "get_head")?,
+            }
+        }
+
+        Ok(snapshot)
     }
 
     fn persist_session_event_blocking(

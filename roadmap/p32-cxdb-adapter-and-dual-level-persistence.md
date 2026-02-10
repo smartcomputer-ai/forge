@@ -1,7 +1,10 @@
 # P32: CXDB Adapter and Dual-level Persistence Activation (Spec 04 post-P31)
 
 **Status**
-- Planned (2026-02-10)
+- In progress (2026-02-10)
+- G1 completed (2026-02-10)
+- G2 completed (2026-02-10)
+- G3 completed (2026-02-10)
 
 **Goal**
 Implement CXDB-backed turnstore adapter and activate dual-level persistence for Attractor and Agent timelines, including stage-to-agent drill-down.
@@ -36,7 +39,7 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Add `forge-turnstore-cxdb` crate
+### [x] G1. Add `forge-turnstore-cxdb` crate
 - Work:
   - Implement `TurnStore` interface over CXDB APIs with explicit operation mapping:
     - binary: `CTX_CREATE`, `CTX_FORK`, `APPEND_TURN`, `GET_HEAD`, `GET_LAST`
@@ -52,8 +55,16 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - `crates/forge-turnstore-cxdb/src/adapter.rs`
 - DoD:
   - Adapter passes contract tests shared with memory/fs turnstore backends.
+- Completed:
+  - Added workspace crate `crates/forge-turnstore-cxdb` with `CxdbTurnStore` implementing `TurnStore`, `TypedTurnStore`, and `ArtifactStore` over explicit CXDB binary/HTTP client traits.
+  - Implemented operation mapping per spec section 4.7:
+    - binary path for `create_context`, `fork_context`, `append_turn`, `get_head`, `list_turns` newest-window (`GET_LAST`), `put_blob`, `get_blob`, `attach_fs`
+    - HTTP path for cursor-paged `list_turns(before_turn_id)` and registry bundle publish/read
+  - Added deterministic idempotency fallback key generation when append requests omit `idempotency_key`.
+  - Added crate docs mapping table from each trait method to the corresponding CXDB protocol/HTTP API section.
+  - Added contract-style parity tests exercising shared behavior across memory, fs, and CXDB adapter backends.
 
-### [ ] G2. Wire `forge-agent` + Attractor runtime to CXDB adapter
+### [x] G2. Wire `forge-agent` + Attractor runtime to CXDB adapter
 - Work:
   - Add runtime config and bootstrap wiring for CXDB-backed turnstore selection.
   - Persist all required agent and attractor records through adapter in `best_effort` mode.
@@ -64,8 +75,16 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - `crates/forge-attractor/src/backends/forge_agent.rs`
 - DoD:
   - Dual-level timeline is queryable and causally linked in CXDB.
+- Completed:
+  - Added CXDB bootstrap constructors/helpers:
+    - `forge-agent::Session::new_with_cxdb_turn_store(...)`
+    - `forge_attractor::runner::cxdb_storage_writer(...)`
+  - Added agent persistence snapshot surface (`SessionPersistenceSnapshot`) so runtimes can query session/context/head linkage after agent execution.
+  - Wired stage-to-agent link emission into the forge-agent backend execution path when pipeline context metadata is present, with `StorageWriteMode::BestEffort` default behavior and `Required` escalation support.
+  - Added runtime storage write-mode support (`off`, `best_effort`, `required`) for Attractor run persistence and preserved deterministic progression in best-effort mode.
+  - Added backend test coverage for stage-to-agent linkage emission from live backend execution context.
 
-### [ ] G3. DOT and graph snapshot persistence
+### [x] G3. DOT and graph snapshot persistence
 - Work:
   - Persist DOT source as payload or artifact ref + content hash for each run.
   - Persist normalized graph snapshot used at runtime initialization.
@@ -75,6 +94,12 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - `crates/forge-attractor/src/storage/types.rs`
 - DoD:
   - Observability layer can reconstruct run intent and executed graph from store data alone.
+- Completed:
+  - Persisted DOT source and normalized graph snapshot through run-storage initialization for each run (including existing run metadata refs).
+  - Added optional artifact/CAS backing for DOT and graph snapshots via `ArtifactStore` in run config:
+    - stores deterministic BLAKE3-addressed blobs when artifact store is configured,
+    - persists either inline payloads or blob references with content hash + size metadata.
+  - Extended storage record/envelope payloads to carry optional artifact blob references while preserving existing queryability and replay metadata.
 
 ## Priority 1 (Strongly recommended)
 
