@@ -87,6 +87,21 @@ Integrations SHOULD use CXDB protocols by responsibility:
 - Write-heavy runtime path (append/fork/head updates): prefer CXDB binary protocol (`:9009`) for throughput.
 - Read/projection path (UI/tooling/timeline browsing): prefer CXDB HTTP API (`:9010`).
 - HTTP-only write mode is acceptable for bootstrap/testing, but SHOULD NOT be default for production append paths.
+- Binary protocol SHOULD also be used for blob/artifact upload paths (`PUT_BLOB`, `GET_BLOB`, `ATTACH_FS`) when enabled.
+- Readers requiring typed projection or cursor paging (`before_turn_id`) SHOULD use HTTP endpoints even when writes use binary.
+
+### 2.5 CXDB Cross-check References
+
+For fast protocol verification while implementing:
+
+- Binary wire operations and idempotency/compression behavior:
+  `spec/cxdb/protocol.md` (Message Flows 2-10, Idempotency, Compression)
+- HTTP paging/projection/registry behavior:
+  `spec/cxdb/http-api.md` (Contexts, Turns, Registry, Blobs)
+- Storage invariants and concurrency assumptions:
+  `spec/cxdb/architecture.md` (Turn DAG, Blob CAS, Concurrency Model)
+- Schema/tag evolution and typed projection rules:
+  `spec/cxdb/type-registry.md` (Core Concepts, Registry Bundle Format, Schema Evolution)
 
 ---
 
@@ -177,6 +192,7 @@ Rules:
 - `correlation` MUST contain enough linkage to traverse attractor <-> agent timelines.
 - `payload` MUST avoid non-deterministic fields unless explicitly marked diagnostic.
 - Large blobs SHOULD be stored as artifacts with references in the envelope.
+- Artifact references SHOULD include immutable hash and size metadata so envelopes stay small and replayable.
 
 ### 3.6 Encoding and Registry Contract
 
@@ -187,6 +203,8 @@ Rules:
 - Forge-owned turn schemas SHOULD use a dedicated namespace (`forge.agent.*`, `forge.attractor.*`, `forge.link.*`, `forge.shared.*`).
 - Registry bundles SHOULD be published before or alongside first writes for new schema versions.
 - Unknown fields/tags MUST be forward-compatible and MUST NOT break readers.
+- Production writers SHOULD encode payloads directly as msgpack with numeric tags (not JSON-to-msgpack transcode) for deterministic hashing.
+- Cross-check references: `spec/cxdb/type-registry.md`, `spec/cxdb/http-api.md` (Registry)
 
 ### 3.7 Branch Context Policy
 
@@ -205,18 +223,24 @@ To preserve clear causality and avoid interleaving ambiguity:
 Implementations SHOULD expose a minimal append/fork/read store interface:
 
 ```
+TYPE ContextId = String            // Opaque in Forge, u64-backed in CXDB
+TYPE TurnId = String               // Opaque in Forge, u64-backed in CXDB
+TYPE BlobHash = String             // Lowercase hex BLAKE3-256
+
+RECORD AppendTurnRequest:
+    context_id       : ContextId
+    parent_turn_id   : TurnId | None
+    type_id          : String
+    type_version     : Integer
+    payload          : Bytes
+    idempotency_key  : String
+
 INTERFACE TurnStore:
-    FUNCTION create_context(parent_turn_id: String | None) -> StoreContext
-    FUNCTION append_turn(
-        context_id: String,
-        type_id: String,
-        type_version: Integer,
-        payload: Bytes,
-        idempotency_key: String
-    ) -> StoredTurn
-    FUNCTION fork_context(from_context_id: String, from_turn_id: String) -> StoreContext
-    FUNCTION get_head(context_id: String) -> StoredTurnRef
-    FUNCTION list_turns(context_id: String, before_turn_id: String | None, limit: Integer) -> List<StoredTurn>
+    FUNCTION create_context(base_turn_id: TurnId | None) -> StoreContext
+    FUNCTION append_turn(request: AppendTurnRequest) -> StoredTurn
+    FUNCTION fork_context(from_turn_id: TurnId) -> StoreContext
+    FUNCTION get_head(context_id: ContextId) -> StoredTurnRef
+    FUNCTION list_turns(context_id: ContextId, before_turn_id: TurnId | None, limit: Integer) -> List<StoredTurn>
 ```
 
 Optional extension methods:
@@ -225,6 +249,11 @@ Optional extension methods:
 INTERFACE TypedTurnStore EXTENDS TurnStore:
     FUNCTION publish_registry_bundle(bundle_id: String, bundle_json: Bytes) -> Void
     FUNCTION get_registry_bundle(bundle_id: String) -> Bytes | None
+
+INTERFACE ArtifactStore:
+    FUNCTION put_blob(raw_bytes: Bytes) -> BlobHash
+    FUNCTION get_blob(content_hash: BlobHash) -> Bytes | None
+    FUNCTION attach_fs(turn_id: TurnId, fs_root_hash: BlobHash) -> Void
 ```
 
 ### 4.2 Optional Coordination Interface (Distributed Runtime)
@@ -281,6 +310,23 @@ Integration metadata SHOULD include deterministic idempotency keys, for example:
 - `session_id + local_turn_index + event_kind` (agent).
 
 These keys are used to suppress duplicate writes during retries/reconnects.
+CXDB v1 deduplicates idempotency keys per context with a 24-hour TTL; strict longer-horizon dedup SHOULD be handled by integration policy when needed.
+
+### 4.7 CXDB Operation Mapping Contract
+
+`forge-turnstore-cxdb` SHOULD map operations as follows:
+
+- `create_context(base_turn_id)` -> binary `CTX_CREATE` (`base_turn_id=0` for empty).
+- `fork_context(from_turn_id)` -> binary `CTX_FORK`.
+- `append_turn` -> binary `APPEND_TURN` (client computes BLAKE3 over uncompressed payload, sets encoding/compression/idempotency).
+- `get_head` -> binary `GET_HEAD`.
+- `list_turns` newest-window, raw bytes -> binary `GET_LAST`.
+- `list_turns` with cursor paging (`before_turn_id`) or typed projection -> HTTP `GET /v1/contexts/:id/turns`.
+- `publish_registry_bundle`/`get_registry_bundle` -> HTTP `/v1/registry/*`.
+- `put_blob`/`get_blob`/`attach_fs` -> binary `PUT_BLOB`/`GET_BLOB`/`ATTACH_FS`.
+
+Adapters SHOULD keep Forge IDs opaque and perform u64/string conversion only at the CXDB boundary.
+Cross-check references: `spec/cxdb/protocol.md`, `spec/cxdb/http-api.md`, `spec/cxdb/architecture.md`
 
 ---
 
@@ -344,6 +390,7 @@ Renderer loading/execution is a host/UI concern, not a core runtime concern:
 
 ### Phase A: Pre-runtime storage foundations (before Attractor runtime milestones)
 - Add `forge-turnstore` interfaces and shared envelope/correlation types.
+- Add optional artifact/blob extension interface(s) so large payloads are not forced into turn bodies.
 - Add in-memory implementation for deterministic tests.
 - Add optional filesystem implementation for local parity/offline workflows.
 - Integrate `forge-agent` with optional store binding and deterministic idempotency metadata.
@@ -355,6 +402,7 @@ Renderer loading/execution is a host/UI concern, not a core runtime concern:
 
 ### Phase C: CXDB adapter integration (allowed after P31)
 - Implement `forge-turnstore-cxdb` adapter.
+- Implement binary write path + HTTP projection/read path split per Section 4.7.
 - Dual-write runtime events/turns in `best_effort` mode.
 - Add projection browsing for stage<->agent drill-down.
 
@@ -388,6 +436,7 @@ Renderer loading/execution is a host/UI concern, not a core runtime concern:
 ### 7.4 CXDB Integration (Post-P31 allowed)
 - [ ] `forge-turnstore-cxdb` append/fork/read path is implemented.
 - [ ] Binary-vs-HTTP protocol usage follows Section 2.4 defaults.
+- [ ] Adapter mapping follows Section 4.7 including blob/artifact operations when enabled.
 - [ ] Replay/resume parity tests pass for CXDB-backed runs (when enabled).
 - [ ] Host drill-down view can navigate run -> stage -> agent -> tool-turn timeline.
 
