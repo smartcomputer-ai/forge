@@ -1,5 +1,7 @@
 use crate::{
-    Diagnostic, Graph, Severity, ValidationError, parse_stylesheet, validate_condition_expression,
+    Diagnostic, Graph, Severity, ValidationError,
+    handlers::registry::resolve_handler_type_from_node, parse_stylesheet,
+    validate_condition_expression,
 };
 use std::collections::{BTreeSet, VecDeque};
 
@@ -343,7 +345,7 @@ fn rule_prompt_on_llm_nodes(graph: &Graph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
     for node in graph.nodes.values() {
-        if resolved_handler_type(node) == "codergen" {
+        if resolve_handler_type_from_node(node) == "codergen" {
             let has_prompt = !node.attrs.get_str("prompt").unwrap_or_default().is_empty();
             let has_label = !node.attrs.get_str("label").unwrap_or_default().is_empty();
             if !has_prompt && !has_label {
@@ -376,54 +378,6 @@ fn known_types() -> BTreeSet<&'static str> {
     ]
     .into_iter()
     .collect()
-}
-
-fn resolved_handler_type(node: &crate::Node) -> &'static str {
-    if let Some(node_type) = node.attrs.get_str("type") {
-        if !node_type.is_empty() {
-            return if matches!(
-                node_type,
-                "start"
-                    | "exit"
-                    | "codergen"
-                    | "wait.human"
-                    | "conditional"
-                    | "parallel"
-                    | "parallel.fan_in"
-                    | "tool"
-                    | "stack.manager_loop"
-            ) {
-                // known types are represented verbatim; unknown types are linted elsewhere.
-                match node_type {
-                    "start" => "start",
-                    "exit" => "exit",
-                    "codergen" => "codergen",
-                    "wait.human" => "wait.human",
-                    "conditional" => "conditional",
-                    "parallel" => "parallel",
-                    "parallel.fan_in" => "parallel.fan_in",
-                    "tool" => "tool",
-                    "stack.manager_loop" => "stack.manager_loop",
-                    _ => "codergen",
-                }
-            } else {
-                "codergen"
-            };
-        }
-    }
-
-    match node.attrs.get_str("shape").unwrap_or("box") {
-        "Mdiamond" => "start",
-        "Msquare" => "exit",
-        "box" => "codergen",
-        "hexagon" => "wait.human",
-        "diamond" => "conditional",
-        "component" => "parallel",
-        "tripleoctagon" => "parallel.fan_in",
-        "parallelogram" => "tool",
-        "house" => "stack.manager_loop",
-        _ => "codergen",
-    }
 }
 
 #[cfg(test)]

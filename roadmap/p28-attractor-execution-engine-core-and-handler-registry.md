@@ -97,7 +97,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - Implemented failure-routing precedence: fail edge (`outcome=fail`) -> node `retry_target` -> node `fallback_retry_target` -> terminate with failure.
   - Added deterministic unit tests for retry policy/backoff and runtime retry/failure routing behaviors.
 
-### [ ] G4. Handler interface + registry + shape/type resolution
+### [x] G4. Handler interface + registry + shape/type resolution
 - Work:
   - Define handler trait and registry with override precedence:
     1) explicit node `type`
@@ -110,8 +110,18 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/src/outcome.rs`
 - DoD:
   - Registry resolves handlers exactly per spec mapping and precedence.
+- Completed:
+  - Added `NodeHandler` interface and shared handler pointer types under `handlers` module.
+  - Added `HandlerRegistry` with precedence resolution:
+    1) explicit node `type`
+    2) shape mapping
+    3) default handler type.
+  - Added canonical shape-to-handler defaults per spec table in registry.
+  - Added `outcome` module exporting runtime outcome model (`NodeStatus`, `NodeOutcome`).
+  - Unified lint-side handler-type resolution to use registry helper instead of duplicate logic.
+  - Added unit tests validating resolution precedence and default/fallback handler behavior.
 
-### [ ] G5. Core handlers (start/exit/codergen/conditional/wait.human/tool)
+### [x] G5. Core handlers (start/exit/codergen/conditional/wait.human/tool)
 - Work:
   - `start` and `exit` no-op handlers.
   - `codergen` handler:
@@ -131,6 +141,15 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/src/handlers/tool.rs`
 - DoD:
   - Section 11.6 baseline handler matrix is executable and tested.
+- Completed:
+  - Added core handler modules:
+    - `start` and `exit` no-op success handlers
+    - `codergen` handler with prompt fallback, `$goal` expansion, and pluggable backend (`String | Outcome`)
+    - `conditional` pass-through handler
+    - `wait.human` handler with interviewer interface and edge-derived choice routing
+    - `tool` handler with deterministic command/output behavior
+  - Added core handler registry bootstrap and registry-backed default node executor for runtime.
+  - Added handler unit tests covering baseline success/failure semantics and routing hints.
 
 ## Priority 1 (Strongly recommended)
 

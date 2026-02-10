@@ -1,4 +1,4 @@
-use crate::{AttractorError, Graph, Node};
+use crate::{AttractorError, Graph, Node, handlers};
 use async_trait::async_trait;
 use forge_turnstore::TurnId;
 use serde_json::Value;
@@ -100,7 +100,9 @@ impl Default for RunConfig {
             run_id: None,
             base_turn_id: None,
             storage: None,
-            executor: Arc::new(NoopNodeExecutor),
+            executor: Arc::new(handlers::registry::RegistryNodeExecutor::new(
+                handlers::core_registry(),
+            )),
             retry_backoff: crate::RetryBackoffConfig::default(),
         }
     }
