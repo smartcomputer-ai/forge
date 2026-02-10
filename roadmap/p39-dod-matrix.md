@@ -6,6 +6,12 @@ Legend:
 - `[x]` complete and covered
 - `[ ]` gap/deviation tracked
 
+## G1 Freeze Artifacts
+- [x] Canonical persisted semantic facts are documented from runtime behavior sources (`events.rs`, `runner.rs`, `session.rs`) in `spec/04-cxdb-integration-spec.md` section `3.3.1`.
+- [x] V2 type family list and per-family required field minimums are frozen in `spec/04-cxdb-integration-spec.md` section `3.3.2`.
+- [x] Context topology contract (run context, thread context, attempt/branch contexts) is frozen in `spec/04-cxdb-integration-spec.md` section `3.4`.
+- [x] Fork-trigger policy and `fidelity=full` thread-reuse policy are frozen in `spec/04-cxdb-integration-spec.md` section `3.4`.
+
 ## Semantic Alignment (Forge-first)
 - [ ] Persisted event/type names map to Forge runtime semantics (Attractor `Pipeline/Stage/Parallel/Interview/Checkpoint`, Agent transcript + lifecycle), not external schema imports. Refs: `crates/forge-attractor/src/events.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-agent/src/session.rs`
 - [ ] Attractor stage-attempt lifecycle is first-class (`node_id`, `stage_attempt_id`, `attempt`, status/retry fields). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/storage/types.rs`

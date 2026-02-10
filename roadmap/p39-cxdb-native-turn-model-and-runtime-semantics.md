@@ -2,6 +2,7 @@
 
 **Status**
 - Planned (2026-02-10)
+- In Progress (2026-02-10)
 
 **Goal**
 Move Forge persistence from envelope-over-turn records to Forge-native typed turns that match actual Agent and Attractor runtime semantics, while relying on CXDB turn graph primitives for lineage.
@@ -125,7 +126,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Semantic inventory freeze from Forge runtime code
+### [x] G1. Semantic inventory freeze from Forge runtime code
 - Work:
   - Document canonical persisted semantic facts directly from current runtime behavior.
   - Freeze v2 type families and per-type required fields before implementation.
@@ -137,6 +138,9 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 - DoD:
   - No event/type naming in the implementation is derived from external schema examples; all names map to Forge runtime semantics.
   - No implicit one-context-per-node model is introduced.
+- Completed:
+  - Added runtime-derived semantic inventory freeze and v2 required-field freeze to `spec/04-cxdb-integration-spec.md` (sections `3.3.1` and `3.3.2`).
+  - Thread reuse and fork-trigger policy are now explicitly frozen in spec text (`3.4`).
 
 ### [ ] G2. Envelope removal and typed schema contract
 - Work:

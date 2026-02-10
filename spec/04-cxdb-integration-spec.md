@@ -169,6 +169,64 @@ Recommended `type_id` namespace:
 - `forge.attractor.graph_snapshot`
 - `forge.link.stage_to_agent`
 
+### 3.3.1 P39 G1 Semantic Inventory Freeze (Runtime-Derived)
+
+This subsection freezes the canonical persisted semantic facts for P39 from current runtime behavior:
+- Attractor runtime source: `crates/forge-attractor/src/events.rs`, `crates/forge-attractor/src/runner.rs`
+- Agent runtime source: `crates/forge-agent/src/session.rs`
+
+Attractor canonical facts:
+- `PipelineEvent::Started` persists as `forge.attractor.run_lifecycle` kind `initialized`.
+- `PipelineEvent::Resumed` persists as `forge.attractor.run_lifecycle` kind `resumed`.
+- `PipelineEvent::Completed` and `PipelineEvent::Failed` persist as `forge.attractor.run_lifecycle` kind `finalized` with terminal status/outcome fields.
+- `StageEvent::{Started, Completed, Failed, Retrying}` persists as `forge.attractor.stage_lifecycle` with same lifecycle meaning.
+- `ParallelEvent::{Started, BranchStarted, BranchCompleted, Completed}` persists as `forge.attractor.parallel_lifecycle`.
+- `InterviewEvent::{Started, Completed, Timeout}` persists as `forge.attractor.interview_lifecycle`.
+- `CheckpointEvent::Saved` persists as `forge.attractor.checkpoint_saved`.
+- Edge selection/routing persists as `forge.attractor.route_decision` (explicit turn; do not infer only from checkpoint payload).
+- Stage-agent join persists as `forge.link.stage_to_agent`.
+- Graph materialization persists as `forge.attractor.dot_source` and `forge.attractor.graph_snapshot`.
+
+Agent canonical facts:
+- Transcript turns remain first-class records:
+  - `forge.agent.user_turn`
+  - `forge.agent.assistant_turn`
+  - `forge.agent.tool_results_turn`
+  - `forge.agent.system_turn`
+  - `forge.agent.steering_turn`
+- Session lifecycle facts persist as `forge.agent.session_lifecycle` kinds `started` and `ended`.
+- Tool call lifecycle facts persist as `forge.agent.tool_call_lifecycle` kinds `started` and `ended`.
+- `call_id` is required on tool-call lifecycle turns to join start/end.
+
+### 3.3.2 P39 G1 Required Fields Freeze (v2 Type Families)
+
+Required fields are frozen at family level for P39 G1:
+
+Attractor:
+- `forge.attractor.run_lifecycle`: `run_id`, `graph_id`, `kind`, `timestamp`
+- `forge.attractor.stage_lifecycle`: `run_id`, `node_id`, `stage_attempt_id`, `attempt`, `kind`, `timestamp`
+- `forge.attractor.parallel_lifecycle`: `run_id`, `node_id`, `kind`, `timestamp`
+- `forge.attractor.interview_lifecycle`: `run_id`, `node_id`, `kind`, `timestamp`
+- `forge.attractor.checkpoint_saved`: `run_id`, `node_id`, `stage_attempt_id`, `checkpoint_id`, `timestamp`
+- `forge.attractor.route_decision`: `run_id`, `node_id`, `stage_attempt_id`, `selected_edge`, `timestamp`
+- `forge.attractor.dot_source`: `run_id`, `content_hash`, `size_bytes`, `timestamp`
+- `forge.attractor.graph_snapshot`: `run_id`, `content_hash`, `size_bytes`, `timestamp`
+- `forge.link.stage_to_agent`: `run_id`, `pipeline_context_id`, `node_id`, `stage_attempt_id`, `agent_session_id`, `agent_context_id`, `timestamp`
+
+Agent:
+- `forge.agent.user_turn`: `session_id`, `timestamp`, user turn content fields
+- `forge.agent.assistant_turn`: `session_id`, `timestamp`, assistant turn content fields
+- `forge.agent.tool_results_turn`: `session_id`, `timestamp`, tool result list fields
+- `forge.agent.system_turn`: `session_id`, `timestamp`, system turn content fields
+- `forge.agent.steering_turn`: `session_id`, `timestamp`, steering content fields
+- `forge.agent.session_lifecycle`: `session_id`, `kind`, `timestamp`
+- `forge.agent.tool_call_lifecycle`: `session_id`, `call_id`, `tool_name`, `kind`, `timestamp`
+
+Rules:
+- These are minimum required fields; event-local optional fields may be added as needed.
+- `event_kind` is not a generic envelope requirement in v2.
+- `payload_json` is not a required field in any v2 family.
+
 ### 3.4 Cross-layer Correlation Requirements
 
 Context topology contract:
@@ -180,6 +238,10 @@ Fork trigger policy:
 - parallel fan-out: fork one context per branch from a pre-fan-out base turn,
 - retry: fork each retry attempt from a stable node-entry base turn,
 - wait.human alternatives: fork only when precomputing multiple alternatives; normal selected-edge progression remains linear.
+
+Thread reuse policy freeze:
+- Reuse thread context only when `fidelity=full` and resolved thread key is unchanged.
+- When fidelity is not `full`, do not reuse thread context.
 
 Persisted records SHOULD include only required correlation fields:
 - `run_id`
