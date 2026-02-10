@@ -306,11 +306,38 @@ fn agent_idempotency_key(session_id: &str, local_turn_index: u64, event_kind: &s
 
 const AGENT_REGISTRY_BUNDLE_ID: &str = "forge.agent.runtime.v1";
 
+fn run_cxdb_future_blocking<F, T>(operation: &str, future: F) -> Result<T, CxdbClientError>
+where
+    F: std::future::Future<Output = Result<T, CxdbClientError>> + Send + 'static,
+    T: Send + 'static,
+{
+    let operation_name = operation.to_string();
+    let spawn_operation = operation_name.clone();
+    std::thread::Builder::new()
+        .name(format!("forge-agent-{operation_name}"))
+        .spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| {
+                    CxdbClientError::Backend(format!(
+                        "{spawn_operation} runtime initialization failed: {error}"
+                    ))
+                })?;
+            runtime.block_on(future)
+        })
+        .map_err(|error| {
+            CxdbClientError::Backend(format!("{operation_name} thread spawn failed: {error}"))
+        })?
+        .join()
+        .map_err(|_| CxdbClientError::Backend(format!("{operation_name} task panicked")))?
+}
+
 fn publish_agent_registry_bundle_blocking(
     store: Arc<CxdbRuntimeStore<Arc<dyn CxdbBinaryClient>, Arc<dyn CxdbHttpClient>>>,
 ) -> Result<(), AgentError> {
     let bundle_json = agent_registry_bundle_json()?;
-    futures::executor::block_on(async move {
+    run_cxdb_future_blocking("publish_registry_bundle", async move {
         store
             .publish_registry_bundle(AGENT_REGISTRY_BUNDLE_ID, &bundle_json)
             .await
@@ -1049,12 +1076,92 @@ impl Session {
     fn persist_session_event_blocking(
         &mut self,
         event_kind: &str,
-        payload: Value,
+        mut payload: Value,
     ) -> Result<(), AgentError> {
         if !self.persistence_enabled() {
             return Ok(());
         }
-        futures::executor::block_on(self.persist_event_turn(event_kind, payload))
+        let Some(store) = self.persistence_writer.clone() else {
+            return Ok(());
+        };
+
+        if self.persistence_context_id.is_none() {
+            let created = run_cxdb_future_blocking("create_context", {
+                let store = store.clone();
+                async move { store.create_context(None).await }
+            });
+            match created {
+                Ok(context) => self.persistence_context_id = Some(context.context_id),
+                Err(error) => return self.handle_persistence_error(error, "create_context"),
+            }
+        }
+
+        let Some(context_id) = self.persistence_context_id.clone() else {
+            return Ok(());
+        };
+
+        let snapshot_capture = if let Some(policy) = self.config.fs_snapshot_policy.as_ref() {
+            let workspace_root = self.execution_env.working_directory().to_path_buf();
+            let policy = policy.clone();
+            match run_cxdb_future_blocking("capture_upload_workspace", {
+                let store = store.clone();
+                async move {
+                    store
+                        .capture_upload_workspace(&workspace_root, &policy)
+                        .await
+                }
+            }) {
+                Ok(capture) => {
+                    inject_fs_lineage_payload(&mut payload, &capture);
+                    Some(capture)
+                }
+                Err(error) => {
+                    return self.handle_persistence_error(error, "capture_upload_workspace");
+                }
+            }
+        } else {
+            None
+        };
+
+        let sequence_no = self.next_persistence_sequence();
+        let envelope = StoredTurnEnvelope {
+            schema_version: 1,
+            run_id: None,
+            session_id: Some(self.id.clone()),
+            node_id: None,
+            stage_attempt_id: None,
+            event_kind: event_kind.to_string(),
+            timestamp: current_timestamp(),
+            payload,
+            correlation: CorrelationMetadata {
+                agent_session_id: Some(self.id.clone()),
+                agent_context_id: Some(context_id.clone()),
+                sequence_no: Some(sequence_no),
+                thread_key: self.thread_key.clone(),
+                ..CorrelationMetadata::default()
+            },
+        };
+        let payload_bytes = encode_stored_turn_envelope(&envelope)?;
+        let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
+        let request = CxdbAppendTurnRequest {
+            context_id,
+            parent_turn_id: None,
+            type_id: "forge.agent.event".to_string(),
+            type_version: 1,
+            payload: payload_bytes,
+            idempotency_key,
+            fs_root_hash: snapshot_capture
+                .as_ref()
+                .map(|capture| capture.fs_root_hash.clone()),
+        };
+
+        match run_cxdb_future_blocking("append_turn", {
+            let store = store.clone();
+            async move { store.append_turn(request).await }
+        }) {
+            Ok(_) => Ok(()),
+            Err(error) => self.handle_persistence_error(error, "append_turn"),
+        }
     }
 
     fn handle_persistence_error(
