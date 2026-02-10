@@ -7,6 +7,7 @@ use crate::storage::types::{
 use forge_turnstore::{
     AppendTurnRequest, ContextId, StoreContext, StoredTurn, TurnId, TurnStore, TurnStoreError,
 };
+use std::sync::Arc;
 
 pub mod types;
 
@@ -15,6 +16,8 @@ pub use types::{
     RunEventRecord as AttractorRunEventRecord, StageEventRecord as AttractorStageEventRecord,
     StageToAgentLinkRecord as AttractorStageToAgentLinkRecord,
 };
+
+pub type SharedAttractorStorageWriter = Arc<dyn AttractorStorageWriter>;
 
 #[async_trait::async_trait]
 pub trait AttractorStorageWriter: Send + Sync {

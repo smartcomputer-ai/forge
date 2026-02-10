@@ -1,4 +1,5 @@
 use crate::Diagnostic;
+use forge_turnstore::TurnStoreError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -9,6 +10,10 @@ pub enum AttractorError {
     InvalidGraph(String),
     #[error("stylesheet parse error: {0}")]
     StylesheetParse(String),
+    #[error("runtime error: {0}")]
+    Runtime(String),
+    #[error(transparent)]
+    Storage(#[from] TurnStoreError),
     #[error(transparent)]
     Validation(#[from] ValidationError),
 }

@@ -1,7 +1,7 @@
 # P28: Attractor Execution Engine Core and Handler Registry (Spec 03 §§3-4,10)
 
 **Status**
-- Planned (2026-02-09)
+- In progress (2026-02-10)
 
 **Goal**
 Implement the runtime traversal engine, deterministic edge routing, retry/failure logic, and core handler registry needed to execute normalized Attractor graphs, built on the pre-established storage abstractions.
@@ -37,7 +37,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Runtime engine skeleton and run lifecycle (storage-aware)
+### [x] G1. Runtime engine skeleton and run lifecycle (storage-aware)
 - Work:
   - Implement `PipelineRunner::run(graph, config)` with deterministic control flow.
   - Implement lifecycle phases: initialize -> execute -> finalize.
@@ -50,6 +50,11 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 - DoD:
   - Engine can execute a simple linear graph from start to exit.
   - Store-disabled and store-enabled behavior are functionally equivalent.
+- Completed:
+  - Added async `PipelineRunner::run(...)` lifecycle loop with initialize/execute/finalize phases.
+  - Added goal-gate checks at terminal nodes with graph/node retry-target fallback behavior.
+  - Added storage-aware lifecycle emission for run/stage/checkpoint records via `AttractorStorageWriter`.
+  - Added deterministic runtime tests covering linear graph execution and store-off/store-on equivalence.
 
 ### [ ] G2. Edge selection + condition language evaluator
 - Work:
