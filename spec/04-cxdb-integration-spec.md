@@ -1,6 +1,6 @@
 # CXDB Integration Specification (Extension)
 
-This document defines how Forge integrates CXDB as a durable, branch-friendly turn store for agent and pipeline execution history.
+This document defines how Forge integrates CXDB as the primary durable store for runtime history, lineage, and drill-down queries.
 
 It is an extension spec, not a replacement for existing specs:
 - `01-unified-llm-spec.md` remains the provider transport layer.
@@ -25,28 +25,37 @@ It is an extension spec, not a replacement for existing specs:
 
 ### 1.1 Problem
 
-Forge currently keeps runtime history primarily in in-memory structures and local run directories. This works for local execution but makes cross-run branching, external inspection, and long-lived replay/resume harder than necessary.
+After P32, Forge has a working CXDB adapter path, but current layering still routes runtime persistence through generic `forge-turnstore` abstractions.
 
-CXDB provides:
-- immutable Turn DAG storage,
-- O(1) branch/fork via context head pointers,
-- content-addressed dedup for repeated payloads,
-- typed projections for UI and tooling.
+That layering now creates avoidable leakage and ambiguity:
+- runtime behavior is already CXDB-shaped,
+- capability mismatches appear at trait boundaries,
+- host/runtime wiring does extra conversions,
+- critical semantics (idempotency, parent resolution, fs attachment, projection paging) are better expressed directly in CXDB terms.
 
-### 1.2 Goals
+### 1.2 Architecture Decision
 
-This extension adds an optional CXDB-backed persistence path for:
-- agent conversation turns and tool outputs,
-- attractor stage transitions, outcomes, routing, and human-gate decisions,
-- cross-layer drill-down links (attractor stage -> agent session/thread -> agent turns/tools),
-- DOT/graph artifacts and normalized graph snapshots for observability,
-- checkpoint metadata for replay and resume.
+Forge adopts a CXDB-first persistence architecture for runtime write and read paths.
 
-### 1.3 Non-goals
+Implications:
+- `forge-agent` and `forge-attractor` persist runtime events via CXDB-facing contracts.
+- `forge-llm` remains CXDB-independent.
+- `forge-turnstore` and `forge-turnstore-cxdb` are transitional artifacts and are not the long-term runtime contract.
+
+### 1.3 Goals
+
+This extension defines:
+- direct CXDB runtime write-path contracts,
+- projection-native read/query contracts,
+- fs lineage using CXDB `fstree` and turn attachment,
+- schema/registry discipline for typed projection compatibility,
+- migration phases from turnstore abstraction to CXDB-first runtime cores.
+
+### 1.4 Non-goals
 
 - Replacing `forge-llm` request/response contracts.
-- Coupling core loop correctness to CXDB availability by default.
-- Requiring CXDB adapter implementation before Attractor runtime conformance milestones complete.
+- Guaranteeing multi-backend portability for persistent runtime storage.
+- Requiring a live CXDB service for deterministic unit tests.
 
 ---
 
@@ -54,54 +63,57 @@ This extension adds an optional CXDB-backed persistence path for:
 
 ### 2.1 Layer Placement
 
-CXDB integration belongs above the LLM transport layer and below hosts/UI:
+CXDB integration belongs above the LLM transport layer and below host/UI surfaces:
 
 - `forge-llm`: no direct CXDB dependency.
-- `forge-agent`: optional turn persistence adapter.
-- `forge-attractor` runtime: optional run/turn persistence adapter.
-- Host (CLI/HTTP/TUI/Web): reads events from engines and may read projections from CXDB.
+- `forge-agent`: optional runtime persistence using CXDB-facing contracts.
+- `forge-attractor`: optional runtime persistence using CXDB-facing contracts.
+- Host (CLI/HTTP/TUI/Web): configures endpoints/modes and may consume CXDB projections.
 
-### 2.2 Architecture Rule
+### 2.2 Architecture Rules
 
-Core runtimes MUST depend on storage interfaces, not on CXDB SDK types.
+Rules:
+- Core runtime logic MUST remain deterministic with persistence disabled (`off`).
+- Runtime persistence contracts MAY be CXDB-specific; they MUST NOT leak CXDB details into `forge-llm`.
+- Conversion between runtime domain records and encoded CXDB payloads MUST happen at persistence boundaries, not scattered across business logic.
+- Projection/query decoding logic SHOULD consume typed projection responses instead of ad hoc JSON envelope decoding when typed projection is available.
 
-The recommended crate split is:
-- `forge-turnstore` (traits + shared record types + in-memory test implementation),
-- optional filesystem backend as either `forge-turnstore-fs` or a `forge-turnstore` module,
-- `forge-turnstore-cxdb` (CXDB implementation).
+### 2.3 Crate Topology Policy
 
-Attractor and agent MUST compile and run with `forge-turnstore` abstractions only.
+Current workspace includes:
+- `crates/forge-cxdb` (vendored CXDB client and fstree helpers),
+- `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` (transitional abstraction path).
 
-### 2.3 Why this Layer
+Target direction:
+- runtime cores (`forge-agent`, `forge-attractor`) use CXDB-first persistence contracts,
+- turnstore crates are either removed or retained only as explicitly deprecated compatibility/test shims,
+- host/bootstrap layers own endpoint/wiring policy.
 
-This placement preserves:
-- deterministic core execution when storage is disabled,
-- portability to other backing stores,
-- fast deterministic tests via in-memory store,
-- ability to defer CXDB transport work without rewriting runtime cores.
+### 2.4 CXDB Protocol Usage Policy
 
-### 2.4 CXDB Protocol Usage
-
-Integrations SHOULD use CXDB protocols by responsibility:
-
-- Write-heavy runtime path (append/fork/head updates): prefer CXDB binary protocol (`:9009`) for throughput.
-- Read/projection path (UI/tooling/timeline browsing): prefer CXDB HTTP API (`:9010`).
-- HTTP-only write mode is acceptable for bootstrap/testing, but SHOULD NOT be default for production append paths.
-- Binary protocol SHOULD also be used for blob/artifact upload paths (`PUT_BLOB`, `GET_BLOB`, `ATTACH_FS`) when enabled.
-- Readers requiring typed projection or cursor paging (`before_turn_id`) SHOULD use HTTP endpoints even when writes use binary.
+By default:
+- write-heavy runtime path (create/fork/append/head/last/blob/fs attach): binary protocol (`:9009`),
+- typed projection and cursor paging: HTTP API (`:9010`),
+- registry bundle publish/read: HTTP API,
+- HTTP-only write mode is acceptable for bootstrap/testing but SHOULD NOT be the production default.
 
 ### 2.5 CXDB Cross-check References
 
-For fast protocol verification while implementing:
+Authoritative references in this repository:
+- `crates/forge-cxdb/docs/protocol.md`
+- `crates/forge-cxdb/README.md`
 
-- Binary wire operations and idempotency/compression behavior:
-  `spec/cxdb/protocol.md` (Message Flows 2-10, Idempotency, Compression)
-- HTTP paging/projection/registry behavior:
-  `spec/cxdb/http-api.md` (Contexts, Turns, Registry, Blobs)
-- Storage invariants and concurrency assumptions:
-  `spec/cxdb/architecture.md` (Turn DAG, Blob CAS, Concurrency Model)
-- Schema/tag evolution and typed projection rules:
-  `spec/cxdb/type-registry.md` (Core Concepts, Registry Bundle Format, Schema Evolution)
+When vendored docs are extended, add cross-check references here for:
+- HTTP projection and paging contracts,
+- type registry bundle contract,
+- storage/concurrency invariants.
+
+### 2.6 Transition Posture
+
+During migration (P33-P37):
+- existing turnstore adapters MAY coexist,
+- new runtime code SHOULD prefer CXDB-first contracts,
+- new feature work MUST NOT deepen dependency on generic turnstore abstractions.
 
 ---
 
@@ -110,17 +122,18 @@ For fast protocol verification while implementing:
 ### 3.1 Mapping Principles
 
 - One CXDB context represents one logical execution thread.
-- Every emitted runtime event/turn can be represented as an immutable CXDB turn.
-- Parent-child relationships mirror causality and branch points.
-- Attractor turns and agent turns MUST be linkable by stable correlation fields.
+- Every durable runtime event is an immutable CXDB turn.
+- Parent-child turn relationships mirror causality.
+- Branching/fan-out/fan-in are represented explicitly via context forks and linkage records.
+- Attractor and agent timelines MUST be correlated by stable identifiers.
 
 ### 3.2 Agent Mapping (`02-coding-agent-loop-spec.md`)
 
 Recommended mapping:
-- Agent session root -> new CXDB context.
-- `UserTurn`, `AssistantTurn`, `ToolResultsTurn`, `SteeringTurn`, `SystemTurn` -> CXDB turns.
-- Session events MAY be persisted as separate event turns or embedded metadata.
-- Subagent spawn -> forked CXDB context from the parent turn where spawn occurred.
+- agent session root -> CXDB context,
+- `UserTurn`, `AssistantTurn`, `ToolResultsTurn`, `SteeringTurn`, `SystemTurn` -> CXDB turns,
+- subagent spawn -> forked context from triggering parent turn,
+- session lifecycle events MAY be separate event turns.
 
 Recommended `type_id` namespace:
 - `forge.agent.user_turn`
@@ -134,322 +147,332 @@ Recommended `type_id` namespace:
 ### 3.3 Attractor Mapping (`03-attractor-spec.md`)
 
 Recommended mapping:
-- Pipeline run root -> new CXDB context.
-- Stage lifecycle events -> turns (`StageStarted`, `StageCompleted`, `StageFailed`, etc.).
-- Human interaction (`InterviewStarted`, `InterviewCompleted`, `InterviewTimeout`) -> turns.
-- Checkpoint save -> turn containing checkpoint pointer/hash + minimal state summary.
-- Retry/failure routing -> normal turns with explicit edge-selection metadata.
-
-DOT and graph payload guidance:
-- Each run SHOULD persist the source DOT payload (or immutable artifact reference + hash).
-- Each run SHOULD persist the normalized graph snapshot used at execution start.
-- Dot payloads MAY be large; payload dedup is expected through content addressing.
+- pipeline run root -> CXDB context,
+- stage lifecycle events -> turns,
+- interview/human-gate lifecycle -> turns,
+- checkpoint save -> turn with checkpoint pointer/hash and minimal state summary,
+- route decisions and retries -> turns with explicit routing metadata,
+- DOT source and normalized graph snapshot -> turns with inline payload and/or artifact refs.
 
 Recommended `type_id` namespace:
+- `forge.attractor.run_event`
 - `forge.attractor.stage_event`
 - `forge.attractor.interview_event`
 - `forge.attractor.checkpoint_event`
 - `forge.attractor.route_decision`
-- `forge.attractor.run_event`
 - `forge.attractor.dot_source`
 - `forge.attractor.graph_snapshot`
 - `forge.link.stage_to_agent`
 
 ### 3.4 Cross-layer Correlation Requirements
 
-For stage-level drill-down into agent behavior, persisted records SHOULD include:
+Persisted records SHOULD include:
 - `run_id`
 - `pipeline_context_id`
 - `node_id`
 - `stage_attempt_id`
-- `agent_session_id` (when a stage invokes an agent)
-- `agent_context_id` (turnstore context)
-- `agent_head_turn_id` (optional, for quick jump)
-- `parent_turn_id` (causal parent in context DAG)
+- `agent_session_id` (if stage invokes agent)
+- `agent_context_id`
+- `agent_head_turn_id` (optional)
+- `parent_turn_id`
 - `sequence_no` (monotonic within logical stream)
 
 A `forge.link.stage_to_agent` record MUST be emitted when a stage creates or attaches to an agent session.
 
-### 3.5 Payload Requirements
+### 3.5 Envelope Requirements
 
-Stored payloads SHOULD be stable, versioned envelopes:
+Persisted runtime payloads SHOULD use a stable envelope:
 
 ```
 RECORD StoredTurnEnvelope:
     schema_version    : Integer
-    run_id            : String | None
-    session_id        : String | None
-    node_id           : String | None
-    stage_attempt_id  : String | None
     event_kind        : String
     timestamp         : Timestamp
-    payload           : Object
     correlation       : Object
+    payload           : Object
 ```
 
 Rules:
-- `schema_version` MUST be present for migration safety.
-- `correlation` MUST contain enough linkage to traverse attractor <-> agent timelines.
-- `payload` MUST avoid non-deterministic fields unless explicitly marked diagnostic.
-- Large blobs SHOULD be stored as artifacts with references in the envelope.
-- Artifact references SHOULD include immutable hash and size metadata so envelopes stay small and replayable.
+- `schema_version` MUST be present.
+- `correlation` MUST include enough keys for attractor <-> agent traversal.
+- `payload` SHOULD avoid non-deterministic fields unless explicitly marked diagnostic.
+- large data SHOULD be referenced as artifacts (`blob_hash`, `size`, optional `mime_type`) instead of inlining all bytes.
 
-### 3.6 Encoding and Registry Contract
+### 3.6 Filesystem Lineage Requirements (`fstree`)
 
-For typed projection support, stored payload bytes SHOULD use msgpack with stable numeric field tags.
+For workspace lineage, records SHOULD include:
+- `fs_root_hash` (BLAKE3-256 hash of Merkle root),
+- `snapshot_policy_id`,
+- optional snapshot stats (`file_count`, `dir_count`, `symlink_count`, `total_bytes`, `bytes_uploaded`).
 
-Rules:
-- Every persisted turn MUST include `type_id` and `type_version`.
-- Forge-owned turn schemas SHOULD use a dedicated namespace (`forge.agent.*`, `forge.attractor.*`, `forge.link.*`, `forge.shared.*`).
-- Registry bundles SHOULD be published before or alongside first writes for new schema versions.
-- Unknown fields/tags MUST be forward-compatible and MUST NOT break readers.
-- Production writers SHOULD encode payloads directly as msgpack with numeric tags (not JSON-to-msgpack transcode) for deterministic hashing.
-- Cross-check references: `spec/cxdb/type-registry.md`, `spec/cxdb/http-api.md` (Registry)
+Snapshot policy MUST define:
+- include/exclude patterns,
+- symlink behavior (`follow_symlinks` false by default),
+- limits (`max_files`, `max_file_size`),
+- capture boundary (for example stage start/end/checkpoint).
 
-### 3.7 Branch Context Policy
+### 3.7 Encoding and Registry Contract
 
-To preserve clear causality and avoid interleaving ambiguity:
+For typed projections:
+- each turn MUST include `type_id` and `type_version`,
+- Forge-owned schemas SHOULD use stable numeric msgpack tags,
+- runtime writers SHOULD encode deterministic msgpack bytes directly,
+- registry bundles SHOULD be published before or alongside first writes for new schema versions,
+- unknown tags/fields MUST be forward-compatible for readers.
 
-- Agent: one context per session thread; each subagent gets its own forked context.
-- Attractor: each parallel fan-out branch SHOULD run in its own forked context derived from pre-branch routing turn.
-- Fan-in SHOULD emit explicit merge/fan-in turns that reference source branch context IDs and terminal turn IDs.
+### 3.8 Branch Context Policy
+
+- Agent: one context per session thread; each subagent gets a forked context.
+- Attractor: parallel fan-out branches SHOULD run in forked contexts from a pre-branch turn.
+- Fan-in turns SHOULD reference all source branch contexts and terminal turn IDs.
 
 ---
 
 ## 4. Integration Contracts
 
-### 4.1 Turn Store Interface
+### 4.1 Runtime Write Contract (CXDB-first)
 
-Implementations SHOULD expose a minimal append/fork/read store interface:
+Runtime persistence SHOULD expose CXDB-shaped operations:
 
 ```
 TYPE ContextId = String            // Opaque in Forge, u64-backed in CXDB
 TYPE TurnId = String               // Opaque in Forge, u64-backed in CXDB
 TYPE BlobHash = String             // Lowercase hex BLAKE3-256
 
-RECORD AppendTurnRequest:
+RECORD CxdbAppendRequest:
     context_id       : ContextId
     parent_turn_id   : TurnId | None
     type_id          : String
     type_version     : Integer
     payload          : Bytes
     idempotency_key  : String
+    fs_root_hash     : BlobHash | None
 
-INTERFACE TurnStore:
-    FUNCTION create_context(base_turn_id: TurnId | None) -> StoreContext
-    FUNCTION append_turn(request: AppendTurnRequest) -> StoredTurn
-    FUNCTION fork_context(from_turn_id: TurnId) -> StoreContext
+INTERFACE CxdbRuntimeWriter:
+    FUNCTION create_context(base_turn_id: TurnId | None) -> ContextHead
+    FUNCTION fork_context(from_turn_id: TurnId) -> ContextHead
+    FUNCTION append_turn(request: CxdbAppendRequest) -> StoredTurn
     FUNCTION get_head(context_id: ContextId) -> StoredTurnRef
+    FUNCTION get_last(context_id: ContextId, limit: Integer, include_payload: Bool) -> List<StoredTurn>
+```
+
+### 4.2 Projection Read Contract
+
+Projection/query surfaces SHOULD expose:
+
+```
+INTERFACE CxdbProjectionReader:
     FUNCTION list_turns(context_id: ContextId, before_turn_id: TurnId | None, limit: Integer) -> List<StoredTurn>
-```
-
-Optional extension methods:
-
-```
-INTERFACE TypedTurnStore EXTENDS TurnStore:
     FUNCTION publish_registry_bundle(bundle_id: String, bundle_json: Bytes) -> Void
     FUNCTION get_registry_bundle(bundle_id: String) -> Bytes | None
+```
 
-INTERFACE ArtifactStore:
+Rule:
+- when `before_turn_id` paging or typed projection decoding is required, prefer HTTP projection APIs.
+
+### 4.3 Artifact and FS Contract
+
+```
+INTERFACE CxdbArtifactClient:
     FUNCTION put_blob(raw_bytes: Bytes) -> BlobHash
     FUNCTION get_blob(content_hash: BlobHash) -> Bytes | None
     FUNCTION attach_fs(turn_id: TurnId, fs_root_hash: BlobHash) -> Void
 ```
 
-### 4.2 Optional Coordination Interface (Distributed Runtime)
+Notes:
+- `append_turn_with_fs` is preferred when fs root is available at append time.
+- `attach_fs` is valid for post-hoc attachment.
+- if a client implementation does not yet expose `get_blob`, runtime/host code MUST degrade gracefully and clearly signal unsupported retrieval behavior.
 
-When running nodes across multiple processes/machines, an optional coordination interface MAY be implemented:
+### 4.4 Runtime Hook Points
 
-```
-INTERFACE RunCoordinator:
-    FUNCTION claim_node(run_id: String, node_id: String, worker_id: String, lease_ms: Integer) -> ClaimResult
-    FUNCTION renew_lease(run_id: String, node_id: String, worker_id: String, lease_ms: Integer) -> LeaseResult
-    FUNCTION release_node(run_id: String, node_id: String, worker_id: String, status: String) -> Void
-```
-
-Rules:
-- Coordination APIs are optional and MUST NOT be required for single-process deterministic runtime.
-- Coordination claims MUST be idempotent and lease-based.
-
-### 4.3 Agent Hook Points
-
-`forge-agent` SHOULD append store turns at:
+`forge-agent` SHOULD persist at:
 - session start/end,
 - input acceptance,
 - assistant completion,
-- tool call start/end (including truncation metadata),
+- tool call start/end,
 - steering injection,
 - subagent spawn/close linkage,
-- checkpoint snapshot creation (when used).
+- optional checkpoint snapshots.
 
-### 4.4 Attractor Hook Points
-
-Attractor runtime SHOULD append store turns at:
-- pipeline start/finalization,
-- every stage start/end/failure/retry,
+`forge-attractor` SHOULD persist at:
+- run start/finalization,
+- stage start/end/failure/retry,
 - edge selection decision,
-- human question/answer lifecycle,
+- human-gate lifecycle,
 - checkpoint save,
-- stage-to-agent linkage creation.
+- stage-to-agent linkage creation,
+- dot source and normalized graph snapshot at run initialization.
 
 ### 4.5 Failure Handling Modes
 
 Runtime config SHOULD support:
-- `off`: no store writes.
-- `best_effort`: write failures become warning events; runtime continues.
-- `required`: write failures are terminal for that run.
+- `off`: skip persistence writes,
+- `best_effort`: record warning/diagnostic and continue,
+- `required`: fail run/session when persistence write fails.
 
 Recommended defaults:
-- agent: `best_effort`.
-- attractor: `best_effort` initially; `required` for strict audit deployments.
+- agent: `best_effort`,
+- attractor: `best_effort` initially, `required` for strict audit profiles.
 
-### 4.6 Idempotency Keys
+### 4.6 Idempotency and Parent Semantics
 
-Integration metadata SHOULD include deterministic idempotency keys, for example:
-- `run_id + node_id + stage_attempt_id + event_kind + sequence_no` (attractor),
-- `session_id + local_turn_index + event_kind` (agent).
+Rules:
+- append retries MUST use deterministic idempotency keys,
+- keys SHOULD be derived from stable correlation fields and sequence numbers,
+- parent resolution behavior MUST be explicit (`parent_turn_id` if present, else current head),
+- returned turn metadata MUST reflect the committed parent semantics.
 
-These keys are used to suppress duplicate writes during retries/reconnects.
-CXDB v1 deduplicates idempotency keys per context with a 24-hour TTL; strict longer-horizon dedup SHOULD be handled by integration policy when needed.
+Example key patterns:
+- attractor: `run_id + node_id + stage_attempt_id + event_kind + sequence_no`,
+- agent: `session_id + local_turn_index + event_kind`.
 
 ### 4.7 CXDB Operation Mapping Contract
 
-`forge-turnstore-cxdb` SHOULD map operations as follows:
+Expected mapping:
+- `create_context` -> `CTX_CREATE`
+- `fork_context` -> `CTX_FORK`
+- `append_turn` -> `APPEND_TURN` (or `append_turn_with_fs` flag path)
+- `get_head` -> `GET_HEAD`
+- `get_last` newest-window reads -> `GET_LAST`
+- `list_turns(before_turn_id)` -> HTTP turn listing/paging API
+- registry publish/read -> HTTP registry APIs
+- artifact/fs operations -> `PUT_BLOB`, `GET_BLOB`, `ATTACH_FS`
 
-- `create_context(base_turn_id)` -> binary `CTX_CREATE` (`base_turn_id=0` for empty).
-- `fork_context(from_turn_id)` -> binary `CTX_FORK`.
-- `append_turn` -> binary `APPEND_TURN` (client computes BLAKE3 over uncompressed payload, sets encoding/compression/idempotency).
-- `get_head` -> binary `GET_HEAD`.
-- `list_turns` newest-window, raw bytes -> binary `GET_LAST`.
-- `list_turns` with cursor paging (`before_turn_id`) or typed projection -> HTTP `GET /v1/contexts/:id/turns`.
-- `publish_registry_bundle`/`get_registry_bundle` -> HTTP `/v1/registry/*`.
-- `put_blob`/`get_blob`/`attach_fs` -> binary `PUT_BLOB`/`GET_BLOB`/`ATTACH_FS`.
+Adapters SHOULD keep Forge IDs opaque and only convert at CXDB boundaries.
 
-Adapters SHOULD keep Forge IDs opaque and perform u64/string conversion only at the CXDB boundary.
-Cross-check references: `spec/cxdb/protocol.md`, `spec/cxdb/http-api.md`, `spec/cxdb/architecture.md`
+### 4.8 FSTree Sync Flow
+
+Preferred snapshot flow:
+1. capture workspace snapshot via `fstree::capture(root, options)`
+2. upload tree/file/symlink blobs via `snapshot.upload(ctx, client)`
+3. append turn with `fs_root_hash` (preferred) or attach after append
+4. store lineage metadata (`fs_root_hash`, policy, stats) in envelope payload
+
+Rules:
+- snapshot tree entries are sorted by name for deterministic hashing,
+- file and tree objects are content-addressed and deduplicated,
+- symlink loops MUST fail fast (`CyclicLink`),
+- oversize/overcount policy violations MUST return explicit errors (`FileTooLarge`, `TooManyFiles`).
+
+### 4.9 Deterministic Test Doubles
+
+Because runtime architecture is CXDB-first, deterministic tests SHOULD use fake/mocked CXDB contracts instead of backend portability tests.
+
+Minimum test tiers:
+- unit tests with fake CXDB writer/reader,
+- integration tests with deterministic in-process fakes,
+- optional live CXDB tests gated by env vars.
 
 ---
 
 ## 5. Runtime Semantics
 
-### 5.1 Source of Truth by Phase
+### 5.1 Source of Truth by Mode
 
-- Pre-CXDB phases: in-memory/filesystem state remains authoritative; turnstore implementations are interchangeable for tests and early integration.
-- CXDB mirror phase: runtime state remains authoritative locally, CXDB is mirrored journal.
-- CXDB-authoritative phase (opt-in): resume/checkpoint and branch introspection may restore from CXDB directly.
+- `off`: runtime memory/filesystem state is authoritative.
+- `best_effort`: runtime state is authoritative; CXDB is journal/mirror with tolerated write failures.
+- `required`: CXDB write success is part of runtime correctness contract.
 
-### 5.2 Filesystem and In-memory Requirements
+### 5.2 Workspace and Artifacts
 
-Even when CXDB is primary, implementations SHOULD retain:
-- filesystem execution workspace for tool operations and deterministic local harnessing,
-- in-memory turnstore implementation for unit tests and deterministic integration tests,
-- optional filesystem-backed turnstore implementation for parity and offline debugging.
+Runtime execution still uses a filesystem workspace for tools and local reproducibility.
 
-Stage artifact writes (`prompt.md`, `response.md`, `status.json`) SHOULD be runtime-configurable:
-- `required` (always write),
-- `mirror` (write when configured),
-- `off` (for pure DB-heavy modes).
+CXDB persistence SHOULD capture:
+- small metadata directly in turn payloads,
+- large artifacts via blob refs,
+- full workspace lineage via fs root attachment at configured boundaries.
 
-### 5.3 Ordering and Idempotency
+### 5.3 Ordering and Retry Guarantees
 
-- Store writes MUST preserve causal order per context.
-- Retries on append MUST be idempotent at integration layer.
-- Cross-context causal links (fork/fan-in/stage-to-agent) MUST be explicit in payload metadata.
+- writes MUST preserve causal order per context,
+- retries MUST remain idempotent,
+- cross-context causal links MUST be explicit in payload metadata,
+- sequence number assignment MUST remain deterministic for repeated runs with the same execution path.
 
-### 5.4 Branching
+### 5.4 Branching and Fan-in
 
-- Agent subagents SHOULD fork from the parent turn that triggered spawn.
-- Attractor retry loops and parallel fan-out branches SHOULD fork from pre-branch routing turn.
-- Merge/fan-in turns SHOULD reference all source contexts that contributed.
+- subagents and parallel branches SHOULD fork from explicit pre-branch turns,
+- fan-in/merge events MUST reference all contributing branch contexts,
+- branch lineage MUST remain queryable through correlation metadata.
 
 ### 5.5 Privacy and Retention
 
-Implementations MUST allow:
+Integrations MUST allow:
 - payload redaction for secrets,
-- configurable retention/TTL policy,
-- disabling persistence for sensitive projects.
+- retention/TTL policy configuration,
+- per-project persistence disablement.
 
 ### 5.6 Security Posture
 
-Given CXDB v1 assumptions:
-- Binary protocol endpoints MUST be treated as trusted-network-only surfaces.
-- Production deployments SHOULD place HTTP endpoints behind authenticated gateway/proxy.
-- Forge integrations MUST support transport security (TLS or equivalent network controls).
-- Secret-bearing fields SHOULD be redacted before persistence when policy requires.
+- binary protocol endpoints are trusted-network surfaces and MUST be protected accordingly,
+- HTTP projection surfaces SHOULD be behind authenticated gateways,
+- TLS (or equivalent network controls) SHOULD be used in production,
+- sensitive fields SHOULD be redacted before persistence where policy requires.
 
 ### 5.7 Renderer Boundary
 
-Renderer loading/execution is a host/UI concern, not a core runtime concern:
-- Core engine libraries MUST only persist typed turns and emit events.
-- Host/web surfaces MAY consume typed projections and map `type_id` to renderers.
-- Remote renderer code loading MUST be origin-restricted by host configuration.
+Renderer loading/execution is host/UI scope, not core runtime scope:
+- core libraries persist typed turns and emit events,
+- host surfaces map `type_id` to renderer behavior,
+- remote renderer execution (if any) MUST be host-policy-controlled.
 
 ---
 
 ## 6. Rollout Plan
 
-### Phase A: Pre-runtime storage foundations (before Attractor runtime milestones)
-- Add `forge-turnstore` interfaces and shared envelope/correlation types.
-- Add optional artifact/blob extension interface(s) so large payloads are not forced into turn bodies.
-- Add in-memory implementation for deterministic tests.
-- Add optional filesystem implementation for local parity/offline workflows.
-- Integrate `forge-agent` with optional store binding and deterministic idempotency metadata.
+### Phase A (P33): Architecture pivot and spec rebaseline
+- adopt CXDB-first terminology and contracts,
+- define crate-boundary and migration policy,
+- establish turnstore sunset posture.
 
-### Phase B: Attractor runtime built on storage abstractions
-- Build Attractor runtime modules to depend on storage interfaces from day one.
-- Persist stage/run/checkpoint records through abstraction (no CXDB requirement yet).
-- Persist DOT source + normalized graph snapshot through abstraction.
+### Phase B (P34): Direct runtime write-path migration
+- migrate agent and attractor writes from turnstore traits to CXDB-first contracts,
+- preserve `off`/`best_effort`/`required` semantics,
+- fix idempotency/parent-resolution correctness gaps.
 
-### Phase C: CXDB adapter integration (allowed after P31)
-- Implement `forge-turnstore-cxdb` adapter.
-- Implement binary write path + HTTP projection/read path split per Section 4.7.
-- Dual-write runtime events/turns in `best_effort` mode.
-- Add projection browsing for stage<->agent drill-down.
+### Phase C (P35): FSTree and workspace snapshot integration
+- integrate deterministic snapshot capture/upload,
+- attach fs roots on configured boundaries,
+- normalize artifact model for blob refs plus fs lineage.
 
-Phase C implementation notes (2026-02-10):
-- `forge-turnstore-cxdb` crate is present and maps trait operations to CXDB binary/HTTP responsibilities per Section 4.7.
-- Agent bootstrap exposes CXDB constructor wiring and persistence snapshots for stage/agent linkage traversal.
-- Attractor runtime supports storage failure modes (`off`, `best_effort`, `required`) while keeping `best_effort` as default.
-- Stage-to-agent link records are emitted from forge-agent backend execution when pipeline context metadata is available.
-- DOT source and normalized graph snapshots persist with content hash + size, with optional artifact-blob references for CAS-backed payloads.
+### Phase D (P36): Typed projection and query-surface refactor
+- enforce msgpack numeric-tag writer discipline,
+- publish/use registry bundles,
+- migrate query/drill-down surfaces to typed projection APIs.
 
-### Phase D: CXDB-authoritative and distributed coordination (opt-in)
-- Restore checkpoint/session state from CXDB when enabled.
-- Add conformance tests for replay parity (filesystem vs CXDB-backed).
-- Add optional lease-based coordination for multi-process execution.
+### Phase E (P37): Turnstore sunset and CXDB hardening
+- remove or hard-deprecate turnstore runtime dependencies,
+- finish operational runbooks and migration DoD matrix,
+- rebaseline deferred roadmap work on CXDB-first foundation.
 
 ---
 
 ## 7. Definition of Done
 
 ### 7.1 Architecture
-- [ ] Core crates depend on storage interfaces, not CXDB concrete types.
-- [ ] `forge-turnstore` abstraction crate exists with deterministic in-memory implementation.
-- [ ] `forge-llm` has no CXDB coupling.
-- [ ] CXDB adapter is isolated in a dedicated crate/module.
+- [ ] `forge-agent` and `forge-attractor` runtime persistence paths are CXDB-first.
+- [ ] `forge-llm` remains CXDB-independent.
+- [ ] Turnstore abstraction is no longer a required runtime boundary.
+- [ ] Repository docs and terminology reflect CXDB-first architecture.
 
-### 7.2 Agent Integration
-- [ ] Session lifecycle and turn types can be persisted via store interface.
-- [ ] Subagent spawn creates fork/link records with context lineage metadata.
-- [ ] Store failures follow configured mode (`off`, `best_effort`, `required`).
-- [ ] Agent payloads include deterministic idempotency and correlation metadata.
+### 7.2 Runtime Write Path
+- [ ] Agent session and Attractor run/stage/checkpoint/link writes use CXDB-first contracts.
+- [ ] Write-mode behavior (`off`, `best_effort`, `required`) is preserved and tested.
+- [ ] Deterministic idempotency keys and committed parent semantics are validated.
 
-### 7.3 Attractor Integration
-- [ ] Stage lifecycle, routing decisions, and checkpoint metadata are persisted.
-- [ ] Stage-to-agent linkage records are emitted and queryable.
-- [ ] DOT source and normalized graph snapshot are persisted per run.
-- [ ] Parallel fan-out/fan-in branch context policy is implemented and tested.
+### 7.3 FS Lineage
+- [ ] Snapshot capture policy is explicit and configurable.
+- [ ] Relevant turns include fs root attachment/lineage metadata.
+- [ ] FSTree error modes and limits are deterministic and covered by tests.
 
-### 7.4 CXDB Integration (Post-P31 allowed)
-- [ ] `forge-turnstore-cxdb` append/fork/read path is implemented.
-- [ ] Binary-vs-HTTP protocol usage follows Section 2.4 defaults.
-- [ ] Adapter mapping follows Section 4.7 including blob/artifact operations when enabled.
-- [ ] Replay/resume parity tests pass for CXDB-backed runs (when enabled).
-- [ ] Host drill-down view can navigate run -> stage -> agent -> tool-turn timeline.
+### 7.4 Typed Projection and Query
+- [ ] Runtime payloads are projection-ready msgpack with stable schema identifiers.
+- [ ] Registry bundle lifecycle is documented and implemented.
+- [ ] Host query surfaces use typed projection APIs with deterministic paging.
 
-### 7.5 Operational Concerns
-- [ ] Redaction/retention controls are implemented.
-- [ ] Integration can be disabled with zero behavior change to core loops.
-- [ ] Event ordering and append idempotency are verified in tests.
-- [ ] Registry bundle publication/versioning is part of rollout and CI checks.
-- [ ] Renderer loading remains host-scoped with origin restrictions.
+### 7.5 Operations and Security
+- [ ] Endpoint topology and trust boundaries are documented.
+- [ ] Redaction/retention controls are enforced by policy.
+- [ ] Deterministic fake-CXDB and optional live-CXDB suites are green.
+- [ ] Migration phases P33-P37 have an explicit closure matrix.

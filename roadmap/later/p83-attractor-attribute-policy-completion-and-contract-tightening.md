@@ -1,6 +1,7 @@
-# P36: Attractor Attribute Policy Completion and Contract Tightening (Post-P35 Predictability)
+# P83: Attractor Attribute Policy Completion and Contract Tightening (Post-P82 Predictability)
 
 **Status**
+- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
 
 **Goal**
@@ -10,9 +11,10 @@ Ensure DOT graph/node/edge attributes are fully and deterministically enforced a
 - Spec of record: `spec/03-attractor-spec.md` (Sections 2.5, 2.6, 2.7, 3, 4.5, 5.4, 11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 4.4)
 - Prerequisites:
-  - `roadmap/p33-attractor-stage-outcome-contract-and-status-ingestion.md`
-  - `roadmap/p34-attractor-true-parallel-and-fan-in-semantics.md`
-  - `roadmap/p35-attractor-runtime-control-plane-and-resume-hardening.md`
+  - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
+  - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
+  - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
+  - `roadmap/later/p82-attractor-runtime-control-plane-and-resume-hardening.md`
 
 **Context**
 - Complex orchestration graphs rely on many attrs as declarative control surface.

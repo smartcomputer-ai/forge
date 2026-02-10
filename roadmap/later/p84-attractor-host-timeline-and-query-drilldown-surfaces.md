@@ -1,6 +1,7 @@
-# P37: Attractor Host Timeline and Query Drilldown Surfaces (Post-P36 Operability)
+# P84: Attractor Host Timeline and Query Drilldown Surfaces (Post-P83 Operability)
 
 **Status**
+- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
 
 **Goal**
@@ -10,10 +11,11 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 - Spec of record: `spec/03-attractor-spec.md` (Sections 9.6, 11.8, 11.11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 3.5, 4.4, 5.7)
 - Prerequisites:
+  - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
   - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
   - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
-  - `roadmap/p34-attractor-true-parallel-and-fan-in-semantics.md`
-  - `roadmap/p36-attractor-attribute-policy-completion-and-contract-tightening.md`
+  - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
+  - `roadmap/later/p83-attractor-attribute-policy-completion-and-contract-tightening.md`
 
 **Context**
 - Large graphs require fast, structured introspection for incident response and tuning.

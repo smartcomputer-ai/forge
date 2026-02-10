@@ -1,6 +1,7 @@
-# P35: Attractor Runtime Control Plane and Resume Hardening (Post-P34 Operations)
+# P82: Attractor Runtime Control Plane and Resume Hardening (Post-P81 Operations)
 
 **Status**
+- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
 
 **Goal**
@@ -10,9 +11,10 @@ Add a deterministic runtime control plane (`pause`, `cancel`, `continue`) and st
 - Spec of record: `spec/03-attractor-spec.md` (Sections 3.1, 3.2, 5.3, 9.6, 11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 4.4, 5.1, 5.3)
 - Prerequisites:
+  - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
   - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
-  - `roadmap/p33-attractor-stage-outcome-contract-and-status-ingestion.md`
-  - `roadmap/p34-attractor-true-parallel-and-fan-in-semantics.md`
+  - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
+  - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
 
 **Context**
 - Complex pipelines can run for long durations and require operator intervention.
