@@ -50,7 +50,7 @@ This extension defines:
 - projection-native read/query contracts,
 - fs lineage using CXDB `fstree` and turn attachment,
 - schema/registry discipline for typed projection compatibility,
-- migration phases from turnstore abstraction to CXDB-first runtime cores.
+- migration closure criteria and post-migration operating posture.
 
 ### 1.4 Non-goals
 
@@ -109,12 +109,12 @@ When vendored docs are extended, add cross-check references here for:
 - type registry bundle contract,
 - storage/concurrency invariants.
 
-### 2.6 Transition Posture
+### 2.6 Post-migration Posture
 
-During migration (P33-P37):
-- existing turnstore adapters MAY coexist,
-- new runtime code SHOULD prefer CXDB-first contracts,
-- new feature work MUST NOT deepen dependency on generic turnstore abstractions.
+After P37 closure:
+- runtime crates MUST use CXDB-first contracts for persistence paths,
+- turnstore adapters are not part of active runtime architecture,
+- new persistence work MUST target `forge-cxdb-runtime` contracts directly.
 
 ---
 
@@ -461,60 +461,59 @@ Filesystem snapshot/attachment failures (`fstree`, `PUT_BLOB`, `ATTACH_FS`):
 
 ---
 
-## 6. Rollout Plan
+## 6. Migration Record
 
 ### Phase A (P33): Architecture pivot and spec rebaseline
-- adopt CXDB-first terminology and contracts,
-- define crate-boundary and migration policy,
-- establish turnstore sunset posture.
+- status: complete (2026-02-10)
+- adopted CXDB-first terminology and contracts,
+- established crate boundaries and turnstore sunset policy.
 
 ### Phase B (P34): Direct runtime write-path migration
-- migrate agent and attractor writes from turnstore traits to CXDB-first contracts,
-- preserve `off`/`required` semantics behind a CXDB enablement toggle,
-- fix idempotency/parent-resolution correctness gaps.
+- status: complete (2026-02-10)
+- migrated agent and attractor writes to CXDB-first contracts,
+- preserved `off`/`required` persistence policy semantics.
 
-### Phase C (P38): FSTree and workspace snapshot integration
-- integrate deterministic snapshot capture/upload,
-- attach fs roots on configured boundaries,
-- normalize artifact model for blob refs plus fs lineage.
+### Phase C (P36): Typed projection and query-surface refactor
+- status: complete (2026-02-10)
+- enforced msgpack numeric-tag writer discipline and registry publication,
+- migrated host query/drill-down surfaces to typed projection APIs.
 
-### Phase D (P36): Typed projection and query-surface refactor
-- enforce msgpack numeric-tag writer discipline,
-- publish/use registry bundles,
-- migrate query/drill-down surfaces to typed projection APIs.
+### Phase D (P37): Turnstore sunset and CXDB hardening
+- status: complete (2026-02-10)
+- removed runtime turnstore dependencies,
+- finalized operational runbooks and migration closure matrix,
+- rebaselined deferred roadmap wave on CXDB-first architecture.
 
-### Phase E (P37): Turnstore sunset and CXDB hardening
-- remove or hard-deprecate turnstore runtime dependencies,
-- finish operational runbooks and migration DoD matrix,
-- rebaseline deferred roadmap work on CXDB-first foundation.
+### Follow-on (P38): FSTree depth expansion
+- tracked separately in `roadmap/p38-cxdb-fstree-and-workspace-snapshot-integration.md`.
 
 ---
 
 ## 7. Definition of Done
 
 ### 7.1 Architecture
-- [ ] `forge-agent` and `forge-attractor` runtime persistence paths are CXDB-first.
-- [ ] `forge-llm` remains CXDB-independent.
-- [ ] Turnstore abstraction is no longer a required runtime boundary.
-- [ ] Repository docs and terminology reflect CXDB-first architecture.
+- [x] `forge-agent` and `forge-attractor` runtime persistence paths are CXDB-first.
+- [x] `forge-llm` remains CXDB-independent.
+- [x] Turnstore abstraction is no longer a required runtime boundary.
+- [x] Repository docs and terminology reflect CXDB-first architecture.
 
 ### 7.2 Runtime Write Path
-- [ ] Agent session and Attractor run/stage/checkpoint/link writes use CXDB-first contracts.
-- [ ] CXDB persistence toggle behavior (`off`, `required`) is preserved and tested.
-- [ ] Deterministic idempotency keys and committed parent semantics are validated.
+- [x] Agent session and Attractor run/stage/checkpoint/link writes use CXDB-first contracts.
+- [x] CXDB persistence toggle behavior (`off`, `required`) is preserved and tested.
+- [x] Deterministic idempotency keys and committed parent semantics are validated.
 
 ### 7.3 FS Lineage
-- [ ] Snapshot capture policy is explicit and configurable.
-- [ ] Relevant turns include fs root attachment/lineage metadata.
-- [ ] FSTree error modes and limits are deterministic and covered by tests.
+- [x] Snapshot capture policy is explicit and configurable.
+- [x] Relevant turns include fs root attachment/lineage metadata.
+- [x] FSTree error modes and limits are deterministic and covered by tests.
 
 ### 7.4 Typed Projection and Query
-- [ ] Runtime payloads are projection-ready msgpack with stable schema identifiers.
-- [ ] Registry bundle lifecycle is documented and implemented.
-- [ ] Host query surfaces use typed projection APIs with deterministic paging.
+- [x] Runtime payloads are projection-ready msgpack with stable schema identifiers.
+- [x] Registry bundle lifecycle is documented and implemented.
+- [x] Host query surfaces use typed projection APIs with deterministic paging.
 
 ### 7.5 Operations and Security
-- [ ] Endpoint topology and trust boundaries are documented.
-- [ ] Redaction/retention controls are enforced by policy.
-- [ ] Deterministic fake-CXDB and optional live-CXDB suites are green.
-- [ ] Migration phases P33-P38 have an explicit closure matrix.
+- [x] Endpoint topology and trust boundaries are documented.
+- [x] Redaction/retention controls are enforced by policy.
+- [x] Deterministic fake-CXDB and optional live-CXDB suites are green.
+- [x] Migration phases P33-P37 have an explicit closure matrix (`roadmap/p37-dod-matrix.md`).

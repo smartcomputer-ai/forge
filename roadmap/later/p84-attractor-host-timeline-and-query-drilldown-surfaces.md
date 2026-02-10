@@ -1,8 +1,8 @@
 # P84: Attractor Host Timeline and Query Drilldown Surfaces (Post-P83 Operability)
 
 **Status**
-- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
+- Rebaselined on post-migration CXDB-first architecture (2026-02-10)
 
 **Goal**
 Provide robust host-facing timeline/query APIs for deep run inspection, including stage/branch/agent drilldown, so complex pipelines are operable and debuggable without reading raw turn logs.
@@ -10,10 +10,11 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 9.6, 11.8, 11.11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 3.5, 4.4, 5.7)
-- Prerequisites:
+- Baseline:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
+  - `roadmap/p37-dod-matrix.md`
+- Prerequisites:
   - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
-  - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
   - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
   - `roadmap/later/p83-attractor-attribute-policy-completion-and-contract-tightening.md`
 

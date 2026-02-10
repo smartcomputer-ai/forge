@@ -1,8 +1,8 @@
 # P80: Attractor Stage Outcome Contract and Status Ingestion (Post-P37 Runtime Semantics)
 
 **Status**
-- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
+- Rebaselined on post-migration CXDB-first architecture (2026-02-10)
 
 **Goal**
 Make stage outputs first-class runtime control inputs by defining and enforcing a deterministic stage outcome contract (including `status.json` ingestion) that directly drives routing/gates/retries.
@@ -10,11 +10,12 @@ Make stage outputs first-class runtime control inputs by defining and enforcing 
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 3.2, 3.3, 4.5, 5.2, 10, 11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.3, 3.5, 4.4)
-- Prerequisites:
+- Baseline:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
+  - `roadmap/p37-dod-matrix.md`
+- Prerequisites:
   - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
   - `roadmap/completed/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
-  - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
 
 **Context**
 - Current runtime can execute pipelines, but complex factory graphs rely on robust stage-to-routing contracts.

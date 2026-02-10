@@ -69,7 +69,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
   - Preserve stage->agent->tool drilldown semantics.
 - Files:
   - `crates/forge-attractor/src/queries.rs`
-  - `crates/forge-turnstore-cxdb/src/adapter.rs` (or successor CXDB query client module)
+  - `crates/forge-cxdb-runtime/src/runtime.rs`
   - `crates/forge-cli/src/main.rs`
 - DoD:
   - Read/query surfaces no longer rely on local JSON payload decoding for CXDB mode.
@@ -93,7 +93,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
   - Add live tests covering registry publish + typed retrieval + cursor pagination.
 - Files:
   - `crates/forge-attractor/tests/*`
-  - `crates/forge-turnstore-cxdb/tests/live.rs` (or successor)
+  - `crates/forge-cxdb-runtime/tests/live.rs`
   - `crates/forge-cxdb/tests/integration.rs`
 - DoD:
   - Projection read path is regression-safe and operationally validated.

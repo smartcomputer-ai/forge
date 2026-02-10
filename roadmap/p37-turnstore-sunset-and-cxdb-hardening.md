@@ -1,14 +1,20 @@
 # P37: Turnstore Sunset and CXDB Hardening Completion
+**Complete** (2026-02-10)
 
 **Status**
-- In progress (2026-02-10)
+- Complete (2026-02-10)
 - G1 completed (2026-02-10)
 - G2 completed (2026-02-10)
 - G3 completed (2026-02-10)
+- G4 completed (2026-02-10)
+- G5 completed (2026-02-10)
+- G6 completed (2026-02-10)
 - Progress update (2026-02-10):
   - Removed `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` from workspace membership and source tree.
   - Migrated runtime crates to `crates/forge-cxdb-runtime` contracts only.
   - Rebased `forge-attractor` storage contracts to local CXDB-first types/errors with no turnstore crate dependency.
+  - Published migration closure matrix in `roadmap/p37-dod-matrix.md` and tied it into `spec/04-cxdb-integration-spec.md`.
+  - Rebaselined deferred roadmap wave (`roadmap/later/p80` through `roadmap/later/p84`) on the post-migration CXDB-first architecture.
 
 **Goal**
 Complete the CXDB-first migration by retiring `forge-turnstore` abstraction dependencies from runtime cores, finalizing crate/workspace cleanup, and hardening CXDB operational guarantees.
@@ -17,15 +23,14 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - Spec of record: `spec/04-cxdb-integration-spec.md`
 - Prerequisites:
   - `roadmap/p34-cxdb-direct-runtime-write-path-migration.md`
-  - `roadmap/p38-cxdb-fstree-and-workspace-snapshot-integration.md`
   - `roadmap/p36-cxdb-typed-projection-and-query-surface-refactor.md`
 
 **Context**
-- After direct runtime migration, turnstore crates become either compatibility shims or dead abstractions.
+- After direct runtime migration, turnstore crates became dead abstractions and were removed.
 - Final cleanup is required to prevent architecture drift and reduce maintenance surface.
 
 ## Scope
-- Remove or archive legacy turnstore runtime abstractions.
+- Remove legacy turnstore runtime abstractions.
 - Complete workspace/dependency cleanup.
 - Tighten operational controls and runbooks for CXDB-first deployments.
 - Finalize conformance and DoD matrix for the migration series.
@@ -39,23 +44,19 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 ### [x] G1. Runtime dependency cleanup and turnstore sunset
 - Work:
   - Remove `forge-turnstore` runtime dependencies from `forge-agent` and `forge-attractor`.
-  - Decide final disposition:
-    - remove `forge-turnstore` + `forge-turnstore-cxdb` crates, or
-    - keep only as non-runtime compatibility/test utilities with explicit deprecation markers.
+  - Remove `forge-turnstore` + `forge-turnstore-cxdb` crates from the workspace and source tree.
   - Update workspace membership accordingly.
 - Files:
   - `Cargo.toml`
   - `crates/forge-agent/Cargo.toml`
   - `crates/forge-attractor/Cargo.toml`
-  - `crates/forge-turnstore/*` (if retained/deprecated)
-  - `crates/forge-turnstore-cxdb/*` (if retained/deprecated)
 - DoD:
   - Runtime cores are CXDB-first with no legacy abstraction coupling.
 
 ### [x] G2. Contract and naming cleanup
 - Work:
   - Remove stale terminology (`turnstore`) from runtime-facing APIs/config where no longer accurate.
-  - Keep migration aliases only where necessary and explicitly deprecated.
+  - Do not retain runtime migration aliases.
 - Files:
   - `crates/forge-agent/src/*`
   - `crates/forge-attractor/src/*`
@@ -80,7 +81,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - DoD:
   - Deployment and troubleshooting guidance is complete for CXDB-first operation.
 
-### [ ] G4. Final migration conformance matrix
+### [x] G4. Final migration conformance matrix
 - Work:
   - Publish migration DoD matrix across p33-p37 covering:
     - architecture
@@ -97,7 +98,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Repository cleanup and dead-code elimination
+### [x] G5. Repository cleanup and dead-code elimination
 - Work:
   - Remove obsolete tests, adapters, and compatibility glue no longer needed after migration.
   - Ensure no stale crate references in docs/examples/CI.
@@ -106,7 +107,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - DoD:
   - Repository reflects a coherent CXDB-first architecture with minimal cruft.
 
-### [ ] G6. Post-migration follow-on roadmap reactivation
+### [x] G6. Post-migration follow-on roadmap reactivation
 - Work:
   - Re-baseline deferred feature milestones (stage outcome contract, true parallel, control plane, etc.) on top of CXDB-first foundation.
   - Ensure deferred roadmap files point to the new persistence baseline.
@@ -120,7 +121,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
   - Next roadmap wave starts from the new architecture without ambiguity.
 
 ## Deliverables
-- Turnstore abstraction sunset (or explicit non-runtime deprecation state).
+- Turnstore abstraction sunset.
 - Fully CXDB-first runtime and docs terminology.
 - Operational runbook hardening and migration DoD closure.
 

@@ -19,7 +19,7 @@ Upstream spec references:
 
 - `spec/01` and `spec/02` core layers are implemented with deterministic test coverage.
 - `spec/03` Attractor runtime core, host surfaces, and conformance suites are implemented for headless and CLI-first operation.
-- `spec/04` adopts CXDB-first persistence architecture; direct runtime migration and turnstore sunset are tracked in `roadmap/p34` through `roadmap/p37`.
+- `spec/04` adopts CXDB-first persistence architecture; direct runtime migration and turnstore sunset are completed in `roadmap/p34` through `roadmap/p37` with closure criteria in `roadmap/p37-dod-matrix.md`.
 
 ## Build
 

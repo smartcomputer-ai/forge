@@ -1,8 +1,8 @@
 # P81: Attractor True Parallel and Fan-In Semantics (Post-P80 Runtime Semantics)
 
 **Status**
-- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
+- Rebaselined on post-migration CXDB-first architecture (2026-02-10)
 
 **Goal**
 Replace synthetic parallel summaries with true branch execution semantics, deterministic join/fan-in behavior, and stable branch-level state/event/query contracts for complex DAG orchestration.
@@ -10,12 +10,13 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 3.8, 4.8, 4.9, 11.6)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 3.7, 4.4, 5.3, 5.4)
-- Prerequisites:
+- Baseline:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
+  - `roadmap/p37-dod-matrix.md`
+- Prerequisites:
   - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
   - `roadmap/completed/p29-attractor-state-checkpoint-fidelity-and-advanced-handlers.md`
   - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
-  - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
 
 **Context**
 - Existing `parallel` and `parallel.fan_in` behavior is useful but does not yet represent full branch pipeline execution.

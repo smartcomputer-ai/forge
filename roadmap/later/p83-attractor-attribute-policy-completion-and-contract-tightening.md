@@ -1,8 +1,8 @@
 # P83: Attractor Attribute Policy Completion and Contract Tightening (Post-P82 Predictability)
 
 **Status**
-- Deferred until CXDB-first migration series completion (`roadmap/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md` through `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`)
 - Planned (2026-02-10)
+- Rebaselined on post-migration CXDB-first architecture (2026-02-10)
 
 **Goal**
 Ensure DOT graph/node/edge attributes are fully and deterministically enforced at runtime and backend layers, with explicit precedence rules, strict validation, and conformance coverage.
@@ -10,8 +10,10 @@ Ensure DOT graph/node/edge attributes are fully and deterministically enforced a
 **Source**
 - Spec of record: `spec/03-attractor-spec.md` (Sections 2.5, 2.6, 2.7, 3, 4.5, 5.4, 11)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 4.4)
-- Prerequisites:
+- Baseline:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
+  - `roadmap/p37-dod-matrix.md`
+- Prerequisites:
   - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
   - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
   - `roadmap/later/p82-attractor-runtime-control-plane-and-resume-hardening.md`
