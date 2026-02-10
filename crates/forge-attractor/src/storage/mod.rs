@@ -19,8 +19,7 @@ pub use types::{
     ATTRACTOR_GRAPH_SNAPSHOT_TYPE_ID, ATTRACTOR_INTERVIEW_LIFECYCLE_TYPE_ID,
     ATTRACTOR_PARALLEL_LIFECYCLE_TYPE_ID, ATTRACTOR_ROUTE_DECISION_TYPE_ID,
     ATTRACTOR_RUN_LIFECYCLE_TYPE_ID, ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID,
-    ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID,
-    CheckpointSavedRecord as AttractorCheckpointSavedRecord,
+    ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID, CheckpointSavedRecord as AttractorCheckpointSavedRecord,
     DotSourceRecord as AttractorDotSourceRecord, FsSnapshotStats as AttractorFsSnapshotStats,
     GraphSnapshotRecord as AttractorGraphSnapshotRecord,
     InterviewLifecycleRecord as AttractorInterviewLifecycleRecord,
@@ -466,7 +465,10 @@ where
     R: Serialize,
 {
     let payload = encode_typed_record(type_id, &record)?;
-    let head = store.get_head(context_id).await.map_err(cxdb_error_to_storage)?;
+    let head = store
+        .get_head(context_id)
+        .await
+        .map_err(cxdb_error_to_storage)?;
     let parent_turn_id = if head.turn_id == "0" {
         None
     } else {
@@ -681,8 +683,8 @@ mod tests {
             detail: "ok".to_string(),
         };
 
-        let bytes =
-            encode_typed_record(types::ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID, &record).expect("encode should succeed");
+        let bytes = encode_typed_record(types::ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID, &record)
+            .expect("encode should succeed");
         let decoded: TestRecord = decode_typed_record(&bytes).expect("decode should succeed");
         assert_eq!(decoded, record);
     }

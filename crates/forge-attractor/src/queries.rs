@@ -1,6 +1,4 @@
-use crate::storage::{
-    ContextId, StoredTurn, TurnId, decode_typed_record,
-};
+use crate::storage::{ContextId, StoredTurn, TurnId, decode_typed_record};
 use crate::{
     AttractorCheckpointSavedRecord, AttractorError, AttractorRunLifecycleRecord,
     AttractorStageLifecycleRecord, AttractorStageToAgentLinkRecord, AttractorStorageReader,

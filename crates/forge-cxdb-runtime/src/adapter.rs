@@ -669,8 +669,9 @@ where
         if let Ok(projected) = serde_json::from_slice::<T>(payload) {
             return Ok(projected);
         }
-        rmp_serde::from_slice(payload)
-            .map_err(|error| CxdbRuntimeError::Serialization(format!("typed payload decode failed: {error}")))
+        rmp_serde::from_slice(payload).map_err(|error| {
+            CxdbRuntimeError::Serialization(format!("typed payload decode failed: {error}"))
+        })
     }
 
     fn parse_context_id(context_id: &ContextId) -> CxdbRuntimeResult<u64> {

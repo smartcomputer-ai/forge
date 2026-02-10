@@ -781,7 +781,13 @@ impl PipelineRunner {
                             RouteDecision::Next { node_id, .. } => Some(node_id.clone()),
                             _ => None,
                         },
-                        matches!(&route_decision, RouteDecision::Next { loop_restart: true, .. }),
+                        matches!(
+                            &route_decision,
+                            RouteDecision::Next {
+                                loop_restart: true,
+                                ..
+                            }
+                        ),
                         checkpoint_terminal_status.clone(),
                         checkpoint_terminal_failure_reason.clone(),
                     )
@@ -829,16 +835,14 @@ impl PipelineRunner {
                     graph.id.as_str(),
                     lineage_root_run_id.as_str(),
                     lineage_attempt,
-                    Some(
-                        if restart_target.is_some() {
-                            "restarted".to_string()
-                        } else {
-                            match status {
-                                PipelineStatus::Success => "success".to_string(),
-                                PipelineStatus::Fail => "fail".to_string(),
-                            }
-                        },
-                    ),
+                    Some(if restart_target.is_some() {
+                        "restarted".to_string()
+                    } else {
+                        match status {
+                            PipelineStatus::Success => "success".to_string(),
+                            PipelineStatus::Fail => "fail".to_string(),
+                        }
+                    }),
                     terminal_failure.clone(),
                     restart_target.clone(),
                     None,
@@ -1349,14 +1353,14 @@ async fn emit_parallel_start_events(
         emit_runtime_event(
             sink,
             sequence_no,
-                RuntimeEventKind::Parallel(ParallelEvent::BranchStarted {
-                    run_id: run_id.to_string(),
-                    node_id: node.id.clone(),
-                    branch_id: branch_id.clone(),
-                    branch_index: index,
-                    target_node: target_node.clone(),
-                }),
-            );
+            RuntimeEventKind::Parallel(ParallelEvent::BranchStarted {
+                run_id: run_id.to_string(),
+                node_id: node.id.clone(),
+                branch_id: branch_id.clone(),
+                branch_index: index,
+                target_node: target_node.clone(),
+            }),
+        );
         storage
             .append_parallel_lifecycle(
                 &node.id,
@@ -1714,13 +1718,8 @@ impl RunStorage {
         let snapshot_capture = self.capture_workspace_snapshot().await?;
         let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
             snapshot_capture_fields(snapshot_capture.as_ref());
-        let idempotency_key = attractor_idempotency_key(
-            &self.run_id,
-            node_id,
-            stage_attempt_id,
-            kind,
-            sequence_no,
-        );
+        let idempotency_key =
+            attractor_idempotency_key(&self.run_id, node_id, stage_attempt_id, kind, sequence_no);
         let turn = writer
             .append_stage_lifecycle(
                 &context_id,
@@ -2172,7 +2171,11 @@ fn inject_fs_lineage_payload(payload: &mut Value, capture: &CxdbFsSnapshotCaptur
 
 fn snapshot_capture_fields(
     capture: Option<&CxdbFsSnapshotCapture>,
-) -> (Option<String>, Option<String>, Option<AttractorFsSnapshotStats>) {
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<AttractorFsSnapshotStats>,
+) {
     let Some(capture) = capture else {
         return (None, None, None);
     };

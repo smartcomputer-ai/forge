@@ -170,11 +170,7 @@ async fn cxdb_required_mode_persists_queryable_turns() {
             .iter()
             .any(|turn| turn.type_id == "forge.agent.session_lifecycle")
     );
-    assert!(
-        turns
-            .iter()
-            .all(|turn| turn.type_id != "forge.agent.event")
-    );
+    assert!(turns.iter().all(|turn| turn.type_id != "forge.agent.event"));
 }
 
 #[tokio::test(flavor = "current_thread")]
