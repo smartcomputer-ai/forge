@@ -36,10 +36,26 @@ Do not adopt external schemas verbatim. Model persistence around Forge runtime s
 
 ## Context Topology (v2)
 - One Attractor run-attempt context is the orchestration spine for that attempt.
-- Agent work runs in agent-session contexts that may span multiple stage attempts/nodes when thread/session continuity is intended.
+- Agent work runs in thread contexts and may span multiple stage attempts/nodes when fidelity is `full` and thread continuity is intended.
 - `forge.link.stage_to_agent` is the authoritative join between stage-attempt facts and agent-session turns.
 - Do not create one context per attractor node by default.
-- Parallel branch contexts are introduced only when true branch execution is implemented (see `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`).
+
+## Context Classes (Forge-native contract)
+1. Run context (one per attractor run attempt)
+- Purpose: durable orchestration spine for run lifecycle, stage lifecycle, route decisions, checkpoint refs, and human-gate outcomes.
+- Shape: mostly linear append flow within the attempt.
+
+2. Thread context (one per logical Attractor `thread_id`/resolved thread key under `fidelity=full`)
+- Purpose: multi-turn coding-agent transcript and lifecycle for stages that intentionally share conversational memory.
+- Behavior: reused across nodes/stage-attempts when the resolved thread key is the same and fidelity mode is `full`; otherwise do not reuse.
+
+3. Attempt/branch contexts (forked divergence contexts)
+- Purpose: semantic divergence units, not baseline orchestration.
+- Used for:
+  - parallel fan-out branches (one forked context per branch),
+  - retry attempts (fork per attempt from a stable node-entry base turn),
+  - optional alternative-path precomputation for human-gate/strategy exploration.
+- Not used for normal linear node progression.
 
 ## Field Ownership Contract
 CXDB-native fields (do not duplicate in payload unless strictly required for cross-context navigation):
@@ -58,6 +74,7 @@ Forge-domain fields (payload/typed fields):
 - Align Attractor persistence with runtime event categories already defined in code.
 - Split agent operational events from agent transcript turns.
 - Lock context topology to run-spine + agent-session contexts (not per-node contexts).
+- Define explicit context-fork triggers (parallel, retry, optional alternatives) and lineage rules.
 - Use CXDB `parent_turn_id` as canonical in-context causality.
 - Keep only cross-context linkage metadata as explicit typed fields.
 - Update query surfaces to projection-first typed reads.
@@ -104,7 +121,8 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 - Work:
   - Document canonical persisted semantic facts directly from current runtime behavior.
   - Freeze v2 type families and per-type required fields before implementation.
-  - Freeze context-topology contract (run-spine context, agent-session contexts, optional branch contexts).
+  - Freeze context-topology contract (run context, thread context, attempt/branch contexts).
+  - Freeze fork-trigger policy (parallel/retry/optional alternatives) and thread-reuse policy (`fidelity=full` + thread key).
 - Files:
   - `spec/04-cxdb-integration-spec.md`
   - `roadmap/p39-dod-matrix.md`
@@ -130,6 +148,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Map persisted attractor turns to `Pipeline/Stage/Parallel/Interview/Checkpoint` lifecycle categories.
   - Add explicit route decision records.
   - Keep stage-attempt semantics first-class (`node_id`, `stage_attempt_id`, `attempt`).
+  - Persist branch/attempt lineage records so fork origin and join points are queryable.
 - Files:
   - `crates/forge-attractor/src/runner.rs`
   - `crates/forge-attractor/src/storage/types.rs`
@@ -143,6 +162,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Keep message turns as transcript records.
   - Replace `forge.agent.event` with typed session/tool lifecycle records.
   - Ensure tool call start/end joins via `call_id`.
+  - Enforce thread-context reuse only when fidelity/thread policy resolves to the same thread key.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-agent/tests/*`
@@ -155,6 +175,8 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Drop payload fields that duplicate CXDB turn lineage primitives.
   - Preserve only cross-context joins (for example stage->agent link context/head refs).
   - Ensure run-stages remain on run context spine while agent turns remain in agent-session contexts.
+  - Define retry fork-parent rule: each attempt forks from the same node-entry base turn for comparability.
+  - Define fan-out fork-parent rule: each branch forks from pre-fan-out base turn, with explicit fan-in provenance.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-attractor/src/runner.rs`
@@ -203,7 +225,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 ## Deliverables
 - Clean-break typed runtime schema families aligned to Forge semantics.
 - Clear separation between attractor stage lifecycle and agent transcript lifecycle.
-- CXDB DAG-first causality with minimal cross-context join metadata.
+- CXDB DAG-first causality with explicit run/thread/branch topology and minimal cross-context join metadata.
 - Projection-native query and test coverage for the new model.
 
 ## Execution order
@@ -219,5 +241,5 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
 ## Exit criteria for this file
 - Attractor nodes are represented as stage/run lifecycle facts, not as generic agent-like messages.
 - Agent transcript turns and agent operational lifecycle are distinct typed records.
-- Context model is run-spine + agent-session (+ optional branch contexts), not per-node contexts.
+- Context model is run + thread + attempt/branch contexts (not per-node contexts), with deterministic fork-trigger rules.
 - No core runtime write/query path depends on `payload_json` envelope parsing.
