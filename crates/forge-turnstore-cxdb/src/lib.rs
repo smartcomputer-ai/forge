@@ -28,5 +28,6 @@ pub mod adapter;
 
 pub use adapter::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
-    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbTurnStore, HttpStoredTurn,
+    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbReqwestHttpClient, CxdbSdkBinaryClient,
+    CxdbTurnStore, DEFAULT_CXDB_BINARY_ADDR, DEFAULT_CXDB_HTTP_BASE_URL, HttpStoredTurn,
 };

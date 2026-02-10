@@ -247,14 +247,13 @@ impl CxdbBinaryClient for LiveHttpClient {
             context_id: Self::parse_u64_field(&payload, "context_id")?,
             new_turn_id: Self::parse_u64_field(&payload, "turn_id")?,
             new_depth: Self::parse_u32_field(&payload, "depth")?,
-            content_hash: Self::parse_hash_hex(&payload, "content_hash").unwrap_or(request.content_hash),
+            content_hash: Self::parse_hash_hex(&payload, "content_hash")
+                .unwrap_or(request.content_hash),
         })
     }
 
     async fn get_head(&self, context_id: u64) -> Result<BinaryContextHead, CxdbClientError> {
-        let payload = self
-            .get_json(&format!("/v1/contexts/{context_id}"))
-            .await?;
+        let payload = self.get_json(&format!("/v1/contexts/{context_id}")).await?;
         Ok(BinaryContextHead {
             context_id: Self::parse_u64_field(&payload, "context_id")?,
             head_turn_id: Self::parse_u64_field(&payload, "head_turn_id")?,
@@ -269,7 +268,9 @@ impl CxdbBinaryClient for LiveHttpClient {
         _include_payload: bool,
     ) -> Result<Vec<BinaryStoredTurn>, CxdbClientError> {
         let payload = self
-            .get_json(&format!("/v1/contexts/{context_id}/turns?limit={limit}&view=both"))
+            .get_json(&format!(
+                "/v1/contexts/{context_id}/turns?limit={limit}&view=both"
+            ))
             .await?;
         let turns = payload
             .get("turns")

@@ -491,6 +491,7 @@ dependencies = [
  "async-trait",
  "base64",
  "blake3",
+ "cxdb",
  "forge-turnstore",
  "reqwest",
  "serde",
