@@ -35,7 +35,7 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Typed event model + observer/stream APIs
+### [x] G1. Typed event model + observer/stream APIs
 - Work:
   - Implement event types for:
     - pipeline lifecycle
@@ -49,8 +49,13 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/src/runner.rs`
 - DoD:
   - Host applications can consume deterministic typed events in real time.
+- Completed:
+  - Added typed runtime event model in `crates/forge-attractor/src/events.rs` covering pipeline, stage, parallel, interview, and checkpoint lifecycles.
+  - Added observer callback + async stream sinks (`RuntimeEventSink`, `runtime_event_channel`) and surfaced configuration through `RunConfig.events`.
+  - Integrated event emission into `PipelineRunner` for run lifecycle, stage lifecycle/retry, parallel node branch summaries, interview lifecycle, and checkpoint save notifications.
+  - Added coverage for event sink fanout and runner event sequencing.
 
-### [ ] G2. Interviewer abstractions and implementations
+### [x] G2. Interviewer abstractions and implementations
 - Work:
   - Implement interviewer trait and core implementations:
     - auto-approve
@@ -64,6 +69,15 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/src/handlers/wait_human.rs`
 - DoD:
   - Human gate flows are testable deterministically and usable interactively.
+- Completed:
+  - Added `crates/forge-attractor/src/interviewer.rs` with shared `Interviewer` contract and built-in implementations:
+    - `AutoApproveInterviewer`
+    - `ConsoleInterviewer`
+    - `CallbackInterviewer`
+    - `QueueInterviewer`
+    - `RecordingInterviewer`
+  - Updated `wait.human` to consume shared interviewer types and added support for node-configured timeout (`human.timeout_seconds`) and default choice fallback (`human.default_choice`/`human_default_choice`).
+  - Added deterministic timeout/default-choice tests in `crates/forge-attractor/src/handlers/wait_human.rs` and interviewer implementation tests in `crates/forge-attractor/src/interviewer.rs`.
 
 ### [ ] G3. In-process CLI host surface
 - Work:

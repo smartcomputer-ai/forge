@@ -87,6 +87,7 @@ pub struct RunConfig {
     pub run_id: Option<String>,
     pub base_turn_id: Option<TurnId>,
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
+    pub events: crate::RuntimeEventSink,
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
     pub logs_root: Option<PathBuf>,
@@ -100,6 +101,7 @@ impl Default for RunConfig {
             run_id: None,
             base_turn_id: None,
             storage: None,
+            events: crate::RuntimeEventSink::default(),
             executor: Arc::new(handlers::registry::RegistryNodeExecutor::new(
                 handlers::core_registry(),
             )),

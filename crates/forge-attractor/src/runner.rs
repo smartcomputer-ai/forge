@@ -1,12 +1,14 @@
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorDotSourceRecord,
     AttractorError, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
-    AttractorStageEventRecord, CheckpointMetadata, CheckpointNodeOutcome, CheckpointState,
-    ContextStore, Graph, Node, NodeOutcome, NodeStatus, PipelineRunResult, PipelineStatus,
-    RetryPolicy, RunConfig, RuntimeContext, apply_resume_fidelity_override,
-    build_resume_runtime_state, build_retry_policy, checkpoint_path_for_run, delay_for_attempt_ms,
-    finalize_retry_exhausted, find_incoming_edge, resolve_fidelity_mode, resolve_thread_key,
-    select_next_edge, should_retry_outcome, validate_or_raise,
+    AttractorStageEventRecord, CheckpointEvent, CheckpointMetadata, CheckpointNodeOutcome,
+    CheckpointState, ContextStore, Graph, InterviewEvent, Node, NodeOutcome, NodeStatus,
+    ParallelEvent, PipelineEvent, PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig,
+    RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent,
+    apply_resume_fidelity_override, build_resume_runtime_state, build_retry_policy,
+    checkpoint_path_for_run, delay_for_attempt_ms, finalize_retry_exhausted, find_incoming_edge,
+    resolve_fidelity_mode, resolve_thread_key, select_next_edge, should_retry_outcome,
+    validate_or_raise,
 };
 use forge_turnstore::{ContextId, attractor_idempotency_key};
 use serde_json::{Value, json};
@@ -35,6 +37,8 @@ impl PipelineRunner {
         mut config: RunConfig,
     ) -> Result<PipelineRunResult, AttractorError> {
         validate_or_raise(graph, &[])?;
+        let event_sink = config.events.clone();
+        let mut event_sequence_no = 0u64;
 
         let lineage_root_run_id = config
             .run_id
@@ -153,6 +157,16 @@ impl PipelineRunner {
             .await?;
             let graph_metadata = storage.persist_run_graph_metadata(graph).await?;
 
+            emit_runtime_event(
+                &event_sink,
+                &mut event_sequence_no,
+                RuntimeEventKind::Pipeline(PipelineEvent::Started {
+                    run_id: active_run_id.clone(),
+                    graph_id: graph.id.clone(),
+                    lineage_attempt,
+                }),
+            );
+
             storage
                 .append_run_event(
                     "run_initialized",
@@ -168,6 +182,15 @@ impl PipelineRunner {
                 )
                 .await?;
             if resume_path_for_attempt.is_some() {
+                emit_runtime_event(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    RuntimeEventKind::Pipeline(PipelineEvent::Resumed {
+                        run_id: active_run_id.clone(),
+                        graph_id: graph.id.clone(),
+                        lineage_attempt,
+                    }),
+                );
                 storage
                     .append_run_event(
                         "run_resumed",
@@ -240,6 +263,23 @@ impl PipelineRunner {
                 }
 
                 let retry_policy = build_retry_policy(node, graph, config.retry_backoff.clone());
+                if is_interview_node(node) {
+                    emit_runtime_event(
+                        &event_sink,
+                        &mut event_sequence_no,
+                        RuntimeEventKind::Interview(InterviewEvent::Started {
+                            run_id: active_run_id.clone(),
+                            node_id: node.id.clone(),
+                        }),
+                    );
+                }
+                emit_parallel_start_events(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    &active_run_id,
+                    node,
+                    graph,
+                );
                 let context_snapshot = context_store.snapshot()?;
                 let (outcome, attempts_used) = execute_with_retry(
                     node,
@@ -249,8 +289,24 @@ impl PipelineRunner {
                     &retry_policy,
                     &mut storage,
                     &active_run_id,
+                    &event_sink,
+                    &mut event_sequence_no,
                 )
                 .await?;
+                emit_parallel_completion_events(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    &active_run_id,
+                    node,
+                    &outcome,
+                );
+                emit_interview_completion_event(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    &active_run_id,
+                    node,
+                    &outcome,
+                );
 
                 completed_nodes.push(node.id.clone());
                 node_outcomes.insert(node.id.clone(), outcome.clone());
@@ -315,6 +371,15 @@ impl PipelineRunner {
                         graph_snapshot_ref: graph_metadata.graph_snapshot_ref.clone(),
                     };
                     checkpoint.save_to_path(path)?;
+                    emit_runtime_event(
+                        &event_sink,
+                        &mut event_sequence_no,
+                        RuntimeEventKind::Checkpoint(CheckpointEvent::Saved {
+                            run_id: active_run_id.clone(),
+                            node_id: node.id.clone(),
+                            checkpoint_id: checkpoint.metadata.checkpoint_id.clone(),
+                        }),
+                    );
                 }
 
                 storage
@@ -390,6 +455,38 @@ impl PipelineRunner {
                     }),
                 )
                 .await?;
+            match (restart_target.as_ref(), status, terminal_failure.as_ref()) {
+                (Some(_), _, _) => {}
+                (None, PipelineStatus::Success, _) => emit_runtime_event(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    RuntimeEventKind::Pipeline(PipelineEvent::Completed {
+                        run_id: active_run_id.clone(),
+                        graph_id: graph.id.clone(),
+                        lineage_attempt,
+                    }),
+                ),
+                (None, PipelineStatus::Fail, Some(reason)) => emit_runtime_event(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    RuntimeEventKind::Pipeline(PipelineEvent::Failed {
+                        run_id: active_run_id.clone(),
+                        graph_id: graph.id.clone(),
+                        lineage_attempt,
+                        reason: reason.clone(),
+                    }),
+                ),
+                (None, PipelineStatus::Fail, None) => emit_runtime_event(
+                    &event_sink,
+                    &mut event_sequence_no,
+                    RuntimeEventKind::Pipeline(PipelineEvent::Failed {
+                        run_id: active_run_id.clone(),
+                        graph_id: graph.id.clone(),
+                        lineage_attempt,
+                        reason: "pipeline failed".to_string(),
+                    }),
+                ),
+            }
             storage_writer = storage.take_writer();
 
             if let Some(target) = restart_target {
@@ -610,6 +707,8 @@ async fn execute_with_retry(
     retry_policy: &RetryPolicy,
     storage: &mut RunStorage,
     run_id: &str,
+    event_sink: &RuntimeEventSink,
+    event_sequence_no: &mut u64,
 ) -> Result<(NodeOutcome, u32), AttractorError> {
     for attempt in 1..=retry_policy.max_attempts {
         let stage_attempt_id = stage_attempt_id(node, attempt);
@@ -617,6 +716,16 @@ async fn execute_with_retry(
         attempt_context.insert(
             "stage_attempt_id".to_string(),
             Value::String(stage_attempt_id.clone()),
+        );
+        emit_runtime_event(
+            event_sink,
+            event_sequence_no,
+            RuntimeEventKind::Stage(StageEvent::Started {
+                run_id: run_id.to_string(),
+                node_id: node.id.clone(),
+                stage_attempt_id: stage_attempt_id.clone(),
+                attempt,
+            }),
         );
         storage
             .append_stage_event(
@@ -637,6 +746,7 @@ async fn execute_with_retry(
         } else {
             "stage_completed"
         };
+        let will_retry = should_retry_outcome(&outcome) && attempt < retry_policy.max_attempts;
         storage
             .append_stage_event(
                 &node.id,
@@ -650,16 +760,56 @@ async fn execute_with_retry(
                 }),
             )
             .await?;
+        if outcome.status.is_success_like() {
+            emit_runtime_event(
+                event_sink,
+                event_sequence_no,
+                RuntimeEventKind::Stage(StageEvent::Completed {
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    stage_attempt_id: stage_attempt_id.clone(),
+                    attempt,
+                    status: outcome.status.as_str().to_string(),
+                    notes: outcome.notes.clone(),
+                }),
+            );
+        } else {
+            emit_runtime_event(
+                event_sink,
+                event_sequence_no,
+                RuntimeEventKind::Stage(StageEvent::Failed {
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    stage_attempt_id: stage_attempt_id.clone(),
+                    attempt,
+                    status: outcome.status.as_str().to_string(),
+                    notes: outcome.notes.clone(),
+                    will_retry,
+                }),
+            );
+        }
 
         if outcome.status.is_success_like() {
             return Ok((outcome, attempt));
         }
 
-        if should_retry_outcome(&outcome) && attempt < retry_policy.max_attempts {
+        if will_retry {
             let delay_ms = delay_for_attempt_ms(
                 attempt,
                 &retry_policy.backoff,
                 hash_run_node(run_id, &node.id),
+            );
+            emit_runtime_event(
+                event_sink,
+                event_sequence_no,
+                RuntimeEventKind::Stage(StageEvent::Retrying {
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    stage_attempt_id: stage_attempt_id.clone(),
+                    attempt,
+                    next_attempt: attempt + 1,
+                    delay_ms,
+                }),
             );
             if delay_ms > 0 {
                 sleep(Duration::from_millis(delay_ms));
@@ -687,6 +837,224 @@ fn hash_run_node(run_id: &str, node_id: &str) -> u64 {
         h = h.wrapping_mul(0x100000001b3);
     }
     h
+}
+
+fn emit_runtime_event(sink: &RuntimeEventSink, sequence_no: &mut u64, kind: RuntimeEventKind) {
+    if !sink.is_enabled() {
+        return;
+    }
+    *sequence_no += 1;
+    sink.emit(RuntimeEvent {
+        sequence_no: *sequence_no,
+        timestamp: timestamp_now(),
+        kind,
+    });
+}
+
+fn emit_parallel_start_events(
+    sink: &RuntimeEventSink,
+    sequence_no: &mut u64,
+    run_id: &str,
+    node: &Node,
+    graph: &Graph,
+) {
+    if !is_parallel_node(node) {
+        return;
+    }
+    let branches: Vec<(String, String)> = graph
+        .outgoing_edges(&node.id)
+        .map(|edge| {
+            let branch_id = edge
+                .attrs
+                .get_str("label")
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(edge.to.as_str())
+                .to_string();
+            (branch_id, edge.to.clone())
+        })
+        .collect();
+    emit_runtime_event(
+        sink,
+        sequence_no,
+        RuntimeEventKind::Parallel(ParallelEvent::Started {
+            run_id: run_id.to_string(),
+            node_id: node.id.clone(),
+            branch_count: branches.len(),
+        }),
+    );
+    for (index, (branch_id, target_node)) in branches.into_iter().enumerate() {
+        emit_runtime_event(
+            sink,
+            sequence_no,
+            RuntimeEventKind::Parallel(ParallelEvent::BranchStarted {
+                run_id: run_id.to_string(),
+                node_id: node.id.clone(),
+                branch_id,
+                branch_index: index,
+                target_node,
+            }),
+        );
+    }
+}
+
+fn emit_parallel_completion_events(
+    sink: &RuntimeEventSink,
+    sequence_no: &mut u64,
+    run_id: &str,
+    node: &Node,
+    outcome: &NodeOutcome,
+) {
+    if !is_parallel_node(node) {
+        return;
+    }
+    let mut success_count = 0usize;
+    let mut failure_count = 0usize;
+
+    let results = outcome
+        .context_updates
+        .get("parallel.results")
+        .and_then(Value::as_array);
+    if let Some(results) = results {
+        for (index, result) in results.iter().enumerate() {
+            let Some(result_obj) = result.as_object() else {
+                continue;
+            };
+            let status = result_obj
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+                .to_string();
+            if status == "success" || status == "partial_success" {
+                success_count += 1;
+            } else if status == "fail" {
+                failure_count += 1;
+            }
+            let branch_id = result_obj
+                .get("branch_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let target_node = result_obj
+                .get("target_node")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let notes = result_obj
+                .get("notes")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned);
+            emit_runtime_event(
+                sink,
+                sequence_no,
+                RuntimeEventKind::Parallel(ParallelEvent::BranchCompleted {
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    branch_id,
+                    branch_index: index,
+                    target_node,
+                    status,
+                    notes,
+                }),
+            );
+        }
+    }
+
+    emit_runtime_event(
+        sink,
+        sequence_no,
+        RuntimeEventKind::Parallel(ParallelEvent::Completed {
+            run_id: run_id.to_string(),
+            node_id: node.id.clone(),
+            success_count,
+            failure_count,
+        }),
+    );
+}
+
+fn emit_interview_completion_event(
+    sink: &RuntimeEventSink,
+    sequence_no: &mut u64,
+    run_id: &str,
+    node: &Node,
+    outcome: &NodeOutcome,
+) {
+    if !is_interview_node(node) {
+        return;
+    }
+    if outcome.status == NodeStatus::Retry {
+        emit_runtime_event(
+            sink,
+            sequence_no,
+            RuntimeEventKind::Interview(InterviewEvent::Timeout {
+                run_id: run_id.to_string(),
+                node_id: node.id.clone(),
+                default_selected: outcome
+                    .context_updates
+                    .get("human.gate.selected")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+            }),
+        );
+        return;
+    }
+    emit_runtime_event(
+        sink,
+        sequence_no,
+        RuntimeEventKind::Interview(InterviewEvent::Completed {
+            run_id: run_id.to_string(),
+            node_id: node.id.clone(),
+            selected: outcome
+                .context_updates
+                .get("human.gate.selected")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned),
+        }),
+    );
+}
+
+fn is_parallel_node(node: &Node) -> bool {
+    infer_node_handler_type(node) == "parallel"
+}
+
+fn is_interview_node(node: &Node) -> bool {
+    infer_node_handler_type(node) == "wait.human"
+}
+
+fn infer_node_handler_type(node: &Node) -> &'static str {
+    if let Some(explicit_type) = node.attrs.get_str("type").map(str::trim) {
+        if !explicit_type.is_empty() {
+            return match explicit_type {
+                "start" => "start",
+                "exit" => "exit",
+                "wait.human" => "wait.human",
+                "conditional" => "conditional",
+                "parallel" => "parallel",
+                "parallel.fan_in" => "parallel.fan_in",
+                "tool" => "tool",
+                "stack.manager_loop" => "stack.manager_loop",
+                _ => "codergen",
+            };
+        }
+    }
+
+    match node
+        .attrs
+        .get_str("shape")
+        .map(str::trim)
+        .unwrap_or("box")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "mdiamond" => "start",
+        "msquare" => "exit",
+        "hexagon" => "wait.human",
+        "diamond" => "conditional",
+        "component" => "parallel",
+        "tripleoctagon" => "parallel.fan_in",
+        "parallelogram" => "tool",
+        "house" => "stack.manager_loop",
+        _ => "codergen",
+    }
 }
 
 struct RunStorage {
@@ -986,7 +1354,8 @@ mod tests {
     use crate::{
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorStorageWriter,
         CheckpointMetadata, CheckpointNodeOutcome, CheckpointState, NodeExecutor, NodeOutcome,
-        NodeStatus, parse_dot, storage::SharedAttractorStorageWriter,
+        NodeStatus, PipelineEvent, RuntimeEventKind, RuntimeEventSink, StageEvent, parse_dot,
+        runtime_event_channel, storage::SharedAttractorStorageWriter,
     };
     use async_trait::async_trait;
     use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
@@ -1979,5 +2348,70 @@ mod tests {
         );
         assert!(temp.path().join("attempt-2").exists());
         assert!(temp.path().join("attempt-2").join("artifacts").exists());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_events_stream_expected_pipeline_and_stage_timeline() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                plan [shape=box]
+                exit [shape=Msquare]
+                start -> plan -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let (tx, mut rx) = runtime_event_channel();
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    events: RuntimeEventSink::with_sender(tx),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+        assert_eq!(result.status, PipelineStatus::Success);
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert!(!events.is_empty());
+
+        let mut prior = 0u64;
+        for event in &events {
+            assert!(event.sequence_no > prior);
+            prior = event.sequence_no;
+        }
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RuntimeEventKind::Pipeline(PipelineEvent::Started { .. })
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RuntimeEventKind::Pipeline(PipelineEvent::Completed { .. })
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RuntimeEventKind::Stage(StageEvent::Started { ref node_id, .. }) if node_id == "start"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event.kind,
+                RuntimeEventKind::Stage(StageEvent::Completed { ref node_id, .. }) if node_id == "plan"
+            )
+        }));
     }
 }
