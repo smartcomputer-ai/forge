@@ -10,6 +10,7 @@
 - G4 completed (2026-02-10)
 - G5 completed (2026-02-10)
 - Approach update completed (2026-02-10): adapter now uses vendored `cxdb` Rust client for binary operations and keeps HTTP for projection/registry surfaces.
+- Policy note (2026-02-10): this milestone used `best_effort` in places; active architecture in `p33+` standardizes runtime persistence to CXDB `off`/`required` enablement.
 
 **Goal**
 Implement CXDB-backed turnstore adapter and activate dual-level persistence for Attractor and Agent timelines, including stage-to-agent drill-down.
@@ -17,12 +18,12 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
 **Source**
 - Spec of record: `spec/04-cxdb-integration-spec.md` (Phases C and D)
 - Runtime prerequisites:
-  - `roadmap/p27.1-turnstore-foundation-and-agent-persistence.md`
-  - `roadmap/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
-- CXDB binary protocol reference: `spec/cxdb/protocol.md` (Message Flows 2-10, Idempotency, Compression)
-- CXDB HTTP API reference: `spec/cxdb/http-api.md` (Contexts, Turns, Registry, Blobs)
-- CXDB invariants reference: `spec/cxdb/architecture.md` (Turn DAG, Blob CAS, Concurrency Model)
-- CXDB type registry reference: `spec/cxdb/type-registry.md` (Registry Bundle Format, Schema Evolution)
+  - `roadmap/completed/p27.1-turnstore-foundation-and-agent-persistence.md`
+  - `roadmap/completed/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
+- CXDB binary protocol reference: `crates/forge-cxdb/docs/protocol.md` (Message Flows 2-10, Idempotency, Compression)
+- CXDB HTTP API reference: `crates/forge-cxdb/docs/http-api.md` (Contexts, Turns, Registry, Blobs)
+- CXDB invariants reference: `crates/forge-cxdb/docs/architecture.md` (Turn DAG, Blob CAS, Concurrency Model)
+- CXDB type registry reference: `crates/forge-cxdb/docs/type-registry.md` (Registry Bundle Format, Schema Evolution)
 
 **Context**
 - P31 closes deterministic Attractor runtime conformance on local storage backends.

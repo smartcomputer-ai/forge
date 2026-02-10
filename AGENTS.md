@@ -21,6 +21,7 @@ When making changes, align behavior and terminology to these documents first.
   - `crates/forge-cxdb/` — vendored CXDB Rust client (binary protocol, fs helpers, reconnecting client)
 - Transitioning persistence layering (see roadmap/spec 04, p33-p37):
   - CXDB-first runtime contracts are the target architecture for `forge-agent` and `forge-attractor`.
+  - Runtime persistence policy is a CXDB enablement toggle: `off` or `required` (no `best_effort` mode).
   - `crates/forge-turnstore/` and `crates/forge-turnstore-cxdb/` are transitional and may be removed or retained only as compatibility/test shims after the migration completes.
 
 ## Test Strategy (Concise, Deterministic)

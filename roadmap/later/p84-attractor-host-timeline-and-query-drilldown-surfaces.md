@@ -12,7 +12,7 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 3.5, 4.4, 5.7)
 - Prerequisites:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
-  - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
+  - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
   - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
   - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
   - `roadmap/later/p83-attractor-attribute-policy-completion-and-contract-tightening.md`
@@ -20,14 +20,14 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 **Context**
 - Large graphs require fast, structured introspection for incident response and tuning.
 - Typed events exist, but hosts still need stable query contracts over persisted state/timelines.
-- CXDB enables rich projection browsing, but host APIs must remain backend-agnostic.
+- CXDB enables rich projection browsing, and host APIs should be stable while remaining projection-native.
 
 ## Scope
-- Define backend-agnostic host query contract for run/stage/branch/interview/checkpoint views.
+- Define a CXDB-first host query contract for run/stage/branch/interview/checkpoint views.
 - Implement timeline pagination/filtering and correlation-based drilldown.
 - Provide stage->agent->tool linkage traversal.
 - Add CLI query commands for timeline/inspection operations.
-- Add deterministic query parity tests across memory/fs/cxdb backends.
+- Add deterministic query-contract tests with fake CXDB plus optional live CXDB smoke coverage.
 
 ## Out of Scope
 - UI renderer/plugin implementation.
@@ -36,7 +36,7 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Query contract v1 (backend-agnostic)
+### [ ] G1. Query contract v1 (CXDB-first host surface)
 - Work:
   - Define canonical host query models for:
     - run summary
@@ -49,7 +49,7 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
   - `crates/forge-attractor/src/queries.rs`
   - `crates/forge-attractor/src/storage/types.rs`
 - DoD:
-  - Query contract is explicit and independent of concrete storage backend.
+  - Query contract is explicit and stable over CXDB typed projection surfaces.
 
 ### [ ] G2. Timeline assembly and pagination
 - Work:
@@ -91,15 +91,17 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 
 ### [ ] G5. Query parity and performance guardrails
 - Work:
-  - Add deterministic parity tests for memory/fs/cxdb backends.
+  - Add deterministic contract tests using fake CXDB projection responses.
+  - Add optional live CXDB smoke tests for cursor/paging and drilldown linkage paths.
   - Add basic performance budgets for timeline queries on representative run sizes.
   - Add regression tests for cursor semantics and ordering stability.
 - Files:
-  - `crates/forge-attractor/tests/queries_parity.rs`
+  - `crates/forge-attractor/tests/queries_contract.rs`
+  - `crates/forge-attractor/tests/queries_live.rs`
   - `crates/forge-attractor/tests/queries_pagination.rs`
   - `crates/forge-attractor/tests/queries_drilldown.rs`
 - DoD:
-  - Query results are stable across backends and resilient to large timelines.
+  - Query results are contract-stable and resilient to large timelines.
 
 ### [ ] G6. Documentation and runbook updates
 - Work:
@@ -118,7 +120,7 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 ## Deliverables
 - Stable host query contract with timeline/drilldown support.
 - CLI inspection commands for complex run debugging.
-- Backend parity coverage for query behavior.
+- Deterministic and live CXDB coverage for query behavior.
 - Documentation/runbook for day-2 operability.
 
 ## Execution order
@@ -131,5 +133,5 @@ Provide robust host-facing timeline/query APIs for deep run inspection, includin
 
 ## Exit criteria for this file
 - Complex runs are inspectable via structured timeline and drilldown queries.
-- Query behavior is backend-agnostic, deterministic, and test-backed.
+- Query behavior is projection-native, deterministic, and test-backed.
 - Operators can debug run/stage/branch/agent issues without raw turn spelunking.

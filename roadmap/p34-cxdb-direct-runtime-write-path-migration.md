@@ -4,7 +4,7 @@
 - Planned (2026-02-10)
 
 **Goal**
-Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based interfaces to direct CXDB-facing contracts, preserving deterministic behavior and storage write-mode semantics.
+Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based interfaces to direct CXDB-facing contracts, preserving deterministic behavior and a simple CXDB enabled/disabled persistence policy.
 
 **Source**
 - Spec of record: `spec/04-cxdb-integration-spec.md` (CXDB-first architecture)
@@ -19,7 +19,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 ## Scope
 - Introduce direct runtime persistence contracts around CXDB operations.
 - Remove `TurnStore` as the runtime dependency in Agent and Attractor write paths.
-- Preserve `off`/`best_effort`/`required` handling.
+- Preserve `off`/`required` handling as a CXDB toggle.
 - Maintain stage-to-agent linkage semantics and causal ordering.
 
 ## Out of Scope
@@ -34,7 +34,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
   - Replace `Arc<dyn TurnStore>` session persistence dependency with CXDB writer contract(s).
   - Migrate context creation, append, and head lookup to direct CXDB contract calls.
   - Keep deterministic idempotency key policy and sequence numbering.
-  - Preserve `TurnStoreWriteMode` behavior semantics (`off`, `best_effort`, `required`) while renaming as needed to remove turnstore terminology.
+  - Replace `TurnStoreWriteMode` semantics with a CXDB enablement toggle (`off`/`required`), removing turnstore terminology.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-agent/src/config.rs`
@@ -48,7 +48,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
   - Replace `AttractorStorageWriter` blanket implementation over `TurnStore` with explicit CXDB-targeted writer contract.
   - Migrate run/stage/checkpoint/link append paths to direct CXDB calls.
   - Preserve sequence number and idempotency construction semantics.
-  - Preserve `StorageWriteMode` behavior and error downgrade policy.
+  - Replace `StorageWriteMode` behavior with CXDB enablement semantics (`off`/`required`) and remove error downgrade paths.
 - Files:
   - `crates/forge-attractor/src/storage/mod.rs`
   - `crates/forge-attractor/src/storage/types.rs`
@@ -61,7 +61,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 - Work:
   - Move CXDB wiring responsibility to host/bootstrap layers with explicit binary+HTTP endpoint config.
   - Remove duplicate constructor paths that only differ by adapter wrappers.
-  - Standardize env/config names for binary/HTTP endpoints and write-mode settings.
+  - Standardize env/config names for binary/HTTP endpoints and CXDB enablement settings.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-attractor/src/runner.rs`
@@ -98,7 +98,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 ### [ ] G6. Live CXDB smoke and resilience coverage update
 - Work:
   - Expand live tests to validate binary write path specifically (not HTTP-only fallbacks).
-  - Cover write-mode behavior under transient endpoint failures.
+  - Cover toggle behavior: `off` skips writes, `required` fails deterministically under endpoint failures.
 - Files:
   - `crates/forge-turnstore-cxdb/tests/live.rs` (or successor runtime CXDB integration tests)
   - `crates/forge-agent/tests/cxdb_parity.rs`
@@ -108,7 +108,7 @@ Migrate Agent and Attractor runtime write paths from `forge-turnstore`-based int
 
 ## Deliverables
 - Agent/Attractor write paths migrated to CXDB-direct contracts.
-- Preserved write-mode semantics and stage-agent linkage behavior.
+- Preserved CXDB toggle semantics (`off`/`required`) and stage-agent linkage behavior.
 - Correctness fixes applied to idempotency/parent metadata handling.
 
 ## Execution order

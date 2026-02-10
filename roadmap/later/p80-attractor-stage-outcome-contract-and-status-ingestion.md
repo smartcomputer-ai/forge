@@ -12,8 +12,8 @@ Make stage outputs first-class runtime control inputs by defining and enforcing 
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.3, 3.5, 4.4)
 - Prerequisites:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
-  - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
-  - `roadmap/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
+  - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
+  - `roadmap/completed/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
   - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
 
 **Context**

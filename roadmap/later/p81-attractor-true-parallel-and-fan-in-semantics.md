@@ -13,8 +13,8 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
 - Prerequisites:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
   - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
-  - `roadmap/p29-attractor-state-checkpoint-fidelity-and-advanced-handlers.md`
-  - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
+  - `roadmap/completed/p29-attractor-state-checkpoint-fidelity-and-advanced-handlers.md`
+  - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
   - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
 
 **Context**
@@ -95,11 +95,11 @@ Replace synthetic parallel summaries with true branch execution semantics, deter
     - fan-out/fan-in traversal correctness
     - join policy outcomes
     - branch checkpoint/resume parity
-    - storage parity across memory/fs/cxdb backends
+    - deterministic fake-CXDB contract behavior plus optional live CXDB smoke coverage
 - Files:
   - `crates/forge-attractor/tests/parallel_runtime.rs`
   - `crates/forge-attractor/tests/parallel_resume.rs`
-  - `crates/forge-attractor/tests/parallel_storage_parity.rs`
+  - `crates/forge-attractor/tests/parallel_storage_contract.rs`
 - DoD:
   - True parallel semantics are stable and regression-resistant.
 

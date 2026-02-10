@@ -13,14 +13,14 @@ Upstream spec references:
 - `forge-agent` (`crates/forge-agent`): coding-agent loop (`spec/02-coding-agent-loop-spec.md`).
 - `forge-attractor` (`crates/forge-attractor`): DOT pipeline parser/runtime (`spec/03-attractor-spec.md`).
 - `forge-cli` (`crates/forge-cli`): in-process CLI host for running/resuming/inspecting Attractor pipelines.
-- `forge-turnstore` (`crates/forge-turnstore`): turn-store abstractions and local backends used by agent/attractor persistence.
-- `forge-turnstore-cxdb` (`crates/forge-turnstore-cxdb`): CXDB adapter implementing binary write path + HTTP projection path.
+- `forge-turnstore` (`crates/forge-turnstore`): transitional compatibility/test shim while runtime cores migrate to CXDB-first contracts.
+- `forge-turnstore-cxdb` (`crates/forge-turnstore-cxdb`): transitional adapter crate for CXDB write/projection integration during migration.
 
 ## Current status
 
 - `spec/01` and `spec/02` core layers are implemented with deterministic test coverage.
 - `spec/03` Attractor runtime core, host surfaces, and conformance suites are implemented for headless and CLI-first operation.
-- CXDB adapter rollout is active behind optional configuration; local deterministic memory/fs backends remain first-class for tests.
+- `spec/04` adopts CXDB-first persistence architecture; direct runtime migration and turnstore sunset are tracked in `roadmap/p34` through `roadmap/p37`.
 
 ## Build
 

@@ -1,7 +1,15 @@
 # P33: CXDB-First Architecture Pivot and Spec Rebaseline (Post-P32)
 
+**Complete** (2026-02-10)
+
 **Status**
-- Planned (2026-02-10)
+- Completed (2026-02-10)
+- G1 completed (2026-02-10)
+- G2 completed (2026-02-10)
+- G3 completed (2026-02-10)
+- G4 completed (2026-02-10)
+- G5 completed (2026-02-10)
+- G6 completed (2026-02-10)
 
 **Goal**
 Rebaseline Forge persistence around a CXDB-first architecture, replacing the current multi-backend `turnstore` abstraction strategy with direct CXDB contracts in runtime cores while preserving deterministic local testability.
@@ -12,7 +20,7 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
   - `spec/02-coding-agent-loop-spec.md`
   - `spec/03-attractor-spec.md`
 - Prerequisites:
-  - `roadmap/p27.1-turnstore-foundation-and-agent-persistence.md`
+  - `roadmap/completed/p27.1-turnstore-foundation-and-agent-persistence.md`
   - `roadmap/p32-cxdb-adapter-and-dual-level-persistence.md`
 
 **Context**
@@ -33,7 +41,7 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Architecture and terminology rebaseline in specs/docs
+### [x] G1. Architecture and terminology rebaseline in specs/docs
 - Work:
   - Update `spec/04-cxdb-integration-spec.md` from storage-abstraction-first to CXDB-first runtime architecture.
   - Define clear terms:
@@ -49,7 +57,7 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 - DoD:
   - Spec language and repository architecture docs consistently describe CXDB-first behavior.
 
-### [ ] G2. Crate-boundary policy for CXDB-first runtime cores
+### [x] G2. Crate-boundary policy for CXDB-first runtime cores
 - Work:
   - Define approved dependency direction:
     - `forge-agent` and `forge-attractor` may depend on CXDB-facing contracts/types.
@@ -63,17 +71,17 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 - DoD:
   - The target crate graph and dependency rules are explicit and enforceable.
 
-### [ ] G3. CXDB-first runtime persistence contract definition
+### [x] G3. CXDB-first runtime persistence contract definition
 - Work:
   - Specify runtime-facing CXDB capability contracts directly (append/read/registry/blob/fs-sync).
   - Replace generic `TurnStore` framing in spec with CXDB-native operation framing.
-  - Keep `off`/`best_effort`/`required` behavior as runtime policy independent of transport.
+  - Keep `off`/`required` behavior as runtime policy independent of transport, modeled as CXDB disabled/enabled.
 - Files:
   - `spec/04-cxdb-integration-spec.md`
 - DoD:
   - Runtime contract maps 1:1 to CXDB protocol/HTTP capabilities with no leaky mandatory methods.
 
-### [ ] G4. Migration policy and compatibility strategy
+### [x] G4. Migration policy and compatibility strategy
 - Work:
   - Define phased migration:
     - compatibility phase (coexistence)
@@ -88,12 +96,12 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Test strategy rebaseline for CXDB-first architecture
+### [x] G5. Test strategy rebaseline for CXDB-first architecture
 - Work:
   - Replace backend-portability parity framing with:
     - deterministic mock/fake CXDB contract tests
     - optional live CXDB integration tests
-    - end-to-end runtime conformance tests in `best_effort` and `required` modes.
+    - end-to-end runtime conformance tests in `off` and `required` modes.
   - Define expected minimum coverage for write/read/fs-sync/registry paths.
 - Files:
   - `spec/04-cxdb-integration-spec.md`
@@ -102,7 +110,7 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 - DoD:
   - Test guidance matches architecture and is actionable for implementation milestones.
 
-### [ ] G6. Backlog and sequencing alignment
+### [x] G6. Backlog and sequencing alignment
 - Work:
   - Create active refactor milestones (`p34+`) for code migration and cleanup.
   - Mark deferred Attractor feature milestones (`roadmap/later/p80..p84`) as explicitly sequenced after the CXDB-first migration series.

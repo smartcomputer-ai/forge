@@ -12,7 +12,7 @@ Add a deterministic runtime control plane (`pause`, `cancel`, `continue`) and st
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 4.4, 5.1, 5.3)
 - Prerequisites:
   - `roadmap/p37-turnstore-sunset-and-cxdb-hardening.md`
-  - `roadmap/p30-attractor-observability-hitl-and-storage-abstractions.md`
+  - `roadmap/completed/p30-attractor-observability-hitl-and-storage-abstractions.md`
   - `roadmap/later/p80-attractor-stage-outcome-contract-and-status-ingestion.md`
   - `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
 

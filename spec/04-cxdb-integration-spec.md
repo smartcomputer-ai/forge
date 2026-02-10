@@ -68,7 +68,7 @@ CXDB integration belongs above the LLM transport layer and below host/UI surface
 - `forge-llm`: no direct CXDB dependency.
 - `forge-agent`: optional runtime persistence using CXDB-facing contracts.
 - `forge-attractor`: optional runtime persistence using CXDB-facing contracts.
-- Host (CLI/HTTP/TUI/Web): configures endpoints/modes and may consume CXDB projections.
+- Host (CLI/HTTP/TUI/Web): configures endpoints and CXDB enablement and may consume CXDB projections.
 
 ### 2.2 Architecture Rules
 
@@ -95,7 +95,7 @@ By default:
 - write-heavy runtime path (create/fork/append/head/last/blob/fs attach): binary protocol (`:9009`),
 - typed projection and cursor paging: HTTP API (`:9010`),
 - registry bundle publish/read: HTTP API,
-- HTTP-only write mode is acceptable for bootstrap/testing but SHOULD NOT be the production default.
+- HTTP-only CXDB connectivity is acceptable for bootstrap/testing but SHOULD NOT be the production default.
 
 ### 2.5 CXDB Cross-check References
 
@@ -304,16 +304,15 @@ Notes:
 - stage-to-agent linkage creation,
 - dot source and normalized graph snapshot at run initialization.
 
-### 4.5 Failure Handling Modes
+### 4.5 CXDB Persistence Toggle
 
 Runtime config SHOULD support:
 - `off`: skip persistence writes,
-- `best_effort`: record warning/diagnostic and continue,
 - `required`: fail run/session when persistence write fails.
 
 Recommended defaults:
-- agent: `best_effort`,
-- attractor: `best_effort` initially, `required` for strict audit profiles.
+- local deterministic test runs: `off` unless CXDB-specific behavior is under test,
+- CXDB-enabled runs: `required`.
 
 ### 4.6 Idempotency and Parent Semantics
 
@@ -371,7 +370,6 @@ Minimum test tiers:
 ### 5.1 Source of Truth by Mode
 
 - `off`: runtime memory/filesystem state is authoritative.
-- `best_effort`: runtime state is authoritative; CXDB is journal/mirror with tolerated write failures.
 - `required`: CXDB write success is part of runtime correctness contract.
 
 ### 5.2 Workspace and Artifacts
@@ -428,7 +426,7 @@ Renderer loading/execution is host/UI scope, not core runtime scope:
 
 ### Phase B (P34): Direct runtime write-path migration
 - migrate agent and attractor writes from turnstore traits to CXDB-first contracts,
-- preserve `off`/`best_effort`/`required` semantics,
+- preserve `off`/`required` semantics behind a CXDB enablement toggle,
 - fix idempotency/parent-resolution correctness gaps.
 
 ### Phase C (P35): FSTree and workspace snapshot integration
@@ -458,7 +456,7 @@ Renderer loading/execution is host/UI scope, not core runtime scope:
 
 ### 7.2 Runtime Write Path
 - [ ] Agent session and Attractor run/stage/checkpoint/link writes use CXDB-first contracts.
-- [ ] Write-mode behavior (`off`, `best_effort`, `required`) is preserved and tested.
+- [ ] CXDB persistence toggle behavior (`off`, `required`) is preserved and tested.
 - [ ] Deterministic idempotency keys and committed parent semantics are validated.
 
 ### 7.3 FS Lineage
