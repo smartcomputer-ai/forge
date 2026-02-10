@@ -8,6 +8,7 @@ Primary specs live in `spec/`:
 - `spec/02-coding-agent-loop-spec.md` — coding agent loop spec
 - `spec/03-attractor-spec.md` — attractor spec
 - `spec/04-cxdb-integration-spec.md` — CXDB-first runtime persistence integration extension
+- `spec/05-factory-control-plane-spec.md` — factory control-plane ideation (outer-loop goals and principles)
 
 When making changes, align behavior and terminology to these documents first.
 

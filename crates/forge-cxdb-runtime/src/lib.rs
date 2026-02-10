@@ -9,8 +9,7 @@ Operation mapping (spec cross-check):
 | `CxdbRecordStore::fork_context` | binary `CTX_FORK` | `spec/cxdb/protocol.md` "3. CTX_FORK" |
 | `CxdbRecordStore::append_turn` | binary `APPEND_TURN` | `spec/cxdb/protocol.md` "5. APPEND_TURN" |
 | `CxdbRecordStore::get_head` | binary `GET_HEAD` | `spec/cxdb/protocol.md` "4. GET_HEAD" |
-| `CxdbRecordStore::list_turns` (no cursor) | binary `GET_LAST` | `spec/cxdb/protocol.md` "6. GET_LAST" |
-| `CxdbRecordStore::list_turns` (`before_turn_id`) | HTTP `GET /v1/contexts/:id/turns` | `spec/cxdb/http-api.md` "Get Turns from Context" |
+| `CxdbRecordStore::list_turns` | HTTP `GET /v1/contexts/:id/turns` | `spec/cxdb/http-api.md` "Get Turns from Context" |
 | `CxdbRegistryStore::publish_registry_bundle` | HTTP `PUT /v1/registry/bundles/:bundle_id` | `spec/cxdb/http-api.md` "Publish Registry Bundle" |
 | `CxdbRegistryStore::get_registry_bundle` | HTTP `GET /v1/registry/bundles/:bundle_id` | `spec/cxdb/http-api.md` "Get Registry Bundle" |
 | `CxdbArtifactClient::put_blob` | binary `PUT_BLOB` | `spec/cxdb/protocol.md` "9. PUT_BLOB" |
@@ -21,7 +20,7 @@ Implementation notes:
 - Forge IDs remain opaque `String` values and are converted to `u64` only at the adapter boundary.
 - `append_turn` computes BLAKE3 content hash over uncompressed payload bytes.
 - If `AppendTurnRequest.idempotency_key` is empty, the adapter generates a deterministic fallback key.
-- Cursor paging (`before_turn_id`) is routed to HTTP so projection semantics stay aligned with CXDB.
+- Turn listing always uses HTTP typed projection so read/query surfaces stay projection-native.
 "#]
 
 pub mod adapter;

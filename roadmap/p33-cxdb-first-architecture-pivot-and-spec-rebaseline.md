@@ -106,7 +106,7 @@ Rebaseline Forge persistence around a CXDB-first architecture, replacing the cur
 - Files:
   - `spec/04-cxdb-integration-spec.md`
   - `roadmap/p34-cxdb-direct-runtime-write-path-migration.md`
-  - `roadmap/p35-cxdb-fstree-and-workspace-snapshot-integration.md`
+  - `roadmap/p38-cxdb-fstree-and-workspace-snapshot-integration.md`
 - DoD:
   - Test guidance matches architecture and is actionable for implementation milestones.
 

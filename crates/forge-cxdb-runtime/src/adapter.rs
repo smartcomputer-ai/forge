@@ -508,7 +508,7 @@ impl CxdbHttpClient for CxdbReqwestHttpClient {
         before_turn_id: Option<u64>,
         limit: usize,
     ) -> Result<Vec<HttpStoredTurn>, CxdbClientError> {
-        let mut path = format!("/v1/contexts/{context_id}/turns?limit={limit}&view=both");
+        let mut path = format!("/v1/contexts/{context_id}/turns?limit={limit}&view=typed");
         if let Some(before) = before_turn_id {
             path.push_str(&format!("&before_turn_id={before}"));
         }
@@ -693,20 +693,6 @@ where
         )
     }
 
-    fn as_stored_turn(turn: BinaryStoredTurn) -> StoredTurn {
-        StoredTurn {
-            context_id: Self::context_id_string(turn.context_id),
-            turn_id: Self::turn_id_string(turn.turn_id),
-            parent_turn_id: Self::turn_id_string(turn.parent_turn_id),
-            depth: turn.depth,
-            type_id: turn.type_id,
-            type_version: turn.type_version,
-            payload: turn.payload,
-            idempotency_key: turn.idempotency_key,
-            content_hash: Some(Self::hash_hex(turn.content_hash)),
-        }
-    }
-
     fn as_stored_turn_from_http(turn: HttpStoredTurn) -> StoredTurn {
         StoredTurn {
             context_id: Self::context_id_string(turn.context_id),
@@ -870,30 +856,20 @@ where
         }
 
         let context_id_u64 = Self::parse_context_id(context_id)?;
-
-        if let Some(turn_id) = before_turn_id {
-            if turn_id == "0" {
-                return Ok(Vec::new());
-            }
-            let before_turn_id_u64 = Self::parse_turn_id(turn_id)?;
-            let turns = self
-                .http_client
-                .list_turns(context_id_u64, Some(before_turn_id_u64), limit)
-                .await
-                .map_err(CxdbClientError::into_runtime_error)?;
-            return Ok(turns
-                .into_iter()
-                .map(Self::as_stored_turn_from_http)
-                .collect());
-        }
-
+        let before_turn_id_u64 = match before_turn_id {
+            Some(turn_id) if turn_id == "0" => return Ok(Vec::new()),
+            Some(turn_id) => Some(Self::parse_turn_id(turn_id)?),
+            None => None,
+        };
         let turns = self
-            .binary_client
-            .get_last(context_id_u64, limit, true)
+            .http_client
+            .list_turns(context_id_u64, before_turn_id_u64, limit)
             .await
             .map_err(CxdbClientError::into_runtime_error)?;
-
-        Ok(turns.into_iter().map(Self::as_stored_turn).collect())
+        Ok(turns
+            .into_iter()
+            .map(Self::as_stored_turn_from_http)
+            .collect())
     }
 }
 
@@ -1045,11 +1021,6 @@ fn parse_u32_field(payload: &Value, key: &str) -> Result<u32, CxdbClientError> {
 }
 
 fn decode_turn_payload(turn: &Value) -> Result<Vec<u8>, CxdbClientError> {
-    if let Some(bytes_b64) = turn.get("bytes_b64").and_then(Value::as_str) {
-        return base64::engine::general_purpose::STANDARD
-            .decode(bytes_b64)
-            .map_err(|err| CxdbClientError::Backend(format!("bytes_b64 decode failed: {err}")));
-    }
     if let Some(data) = turn.get("data") {
         if let Some(payload_b64) = data.get("payload_b64").and_then(Value::as_str) {
             return base64::engine::general_purpose::STANDARD
@@ -1060,6 +1031,11 @@ fn decode_turn_payload(turn: &Value) -> Result<Vec<u8>, CxdbClientError> {
         }
         return serde_json::to_vec(data)
             .map_err(|err| CxdbClientError::Backend(format!("data encode failed: {err}")));
+    }
+    if let Some(bytes_b64) = turn.get("bytes_b64").and_then(Value::as_str) {
+        return base64::engine::general_purpose::STANDARD
+            .decode(bytes_b64)
+            .map_err(|err| CxdbClientError::Backend(format!("bytes_b64 decode failed: {err}")));
     }
     Err(CxdbClientError::Backend(
         "turn payload has neither bytes_b64 nor data".to_string(),

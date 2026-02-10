@@ -199,6 +199,19 @@ Rules:
 - `payload` SHOULD avoid non-deterministic fields unless explicitly marked diagnostic.
 - large data SHOULD be referenced as artifacts (`blob_hash`, `size`, optional `mime_type`) instead of inlining all bytes.
 
+Forge P36 baseline (v1 runtime envelope wire format):
+- envelope bytes are msgpack with stable numeric tags (write path no longer persists JSON envelope bytes),
+- required envelope tags:
+  - `1 schema_version`
+  - `2 run_id`
+  - `3 session_id`
+  - `4 node_id`
+  - `5 stage_attempt_id`
+  - `6 event_kind`
+  - `7 timestamp`
+  - `8 payload_json` (JSON string form of payload object)
+  - `9..18` correlation fields (`corr_run_id`, `corr_pipeline_context_id`, `corr_node_id`, `corr_stage_attempt_id`, `corr_agent_session_id`, `corr_agent_context_id`, `corr_agent_head_turn_id`, `corr_parent_turn_id`, `corr_sequence_no`, `corr_thread_key`)
+
 ### 3.6 Filesystem Lineage Requirements (`fstree`)
 
 For workspace lineage, records SHOULD include:
@@ -220,6 +233,11 @@ For typed projections:
 - runtime writers SHOULD encode deterministic msgpack bytes directly,
 - registry bundles SHOULD be published before or alongside first writes for new schema versions,
 - unknown tags/fields MUST be forward-compatible for readers.
+
+Runtime bundle publication policy:
+- Forge runtime bootstrap paths SHOULD publish the relevant Forge bundle (`forge.agent.runtime.v1`, `forge.attractor.runtime.v1`) before first append for `required` mode sessions/runs.
+- bundle publication SHOULD be idempotent (safe to retry and safe when already present).
+- field-tag evolution MUST follow type-registry rules (never reuse tags; bump `type_version` on descriptor changes).
 
 ### 3.8 Branch Context Policy
 
@@ -269,7 +287,7 @@ INTERFACE CxdbProjectionReader:
 ```
 
 Rule:
-- when `before_turn_id` paging or typed projection decoding is required, prefer HTTP projection APIs.
+- query/list surfaces SHOULD use HTTP typed projection APIs by default (with or without `before_turn_id`).
 
 ### 4.3 Artifact and FS Contract
 
@@ -455,7 +473,7 @@ Filesystem snapshot/attachment failures (`fstree`, `PUT_BLOB`, `ATTACH_FS`):
 - preserve `off`/`required` semantics behind a CXDB enablement toggle,
 - fix idempotency/parent-resolution correctness gaps.
 
-### Phase C (P35): FSTree and workspace snapshot integration
+### Phase C (P38): FSTree and workspace snapshot integration
 - integrate deterministic snapshot capture/upload,
 - attach fs roots on configured boundaries,
 - normalize artifact model for blob refs plus fs lineage.
@@ -499,4 +517,4 @@ Filesystem snapshot/attachment failures (`fstree`, `PUT_BLOB`, `ATTACH_FS`):
 - [ ] Endpoint topology and trust boundaries are documented.
 - [ ] Redaction/retention controls are enforced by policy.
 - [ ] Deterministic fake-CXDB and optional live-CXDB suites are green.
-- [ ] Migration phases P33-P37 have an explicit closure matrix.
+- [ ] Migration phases P33-P38 have an explicit closure matrix.

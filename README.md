@@ -71,7 +71,8 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint /path/to/checkpoint.js
 ## CXDB operations
 
 - Binary (`:9009`) is the default write-heavy path for runtime appends and artifacts.
-- HTTP (`:9010`) is the default read/projection path for paging and registry APIs.
+- HTTP (`:9010`) is the default typed read/projection path for turn listing/paging and registry APIs.
+- Forge runtime envelopes are persisted as msgpack with stable numeric tags and published registry bundles (`forge.agent.runtime.v1`, `forge.attractor.runtime.v1`).
 - Production deployments should keep binary endpoints on trusted private networks with TLS/network controls and place HTTP behind authenticated gateways.
 
 ## CXDB trust boundaries

@@ -15,7 +15,7 @@ use forge_llm::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -53,6 +53,217 @@ struct StoredTurnEnvelope {
     correlation: CorrelationMetadata,
 }
 
+const TAG_SCHEMA_VERSION: u64 = 1;
+const TAG_RUN_ID: u64 = 2;
+const TAG_SESSION_ID: u64 = 3;
+const TAG_NODE_ID: u64 = 4;
+const TAG_STAGE_ATTEMPT_ID: u64 = 5;
+const TAG_EVENT_KIND: u64 = 6;
+const TAG_TIMESTAMP: u64 = 7;
+const TAG_PAYLOAD_JSON: u64 = 8;
+const TAG_CORR_RUN_ID: u64 = 9;
+const TAG_CORR_PIPELINE_CONTEXT_ID: u64 = 10;
+const TAG_CORR_NODE_ID: u64 = 11;
+const TAG_CORR_STAGE_ATTEMPT_ID: u64 = 12;
+const TAG_CORR_AGENT_SESSION_ID: u64 = 13;
+const TAG_CORR_AGENT_CONTEXT_ID: u64 = 14;
+const TAG_CORR_AGENT_HEAD_TURN_ID: u64 = 15;
+const TAG_CORR_PARENT_TURN_ID: u64 = 16;
+const TAG_CORR_SEQUENCE_NO: u64 = 17;
+const TAG_CORR_THREAD_KEY: u64 = 18;
+
+fn encode_stored_turn_envelope(envelope: &StoredTurnEnvelope) -> Result<Vec<u8>, SessionError> {
+    let payload_json = serde_json::to_string(&envelope.payload)
+        .map_err(|err| SessionError::Persistence(err.to_string()))?;
+
+    let mut tagged: BTreeMap<u64, Value> = BTreeMap::new();
+    tagged.insert(
+        TAG_SCHEMA_VERSION,
+        Value::Number((envelope.schema_version as u64).into()),
+    );
+    tagged.insert(
+        TAG_RUN_ID,
+        optional_string_value(envelope.run_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_SESSION_ID,
+        optional_string_value(envelope.session_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_NODE_ID,
+        optional_string_value(envelope.node_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_STAGE_ATTEMPT_ID,
+        optional_string_value(envelope.stage_attempt_id.as_deref()),
+    );
+    tagged.insert(TAG_EVENT_KIND, Value::String(envelope.event_kind.clone()));
+    tagged.insert(TAG_TIMESTAMP, Value::String(envelope.timestamp.clone()));
+    tagged.insert(TAG_PAYLOAD_JSON, Value::String(payload_json));
+    tagged.insert(
+        TAG_CORR_RUN_ID,
+        optional_string_value(envelope.correlation.run_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_PIPELINE_CONTEXT_ID,
+        optional_string_value(envelope.correlation.pipeline_context_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_NODE_ID,
+        optional_string_value(envelope.correlation.node_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_STAGE_ATTEMPT_ID,
+        optional_string_value(envelope.correlation.stage_attempt_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_AGENT_SESSION_ID,
+        optional_string_value(envelope.correlation.agent_session_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_AGENT_CONTEXT_ID,
+        optional_string_value(envelope.correlation.agent_context_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_AGENT_HEAD_TURN_ID,
+        optional_string_value(envelope.correlation.agent_head_turn_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_PARENT_TURN_ID,
+        optional_string_value(envelope.correlation.parent_turn_id.as_deref()),
+    );
+    tagged.insert(
+        TAG_CORR_SEQUENCE_NO,
+        envelope
+            .correlation
+            .sequence_no
+            .map(|value| Value::Number(value.into()))
+            .unwrap_or(Value::Null),
+    );
+    tagged.insert(
+        TAG_CORR_THREAD_KEY,
+        optional_string_value(envelope.correlation.thread_key.as_deref()),
+    );
+
+    rmp_serde::to_vec_named(&tagged)
+        .map_err(|err| SessionError::Persistence(format!("msgpack encode failed: {err}")))
+}
+
+#[allow(dead_code)]
+fn decode_stored_turn_envelope(payload: &[u8]) -> Result<StoredTurnEnvelope, SessionError> {
+    if let Ok(projected) = serde_json::from_slice::<Value>(payload) {
+        if let Some(envelope) = decode_projection_envelope(&projected)? {
+            return Ok(envelope);
+        }
+    }
+
+    let tagged: BTreeMap<u64, Value> = rmp_serde::from_slice(payload)
+        .map_err(|err| SessionError::Persistence(format!("msgpack decode failed: {err}")))?;
+    Ok(StoredTurnEnvelope {
+        schema_version: tagged
+            .get(&TAG_SCHEMA_VERSION)
+            .and_then(Value::as_u64)
+            .map(|value| value as u32)
+            .unwrap_or(1),
+        run_id: optional_string_field(tagged.get(&TAG_RUN_ID)),
+        session_id: optional_string_field(tagged.get(&TAG_SESSION_ID)),
+        node_id: optional_string_field(tagged.get(&TAG_NODE_ID)),
+        stage_attempt_id: optional_string_field(tagged.get(&TAG_STAGE_ATTEMPT_ID)),
+        event_kind: tagged
+            .get(&TAG_EVENT_KIND)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        timestamp: tagged
+            .get(&TAG_TIMESTAMP)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        payload: parse_payload_json_field(tagged.get(&TAG_PAYLOAD_JSON))?,
+        correlation: CorrelationMetadata {
+            run_id: optional_string_field(tagged.get(&TAG_CORR_RUN_ID)),
+            pipeline_context_id: optional_string_field(tagged.get(&TAG_CORR_PIPELINE_CONTEXT_ID)),
+            node_id: optional_string_field(tagged.get(&TAG_CORR_NODE_ID)),
+            stage_attempt_id: optional_string_field(tagged.get(&TAG_CORR_STAGE_ATTEMPT_ID)),
+            agent_session_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_SESSION_ID)),
+            agent_context_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_CONTEXT_ID)),
+            agent_head_turn_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_HEAD_TURN_ID)),
+            parent_turn_id: optional_string_field(tagged.get(&TAG_CORR_PARENT_TURN_ID)),
+            sequence_no: tagged.get(&TAG_CORR_SEQUENCE_NO).and_then(Value::as_u64),
+            thread_key: optional_string_field(tagged.get(&TAG_CORR_THREAD_KEY)),
+        },
+    })
+}
+
+#[allow(dead_code)]
+fn decode_projection_envelope(
+    projected: &Value,
+) -> Result<Option<StoredTurnEnvelope>, SessionError> {
+    let Some(object) = projected.as_object() else {
+        return Ok(None);
+    };
+    if !object.contains_key("schema_version") || !object.contains_key("payload_json") {
+        return Ok(None);
+    }
+
+    Ok(Some(StoredTurnEnvelope {
+        schema_version: object
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .map(|value| value as u32)
+            .unwrap_or(1),
+        run_id: optional_string_field(object.get("run_id")),
+        session_id: optional_string_field(object.get("session_id")),
+        node_id: optional_string_field(object.get("node_id")),
+        stage_attempt_id: optional_string_field(object.get("stage_attempt_id")),
+        event_kind: object
+            .get("event_kind")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        timestamp: object
+            .get("timestamp")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        payload: parse_payload_json_field(object.get("payload_json"))?,
+        correlation: CorrelationMetadata {
+            run_id: optional_string_field(object.get("corr_run_id")),
+            pipeline_context_id: optional_string_field(object.get("corr_pipeline_context_id")),
+            node_id: optional_string_field(object.get("corr_node_id")),
+            stage_attempt_id: optional_string_field(object.get("corr_stage_attempt_id")),
+            agent_session_id: optional_string_field(object.get("corr_agent_session_id")),
+            agent_context_id: optional_string_field(object.get("corr_agent_context_id")),
+            agent_head_turn_id: optional_string_field(object.get("corr_agent_head_turn_id")),
+            parent_turn_id: optional_string_field(object.get("corr_parent_turn_id")),
+            sequence_no: object.get("corr_sequence_no").and_then(Value::as_u64),
+            thread_key: optional_string_field(object.get("corr_thread_key")),
+        },
+    }))
+}
+
+#[allow(dead_code)]
+fn parse_payload_json_field(value: Option<&Value>) -> Result<Value, SessionError> {
+    let Some(payload_json) = value.and_then(Value::as_str) else {
+        return Ok(Value::Null);
+    };
+    serde_json::from_str(payload_json)
+        .map_err(|err| SessionError::Persistence(format!("payload_json decode failed: {err}")))
+}
+
+fn optional_string_value(value: Option<&str>) -> Value {
+    value
+        .map(|inner| Value::String(inner.to_string()))
+        .unwrap_or(Value::Null)
+}
+
+#[allow(dead_code)]
+fn optional_string_field(value: Option<&Value>) -> Option<String> {
+    value
+        .and_then(Value::as_str)
+        .map(std::string::ToString::to_string)
+}
+
 fn encode_idempotency_part(part: &str) -> String {
     format!("{}:{}", part.len(), part)
 }
@@ -64,6 +275,71 @@ fn agent_idempotency_key(session_id: &str, local_turn_index: u64, event_kind: &s
         local_turn_index,
         encode_idempotency_part(event_kind)
     )
+}
+
+const AGENT_REGISTRY_BUNDLE_ID: &str = "forge.agent.runtime.v1";
+
+fn publish_agent_registry_bundle_blocking(
+    store: Arc<CxdbRuntimeStore<Arc<dyn CxdbBinaryClient>, Arc<dyn CxdbHttpClient>>>,
+) -> Result<(), AgentError> {
+    let bundle_json = agent_registry_bundle_json()?;
+    futures::executor::block_on(async move {
+        store
+            .publish_registry_bundle(AGENT_REGISTRY_BUNDLE_ID, &bundle_json)
+            .await
+    })
+    .map_err(|error| {
+        SessionError::Persistence(format!(
+            "publish_registry_bundle failed for '{}': {}",
+            AGENT_REGISTRY_BUNDLE_ID, error
+        ))
+        .into()
+    })
+}
+
+fn agent_registry_bundle_json() -> Result<Vec<u8>, AgentError> {
+    let fields = envelope_type_fields_descriptor();
+    let bundle = serde_json::json!({
+        "registry_version": 1,
+        "bundle_id": AGENT_REGISTRY_BUNDLE_ID,
+        "types": {
+            "forge.agent.user_turn": { "versions": { "1": { "fields": fields } } },
+            "forge.agent.assistant_turn": { "versions": { "1": { "fields": fields } } },
+            "forge.agent.tool_results_turn": { "versions": { "1": { "fields": fields } } },
+            "forge.agent.system_turn": { "versions": { "1": { "fields": fields } } },
+            "forge.agent.steering_turn": { "versions": { "1": { "fields": fields } } },
+            "forge.agent.event": { "versions": { "1": { "fields": fields } } }
+        }
+    });
+    serde_json::to_vec(&bundle).map_err(|error| {
+        SessionError::Persistence(format!(
+            "failed to serialize agent registry bundle: {error}"
+        ))
+        .into()
+    })
+}
+
+fn envelope_type_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "schema_version", "type": "u32" },
+        "2": { "name": "run_id", "type": "string", "optional": true },
+        "3": { "name": "session_id", "type": "string", "optional": true },
+        "4": { "name": "node_id", "type": "string", "optional": true },
+        "5": { "name": "stage_attempt_id", "type": "string", "optional": true },
+        "6": { "name": "event_kind", "type": "string" },
+        "7": { "name": "timestamp", "type": "string" },
+        "8": { "name": "payload_json", "type": "string" },
+        "9": { "name": "corr_run_id", "type": "string", "optional": true },
+        "10": { "name": "corr_pipeline_context_id", "type": "string", "optional": true },
+        "11": { "name": "corr_node_id", "type": "string", "optional": true },
+        "12": { "name": "corr_stage_attempt_id", "type": "string", "optional": true },
+        "13": { "name": "corr_agent_session_id", "type": "string", "optional": true },
+        "14": { "name": "corr_agent_context_id", "type": "string", "optional": true },
+        "15": { "name": "corr_agent_head_turn_id", "type": "string", "optional": true },
+        "16": { "name": "corr_parent_turn_id", "type": "string", "optional": true },
+        "17": { "name": "corr_sequence_no", "type": "u64", "optional": true },
+        "18": { "name": "corr_thread_key", "type": "string", "optional": true }
+    })
 }
 
 #[async_trait::async_trait]
@@ -494,8 +770,11 @@ impl Session {
         binary_client: Arc<dyn CxdbBinaryClient>,
         http_client: Arc<dyn CxdbHttpClient>,
     ) -> Result<Self, AgentError> {
-        let store: Arc<dyn SessionPersistenceWriter> =
-            Arc::new(CxdbRuntimeStore::new(binary_client, http_client));
+        let runtime_store = Arc::new(CxdbRuntimeStore::new(binary_client, http_client));
+        if config.cxdb_persistence == CxdbPersistenceMode::Required {
+            publish_agent_registry_bundle_blocking(runtime_store.clone())?;
+        }
+        let store: Arc<dyn SessionPersistenceWriter> = runtime_store;
         Self::new_with_persistence(
             provider_profile,
             execution_env,
@@ -836,8 +1115,7 @@ impl Session {
                 ..CorrelationMetadata::default()
             },
         };
-        let payload_bytes = serde_json::to_vec(&envelope)
-            .map_err(|err| SessionError::Persistence(err.to_string()))?;
+        let payload_bytes = encode_stored_turn_envelope(&envelope)?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
@@ -2624,6 +2902,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stored_turn_envelope_msgpack_roundtrip_preserves_payload_and_metadata() {
+        let envelope = StoredTurnEnvelope {
+            schema_version: 1,
+            run_id: None,
+            session_id: Some("session-1".to_string()),
+            node_id: Some("plan".to_string()),
+            stage_attempt_id: Some("plan:attempt:1".to_string()),
+            event_kind: "tool_call_end".to_string(),
+            timestamp: "123.000Z".to_string(),
+            payload: serde_json::json!({"tool_name":"echo","success":true}),
+            correlation: CorrelationMetadata {
+                run_id: None,
+                pipeline_context_id: Some("ctx-1".to_string()),
+                node_id: Some("plan".to_string()),
+                stage_attempt_id: Some("plan:attempt:1".to_string()),
+                agent_session_id: Some("session-1".to_string()),
+                agent_context_id: Some("ctx-1".to_string()),
+                agent_head_turn_id: Some("42".to_string()),
+                parent_turn_id: Some("7".to_string()),
+                sequence_no: Some(5),
+                thread_key: Some("main".to_string()),
+            },
+        };
+
+        let bytes = encode_stored_turn_envelope(&envelope).expect("encode should succeed");
+        let decoded = decode_stored_turn_envelope(&bytes).expect("decode should succeed");
+        assert_eq!(decoded, envelope);
+    }
+
     #[async_trait]
     impl SessionPersistenceWriter for RecordingPersistence {
         async fn create_context(
@@ -2959,7 +3267,7 @@ mod tests {
             .iter()
             .filter(|request| request.type_id == "forge.agent.event")
             .filter_map(|request| {
-                serde_json::from_slice::<StoredTurnEnvelope>(&request.payload)
+                decode_stored_turn_envelope(&request.payload)
                     .ok()
                     .map(|envelope| envelope.event_kind)
             })

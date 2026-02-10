@@ -202,25 +202,16 @@ where
         }
 
         let context_id_u64 = parse_context_id(context_id)?;
-
-        if let Some(turn_id) = before_turn_id {
-            if turn_id == "0" {
-                return Ok(Vec::new());
-            }
-            let before_turn_id_u64 = parse_turn_id(turn_id)?;
-            let turns = self
-                .http_client
-                .list_turns(context_id_u64, Some(before_turn_id_u64), limit)
-                .await?;
-            return Ok(turns.into_iter().map(stored_turn_from_http).collect());
-        }
-
+        let before_turn_id_u64 = match before_turn_id {
+            Some(turn_id) if turn_id == "0" => return Ok(Vec::new()),
+            Some(turn_id) => Some(parse_turn_id(turn_id)?),
+            None => None,
+        };
         let turns = self
-            .binary_client
-            .get_last(context_id_u64, limit, true)
+            .http_client
+            .list_turns(context_id_u64, before_turn_id_u64, limit)
             .await?;
-
-        Ok(turns.into_iter().map(stored_turn_from_binary).collect())
+        Ok(turns.into_iter().map(stored_turn_from_http).collect())
     }
 
     pub async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError> {
@@ -285,20 +276,6 @@ fn turn_id_string(turn_id: u64) -> TurnId {
 
 fn context_id_string(context_id: u64) -> ContextId {
     context_id.to_string()
-}
-
-fn stored_turn_from_binary(turn: crate::BinaryStoredTurn) -> StoredTurn {
-    StoredTurn {
-        context_id: context_id_string(turn.context_id),
-        turn_id: turn_id_string(turn.turn_id),
-        parent_turn_id: turn_id_string(turn.parent_turn_id),
-        depth: turn.depth,
-        type_id: turn.type_id,
-        type_version: turn.type_version,
-        payload: turn.payload,
-        idempotency_key: turn.idempotency_key,
-        content_hash: Some(hash_hex(turn.content_hash)),
-    }
 }
 
 fn stored_turn_from_http(turn: HttpStoredTurn) -> StoredTurn {

@@ -1,4 +1,4 @@
-use crate::storage::{AttractorArtifactWriter, ContextId, TurnId};
+use crate::storage::{AttractorArtifactWriter, ContextId, StorageError, TurnId};
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorDotSourceRecord,
     AttractorError, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
@@ -11,15 +11,18 @@ use crate::{
     resolve_fidelity_mode, resolve_thread_key, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
-use forge_cxdb_runtime::{CxdbBinaryClient, CxdbHttpClient, CxdbRuntimeStore};
+use async_trait::async_trait;
+use forge_cxdb_runtime::{CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::sleep;
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Clone, Debug, Default)]
 struct PersistedRunGraphMetadata {
@@ -36,7 +39,8 @@ pub fn cxdb_storage_writer(
     binary_client: Arc<dyn CxdbBinaryClient>,
     http_client: Arc<dyn CxdbHttpClient>,
 ) -> crate::storage::SharedAttractorStorageWriter {
-    Arc::new(CxdbRuntimeStore::new(binary_client, http_client))
+    let store = Arc::new(CxdbRuntimeStore::new(binary_client, http_client));
+    Arc::new(CxdbRegistryPublishingStorageWriter::new(store))
 }
 
 pub fn cxdb_artifact_writer(
@@ -44,6 +48,178 @@ pub fn cxdb_artifact_writer(
     http_client: Arc<dyn CxdbHttpClient>,
 ) -> Arc<dyn AttractorArtifactWriter> {
     Arc::new(CxdbRuntimeStore::new(binary_client, http_client))
+}
+
+const ATTRACTOR_REGISTRY_BUNDLE_ID: &str = "forge.attractor.runtime.v1";
+
+#[derive(Clone)]
+struct CxdbRegistryPublishingStorageWriter {
+    store: Arc<CxdbRuntimeStore<Arc<dyn CxdbBinaryClient>, Arc<dyn CxdbHttpClient>>>,
+    publish_once: Arc<AtomicBool>,
+    publish_lock: Arc<AsyncMutex<()>>,
+}
+
+impl CxdbRegistryPublishingStorageWriter {
+    fn new(
+        store: Arc<CxdbRuntimeStore<Arc<dyn CxdbBinaryClient>, Arc<dyn CxdbHttpClient>>>,
+    ) -> Self {
+        Self {
+            store,
+            publish_once: Arc::new(AtomicBool::new(false)),
+            publish_lock: Arc::new(AsyncMutex::new(())),
+        }
+    }
+
+    async fn ensure_registry_bundle(&self) -> Result<(), StorageError> {
+        if self.publish_once.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let _guard = self.publish_lock.lock().await;
+        if self.publish_once.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        let bundle_json = attractor_registry_bundle_json()
+            .map_err(|message| StorageError::Serialization(message.to_string()))?;
+        self.store
+            .publish_registry_bundle(ATTRACTOR_REGISTRY_BUNDLE_ID, &bundle_json)
+            .await
+            .map_err(cxdb_error_to_storage)?;
+        self.publish_once.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl crate::storage::AttractorStorageWriter for CxdbRegistryPublishingStorageWriter {
+    async fn create_run_context(
+        &self,
+        base_turn_id: Option<TurnId>,
+    ) -> Result<crate::storage::StoreContext, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store.create_run_context(base_turn_id).await
+    }
+
+    async fn append_run_event(
+        &self,
+        context_id: &ContextId,
+        record: AttractorRunEventRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_run_event(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_stage_event(
+        &self,
+        context_id: &ContextId,
+        record: AttractorStageEventRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_stage_event(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_checkpoint_event(
+        &self,
+        context_id: &ContextId,
+        record: AttractorCheckpointEventRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_checkpoint_event(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_stage_to_agent_link(
+        &self,
+        context_id: &ContextId,
+        record: crate::AttractorStageToAgentLinkRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_stage_to_agent_link(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_dot_source(
+        &self,
+        context_id: &ContextId,
+        record: AttractorDotSourceRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_dot_source(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_graph_snapshot(
+        &self,
+        context_id: &ContextId,
+        record: AttractorGraphSnapshotRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_graph_snapshot(context_id, record, idempotency_key)
+            .await
+    }
+}
+
+fn attractor_registry_bundle_json() -> Result<Vec<u8>, serde_json::Error> {
+    let fields = envelope_type_fields_descriptor();
+    let bundle = serde_json::json!({
+        "registry_version": 1,
+        "bundle_id": ATTRACTOR_REGISTRY_BUNDLE_ID,
+        "types": {
+            "forge.attractor.run_event": { "versions": { "1": { "fields": fields } } },
+            "forge.attractor.stage_event": { "versions": { "1": { "fields": fields } } },
+            "forge.attractor.checkpoint_event": { "versions": { "1": { "fields": fields } } },
+            "forge.link.stage_to_agent": { "versions": { "1": { "fields": fields } } },
+            "forge.attractor.dot_source": { "versions": { "1": { "fields": fields } } },
+            "forge.attractor.graph_snapshot": { "versions": { "1": { "fields": fields } } }
+        }
+    });
+    serde_json::to_vec(&bundle)
+}
+
+fn envelope_type_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "schema_version", "type": "u32" },
+        "2": { "name": "run_id", "type": "string", "optional": true },
+        "3": { "name": "session_id", "type": "string", "optional": true },
+        "4": { "name": "node_id", "type": "string", "optional": true },
+        "5": { "name": "stage_attempt_id", "type": "string", "optional": true },
+        "6": { "name": "event_kind", "type": "string" },
+        "7": { "name": "timestamp", "type": "string" },
+        "8": { "name": "payload_json", "type": "string" },
+        "9": { "name": "corr_run_id", "type": "string", "optional": true },
+        "10": { "name": "corr_pipeline_context_id", "type": "string", "optional": true },
+        "11": { "name": "corr_node_id", "type": "string", "optional": true },
+        "12": { "name": "corr_stage_attempt_id", "type": "string", "optional": true },
+        "13": { "name": "corr_agent_session_id", "type": "string", "optional": true },
+        "14": { "name": "corr_agent_context_id", "type": "string", "optional": true },
+        "15": { "name": "corr_agent_head_turn_id", "type": "string", "optional": true },
+        "16": { "name": "corr_parent_turn_id", "type": "string", "optional": true },
+        "17": { "name": "corr_sequence_no", "type": "u64", "optional": true },
+        "18": { "name": "corr_thread_key", "type": "string", "optional": true }
+    })
+}
+
+fn cxdb_error_to_storage(error: CxdbClientError) -> StorageError {
+    match error {
+        CxdbClientError::NotFound { resource, id } => StorageError::NotFound { resource, id },
+        CxdbClientError::Conflict(message) => StorageError::Conflict(message),
+        CxdbClientError::InvalidInput(message) => StorageError::InvalidInput(message),
+        CxdbClientError::Backend(message) => StorageError::Backend(message),
+    }
 }
 
 impl PipelineRunner {

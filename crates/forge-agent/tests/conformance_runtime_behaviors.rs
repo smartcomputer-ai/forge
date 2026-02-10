@@ -11,6 +11,7 @@ use forge_cxdb_runtime::{
 };
 use forge_llm::Role;
 use serde_json::json;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use support::{
@@ -22,6 +23,13 @@ use tempfile::tempdir;
 #[derive(serde::Deserialize)]
 struct PersistedEnvelope {
     payload: serde_json::Value,
+}
+
+fn decode_persisted_envelope(payload: &[u8]) -> Option<PersistedEnvelope> {
+    let tagged: BTreeMap<u64, serde_json::Value> = rmp_serde::from_slice(payload).ok()?;
+    let payload_json = tagged.get(&8).and_then(serde_json::Value::as_str)?;
+    let payload = serde_json::from_str::<serde_json::Value>(payload_json).ok()?;
+    Some(PersistedEnvelope { payload })
 }
 
 #[derive(Default)]
@@ -501,9 +509,7 @@ async fn cross_profile_subagent_spawn_persists_link_record() {
         let spawn_links: Vec<PersistedEnvelope> = appended
             .iter()
             .filter(|request| request.type_id == "forge.link.subagent_spawn")
-            .filter_map(|request| {
-                serde_json::from_slice::<PersistedEnvelope>(&request.payload).ok()
-            })
+            .filter_map(|request| decode_persisted_envelope(&request.payload))
             .collect();
 
         assert!(

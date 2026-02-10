@@ -1,5 +1,6 @@
-use crate::storage::StoredTurnEnvelope;
-use crate::storage::{ContextId, StoredTurn, TurnId};
+use crate::storage::{
+    ContextId, StoredTurn, StoredTurnEnvelope, TurnId, decode_stored_turn_envelope,
+};
 use crate::{
     AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageReader, storage::types,
 };
@@ -280,7 +281,7 @@ async fn collect_all_turns(
 }
 
 fn decode_envelope(turn: &StoredTurn) -> Result<StoredTurnEnvelope, AttractorError> {
-    serde_json::from_slice::<StoredTurnEnvelope>(&turn.payload).map_err(|error| {
+    decode_stored_turn_envelope(&turn.payload).map_err(|error| {
         AttractorError::Runtime(format!(
             "failed to decode stored turn envelope for type '{}': {error}",
             turn.type_id

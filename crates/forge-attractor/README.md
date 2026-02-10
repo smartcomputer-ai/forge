@@ -25,6 +25,14 @@ Related crates:
 - Persist run/stage/checkpoint/linkage events via CXDB-backed runtime contracts.
 - Query run metadata, stage timelines, checkpoint snapshots, and stage-to-agent linkage records.
 
+## CXDB projection contract
+
+The CXDB bootstrap helper (`cxdb_storage_writer`) now publishes the Forge
+attractor registry bundle (`forge.attractor.runtime.v1`) before durable writes.
+Attractor runtime records are encoded as msgpack with stable numeric tags, and
+query surfaces are designed to consume CXDB HTTP typed projections with explicit
+cursor paging semantics.
+
 ## Run tests
 
 ```bash

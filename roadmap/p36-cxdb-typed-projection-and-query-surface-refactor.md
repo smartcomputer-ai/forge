@@ -1,7 +1,14 @@
 # P36: CXDB Typed Projection and Query-Surface Refactor
+**Complete** (2026-02-10)
 
 **Status**
-- Planned (2026-02-10)
+- Complete (2026-02-10)
+- G1 completed (2026-02-10)
+- G2 completed (2026-02-10)
+- G3 completed (2026-02-10)
+- G4 completed (2026-02-10)
+- G5 completed (2026-02-10)
+- G6 completed (2026-02-10)
 
 **Goal**
 Move host/runtime read paths to CXDB typed projection APIs and enforce schema/registry discipline (msgpack numeric tags + registry bundles) for stable drilldown and long-term compatibility.
@@ -14,7 +21,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
   - `spec/04-cxdb-integration-spec.md` (Sections 3.7, 4.2, 4.7)
 - Prerequisites:
   - `roadmap/p34-cxdb-direct-runtime-write-path-migration.md`
-  - `roadmap/p35-cxdb-fstree-and-workspace-snapshot-integration.md`
+  - `roadmap/p38-cxdb-fstree-and-workspace-snapshot-integration.md`
 
 **Context**
 - Current query logic decodes JSON envelopes from raw turn payload bytes and bypasses CXDB typed projection strengths.
@@ -32,7 +39,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Schema and type registry discipline
+### [x] G1. Schema and type registry discipline
 - Work:
   - Define/implement Forge-owned schema bundles for agent/attractor/link records.
   - Add bundle publication flow tied to runtime startup/versioning policy.
@@ -44,7 +51,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 - DoD:
   - Registry bundle lifecycle is deterministic and documented.
 
-### [ ] G2. Writer encoding migration to msgpack numeric tags
+### [x] G2. Writer encoding migration to msgpack numeric tags
 - Work:
   - Migrate persisted runtime payloads from JSON envelope bytes to deterministic msgpack payloads aligned with published types.
   - Preserve critical correlation fields and event semantics.
@@ -55,7 +62,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 - DoD:
   - Runtime writes are projection-ready without JSON transcode dependency.
 
-### [ ] G3. Query path migration to HTTP typed projections
+### [x] G3. Query path migration to HTTP typed projections
 - Work:
   - Refactor run/stage/checkpoint/link queries to consume typed HTTP projection responses.
   - Keep explicit cursor paging (`before_turn_id`) and deterministic ordering guarantees.
@@ -67,7 +74,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 - DoD:
   - Read/query surfaces no longer rely on local JSON payload decoding for CXDB mode.
 
-### [ ] G4. Query contract and host API stabilization
+### [x] G4. Query contract and host API stabilization
 - Work:
   - Define stable query response models (run timeline, stage timeline, linkage drilldown) sourced from typed projection data.
   - Document backward/forward compatibility constraints.
@@ -80,7 +87,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Deterministic and live projection parity tests
+### [x] G5. Deterministic and live projection parity tests
 - Work:
   - Add tests verifying typed projection parity with expected runtime semantics.
   - Add live tests covering registry publish + typed retrieval + cursor pagination.
@@ -91,7 +98,7 @@ Move host/runtime read paths to CXDB typed projection APIs and enforce schema/re
 - DoD:
   - Projection read path is regression-safe and operationally validated.
 
-### [ ] G6. Performance and operability guardrails
+### [x] G6. Performance and operability guardrails
 - Work:
   - Add baseline budgets for timeline/drilldown query latency and payload size behavior.
   - Document failure handling for registry mismatch and partial projection decode.

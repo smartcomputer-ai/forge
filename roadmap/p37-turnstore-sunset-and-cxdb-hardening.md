@@ -17,7 +17,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - Spec of record: `spec/04-cxdb-integration-spec.md`
 - Prerequisites:
   - `roadmap/p34-cxdb-direct-runtime-write-path-migration.md`
-  - `roadmap/p35-cxdb-fstree-and-workspace-snapshot-integration.md`
+  - `roadmap/p38-cxdb-fstree-and-workspace-snapshot-integration.md`
   - `roadmap/p36-cxdb-typed-projection-and-query-surface-refactor.md`
 
 **Context**

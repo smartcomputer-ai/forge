@@ -80,18 +80,14 @@ impl CxdbHttpClient for FailingCxdb {
         _bundle_id: &str,
         _bundle_json: &[u8],
     ) -> Result<(), CxdbClientError> {
-        Err(CxdbClientError::Backend(
-            "forced registry failure".to_string(),
-        ))
+        Ok(())
     }
 
     async fn get_registry_bundle(
         &self,
         _bundle_id: &str,
     ) -> Result<Option<Vec<u8>>, CxdbClientError> {
-        Err(CxdbClientError::Backend(
-            "forced registry failure".to_string(),
-        ))
+        Ok(None)
     }
 }
 

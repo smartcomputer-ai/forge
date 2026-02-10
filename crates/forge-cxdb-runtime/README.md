@@ -22,8 +22,11 @@ Recommended deployment topology:
 ## Operational guidance
 
 - Runtime writes should prefer binary protocol for throughput.
-- Cursor paging and typed projection reads should use HTTP APIs.
+- Turn listing and typed projection reads should use HTTP APIs.
 - Registry bundle publication should happen before first writes of new schema versions.
+- Forge runtime bundles used by current bootstrap paths:
+  - `forge.agent.runtime.v1`
+  - `forge.attractor.runtime.v1`
 
 ## Trust boundaries and transport security
 
