@@ -534,6 +534,7 @@ async fn live_create_append_list_and_paging_against_running_cxdb() {
             type_version: 1,
             payload: b"first".to_vec(),
             idempotency_key: "live-k1".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("append 1 should succeed");
@@ -545,6 +546,7 @@ async fn live_create_append_list_and_paging_against_running_cxdb() {
             type_version: 1,
             payload: b"second".to_vec(),
             idempotency_key: "live-k2".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("append 2 should succeed");
@@ -609,6 +611,7 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
             type_version: 1,
             payload: b"first".to_vec(),
             idempotency_key: "live-binary-k1".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("append 1 over binary should succeed");
@@ -620,6 +623,7 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
             type_version: 1,
             payload: b"second".to_vec(),
             idempotency_key: "live-binary-k2".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("append 2 over binary should succeed");
@@ -674,6 +678,7 @@ async fn live_idempotency_against_running_cxdb_returns_existing_turn() {
             type_version: 1,
             payload: b"same".to_vec(),
             idempotency_key: "live-idempotency-key".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("first append should succeed");
@@ -686,6 +691,7 @@ async fn live_idempotency_against_running_cxdb_returns_existing_turn() {
             type_version: 1,
             payload: b"same".to_vec(),
             idempotency_key: "live-idempotency-key".to_string(),
+            fs_root_hash: None,
         })
         .await
         .expect("second append should succeed");

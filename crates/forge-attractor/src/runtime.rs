@@ -1,7 +1,7 @@
 use crate::storage::AttractorArtifactWriter;
 use crate::{AttractorError, Graph, Node, RuntimeContext, handlers};
 use async_trait::async_trait;
-use forge_cxdb_runtime::CxdbTurnId as TurnId;
+use forge_cxdb_runtime::{CxdbFsSnapshotPolicy, CxdbTurnId as TurnId};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,10 +90,12 @@ pub struct RunConfig {
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
     pub artifacts: Option<Arc<dyn AttractorArtifactWriter>>,
     pub cxdb_persistence: CxdbPersistenceMode,
+    pub fs_snapshot_policy: Option<CxdbFsSnapshotPolicy>,
     pub events: crate::RuntimeEventSink,
     pub executor: Arc<dyn NodeExecutor>,
     pub retry_backoff: crate::RetryBackoffConfig,
     pub logs_root: Option<PathBuf>,
+    pub workspace_root: Option<PathBuf>,
     pub resume_from_checkpoint: Option<PathBuf>,
     pub max_loop_restarts: u32,
 }
@@ -112,12 +114,14 @@ impl Default for RunConfig {
             storage: None,
             artifacts: None,
             cxdb_persistence: CxdbPersistenceMode::Off,
+            fs_snapshot_policy: None,
             events: crate::RuntimeEventSink::default(),
             executor: Arc::new(handlers::registry::RegistryNodeExecutor::new(
                 handlers::core_registry(),
             )),
             retry_backoff: crate::RetryBackoffConfig::default(),
             logs_root: None,
+            workspace_root: None,
             resume_from_checkpoint: None,
             max_loop_restarts: 16,
         }

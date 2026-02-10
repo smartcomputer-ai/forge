@@ -2,6 +2,7 @@ use crate::{
     BinaryAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, HttpStoredTurn,
 };
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 
 pub type ContextId = String;
 pub type TurnId = String;
@@ -29,6 +30,7 @@ pub struct AppendTurnRequest {
     pub type_version: u32,
     pub payload: Vec<u8>,
     pub idempotency_key: String,
+    pub fs_root_hash: Option<BlobHash>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,6 +44,43 @@ pub struct StoredTurn {
     pub payload: Vec<u8>,
     pub idempotency_key: Option<String>,
     pub content_hash: Option<BlobHash>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSnapshotPolicy {
+    pub policy_id: String,
+    pub exclude_patterns: Vec<String>,
+    pub follow_symlinks: bool,
+    pub max_file_size: i64,
+    pub max_files: usize,
+}
+
+impl Default for FsSnapshotPolicy {
+    fn default() -> Self {
+        Self {
+            policy_id: "forge.fs_snapshot.default.v1".to_string(),
+            exclude_patterns: vec![".git/**".to_string(), "target/**".to_string()],
+            follow_symlinks: false,
+            max_file_size: 100 * 1024 * 1024,
+            max_files: 100_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSnapshotStats {
+    pub file_count: usize,
+    pub dir_count: usize,
+    pub symlink_count: usize,
+    pub total_bytes: u64,
+    pub bytes_uploaded: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSnapshotCapture {
+    pub fs_root_hash: BlobHash,
+    pub policy_id: String,
+    pub stats: FsSnapshotStats,
 }
 
 #[derive(Clone, Debug)]
@@ -137,6 +176,14 @@ where
         let request_payload = request.payload;
         let request_type_id = request.type_id;
         let request_type_version = request.type_version;
+        let request_fs_root_hash = match request.fs_root_hash.as_deref() {
+            Some(value) => Some(parse_hex_32(value).ok_or_else(|| {
+                CxdbClientError::InvalidInput(format!(
+                    "fs_root_hash must be a 64-character lowercase hex BLAKE3 digest: {value}"
+                ))
+            })?),
+            None => None,
+        };
 
         let appended = self
             .binary_client
@@ -148,6 +195,7 @@ where
                 payload: request_payload.clone(),
                 idempotency_key: idempotency_key.clone(),
                 content_hash,
+                fs_root_hash: request_fs_root_hash,
             })
             .await?;
 
@@ -216,6 +264,69 @@ where
 
     pub async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, CxdbClientError> {
         self.binary_client.put_blob(raw_bytes).await
+    }
+
+    pub async fn capture_upload_workspace(
+        &self,
+        workspace_root: &Path,
+        policy: &FsSnapshotPolicy,
+    ) -> Result<FsSnapshotCapture, CxdbClientError> {
+        let mut opts = Vec::new();
+        if !policy.exclude_patterns.is_empty() {
+            opts.push(cxdb::fstree::with_exclude(policy.exclude_patterns.clone()));
+        }
+        if policy.follow_symlinks {
+            opts.push(cxdb::fstree::with_follow_symlinks());
+        }
+        opts.push(cxdb::fstree::with_max_file_size(policy.max_file_size));
+        opts.push(cxdb::fstree::with_max_files(policy.max_files));
+
+        let snapshot = cxdb::fstree::capture(workspace_root, opts)
+            .map_err(|error| CxdbClientError::Backend(format!("fstree capture failed: {error}")))?;
+
+        for tree in snapshot.trees.values() {
+            self.binary_client.put_blob(tree).await?;
+        }
+        for file_ref in snapshot.files.values() {
+            let content = std::fs::read(&file_ref.path).map_err(|error| {
+                CxdbClientError::Backend(format!(
+                    "fstree file read failed '{}': {error}",
+                    file_ref.path.display()
+                ))
+            })?;
+            self.binary_client.put_blob(&content).await?;
+        }
+        for target in snapshot.symlinks.values() {
+            self.binary_client.put_blob(target.as_bytes()).await?;
+        }
+
+        let bytes_uploaded = (snapshot
+            .trees
+            .values()
+            .map(|value| value.len() as i64)
+            .sum::<i64>())
+            + (snapshot
+                .files
+                .values()
+                .map(|value| value.size as i64)
+                .sum::<i64>())
+            + (snapshot
+                .symlinks
+                .values()
+                .map(|value| value.len() as i64)
+                .sum::<i64>());
+
+        Ok(FsSnapshotCapture {
+            fs_root_hash: hash_hex(snapshot.root_hash),
+            policy_id: policy.policy_id.clone(),
+            stats: FsSnapshotStats {
+                file_count: snapshot.stats.file_count,
+                dir_count: snapshot.stats.dir_count,
+                symlink_count: snapshot.stats.symlink_count,
+                total_bytes: snapshot.stats.total_bytes,
+                bytes_uploaded,
+            },
+        })
     }
 
     pub async fn get_blob(
@@ -299,6 +410,19 @@ fn hash_hex(hash: [u8; 32]) -> BlobHash {
         let _ = write!(&mut hex, "{byte:02x}");
     }
     hex
+}
+
+fn parse_hex_32(input: &str) -> Option<[u8; 32]> {
+    if input.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        let pair = &input[i * 2..i * 2 + 2];
+        let value = u8::from_str_radix(pair, 16).ok()?;
+        out[i] = value;
+    }
+    Some(out)
 }
 
 fn deterministic_idempotency_key(

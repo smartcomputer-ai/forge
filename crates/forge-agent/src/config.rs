@@ -1,3 +1,4 @@
+use forge_cxdb_runtime::CxdbFsSnapshotPolicy;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -25,6 +26,7 @@ pub struct SessionConfig {
     pub tool_hook_strict: bool,
     pub thread_key: Option<String>,
     pub cxdb_persistence: CxdbPersistenceMode,
+    pub fs_snapshot_policy: Option<CxdbFsSnapshotPolicy>,
 }
 
 impl Default for SessionConfig {
@@ -44,6 +46,7 @@ impl Default for SessionConfig {
             tool_hook_strict: false,
             thread_key: None,
             cxdb_persistence: CxdbPersistenceMode::Off,
+            fs_snapshot_policy: None,
         }
     }
 }
@@ -89,5 +92,6 @@ mod tests {
         assert!(!config.tool_hook_strict);
         assert_eq!(config.thread_key, None);
         assert_eq!(config.cxdb_persistence, CxdbPersistenceMode::Off);
+        assert_eq!(config.fs_snapshot_policy, None);
     }
 }

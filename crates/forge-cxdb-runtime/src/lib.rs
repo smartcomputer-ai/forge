@@ -20,6 +20,7 @@ Implementation notes:
 - Forge IDs remain opaque `String` values and are converted to `u64` only at the adapter boundary.
 - `append_turn` computes BLAKE3 content hash over uncompressed payload bytes.
 - If `AppendTurnRequest.idempotency_key` is empty, the adapter generates a deterministic fallback key.
+- `AppendTurnRequest.fs_root_hash` maps to CXDB append-with-fs when provided (atomic attach path).
 - Turn listing always uses HTTP typed projection so read/query surfaces stay projection-native.
 "#]
 
@@ -34,7 +35,9 @@ pub use adapter::{
 };
 pub use runtime::{
     AppendTurnRequest as CxdbAppendTurnRequest, BlobHash as CxdbBlobHash,
-    ContextId as CxdbContextId, CxdbRuntimeStore, StoreContext as CxdbStoreContext,
-    StoredTurn as CxdbStoredTurn, StoredTurnRef as CxdbStoredTurnRef, TurnId as CxdbTurnId,
+    ContextId as CxdbContextId, CxdbRuntimeStore, FsSnapshotCapture as CxdbFsSnapshotCapture,
+    FsSnapshotPolicy as CxdbFsSnapshotPolicy, FsSnapshotStats as CxdbFsSnapshotStats,
+    StoreContext as CxdbStoreContext, StoredTurn as CxdbStoredTurn,
+    StoredTurnRef as CxdbStoredTurnRef, TurnId as CxdbTurnId,
 };
 pub use testing::MockCxdb;

@@ -29,6 +29,7 @@ pub struct AppendTurnRequest {
     pub type_version: u32,
     pub payload: Vec<u8>,
     pub idempotency_key: String,
+    pub fs_root_hash: Option<BlobHash>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -138,6 +139,7 @@ pub struct BinaryAppendTurnRequest {
     pub payload: Vec<u8>,
     pub idempotency_key: String,
     pub content_hash: [u8; 32],
+    pub fs_root_hash: Option<[u8; 32]>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -365,10 +367,15 @@ impl CxdbBinaryClient for CxdbSdkBinaryClient {
             encoding: cxdb::EncodingMsgpack,
             compression: cxdb::CompressionNone,
         };
-        let appended = self
-            .client
-            .append_turn(&request_context, &req)
-            .map_err(map_cxdb_error)?;
+        let appended = if let Some(fs_root_hash) = request.fs_root_hash {
+            self.client
+                .append_turn_with_fs(&request_context, &req, Some(fs_root_hash))
+                .map_err(map_cxdb_error)?
+        } else {
+            self.client
+                .append_turn(&request_context, &req)
+                .map_err(map_cxdb_error)?
+        };
         Ok(BinaryAppendTurnResponse {
             context_id: appended.context_id,
             new_turn_id: appended.turn_id,
@@ -439,10 +446,21 @@ impl CxdbBinaryClient for CxdbSdkBinaryClient {
         Ok(hash_hex(result.hash))
     }
 
-    async fn get_blob(&self, _content_hash: &BlobHash) -> Result<Option<Vec<u8>>, CxdbClientError> {
-        Err(CxdbClientError::Backend(
-            "GET_BLOB is not exposed by the vendored cxdb client yet".to_string(),
-        ))
+    async fn get_blob(&self, content_hash: &BlobHash) -> Result<Option<Vec<u8>>, CxdbClientError> {
+        let parsed_hash = parse_hex_32(content_hash).ok_or_else(|| {
+            CxdbClientError::InvalidInput(format!(
+                "content_hash must be a 64-character lowercase hex BLAKE3 digest: {content_hash}"
+            ))
+        })?;
+        let request_context = cxdb::RequestContext::background();
+        match self.client.get_blob(
+            &request_context,
+            &cxdb::GetBlobRequest { hash: parsed_hash },
+        ) {
+            Ok(result) => Ok(Some(result.data)),
+            Err(cxdb::Error::Server(server_error)) if server_error.code == 404 => Ok(None),
+            Err(error) => Err(map_cxdb_error(error)),
+        }
     }
 
     async fn attach_fs(
@@ -771,6 +789,14 @@ where
         let request_payload = request.payload;
         let request_type_id = request.type_id;
         let request_type_version = request.type_version;
+        let request_fs_root_hash = match request.fs_root_hash.as_deref() {
+            Some(value) => Some(parse_hex_32(value).ok_or_else(|| {
+                CxdbRuntimeError::InvalidInput(format!(
+                    "fs_root_hash must be a 64-character lowercase hex BLAKE3 digest: {value}"
+                ))
+            })?),
+            None => None,
+        };
 
         let appended = self
             .binary_client
@@ -782,6 +808,7 @@ where
                 payload: request_payload.clone(),
                 idempotency_key: idempotency_key.clone(),
                 content_hash,
+                fs_root_hash: request_fs_root_hash,
             })
             .await
             .map_err(CxdbClientError::into_runtime_error)?;

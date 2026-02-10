@@ -28,7 +28,9 @@ pub use crate::client::{
 pub use crate::context::ContextHead;
 pub use crate::encoding::{decode_msgpack, decode_msgpack_into, encode_msgpack};
 pub use crate::error::{is_server_error, Error, Result, ServerError};
-pub use crate::fs::{AttachFsRequest, AttachFsResult, PutBlobRequest, PutBlobResult};
+pub use crate::fs::{
+    AttachFsRequest, AttachFsResult, GetBlobRequest, GetBlobResult, PutBlobRequest, PutBlobResult,
+};
 pub use crate::reconnect::{
     dial_reconnecting, dial_tls_reconnecting, DialFunc, ReconnectOption, ReconnectingClient,
 };

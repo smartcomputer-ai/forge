@@ -6,8 +6,9 @@ use crate::{
     truncate_tool_output,
 };
 use forge_cxdb_runtime::{
-    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
-    CxdbStoreContext, CxdbStoredTurn, CxdbStoredTurnRef, CxdbTurnId,
+    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbFsSnapshotCapture,
+    CxdbFsSnapshotPolicy, CxdbHttpClient, CxdbRuntimeStore, CxdbStoreContext, CxdbStoredTurn,
+    CxdbStoredTurnRef, CxdbTurnId,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
@@ -264,6 +265,32 @@ fn optional_string_field(value: Option<&Value>) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
+fn inject_fs_lineage_payload(payload: &mut Value, capture: &CxdbFsSnapshotCapture) {
+    if !payload.is_object() {
+        *payload = serde_json::json!({ "value": payload.clone() });
+    }
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "fs_root_hash".to_string(),
+            Value::String(capture.fs_root_hash.clone()),
+        );
+        object.insert(
+            "snapshot_policy_id".to_string(),
+            Value::String(capture.policy_id.clone()),
+        );
+        object.insert(
+            "snapshot_stats".to_string(),
+            serde_json::json!({
+                "file_count": capture.stats.file_count,
+                "dir_count": capture.stats.dir_count,
+                "symlink_count": capture.stats.symlink_count,
+                "total_bytes": capture.stats.total_bytes,
+                "bytes_uploaded": capture.stats.bytes_uploaded,
+            }),
+        );
+    }
+}
+
 fn encode_idempotency_part(part: &str) -> String {
     format!("{}:{}", part.len(), part)
 }
@@ -355,6 +382,28 @@ pub trait SessionPersistenceWriter: Send + Sync {
     ) -> Result<CxdbStoredTurn, CxdbClientError>;
 
     async fn get_head(&self, context_id: &String) -> Result<CxdbStoredTurnRef, CxdbClientError>;
+
+    async fn capture_upload_workspace(
+        &self,
+        workspace_root: &Path,
+        policy: &CxdbFsSnapshotPolicy,
+    ) -> Result<CxdbFsSnapshotCapture, CxdbClientError> {
+        let _ = (workspace_root, policy);
+        Err(CxdbClientError::Backend(
+            "capture_upload_workspace is not supported by this persistence writer".to_string(),
+        ))
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: &CxdbTurnId,
+        fs_root_hash: &String,
+    ) -> Result<(), CxdbClientError> {
+        let _ = (turn_id, fs_root_hash);
+        Err(CxdbClientError::Backend(
+            "attach_fs is not supported by this persistence writer".to_string(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -379,6 +428,22 @@ where
 
     async fn get_head(&self, context_id: &String) -> Result<CxdbStoredTurnRef, CxdbClientError> {
         CxdbRuntimeStore::get_head(self, context_id).await
+    }
+
+    async fn capture_upload_workspace(
+        &self,
+        workspace_root: &Path,
+        policy: &CxdbFsSnapshotPolicy,
+    ) -> Result<CxdbFsSnapshotCapture, CxdbClientError> {
+        CxdbRuntimeStore::capture_upload_workspace(self, workspace_root, policy).await
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: &CxdbTurnId,
+        fs_root_hash: &String,
+    ) -> Result<(), CxdbClientError> {
+        CxdbRuntimeStore::attach_fs(self, turn_id, fs_root_hash).await
     }
 }
 
@@ -1084,7 +1149,7 @@ impl Session {
         type_version: u32,
         event_kind: &str,
         timestamp: String,
-        payload: Value,
+        mut payload: Value,
     ) -> Result<(), AgentError> {
         if !self.persistence_enabled() {
             return Ok(());
@@ -1095,6 +1160,21 @@ impl Session {
         };
         let Some(context_id) = self.persistence_context_id.clone() else {
             return Ok(());
+        };
+
+        let snapshot_capture = if let Some(policy) = self.config.fs_snapshot_policy.as_ref() {
+            let workspace_root = self.execution_env.working_directory();
+            match store.capture_upload_workspace(workspace_root, policy).await {
+                Ok(capture) => {
+                    inject_fs_lineage_payload(&mut payload, &capture);
+                    Some(capture)
+                }
+                Err(error) => {
+                    return self.handle_persistence_error(error, "capture_upload_workspace");
+                }
+            }
+        } else {
+            None
         };
 
         let sequence_no = self.next_persistence_sequence();
@@ -1124,6 +1204,9 @@ impl Session {
             type_version,
             payload: payload_bytes,
             idempotency_key,
+            fs_root_hash: snapshot_capture
+                .as_ref()
+                .map(|capture| capture.fs_root_hash.clone()),
         };
         match store.append_turn(request).await {
             Ok(_) => Ok(()),
@@ -2879,6 +2962,7 @@ mod tests {
         next_context_id: Mutex<u64>,
         next_turn_id: Mutex<u64>,
         append_requests: Mutex<Vec<CxdbAppendTurnRequest>>,
+        snapshot_calls: Mutex<usize>,
         fail_create: bool,
         fail_append: bool,
     }
@@ -2889,6 +2973,7 @@ mod tests {
                 next_context_id: Mutex::new(1),
                 next_turn_id: Mutex::new(1),
                 append_requests: Mutex::new(Vec::new()),
+                snapshot_calls: Mutex::new(0),
                 fail_create,
                 fail_append,
             }
@@ -2990,6 +3075,27 @@ mod tests {
                 context_id: context_id.clone(),
                 turn_id: "0".to_string(),
                 depth: 0,
+            })
+        }
+
+        async fn capture_upload_workspace(
+            &self,
+            _workspace_root: &Path,
+            policy: &CxdbFsSnapshotPolicy,
+        ) -> Result<CxdbFsSnapshotCapture, CxdbClientError> {
+            let mut calls = self.snapshot_calls.lock().expect("snapshot calls mutex");
+            *calls += 1;
+            Ok(CxdbFsSnapshotCapture {
+                fs_root_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                policy_id: policy.policy_id.clone(),
+                stats: forge_cxdb_runtime::CxdbFsSnapshotStats {
+                    file_count: 2,
+                    dir_count: 1,
+                    symlink_count: 0,
+                    total_bytes: 64,
+                    bytes_uploaded: 64,
+                },
             })
         }
     }
@@ -3276,6 +3382,50 @@ mod tests {
         assert!(event_kinds.iter().any(|kind| kind == "tool_call_start"));
         assert!(event_kinds.iter().any(|kind| kind == "tool_call_end"));
         assert!(event_kinds.iter().any(|kind| kind == "session_end"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submit_with_fs_snapshot_policy_adds_fs_lineage_to_persisted_payloads() {
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let (client, _) = build_test_client(vec![text_response("resp-1", "done")]);
+        let mut config = SessionConfig::default();
+        config.cxdb_persistence = CxdbPersistenceMode::Required;
+        config.fs_snapshot_policy = Some(CxdbFsSnapshotPolicy::default());
+        let store = Arc::new(RecordingPersistence::default());
+        let mut session =
+            Session::new_with_persistence(profile, env, client, config, Some(store.clone()))
+                .expect("session should initialize");
+
+        session
+            .submit("hi")
+            .await
+            .expect("submit should succeed with fs snapshot policy");
+
+        let appended = store.appended();
+        assert!(!appended.is_empty());
+        assert!(
+            appended
+                .iter()
+                .all(|request| request.fs_root_hash.is_some())
+        );
+
+        let envelope = decode_stored_turn_envelope(&appended[0].payload)
+            .expect("first payload should decode as envelope");
+        let payload_obj = envelope
+            .payload
+            .as_object()
+            .expect("payload should be object");
+        assert!(payload_obj.contains_key("fs_root_hash"));
+        assert!(payload_obj.contains_key("snapshot_policy_id"));
+        assert!(payload_obj.contains_key("snapshot_stats"));
     }
 
     #[test]

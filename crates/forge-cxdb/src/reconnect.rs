@@ -331,6 +331,24 @@ impl ReconnectingClient {
         Ok(value)
     }
 
+    pub fn get_blob(
+        &self,
+        ctx: &RequestContext,
+        req: &crate::fs::GetBlobRequest,
+    ) -> Result<crate::fs::GetBlobResult> {
+        let result = Arc::new(Mutex::new(None));
+        let req = req.clone();
+        let ctx_clone = ctx.clone();
+        let result_clone = result.clone();
+        self.enqueue(ctx, "GetBlob", move |client| {
+            let res = client.get_blob(&ctx_clone, &req)?;
+            *result_clone.lock().unwrap() = Some(res);
+            Ok(())
+        })?;
+        let value = result.lock().unwrap().take().unwrap();
+        Ok(value)
+    }
+
     pub fn put_blob_if_absent(
         &self,
         ctx: &RequestContext,

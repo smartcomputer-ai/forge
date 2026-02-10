@@ -12,7 +12,9 @@ use crate::{
     validate_or_raise,
 };
 use async_trait::async_trait;
-use forge_cxdb_runtime::{CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore};
+use forge_cxdb_runtime::{
+    CxdbBinaryClient, CxdbClientError, CxdbFsSnapshotCapture, CxdbHttpClient, CxdbRuntimeStore,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
@@ -347,6 +349,8 @@ impl PipelineRunner {
                 config.cxdb_persistence,
                 active_run_id.clone(),
                 base_turn_id.take(),
+                config.fs_snapshot_policy.clone(),
+                config.workspace_root.clone(),
             )
             .await?;
             if let Some(pipeline_context_id) = storage.context_id().cloned() {
@@ -1307,6 +1311,8 @@ struct RunStorage {
     context_id: Option<ContextId>,
     sequence_no: u64,
     last_turn_id: Option<TurnId>,
+    fs_snapshot_policy: Option<forge_cxdb_runtime::CxdbFsSnapshotPolicy>,
+    workspace_root: PathBuf,
 }
 
 impl RunStorage {
@@ -1316,7 +1322,11 @@ impl RunStorage {
         persistence_mode: CxdbPersistenceMode,
         run_id: String,
         base_turn_id: Option<String>,
+        fs_snapshot_policy: Option<forge_cxdb_runtime::CxdbFsSnapshotPolicy>,
+        workspace_root: Option<PathBuf>,
     ) -> Result<Self, AttractorError> {
+        let workspace_root = workspace_root
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         if persistence_mode == CxdbPersistenceMode::Off {
             return Ok(Self {
                 writer: None,
@@ -1325,6 +1335,8 @@ impl RunStorage {
                 context_id: None,
                 sequence_no: 0,
                 last_turn_id: None,
+                fs_snapshot_policy: None,
+                workspace_root,
             });
         }
 
@@ -1346,13 +1358,15 @@ impl RunStorage {
             context_id: Some(store_context.context_id),
             sequence_no: 0,
             last_turn_id: head,
+            fs_snapshot_policy,
+            workspace_root,
         })
     }
 
     async fn append_run_event(
         &mut self,
         event_kind: &str,
-        payload: Value,
+        mut payload: Value,
     ) -> Result<(), AttractorError> {
         let sequence_no = self.next_sequence_no();
         let Some(writer) = self.writer.as_ref().cloned() else {
@@ -1361,6 +1375,10 @@ impl RunStorage {
         let Some(context_id) = self.context_id.as_ref().cloned() else {
             return Ok(());
         };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        if let Some(capture) = snapshot_capture.as_ref() {
+            inject_fs_lineage_payload(&mut payload, capture);
+        }
         let correlation = AttractorCorrelation {
             run_id: self.run_id.clone(),
             pipeline_context_id: Some(context_id.clone()),
@@ -1386,6 +1404,9 @@ impl RunStorage {
                 idempotency_key,
             )
             .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
         self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
@@ -1395,7 +1416,7 @@ impl RunStorage {
         node_id: &str,
         stage_attempt_id: &str,
         event_kind: &str,
-        payload: Value,
+        mut payload: Value,
     ) -> Result<(), AttractorError> {
         let sequence_no = self.next_sequence_no();
         let Some(writer) = self.writer.as_ref().cloned() else {
@@ -1404,6 +1425,10 @@ impl RunStorage {
         let Some(context_id) = self.context_id.as_ref().cloned() else {
             return Ok(());
         };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        if let Some(capture) = snapshot_capture.as_ref() {
+            inject_fs_lineage_payload(&mut payload, capture);
+        }
         let correlation = AttractorCorrelation {
             run_id: self.run_id.clone(),
             pipeline_context_id: Some(context_id.clone()),
@@ -1434,6 +1459,9 @@ impl RunStorage {
                 idempotency_key,
             )
             .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
         self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
@@ -1442,7 +1470,7 @@ impl RunStorage {
         &mut self,
         node_id: &str,
         stage_attempt_id: &str,
-        state_summary: Value,
+        mut state_summary: Value,
     ) -> Result<(), AttractorError> {
         let sequence_no = self.next_sequence_no();
         let Some(writer) = self.writer.as_ref().cloned() else {
@@ -1451,6 +1479,10 @@ impl RunStorage {
         let Some(context_id) = self.context_id.as_ref().cloned() else {
             return Ok(());
         };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        if let Some(capture) = snapshot_capture.as_ref() {
+            inject_fs_lineage_payload(&mut state_summary, capture);
+        }
         let correlation = AttractorCorrelation {
             run_id: self.run_id.clone(),
             pipeline_context_id: Some(context_id.clone()),
@@ -1483,6 +1515,9 @@ impl RunStorage {
                 idempotency_key,
             )
             .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
         self.last_turn_id = Some(turn.turn_id);
         Ok(())
     }
@@ -1645,6 +1680,33 @@ impl RunStorage {
         Ok(Some(hash))
     }
 
+    async fn capture_workspace_snapshot(
+        &self,
+    ) -> Result<Option<CxdbFsSnapshotCapture>, AttractorError> {
+        let Some(policy) = self.fs_snapshot_policy.as_ref() else {
+            return Ok(None);
+        };
+        let Some(artifacts) = self.artifacts.as_ref().cloned() else {
+            return Ok(None);
+        };
+        let capture = artifacts
+            .capture_upload_workspace(&self.workspace_root, policy)
+            .await?;
+        Ok(Some(capture))
+    }
+
+    async fn attach_fs_lineage(
+        &self,
+        turn_id: &TurnId,
+        capture: &CxdbFsSnapshotCapture,
+    ) -> Result<(), AttractorError> {
+        let Some(artifacts) = self.artifacts.as_ref().cloned() else {
+            return Ok(());
+        };
+        artifacts.attach_fs(turn_id, &capture.fs_root_hash).await?;
+        Ok(())
+    }
+
     fn take_writer(&mut self) -> Option<crate::storage::SharedAttractorStorageWriter> {
         self.writer.take()
     }
@@ -1661,24 +1723,58 @@ fn timestamp_now() -> String {
     )
 }
 
+fn inject_fs_lineage_payload(payload: &mut Value, capture: &CxdbFsSnapshotCapture) {
+    if !payload.is_object() {
+        *payload = json!({ "value": payload.clone() });
+    }
+    if let Some(object) = payload.as_object_mut() {
+        object.insert(
+            "fs_root_hash".to_string(),
+            Value::String(capture.fs_root_hash.clone()),
+        );
+        object.insert(
+            "snapshot_policy_id".to_string(),
+            Value::String(capture.policy_id.clone()),
+        );
+        object.insert(
+            "snapshot_stats".to_string(),
+            json!({
+                "file_count": capture.stats.file_count,
+                "dir_count": capture.stats.dir_count,
+                "symlink_count": capture.stats.symlink_count,
+                "total_bytes": capture.stats.total_bytes,
+                "bytes_uploaded": capture.stats.bytes_uploaded,
+            }),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::storage::{ContextId, StorageError, StoreContext, StoredTurn, TurnId};
     use crate::{
-        AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorStorageWriter,
-        CheckpointMetadata, CheckpointNodeOutcome, CheckpointState, NodeExecutor, NodeOutcome,
-        NodeStatus, PipelineEvent, RuntimeEventKind, RuntimeEventSink, StageEvent, parse_dot,
-        runtime_event_channel, storage::SharedAttractorStorageWriter,
+        AttractorArtifactWriter, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
+        AttractorStorageWriter, CheckpointMetadata, CheckpointNodeOutcome, CheckpointState,
+        NodeExecutor, NodeOutcome, NodeStatus, PipelineEvent, RuntimeEventKind, RuntimeEventSink,
+        StageEvent, parse_dot, runtime_event_channel, storage::SharedAttractorStorageWriter,
     };
     use async_trait::async_trait;
+    use forge_cxdb_runtime::{CxdbFsSnapshotCapture, CxdbFsSnapshotPolicy, CxdbFsSnapshotStats};
     use serde_json::{Value, json};
+    use std::path::Path;
     use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
     use tempfile::TempDir;
 
     #[derive(Default)]
     struct RecordingStorage {
         events: Mutex<Vec<(String, String)>>,
+    }
+
+    #[derive(Default)]
+    struct RecordingArtifacts {
+        snapshot_calls: Mutex<usize>,
+        attached_turns: Mutex<Vec<(String, String)>>,
     }
 
     impl RecordingStorage {
@@ -1689,6 +1785,49 @@ mod tests {
                 .iter()
                 .map(|(_, kind)| kind.clone())
                 .collect()
+        }
+    }
+
+    #[async_trait]
+    impl AttractorArtifactWriter for RecordingArtifacts {
+        async fn put_blob(
+            &self,
+            _raw_bytes: &[u8],
+        ) -> Result<crate::storage::BlobHash, StorageError> {
+            Ok("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string())
+        }
+
+        async fn capture_upload_workspace(
+            &self,
+            _workspace_root: &Path,
+            policy: &CxdbFsSnapshotPolicy,
+        ) -> Result<CxdbFsSnapshotCapture, StorageError> {
+            let mut calls = self.snapshot_calls.lock().expect("snapshot calls mutex");
+            *calls += 1;
+            Ok(CxdbFsSnapshotCapture {
+                fs_root_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                policy_id: policy.policy_id.clone(),
+                stats: CxdbFsSnapshotStats {
+                    file_count: 2,
+                    dir_count: 1,
+                    symlink_count: 0,
+                    total_bytes: 42,
+                    bytes_uploaded: 42,
+                },
+            })
+        }
+
+        async fn attach_fs(
+            &self,
+            turn_id: &TurnId,
+            fs_root_hash: &crate::storage::BlobHash,
+        ) -> Result<(), StorageError> {
+            self.attached_turns
+                .lock()
+                .expect("attached turns mutex")
+                .push((turn_id.clone(), fs_root_hash.clone()));
+            Ok(())
         }
     }
 
@@ -2036,6 +2175,44 @@ mod tests {
         assert!(event_kinds.iter().any(|kind| kind == "stage_started"));
         assert!(event_kinds.iter().any(|kind| kind == "stage_completed"));
         assert!(event_kinds.iter().any(|kind| kind == "checkpoint_saved"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_with_fs_snapshot_policy_captures_and_attaches_lineage() {
+        let graph = linear_graph();
+        let storage = Arc::new(RecordingStorage::default());
+        let artifacts = Arc::new(RecordingArtifacts::default());
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    storage: Some(storage as SharedAttractorStorageWriter),
+                    artifacts: Some(artifacts.clone() as Arc<dyn AttractorArtifactWriter>),
+                    cxdb_persistence: CxdbPersistenceMode::Required,
+                    fs_snapshot_policy: Some(CxdbFsSnapshotPolicy::default()),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        let snapshot_calls = *artifacts
+            .snapshot_calls
+            .lock()
+            .expect("snapshot calls mutex");
+        assert!(snapshot_calls > 0);
+        let attached = artifacts
+            .attached_turns
+            .lock()
+            .expect("attached turns mutex")
+            .clone();
+        assert!(!attached.is_empty());
+        assert!(
+            attached.iter().all(|(_, hash)| hash
+                == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -6,7 +6,9 @@ use std::io::Read;
 
 use crate::client::{Client, RequestContext};
 use crate::error::{Error, Result};
-use crate::protocol::{ENCODING_MSGPACK, MSG_APPEND_TURN, MSG_ATTACH_FS, MSG_PUT_BLOB};
+use crate::protocol::{
+    ENCODING_MSGPACK, MSG_APPEND_TURN, MSG_ATTACH_FS, MSG_GET_BLOB, MSG_PUT_BLOB,
+};
 use crate::turn::{AppendRequest, AppendResult};
 
 #[derive(Debug, Clone)]
@@ -30,6 +32,16 @@ pub struct PutBlobRequest {
 pub struct PutBlobResult {
     pub hash: [u8; 32],
     pub was_new: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct GetBlobRequest {
+    pub hash: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GetBlobResult {
+    pub data: Vec<u8>,
 }
 
 impl Client {
@@ -87,6 +99,21 @@ impl Client {
     ) -> Result<([u8; 32], bool)> {
         let result = self.put_blob(ctx, &PutBlobRequest { data })?;
         Ok((result.hash, result.was_new))
+    }
+
+    pub fn get_blob(&self, ctx: &RequestContext, req: &GetBlobRequest) -> Result<GetBlobResult> {
+        let frame = self.send_request(ctx, MSG_GET_BLOB, &req.hash)?;
+        if frame.payload.len() < 4 {
+            return Err(Error::invalid_response(format!(
+                "get blob response too short ({} bytes)",
+                frame.payload.len()
+            )));
+        }
+        let mut cursor = std::io::Cursor::new(frame.payload);
+        let raw_len = cursor.read_u32::<LittleEndian>()? as usize;
+        let mut data = vec![0u8; raw_len];
+        cursor.read_exact(&mut data)?;
+        Ok(GetBlobResult { data })
     }
 
     pub fn append_turn_with_fs(

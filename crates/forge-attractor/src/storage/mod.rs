@@ -5,11 +5,13 @@ use crate::storage::types::{
     stage_to_agent_link_envelope,
 };
 use forge_cxdb_runtime::{
-    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbRuntimeStore,
+    CxdbAppendTurnRequest, CxdbBinaryClient, CxdbClientError, CxdbFsSnapshotCapture,
+    CxdbFsSnapshotPolicy, CxdbHttpClient, CxdbRuntimeStore,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 
 pub mod types;
@@ -217,6 +219,28 @@ pub trait AttractorStorageReader: Send + Sync {
 #[async_trait::async_trait]
 pub trait AttractorArtifactWriter: Send + Sync {
     async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, StorageError>;
+
+    async fn capture_upload_workspace(
+        &self,
+        workspace_root: &Path,
+        policy: &CxdbFsSnapshotPolicy,
+    ) -> Result<CxdbFsSnapshotCapture, StorageError> {
+        let _ = (workspace_root, policy);
+        Err(StorageError::Unsupported(
+            "capture_upload_workspace is not supported by this artifact writer".to_string(),
+        ))
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: &TurnId,
+        fs_root_hash: &BlobHash,
+    ) -> Result<(), StorageError> {
+        let _ = (turn_id, fs_root_hash);
+        Err(StorageError::Unsupported(
+            "attach_fs is not supported by this artifact writer".to_string(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -380,6 +404,26 @@ where
             .await
             .map_err(cxdb_error_to_storage)
     }
+
+    async fn capture_upload_workspace(
+        &self,
+        workspace_root: &Path,
+        policy: &CxdbFsSnapshotPolicy,
+    ) -> Result<CxdbFsSnapshotCapture, StorageError> {
+        CxdbRuntimeStore::capture_upload_workspace(self, workspace_root, policy)
+            .await
+            .map_err(cxdb_error_to_storage)
+    }
+
+    async fn attach_fs(
+        &self,
+        turn_id: &TurnId,
+        fs_root_hash: &BlobHash,
+    ) -> Result<(), StorageError> {
+        CxdbRuntimeStore::attach_fs(self, turn_id, fs_root_hash)
+            .await
+            .map_err(cxdb_error_to_storage)
+    }
 }
 
 async fn append_record_runtime<B, H>(
@@ -402,6 +446,7 @@ where
             type_version: 1,
             payload,
             idempotency_key,
+            fs_root_hash: None,
         })
         .await
         .map_err(cxdb_error_to_storage)?;
