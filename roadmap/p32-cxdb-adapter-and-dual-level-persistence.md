@@ -9,6 +9,7 @@
 - G3 completed (2026-02-10)
 - G4 completed (2026-02-10)
 - G5 completed (2026-02-10)
+- Approach update completed (2026-02-10): adapter now uses vendored `cxdb` Rust client for binary operations and keeps HTTP for projection/registry surfaces.
 
 **Goal**
 Implement CXDB-backed turnstore adapter and activate dual-level persistence for Attractor and Agent timelines, including stage-to-agent drill-down.
@@ -61,12 +62,22 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
   - Adapter passes contract tests shared with memory/fs turnstore backends.
 - Completed:
   - Added workspace crate `crates/forge-turnstore-cxdb` with `CxdbTurnStore` implementing `TurnStore`, `TypedTurnStore`, and `ArtifactStore` over explicit CXDB binary/HTTP client traits.
-  - Implemented operation mapping per spec section 4.7:
-    - binary path for `create_context`, `fork_context`, `append_turn`, `get_head`, `list_turns` newest-window (`GET_LAST`), `put_blob`, `get_blob`, `attach_fs`
-    - HTTP path for cursor-paged `list_turns(before_turn_id)` and registry bundle publish/read
+  - Reworked binary integration to use vendored `cxdb` client crate (`crates/forge-cxdb`) instead of custom protocol plumbing.
+  - Implemented operation mapping per spec section 4.7 with hybrid transport:
+    - binary via `cxdb::Client`: `create_context`, `fork_context`, `append_turn`, `get_head`, `list_turns` newest-window (`GET_LAST`), `put_blob`, `attach_fs`
+    - HTTP via reqwest client: cursor-paged `list_turns(before_turn_id)` and registry bundle publish/read
+  - Added concrete adapter clients and constructors:
+    - `CxdbSdkBinaryClient` (vendored client-backed)
+    - `CxdbReqwestHttpClient` (HTTP projections/registry)
+    - `CxdbTurnStore::connect(...)`, `connect_default()`, `connect_from_env()`
+  - Added sensible defaults for endpoint wiring:
+    - binary default `127.0.0.1:9009`
+    - HTTP default `http://127.0.0.1:9010`
+    - env override support (`CXDB_ADDR` / `CXDB_BINARY_ADDR`, `CXDB_HTTP_BASE_URL`)
   - Added deterministic idempotency fallback key generation when append requests omit `idempotency_key`.
   - Added crate docs mapping table from each trait method to the corresponding CXDB protocol/HTTP API section.
   - Added contract-style parity tests exercising shared behavior across memory, fs, and CXDB adapter backends.
+  - Current known gap: `get_blob` remains unsupported in vendored client path until CXDB exposes GET_BLOB API in the client crate.
 
 ### [x] G2. Wire `forge-agent` + Attractor runtime to CXDB adapter
 - Work:
@@ -126,6 +137,7 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
     - HTTP paging parity via `before_turn_id`
   - Added `crates/forge-agent/tests/cxdb_parity.rs` covering CXDB-backed session persistence parity and store mode behavior (`off`, `best_effort`, `required`).
   - Added `crates/forge-attractor/tests/cxdb_parity.rs` covering cross-backend deterministic outcome parity and runtime storage mode resilience (`off`, `best_effort`, `required`) with CXDB-backed store wiring.
+  - Added/validated live integration coverage in `crates/forge-turnstore-cxdb/tests/live.rs` (ignored-by-default) against a running CXDB endpoint.
 
 ### [x] G5. Operational hardening and runbook docs
 - Work:
@@ -160,3 +172,4 @@ Implement CXDB-backed turnstore adapter and activate dual-level persistence for 
 - CXDB adapter is production-ready behind configuration flags.
 - Run -> stage -> agent -> tool drill-down is supported via persisted links.
 - Local deterministic test path remains available and green.
+- Live CXDB adapter checks (`cargo test -p forge-turnstore-cxdb --test live -- --ignored`) are green against running CXDB endpoints.
