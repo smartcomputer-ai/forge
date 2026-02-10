@@ -705,6 +705,7 @@ pub struct Session {
     thread_key: Option<String>,
     persistence_writer: Option<Arc<dyn SessionPersistenceWriter>>,
     persistence_context_id: Option<String>,
+    persistence_parent_turn_id: Option<String>,
     persistence_sequence_no: u64,
     persistence_mode: CxdbPersistenceMode,
 }
@@ -854,6 +855,7 @@ impl Session {
             thread_key,
             persistence_writer,
             persistence_context_id: None,
+            persistence_parent_turn_id: None,
             persistence_sequence_no: 0,
             persistence_mode,
         };
@@ -992,7 +994,15 @@ impl Session {
                 async move { store.create_context(None).await }
             });
             match created {
-                Ok(context) => self.persistence_context_id = Some(context.context_id),
+                Ok(context) => {
+                    let head_turn_id = if context.head_turn_id == "0" {
+                        None
+                    } else {
+                        Some(context.head_turn_id)
+                    };
+                    self.persistence_context_id = Some(context.context_id);
+                    self.persistence_parent_turn_id = head_turn_id;
+                }
                 Err(error) => return self.handle_persistence_error(error, "create_context"),
             }
         }
@@ -1037,7 +1047,7 @@ impl Session {
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
-            parent_turn_id: None,
+            parent_turn_id: self.persistence_parent_turn_id.clone(),
             type_id: "forge.agent.session_lifecycle".to_string(),
             type_version: 1,
             payload: payload_bytes,
@@ -1051,7 +1061,10 @@ impl Session {
             let store = store.clone();
             async move { store.append_turn(request).await }
         }) {
-            Ok(_) => Ok(()),
+            Ok(turn) => {
+                self.persistence_parent_turn_id = Some(turn.turn_id);
+                Ok(())
+            }
             Err(error) => self.handle_persistence_error(error, "append_turn"),
         }
     }
@@ -1078,6 +1091,11 @@ impl Session {
         };
         match store.create_context(None).await {
             Ok(context) => {
+                self.persistence_parent_turn_id = if context.head_turn_id == "0" {
+                    None
+                } else {
+                    Some(context.head_turn_id.clone())
+                };
                 self.persistence_context_id = Some(context.context_id);
                 Ok(())
             }
@@ -1242,7 +1260,7 @@ impl Session {
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
-            parent_turn_id: None,
+            parent_turn_id: self.persistence_parent_turn_id.clone(),
             type_id: type_id.to_string(),
             type_version: 1,
             payload: payload_bytes,
@@ -1252,7 +1270,10 @@ impl Session {
                 .map(|capture| capture.fs_root_hash.clone()),
         };
         match store.append_turn(request).await {
-            Ok(_) => Ok(()),
+            Ok(turn) => {
+                self.persistence_parent_turn_id = Some(turn.turn_id);
+                Ok(())
+            }
             Err(error) => self.handle_persistence_error(error, "append_turn"),
         }
     }
@@ -1934,6 +1955,11 @@ impl Session {
                     .cloned();
                 match store.create_context(base_turn).await {
                     Ok(context) => {
+                        child_session.persistence_parent_turn_id = if context.head_turn_id == "0" {
+                            None
+                        } else {
+                            Some(context.head_turn_id.clone())
+                        };
                         child_session.persistence_context_id = Some(context.context_id);
                     }
                     Err(error) => {

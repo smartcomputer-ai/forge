@@ -25,12 +25,12 @@ Legend:
 - [x] Attractor persistence uses typed lifecycle families (`run/stage/parallel/interview/checkpoint`) plus explicit `route_decision` and `stage_to_agent` link records. Refs: `crates/forge-attractor/src/storage/types.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`
 
 ## CXDB Primitive Alignment
-- [ ] CXDB `parent_turn_id` is the primary in-context causal linkage in append paths. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/mod.rs`
-- [ ] Payload fields do not duplicate CXDB lineage primitives (`turn_id`, `parent_turn_id`, `depth`) except for intentional cross-context joins. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/types.rs`
-- [ ] Cross-context linkage remains explicit and minimal (`pipeline_context_id`, `agent_context_id`, `agent_head_turn_id`). Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/storage/types.rs`
-- [ ] Run-stage events stay on attractor run context spine; agent turns stay on agent-session contexts; joins occur via typed link records. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
-- [ ] Thread-context reuse is keyed by resolved thread key only under `fidelity=full`; non-full fidelity does not reuse thread context. Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/runner.rs`
-- [ ] Parallel/retry fork policy is frozen in schemas/lineage contract; full runtime enforcement is tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`. Refs: `spec/04-cxdb-integration-spec.md`, `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
+- [x] CXDB `parent_turn_id` is the primary in-context causal linkage in append paths. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/mod.rs`
+- [x] Payload fields do not duplicate CXDB lineage primitives (`turn_id`, `parent_turn_id`, `depth`) except for intentional cross-context joins. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/types.rs`
+- [x] Cross-context linkage remains explicit and minimal (`pipeline_context_id`, `agent_context_id`, `agent_head_turn_id`). Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/storage/types.rs`
+- [x] Run-stage events stay on attractor run context spine; agent turns stay on agent-session contexts; joins occur via typed link records. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
+- [x] Thread-context reuse is keyed by resolved thread key only under `fidelity=full`; non-full fidelity does not reuse thread context. Refs: `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-attractor/src/runner.rs`
+- [x] Parallel/retry fork policy is frozen in schemas/lineage contract; full runtime enforcement is tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`. Refs: `spec/04-cxdb-integration-spec.md`, `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
 
 ## Registry and Projection
 - [x] New runtime registry bundles represent typed schemas for all v2 families (clean break). Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/runner.rs`

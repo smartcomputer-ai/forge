@@ -466,10 +466,16 @@ where
     R: Serialize,
 {
     let payload = encode_typed_record(&record)?;
+    let head = store.get_head(context_id).await.map_err(cxdb_error_to_storage)?;
+    let parent_turn_id = if head.turn_id == "0" {
+        None
+    } else {
+        Some(head.turn_id)
+    };
     let turn = store
         .append_turn(CxdbAppendTurnRequest {
             context_id: context_id.clone(),
-            parent_turn_id: None,
+            parent_turn_id,
             type_id: type_id.to_string(),
             type_version: 1,
             payload,

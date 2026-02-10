@@ -188,7 +188,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Added explicit `forge.attractor.route_decision` persistence in runner traversal.
   - Queries rebased to typed record decoding in `crates/forge-attractor/src/queries.rs`.
 
-### [ ] G4. Agent persistence split: transcript vs operational lifecycle
+### [x] G4. Agent persistence split: transcript vs operational lifecycle
 - Work:
   - Keep message turns as transcript records.
   - Replace `forge.agent.event` with typed session/tool lifecycle records.
@@ -199,8 +199,20 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `crates/forge-agent/tests/*`
 - DoD:
   - Agent trace no longer encodes operational lifecycle in a generic event envelope.
+- Completed:
+  - Agent transcript remains in dedicated turn families:
+    - `forge.agent.user_turn`
+    - `forge.agent.assistant_turn`
+    - `forge.agent.tool_results_turn`
+    - `forge.agent.system_turn`
+    - `forge.agent.steering_turn`
+  - Replaced generic `forge.agent.event` with typed lifecycle families:
+    - `forge.agent.session_lifecycle`
+    - `forge.agent.tool_call_lifecycle`
+  - Tool lifecycle start/end are joinable by required `call_id` in persisted records.
+  - Updated agent conformance/runtime tests for typed lifecycle decoding.
 
-### [ ] G5. CXDB DAG-first causality cleanup
+### [x] G5. CXDB DAG-first causality cleanup
 - Work:
   - Set `parent_turn_id` deterministically for in-context causal chain.
   - Drop payload fields that duplicate CXDB turn lineage primitives.
@@ -214,6 +226,12 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `crates/forge-attractor/src/backends/forge_agent.rs`
 - DoD:
   - Causality is represented by CXDB DAG, not mirrored in payload correlation fields.
+- Completed:
+  - Agent append paths now set deterministic `parent_turn_id` within context and advance head on successful append (`crates/forge-agent/src/session.rs`).
+  - Attractor runtime-store append paths now resolve current context head and set `parent_turn_id` for typed appends (`crates/forge-attractor/src/storage/mod.rs`).
+  - Envelope-era lineage duplication fields were removed from active runtime payload contracts; only domain fields and explicit cross-context joins remain.
+  - Stage-to-agent linkage retains explicit cross-context references (`pipeline_context_id`, `agent_context_id`, `agent_head_turn_id`, optional `parent_turn_id`) as intended.
+  - Fork policy contract remains frozen in spec; full true-branch execution enforcement stays tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`.
 
 ### [ ] G6. Typed projection-first queries
 - Work:
