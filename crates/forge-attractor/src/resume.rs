@@ -78,43 +78,6 @@ pub fn apply_resume_fidelity_override(
     Ok(())
 }
 
-pub fn effective_node_fidelity(
-    graph: &Graph,
-    target_node_id: &str,
-    incoming_from_node_id: Option<&str>,
-) -> String {
-    if let Some(from) = incoming_from_node_id {
-        for edge in graph.outgoing_edges(from) {
-            if edge.to == target_node_id {
-                if let Some(fidelity) = edge.attrs.get_str("fidelity") {
-                    let trimmed = fidelity.trim();
-                    if !trimmed.is_empty() {
-                        return trimmed.to_string();
-                    }
-                }
-            }
-        }
-    }
-
-    if let Some(node) = graph.nodes.get(target_node_id) {
-        if let Some(fidelity) = node.attrs.get_str("fidelity") {
-            let trimmed = fidelity.trim();
-            if !trimmed.is_empty() {
-                return trimmed.to_string();
-            }
-        }
-    }
-
-    if let Some(fidelity) = graph.attrs.get_str("default_fidelity") {
-        let trimmed = fidelity.trim();
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
-    }
-
-    "compact".to_string()
-}
-
 pub fn build_resume_runtime_state(
     graph: &Graph,
     checkpoint_path: &Path,
@@ -192,7 +155,7 @@ mod tests {
     }
 
     #[test]
-    fn effective_node_fidelity_edge_precedence_expected_edge_value() {
+    fn resolve_fidelity_mode_edge_precedence_expected_edge_value() {
         let graph = parse_dot(
             r#"
             digraph G {
@@ -205,7 +168,8 @@ mod tests {
         )
         .expect("graph should parse");
 
-        let resolved = effective_node_fidelity(&graph, "plan", Some("start"));
+        let incoming = crate::find_incoming_edge(&graph, "plan", Some("start"));
+        let resolved = crate::resolve_fidelity_mode(&graph, "plan", incoming);
         assert_eq!(resolved, "full");
     }
 

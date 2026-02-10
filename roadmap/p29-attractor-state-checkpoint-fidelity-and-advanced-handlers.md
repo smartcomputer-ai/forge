@@ -84,7 +84,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - Implemented first-hop fidelity degrade marker on resume when prior checkpointed node fidelity was `full` (`summary:high` override marker in context for one hop).
   - Added deterministic tests for checkpoint round-trip, resume continuation parity, and one-hop degrade marker behavior.
 
-### [ ] G3. Fidelity and thread resolution engine
+### [x] G3. Fidelity and thread resolution engine
 - Work:
   - Implement fidelity precedence:
     1) incoming edge
@@ -98,6 +98,18 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
   - `crates/forge-attractor/src/backends/forge_agent.rs`
 - DoD:
   - Fidelity/thread behavior is deterministic and test-covered.
+- Completed:
+  - Added centralized fidelity/thread resolver module in `crates/forge-attractor/src/fidelity.rs`:
+    - fidelity precedence: incoming edge -> target node -> graph default -> `compact`
+    - thread key precedence for `full`: node `thread_id` -> edge `thread_id` -> graph-level thread (`thread_id`/`default_thread_id`) -> node class-derived fallback -> previous node id
+  - Integrated resolver into runner so each hop writes deterministic runtime context keys:
+    - `internal.fidelity.mode`
+    - `internal.fidelity.thread_key` (for `full`)
+    - `thread_key` (for backend continuity)
+  - Enforced non-`full` behavior to clear thread reuse keys, ensuring fresh-session semantics.
+  - Updated resume/checkpoint fidelity integration to use resolved runtime fidelity values and one-hop degrade override behavior.
+  - Updated `forge_agent` adapter thread continuity behavior to honor resolved fidelity context (`full` only) and clear thread when fidelity is non-`full`.
+  - Added deterministic unit coverage for resolver precedence and runner/backend integration behavior.
 
 ### [ ] G4. Advanced handlers: `parallel`, `parallel.fan_in`, `stack.manager_loop`
 - Work:

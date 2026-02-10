@@ -3,9 +3,9 @@ use crate::{
     AttractorRunEventRecord, AttractorStageEventRecord, CheckpointMetadata, CheckpointNodeOutcome,
     CheckpointState, ContextStore, Graph, Node, NodeOutcome, NodeStatus, PipelineRunResult,
     PipelineStatus, RetryPolicy, RunConfig, RuntimeContext, apply_resume_fidelity_override,
-    build_resume_runtime_state, build_retry_policy, checkpoint_path_for_run, effective_node_fidelity,
-    delay_for_attempt_ms, finalize_retry_exhausted, select_next_edge, should_retry_outcome,
-    validate_or_raise,
+    build_resume_runtime_state, build_retry_policy, checkpoint_path_for_run, delay_for_attempt_ms,
+    find_incoming_edge, finalize_retry_exhausted, resolve_fidelity_mode, resolve_thread_key,
+    select_next_edge, should_retry_outcome, validate_or_raise,
 };
 use forge_turnstore::{ContextId, attractor_idempotency_key};
 use serde_json::{Value, json};
@@ -105,6 +105,37 @@ impl PipelineRunner {
                 ))
             })?;
             context_store.set("current_node", Value::String(node.id.clone()))?;
+            let previous_node_id = completed_nodes.last().cloned();
+            let incoming_edge = find_incoming_edge(graph, &node.id, previous_node_id.as_deref());
+            let mut effective_fidelity = resolve_fidelity_mode(graph, &node.id, incoming_edge);
+            if let Some(resume_override) = context_store
+                .get("internal.resume.fidelity_override_once")?
+                .and_then(|value| value.as_str().map(ToOwned::to_owned))
+            {
+                effective_fidelity = resume_override;
+            }
+            context_store.set(
+                "internal.fidelity.mode",
+                Value::String(effective_fidelity.clone()),
+            )?;
+            context_store.set("fidelity", Value::String(effective_fidelity.clone()))?;
+            if effective_fidelity == "full" {
+                let thread_key =
+                    resolve_thread_key(graph, &node.id, incoming_edge, previous_node_id.as_deref());
+                if let Some(thread_key) = thread_key {
+                    context_store.set("thread_key", Value::String(thread_key.clone()))?;
+                    context_store.set(
+                        "internal.fidelity.thread_key",
+                        Value::String(thread_key),
+                    )?;
+                } else {
+                    context_store.remove("thread_key")?;
+                    context_store.remove("internal.fidelity.thread_key")?;
+                }
+            } else {
+                context_store.remove("thread_key")?;
+                context_store.remove("internal.fidelity.thread_key")?;
+            }
 
             if is_terminal_node(node) {
                 if let Some(failed_gate_id) = first_unsatisfied_goal_gate(graph, &node_outcomes) {
@@ -134,7 +165,6 @@ impl PipelineRunner {
             )
             .await?;
 
-            let previous_node_id = completed_nodes.last().cloned();
             completed_nodes.push(node.id.clone());
             node_outcomes.insert(node.id.clone(), outcome.clone());
             let retries_used = attempts_used.saturating_sub(1);
@@ -185,11 +215,7 @@ impl PipelineRunner {
                         .collect(),
                     context_values: context_snapshot.values.clone(),
                     logs: context_snapshot.logs,
-                    current_node_fidelity: Some(effective_node_fidelity(
-                        graph,
-                        &node.id,
-                        previous_node_id.as_deref(),
-                    )),
+                    current_node_fidelity: Some(effective_fidelity.clone()),
                     terminal_status: checkpoint_terminal_status.clone(),
                     terminal_failure_reason: checkpoint_terminal_failure_reason.clone(),
                 };
@@ -1521,5 +1547,64 @@ mod tests {
             calls[1].1.get("internal.resume.fidelity_override_once"),
             None
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_fidelity_thread_resolution_expected_deterministic_precedence_and_full_only_threads() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                graph [default_fidelity="summary:medium", thread_id="graph-thread"]
+                start [shape=Mdiamond]
+                plan [fidelity="summary:low"]
+                review [fidelity="truncate", class="review-cluster"]
+                exit [shape=Msquare]
+                start -> plan [fidelity="full", thread_id="edge-thread"]
+                plan -> review
+                review -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let executor = Arc::new(RecordingExecutor::default());
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: executor.clone(),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+        assert_eq!(result.status, PipelineStatus::Success);
+
+        let calls = executor.calls.lock().expect("calls mutex should lock");
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].0, "start");
+        assert_eq!(calls[1].0, "plan");
+        assert_eq!(calls[2].0, "review");
+
+        assert_eq!(
+            calls[1]
+                .1
+                .get("internal.fidelity.mode")
+                .and_then(Value::as_str),
+            Some("full")
+        );
+        assert_eq!(
+            calls[1].1.get("thread_key").and_then(Value::as_str),
+            Some("edge-thread")
+        );
+
+        assert_eq!(
+            calls[2]
+                .1
+                .get("internal.fidelity.mode")
+                .and_then(Value::as_str),
+            Some("truncate")
+        );
+        assert_eq!(calls[2].1.get("thread_key"), None);
     }
 }

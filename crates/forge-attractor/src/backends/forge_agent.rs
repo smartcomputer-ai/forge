@@ -112,9 +112,7 @@ impl ForgeAgentCodergenAdapter {
         graph: &Graph,
         stage_attempt_id: &str,
     ) -> Result<NodeOutcome, AttractorError> {
-        if let Some(thread_key) = resolve_thread_key(node, context) {
-            submitter.set_thread_key(Some(thread_key));
-        }
+        submitter.set_thread_key(resolve_thread_key(node, context));
 
         let prompt = self.build_prompt(node, graph);
         let mut options = self.submit_options_for_node(node);
@@ -138,9 +136,7 @@ impl ForgeAgentCodergenAdapter {
         prompt: String,
         stage_attempt_id: &str,
     ) -> Result<NodeOutcome, AttractorError> {
-        if let Some(thread_key) = resolve_thread_key(node, context) {
-            submitter.set_thread_key(Some(thread_key));
-        }
+        submitter.set_thread_key(resolve_thread_key(node, context));
 
         let mut options = self.submit_options_for_node(node);
         options.metadata = Some(stage_metadata(node, stage_attempt_id));
@@ -252,6 +248,26 @@ fn stage_metadata(node: &Node, stage_attempt_id: &str) -> HashMap<String, String
 }
 
 fn resolve_thread_key(node: &Node, context: &RuntimeContext) -> Option<String> {
+    if let Some(mode) = context
+        .get("internal.fidelity.mode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        if !mode.is_empty() && mode != "full" {
+            return None;
+        }
+    }
+
+    if let Some(thread_key) = context
+        .get("internal.fidelity.thread_key")
+        .and_then(Value::as_str)
+        .map(str::trim)
+    {
+        if !thread_key.is_empty() {
+            return Some(thread_key.to_string());
+        }
+    }
+
     if let Some(thread_id) = node.attrs.get_str("thread_id") {
         if !thread_id.trim().is_empty() {
             return Some(thread_id.trim().to_string());
@@ -557,5 +573,15 @@ mod tests {
         let mut context = RuntimeContext::new();
         context.insert("thread_key".to_string(), json!("ctx-thread"));
         assert_eq!(resolve_thread_key(node, &context).as_deref(), Some("t1"));
+    }
+
+    #[test]
+    fn resolve_thread_key_non_full_fidelity_expected_none() {
+        let graph = parse_dot("digraph G { n1 [thread_id=\"t1\"] }").expect("graph should parse");
+        let node = graph.nodes.get("n1").expect("node");
+        let mut context = RuntimeContext::new();
+        context.insert("internal.fidelity.mode".to_string(), json!("truncate"));
+        context.insert("thread_key".to_string(), json!("ctx-thread"));
+        assert_eq!(resolve_thread_key(node, &context), None);
     }
 }
