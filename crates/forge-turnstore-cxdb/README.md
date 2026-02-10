@@ -53,6 +53,24 @@ Retention and purge policies should be implemented by the CXDB deployment layer 
 - `conflict`/idempotency mismatches: verify deterministic idempotency key construction and context scoping.
 - Missing projection rows when paging: verify HTTP path is used for `before_turn_id` queries.
 
+## Live tests
+
+Live integration tests are in `crates/forge-turnstore-cxdb/tests/live.rs` and are ignored by default.
+
+Run against default local CXDB (`http://127.0.0.1:9010`):
+
+```bash
+cargo test -p forge-turnstore-cxdb --test live -- --ignored
+```
+
+Run against a custom endpoint:
+
+```bash
+CXDB_HTTP_BASE_URL=http://localhost:9010 cargo test -p forge-turnstore-cxdb --test live -- --ignored
+```
+
+Note: some CXDB builds expose read/registry HTTP routes but not HTTP context create/append routes. In that case, write-path live tests are auto-skipped and registry coverage still runs.
+
 ## Cross-check references
 
 - `spec/cxdb/protocol.md`
