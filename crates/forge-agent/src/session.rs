@@ -1364,7 +1364,7 @@ impl Session {
             },
         );
 
-        let child_session = Session::new_with_depth(
+        let mut child_session = Session::new_with_depth(
             child_provider_profile,
             child_execution_env,
             self.llm_client.clone(),
@@ -1373,6 +1373,58 @@ impl Session {
             self.turn_store.clone(),
             self.subagent_depth + 1,
         )?;
+
+        let mut parent_turn_id: Option<String> = None;
+        if self.persistence_enabled() {
+            self.ensure_turn_store_context().await?;
+            if let (Some(store), Some(context_id)) =
+                (self.turn_store.clone(), self.turn_store_context_id.clone())
+            {
+                match store.get_head(&context_id).await {
+                    Ok(head) => parent_turn_id = Some(head.turn_id),
+                    Err(error) => self.handle_persistence_error(error, "get_head")?,
+                }
+            }
+        }
+
+        if child_session.persistence_enabled() && child_session.turn_store_context_id.is_none() {
+            if let Some(store) = child_session.turn_store.clone() {
+                let base_turn = parent_turn_id
+                    .as_ref()
+                    .filter(|turn_id| turn_id.as_str() != "0")
+                    .cloned();
+                match store.create_context(base_turn).await {
+                    Ok(context) => {
+                        child_session.turn_store_context_id = Some(context.context_id);
+                    }
+                    Err(error) => {
+                        child_session.handle_persistence_error(error, "create_context")?
+                    }
+                }
+            }
+        }
+
+        let child_context_id = child_session.turn_store_context_id.clone();
+        let session_id = self.id.clone();
+        let thread_key = self.thread_key.clone();
+        let child_session_id = child_session.id.clone();
+        let subagent_id = child_id.clone();
+        self.persist_envelope(
+            "forge.link.subagent_spawn",
+            1,
+            "subagent_spawn",
+            current_timestamp(),
+            serde_json::json!({
+                "session_id": session_id,
+                "parent_turn": parent_turn_id,
+                "child_context_id": child_context_id,
+                "thread_key": thread_key,
+                "subagent_id": subagent_id,
+                "child_session_id": child_session_id,
+            }),
+        )
+        .await?;
+
         let active_task = Some(spawn_subagent_submit_task(Box::new(child_session), task));
         self.subagent_records.insert(
             child_id.clone(),

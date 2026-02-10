@@ -2,16 +2,106 @@ mod support;
 
 use forge_agent::{
     BufferedEventEmitter, EventKind, ExecutionEnvironment, LocalExecutionEnvironment, Session,
-    SessionConfig, SessionState, Turn,
+    SessionConfig, SessionState, Turn, TurnStoreWriteMode,
 };
 use forge_llm::Role;
+use forge_turnstore::{
+    AppendTurnRequest, ContextId, StoreContext, StoredTurn, StoredTurnEnvelope, StoredTurnRef,
+    TurnId, TurnStore, TurnStoreError,
+};
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::Mutex;
 use support::{
     all_fixtures, client_with_adapter, enqueue, text_response, tool_call_response,
     tool_result_by_call_id,
 };
 use tempfile::tempdir;
+
+#[derive(Default)]
+struct RecordingTurnStore {
+    next_context: Mutex<u64>,
+    next_turn: Mutex<u64>,
+    appended: Mutex<Vec<AppendTurnRequest>>,
+}
+
+impl RecordingTurnStore {
+    fn appended(&self) -> Vec<AppendTurnRequest> {
+        self.appended
+            .lock()
+            .expect("append mutex should lock")
+            .clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl TurnStore for RecordingTurnStore {
+    async fn create_context(
+        &self,
+        _base_turn_id: Option<TurnId>,
+    ) -> Result<StoreContext, TurnStoreError> {
+        let mut next = self.next_context.lock().expect("context mutex should lock");
+        if *next == 0 {
+            *next = 1;
+        }
+        let context_id = next.to_string();
+        *next += 1;
+        Ok(StoreContext {
+            context_id,
+            head_turn_id: "0".to_string(),
+            head_depth: 0,
+        })
+    }
+
+    async fn append_turn(&self, request: AppendTurnRequest) -> Result<StoredTurn, TurnStoreError> {
+        self.appended
+            .lock()
+            .expect("append mutex should lock")
+            .push(request.clone());
+        let mut next = self.next_turn.lock().expect("turn mutex should lock");
+        if *next == 0 {
+            *next = 1;
+        }
+        let turn_id = next.to_string();
+        *next += 1;
+        Ok(StoredTurn {
+            context_id: request.context_id,
+            turn_id,
+            parent_turn_id: request.parent_turn_id.unwrap_or_else(|| "0".to_string()),
+            depth: 1,
+            type_id: request.type_id,
+            type_version: request.type_version,
+            payload: request.payload,
+            idempotency_key: Some(request.idempotency_key),
+            content_hash: None,
+        })
+    }
+
+    async fn fork_context(&self, from_turn_id: TurnId) -> Result<StoreContext, TurnStoreError> {
+        Ok(StoreContext {
+            context_id: "fork".to_string(),
+            head_turn_id: from_turn_id,
+            head_depth: 1,
+        })
+    }
+
+    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, TurnStoreError> {
+        Ok(StoredTurnRef {
+            context_id: context_id.clone(),
+            turn_id: "1".to_string(),
+            depth: 1,
+        })
+    }
+
+    async fn list_turns(
+        &self,
+        _context_id: &ContextId,
+        _before_turn_id: Option<&TurnId>,
+        _limit: usize,
+    ) -> Result<Vec<StoredTurn>, TurnStoreError> {
+        Ok(Vec::new())
+    }
+}
 
 #[tokio::test(flavor = "current_thread")]
 async fn cross_profile_reasoning_effort_change_applies_on_next_request() {
@@ -371,5 +461,68 @@ async fn cross_profile_large_output_truncation_behavior() {
             .expect("result should exist");
         let text = result.content.as_str().unwrap_or_default();
         assert!(text.contains("[WARNING: Tool output was truncated."));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cross_profile_subagent_spawn_persists_link_record() {
+    for fixture in all_fixtures() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        let (client, responses, _requests) = client_with_adapter(fixture.id());
+        let profile = fixture.profile();
+        let store = Arc::new(RecordingTurnStore::default());
+        let mut config = SessionConfig::default();
+        config.turn_store_mode = TurnStoreWriteMode::Required;
+        let mut session =
+            Session::new_with_turn_store(profile, env, client, config, Some(store.clone()))
+                .expect("session should initialize");
+
+        enqueue(
+            &responses,
+            tool_call_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-1",
+                vec![(
+                    "call-spawn",
+                    "spawn_agent",
+                    json!({ "task": "child task", "max_turns": 1 }),
+                )],
+            ),
+        );
+        enqueue(
+            &responses,
+            text_response(fixture.id(), fixture.model(), "resp-2", "done"),
+        );
+        enqueue(
+            &responses,
+            text_response(fixture.id(), fixture.model(), "resp-3", "child-done"),
+        );
+
+        session
+            .submit("spawn child")
+            .await
+            .expect("submit should succeed");
+
+        let appended = store.appended();
+        let spawn_links: Vec<StoredTurnEnvelope> = appended
+            .iter()
+            .filter(|request| request.type_id == "forge.link.subagent_spawn")
+            .filter_map(|request| {
+                serde_json::from_slice::<StoredTurnEnvelope>(&request.payload).ok()
+            })
+            .collect();
+
+        assert!(
+            !spawn_links.is_empty(),
+            "expected subagent spawn link turn for {}",
+            fixture.id()
+        );
+        let payload = &spawn_links[0].payload;
+        assert_eq!(payload["session_id"].as_str(), Some(session.id()));
+        assert!(payload["parent_turn"].as_str().is_some());
+        assert!(payload["child_context_id"].as_str().is_some());
+        assert_eq!(payload["thread_key"].as_str(), session.thread_key());
     }
 }
