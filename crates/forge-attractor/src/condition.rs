@@ -203,6 +203,17 @@ mod tests {
     }
 
     #[test]
+    fn validate_condition_expression_empty_value_expected_err() {
+        let error = validate_condition_expression("outcome=").expect_err("validation should fail");
+        assert!(error.contains("empty value"));
+    }
+
+    #[test]
+    fn validate_condition_expression_exists_clause_expected_ok() {
+        validate_condition_expression("context.ready").expect("validation should succeed");
+    }
+
+    #[test]
     fn evaluate_condition_expression_all_clauses_match_expected_true() {
         let mut context = RuntimeContext::new();
         context.insert("ready".to_string(), Value::Bool(true));
@@ -222,5 +233,47 @@ mod tests {
         let ok = evaluate_condition_expression("outcome!=success", &outcome(), &context)
             .expect("evaluation should succeed");
         assert!(!ok);
+    }
+
+    #[test]
+    fn evaluate_condition_expression_exists_clause_missing_key_expected_false() {
+        let context = RuntimeContext::new();
+        let ok = evaluate_condition_expression("context.ready", &outcome(), &context)
+            .expect("evaluation should succeed");
+        assert!(!ok);
+    }
+
+    #[test]
+    fn evaluate_condition_expression_exists_clause_present_non_empty_expected_true() {
+        let mut context = RuntimeContext::new();
+        context.insert("ready".to_string(), Value::Bool(true));
+        let ok = evaluate_condition_expression("context.ready", &outcome(), &context)
+            .expect("evaluation should succeed");
+        assert!(ok);
+    }
+
+    #[test]
+    fn evaluate_condition_expression_quoted_string_expected_true() {
+        let mut context = RuntimeContext::new();
+        context.insert("choice".to_string(), Value::String("ship now".to_string()));
+        let ok = evaluate_condition_expression("context.choice=\"ship now\"", &outcome(), &context)
+            .expect("evaluation should succeed");
+        assert!(ok);
+    }
+
+    #[test]
+    fn evaluate_condition_expression_missing_key_null_compare_expected_true() {
+        let context = RuntimeContext::new();
+        let ok = evaluate_condition_expression("context.missing=null", &outcome(), &context)
+            .expect("evaluation should succeed");
+        assert!(ok);
+    }
+
+    #[test]
+    fn evaluate_condition_expression_preferred_label_exists_expected_true() {
+        let context = RuntimeContext::new();
+        let ok = evaluate_condition_expression("preferred_label", &outcome(), &context)
+            .expect("evaluation should succeed");
+        assert!(ok);
     }
 }

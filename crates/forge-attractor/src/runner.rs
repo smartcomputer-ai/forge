@@ -1,12 +1,15 @@
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorError,
     AttractorRunEventRecord, AttractorStageEventRecord, Graph, Node, NodeOutcome, NodeStatus,
-    PipelineRunResult, PipelineStatus, RunConfig, RuntimeContext, select_next_edge,
+    PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig, RuntimeContext, build_retry_policy,
+    delay_for_attempt_ms, finalize_retry_exhausted, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
 use forge_turnstore::{ContextId, attractor_idempotency_key};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
+use std::thread::sleep;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Default)]
@@ -65,38 +68,17 @@ impl PipelineRunner {
                 break;
             }
 
-            let stage_attempt_id = stage_attempt_id(node);
-            storage
-                .append_stage_event(
-                    &node.id,
-                    &stage_attempt_id,
-                    "stage_started",
-                    json!({ "node_id": node.id }),
-                )
-                .await?;
-
-            let outcome = match config.executor.execute(node, &context, graph).await {
-                Ok(outcome) => outcome,
-                Err(error) => NodeOutcome::failure(error.to_string()),
-            };
-
-            let completion_kind = if outcome.status == NodeStatus::Fail {
-                "stage_failed"
-            } else {
-                "stage_completed"
-            };
-            storage
-                .append_stage_event(
-                    &node.id,
-                    &stage_attempt_id,
-                    completion_kind,
-                    json!({
-                        "node_id": node.id,
-                        "status": outcome.status.as_str(),
-                        "notes": outcome.notes,
-                    }),
-                )
-                .await?;
+            let retry_policy = build_retry_policy(node, graph, config.retry_backoff.clone());
+            let (outcome, attempts_used) = execute_with_retry(
+                node,
+                graph,
+                &context,
+                &*config.executor,
+                &retry_policy,
+                &mut storage,
+                &run_id,
+            )
+            .await?;
 
             completed_nodes.push(node.id.clone());
             node_outcomes.insert(node.id.clone(), outcome.clone());
@@ -105,7 +87,7 @@ impl PipelineRunner {
             storage
                 .append_checkpoint_event(
                     &node.id,
-                    &stage_attempt_id,
+                    &stage_attempt_id(node, attempts_used),
                     json!({
                         "current_node_id": node.id,
                         "completed_nodes_count": completed_nodes.len(),
@@ -114,14 +96,25 @@ impl PipelineRunner {
                 )
                 .await?;
 
-            let Some(next_edge) = select_next_edge(graph, &node.id, &outcome, &context) else {
-                if outcome.status == NodeStatus::Fail {
-                    terminal_failure = Some(
-                        outcome
-                            .notes
-                            .unwrap_or_else(|| "stage failed with no routing target".to_string()),
-                    );
+            if outcome.status == NodeStatus::Fail {
+                if let Some(edge) = select_fail_edge(graph, &node.id) {
+                    current_node_id = edge.to.clone();
+                    continue;
                 }
+                if let Some(target) = resolve_node_failure_target(graph, node) {
+                    current_node_id = target;
+                    continue;
+                }
+                terminal_failure = Some(
+                    outcome
+                        .notes
+                        .clone()
+                        .unwrap_or_else(|| "stage failed with no routing target".to_string()),
+                );
+                break;
+            }
+
+            let Some(next_edge) = select_next_edge(graph, &node.id, &outcome, &context) else {
                 break;
             };
             current_node_id = next_edge.to.clone();
@@ -204,6 +197,43 @@ fn resolve_retry_target(graph: &Graph, node_id: &str) -> Option<String> {
     None
 }
 
+fn resolve_node_failure_target(graph: &Graph, node: &Node) -> Option<String> {
+    for key in ["retry_target", "fallback_retry_target"] {
+        let target = node.attrs.get_str(key).unwrap_or_default();
+        if !target.is_empty() && graph.nodes.contains_key(target) {
+            return Some(target.to_string());
+        }
+    }
+    None
+}
+
+fn select_fail_edge<'a>(graph: &'a Graph, node_id: &'a str) -> Option<&'a crate::Edge> {
+    let fail_edges: Vec<&crate::Edge> = graph
+        .outgoing_edges(node_id)
+        .filter(|edge| is_fail_condition(edge.attrs.get_str("condition").unwrap_or_default()))
+        .collect();
+    if fail_edges.is_empty() {
+        return None;
+    }
+
+    fail_edges.into_iter().max_by(|left, right| {
+        edge_weight(left)
+            .cmp(&edge_weight(right))
+            .then_with(|| right.to.cmp(&left.to))
+    })
+}
+
+fn is_fail_condition(condition: &str) -> bool {
+    condition.replace(' ', "") == "outcome=fail"
+}
+
+fn edge_weight(edge: &crate::Edge) -> i64 {
+    edge.attrs
+        .get("weight")
+        .and_then(|value| value.as_i64())
+        .unwrap_or(0)
+}
+
 fn apply_outcome_to_context(context: &mut RuntimeContext, outcome: &NodeOutcome) {
     for (key, value) in &outcome.context_updates {
         context.insert(key.clone(), value.clone());
@@ -235,8 +265,90 @@ fn attr_value_to_json(value: &AttrValue) -> Value {
     }
 }
 
-fn stage_attempt_id(node: &Node) -> String {
-    format!("{}:attempt:1", node.id)
+fn stage_attempt_id(node: &Node, attempt: u32) -> String {
+    format!("{}:attempt:{attempt}", node.id)
+}
+
+async fn execute_with_retry(
+    node: &Node,
+    graph: &Graph,
+    context: &RuntimeContext,
+    executor: &dyn crate::NodeExecutor,
+    retry_policy: &RetryPolicy,
+    storage: &mut RunStorage,
+    run_id: &str,
+) -> Result<(NodeOutcome, u32), AttractorError> {
+    for attempt in 1..=retry_policy.max_attempts {
+        let stage_attempt_id = stage_attempt_id(node, attempt);
+        storage
+            .append_stage_event(
+                &node.id,
+                &stage_attempt_id,
+                "stage_started",
+                json!({ "node_id": node.id, "attempt": attempt }),
+            )
+            .await?;
+
+        let outcome = match executor.execute(node, context, graph).await {
+            Ok(outcome) => outcome,
+            Err(error) => NodeOutcome::failure(error.to_string()),
+        };
+
+        let completion_kind = if outcome.status == NodeStatus::Fail {
+            "stage_failed"
+        } else {
+            "stage_completed"
+        };
+        storage
+            .append_stage_event(
+                &node.id,
+                &stage_attempt_id,
+                completion_kind,
+                json!({
+                    "node_id": node.id,
+                    "attempt": attempt,
+                    "status": outcome.status.as_str(),
+                    "notes": outcome.notes,
+                }),
+            )
+            .await?;
+
+        if outcome.status.is_success_like() {
+            return Ok((outcome, attempt));
+        }
+
+        if should_retry_outcome(&outcome) && attempt < retry_policy.max_attempts {
+            let delay_ms = delay_for_attempt_ms(
+                attempt,
+                &retry_policy.backoff,
+                hash_run_node(run_id, &node.id),
+            );
+            if delay_ms > 0 {
+                sleep(Duration::from_millis(delay_ms));
+            }
+            continue;
+        }
+
+        if outcome.status == NodeStatus::Retry && attempt >= retry_policy.max_attempts {
+            return Ok((finalize_retry_exhausted(node), attempt));
+        }
+
+        return Ok((outcome, attempt));
+    }
+
+    Ok((
+        NodeOutcome::failure("max retries exceeded"),
+        retry_policy.max_attempts,
+    ))
+}
+
+fn hash_run_node(run_id: &str, node_id: &str) -> u64 {
+    let mut h = 0xcbf29ce484222325u64;
+    for b in run_id.bytes().chain(node_id.bytes()) {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    h
 }
 
 struct RunStorage {
@@ -424,10 +536,13 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AttractorStorageWriter, parse_dot, storage::SharedAttractorStorageWriter};
+    use crate::{
+        AttractorStorageWriter, NodeExecutor, NodeOutcome, NodeStatus, parse_dot,
+        storage::SharedAttractorStorageWriter,
+    };
     use async_trait::async_trait;
     use forge_turnstore::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
 
     #[derive(Default)]
     struct RecordingStorage {
@@ -554,6 +669,144 @@ mod tests {
         .expect("graph should parse")
     }
 
+    struct PreferredLabelExecutor;
+
+    #[async_trait]
+    impl NodeExecutor for PreferredLabelExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id == "gate" {
+                return Ok(NodeOutcome {
+                    status: NodeStatus::Success,
+                    notes: None,
+                    context_updates: RuntimeContext::new(),
+                    preferred_label: Some("No".to_string()),
+                    suggested_next_ids: Vec::new(),
+                });
+            }
+            Ok(NodeOutcome::success())
+        }
+    }
+
+    struct ConditionFailExecutor;
+
+    #[async_trait]
+    impl NodeExecutor for ConditionFailExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id == "gate" {
+                return Ok(NodeOutcome {
+                    status: NodeStatus::Fail,
+                    notes: Some("intentional failure".to_string()),
+                    context_updates: RuntimeContext::new(),
+                    preferred_label: None,
+                    suggested_next_ids: Vec::new(),
+                });
+            }
+            Ok(NodeOutcome::success())
+        }
+    }
+
+    struct RetryThenSuccessExecutor {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl NodeExecutor for RetryThenSuccessExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id != "work" {
+                return Ok(NodeOutcome::success());
+            }
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call < 3 {
+                return Ok(NodeOutcome {
+                    status: NodeStatus::Retry,
+                    notes: Some("retry requested".to_string()),
+                    context_updates: RuntimeContext::new(),
+                    preferred_label: None,
+                    suggested_next_ids: Vec::new(),
+                });
+            }
+            Ok(NodeOutcome::success())
+        }
+    }
+
+    struct FailThenSuccessExecutor {
+        calls: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl NodeExecutor for FailThenSuccessExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id != "work" {
+                return Ok(NodeOutcome::success());
+            }
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call < 2 {
+                return Ok(NodeOutcome::failure("first failure"));
+            }
+            Ok(NodeOutcome::success())
+        }
+    }
+
+    struct AlwaysRetryExecutor;
+
+    #[async_trait]
+    impl NodeExecutor for AlwaysRetryExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id != "work" {
+                return Ok(NodeOutcome::success());
+            }
+            Ok(NodeOutcome {
+                status: NodeStatus::Retry,
+                notes: Some("keep retrying".to_string()),
+                context_updates: RuntimeContext::new(),
+                preferred_label: None,
+                suggested_next_ids: Vec::new(),
+            })
+        }
+    }
+
+    struct AlwaysFailAtGateExecutor;
+
+    #[async_trait]
+    impl NodeExecutor for AlwaysFailAtGateExecutor {
+        async fn execute(
+            &self,
+            node: &Node,
+            _context: &RuntimeContext,
+            _graph: &Graph,
+        ) -> Result<NodeOutcome, AttractorError> {
+            if node.id == "gate" {
+                return Ok(NodeOutcome::failure("gate failed"));
+            }
+            Ok(NodeOutcome::success())
+        }
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn run_linear_graph_store_disabled_expected_success() {
         let graph = linear_graph();
@@ -604,5 +857,349 @@ mod tests {
         assert!(event_kinds.iter().any(|kind| kind == "stage_started"));
         assert!(event_kinds.iter().any(|kind| kind == "stage_completed"));
         assert!(event_kinds.iter().any(|kind| kind == "checkpoint_saved"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_branching_graph_preferred_label_expected_selected_branch() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate
+                yes
+                no
+                exit [shape=Msquare]
+                start -> gate
+                gate -> yes [label="Yes"]
+                gate -> no [label="No"]
+                yes -> exit
+                no -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: Arc::new(PreferredLabelExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert!(result.completed_nodes.iter().any(|node| node == "no"));
+        assert!(!result.completed_nodes.iter().any(|node| node == "yes"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_branching_graph_condition_route_expected_fail_edge_taken() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate
+                retry_path
+                success_path
+                exit [shape=Msquare]
+                start -> gate
+                gate -> retry_path [condition="outcome=fail"]
+                gate -> success_path [condition="outcome=success"]
+                retry_path -> exit
+                success_path -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: Arc::new(ConditionFailExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert!(
+            result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "retry_path")
+        );
+        assert!(
+            !result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "success_path")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_retries_on_retry_status_expected_attempts_and_success() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                work [max_retries=2]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let executor = Arc::new(RetryThenSuccessExecutor {
+            calls: AtomicUsize::new(0),
+        });
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: executor.clone(),
+                    retry_backoff: crate::RetryBackoffConfig {
+                        initial_delay_ms: 0,
+                        backoff_factor: 1.0,
+                        max_delay_ms: 0,
+                        jitter: false,
+                    },
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_retries_on_fail_status_expected_attempts_and_success() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                work [max_retries=1]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let executor = Arc::new(FailThenSuccessExecutor {
+            calls: AtomicUsize::new(0),
+        });
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: executor.clone(),
+                    retry_backoff: crate::RetryBackoffConfig {
+                        initial_delay_ms: 0,
+                        backoff_factor: 1.0,
+                        max_delay_ms: 0,
+                        jitter: false,
+                    },
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_retry_exhausted_allow_partial_expected_partial_success() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                work [max_retries=1, allow_partial=true]
+                exit [shape=Msquare]
+                start -> work -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: Arc::new(AlwaysRetryExecutor),
+                    retry_backoff: crate::RetryBackoffConfig {
+                        initial_delay_ms: 0,
+                        backoff_factor: 1.0,
+                        max_delay_ms: 0,
+                        jitter: false,
+                    },
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert_eq!(result.status, PipelineStatus::Success);
+        assert_eq!(
+            result
+                .node_outcomes
+                .get("work")
+                .expect("work outcome should exist")
+                .status,
+            NodeStatus::PartialSuccess
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_failure_routing_fail_edge_beats_retry_targets_expected_fail_edge_taken() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate [retry_target="retry_target", fallback_retry_target="fallback_target"]
+                fail_edge_target
+                retry_target
+                fallback_target
+                exit [shape=Msquare]
+                start -> gate
+                gate -> fail_edge_target [condition="outcome=fail"]
+                gate -> retry_target
+                gate -> fallback_target
+                fail_edge_target -> exit
+                retry_target -> exit
+                fallback_target -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: Arc::new(AlwaysFailAtGateExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+
+        assert!(
+            result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "fail_edge_target")
+        );
+        assert!(
+            !result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "retry_target")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_failure_routing_retry_target_then_fallback_expected_order() {
+        let graph_retry_target = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate [retry_target="retry_target", fallback_retry_target="fallback_target"]
+                retry_target
+                fallback_target
+                exit [shape=Msquare]
+                start -> gate
+                gate -> retry_target
+                gate -> fallback_target
+                retry_target -> exit
+                fallback_target -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let retry_target_result = PipelineRunner
+            .run(
+                &graph_retry_target,
+                RunConfig {
+                    executor: Arc::new(AlwaysFailAtGateExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+        assert!(
+            retry_target_result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "retry_target")
+        );
+
+        let graph_fallback = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate [retry_target="missing", fallback_retry_target="fallback_target"]
+                fallback_target
+                exit [shape=Msquare]
+                start -> gate
+                gate -> fallback_target
+                fallback_target -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let fallback_result = PipelineRunner
+            .run(
+                &graph_fallback,
+                RunConfig {
+                    executor: Arc::new(AlwaysFailAtGateExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should succeed");
+        assert!(
+            fallback_result
+                .completed_nodes
+                .iter()
+                .any(|node| node == "fallback_target")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_failure_without_route_expected_pipeline_fail() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                start [shape=Mdiamond]
+                gate
+                exit [shape=Msquare]
+                start -> gate
+                gate -> exit
+            }
+            "#,
+        )
+        .expect("graph should parse");
+
+        let result = PipelineRunner
+            .run(
+                &graph,
+                RunConfig {
+                    executor: Arc::new(AlwaysFailAtGateExecutor),
+                    ..RunConfig::default()
+                },
+            )
+            .await
+            .expect("run should complete");
+
+        assert_eq!(result.status, PipelineStatus::Fail);
+        assert!(result.failure_reason.is_some());
     }
 }

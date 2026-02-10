@@ -76,7 +76,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - Wired runner traversal to routing engine so runtime execution now uses condition-aware edge selection.
   - Added deterministic unit tests for condition evaluation and routing priority behavior.
 
-### [ ] G3. Retry policy, backoff, and failure routing
+### [x] G3. Retry policy, backoff, and failure routing
 - Work:
   - Implement `max_retries` semantics (`max_attempts = max_retries + 1`).
   - Implement retry backoff config + jitter behavior.
@@ -90,6 +90,12 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/src/runner.rs`
 - DoD:
   - Retries, exhaustion, and fallback routing are test-covered and spec-aligned.
+- Completed:
+  - Added `retry` module with retry policy construction (`max_attempts = max_retries + 1`) and configurable backoff/jitter delay calculation.
+  - Updated runner execution to apply retry loops for `RETRY` and `FAIL` outcomes with attempt-scoped stage events.
+  - Implemented retry-exhaustion handling including `allow_partial=true` -> `PARTIAL_SUCCESS`.
+  - Implemented failure-routing precedence: fail edge (`outcome=fail`) -> node `retry_target` -> node `fallback_retry_target` -> terminate with failure.
+  - Added deterministic unit tests for retry policy/backoff and runtime retry/failure routing behaviors.
 
 ### [ ] G4. Handler interface + registry + shape/type resolution
 - Work:

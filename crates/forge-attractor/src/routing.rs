@@ -197,4 +197,115 @@ mod tests {
         let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
         assert_eq!(selected.to, "a");
     }
+
+    #[test]
+    fn select_next_edge_step3_suggested_ids_expected_match() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1
+                a
+                b
+                n1 -> a
+                n1 -> b
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let mut outcome = base_outcome();
+        outcome.suggested_next_ids = vec!["b".to_string(), "a".to_string()];
+        let context = RuntimeContext::new();
+
+        let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
+        assert_eq!(selected.to, "b");
+    }
+
+    #[test]
+    fn select_next_edge_step2_preferred_label_beats_suggested_ids_expected_label_route() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1
+                yes
+                no
+                n1 -> yes [label="Yes"]
+                n1 -> no [label="No"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let mut outcome = base_outcome();
+        outcome.preferred_label = Some("No".to_string());
+        outcome.suggested_next_ids = vec!["yes".to_string()];
+        let context = RuntimeContext::new();
+
+        let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
+        assert_eq!(selected.to, "no");
+    }
+
+    #[test]
+    fn select_next_edge_step1_condition_beats_preferred_label_expected_condition_route() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1
+                pass
+                fail
+                n1 -> pass [condition="outcome=success"]
+                n1 -> fail [label="fail"]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let mut outcome = base_outcome();
+        outcome.preferred_label = Some("fail".to_string());
+        let context = RuntimeContext::new();
+
+        let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
+        assert_eq!(selected.to, "pass");
+    }
+
+    #[test]
+    fn select_next_edge_condition_matches_weight_then_lexical_expected_tiebreak() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1
+                a
+                b
+                c
+                n1 -> b [condition="outcome=success", weight=1]
+                n1 -> c [condition="outcome=success", weight=1]
+                n1 -> a [condition="outcome=success", weight=2]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let outcome = base_outcome();
+        let context = RuntimeContext::new();
+
+        let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
+        assert_eq!(selected.to, "a");
+    }
+
+    #[test]
+    fn select_next_edge_unconditional_lexical_tie_expected_smallest_id() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                n1
+                a
+                b
+                n1 -> b [weight=1]
+                n1 -> a [weight=1]
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let outcome = base_outcome();
+        let context = RuntimeContext::new();
+
+        let selected = select_next_edge(&graph, "n1", &outcome, &context).expect("edge expected");
+        assert_eq!(selected.to, "a");
+    }
 }

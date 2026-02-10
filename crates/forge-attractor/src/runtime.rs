@@ -91,6 +91,7 @@ pub struct RunConfig {
     pub base_turn_id: Option<TurnId>,
     pub storage: Option<crate::storage::SharedAttractorStorageWriter>,
     pub executor: Arc<dyn NodeExecutor>,
+    pub retry_backoff: crate::RetryBackoffConfig,
 }
 
 impl Default for RunConfig {
@@ -100,6 +101,7 @@ impl Default for RunConfig {
             base_turn_id: None,
             storage: None,
             executor: Arc::new(NoopNodeExecutor),
+            retry_backoff: crate::RetryBackoffConfig::default(),
         }
     }
 }
