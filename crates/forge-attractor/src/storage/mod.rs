@@ -93,7 +93,7 @@ pub struct StoredTurnEnvelope {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum TurnStoreError {
+pub enum StorageError {
     #[error("resource not found: {resource} ({id})")]
     NotFound { resource: &'static str, id: String },
     #[error("conflict: {0}")]
@@ -137,66 +137,66 @@ pub trait AttractorStorageWriter: Send + Sync {
     async fn create_run_context(
         &self,
         base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError>;
+    ) -> Result<StoreContext, StorageError>;
 
     async fn append_run_event(
         &self,
         context_id: &ContextId,
         record: RunEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 
     async fn append_stage_event(
         &self,
         context_id: &ContextId,
         record: StageEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 
     async fn append_checkpoint_event(
         &self,
         context_id: &ContextId,
         record: CheckpointEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 
     async fn append_stage_to_agent_link(
         &self,
         context_id: &ContextId,
         record: StageToAgentLinkRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 
     async fn append_dot_source(
         &self,
         context_id: &ContextId,
         record: DotSourceRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 
     async fn append_graph_snapshot(
         &self,
         context_id: &ContextId,
         record: GraphSnapshotRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError>;
+    ) -> Result<StoredTurn, StorageError>;
 }
 
 #[async_trait::async_trait]
 pub trait AttractorStorageReader: Send + Sync {
-    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, TurnStoreError>;
+    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, StorageError>;
 
     async fn list_turns(
         &self,
         context_id: &ContextId,
         before_turn_id: Option<&TurnId>,
         limit: usize,
-    ) -> Result<Vec<StoredTurn>, TurnStoreError>;
+    ) -> Result<Vec<StoredTurn>, StorageError>;
 }
 
 #[async_trait::async_trait]
 pub trait AttractorArtifactWriter: Send + Sync {
-    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, TurnStoreError>;
+    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, StorageError>;
 }
 
 #[async_trait::async_trait]
@@ -208,11 +208,11 @@ where
     async fn create_run_context(
         &self,
         base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError> {
+    ) -> Result<StoreContext, StorageError> {
         let context = self
             .create_context(base_turn_id)
             .await
-            .map_err(cxdb_error_to_turnstore)?;
+            .map_err(cxdb_error_to_storage)?;
         Ok(StoreContext {
             context_id: context.context_id,
             head_turn_id: context.head_turn_id,
@@ -225,7 +225,7 @@ where
         context_id: &ContextId,
         record: RunEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -241,7 +241,7 @@ where
         context_id: &ContextId,
         record: StageEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -257,7 +257,7 @@ where
         context_id: &ContextId,
         record: CheckpointEventRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -273,7 +273,7 @@ where
         context_id: &ContextId,
         record: StageToAgentLinkRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -289,7 +289,7 @@ where
         context_id: &ContextId,
         record: DotSourceRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -305,7 +305,7 @@ where
         context_id: &ContextId,
         record: GraphSnapshotRecord,
         idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         append_record_runtime(
             self,
             context_id,
@@ -323,11 +323,11 @@ where
     B: CxdbBinaryClient + Send + Sync,
     H: CxdbHttpClient + Send + Sync,
 {
-    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, TurnStoreError> {
+    async fn get_head(&self, context_id: &ContextId) -> Result<StoredTurnRef, StorageError> {
         let head = self
             .get_head(context_id)
             .await
-            .map_err(cxdb_error_to_turnstore)?;
+            .map_err(cxdb_error_to_storage)?;
         Ok(StoredTurnRef {
             context_id: head.context_id,
             turn_id: head.turn_id,
@@ -340,11 +340,11 @@ where
         context_id: &ContextId,
         before_turn_id: Option<&TurnId>,
         limit: usize,
-    ) -> Result<Vec<StoredTurn>, TurnStoreError> {
+    ) -> Result<Vec<StoredTurn>, StorageError> {
         let turns = self
             .list_turns(context_id, before_turn_id, limit)
             .await
-            .map_err(cxdb_error_to_turnstore)?;
+            .map_err(cxdb_error_to_storage)?;
         Ok(turns.into_iter().map(runtime_to_stored_turn).collect())
     }
 }
@@ -355,10 +355,10 @@ where
     B: CxdbBinaryClient + Send + Sync,
     H: CxdbHttpClient + Send + Sync,
 {
-    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, TurnStoreError> {
+    async fn put_blob(&self, raw_bytes: &[u8]) -> Result<BlobHash, StorageError> {
         self.put_blob(raw_bytes)
             .await
-            .map_err(cxdb_error_to_turnstore)
+            .map_err(cxdb_error_to_storage)
     }
 }
 
@@ -368,13 +368,13 @@ async fn append_record_runtime<B, H>(
     type_id: &str,
     envelope: StoredTurnEnvelope,
     idempotency_key: String,
-) -> Result<StoredTurn, TurnStoreError>
+) -> Result<StoredTurn, StorageError>
 where
     B: CxdbBinaryClient + Send + Sync,
     H: CxdbHttpClient + Send + Sync,
 {
     let payload = serde_json::to_vec(&envelope)
-        .map_err(|err| TurnStoreError::Serialization(err.to_string()))?;
+        .map_err(|err| StorageError::Serialization(err.to_string()))?;
     let turn = store
         .append_turn(CxdbAppendTurnRequest {
             context_id: context_id.clone(),
@@ -385,7 +385,7 @@ where
             idempotency_key,
         })
         .await
-        .map_err(cxdb_error_to_turnstore)?;
+        .map_err(cxdb_error_to_storage)?;
     Ok(runtime_to_stored_turn(turn))
 }
 
@@ -403,11 +403,11 @@ fn runtime_to_stored_turn(turn: forge_cxdb_runtime::CxdbStoredTurn) -> StoredTur
     }
 }
 
-fn cxdb_error_to_turnstore(error: CxdbClientError) -> TurnStoreError {
+fn cxdb_error_to_storage(error: CxdbClientError) -> StorageError {
     match error {
-        CxdbClientError::NotFound { resource, id } => TurnStoreError::NotFound { resource, id },
-        CxdbClientError::Conflict(message) => TurnStoreError::Conflict(message),
-        CxdbClientError::InvalidInput(message) => TurnStoreError::InvalidInput(message),
-        CxdbClientError::Backend(message) => TurnStoreError::Backend(message),
+        CxdbClientError::NotFound { resource, id } => StorageError::NotFound { resource, id },
+        CxdbClientError::Conflict(message) => StorageError::Conflict(message),
+        CxdbClientError::InvalidInput(message) => StorageError::InvalidInput(message),
+        CxdbClientError::Backend(message) => StorageError::Backend(message),
     }
 }

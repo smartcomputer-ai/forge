@@ -416,6 +416,31 @@ Renderer loading/execution is host/UI scope, not core runtime scope:
 - host surfaces map `type_id` to renderer behavior,
 - remote renderer execution (if any) MUST be host-policy-controlled.
 
+### 5.8 Operational Runbook Requirements
+
+Runtime and host documentation MUST include explicit runbooks for the following failure classes.
+
+Append path failures (`CTX_CREATE`, `CTX_FORK`, `APPEND_TURN`, `GET_HEAD`):
+- verify binary endpoint route, ACL, and TLS trust path,
+- validate persistence mode policy (`off` vs `required`) against expected fail-open/fail-closed behavior,
+- verify deterministic idempotency key generation and parent-turn resolution,
+- verify context lifecycle ordering before append.
+
+Projection path failures (HTTP turn listing/paging):
+- verify HTTP gateway auth/policy and upstream route health,
+- validate `context_id`, `before_turn_id`, and `limit` semantics,
+- distinguish projection lag from ingest failure by cross-checking binary write success.
+
+Registry mismatch (bundle decode or schema drift):
+- verify bundle presence/readability for expected `bundle_id`,
+- verify writer `type_id`/`type_version` alignment with published bundle versions,
+- publish bundle before first write of new schema versions.
+
+Filesystem snapshot/attachment failures (`fstree`, `PUT_BLOB`, `ATTACH_FS`):
+- validate capture policy bounds and excludes,
+- verify blob upload success before fs attachment,
+- verify `fs_root_hash` integrity and turn linkage consistency.
+
 ---
 
 ## 6. Rollout Plan

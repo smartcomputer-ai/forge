@@ -1,9 +1,11 @@
 use async_trait::async_trait;
 use base64::Engine;
-use forge_cxdb_runtime::adapter::{AppendTurnRequest, RegistryBundle, TurnStore, TypedTurnStore};
+use forge_cxdb_runtime::adapter::{
+    AppendTurnRequest, CxdbRecordStore, CxdbRegistryStore, RegistryBundle,
+};
 use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
-    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbSdkBinaryClient, CxdbTurnStore,
+    CxdbBinaryClient, CxdbClientError, CxdbHttpClient, CxdbSdkBinaryClient, CxdbStoreAdapter,
     HttpStoredTurn,
 };
 use serde_json::{Value, json};
@@ -225,7 +227,7 @@ fn binary_addr_from_env() -> String {
 
 #[derive(Clone)]
 struct LiveHarness {
-    store: CxdbTurnStore<LiveHttpClient, LiveHttpClient>,
+    store: CxdbStoreAdapter<LiveHttpClient, LiveHttpClient>,
     supports_context_write_routes: bool,
 }
 
@@ -474,7 +476,7 @@ async fn build_live_harness() -> LiveHarness {
     client.supports_context_write_routes = supports_context_write_routes;
 
     LiveHarness {
-        store: CxdbTurnStore::new(client.clone(), client),
+        store: CxdbStoreAdapter::new(client.clone(), client),
         supports_context_write_routes,
     }
 }
@@ -581,7 +583,7 @@ async fn live_binary_create_append_list_and_head_against_running_cxdb() {
     let binary_client = CxdbSdkBinaryClient::connect(&binary_addr).unwrap_or_else(|error| {
         panic!("failed to connect CXDB binary endpoint at {binary_addr}: {error}")
     });
-    let store = CxdbTurnStore::new(binary_client, http_client.clone());
+    let store = CxdbStoreAdapter::new(binary_client, http_client.clone());
 
     let bundle_id = unique_bundle_id();
     let type_id = "forge.test.live_binary_payload";

@@ -1,5 +1,5 @@
 use crate::Diagnostic;
-use crate::storage::TurnStoreError;
+use crate::storage::StorageError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -13,7 +13,7 @@ pub enum AttractorError {
     #[error("runtime error: {0}")]
     Runtime(String),
     #[error(transparent)]
-    Storage(#[from] TurnStoreError),
+    Storage(#[from] StorageError),
     #[error(transparent)]
     Validation(#[from] ValidationError),
 }

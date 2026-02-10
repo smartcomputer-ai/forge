@@ -3,8 +3,8 @@ use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
     AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StoreContext,
-    StoredTurn, TurnId, TurnStoreError, parse_dot,
+    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StorageError,
+    StoreContext, StoredTurn, TurnId, parse_dot,
 };
 use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
@@ -19,7 +19,7 @@ impl AttractorStorageWriter for RecordingStorage {
     async fn create_run_context(
         &self,
         _base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError> {
+    ) -> Result<StoreContext, StorageError> {
         Ok(StoreContext {
             context_id: "ctx-1".to_string(),
             head_turn_id: "0".to_string(),
@@ -32,7 +32,7 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         record: AttractorRunEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         self.events.lock().expect("mutex").push(record.event_kind);
         Ok(stub_turn("forge.attractor.run_event"))
     }
@@ -42,7 +42,7 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         record: AttractorStageEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         self.events.lock().expect("mutex").push(record.event_kind);
         Ok(stub_turn("forge.attractor.stage_event"))
     }
@@ -52,7 +52,7 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         _record: AttractorCheckpointEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         self.events
             .lock()
             .expect("mutex")
@@ -65,8 +65,8 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         _record: AttractorStageToAgentLinkRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Unsupported("unused".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Unsupported("unused".to_string()))
     }
 
     async fn append_dot_source(
@@ -74,7 +74,7 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         record: AttractorDotSourceRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         self.events
             .lock()
             .expect("mutex")
@@ -87,7 +87,7 @@ impl AttractorStorageWriter for RecordingStorage {
         _context_id: &ContextId,
         record: AttractorGraphSnapshotRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
+    ) -> Result<StoredTurn, StorageError> {
         self.events
             .lock()
             .expect("mutex")
@@ -232,7 +232,7 @@ async fn execution_linear_store_off_and_on_expected_equivalent_status() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn execution_store_enabled_memory_turnstore_expected_persisted_turns() {
+async fn execution_store_enabled_cxdb_expected_persisted_turns() {
     let graph = parse(
         r#"
         digraph G {

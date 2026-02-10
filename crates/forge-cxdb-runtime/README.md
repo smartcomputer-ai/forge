@@ -1,6 +1,6 @@
 # forge-cxdb-runtime
 
-CXDB-backed implementation of Forge turnstore interfaces.
+CXDB-backed runtime contracts and adapter surfaces for Forge.
 
 ## Scope
 

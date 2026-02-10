@@ -517,7 +517,7 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{StoreContext, StoredTurn, TurnStoreError};
+    use crate::storage::{StorageError, StoreContext, StoredTurn};
     use crate::{
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
         AttractorStageEventRecord, parse_dot,
@@ -579,7 +579,7 @@ mod tests {
         async fn create_run_context(
             &self,
             _base_turn_id: Option<TurnId>,
-        ) -> Result<StoreContext, TurnStoreError> {
+        ) -> Result<StoreContext, StorageError> {
             Ok(StoreContext {
                 context_id: "ctx".to_string(),
                 head_turn_id: "0".to_string(),
@@ -592,8 +592,8 @@ mod tests {
             _context_id: &ContextId,
             _record: AttractorRunEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported("unused".to_string()))
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
         }
 
         async fn append_stage_event(
@@ -601,8 +601,8 @@ mod tests {
             _context_id: &ContextId,
             _record: AttractorStageEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported("unused".to_string()))
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
         }
 
         async fn append_checkpoint_event(
@@ -610,8 +610,8 @@ mod tests {
             _context_id: &ContextId,
             _record: crate::AttractorCheckpointEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported("unused".to_string()))
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
         }
 
         async fn append_stage_to_agent_link(
@@ -619,7 +619,7 @@ mod tests {
             _context_id: &ContextId,
             record: AttractorStageToAgentLinkRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.calls.lock().expect("mutex").push(record);
             Ok(StoredTurn {
                 context_id: "ctx".to_string(),
@@ -639,8 +639,8 @@ mod tests {
             _context_id: &ContextId,
             _record: AttractorDotSourceRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported("unused".to_string()))
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
         }
 
         async fn append_graph_snapshot(
@@ -648,8 +648,8 @@ mod tests {
             _context_id: &ContextId,
             _record: AttractorGraphSnapshotRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported("unused".to_string()))
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
         }
     }
 

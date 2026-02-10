@@ -1488,7 +1488,7 @@ fn timestamp_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::{ContextId, StoreContext, StoredTurn, TurnId, TurnStoreError};
+    use crate::storage::{ContextId, StorageError, StoreContext, StoredTurn, TurnId};
     use crate::{
         AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorStorageWriter,
         CheckpointMetadata, CheckpointNodeOutcome, CheckpointState, NodeExecutor, NodeOutcome,
@@ -1521,7 +1521,7 @@ mod tests {
         async fn create_run_context(
             &self,
             _base_turn_id: Option<TurnId>,
-        ) -> Result<StoreContext, TurnStoreError> {
+        ) -> Result<StoreContext, StorageError> {
             Ok(StoreContext {
                 context_id: "ctx-1".to_string(),
                 head_turn_id: "0".to_string(),
@@ -1534,7 +1534,7 @@ mod tests {
             context_id: &ContextId,
             record: AttractorRunEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
@@ -1557,7 +1557,7 @@ mod tests {
             context_id: &ContextId,
             record: AttractorStageEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
@@ -1580,7 +1580,7 @@ mod tests {
             context_id: &ContextId,
             _record: AttractorCheckpointEventRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
@@ -1603,8 +1603,8 @@ mod tests {
             _context_id: &ContextId,
             _record: crate::AttractorStageToAgentLinkRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
-            Err(TurnStoreError::Unsupported(
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported(
                 "stage_to_agent_link is unused in this test".to_string(),
             ))
         }
@@ -1614,7 +1614,7 @@ mod tests {
             context_id: &ContextId,
             _record: AttractorDotSourceRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
@@ -1637,7 +1637,7 @@ mod tests {
             context_id: &ContextId,
             _record: AttractorGraphSnapshotRecord,
             _idempotency_key: String,
-        ) -> Result<StoredTurn, TurnStoreError> {
+        ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")

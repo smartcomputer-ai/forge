@@ -51,7 +51,7 @@ pub struct RegistryBundle {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum TurnStoreError {
+pub enum CxdbRuntimeError {
     #[error("resource not found: {resource} ({id})")]
     NotFound { resource: &'static str, id: String },
     #[error("conflict: {0}")]
@@ -66,33 +66,34 @@ pub enum TurnStoreError {
     Backend(String),
 }
 
-pub type TurnStoreResult<T> = Result<T, TurnStoreError>;
+pub type CxdbRuntimeResult<T> = Result<T, CxdbRuntimeError>;
 
 #[async_trait]
-pub trait TurnStore: Send + Sync {
-    async fn create_context(&self, base_turn_id: Option<TurnId>) -> TurnStoreResult<StoreContext>;
-    async fn append_turn(&self, request: AppendTurnRequest) -> TurnStoreResult<StoredTurn>;
-    async fn fork_context(&self, from_turn_id: TurnId) -> TurnStoreResult<StoreContext>;
-    async fn get_head(&self, context_id: &ContextId) -> TurnStoreResult<StoredTurnRef>;
+pub trait CxdbRecordStore: Send + Sync {
+    async fn create_context(&self, base_turn_id: Option<TurnId>)
+    -> CxdbRuntimeResult<StoreContext>;
+    async fn append_turn(&self, request: AppendTurnRequest) -> CxdbRuntimeResult<StoredTurn>;
+    async fn fork_context(&self, from_turn_id: TurnId) -> CxdbRuntimeResult<StoreContext>;
+    async fn get_head(&self, context_id: &ContextId) -> CxdbRuntimeResult<StoredTurnRef>;
     async fn list_turns(
         &self,
         context_id: &ContextId,
         before_turn_id: Option<&TurnId>,
         limit: usize,
-    ) -> TurnStoreResult<Vec<StoredTurn>>;
+    ) -> CxdbRuntimeResult<Vec<StoredTurn>>;
 }
 
 #[async_trait]
-pub trait TypedTurnStore: TurnStore {
-    async fn publish_registry_bundle(&self, bundle: RegistryBundle) -> TurnStoreResult<()>;
-    async fn get_registry_bundle(&self, bundle_id: &str) -> TurnStoreResult<Option<Vec<u8>>>;
+pub trait CxdbRegistryStore: CxdbRecordStore {
+    async fn publish_registry_bundle(&self, bundle: RegistryBundle) -> CxdbRuntimeResult<()>;
+    async fn get_registry_bundle(&self, bundle_id: &str) -> CxdbRuntimeResult<Option<Vec<u8>>>;
 }
 
 #[async_trait]
-pub trait ArtifactStore: Send + Sync {
-    async fn put_blob(&self, raw_bytes: &[u8]) -> TurnStoreResult<BlobHash>;
-    async fn get_blob(&self, content_hash: &BlobHash) -> TurnStoreResult<Option<Vec<u8>>>;
-    async fn attach_fs(&self, turn_id: &TurnId, fs_root_hash: &BlobHash) -> TurnStoreResult<()>;
+pub trait CxdbArtifactClient: Send + Sync {
+    async fn put_blob(&self, raw_bytes: &[u8]) -> CxdbRuntimeResult<BlobHash>;
+    async fn get_blob(&self, content_hash: &BlobHash) -> CxdbRuntimeResult<Option<Vec<u8>>>;
+    async fn attach_fs(&self, turn_id: &TurnId, fs_root_hash: &BlobHash) -> CxdbRuntimeResult<()>;
 }
 
 pub const DEFAULT_CXDB_BINARY_ADDR: &str = "127.0.0.1:9009";
@@ -111,12 +112,12 @@ pub enum CxdbClientError {
 }
 
 impl CxdbClientError {
-    fn into_turnstore_error(self) -> TurnStoreError {
+    fn into_runtime_error(self) -> CxdbRuntimeError {
         match self {
-            Self::NotFound { resource, id } => TurnStoreError::NotFound { resource, id },
-            Self::Conflict(message) => TurnStoreError::Conflict(message),
-            Self::InvalidInput(message) => TurnStoreError::InvalidInput(message),
-            Self::Backend(message) => TurnStoreError::Backend(message),
+            Self::NotFound { resource, id } => CxdbRuntimeError::NotFound { resource, id },
+            Self::Conflict(message) => CxdbRuntimeError::Conflict(message),
+            Self::InvalidInput(message) => CxdbRuntimeError::InvalidInput(message),
+            Self::Backend(message) => CxdbRuntimeError::Backend(message),
         }
     }
 }
@@ -594,12 +595,12 @@ impl CxdbHttpClient for CxdbReqwestHttpClient {
 }
 
 #[derive(Clone, Debug)]
-pub struct CxdbTurnStore<B, H> {
+pub struct CxdbStoreAdapter<B, H> {
     binary_client: B,
     http_client: H,
 }
 
-impl<B, H> CxdbTurnStore<B, H> {
+impl<B, H> CxdbStoreAdapter<B, H> {
     pub fn new(binary_client: B, http_client: H) -> Self {
         Self {
             binary_client,
@@ -608,7 +609,7 @@ impl<B, H> CxdbTurnStore<B, H> {
     }
 }
 
-impl CxdbTurnStore<CxdbSdkBinaryClient, CxdbReqwestHttpClient> {
+impl CxdbStoreAdapter<CxdbSdkBinaryClient, CxdbReqwestHttpClient> {
     pub fn connect(binary_addr: &str, http_base_url: &str) -> Result<Self, CxdbClientError> {
         Ok(Self::new(
             CxdbSdkBinaryClient::connect(binary_addr)?,
@@ -640,22 +641,22 @@ impl CxdbTurnStore<CxdbSdkBinaryClient, CxdbReqwestHttpClient> {
     }
 }
 
-impl<B, H> CxdbTurnStore<B, H>
+impl<B, H> CxdbStoreAdapter<B, H>
 where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
-    fn parse_context_id(context_id: &ContextId) -> TurnStoreResult<u64> {
+    fn parse_context_id(context_id: &ContextId) -> CxdbRuntimeResult<u64> {
         context_id.parse::<u64>().map_err(|_| {
-            TurnStoreError::InvalidInput(format!(
+            CxdbRuntimeError::InvalidInput(format!(
                 "context_id must be a u64-compatible string: {context_id}"
             ))
         })
     }
 
-    fn parse_turn_id(turn_id: &TurnId) -> TurnStoreResult<u64> {
+    fn parse_turn_id(turn_id: &TurnId) -> CxdbRuntimeResult<u64> {
         turn_id.parse::<u64>().map_err(|_| {
-            TurnStoreError::InvalidInput(format!(
+            CxdbRuntimeError::InvalidInput(format!(
                 "turn_id must be a u64-compatible string: {turn_id}"
             ))
         })
@@ -722,12 +723,15 @@ where
 }
 
 #[async_trait]
-impl<B, H> TurnStore for CxdbTurnStore<B, H>
+impl<B, H> CxdbRecordStore for CxdbStoreAdapter<B, H>
 where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
-    async fn create_context(&self, base_turn_id: Option<TurnId>) -> TurnStoreResult<StoreContext> {
+    async fn create_context(
+        &self,
+        base_turn_id: Option<TurnId>,
+    ) -> CxdbRuntimeResult<StoreContext> {
         let base_turn_id = match base_turn_id {
             Some(turn_id) if turn_id != "0" => Self::parse_turn_id(&turn_id)?,
             _ => 0,
@@ -737,7 +741,7 @@ where
             .binary_client
             .ctx_create(base_turn_id)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)?;
+            .map_err(CxdbClientError::into_runtime_error)?;
 
         Ok(StoreContext {
             context_id: Self::context_id_string(created.context_id),
@@ -746,7 +750,7 @@ where
         })
     }
 
-    async fn append_turn(&self, request: AppendTurnRequest) -> TurnStoreResult<StoredTurn> {
+    async fn append_turn(&self, request: AppendTurnRequest) -> CxdbRuntimeResult<StoredTurn> {
         let context_id = Self::parse_context_id(&request.context_id)?;
 
         let parent_turn_id = match request.parent_turn_id.as_ref() {
@@ -758,7 +762,7 @@ where
             self.binary_client
                 .get_head(context_id)
                 .await
-                .map_err(CxdbClientError::into_turnstore_error)?
+                .map_err(CxdbClientError::into_runtime_error)?
                 .head_turn_id
         } else {
             parent_turn_id
@@ -794,7 +798,7 @@ where
                 content_hash,
             })
             .await
-            .map_err(CxdbClientError::into_turnstore_error)?;
+            .map_err(CxdbClientError::into_runtime_error)?;
 
         let committed_parent_turn_id = if parent_turn_id == 0 {
             self.binary_client
@@ -825,13 +829,13 @@ where
         })
     }
 
-    async fn fork_context(&self, from_turn_id: TurnId) -> TurnStoreResult<StoreContext> {
+    async fn fork_context(&self, from_turn_id: TurnId) -> CxdbRuntimeResult<StoreContext> {
         let from_turn_id = Self::parse_turn_id(&from_turn_id)?;
         let forked = self
             .binary_client
             .ctx_fork(from_turn_id)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)?;
+            .map_err(CxdbClientError::into_runtime_error)?;
 
         Ok(StoreContext {
             context_id: Self::context_id_string(forked.context_id),
@@ -840,13 +844,13 @@ where
         })
     }
 
-    async fn get_head(&self, context_id: &ContextId) -> TurnStoreResult<StoredTurnRef> {
+    async fn get_head(&self, context_id: &ContextId) -> CxdbRuntimeResult<StoredTurnRef> {
         let context_id_u64 = Self::parse_context_id(context_id)?;
         let head = self
             .binary_client
             .get_head(context_id_u64)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)?;
+            .map_err(CxdbClientError::into_runtime_error)?;
 
         Ok(StoredTurnRef {
             context_id: Self::context_id_string(head.context_id),
@@ -860,7 +864,7 @@ where
         context_id: &ContextId,
         before_turn_id: Option<&TurnId>,
         limit: usize,
-    ) -> TurnStoreResult<Vec<StoredTurn>> {
+    ) -> CxdbRuntimeResult<Vec<StoredTurn>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
@@ -876,7 +880,7 @@ where
                 .http_client
                 .list_turns(context_id_u64, Some(before_turn_id_u64), limit)
                 .await
-                .map_err(CxdbClientError::into_turnstore_error)?;
+                .map_err(CxdbClientError::into_runtime_error)?;
             return Ok(turns
                 .into_iter()
                 .map(Self::as_stored_turn_from_http)
@@ -887,59 +891,59 @@ where
             .binary_client
             .get_last(context_id_u64, limit, true)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)?;
+            .map_err(CxdbClientError::into_runtime_error)?;
 
         Ok(turns.into_iter().map(Self::as_stored_turn).collect())
     }
 }
 
 #[async_trait]
-impl<B, H> TypedTurnStore for CxdbTurnStore<B, H>
+impl<B, H> CxdbRegistryStore for CxdbStoreAdapter<B, H>
 where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
-    async fn publish_registry_bundle(&self, bundle: RegistryBundle) -> TurnStoreResult<()> {
+    async fn publish_registry_bundle(&self, bundle: RegistryBundle) -> CxdbRuntimeResult<()> {
         self.http_client
             .publish_registry_bundle(&bundle.bundle_id, &bundle.bundle_json)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)
+            .map_err(CxdbClientError::into_runtime_error)
     }
 
-    async fn get_registry_bundle(&self, bundle_id: &str) -> TurnStoreResult<Option<Vec<u8>>> {
+    async fn get_registry_bundle(&self, bundle_id: &str) -> CxdbRuntimeResult<Option<Vec<u8>>> {
         self.http_client
             .get_registry_bundle(bundle_id)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)
+            .map_err(CxdbClientError::into_runtime_error)
     }
 }
 
 #[async_trait]
-impl<B, H> ArtifactStore for CxdbTurnStore<B, H>
+impl<B, H> CxdbArtifactClient for CxdbStoreAdapter<B, H>
 where
     B: CxdbBinaryClient,
     H: CxdbHttpClient,
 {
-    async fn put_blob(&self, raw_bytes: &[u8]) -> TurnStoreResult<BlobHash> {
+    async fn put_blob(&self, raw_bytes: &[u8]) -> CxdbRuntimeResult<BlobHash> {
         self.binary_client
             .put_blob(raw_bytes)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)
+            .map_err(CxdbClientError::into_runtime_error)
     }
 
-    async fn get_blob(&self, content_hash: &BlobHash) -> TurnStoreResult<Option<Vec<u8>>> {
+    async fn get_blob(&self, content_hash: &BlobHash) -> CxdbRuntimeResult<Option<Vec<u8>>> {
         self.binary_client
             .get_blob(content_hash)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)
+            .map_err(CxdbClientError::into_runtime_error)
     }
 
-    async fn attach_fs(&self, turn_id: &TurnId, fs_root_hash: &BlobHash) -> TurnStoreResult<()> {
+    async fn attach_fs(&self, turn_id: &TurnId, fs_root_hash: &BlobHash) -> CxdbRuntimeResult<()> {
         let turn_id_u64 = Self::parse_turn_id(turn_id)?;
         self.binary_client
             .attach_fs(turn_id_u64, fs_root_hash)
             .await
-            .map_err(CxdbClientError::into_turnstore_error)
+            .map_err(CxdbClientError::into_runtime_error)
     }
 }
 

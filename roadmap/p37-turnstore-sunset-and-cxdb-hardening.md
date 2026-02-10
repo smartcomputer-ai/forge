@@ -3,7 +3,8 @@
 **Status**
 - In progress (2026-02-10)
 - G1 completed (2026-02-10)
-- G2 in progress (2026-02-10)
+- G2 completed (2026-02-10)
+- G3 completed (2026-02-10)
 - Progress update (2026-02-10):
   - Removed `crates/forge-turnstore` and `crates/forge-turnstore-cxdb` from workspace membership and source tree.
   - Migrated runtime crates to `crates/forge-cxdb-runtime` contracts only.
@@ -51,7 +52,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - DoD:
   - Runtime cores are CXDB-first with no legacy abstraction coupling.
 
-### [~] G2. Contract and naming cleanup
+### [x] G2. Contract and naming cleanup
 - Work:
   - Remove stale terminology (`turnstore`) from runtime-facing APIs/config where no longer accurate.
   - Keep migration aliases only where necessary and explicitly deprecated.
@@ -64,7 +65,7 @@ Complete the CXDB-first migration by retiring `forge-turnstore` abstraction depe
 - DoD:
   - Public API/docs terminology reflects CXDB-first architecture.
 
-### [ ] G3. Operational hardening completion
+### [x] G3. Operational hardening completion
 - Work:
   - Finalize endpoint topology, TLS/network guidance, and trust-boundary documentation.
   - Document incident/debug workflows for:

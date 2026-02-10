@@ -3,8 +3,8 @@ use forge_attractor::{
     AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
     AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
     AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StoreContext, StoredTurn, TurnId,
-    TurnStoreError, parse_dot,
+    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StorageError, StoreContext,
+    StoredTurn, TurnId, parse_dot,
 };
 use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
@@ -90,9 +90,9 @@ impl AttractorStorageWriter for FailingStorageWriter {
     async fn create_run_context(
         &self,
         _base_turn_id: Option<TurnId>,
-    ) -> Result<StoreContext, TurnStoreError> {
+    ) -> Result<StoreContext, StorageError> {
         *self.calls.lock().expect("mutex") += 1;
-        Err(TurnStoreError::Backend("forced create failure".to_string()))
+        Err(StorageError::Backend("forced create failure".to_string()))
     }
 
     async fn append_run_event(
@@ -100,8 +100,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorRunEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 
     async fn append_stage_event(
@@ -109,8 +109,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorStageEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 
     async fn append_checkpoint_event(
@@ -118,8 +118,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorCheckpointEventRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 
     async fn append_stage_to_agent_link(
@@ -127,8 +127,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorStageToAgentLinkRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 
     async fn append_dot_source(
@@ -136,8 +136,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorDotSourceRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 
     async fn append_graph_snapshot(
@@ -145,8 +145,8 @@ impl AttractorStorageWriter for FailingStorageWriter {
         _context_id: &ContextId,
         _record: AttractorGraphSnapshotRecord,
         _idempotency_key: String,
-    ) -> Result<StoredTurn, TurnStoreError> {
-        Err(TurnStoreError::Backend("forced append failure".to_string()))
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
     }
 }
 
