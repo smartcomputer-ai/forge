@@ -1,8 +1,9 @@
 use crate::storage::{AttractorArtifactWriter, ContextId, StorageError, TurnId};
 use crate::{
-    AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorDotSourceRecord,
-    AttractorError, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
-    AttractorStageEventRecord, CheckpointEvent, CheckpointMetadata, CheckpointNodeOutcome,
+    AttrValue, AttractorCheckpointSavedRecord, AttractorDotSourceRecord, AttractorError,
+    AttractorFsSnapshotStats, AttractorGraphSnapshotRecord, AttractorInterviewLifecycleRecord,
+    AttractorParallelLifecycleRecord, AttractorRouteDecisionRecord, AttractorRunLifecycleRecord,
+    AttractorStageLifecycleRecord, CheckpointEvent, CheckpointMetadata, CheckpointNodeOutcome,
     CheckpointState, ContextStore, CxdbPersistenceMode, Graph, InterviewEvent, Node, NodeOutcome,
     NodeStatus, ParallelEvent, PipelineEvent, PipelineRunResult, PipelineStatus, RetryPolicy,
     RunConfig, RuntimeContext, RuntimeEvent, RuntimeEventKind, RuntimeEventSink, StageEvent,
@@ -52,7 +53,7 @@ pub fn cxdb_artifact_writer(
     Arc::new(CxdbRuntimeStore::new(binary_client, http_client))
 }
 
-const ATTRACTOR_REGISTRY_BUNDLE_ID: &str = "forge.attractor.runtime.v1";
+const ATTRACTOR_REGISTRY_BUNDLE_ID: &str = "forge.attractor.runtime.v2";
 
 #[derive(Clone)]
 struct CxdbRegistryPublishingStorageWriter {
@@ -102,39 +103,75 @@ impl crate::storage::AttractorStorageWriter for CxdbRegistryPublishingStorageWri
         self.store.create_run_context(base_turn_id).await
     }
 
-    async fn append_run_event(
+    async fn append_run_lifecycle(
         &self,
         context_id: &ContextId,
-        record: AttractorRunEventRecord,
+        record: AttractorRunLifecycleRecord,
         idempotency_key: String,
     ) -> Result<crate::storage::StoredTurn, StorageError> {
         self.ensure_registry_bundle().await?;
         self.store
-            .append_run_event(context_id, record, idempotency_key)
+            .append_run_lifecycle(context_id, record, idempotency_key)
             .await
     }
 
-    async fn append_stage_event(
+    async fn append_stage_lifecycle(
         &self,
         context_id: &ContextId,
-        record: AttractorStageEventRecord,
+        record: AttractorStageLifecycleRecord,
         idempotency_key: String,
     ) -> Result<crate::storage::StoredTurn, StorageError> {
         self.ensure_registry_bundle().await?;
         self.store
-            .append_stage_event(context_id, record, idempotency_key)
+            .append_stage_lifecycle(context_id, record, idempotency_key)
             .await
     }
 
-    async fn append_checkpoint_event(
+    async fn append_parallel_lifecycle(
         &self,
         context_id: &ContextId,
-        record: AttractorCheckpointEventRecord,
+        record: AttractorParallelLifecycleRecord,
         idempotency_key: String,
     ) -> Result<crate::storage::StoredTurn, StorageError> {
         self.ensure_registry_bundle().await?;
         self.store
-            .append_checkpoint_event(context_id, record, idempotency_key)
+            .append_parallel_lifecycle(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_interview_lifecycle(
+        &self,
+        context_id: &ContextId,
+        record: AttractorInterviewLifecycleRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_interview_lifecycle(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_checkpoint_saved(
+        &self,
+        context_id: &ContextId,
+        record: AttractorCheckpointSavedRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_checkpoint_saved(context_id, record, idempotency_key)
+            .await
+    }
+
+    async fn append_route_decision(
+        &self,
+        context_id: &ContextId,
+        record: AttractorRouteDecisionRecord,
+        idempotency_key: String,
+    ) -> Result<crate::storage::StoredTurn, StorageError> {
+        self.ensure_registry_bundle().await?;
+        self.store
+            .append_route_decision(context_id, record, idempotency_key)
             .await
     }
 
@@ -176,42 +213,154 @@ impl crate::storage::AttractorStorageWriter for CxdbRegistryPublishingStorageWri
 }
 
 fn attractor_registry_bundle_json() -> Result<Vec<u8>, serde_json::Error> {
-    let fields = envelope_type_fields_descriptor();
     let bundle = serde_json::json!({
         "registry_version": 1,
         "bundle_id": ATTRACTOR_REGISTRY_BUNDLE_ID,
         "types": {
-            "forge.attractor.run_event": { "versions": { "1": { "fields": fields } } },
-            "forge.attractor.stage_event": { "versions": { "1": { "fields": fields } } },
-            "forge.attractor.checkpoint_event": { "versions": { "1": { "fields": fields } } },
-            "forge.link.stage_to_agent": { "versions": { "1": { "fields": fields } } },
-            "forge.attractor.dot_source": { "versions": { "1": { "fields": fields } } },
-            "forge.attractor.graph_snapshot": { "versions": { "1": { "fields": fields } } }
+            "forge.attractor.run_lifecycle": { "versions": { "1": { "fields": run_lifecycle_fields_descriptor() } } },
+            "forge.attractor.stage_lifecycle": { "versions": { "1": { "fields": stage_lifecycle_fields_descriptor() } } },
+            "forge.attractor.parallel_lifecycle": { "versions": { "1": { "fields": parallel_lifecycle_fields_descriptor() } } },
+            "forge.attractor.interview_lifecycle": { "versions": { "1": { "fields": interview_lifecycle_fields_descriptor() } } },
+            "forge.attractor.checkpoint_saved": { "versions": { "1": { "fields": checkpoint_saved_fields_descriptor() } } },
+            "forge.attractor.route_decision": { "versions": { "1": { "fields": route_decision_fields_descriptor() } } },
+            "forge.link.stage_to_agent": { "versions": { "1": { "fields": stage_to_agent_fields_descriptor() } } },
+            "forge.attractor.dot_source": { "versions": { "1": { "fields": dot_source_fields_descriptor() } } },
+            "forge.attractor.graph_snapshot": { "versions": { "1": { "fields": graph_snapshot_fields_descriptor() } } }
         }
     });
     serde_json::to_vec(&bundle)
 }
 
-fn envelope_type_fields_descriptor() -> serde_json::Value {
+fn run_lifecycle_fields_descriptor() -> serde_json::Value {
     serde_json::json!({
-        "1": { "name": "schema_version", "type": "u32" },
-        "2": { "name": "run_id", "type": "string", "optional": true },
-        "3": { "name": "session_id", "type": "string", "optional": true },
-        "4": { "name": "node_id", "type": "string", "optional": true },
-        "5": { "name": "stage_attempt_id", "type": "string", "optional": true },
-        "6": { "name": "event_kind", "type": "string" },
-        "7": { "name": "timestamp", "type": "string" },
-        "8": { "name": "payload_json", "type": "string" },
-        "9": { "name": "corr_run_id", "type": "string", "optional": true },
-        "10": { "name": "corr_pipeline_context_id", "type": "string", "optional": true },
-        "11": { "name": "corr_node_id", "type": "string", "optional": true },
-        "12": { "name": "corr_stage_attempt_id", "type": "string", "optional": true },
-        "13": { "name": "corr_agent_session_id", "type": "string", "optional": true },
-        "14": { "name": "corr_agent_context_id", "type": "string", "optional": true },
-        "15": { "name": "corr_agent_head_turn_id", "type": "string", "optional": true },
-        "16": { "name": "corr_parent_turn_id", "type": "string", "optional": true },
-        "17": { "name": "corr_sequence_no", "type": "u64", "optional": true },
-        "18": { "name": "corr_thread_key", "type": "string", "optional": true }
+        "1": { "name": "kind", "type": "string" },
+        "2": { "name": "timestamp", "type": "string" },
+        "3": { "name": "run_id", "type": "string" },
+        "4": { "name": "graph_id", "type": "string" },
+        "5": { "name": "lineage_root_run_id", "type": "string" },
+        "6": { "name": "lineage_attempt", "type": "u32" },
+        "7": { "name": "status", "type": "string", "optional": true },
+        "8": { "name": "reason", "type": "string", "optional": true },
+        "9": { "name": "restart_target", "type": "string", "optional": true },
+        "10": { "name": "dot_source_hash", "type": "string", "optional": true },
+        "11": { "name": "dot_source_ref", "type": "string", "optional": true },
+        "12": { "name": "graph_snapshot_hash", "type": "string", "optional": true },
+        "13": { "name": "graph_snapshot_ref", "type": "string", "optional": true },
+        "14": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn stage_lifecycle_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "kind", "type": "string" },
+        "2": { "name": "timestamp", "type": "string" },
+        "3": { "name": "run_id", "type": "string" },
+        "4": { "name": "node_id", "type": "string" },
+        "5": { "name": "stage_attempt_id", "type": "string" },
+        "6": { "name": "attempt", "type": "u32" },
+        "7": { "name": "status", "type": "string", "optional": true },
+        "8": { "name": "notes", "type": "string", "optional": true },
+        "9": { "name": "will_retry", "type": "bool", "optional": true },
+        "10": { "name": "next_attempt", "type": "u32", "optional": true },
+        "11": { "name": "delay_ms", "type": "u64", "optional": true },
+        "12": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn parallel_lifecycle_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "kind", "type": "string" },
+        "2": { "name": "timestamp", "type": "string" },
+        "3": { "name": "run_id", "type": "string" },
+        "4": { "name": "node_id", "type": "string" },
+        "5": { "name": "branch_count", "type": "u32", "optional": true },
+        "6": { "name": "branch_id", "type": "string", "optional": true },
+        "7": { "name": "branch_index", "type": "u32", "optional": true },
+        "8": { "name": "target_node", "type": "string", "optional": true },
+        "9": { "name": "status", "type": "string", "optional": true },
+        "10": { "name": "notes", "type": "string", "optional": true },
+        "11": { "name": "success_count", "type": "u32", "optional": true },
+        "12": { "name": "failure_count", "type": "u32", "optional": true },
+        "13": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn interview_lifecycle_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "kind", "type": "string" },
+        "2": { "name": "timestamp", "type": "string" },
+        "3": { "name": "run_id", "type": "string" },
+        "4": { "name": "node_id", "type": "string" },
+        "5": { "name": "selected", "type": "string", "optional": true },
+        "6": { "name": "default_selected", "type": "string", "optional": true },
+        "7": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn checkpoint_saved_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "timestamp", "type": "string" },
+        "2": { "name": "run_id", "type": "string" },
+        "3": { "name": "node_id", "type": "string" },
+        "4": { "name": "stage_attempt_id", "type": "string" },
+        "5": { "name": "checkpoint_id", "type": "string" },
+        "6": { "name": "state_summary", "type": "any" },
+        "7": { "name": "checkpoint_hash", "type": "string", "optional": true },
+        "8": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn route_decision_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "timestamp", "type": "string" },
+        "2": { "name": "run_id", "type": "string" },
+        "3": { "name": "node_id", "type": "string" },
+        "4": { "name": "stage_attempt_id", "type": "string" },
+        "5": { "name": "selected_edge", "type": "string", "optional": true },
+        "6": { "name": "loop_restart", "type": "bool" },
+        "7": { "name": "terminated_status", "type": "string", "optional": true },
+        "8": { "name": "terminated_reason", "type": "string", "optional": true },
+        "9": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn stage_to_agent_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "timestamp", "type": "string" },
+        "2": { "name": "run_id", "type": "string" },
+        "3": { "name": "pipeline_context_id", "type": "string" },
+        "4": { "name": "node_id", "type": "string" },
+        "5": { "name": "stage_attempt_id", "type": "string" },
+        "6": { "name": "agent_session_id", "type": "string" },
+        "7": { "name": "agent_context_id", "type": "string" },
+        "8": { "name": "agent_head_turn_id", "type": "string", "optional": true },
+        "9": { "name": "parent_turn_id", "type": "string", "optional": true },
+        "10": { "name": "sequence_no", "type": "u64" },
+        "11": { "name": "thread_key", "type": "string", "optional": true }
+    })
+}
+
+fn dot_source_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "timestamp", "type": "string" },
+        "2": { "name": "run_id", "type": "string" },
+        "3": { "name": "dot_source", "type": "string", "optional": true },
+        "4": { "name": "artifact_blob_hash", "type": "string", "optional": true },
+        "5": { "name": "content_hash", "type": "string" },
+        "6": { "name": "size_bytes", "type": "u64" },
+        "7": { "name": "sequence_no", "type": "u64" }
+    })
+}
+
+fn graph_snapshot_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "timestamp", "type": "string" },
+        "2": { "name": "run_id", "type": "string" },
+        "3": { "name": "graph_snapshot", "type": "any", "optional": true },
+        "4": { "name": "artifact_blob_hash", "type": "string", "optional": true },
+        "5": { "name": "content_hash", "type": "string" },
+        "6": { "name": "size_bytes", "type": "u64" },
+        "7": { "name": "sequence_no", "type": "u64" }
     })
 }
 
@@ -377,17 +526,18 @@ impl PipelineRunner {
             );
 
             storage
-                .append_run_event(
-                    "run_initialized",
-                    json!({
-                        "graph_id": graph.id,
-                        "lineage_root_run_id": lineage_root_run_id,
-                        "lineage_attempt": lineage_attempt,
-                        "dot_source_hash": graph_metadata.dot_source_hash,
-                        "dot_source_ref": graph_metadata.dot_source_ref,
-                        "graph_snapshot_hash": graph_metadata.graph_snapshot_hash,
-                        "graph_snapshot_ref": graph_metadata.graph_snapshot_ref,
-                    }),
+                .append_run_lifecycle(
+                    "initialized",
+                    graph.id.as_str(),
+                    lineage_root_run_id.as_str(),
+                    lineage_attempt,
+                    None,
+                    None,
+                    None,
+                    graph_metadata.dot_source_hash.clone(),
+                    graph_metadata.dot_source_ref.clone(),
+                    graph_metadata.graph_snapshot_hash.clone(),
+                    graph_metadata.graph_snapshot_ref.clone(),
                 )
                 .await?;
             if resume_path_for_attempt.is_some() {
@@ -401,13 +551,18 @@ impl PipelineRunner {
                     }),
                 );
                 storage
-                    .append_run_event(
-                        "run_resumed",
-                        json!({
-                            "graph_id": graph.id,
-                            "lineage_root_run_id": lineage_root_run_id,
-                            "lineage_attempt": lineage_attempt,
-                        }),
+                    .append_run_lifecycle(
+                        "resumed",
+                        graph.id.as_str(),
+                        lineage_root_run_id.as_str(),
+                        lineage_attempt,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
                     )
                     .await?;
             }
@@ -481,6 +636,9 @@ impl PipelineRunner {
                             node_id: node.id.clone(),
                         }),
                     );
+                    storage
+                        .append_interview_lifecycle(&node.id, "started", None, None)
+                        .await?;
                 }
                 emit_parallel_start_events(
                     &event_sink,
@@ -488,7 +646,9 @@ impl PipelineRunner {
                     &active_run_id,
                     node,
                     graph,
-                );
+                    &mut storage,
+                )
+                .await?;
                 let context_snapshot = context_store.snapshot()?;
                 let (outcome, attempts_used) = execute_with_retry(
                     node,
@@ -508,14 +668,18 @@ impl PipelineRunner {
                     &active_run_id,
                     node,
                     &outcome,
-                );
+                    &mut storage,
+                )
+                .await?;
                 emit_interview_completion_event(
                     &event_sink,
                     &mut event_sequence_no,
                     &active_run_id,
                     node,
                     &outcome,
-                );
+                    &mut storage,
+                )
+                .await?;
 
                 completed_nodes.push(node.id.clone());
                 node_outcomes.insert(node.id.clone(), outcome.clone());
@@ -546,6 +710,7 @@ impl PipelineRunner {
                     RouteDecision::Next { node_id, .. } => Some(node_id.clone()),
                     _ => None,
                 };
+                let route_stage_attempt_id = stage_attempt_id(node, attempts_used);
                 if let Some(path) = checkpoint_path.as_ref() {
                     let context_snapshot = context_store.snapshot()?;
                     let checkpoint = CheckpointState {
@@ -592,9 +757,9 @@ impl PipelineRunner {
                 }
 
                 storage
-                    .append_checkpoint_event(
+                    .append_checkpoint_saved(
                         &node.id,
-                        &stage_attempt_id(node, attempts_used),
+                        &route_stage_attempt_id,
                         json!({
                             "current_node_id": node.id,
                             "next_node_id": checkpoint_next_node,
@@ -606,6 +771,19 @@ impl PipelineRunner {
                             "graph_snapshot_hash": graph_metadata.graph_snapshot_hash,
                             "graph_snapshot_ref": graph_metadata.graph_snapshot_ref,
                         }),
+                    )
+                    .await?;
+                storage
+                    .append_route_decision(
+                        &node.id,
+                        &route_stage_attempt_id,
+                        match &route_decision {
+                            RouteDecision::Next { node_id, .. } => Some(node_id.clone()),
+                            _ => None,
+                        },
+                        matches!(&route_decision, RouteDecision::Next { loop_restart: true, .. }),
+                        checkpoint_terminal_status.clone(),
+                        checkpoint_terminal_failure_reason.clone(),
                     )
                     .await?;
 
@@ -646,22 +824,27 @@ impl PipelineRunner {
             };
 
             storage
-                .append_run_event(
-                    "run_finalized",
-                    json!({
-                        "graph_id": graph.id,
-                        "status": if restart_target.is_some() {
-                            "restarted"
+                .append_run_lifecycle(
+                    "finalized",
+                    graph.id.as_str(),
+                    lineage_root_run_id.as_str(),
+                    lineage_attempt,
+                    Some(
+                        if restart_target.is_some() {
+                            "restarted".to_string()
                         } else {
                             match status {
-                                PipelineStatus::Success => "success",
-                                PipelineStatus::Fail => "fail",
+                                PipelineStatus::Success => "success".to_string(),
+                                PipelineStatus::Fail => "fail".to_string(),
                             }
                         },
-                        "lineage_root_run_id": lineage_root_run_id,
-                        "lineage_attempt": lineage_attempt,
-                        "restart_target": restart_target,
-                    }),
+                    ),
+                    terminal_failure.clone(),
+                    restart_target.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
                 )
                 .await?;
             match (restart_target.as_ref(), status, terminal_failure.as_ref()) {
@@ -954,11 +1137,16 @@ async fn execute_with_retry(
             }),
         );
         storage
-            .append_stage_event(
+            .append_stage_lifecycle(
                 &node.id,
                 &stage_attempt_id,
-                "stage_started",
-                json!({ "node_id": node.id, "attempt": attempt }),
+                "started",
+                attempt,
+                None,
+                None,
+                None,
+                None,
+                None,
             )
             .await?;
 
@@ -968,22 +1156,22 @@ async fn execute_with_retry(
         };
 
         let completion_kind = if outcome.status == NodeStatus::Fail {
-            "stage_failed"
+            "failed"
         } else {
-            "stage_completed"
+            "completed"
         };
         let will_retry = should_retry_outcome(&outcome) && attempt < retry_policy.max_attempts;
         storage
-            .append_stage_event(
+            .append_stage_lifecycle(
                 &node.id,
                 &stage_attempt_id,
                 completion_kind,
-                json!({
-                    "node_id": node.id,
-                    "attempt": attempt,
-                    "status": outcome.status.as_str(),
-                    "notes": outcome.notes,
-                }),
+                attempt,
+                Some(outcome.status.as_str().to_string()),
+                outcome.notes.clone(),
+                Some(will_retry),
+                None,
+                None,
             )
             .await?;
         if outcome.status.is_success_like() {
@@ -1037,6 +1225,19 @@ async fn execute_with_retry(
                     delay_ms,
                 }),
             );
+            storage
+                .append_stage_lifecycle(
+                    &node.id,
+                    &stage_attempt_id,
+                    "retrying",
+                    attempt,
+                    Some(outcome.status.as_str().to_string()),
+                    outcome.notes.clone(),
+                    Some(true),
+                    Some(attempt + 1),
+                    Some(delay_ms),
+                )
+                .await?;
             if delay_ms > 0 {
                 sleep(Duration::from_millis(delay_ms));
             }
@@ -1098,15 +1299,16 @@ fn emit_runtime_event(sink: &RuntimeEventSink, sequence_no: &mut u64, kind: Runt
     });
 }
 
-fn emit_parallel_start_events(
+async fn emit_parallel_start_events(
     sink: &RuntimeEventSink,
     sequence_no: &mut u64,
     run_id: &str,
     node: &Node,
     graph: &Graph,
-) {
+    storage: &mut RunStorage,
+) -> Result<(), AttractorError> {
     if !is_parallel_node(node) {
-        return;
+        return Ok(());
     }
     let branches: Vec<(String, String)> = graph
         .outgoing_edges(&node.id)
@@ -1129,30 +1331,60 @@ fn emit_parallel_start_events(
             branch_count: branches.len(),
         }),
     );
+    storage
+        .append_parallel_lifecycle(
+            &node.id,
+            "started",
+            Some(branches.len()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
     for (index, (branch_id, target_node)) in branches.into_iter().enumerate() {
         emit_runtime_event(
             sink,
             sequence_no,
-            RuntimeEventKind::Parallel(ParallelEvent::BranchStarted {
-                run_id: run_id.to_string(),
-                node_id: node.id.clone(),
-                branch_id,
-                branch_index: index,
-                target_node,
-            }),
-        );
+                RuntimeEventKind::Parallel(ParallelEvent::BranchStarted {
+                    run_id: run_id.to_string(),
+                    node_id: node.id.clone(),
+                    branch_id: branch_id.clone(),
+                    branch_index: index,
+                    target_node: target_node.clone(),
+                }),
+            );
+        storage
+            .append_parallel_lifecycle(
+                &node.id,
+                "branch_started",
+                None,
+                Some(branch_id),
+                Some(index),
+                Some(target_node),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
     }
+    Ok(())
 }
 
-fn emit_parallel_completion_events(
+async fn emit_parallel_completion_events(
     sink: &RuntimeEventSink,
     sequence_no: &mut u64,
     run_id: &str,
     node: &Node,
     outcome: &NodeOutcome,
-) {
+    storage: &mut RunStorage,
+) -> Result<(), AttractorError> {
     if !is_parallel_node(node) {
-        return;
+        return Ok(());
     }
     let mut success_count = 0usize;
     let mut failure_count = 0usize;
@@ -1196,13 +1428,27 @@ fn emit_parallel_completion_events(
                 RuntimeEventKind::Parallel(ParallelEvent::BranchCompleted {
                     run_id: run_id.to_string(),
                     node_id: node.id.clone(),
-                    branch_id,
+                    branch_id: branch_id.clone(),
                     branch_index: index,
-                    target_node,
-                    status,
-                    notes,
+                    target_node: target_node.clone(),
+                    status: status.clone(),
+                    notes: notes.clone(),
                 }),
             );
+            storage
+                .append_parallel_lifecycle(
+                    &node.id,
+                    "branch_completed",
+                    None,
+                    Some(branch_id),
+                    Some(index),
+                    Some(target_node),
+                    Some(status),
+                    notes,
+                    None,
+                    None,
+                )
+                .await?;
         }
     }
 
@@ -1216,47 +1462,72 @@ fn emit_parallel_completion_events(
             failure_count,
         }),
     );
+    storage
+        .append_parallel_lifecycle(
+            &node.id,
+            "completed",
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(success_count),
+            Some(failure_count),
+        )
+        .await?;
+    Ok(())
 }
 
-fn emit_interview_completion_event(
+async fn emit_interview_completion_event(
     sink: &RuntimeEventSink,
     sequence_no: &mut u64,
     run_id: &str,
     node: &Node,
     outcome: &NodeOutcome,
-) {
+    storage: &mut RunStorage,
+) -> Result<(), AttractorError> {
     if !is_interview_node(node) {
-        return;
+        return Ok(());
     }
     if outcome.status == NodeStatus::Retry {
+        let default_selected = outcome
+            .context_updates
+            .get("human.gate.selected")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
         emit_runtime_event(
             sink,
             sequence_no,
             RuntimeEventKind::Interview(InterviewEvent::Timeout {
                 run_id: run_id.to_string(),
                 node_id: node.id.clone(),
-                default_selected: outcome
-                    .context_updates
-                    .get("human.gate.selected")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned),
+                default_selected: default_selected.clone(),
             }),
         );
-        return;
+        storage
+            .append_interview_lifecycle(&node.id, "timeout", None, default_selected)
+            .await?;
+        return Ok(());
     }
+    let selected = outcome
+        .context_updates
+        .get("human.gate.selected")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
     emit_runtime_event(
         sink,
         sequence_no,
         RuntimeEventKind::Interview(InterviewEvent::Completed {
             run_id: run_id.to_string(),
             node_id: node.id.clone(),
-            selected: outcome
-                .context_updates
-                .get("human.gate.selected")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
+            selected: selected.clone(),
         }),
     );
+    storage
+        .append_interview_lifecycle(&node.id, "completed", selected, None)
+        .await?;
+    Ok(())
 }
 
 fn is_parallel_node(node: &Node) -> bool {
@@ -1363,10 +1634,19 @@ impl RunStorage {
         })
     }
 
-    async fn append_run_event(
+    async fn append_run_lifecycle(
         &mut self,
-        event_kind: &str,
-        mut payload: Value,
+        kind: &str,
+        graph_id: &str,
+        lineage_root_run_id: &str,
+        lineage_attempt: u32,
+        status: Option<String>,
+        reason: Option<String>,
+        restart_target: Option<String>,
+        dot_source_hash: Option<String>,
+        dot_source_ref: Option<String>,
+        graph_snapshot_hash: Option<String>,
+        graph_snapshot_ref: Option<String>,
     ) -> Result<(), AttractorError> {
         let sequence_no = self.next_sequence_no();
         let Some(writer) = self.writer.as_ref().cloned() else {
@@ -1376,30 +1656,31 @@ impl RunStorage {
             return Ok(());
         };
         let snapshot_capture = self.capture_workspace_snapshot().await?;
-        if let Some(capture) = snapshot_capture.as_ref() {
-            inject_fs_lineage_payload(&mut payload, capture);
-        }
-        let correlation = AttractorCorrelation {
-            run_id: self.run_id.clone(),
-            pipeline_context_id: Some(context_id.clone()),
-            node_id: None,
-            stage_attempt_id: None,
-            parent_turn_id: None,
-            sequence_no,
-            agent_session_id: None,
-            agent_context_id: None,
-            agent_head_turn_id: None,
-        };
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
         let idempotency_key =
-            attractor_idempotency_key(&self.run_id, "__run__", "__run__", event_kind, sequence_no);
+            attractor_idempotency_key(&self.run_id, "__run__", "__run__", kind, sequence_no);
         let turn = writer
-            .append_run_event(
+            .append_run_lifecycle(
                 &context_id,
-                AttractorRunEventRecord {
-                    event_kind: event_kind.to_string(),
+                AttractorRunLifecycleRecord {
+                    kind: kind.to_string(),
                     timestamp: timestamp_now(),
-                    payload,
-                    correlation,
+                    run_id: self.run_id.clone(),
+                    graph_id: graph_id.to_string(),
+                    lineage_root_run_id: lineage_root_run_id.to_string(),
+                    lineage_attempt,
+                    status,
+                    reason,
+                    restart_target,
+                    dot_source_hash,
+                    dot_source_ref,
+                    graph_snapshot_hash,
+                    graph_snapshot_ref,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
                 },
                 idempotency_key,
             )
@@ -1411,12 +1692,17 @@ impl RunStorage {
         Ok(())
     }
 
-    async fn append_stage_event(
+    async fn append_stage_lifecycle(
         &mut self,
         node_id: &str,
         stage_attempt_id: &str,
-        event_kind: &str,
-        mut payload: Value,
+        kind: &str,
+        attempt: u32,
+        status: Option<String>,
+        notes: Option<String>,
+        will_retry: Option<bool>,
+        next_attempt: Option<u32>,
+        delay_ms: Option<u64>,
     ) -> Result<(), AttractorError> {
         let sequence_no = self.next_sequence_no();
         let Some(writer) = self.writer.as_ref().cloned() else {
@@ -1426,35 +1712,34 @@ impl RunStorage {
             return Ok(());
         };
         let snapshot_capture = self.capture_workspace_snapshot().await?;
-        if let Some(capture) = snapshot_capture.as_ref() {
-            inject_fs_lineage_payload(&mut payload, capture);
-        }
-        let correlation = AttractorCorrelation {
-            run_id: self.run_id.clone(),
-            pipeline_context_id: Some(context_id.clone()),
-            node_id: Some(node_id.to_string()),
-            stage_attempt_id: Some(stage_attempt_id.to_string()),
-            parent_turn_id: None,
-            sequence_no,
-            agent_session_id: None,
-            agent_context_id: None,
-            agent_head_turn_id: None,
-        };
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
         let idempotency_key = attractor_idempotency_key(
             &self.run_id,
             node_id,
             stage_attempt_id,
-            event_kind,
+            kind,
             sequence_no,
         );
         let turn = writer
-            .append_stage_event(
+            .append_stage_lifecycle(
                 &context_id,
-                AttractorStageEventRecord {
-                    event_kind: event_kind.to_string(),
+                AttractorStageLifecycleRecord {
+                    kind: kind.to_string(),
                     timestamp: timestamp_now(),
-                    payload,
-                    correlation,
+                    run_id: self.run_id.clone(),
+                    node_id: node_id.to_string(),
+                    stage_attempt_id: stage_attempt_id.to_string(),
+                    attempt,
+                    status,
+                    notes,
+                    will_retry,
+                    next_attempt,
+                    delay_ms,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
                 },
                 idempotency_key,
             )
@@ -1466,7 +1751,107 @@ impl RunStorage {
         Ok(())
     }
 
-    async fn append_checkpoint_event(
+    async fn append_parallel_lifecycle(
+        &mut self,
+        node_id: &str,
+        kind: &str,
+        branch_count: Option<usize>,
+        branch_id: Option<String>,
+        branch_index: Option<usize>,
+        target_node: Option<String>,
+        status: Option<String>,
+        notes: Option<String>,
+        success_count: Option<usize>,
+        failure_count: Option<usize>,
+    ) -> Result<(), AttractorError> {
+        let sequence_no = self.next_sequence_no();
+        let Some(writer) = self.writer.as_ref().cloned() else {
+            return Ok(());
+        };
+        let Some(context_id) = self.context_id.as_ref().cloned() else {
+            return Ok(());
+        };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
+        let idempotency_key =
+            attractor_idempotency_key(&self.run_id, node_id, "__parallel__", kind, sequence_no);
+        let turn = writer
+            .append_parallel_lifecycle(
+                &context_id,
+                AttractorParallelLifecycleRecord {
+                    kind: kind.to_string(),
+                    timestamp: timestamp_now(),
+                    run_id: self.run_id.clone(),
+                    node_id: node_id.to_string(),
+                    branch_count,
+                    branch_id,
+                    branch_index,
+                    target_node,
+                    status,
+                    notes,
+                    success_count,
+                    failure_count,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
+                },
+                idempotency_key,
+            )
+            .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
+        self.last_turn_id = Some(turn.turn_id);
+        Ok(())
+    }
+
+    async fn append_interview_lifecycle(
+        &mut self,
+        node_id: &str,
+        kind: &str,
+        selected: Option<String>,
+        default_selected: Option<String>,
+    ) -> Result<(), AttractorError> {
+        let sequence_no = self.next_sequence_no();
+        let Some(writer) = self.writer.as_ref().cloned() else {
+            return Ok(());
+        };
+        let Some(context_id) = self.context_id.as_ref().cloned() else {
+            return Ok(());
+        };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
+        let idempotency_key =
+            attractor_idempotency_key(&self.run_id, node_id, "__interview__", kind, sequence_no);
+        let turn = writer
+            .append_interview_lifecycle(
+                &context_id,
+                AttractorInterviewLifecycleRecord {
+                    kind: kind.to_string(),
+                    timestamp: timestamp_now(),
+                    run_id: self.run_id.clone(),
+                    node_id: node_id.to_string(),
+                    selected,
+                    default_selected,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
+                },
+                idempotency_key,
+            )
+            .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
+        self.last_turn_id = Some(turn.turn_id);
+        Ok(())
+    }
+
+    async fn append_checkpoint_saved(
         &mut self,
         node_id: &str,
         stage_attempt_id: &str,
@@ -1483,17 +1868,8 @@ impl RunStorage {
         if let Some(capture) = snapshot_capture.as_ref() {
             inject_fs_lineage_payload(&mut state_summary, capture);
         }
-        let correlation = AttractorCorrelation {
-            run_id: self.run_id.clone(),
-            pipeline_context_id: Some(context_id.clone()),
-            node_id: Some(node_id.to_string()),
-            stage_attempt_id: Some(stage_attempt_id.to_string()),
-            parent_turn_id: None,
-            sequence_no,
-            agent_session_id: None,
-            agent_context_id: None,
-            agent_head_turn_id: None,
-        };
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
         let checkpoint_id = format!("cp-{}", sequence_no);
         let idempotency_key = attractor_idempotency_key(
             &self.run_id,
@@ -1503,14 +1879,73 @@ impl RunStorage {
             sequence_no,
         );
         let turn = writer
-            .append_checkpoint_event(
+            .append_checkpoint_saved(
                 &context_id,
-                AttractorCheckpointEventRecord {
+                AttractorCheckpointSavedRecord {
+                    run_id: self.run_id.clone(),
+                    node_id: node_id.to_string(),
+                    stage_attempt_id: stage_attempt_id.to_string(),
                     checkpoint_id,
                     timestamp: timestamp_now(),
                     state_summary,
                     checkpoint_hash: None,
-                    correlation,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
+                },
+                idempotency_key,
+            )
+            .await?;
+        if let Some(capture) = snapshot_capture {
+            self.attach_fs_lineage(&turn.turn_id, &capture).await?;
+        }
+        self.last_turn_id = Some(turn.turn_id);
+        Ok(())
+    }
+
+    async fn append_route_decision(
+        &mut self,
+        node_id: &str,
+        stage_attempt_id: &str,
+        selected_edge: Option<String>,
+        loop_restart: bool,
+        terminated_status: Option<String>,
+        terminated_reason: Option<String>,
+    ) -> Result<(), AttractorError> {
+        let sequence_no = self.next_sequence_no();
+        let Some(writer) = self.writer.as_ref().cloned() else {
+            return Ok(());
+        };
+        let Some(context_id) = self.context_id.as_ref().cloned() else {
+            return Ok(());
+        };
+        let snapshot_capture = self.capture_workspace_snapshot().await?;
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
+        let idempotency_key = attractor_idempotency_key(
+            &self.run_id,
+            node_id,
+            stage_attempt_id,
+            "route_decision",
+            sequence_no,
+        );
+        let turn = writer
+            .append_route_decision(
+                &context_id,
+                AttractorRouteDecisionRecord {
+                    timestamp: timestamp_now(),
+                    run_id: self.run_id.clone(),
+                    node_id: node_id.to_string(),
+                    stage_attempt_id: stage_attempt_id.to_string(),
+                    selected_edge,
+                    loop_restart,
+                    terminated_status,
+                    terminated_reason,
+                    sequence_no,
+                    fs_root_hash,
+                    snapshot_policy_id,
+                    snapshot_stats,
                 },
                 idempotency_key,
             )
@@ -1539,17 +1974,6 @@ impl RunStorage {
             let dot_hash = blake3::hash(dot_bytes).to_hex().to_string();
             let dot_blob_hash = self.persist_blob(dot_bytes).await?;
             let sequence_no = self.next_sequence_no();
-            let correlation = AttractorCorrelation {
-                run_id: self.run_id.clone(),
-                pipeline_context_id: Some(context_id.clone()),
-                node_id: None,
-                stage_attempt_id: None,
-                parent_turn_id: None,
-                sequence_no,
-                agent_session_id: None,
-                agent_context_id: None,
-                agent_head_turn_id: None,
-            };
             let idempotency_key = attractor_idempotency_key(
                 &self.run_id,
                 "__run__",
@@ -1569,7 +1993,11 @@ impl RunStorage {
                         artifact_blob_hash: dot_blob_hash.clone(),
                         content_hash: dot_hash.clone(),
                         size_bytes: dot_bytes.len() as u64,
-                        correlation,
+                        run_id: self.run_id.clone(),
+                        sequence_no,
+                        fs_root_hash: None,
+                        snapshot_policy_id: None,
+                        snapshot_stats: None,
                     },
                     idempotency_key,
                 )
@@ -1603,17 +2031,6 @@ impl RunStorage {
         let snapshot_hash = blake3::hash(&snapshot_bytes).to_hex().to_string();
         let snapshot_blob_hash = self.persist_blob(&snapshot_bytes).await?;
         let sequence_no = self.next_sequence_no();
-        let correlation = AttractorCorrelation {
-            run_id: self.run_id.clone(),
-            pipeline_context_id: Some(context_id.clone()),
-            node_id: None,
-            stage_attempt_id: None,
-            parent_turn_id: None,
-            sequence_no,
-            agent_session_id: None,
-            agent_context_id: None,
-            agent_head_turn_id: None,
-        };
         let idempotency_key = attractor_idempotency_key(
             &self.run_id,
             "__run__",
@@ -1633,7 +2050,11 @@ impl RunStorage {
                     artifact_blob_hash: snapshot_blob_hash.clone(),
                     content_hash: snapshot_hash.clone(),
                     size_bytes: snapshot_bytes.len() as u64,
-                    correlation,
+                    run_id: self.run_id.clone(),
+                    sequence_no,
+                    fs_root_hash: None,
+                    snapshot_policy_id: None,
+                    snapshot_stats: None,
                 },
                 idempotency_key,
             )
@@ -1749,6 +2170,25 @@ fn inject_fs_lineage_payload(payload: &mut Value, capture: &CxdbFsSnapshotCaptur
     }
 }
 
+fn snapshot_capture_fields(
+    capture: Option<&CxdbFsSnapshotCapture>,
+) -> (Option<String>, Option<String>, Option<AttractorFsSnapshotStats>) {
+    let Some(capture) = capture else {
+        return (None, None, None);
+    };
+    (
+        Some(capture.fs_root_hash.clone()),
+        Some(capture.policy_id.clone()),
+        Some(AttractorFsSnapshotStats {
+            file_count: capture.stats.file_count as u64,
+            dir_count: capture.stats.dir_count as u64,
+            symlink_count: capture.stats.symlink_count as u64,
+            total_bytes: capture.stats.total_bytes as u64,
+            bytes_uploaded: capture.stats.bytes_uploaded as u64,
+        }),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1844,22 +2284,22 @@ mod tests {
             })
         }
 
-        async fn append_run_event(
+        async fn append_run_lifecycle(
             &self,
             context_id: &ContextId,
-            record: AttractorRunEventRecord,
+            record: AttractorRunLifecycleRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
-                .push((context_id.clone(), record.event_kind.clone()));
+                .push((context_id.clone(), format!("run_{}", record.kind)));
             Ok(StoredTurn {
                 context_id: context_id.clone(),
                 turn_id: "1".to_string(),
                 parent_turn_id: "0".to_string(),
                 depth: 1,
-                type_id: "forge.attractor.run_event".to_string(),
+                type_id: "forge.attractor.run_lifecycle".to_string(),
                 type_version: 1,
                 payload: Vec::new(),
                 idempotency_key: None,
@@ -1867,22 +2307,22 @@ mod tests {
             })
         }
 
-        async fn append_stage_event(
+        async fn append_stage_lifecycle(
             &self,
             context_id: &ContextId,
-            record: AttractorStageEventRecord,
+            record: AttractorStageLifecycleRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             self.events
                 .lock()
                 .expect("events mutex should lock")
-                .push((context_id.clone(), record.event_kind.clone()));
+                .push((context_id.clone(), format!("stage_{}", record.kind)));
             Ok(StoredTurn {
                 context_id: context_id.clone(),
                 turn_id: "2".to_string(),
                 parent_turn_id: "0".to_string(),
                 depth: 1,
-                type_id: "forge.attractor.stage_event".to_string(),
+                type_id: "forge.attractor.stage_lifecycle".to_string(),
                 type_version: 1,
                 payload: Vec::new(),
                 idempotency_key: None,
@@ -1890,10 +2330,56 @@ mod tests {
             })
         }
 
-        async fn append_checkpoint_event(
+        async fn append_parallel_lifecycle(
             &self,
             context_id: &ContextId,
-            _record: AttractorCheckpointEventRecord,
+            record: AttractorParallelLifecycleRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            self.events
+                .lock()
+                .expect("events mutex should lock")
+                .push((context_id.clone(), format!("parallel_{}", record.kind)));
+            Ok(StoredTurn {
+                context_id: context_id.clone(),
+                turn_id: "3".to_string(),
+                parent_turn_id: "0".to_string(),
+                depth: 1,
+                type_id: "forge.attractor.parallel_lifecycle".to_string(),
+                type_version: 1,
+                payload: Vec::new(),
+                idempotency_key: None,
+                content_hash: None,
+            })
+        }
+
+        async fn append_interview_lifecycle(
+            &self,
+            context_id: &ContextId,
+            record: AttractorInterviewLifecycleRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            self.events
+                .lock()
+                .expect("events mutex should lock")
+                .push((context_id.clone(), format!("interview_{}", record.kind)));
+            Ok(StoredTurn {
+                context_id: context_id.clone(),
+                turn_id: "4".to_string(),
+                parent_turn_id: "0".to_string(),
+                depth: 1,
+                type_id: "forge.attractor.interview_lifecycle".to_string(),
+                type_version: 1,
+                payload: Vec::new(),
+                idempotency_key: None,
+                content_hash: None,
+            })
+        }
+
+        async fn append_checkpoint_saved(
+            &self,
+            context_id: &ContextId,
+            _record: AttractorCheckpointSavedRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             self.events
@@ -1902,10 +2388,33 @@ mod tests {
                 .push((context_id.clone(), "checkpoint_saved".to_string()));
             Ok(StoredTurn {
                 context_id: context_id.clone(),
-                turn_id: "3".to_string(),
+                turn_id: "5".to_string(),
                 parent_turn_id: "0".to_string(),
                 depth: 1,
-                type_id: "forge.attractor.checkpoint_event".to_string(),
+                type_id: "forge.attractor.checkpoint_saved".to_string(),
+                type_version: 1,
+                payload: Vec::new(),
+                idempotency_key: None,
+                content_hash: None,
+            })
+        }
+
+        async fn append_route_decision(
+            &self,
+            context_id: &ContextId,
+            _record: AttractorRouteDecisionRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            self.events
+                .lock()
+                .expect("events mutex should lock")
+                .push((context_id.clone(), "route_decision".to_string()));
+            Ok(StoredTurn {
+                context_id: context_id.clone(),
+                turn_id: "6".to_string(),
+                parent_turn_id: "0".to_string(),
+                depth: 1,
+                type_id: "forge.attractor.route_decision".to_string(),
                 type_version: 1,
                 payload: Vec::new(),
                 idempotency_key: None,
@@ -1933,10 +2442,10 @@ mod tests {
             self.events
                 .lock()
                 .expect("events mutex should lock")
-                .push((context_id.clone(), "dot_source_persisted".to_string()));
+                .push((context_id.clone(), "dot_source".to_string()));
             Ok(StoredTurn {
                 context_id: context_id.clone(),
-                turn_id: "4".to_string(),
+                turn_id: "7".to_string(),
                 parent_turn_id: "0".to_string(),
                 depth: 1,
                 type_id: "forge.attractor.dot_source".to_string(),
@@ -1956,10 +2465,10 @@ mod tests {
             self.events
                 .lock()
                 .expect("events mutex should lock")
-                .push((context_id.clone(), "graph_snapshot_persisted".to_string()));
+                .push((context_id.clone(), "graph_snapshot".to_string()));
             Ok(StoredTurn {
                 context_id: context_id.clone(),
-                turn_id: "5".to_string(),
+                turn_id: "8".to_string(),
                 parent_turn_id: "0".to_string(),
                 depth: 1,
                 type_id: "forge.attractor.graph_snapshot".to_string(),
@@ -2175,6 +2684,7 @@ mod tests {
         assert!(event_kinds.iter().any(|kind| kind == "stage_started"));
         assert!(event_kinds.iter().any(|kind| kind == "stage_completed"));
         assert!(event_kinds.iter().any(|kind| kind == "checkpoint_saved"));
+        assert!(event_kinds.iter().any(|kind| kind == "route_decision"));
     }
 
     #[tokio::test(flavor = "current_thread")]

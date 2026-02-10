@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use forge_attractor::{
-    AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
-    AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    NodeStatus, PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StorageError,
-    StoreContext, StoredTurn, TurnId, parse_dot,
+    AttractorCheckpointSavedRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
+    AttractorInterviewLifecycleRecord, AttractorParallelLifecycleRecord,
+    AttractorRouteDecisionRecord, AttractorRunLifecycleRecord, AttractorStageLifecycleRecord,
+    AttractorStageToAgentLinkRecord, AttractorStorageWriter, ContextId, CxdbPersistenceMode,
+    Graph, Node, NodeExecutor, NodeOutcome, NodeStatus, PipelineRunner, PipelineStatus, RunConfig,
+    RuntimeContext, StorageError, StoreContext, StoredTurn, TurnId, parse_dot,
 };
 use forge_cxdb_runtime::{CxdbRuntimeStore, MockCxdb};
 use std::sync::{Arc, Mutex, atomic::AtomicUsize, atomic::Ordering};
@@ -27,37 +28,82 @@ impl AttractorStorageWriter for RecordingStorage {
         })
     }
 
-    async fn append_run_event(
+    async fn append_run_lifecycle(
         &self,
         _context_id: &ContextId,
-        record: AttractorRunEventRecord,
+        record: AttractorRunLifecycleRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
-        self.events.lock().expect("mutex").push(record.event_kind);
-        Ok(stub_turn("forge.attractor.run_event"))
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("run_{}", record.kind));
+        Ok(stub_turn("forge.attractor.run_lifecycle"))
     }
 
-    async fn append_stage_event(
+    async fn append_stage_lifecycle(
         &self,
         _context_id: &ContextId,
-        record: AttractorStageEventRecord,
+        record: AttractorStageLifecycleRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
-        self.events.lock().expect("mutex").push(record.event_kind);
-        Ok(stub_turn("forge.attractor.stage_event"))
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("stage_{}", record.kind));
+        Ok(stub_turn("forge.attractor.stage_lifecycle"))
     }
 
-    async fn append_checkpoint_event(
+    async fn append_parallel_lifecycle(
         &self,
         _context_id: &ContextId,
-        _record: AttractorCheckpointEventRecord,
+        record: AttractorParallelLifecycleRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("parallel_{}", record.kind));
+        Ok(stub_turn("forge.attractor.parallel_lifecycle"))
+    }
+
+    async fn append_interview_lifecycle(
+        &self,
+        _context_id: &ContextId,
+        record: AttractorInterviewLifecycleRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        self.events
+            .lock()
+            .expect("mutex")
+            .push(format!("interview_{}", record.kind));
+        Ok(stub_turn("forge.attractor.interview_lifecycle"))
+    }
+
+    async fn append_checkpoint_saved(
+        &self,
+        _context_id: &ContextId,
+        _record: AttractorCheckpointSavedRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
         self.events
             .lock()
             .expect("mutex")
             .push("checkpoint_saved".to_string());
-        Ok(stub_turn("forge.attractor.checkpoint_event"))
+        Ok(stub_turn("forge.attractor.checkpoint_saved"))
+    }
+
+    async fn append_route_decision(
+        &self,
+        _context_id: &ContextId,
+        _record: AttractorRouteDecisionRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        self.events
+            .lock()
+            .expect("mutex")
+            .push("route_decision".to_string());
+        Ok(stub_turn("forge.attractor.route_decision"))
     }
 
     async fn append_stage_to_agent_link(
@@ -267,7 +313,7 @@ async fn execution_store_enabled_cxdb_expected_persisted_turns() {
     assert!(
         turns
             .iter()
-            .any(|turn| turn.type_id == "forge.attractor.run_event")
+            .any(|turn| turn.type_id == "forge.attractor.run_lifecycle")
     );
     assert!(
         turns

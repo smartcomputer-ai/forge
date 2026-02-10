@@ -519,8 +519,10 @@ mod tests {
     use super::*;
     use crate::storage::{StorageError, StoreContext, StoredTurn};
     use crate::{
-        AttractorDotSourceRecord, AttractorGraphSnapshotRecord, AttractorRunEventRecord,
-        AttractorStageEventRecord, parse_dot,
+        AttractorCheckpointSavedRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
+        AttractorInterviewLifecycleRecord, AttractorParallelLifecycleRecord,
+        AttractorRouteDecisionRecord, AttractorRunLifecycleRecord, AttractorStageLifecycleRecord,
+        parse_dot,
     };
     use forge_agent::{SessionState, ToolCallHook};
     use serde_json::json;
@@ -587,28 +589,55 @@ mod tests {
             })
         }
 
-        async fn append_run_event(
+        async fn append_run_lifecycle(
             &self,
             _context_id: &ContextId,
-            _record: AttractorRunEventRecord,
+            _record: AttractorRunLifecycleRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             Err(StorageError::Unsupported("unused".to_string()))
         }
 
-        async fn append_stage_event(
+        async fn append_stage_lifecycle(
             &self,
             _context_id: &ContextId,
-            _record: AttractorStageEventRecord,
+            _record: AttractorStageLifecycleRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             Err(StorageError::Unsupported("unused".to_string()))
         }
 
-        async fn append_checkpoint_event(
+        async fn append_parallel_lifecycle(
             &self,
             _context_id: &ContextId,
-            _record: crate::AttractorCheckpointEventRecord,
+            _record: AttractorParallelLifecycleRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
+        }
+
+        async fn append_interview_lifecycle(
+            &self,
+            _context_id: &ContextId,
+            _record: AttractorInterviewLifecycleRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
+        }
+
+        async fn append_checkpoint_saved(
+            &self,
+            _context_id: &ContextId,
+            _record: AttractorCheckpointSavedRecord,
+            _idempotency_key: String,
+        ) -> Result<StoredTurn, StorageError> {
+            Err(StorageError::Unsupported("unused".to_string()))
+        }
+
+        async fn append_route_decision(
+            &self,
+            _context_id: &ContextId,
+            _record: AttractorRouteDecisionRecord,
             _idempotency_key: String,
         ) -> Result<StoredTurn, StorageError> {
             Err(StorageError::Unsupported("unused".to_string()))

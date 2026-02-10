@@ -13,16 +13,16 @@ Legend:
 - [x] Fork-trigger policy and `fidelity=full` thread-reuse policy are frozen in `spec/04-cxdb-integration-spec.md` section `3.4`.
 
 ## Semantic Alignment (Forge-first)
-- [ ] Persisted event/type names map to Forge runtime semantics (Attractor `Pipeline/Stage/Parallel/Interview/Checkpoint`, Agent transcript + lifecycle), not external schema imports. Refs: `crates/forge-attractor/src/events.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-agent/src/session.rs`
-- [ ] Attractor stage-attempt lifecycle is first-class (`node_id`, `stage_attempt_id`, `attempt`, status/retry fields). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/storage/types.rs`
-- [ ] Agent transcript turns remain distinct from agent operational lifecycle telemetry. Refs: `crates/forge-agent/src/session.rs`
+- [x] Persisted event/type names map to Forge runtime semantics (Attractor `Pipeline/Stage/Parallel/Interview/Checkpoint`, Agent transcript + lifecycle), not external schema imports. Refs: `crates/forge-attractor/src/events.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-agent/src/session.rs`
+- [x] Attractor stage-attempt lifecycle is first-class (`node_id`, `stage_attempt_id`, `attempt`, status/retry fields). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/storage/types.rs`
+- [x] Agent transcript turns remain distinct from agent operational lifecycle telemetry. Refs: `crates/forge-agent/src/session.rs`
 - [ ] Context topology follows run-spine + thread/agent-context model; no default one-context-per-node writes. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`, `crates/forge-agent/src/session.rs`
 - [ ] Context classes are explicit and enforced: run context, thread context (`fidelity=full`), attempt/branch contexts (divergence only). Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`
 
 ## Data Model
-- [ ] Generic runtime envelope (`event_kind` + `payload_json`) is removed from active write paths. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/mod.rs`
-- [ ] `forge.agent.event` is replaced by typed lifecycle families (`session_lifecycle`, `tool_call_lifecycle`). Refs: `crates/forge-agent/src/session.rs`
-- [ ] Attractor persistence uses typed lifecycle families (`run/stage/parallel/interview/checkpoint`) plus explicit `route_decision` and `stage_to_agent` link records. Refs: `crates/forge-attractor/src/storage/types.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`
+- [x] Generic runtime envelope (`event_kind` + `payload_json`) is removed from active write paths. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/mod.rs`
+- [x] `forge.agent.event` is replaced by typed lifecycle families (`session_lifecycle`, `tool_call_lifecycle`). Refs: `crates/forge-agent/src/session.rs`
+- [x] Attractor persistence uses typed lifecycle families (`run/stage/parallel/interview/checkpoint`) plus explicit `route_decision` and `stage_to_agent` link records. Refs: `crates/forge-attractor/src/storage/types.rs`, `crates/forge-attractor/src/runner.rs`, `crates/forge-attractor/src/backends/forge_agent.rs`
 
 ## CXDB Primitive Alignment
 - [ ] CXDB `parent_turn_id` is the primary in-context causal linkage in append paths. Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/storage/mod.rs`
@@ -33,7 +33,7 @@ Legend:
 - [ ] Parallel/retry fork policy is frozen in schemas/lineage contract; full runtime enforcement is tracked in `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`. Refs: `spec/04-cxdb-integration-spec.md`, `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`
 
 ## Registry and Projection
-- [ ] New runtime registry bundles represent typed schemas for all v2 families (clean break). Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/runner.rs`
+- [x] New runtime registry bundles represent typed schemas for all v2 families (clean break). Refs: `crates/forge-agent/src/session.rs`, `crates/forge-attractor/src/runner.rs`
 - [ ] Query paths consume typed projection fields directly without nested payload reparsing. Refs: `crates/forge-attractor/src/queries.rs`, `crates/forge-cxdb-runtime/src/adapter.rs`
 - [ ] Semantic hints are used for time/duration fields where useful (`unix_ms`, `duration_ms`, etc.). Refs: `spec/04-cxdb-integration-spec.md`, `crates/forge-cxdb/docs/type-registry.md`
 
@@ -44,12 +44,12 @@ Legend:
 - [ ] Artifact hash references remain payload-level linkage only; no parallel Forge hash identity system is introduced. Refs: `crates/forge-attractor/src/runner.rs`, `crates/forge-cxdb/docs/protocol.md`
 
 ## Spec and Docs
-- [ ] `spec/04-cxdb-integration-spec.md` reflects Forge-native semantic type families and no envelope-over-turn dependency. Refs: `spec/04-cxdb-integration-spec.md`
+- [x] `spec/04-cxdb-integration-spec.md` reflects Forge-native semantic type families and no envelope-over-turn dependency. Refs: `spec/04-cxdb-integration-spec.md`
 - [ ] Docs explain CXDB-native vs Forge-domain field ownership and how to read attractor vs agent traces. Refs: `README.md`, `crates/forge-agent/README.md`, `crates/forge-attractor/README.md`
 - [ ] AGENTS architecture index remains consistent with implemented model. Refs: `AGENTS.md`
 
 ## Verification Gates
-- [ ] Deterministic suites green:
+- [x] Deterministic suites green:
   - `cargo test -p forge-agent`
   - `cargo test -p forge-attractor`
   - `cargo test -p forge-cxdb-runtime`

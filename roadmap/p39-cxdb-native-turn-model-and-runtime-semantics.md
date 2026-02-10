@@ -142,7 +142,7 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - Added runtime-derived semantic inventory freeze and v2 required-field freeze to `spec/04-cxdb-integration-spec.md` (sections `3.3.1` and `3.3.2`).
   - Thread reuse and fork-trigger policy are now explicitly frozen in spec text (`3.4`).
 
-### [ ] G2. Envelope removal and typed schema contract
+### [x] G2. Envelope removal and typed schema contract
 - Work:
   - Remove `payload_json`-centric schema contract from runtime write paths.
   - Replace generic `event_kind` envelope with typed fields per family.
@@ -154,8 +154,18 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `spec/04-cxdb-integration-spec.md`
 - DoD:
   - Runtime writes use typed payloads only; no envelope reconstruction required.
+- Completed:
+  - Replaced attractor runtime envelope write paths with typed msgpack records in:
+    - `crates/forge-attractor/src/storage/mod.rs`
+    - `crates/forge-attractor/src/storage/types.rs`
+    - `crates/forge-attractor/src/runner.rs`
+  - Replaced agent runtime envelope write paths with typed msgpack records in:
+    - `crates/forge-agent/src/session.rs`
+  - Published clean-break runtime bundle IDs:
+    - `forge.attractor.runtime.v2`
+    - `forge.agent.runtime.v2`
 
-### [ ] G3. Attractor persistence rebased to runtime event categories
+### [x] G3. Attractor persistence rebased to runtime event categories
 - Work:
   - Map persisted attractor turns to `Pipeline/Stage/Parallel/Interview/Checkpoint` lifecycle categories.
   - Add explicit route decision records.
@@ -168,6 +178,15 @@ CXDB already uses content-hash-addressed blobs. Forge may keep hash references i
   - `crates/forge-attractor/src/queries.rs`
 - DoD:
   - Attractor trace can be read as stage/run lifecycle without interpreting generic `event_kind` strings.
+- Completed:
+  - Attractor writes now map runtime categories to typed families:
+    - `forge.attractor.run_lifecycle`
+    - `forge.attractor.stage_lifecycle`
+    - `forge.attractor.parallel_lifecycle`
+    - `forge.attractor.interview_lifecycle`
+    - `forge.attractor.checkpoint_saved`
+  - Added explicit `forge.attractor.route_decision` persistence in runner traversal.
+  - Queries rebased to typed record decoding in `crates/forge-attractor/src/queries.rs`.
 
 ### [ ] G4. Agent persistence split: transcript vs operational lifecycle
 - Work:

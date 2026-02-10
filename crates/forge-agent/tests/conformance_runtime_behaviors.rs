@@ -11,7 +11,6 @@ use forge_cxdb_runtime::{
 };
 use forge_llm::Role;
 use serde_json::json;
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use support::{
@@ -20,16 +19,8 @@ use support::{
 };
 use tempfile::tempdir;
 
-#[derive(serde::Deserialize)]
-struct PersistedEnvelope {
-    payload: serde_json::Value,
-}
-
-fn decode_persisted_envelope(payload: &[u8]) -> Option<PersistedEnvelope> {
-    let tagged: BTreeMap<u64, serde_json::Value> = rmp_serde::from_slice(payload).ok()?;
-    let payload_json = tagged.get(&8).and_then(serde_json::Value::as_str)?;
-    let payload = serde_json::from_str::<serde_json::Value>(payload_json).ok()?;
-    Some(PersistedEnvelope { payload })
+fn decode_persisted_record(payload: &[u8]) -> Option<serde_json::Value> {
+    rmp_serde::from_slice(payload).ok()
 }
 
 #[derive(Default)]
@@ -506,10 +497,10 @@ async fn cross_profile_subagent_spawn_persists_link_record() {
             .expect("submit should succeed");
 
         let appended = store.appended();
-        let spawn_links: Vec<PersistedEnvelope> = appended
+        let spawn_links: Vec<serde_json::Value> = appended
             .iter()
             .filter(|request| request.type_id == "forge.link.subagent_spawn")
-            .filter_map(|request| decode_persisted_envelope(&request.payload))
+            .filter_map(|request| decode_persisted_record(&request.payload))
             .collect();
 
         assert!(
@@ -517,7 +508,10 @@ async fn cross_profile_subagent_spawn_persists_link_record() {
             "expected subagent spawn link turn for {}",
             fixture.id()
         );
-        let payload = &spawn_links[0].payload;
+        let payload = spawn_links[0]
+            .get("turn")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         assert_eq!(payload["session_id"].as_str(), Some(session.id()));
         assert!(payload["parent_turn"].as_str().is_some());
         assert!(payload["child_context_id"].as_str().is_some());

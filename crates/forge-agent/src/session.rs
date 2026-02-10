@@ -14,9 +14,10 @@ use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
     ToolResult, Usage,
 };
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{self, Display};
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
@@ -27,268 +28,146 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-struct CorrelationMetadata {
-    run_id: Option<String>,
-    pipeline_context_id: Option<String>,
-    node_id: Option<String>,
-    stage_attempt_id: Option<String>,
-    agent_session_id: Option<String>,
-    agent_context_id: Option<String>,
-    agent_head_turn_id: Option<String>,
-    parent_turn_id: Option<String>,
-    sequence_no: Option<u64>,
-    thread_key: Option<String>,
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct FsSnapshotStatsRecord {
+    file_count: usize,
+    dir_count: usize,
+    symlink_count: usize,
+    total_bytes: i64,
+    bytes_uploaded: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct StoredTurnEnvelope {
-    schema_version: u32,
-    run_id: Option<String>,
-    session_id: Option<String>,
-    node_id: Option<String>,
-    stage_attempt_id: Option<String>,
-    event_kind: String,
+struct AgentTurnRecord {
+    session_id: String,
     timestamp: String,
-    payload: Value,
-    correlation: CorrelationMetadata,
+    turn: Value,
+    sequence_no: u64,
+    thread_key: Option<String>,
+    fs_root_hash: Option<String>,
+    snapshot_policy_id: Option<String>,
+    snapshot_stats: Option<FsSnapshotStatsRecord>,
 }
 
-const TAG_SCHEMA_VERSION: u64 = 1;
-const TAG_RUN_ID: u64 = 2;
-const TAG_SESSION_ID: u64 = 3;
-const TAG_NODE_ID: u64 = 4;
-const TAG_STAGE_ATTEMPT_ID: u64 = 5;
-const TAG_EVENT_KIND: u64 = 6;
-const TAG_TIMESTAMP: u64 = 7;
-const TAG_PAYLOAD_JSON: u64 = 8;
-const TAG_CORR_RUN_ID: u64 = 9;
-const TAG_CORR_PIPELINE_CONTEXT_ID: u64 = 10;
-const TAG_CORR_NODE_ID: u64 = 11;
-const TAG_CORR_STAGE_ATTEMPT_ID: u64 = 12;
-const TAG_CORR_AGENT_SESSION_ID: u64 = 13;
-const TAG_CORR_AGENT_CONTEXT_ID: u64 = 14;
-const TAG_CORR_AGENT_HEAD_TURN_ID: u64 = 15;
-const TAG_CORR_PARENT_TURN_ID: u64 = 16;
-const TAG_CORR_SEQUENCE_NO: u64 = 17;
-const TAG_CORR_THREAD_KEY: u64 = 18;
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct SessionLifecycleRecord {
+    session_id: String,
+    kind: String,
+    timestamp: String,
+    final_state: Option<String>,
+    sequence_no: u64,
+    thread_key: Option<String>,
+    fs_root_hash: Option<String>,
+    snapshot_policy_id: Option<String>,
+    snapshot_stats: Option<FsSnapshotStatsRecord>,
+}
 
-fn encode_stored_turn_envelope(envelope: &StoredTurnEnvelope) -> Result<Vec<u8>, SessionError> {
-    let payload_json = serde_json::to_string(&envelope.payload)
-        .map_err(|err| SessionError::Persistence(err.to_string()))?;
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct ToolCallLifecycleRecord {
+    session_id: String,
+    kind: String,
+    timestamp: String,
+    call_id: String,
+    tool_name: Option<String>,
+    arguments: Option<Value>,
+    output: Option<Value>,
+    is_error: Option<bool>,
+    sequence_no: u64,
+    thread_key: Option<String>,
+    fs_root_hash: Option<String>,
+    snapshot_policy_id: Option<String>,
+    snapshot_stats: Option<FsSnapshotStatsRecord>,
+}
 
-    let mut tagged: BTreeMap<u64, Value> = BTreeMap::new();
-    tagged.insert(
-        TAG_SCHEMA_VERSION,
-        Value::Number((envelope.schema_version as u64).into()),
-    );
-    tagged.insert(
-        TAG_RUN_ID,
-        optional_string_value(envelope.run_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_SESSION_ID,
-        optional_string_value(envelope.session_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_NODE_ID,
-        optional_string_value(envelope.node_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_STAGE_ATTEMPT_ID,
-        optional_string_value(envelope.stage_attempt_id.as_deref()),
-    );
-    tagged.insert(TAG_EVENT_KIND, Value::String(envelope.event_kind.clone()));
-    tagged.insert(TAG_TIMESTAMP, Value::String(envelope.timestamp.clone()));
-    tagged.insert(TAG_PAYLOAD_JSON, Value::String(payload_json));
-    tagged.insert(
-        TAG_CORR_RUN_ID,
-        optional_string_value(envelope.correlation.run_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_PIPELINE_CONTEXT_ID,
-        optional_string_value(envelope.correlation.pipeline_context_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_NODE_ID,
-        optional_string_value(envelope.correlation.node_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_STAGE_ATTEMPT_ID,
-        optional_string_value(envelope.correlation.stage_attempt_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_AGENT_SESSION_ID,
-        optional_string_value(envelope.correlation.agent_session_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_AGENT_CONTEXT_ID,
-        optional_string_value(envelope.correlation.agent_context_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_AGENT_HEAD_TURN_ID,
-        optional_string_value(envelope.correlation.agent_head_turn_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_PARENT_TURN_ID,
-        optional_string_value(envelope.correlation.parent_turn_id.as_deref()),
-    );
-    tagged.insert(
-        TAG_CORR_SEQUENCE_NO,
-        envelope
-            .correlation
-            .sequence_no
-            .map(|value| Value::Number(value.into()))
-            .unwrap_or(Value::Null),
-    );
-    tagged.insert(
-        TAG_CORR_THREAD_KEY,
-        optional_string_value(envelope.correlation.thread_key.as_deref()),
-    );
-
-    rmp_serde::to_vec_named(&tagged)
+fn encode_typed_record<T: Serialize>(record: &T) -> Result<Vec<u8>, SessionError> {
+    rmp_serde::to_vec_named(record)
         .map_err(|err| SessionError::Persistence(format!("msgpack encode failed: {err}")))
 }
 
 #[allow(dead_code)]
-fn decode_stored_turn_envelope(payload: &[u8]) -> Result<StoredTurnEnvelope, SessionError> {
-    if let Ok(projected) = serde_json::from_slice::<Value>(payload) {
-        if let Some(envelope) = decode_projection_envelope(&projected)? {
-            return Ok(envelope);
-        }
+fn decode_typed_record<T: DeserializeOwned>(payload: &[u8]) -> Result<T, SessionError> {
+    if let Ok(projected) = serde_json::from_slice::<T>(payload) {
+        return Ok(projected);
     }
+    rmp_serde::from_slice(payload)
+        .map_err(|err| SessionError::Persistence(format!("msgpack decode failed: {err}")))
+}
 
-    let tagged: BTreeMap<u64, Value> = rmp_serde::from_slice(payload)
-        .map_err(|err| SessionError::Persistence(format!("msgpack decode failed: {err}")))?;
-    Ok(StoredTurnEnvelope {
-        schema_version: tagged
-            .get(&TAG_SCHEMA_VERSION)
-            .and_then(Value::as_u64)
-            .map(|value| value as u32)
-            .unwrap_or(1),
-        run_id: optional_string_field(tagged.get(&TAG_RUN_ID)),
-        session_id: optional_string_field(tagged.get(&TAG_SESSION_ID)),
-        node_id: optional_string_field(tagged.get(&TAG_NODE_ID)),
-        stage_attempt_id: optional_string_field(tagged.get(&TAG_STAGE_ATTEMPT_ID)),
-        event_kind: tagged
-            .get(&TAG_EVENT_KIND)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        timestamp: tagged
-            .get(&TAG_TIMESTAMP)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        payload: parse_payload_json_field(tagged.get(&TAG_PAYLOAD_JSON))?,
-        correlation: CorrelationMetadata {
-            run_id: optional_string_field(tagged.get(&TAG_CORR_RUN_ID)),
-            pipeline_context_id: optional_string_field(tagged.get(&TAG_CORR_PIPELINE_CONTEXT_ID)),
-            node_id: optional_string_field(tagged.get(&TAG_CORR_NODE_ID)),
-            stage_attempt_id: optional_string_field(tagged.get(&TAG_CORR_STAGE_ATTEMPT_ID)),
-            agent_session_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_SESSION_ID)),
-            agent_context_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_CONTEXT_ID)),
-            agent_head_turn_id: optional_string_field(tagged.get(&TAG_CORR_AGENT_HEAD_TURN_ID)),
-            parent_turn_id: optional_string_field(tagged.get(&TAG_CORR_PARENT_TURN_ID)),
-            sequence_no: tagged.get(&TAG_CORR_SEQUENCE_NO).and_then(Value::as_u64),
-            thread_key: optional_string_field(tagged.get(&TAG_CORR_THREAD_KEY)),
-        },
+fn capture_fs_snapshot_blocking(
+    store: Arc<dyn SessionPersistenceWriter>,
+    policy: Option<&CxdbFsSnapshotPolicy>,
+    workspace_root: &Path,
+) -> Result<Option<CxdbFsSnapshotCapture>, CxdbClientError> {
+    let Some(policy) = policy.cloned() else {
+        return Ok(None);
+    };
+    let workspace_root = workspace_root.to_path_buf();
+    run_cxdb_future_blocking("capture_upload_workspace", async move {
+        store.capture_upload_workspace(&workspace_root, &policy).await
     })
+    .map(Some)
 }
 
-#[allow(dead_code)]
-fn decode_projection_envelope(
-    projected: &Value,
-) -> Result<Option<StoredTurnEnvelope>, SessionError> {
-    let Some(object) = projected.as_object() else {
-        return Ok(None);
+fn snapshot_capture_fields(
+    capture: Option<&CxdbFsSnapshotCapture>,
+) -> (Option<String>, Option<String>, Option<FsSnapshotStatsRecord>) {
+    let Some(capture) = capture else {
+        return (None, None, None);
     };
-    if !object.contains_key("schema_version") || !object.contains_key("payload_json") {
-        return Ok(None);
+    (
+        Some(capture.fs_root_hash.clone()),
+        Some(capture.policy_id.clone()),
+        Some(FsSnapshotStatsRecord {
+            file_count: capture.stats.file_count,
+            dir_count: capture.stats.dir_count,
+            symlink_count: capture.stats.symlink_count,
+            total_bytes: capture.stats.total_bytes as i64,
+            bytes_uploaded: capture.stats.bytes_uploaded,
+        }),
+    )
+}
+
+fn apply_sequence_and_fs_to_record<T: Serialize + DeserializeOwned>(
+    record: &mut T,
+    sequence_no: u64,
+    thread_key: Option<String>,
+    capture: Option<&CxdbFsSnapshotCapture>,
+) -> Result<(), AgentError> {
+    let mut value = serde_json::to_value(&*record)
+        .map_err(|error| SessionError::Persistence(format!("failed to serialize record: {error}")))?;
+    if !value.is_object() {
+        return Err(
+            SessionError::Persistence("typed record should serialize as object".to_string()).into(),
+        );
     }
-
-    Ok(Some(StoredTurnEnvelope {
-        schema_version: object
-            .get("schema_version")
-            .and_then(Value::as_u64)
-            .map(|value| value as u32)
-            .unwrap_or(1),
-        run_id: optional_string_field(object.get("run_id")),
-        session_id: optional_string_field(object.get("session_id")),
-        node_id: optional_string_field(object.get("node_id")),
-        stage_attempt_id: optional_string_field(object.get("stage_attempt_id")),
-        event_kind: object
-            .get("event_kind")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        timestamp: object
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        payload: parse_payload_json_field(object.get("payload_json"))?,
-        correlation: CorrelationMetadata {
-            run_id: optional_string_field(object.get("corr_run_id")),
-            pipeline_context_id: optional_string_field(object.get("corr_pipeline_context_id")),
-            node_id: optional_string_field(object.get("corr_node_id")),
-            stage_attempt_id: optional_string_field(object.get("corr_stage_attempt_id")),
-            agent_session_id: optional_string_field(object.get("corr_agent_session_id")),
-            agent_context_id: optional_string_field(object.get("corr_agent_context_id")),
-            agent_head_turn_id: optional_string_field(object.get("corr_agent_head_turn_id")),
-            parent_turn_id: optional_string_field(object.get("corr_parent_turn_id")),
-            sequence_no: object.get("corr_sequence_no").and_then(Value::as_u64),
-            thread_key: optional_string_field(object.get("corr_thread_key")),
-        },
-    }))
-}
-
-#[allow(dead_code)]
-fn parse_payload_json_field(value: Option<&Value>) -> Result<Value, SessionError> {
-    let Some(payload_json) = value.and_then(Value::as_str) else {
-        return Ok(Value::Null);
-    };
-    serde_json::from_str(payload_json)
-        .map_err(|err| SessionError::Persistence(format!("payload_json decode failed: {err}")))
-}
-
-fn optional_string_value(value: Option<&str>) -> Value {
-    value
-        .map(|inner| Value::String(inner.to_string()))
-        .unwrap_or(Value::Null)
-}
-
-#[allow(dead_code)]
-fn optional_string_field(value: Option<&Value>) -> Option<String> {
-    value
-        .and_then(Value::as_str)
-        .map(std::string::ToString::to_string)
-}
-
-fn inject_fs_lineage_payload(payload: &mut Value, capture: &CxdbFsSnapshotCapture) {
-    if !payload.is_object() {
-        *payload = serde_json::json!({ "value": payload.clone() });
-    }
-    if let Some(object) = payload.as_object_mut() {
+    let (fs_root_hash, snapshot_policy_id, snapshot_stats) = snapshot_capture_fields(capture);
+    if let Some(object) = value.as_object_mut() {
+        object.insert("sequence_no".to_string(), Value::Number(sequence_no.into()));
+        object.insert(
+            "thread_key".to_string(),
+            thread_key.map(Value::String).unwrap_or(Value::Null),
+        );
         object.insert(
             "fs_root_hash".to_string(),
-            Value::String(capture.fs_root_hash.clone()),
+            fs_root_hash.map(Value::String).unwrap_or(Value::Null),
         );
         object.insert(
             "snapshot_policy_id".to_string(),
-            Value::String(capture.policy_id.clone()),
+            snapshot_policy_id.map(Value::String).unwrap_or(Value::Null),
         );
         object.insert(
             "snapshot_stats".to_string(),
-            serde_json::json!({
-                "file_count": capture.stats.file_count,
-                "dir_count": capture.stats.dir_count,
-                "symlink_count": capture.stats.symlink_count,
-                "total_bytes": capture.stats.total_bytes,
-                "bytes_uploaded": capture.stats.bytes_uploaded,
-            }),
+            match snapshot_stats {
+                Some(stats) => serde_json::to_value(stats).map_err(|error| {
+                    SessionError::Persistence(format!("failed to encode snapshot stats: {error}"))
+                })?,
+                None => Value::Null,
+            },
         );
     }
+    *record = serde_json::from_value(value)
+        .map_err(|error| SessionError::Persistence(format!("failed to hydrate typed record: {error}")))?;
+    Ok(())
 }
 
 fn encode_idempotency_part(part: &str) -> String {
@@ -304,7 +183,7 @@ fn agent_idempotency_key(session_id: &str, local_turn_index: u64, event_kind: &s
     )
 }
 
-const AGENT_REGISTRY_BUNDLE_ID: &str = "forge.agent.runtime.v1";
+const AGENT_REGISTRY_BUNDLE_ID: &str = "forge.agent.runtime.v2";
 
 fn run_cxdb_future_blocking<F, T>(operation: &str, future: F) -> Result<T, CxdbClientError>
 where
@@ -352,17 +231,17 @@ fn publish_agent_registry_bundle_blocking(
 }
 
 fn agent_registry_bundle_json() -> Result<Vec<u8>, AgentError> {
-    let fields = envelope_type_fields_descriptor();
     let bundle = serde_json::json!({
         "registry_version": 1,
         "bundle_id": AGENT_REGISTRY_BUNDLE_ID,
         "types": {
-            "forge.agent.user_turn": { "versions": { "1": { "fields": fields } } },
-            "forge.agent.assistant_turn": { "versions": { "1": { "fields": fields } } },
-            "forge.agent.tool_results_turn": { "versions": { "1": { "fields": fields } } },
-            "forge.agent.system_turn": { "versions": { "1": { "fields": fields } } },
-            "forge.agent.steering_turn": { "versions": { "1": { "fields": fields } } },
-            "forge.agent.event": { "versions": { "1": { "fields": fields } } }
+            "forge.agent.user_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.assistant_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.tool_results_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.system_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.steering_turn": { "versions": { "1": { "fields": turn_fields_descriptor() } } },
+            "forge.agent.session_lifecycle": { "versions": { "1": { "fields": session_lifecycle_fields_descriptor() } } },
+            "forge.agent.tool_call_lifecycle": { "versions": { "1": { "fields": tool_call_lifecycle_fields_descriptor() } } }
         }
     });
     serde_json::to_vec(&bundle).map_err(|error| {
@@ -373,26 +252,48 @@ fn agent_registry_bundle_json() -> Result<Vec<u8>, AgentError> {
     })
 }
 
-fn envelope_type_fields_descriptor() -> serde_json::Value {
+fn turn_fields_descriptor() -> serde_json::Value {
     serde_json::json!({
-        "1": { "name": "schema_version", "type": "u32" },
-        "2": { "name": "run_id", "type": "string", "optional": true },
-        "3": { "name": "session_id", "type": "string", "optional": true },
-        "4": { "name": "node_id", "type": "string", "optional": true },
-        "5": { "name": "stage_attempt_id", "type": "string", "optional": true },
-        "6": { "name": "event_kind", "type": "string" },
-        "7": { "name": "timestamp", "type": "string" },
-        "8": { "name": "payload_json", "type": "string" },
-        "9": { "name": "corr_run_id", "type": "string", "optional": true },
-        "10": { "name": "corr_pipeline_context_id", "type": "string", "optional": true },
-        "11": { "name": "corr_node_id", "type": "string", "optional": true },
-        "12": { "name": "corr_stage_attempt_id", "type": "string", "optional": true },
-        "13": { "name": "corr_agent_session_id", "type": "string", "optional": true },
-        "14": { "name": "corr_agent_context_id", "type": "string", "optional": true },
-        "15": { "name": "corr_agent_head_turn_id", "type": "string", "optional": true },
-        "16": { "name": "corr_parent_turn_id", "type": "string", "optional": true },
-        "17": { "name": "corr_sequence_no", "type": "u64", "optional": true },
-        "18": { "name": "corr_thread_key", "type": "string", "optional": true }
+        "1": { "name": "session_id", "type": "string" },
+        "2": { "name": "timestamp", "type": "string" },
+        "3": { "name": "turn", "type": "any" },
+        "4": { "name": "sequence_no", "type": "u64" },
+        "5": { "name": "thread_key", "type": "string", "optional": true },
+        "6": { "name": "fs_root_hash", "type": "string", "optional": true },
+        "7": { "name": "snapshot_policy_id", "type": "string", "optional": true },
+        "8": { "name": "snapshot_stats", "type": "any", "optional": true }
+    })
+}
+
+fn session_lifecycle_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "session_id", "type": "string" },
+        "2": { "name": "kind", "type": "string" },
+        "3": { "name": "timestamp", "type": "string" },
+        "4": { "name": "final_state", "type": "string", "optional": true },
+        "5": { "name": "sequence_no", "type": "u64" },
+        "6": { "name": "thread_key", "type": "string", "optional": true },
+        "7": { "name": "fs_root_hash", "type": "string", "optional": true },
+        "8": { "name": "snapshot_policy_id", "type": "string", "optional": true },
+        "9": { "name": "snapshot_stats", "type": "any", "optional": true }
+    })
+}
+
+fn tool_call_lifecycle_fields_descriptor() -> serde_json::Value {
+    serde_json::json!({
+        "1": { "name": "session_id", "type": "string" },
+        "2": { "name": "kind", "type": "string" },
+        "3": { "name": "timestamp", "type": "string" },
+        "4": { "name": "call_id", "type": "string" },
+        "5": { "name": "tool_name", "type": "string", "optional": true },
+        "6": { "name": "arguments", "type": "any", "optional": true },
+        "7": { "name": "output", "type": "any", "optional": true },
+        "8": { "name": "is_error", "type": "bool", "optional": true },
+        "9": { "name": "sequence_no", "type": "u64" },
+        "10": { "name": "thread_key", "type": "string", "optional": true },
+        "11": { "name": "fs_root_hash", "type": "string", "optional": true },
+        "12": { "name": "snapshot_policy_id", "type": "string", "optional": true },
+        "13": { "name": "snapshot_stats", "type": "any", "optional": true }
     })
 }
 
@@ -1076,7 +977,7 @@ impl Session {
     fn persist_session_event_blocking(
         &mut self,
         event_kind: &str,
-        mut payload: Value,
+        payload: Value,
     ) -> Result<(), AgentError> {
         if !self.persistence_enabled() {
             return Ok(());
@@ -1100,53 +1001,44 @@ impl Session {
             return Ok(());
         };
 
-        let snapshot_capture = if let Some(policy) = self.config.fs_snapshot_policy.as_ref() {
-            let workspace_root = self.execution_env.working_directory().to_path_buf();
-            let policy = policy.clone();
-            match run_cxdb_future_blocking("capture_upload_workspace", {
-                let store = store.clone();
-                async move {
-                    store
-                        .capture_upload_workspace(&workspace_root, &policy)
-                        .await
-                }
-            }) {
-                Ok(capture) => {
-                    inject_fs_lineage_payload(&mut payload, &capture);
-                    Some(capture)
-                }
-                Err(error) => {
-                    return self.handle_persistence_error(error, "capture_upload_workspace");
-                }
-            }
-        } else {
-            None
+        let snapshot_capture = match capture_fs_snapshot_blocking(
+            store.clone(),
+            self.config.fs_snapshot_policy.as_ref(),
+            self.execution_env.working_directory(),
+        ) {
+            Ok(value) => value,
+            Err(error) => return self.handle_persistence_error(error, "capture_upload_workspace"),
         };
 
         let sequence_no = self.next_persistence_sequence();
-        let envelope = StoredTurnEnvelope {
-            schema_version: 1,
-            run_id: None,
-            session_id: Some(self.id.clone()),
-            node_id: None,
-            stage_attempt_id: None,
-            event_kind: event_kind.to_string(),
-            timestamp: current_timestamp(),
-            payload,
-            correlation: CorrelationMetadata {
-                agent_session_id: Some(self.id.clone()),
-                agent_context_id: Some(context_id.clone()),
-                sequence_no: Some(sequence_no),
-                thread_key: self.thread_key.clone(),
-                ..CorrelationMetadata::default()
-            },
+        let kind = match event_kind {
+            "session_start" => "started",
+            "session_end" => "ended",
+            other => other,
         };
-        let payload_bytes = encode_stored_turn_envelope(&envelope)?;
+        let final_state = payload
+            .get("final_state")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned);
+        let (fs_root_hash, snapshot_policy_id, snapshot_stats) =
+            snapshot_capture_fields(snapshot_capture.as_ref());
+        let record = SessionLifecycleRecord {
+            session_id: self.id.clone(),
+            kind: kind.to_string(),
+            timestamp: current_timestamp(),
+            final_state,
+            sequence_no,
+            thread_key: self.thread_key.clone(),
+            fs_root_hash,
+            snapshot_policy_id,
+            snapshot_stats,
+        };
+        let payload_bytes = encode_typed_record(&record)?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
             parent_turn_id: None,
-            type_id: "forge.agent.event".to_string(),
+            type_id: "forge.agent.session_lifecycle".to_string(),
             type_version: 1,
             payload: payload_bytes,
             idempotency_key,
@@ -1198,7 +1090,7 @@ impl Session {
             return Ok(());
         }
 
-        let (type_id, timestamp, payload) = match turn {
+        let (type_id, timestamp, turn_payload) = match turn {
             Turn::User(turn) => (
                 "forge.agent.user_turn",
                 turn.timestamp.clone(),
@@ -1231,8 +1123,21 @@ impl Session {
             ),
         };
 
-        self.persist_envelope(type_id, 1, "turn_appended", timestamp, payload)
-            .await
+        self.persist_typed_payload(
+            type_id,
+            "turn_appended",
+            AgentTurnRecord {
+                session_id: self.id.clone(),
+                timestamp,
+                turn: turn_payload,
+                sequence_no: 0,
+                thread_key: self.thread_key.clone(),
+                fs_root_hash: None,
+                snapshot_policy_id: None,
+                snapshot_stats: None,
+            },
+        )
+        .await
     }
 
     async fn persist_event_turn(
@@ -1240,23 +1145,68 @@ impl Session {
         event_kind: &str,
         payload: Value,
     ) -> Result<(), AgentError> {
-        self.persist_envelope(
-            "forge.agent.event",
-            1,
+        let (call_id, tool_name, arguments, output, is_error, kind) = match event_kind {
+            "tool_call_start" => (
+                payload
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                payload
+                    .get("tool_name")
+                    .and_then(Value::as_str)
+                    .map(ToOwned::to_owned),
+                payload.get("arguments").cloned(),
+                None,
+                None,
+                "started".to_string(),
+            ),
+            "tool_call_end" => (
+                payload
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                None,
+                None,
+                payload.get("output").cloned(),
+                payload.get("is_error").and_then(Value::as_bool),
+                "ended".to_string(),
+            ),
+            _ => {
+                return Err(SessionError::Persistence(format!(
+                    "unsupported event kind for typed lifecycle persistence: {event_kind}"
+                ))
+                .into());
+            }
+        };
+        self.persist_typed_payload(
+            "forge.agent.tool_call_lifecycle",
             event_kind,
-            current_timestamp(),
-            payload,
+            ToolCallLifecycleRecord {
+                session_id: self.id.clone(),
+                kind,
+                timestamp: current_timestamp(),
+                call_id,
+                tool_name,
+                arguments,
+                output,
+                is_error,
+                sequence_no: 0,
+                thread_key: self.thread_key.clone(),
+                fs_root_hash: None,
+                snapshot_policy_id: None,
+                snapshot_stats: None,
+            },
         )
         .await
     }
 
-    async fn persist_envelope(
+    async fn persist_typed_payload<T: Serialize + DeserializeOwned>(
         &mut self,
         type_id: &str,
-        type_version: u32,
         event_kind: &str,
-        timestamp: String,
-        mut payload: Value,
+        mut record: T,
     ) -> Result<(), AgentError> {
         if !self.persistence_enabled() {
             return Ok(());
@@ -1272,10 +1222,7 @@ impl Session {
         let snapshot_capture = if let Some(policy) = self.config.fs_snapshot_policy.as_ref() {
             let workspace_root = self.execution_env.working_directory();
             match store.capture_upload_workspace(workspace_root, policy).await {
-                Ok(capture) => {
-                    inject_fs_lineage_payload(&mut payload, &capture);
-                    Some(capture)
-                }
+                Ok(capture) => Some(capture),
                 Err(error) => {
                     return self.handle_persistence_error(error, "capture_upload_workspace");
                 }
@@ -1285,30 +1232,19 @@ impl Session {
         };
 
         let sequence_no = self.next_persistence_sequence();
-        let envelope = StoredTurnEnvelope {
-            schema_version: 1,
-            run_id: None,
-            session_id: Some(self.id.clone()),
-            node_id: None,
-            stage_attempt_id: None,
-            event_kind: event_kind.to_string(),
-            timestamp,
-            payload,
-            correlation: CorrelationMetadata {
-                agent_session_id: Some(self.id.clone()),
-                agent_context_id: Some(context_id.clone()),
-                sequence_no: Some(sequence_no),
-                thread_key: self.thread_key.clone(),
-                ..CorrelationMetadata::default()
-            },
-        };
-        let payload_bytes = encode_stored_turn_envelope(&envelope)?;
+        apply_sequence_and_fs_to_record(
+            &mut record,
+            sequence_no,
+            self.thread_key.clone(),
+            snapshot_capture.as_ref(),
+        )?;
+        let payload_bytes = encode_typed_record(&record)?;
         let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
         let request = CxdbAppendTurnRequest {
             context_id,
             parent_turn_id: None,
             type_id: type_id.to_string(),
-            type_version,
+            type_version: 1,
             payload: payload_bytes,
             idempotency_key,
             fs_root_hash: snapshot_capture
@@ -2012,19 +1948,26 @@ impl Session {
         let thread_key = self.thread_key.clone();
         let child_session_id = child_session.id.clone();
         let subagent_id = child_id.clone();
-        self.persist_envelope(
+        self.persist_typed_payload(
             "forge.link.subagent_spawn",
-            1,
             "subagent_spawn",
-            current_timestamp(),
-            serde_json::json!({
-                "session_id": session_id,
-                "parent_turn": parent_turn_id,
-                "child_context_id": child_context_id,
-                "thread_key": thread_key,
-                "subagent_id": subagent_id,
-                "child_session_id": child_session_id,
-            }),
+            AgentTurnRecord {
+                session_id: self.id.clone(),
+                timestamp: current_timestamp(),
+                turn: serde_json::json!({
+                    "session_id": session_id,
+                    "parent_turn": parent_turn_id,
+                    "child_context_id": child_context_id,
+                    "thread_key": thread_key,
+                    "subagent_id": subagent_id,
+                    "child_session_id": child_session_id,
+                }),
+                sequence_no: 0,
+                thread_key: self.thread_key.clone(),
+                fs_root_hash: None,
+                snapshot_policy_id: None,
+                snapshot_stats: None,
+            },
         )
         .await?;
 
@@ -3095,33 +3038,33 @@ mod tests {
     }
 
     #[test]
-    fn stored_turn_envelope_msgpack_roundtrip_preserves_payload_and_metadata() {
-        let envelope = StoredTurnEnvelope {
-            schema_version: 1,
-            run_id: None,
-            session_id: Some("session-1".to_string()),
-            node_id: Some("plan".to_string()),
-            stage_attempt_id: Some("plan:attempt:1".to_string()),
-            event_kind: "tool_call_end".to_string(),
+    fn typed_record_msgpack_roundtrip_preserves_payload_and_metadata() {
+        let record = ToolCallLifecycleRecord {
+            session_id: "session-1".to_string(),
+            kind: "ended".to_string(),
             timestamp: "123.000Z".to_string(),
-            payload: serde_json::json!({"tool_name":"echo","success":true}),
-            correlation: CorrelationMetadata {
-                run_id: None,
-                pipeline_context_id: Some("ctx-1".to_string()),
-                node_id: Some("plan".to_string()),
-                stage_attempt_id: Some("plan:attempt:1".to_string()),
-                agent_session_id: Some("session-1".to_string()),
-                agent_context_id: Some("ctx-1".to_string()),
-                agent_head_turn_id: Some("42".to_string()),
-                parent_turn_id: Some("7".to_string()),
-                sequence_no: Some(5),
-                thread_key: Some("main".to_string()),
-            },
+            call_id: "call-1".to_string(),
+            tool_name: Some("echo_tool".to_string()),
+            arguments: Some(serde_json::json!({"value":"hello"})),
+            output: Some(serde_json::json!({"ok":true})),
+            is_error: Some(false),
+            sequence_no: 5,
+            thread_key: Some("main".to_string()),
+            fs_root_hash: Some("abc".to_string()),
+            snapshot_policy_id: Some("default".to_string()),
+            snapshot_stats: Some(FsSnapshotStatsRecord {
+                file_count: 1,
+                dir_count: 1,
+                symlink_count: 0,
+                total_bytes: 64,
+                bytes_uploaded: 64,
+            }),
         };
 
-        let bytes = encode_stored_turn_envelope(&envelope).expect("encode should succeed");
-        let decoded = decode_stored_turn_envelope(&bytes).expect("decode should succeed");
-        assert_eq!(decoded, envelope);
+        let bytes = encode_typed_record(&record).expect("encode should succeed");
+        let decoded: ToolCallLifecycleRecord =
+            decode_typed_record(&bytes).expect("decode should succeed");
+        assert_eq!(decoded, record);
     }
 
     #[async_trait]
@@ -3474,21 +3417,32 @@ mod tests {
         assert!(type_ids.contains(&"forge.agent.user_turn"));
         assert!(type_ids.contains(&"forge.agent.assistant_turn"));
         assert!(type_ids.contains(&"forge.agent.tool_results_turn"));
-        assert!(type_ids.contains(&"forge.agent.event"));
+        assert!(type_ids.contains(&"forge.agent.session_lifecycle"));
+        assert!(type_ids.contains(&"forge.agent.tool_call_lifecycle"));
 
-        let event_kinds: Vec<String> = appended
+        let session_kinds: Vec<String> = appended
             .iter()
-            .filter(|request| request.type_id == "forge.agent.event")
+            .filter(|request| request.type_id == "forge.agent.session_lifecycle")
             .filter_map(|request| {
-                decode_stored_turn_envelope(&request.payload)
+                decode_typed_record::<SessionLifecycleRecord>(&request.payload)
                     .ok()
-                    .map(|envelope| envelope.event_kind)
+                    .map(|record| record.kind)
             })
             .collect();
-        assert!(event_kinds.iter().any(|kind| kind == "session_start"));
-        assert!(event_kinds.iter().any(|kind| kind == "tool_call_start"));
-        assert!(event_kinds.iter().any(|kind| kind == "tool_call_end"));
-        assert!(event_kinds.iter().any(|kind| kind == "session_end"));
+        assert!(session_kinds.iter().any(|kind| kind == "started"));
+        assert!(session_kinds.iter().any(|kind| kind == "ended"));
+
+        let tool_kinds: Vec<String> = appended
+            .iter()
+            .filter(|request| request.type_id == "forge.agent.tool_call_lifecycle")
+            .filter_map(|request| {
+                decode_typed_record::<ToolCallLifecycleRecord>(&request.payload)
+                    .ok()
+                    .map(|record| record.kind)
+            })
+            .collect();
+        assert!(tool_kinds.iter().any(|kind| kind == "started"));
+        assert!(tool_kinds.iter().any(|kind| kind == "ended"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3524,15 +3478,20 @@ mod tests {
                 .all(|request| request.fs_root_hash.is_some())
         );
 
-        let envelope = decode_stored_turn_envelope(&appended[0].payload)
-            .expect("first payload should decode as envelope");
-        let payload_obj = envelope
-            .payload
-            .as_object()
-            .expect("payload should be object");
-        assert!(payload_obj.contains_key("fs_root_hash"));
-        assert!(payload_obj.contains_key("snapshot_policy_id"));
-        assert!(payload_obj.contains_key("snapshot_stats"));
+        let first = &appended[0];
+        if first.type_id == "forge.agent.session_lifecycle" {
+            let record: SessionLifecycleRecord =
+                decode_typed_record(&first.payload).expect("first payload should decode");
+            assert!(record.fs_root_hash.is_some());
+            assert!(record.snapshot_policy_id.is_some());
+            assert!(record.snapshot_stats.is_some());
+        } else {
+            let record: AgentTurnRecord =
+                decode_typed_record(&first.payload).expect("first payload should decode");
+            assert!(record.fs_root_hash.is_some());
+            assert!(record.snapshot_policy_id.is_some());
+            assert!(record.snapshot_stats.is_some());
+        }
     }
 
     #[test]

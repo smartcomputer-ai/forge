@@ -1,8 +1,10 @@
 use crate::storage::{
-    ContextId, StoredTurn, StoredTurnEnvelope, TurnId, decode_stored_turn_envelope,
+    ContextId, StoredTurn, TurnId, decode_typed_record,
 };
 use crate::{
-    AttractorError, AttractorStageToAgentLinkRecord, AttractorStorageReader, storage::types,
+    AttractorCheckpointSavedRecord, AttractorError, AttractorRunLifecycleRecord,
+    AttractorStageLifecycleRecord, AttractorStageToAgentLinkRecord, AttractorStorageReader,
+    storage::types,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -69,54 +71,26 @@ pub async fn query_run_metadata(
     let mut graph_snapshot_ref = None;
 
     for turn in &turns {
-        if turn.type_id != types::ATTRACTOR_RUN_EVENT_TYPE_ID {
+        if turn.type_id != types::ATTRACTOR_RUN_LIFECYCLE_TYPE_ID {
             continue;
         }
-        let envelope = decode_envelope(turn)?;
+        let record: AttractorRunLifecycleRecord = decode_record(turn)?;
         if run_id.is_none() {
-            run_id = envelope.run_id.clone();
+            run_id = Some(record.run_id.clone());
         }
-        match envelope.event_kind.as_str() {
-            "run_initialized" => {
-                started_at = Some(envelope.timestamp.clone());
-                graph_id = envelope
-                    .payload
-                    .get("graph_id")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                lineage_attempt = envelope
-                    .payload
-                    .get("lineage_attempt")
-                    .and_then(Value::as_u64)
-                    .map(|value| value as u32);
-                dot_source_hash = envelope
-                    .payload
-                    .get("dot_source_hash")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                dot_source_ref = envelope
-                    .payload
-                    .get("dot_source_ref")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                graph_snapshot_hash = envelope
-                    .payload
-                    .get("graph_snapshot_hash")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
-                graph_snapshot_ref = envelope
-                    .payload
-                    .get("graph_snapshot_ref")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
+        match record.kind.as_str() {
+            "initialized" => {
+                started_at = Some(record.timestamp.clone());
+                graph_id = Some(record.graph_id.clone());
+                lineage_attempt = Some(record.lineage_attempt);
+                dot_source_hash = record.dot_source_hash.clone();
+                dot_source_ref = record.dot_source_ref.clone();
+                graph_snapshot_hash = record.graph_snapshot_hash.clone();
+                graph_snapshot_ref = record.graph_snapshot_ref.clone();
             }
-            "run_finalized" => {
-                finalized_at = Some(envelope.timestamp.clone());
-                status = envelope
-                    .payload
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(ToOwned::to_owned);
+            "finalized" => {
+                finalized_at = Some(record.timestamp.clone());
+                status = record.status.clone();
             }
             _ => {}
         }
@@ -147,33 +121,19 @@ pub async fn query_stage_timeline(
     let turns = collect_all_turns(reader, context_id).await?;
     let mut timeline = Vec::new();
     for turn in turns {
-        if turn.type_id != types::ATTRACTOR_STAGE_EVENT_TYPE_ID {
+        if turn.type_id != types::ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID {
             continue;
         }
-        let envelope = decode_envelope(&turn)?;
+        let record: AttractorStageLifecycleRecord = decode_record(&turn)?;
         timeline.push(StageTimelineEntry {
-            sequence_no: envelope.correlation.sequence_no,
-            timestamp: envelope.timestamp,
-            event_kind: envelope.event_kind,
-            node_id: envelope.node_id.or(envelope.correlation.node_id),
-            stage_attempt_id: envelope
-                .stage_attempt_id
-                .or(envelope.correlation.stage_attempt_id),
-            attempt: envelope
-                .payload
-                .get("attempt")
-                .and_then(Value::as_u64)
-                .map(|value| value as u32),
-            status: envelope
-                .payload
-                .get("status")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            notes: envelope
-                .payload
-                .get("notes")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
+            sequence_no: Some(record.sequence_no),
+            timestamp: record.timestamp,
+            event_kind: record.kind,
+            node_id: Some(record.node_id),
+            stage_attempt_id: Some(record.stage_attempt_id),
+            attempt: Some(record.attempt),
+            status: record.status,
+            notes: record.notes,
         });
     }
     Ok(timeline)
@@ -185,34 +145,18 @@ pub async fn query_latest_checkpoint_snapshot(
 ) -> Result<Option<CheckpointSnapshot>, AttractorError> {
     let turns = collect_all_turns(reader, context_id).await?;
     for turn in turns.iter().rev() {
-        if turn.type_id != types::ATTRACTOR_CHECKPOINT_EVENT_TYPE_ID {
+        if turn.type_id != types::ATTRACTOR_CHECKPOINT_SAVED_TYPE_ID {
             continue;
         }
-        let envelope = decode_envelope(turn)?;
-        let checkpoint_id = envelope
-            .payload
-            .get("checkpoint_id")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let record: AttractorCheckpointSavedRecord = decode_record(turn)?;
         return Ok(Some(CheckpointSnapshot {
-            sequence_no: envelope.correlation.sequence_no,
-            checkpoint_id,
-            timestamp: envelope.timestamp,
-            node_id: envelope.node_id.or(envelope.correlation.node_id),
-            stage_attempt_id: envelope
-                .stage_attempt_id
-                .or(envelope.correlation.stage_attempt_id),
-            checkpoint_hash: envelope
-                .payload
-                .get("checkpoint_hash")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned),
-            state_summary: envelope
-                .payload
-                .get("state_summary")
-                .cloned()
-                .unwrap_or(Value::Null),
+            sequence_no: Some(record.sequence_no),
+            checkpoint_id: record.checkpoint_id,
+            timestamp: record.timestamp,
+            node_id: Some(record.node_id),
+            stage_attempt_id: Some(record.stage_attempt_id),
+            checkpoint_hash: record.checkpoint_hash,
+            state_summary: record.state_summary,
         }));
     }
     Ok(None)
@@ -228,24 +172,7 @@ pub async fn query_stage_to_agent_linkage(
         if turn.type_id != types::ATTRACTOR_STAGE_TO_AGENT_LINK_TYPE_ID {
             continue;
         }
-        let envelope = decode_envelope(&turn)?;
-        let payload = envelope.payload;
-        let record = AttractorStageToAgentLinkRecord {
-            timestamp: envelope.timestamp,
-            run_id: required_string_field(&payload, "run_id")?,
-            pipeline_context_id: required_string_field(&payload, "pipeline_context_id")?,
-            node_id: required_string_field(&payload, "node_id")?,
-            stage_attempt_id: required_string_field(&payload, "stage_attempt_id")?,
-            agent_session_id: required_string_field(&payload, "agent_session_id")?,
-            agent_context_id: required_string_field(&payload, "agent_context_id")?,
-            agent_head_turn_id: optional_string_field(&payload, "agent_head_turn_id"),
-            parent_turn_id: optional_string_field(&payload, "parent_turn_id"),
-            sequence_no: payload
-                .get("sequence_no")
-                .and_then(Value::as_u64)
-                .unwrap_or_default(),
-            thread_key: optional_string_field(&payload, "thread_key"),
-        };
+        let record: AttractorStageToAgentLinkRecord = decode_record(&turn)?;
         links.push(record);
     }
     Ok(links)
@@ -280,30 +207,11 @@ async fn collect_all_turns(
     Ok(turns)
 }
 
-fn decode_envelope(turn: &StoredTurn) -> Result<StoredTurnEnvelope, AttractorError> {
-    decode_stored_turn_envelope(&turn.payload).map_err(|error| {
+fn decode_record<T: serde::de::DeserializeOwned>(turn: &StoredTurn) -> Result<T, AttractorError> {
+    decode_typed_record(&turn.payload).map_err(|error| {
         AttractorError::Runtime(format!(
-            "failed to decode stored turn envelope for type '{}': {error}",
+            "failed to decode typed record for type '{}': {error}",
             turn.type_id
         ))
     })
-}
-
-fn required_string_field(payload: &Value, key: &str) -> Result<String, AttractorError> {
-    payload
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| {
-            AttractorError::Runtime(format!(
-                "stage-to-agent linkage payload is missing required field '{key}'"
-            ))
-        })
-}
-
-fn optional_string_field(payload: &Value, key: &str) -> Option<String> {
-    payload
-        .get(key)
-        .and_then(Value::as_str)
-        .map(ToOwned::to_owned)
 }

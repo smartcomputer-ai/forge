@@ -115,8 +115,8 @@ async fn storage_queries_memory_and_fs_expected_parity() {
             .iter()
             .map(|entry| entry.event_kind.clone())
             .collect();
-        assert!(event_kinds.iter().any(|kind| kind == "stage_started"));
-        assert!(event_kinds.iter().any(|kind| kind == "stage_completed"));
+        assert!(event_kinds.iter().any(|kind| kind == "started"));
+        assert!(event_kinds.iter().any(|kind| kind == "completed"));
 
         let checkpoint = query_latest_checkpoint_snapshot(&*harness.reader(), &context_id)
             .await

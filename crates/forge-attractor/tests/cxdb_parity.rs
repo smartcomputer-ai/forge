@@ -1,10 +1,11 @@
 use async_trait::async_trait;
 use forge_attractor::{
-    AttractorCheckpointEventRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
-    AttractorRunEventRecord, AttractorStageEventRecord, AttractorStageToAgentLinkRecord,
-    AttractorStorageWriter, ContextId, CxdbPersistenceMode, Graph, Node, NodeExecutor, NodeOutcome,
-    PipelineRunner, PipelineStatus, RunConfig, RuntimeContext, StorageError, StoreContext,
-    StoredTurn, TurnId, parse_dot,
+    AttractorCheckpointSavedRecord, AttractorDotSourceRecord, AttractorGraphSnapshotRecord,
+    AttractorInterviewLifecycleRecord, AttractorParallelLifecycleRecord,
+    AttractorRouteDecisionRecord, AttractorRunLifecycleRecord, AttractorStageLifecycleRecord,
+    AttractorStageToAgentLinkRecord, AttractorStorageWriter, ContextId, CxdbPersistenceMode,
+    Graph, Node, NodeExecutor, NodeOutcome, PipelineRunner, PipelineStatus, RunConfig,
+    RuntimeContext, StorageError, StoreContext, StoredTurn, TurnId, parse_dot,
 };
 use forge_cxdb_runtime::{
     BinaryAppendTurnRequest, BinaryAppendTurnResponse, BinaryContextHead, BinaryStoredTurn,
@@ -95,28 +96,55 @@ impl AttractorStorageWriter for FailingStorageWriter {
         Err(StorageError::Backend("forced create failure".to_string()))
     }
 
-    async fn append_run_event(
+    async fn append_run_lifecycle(
         &self,
         _context_id: &ContextId,
-        _record: AttractorRunEventRecord,
+        _record: AttractorRunLifecycleRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
         Err(StorageError::Backend("forced append failure".to_string()))
     }
 
-    async fn append_stage_event(
+    async fn append_stage_lifecycle(
         &self,
         _context_id: &ContextId,
-        _record: AttractorStageEventRecord,
+        _record: AttractorStageLifecycleRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
         Err(StorageError::Backend("forced append failure".to_string()))
     }
 
-    async fn append_checkpoint_event(
+    async fn append_parallel_lifecycle(
         &self,
         _context_id: &ContextId,
-        _record: AttractorCheckpointEventRecord,
+        _record: AttractorParallelLifecycleRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
+    }
+
+    async fn append_interview_lifecycle(
+        &self,
+        _context_id: &ContextId,
+        _record: AttractorInterviewLifecycleRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
+    }
+
+    async fn append_checkpoint_saved(
+        &self,
+        _context_id: &ContextId,
+        _record: AttractorCheckpointSavedRecord,
+        _idempotency_key: String,
+    ) -> Result<StoredTurn, StorageError> {
+        Err(StorageError::Backend("forced append failure".to_string()))
+    }
+
+    async fn append_route_decision(
+        &self,
+        _context_id: &ContextId,
+        _record: AttractorRouteDecisionRecord,
         _idempotency_key: String,
     ) -> Result<StoredTurn, StorageError> {
         Err(StorageError::Backend("forced append failure".to_string()))
