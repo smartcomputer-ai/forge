@@ -1,29 +1,34 @@
-# P30: Attractor Observability, HITL Surfaces, and Host APIs (Spec 03 §6, §9)
+# P30: Attractor Observability, HITL Surfaces, and In-Process CLI Host (Spec 03 §6, §9)
 
 **Status**
 - Planned (2026-02-09)
+- Scope updated to CLI-first in-process host (2026-02-10)
 
 **Goal**
-Implement host-facing integration surfaces: typed event stream, interviewer implementations, and optional HTTP mode, while consuming storage abstractions introduced earlier.
+Implement host-facing integration surfaces for a CLI-first in-process host: typed event stream, interviewer implementations, storage-backed query APIs, and hook observability, while consuming storage abstractions introduced earlier.
 
 **Source**
-- Spec of record: `spec/03-attractor-spec.md` (Sections 6, 9.5, 9.6, 9.7, 11.8, 11.11)
+- Spec of record: `spec/03-attractor-spec.md` (Sections 6, 9.6, 9.7, 11.8, 11.11; 9.5 intentionally deferred)
 - Storage/correlation extension: `spec/04-cxdb-integration-spec.md` (Sections 3.4, 4.4, 5.7)
 - Prerequisite: `roadmap/p27.1-turnstore-foundation-and-agent-persistence.md`
 
 **Context**
 - Runtime core exists from P28/P29.
-- We need clean host integration boundaries for CLI/TUI/Web without coupling runtime logic to one frontend.
+- First host target is a CLI that embeds the runtime in-process (no daemon/server dependency).
+- We need clean host integration boundaries without coupling runtime logic to transport/UI concerns.
 - Storage interfaces exist already; this phase consumes them for query and observability surfaces.
 
 ## Scope
 - Implement typed runtime events and streaming APIs.
 - Implement interviewer interfaces and concrete implementations.
-- Implement optional HTTP server surface for pipeline control and human answers.
+- Implement an in-process CLI host surface for run/resume/inspection and human-gate interaction.
 - Expose read/query surfaces over storage-backed runtime state for host introspection.
 - Integrate tool hook observability bridge in codergen flows.
 
 ## Out of Scope
+- HTTP server mode and SSE transport surface (`spec/03` Section 9.5) in this phase.
+- Out-of-process runtime hosting (daemon/service) and remote control protocol.
+- Web/TUI host implementation.
 - CXDB adapter crate and production deployment hardening for CXDB transport.
 - Remote renderer loading/projection UI implementation.
 - Non-headless host UX polish.
@@ -60,20 +65,21 @@ Implement host-facing integration surfaces: typed event stream, interviewer impl
 - DoD:
   - Human gate flows are testable deterministically and usable interactively.
 
-### [ ] G3. Optional HTTP server mode (feature-gated)
+### [ ] G3. In-process CLI host surface
 - Work:
-  - Add feature-gated HTTP API with endpoints for:
-    - create/start pipeline
-    - get status
-    - stream events (SSE)
-    - answer pending questions
-    - get checkpoint/context
-  - Keep server layer outside core execution modules.
+  - Add CLI host entrypoint that directly invokes Attractor runtime/library APIs.
+  - Support initial command surface for:
+    - run pipeline from DOT source/file
+    - resume from checkpoint
+    - stream/print typed runtime events
+    - inspect current checkpoint/context and run status
+    - provide human answers through interviewer-backed flows
+  - Keep runtime modules transport-agnostic; CLI adapter owns presentation/IO.
 - Files:
-  - `crates/forge-attractor/src/server/mod.rs`
-  - `crates/forge-attractor/src/server/routes.rs`
+  - `crates/forge-attractor/src/host_cli.rs`
+  - `crates/forge-attractor/src/bin/forge-attractor.rs`
 - DoD:
-  - Host can drive runtime via HTTP in local/dev environments.
+  - Runtime is operable end-to-end through an embedded CLI process with no external service dependency.
 
 ### [ ] G4. Storage-backed host query surfaces
 - Work:
@@ -102,16 +108,16 @@ Implement host-facing integration surfaces: typed event stream, interviewer impl
 - DoD:
   - Tool hooks are observable and policy-enforceable without breaking core loop determinism.
 
-### [ ] G6. Integration tests for event/HITL/server/query behavior
+### [ ] G6. Integration tests for event/HITL/CLI/query behavior
 - Work:
   - Add tests for event ordering and payload shape.
   - Add tests for queue/callback interviewer flows.
-  - Add tests for HTTP lifecycle endpoints and answer submission.
+  - Add tests for CLI-hosted run/resume and interactive answer flows.
   - Add tests for storage-backed query parity across in-memory and filesystem backends.
 - Files:
   - `crates/forge-attractor/tests/events.rs`
   - `crates/forge-attractor/tests/hitl.rs`
-  - `crates/forge-attractor/tests/http.rs`
+  - `crates/forge-attractor/tests/cli_host.rs`
   - `crates/forge-attractor/tests/queries.rs`
 - DoD:
   - Host integration surfaces are stable and deterministic in test runs.
@@ -119,18 +125,19 @@ Implement host-facing integration surfaces: typed event stream, interviewer impl
 ## Deliverables
 - Event stream contract for UI/logging integration.
 - Full interviewer interface and implementations.
-- Feature-gated HTTP server mode.
+- In-process CLI host command surface.
 - Backend-agnostic host query APIs over storage-backed state.
 
 ## Execution order
 1. G1 event model
 2. G2 interviewer implementations
-3. G3 HTTP server feature
+3. G3 in-process CLI host surface
 4. G4 query surfaces
 5. G5 tool hook bridge
 6. G6 integration tests
 
 ## Exit criteria for this file
-- Runtime is fully operable headlessly and via host surfaces.
+- Runtime is fully operable headlessly and through an in-process CLI host.
 - Host surfaces are backend-agnostic and storage-aware.
+- HTTP/out-of-process host mode is explicitly deferred to a later roadmap phase.
 - Observability APIs are ready for post-P31 CXDB projection adoption.
