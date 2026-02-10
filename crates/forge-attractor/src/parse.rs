@@ -1,6 +1,4 @@
-use crate::{
-    AttrValue, Attributes, AttractorError, DurationValue, Edge, Graph, Node,
-};
+use crate::{AttrValue, AttractorError, Attributes, DurationValue, Edge, Graph, Node};
 use graphviz_rust::dot_structures::{
     Attribute, Edge as DotEdge, EdgeTy, Graph as DotGraph, GraphAttributes, Id, Node as DotNode,
     NodeId, Stmt, Subgraph, Vertex,
@@ -157,7 +155,11 @@ fn derive_subgraph_class(subgraph: &Subgraph) -> Result<Option<String>, Attracto
     }))
 }
 
-fn process_node_stmt(state: &mut ParseState, node: &DotNode, scope: &Scope) -> Result<(), AttractorError> {
+fn process_node_stmt(
+    state: &mut ParseState,
+    node: &DotNode,
+    scope: &Scope,
+) -> Result<(), AttractorError> {
     let node_id = parse_node_id(&node.id)?;
 
     let mut attrs = scope.node_defaults.without_explicit();
@@ -185,7 +187,11 @@ fn process_node_stmt(state: &mut ParseState, node: &DotNode, scope: &Scope) -> R
     Ok(())
 }
 
-fn process_edge_stmt(state: &mut ParseState, edge: &DotEdge, scope: &Scope) -> Result<(), AttractorError> {
+fn process_edge_stmt(
+    state: &mut ParseState,
+    edge: &DotEdge,
+    scope: &Scope,
+) -> Result<(), AttractorError> {
     let vertices = match &edge.ty {
         EdgeTy::Pair(from, to) => vec![parse_vertex(from)?, parse_vertex(to)?],
         EdgeTy::Chain(chain) => {
@@ -667,7 +673,10 @@ mod tests {
         assert_eq!(node.attrs.get_str("class"), Some("loop-a"));
         assert!(matches!(
             node.attrs.get("timeout"),
-            Some(AttrValue::Duration(DurationValue { millis: 900_000, .. }))
+            Some(AttrValue::Duration(DurationValue {
+                millis: 900_000,
+                ..
+            }))
         ));
     }
 

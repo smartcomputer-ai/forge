@@ -1,6 +1,14 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnStoreWriteMode {
+    Off,
+    BestEffort,
+    Required,
+}
+
 /// Runtime configuration for a coding-agent session.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionConfig {
@@ -17,6 +25,7 @@ pub struct SessionConfig {
     pub max_subagent_depth: usize,
     pub tool_hook_strict: bool,
     pub thread_key: Option<String>,
+    pub turn_store_mode: TurnStoreWriteMode,
 }
 
 impl Default for SessionConfig {
@@ -35,6 +44,7 @@ impl Default for SessionConfig {
             max_subagent_depth: 1,
             tool_hook_strict: false,
             thread_key: None,
+            turn_store_mode: TurnStoreWriteMode::BestEffort,
         }
     }
 }
@@ -79,5 +89,6 @@ mod tests {
         assert_eq!(config.max_subagent_depth, 1);
         assert!(!config.tool_hook_strict);
         assert_eq!(config.thread_key, None);
+        assert_eq!(config.turn_store_mode, TurnStoreWriteMode::BestEffort);
     }
 }

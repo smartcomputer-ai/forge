@@ -1,4 +1,6 @@
-use crate::{apply_model_stylesheet, lint::LintRule, validate, AttrValue, AttractorError, Diagnostic, Graph};
+use crate::{
+    AttrValue, AttractorError, Diagnostic, Graph, apply_model_stylesheet, lint::LintRule, validate,
+};
 
 pub trait Transform: Send + Sync {
     fn apply(&self, graph: &mut Graph) -> Result<(), AttractorError>;
@@ -17,7 +19,8 @@ impl Transform for VariableExpansionTransform {
         for node in graph.nodes.values_mut() {
             if let Some(prompt) = node.attrs.get_str("prompt") {
                 let replaced = prompt.replace("$goal", &goal);
-                node.attrs.set_inherited("prompt", AttrValue::String(replaced));
+                node.attrs
+                    .set_inherited("prompt", AttrValue::String(replaced));
             }
         }
 

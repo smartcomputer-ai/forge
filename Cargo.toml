@@ -3,5 +3,6 @@ members = [
     "crates/forge-llm",
     "crates/forge-agent",
     "crates/forge-attractor",
+    "crates/forge-turnstore",
 ]
 resolver = "2"

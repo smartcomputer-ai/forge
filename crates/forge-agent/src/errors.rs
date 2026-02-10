@@ -13,6 +13,8 @@ pub enum SessionError {
     EventSerialization(String),
     #[error("checkpoint not supported: {0}")]
     CheckpointUnsupported(String),
+    #[error("turnstore persistence failed: {0}")]
+    Persistence(String),
 }
 
 /// Tool-level failures in lookup, validation, and execution.

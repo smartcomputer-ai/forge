@@ -1,4 +1,4 @@
-use crate::{parse_stylesheet, Diagnostic, Graph, Severity, ValidationError};
+use crate::{Diagnostic, Graph, Severity, ValidationError, parse_stylesheet};
 use std::collections::{BTreeSet, VecDeque};
 
 pub trait LintRule {
@@ -474,7 +474,11 @@ mod tests {
     fn validate_missing_start_node_expected_error() {
         let graph = parse_dot("digraph G { exit [shape=Msquare] }").expect("graph should parse");
         let diagnostics = validate(&graph, &[]);
-        assert!(diagnostics.iter().any(|d| d.rule == "start_node" && d.is_error()));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == "start_node" && d.is_error())
+        );
     }
 
     #[test]
@@ -491,9 +495,11 @@ mod tests {
         .expect("graph should parse");
 
         let diagnostics = validate(&graph, &[]);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.rule == "condition_syntax" && d.is_error()));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == "condition_syntax" && d.is_error())
+        );
     }
 
     #[test]
@@ -511,9 +517,11 @@ mod tests {
         .expect("graph should parse");
 
         let diagnostics = validate(&graph, &[]);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.rule == "stylesheet_syntax" && d.is_error()));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == "stylesheet_syntax" && d.is_error())
+        );
     }
 
     #[test]
@@ -538,9 +546,11 @@ mod tests {
         .expect("graph should parse");
 
         let diagnostics = validate(&graph, &[]);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.rule == "goal_gate_has_retry" && d.severity == Severity::Warning));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == "goal_gate_has_retry" && d.severity == Severity::Warning)
+        );
     }
 
     #[test]
@@ -558,8 +568,10 @@ mod tests {
         .expect("graph should parse");
 
         let diagnostics = validate(&graph, &[]);
-        assert!(diagnostics
-            .iter()
-            .any(|d| d.rule == "prompt_on_llm_nodes" && d.severity == Severity::Warning));
+        assert!(
+            diagnostics
+                .iter()
+                .any(|d| d.rule == "prompt_on_llm_nodes" && d.severity == Severity::Warning)
+        );
     }
 }

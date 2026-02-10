@@ -2,11 +2,14 @@ use crate::{
     AgentError, AssistantTurn, EnvironmentContext, EventData, EventEmitter, EventKind, EventStream,
     ExecutionEnvironment, NoopEventEmitter, ProjectDocument, ProviderProfile, SessionConfig,
     SessionError, SessionEvent, SteeringTurn, ToolCallHook, ToolDispatchOptions, ToolError,
-    ToolResultTurn, ToolResultsTurn, Turn, UserTurn, truncate_tool_output,
+    ToolResultTurn, ToolResultsTurn, Turn, TurnStoreWriteMode, UserTurn, truncate_tool_output,
 };
 use forge_llm::{
     Client, ContentPart, Message, Request, Role, ThinkingData, ToolCall, ToolCallData, ToolChoice,
     ToolResult, Usage,
+};
+use forge_turnstore::{
+    AppendTurnRequest, CorrelationMetadata, StoredTurnEnvelope, TurnStore, agent_idempotency_key,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -342,6 +345,10 @@ pub struct Session {
     abort_notify: Arc<Notify>,
     tool_call_hook: Option<Arc<dyn ToolCallHook>>,
     thread_key: Option<String>,
+    turn_store: Option<Arc<dyn TurnStore>>,
+    turn_store_context_id: Option<String>,
+    turn_store_sequence_no: u64,
+    turn_store_mode: TurnStoreWriteMode,
 }
 
 #[derive(Clone)]
@@ -373,6 +380,23 @@ impl Session {
         )
     }
 
+    pub fn new_with_turn_store(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        turn_store: Option<Arc<dyn TurnStore>>,
+    ) -> Result<Self, AgentError> {
+        Self::new_with_emitter_and_turn_store(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            Arc::new(NoopEventEmitter),
+            turn_store,
+        )
+    }
+
     pub fn new_with_emitter(
         provider_profile: Arc<dyn ProviderProfile>,
         execution_env: Arc<dyn ExecutionEnvironment>,
@@ -380,12 +404,31 @@ impl Session {
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
     ) -> Result<Self, AgentError> {
+        Self::new_with_emitter_and_turn_store(
+            provider_profile,
+            execution_env,
+            llm_client,
+            config,
+            event_emitter,
+            None,
+        )
+    }
+
+    pub fn new_with_emitter_and_turn_store(
+        provider_profile: Arc<dyn ProviderProfile>,
+        execution_env: Arc<dyn ExecutionEnvironment>,
+        llm_client: Arc<Client>,
+        config: SessionConfig,
+        event_emitter: Arc<dyn EventEmitter>,
+        turn_store: Option<Arc<dyn TurnStore>>,
+    ) -> Result<Self, AgentError> {
         Self::new_with_depth(
             provider_profile,
             execution_env,
             llm_client,
             config,
             event_emitter,
+            turn_store,
             0,
         )
     }
@@ -396,10 +439,12 @@ impl Session {
         llm_client: Arc<Client>,
         config: SessionConfig,
         event_emitter: Arc<dyn EventEmitter>,
+        turn_store: Option<Arc<dyn TurnStore>>,
         subagent_depth: usize,
     ) -> Result<Self, AgentError> {
+        let turn_store_mode = config.turn_store_mode;
         let thread_key = config.thread_key.clone();
-        let session = Self {
+        let mut session = Self {
             id: Uuid::new_v4().to_string(),
             provider_profiles: HashMap::from([(
                 provider_profile.id().to_string(),
@@ -421,8 +466,13 @@ impl Session {
             abort_notify: Arc::new(Notify::new()),
             tool_call_hook: None,
             thread_key,
+            turn_store,
+            turn_store_context_id: None,
+            turn_store_sequence_no: 0,
+            turn_store_mode,
         };
         session.emit(EventKind::SessionStart, EventData::new())?;
+        session.persist_session_event_blocking("session_start", serde_json::json!({}))?;
         Ok(session)
     }
 
@@ -499,6 +549,174 @@ impl Session {
 
     pub fn push_turn(&mut self, turn: Turn) {
         self.history.push(turn);
+    }
+
+    fn next_turn_store_sequence(&mut self) -> u64 {
+        let current = self.turn_store_sequence_no;
+        self.turn_store_sequence_no = self.turn_store_sequence_no.saturating_add(1);
+        current
+    }
+
+    fn persistence_enabled(&self) -> bool {
+        self.turn_store.is_some() && self.turn_store_mode != TurnStoreWriteMode::Off
+    }
+
+    fn persist_session_event_blocking(
+        &mut self,
+        event_kind: &str,
+        payload: Value,
+    ) -> Result<(), AgentError> {
+        if !self.persistence_enabled() {
+            return Ok(());
+        }
+        futures::executor::block_on(self.persist_event_turn(event_kind, payload))
+    }
+
+    fn handle_persistence_error(
+        &self,
+        error: forge_turnstore::TurnStoreError,
+        operation: &str,
+    ) -> Result<(), AgentError> {
+        match self.turn_store_mode {
+            TurnStoreWriteMode::Off => Ok(()),
+            TurnStoreWriteMode::BestEffort => {
+                let _ = self.event_emitter.emit(SessionEvent::warning(
+                    self.id.clone(),
+                    format!("turnstore {} failed: {}", operation, error),
+                ));
+                Ok(())
+            }
+            TurnStoreWriteMode::Required => {
+                Err(SessionError::Persistence(format!("{} failed: {}", operation, error)).into())
+            }
+        }
+    }
+
+    async fn ensure_turn_store_context(&mut self) -> Result<(), AgentError> {
+        if !self.persistence_enabled() || self.turn_store_context_id.is_some() {
+            return Ok(());
+        }
+        let Some(store) = self.turn_store.clone() else {
+            return Ok(());
+        };
+        match store.create_context(None).await {
+            Ok(context) => {
+                self.turn_store_context_id = Some(context.context_id);
+                Ok(())
+            }
+            Err(error) => self.handle_persistence_error(error, "create_context"),
+        }
+    }
+
+    async fn persist_turn_if_enabled(&mut self, turn: &Turn) -> Result<(), AgentError> {
+        if !self.persistence_enabled() {
+            return Ok(());
+        }
+
+        let (type_id, timestamp, payload) = match turn {
+            Turn::User(turn) => (
+                "forge.agent.user_turn",
+                turn.timestamp.clone(),
+                serde_json::to_value(turn)
+                    .map_err(|err| SessionError::Persistence(err.to_string()))?,
+            ),
+            Turn::Assistant(turn) => (
+                "forge.agent.assistant_turn",
+                turn.timestamp.clone(),
+                serde_json::to_value(turn)
+                    .map_err(|err| SessionError::Persistence(err.to_string()))?,
+            ),
+            Turn::ToolResults(turn) => (
+                "forge.agent.tool_results_turn",
+                turn.timestamp.clone(),
+                serde_json::to_value(turn)
+                    .map_err(|err| SessionError::Persistence(err.to_string()))?,
+            ),
+            Turn::System(turn) => (
+                "forge.agent.system_turn",
+                turn.timestamp.clone(),
+                serde_json::to_value(turn)
+                    .map_err(|err| SessionError::Persistence(err.to_string()))?,
+            ),
+            Turn::Steering(turn) => (
+                "forge.agent.steering_turn",
+                turn.timestamp.clone(),
+                serde_json::to_value(turn)
+                    .map_err(|err| SessionError::Persistence(err.to_string()))?,
+            ),
+        };
+
+        self.persist_envelope(type_id, 1, "turn_appended", timestamp, payload)
+            .await
+    }
+
+    async fn persist_event_turn(
+        &mut self,
+        event_kind: &str,
+        payload: Value,
+    ) -> Result<(), AgentError> {
+        self.persist_envelope(
+            "forge.agent.event",
+            1,
+            event_kind,
+            current_timestamp(),
+            payload,
+        )
+        .await
+    }
+
+    async fn persist_envelope(
+        &mut self,
+        type_id: &str,
+        type_version: u32,
+        event_kind: &str,
+        timestamp: String,
+        payload: Value,
+    ) -> Result<(), AgentError> {
+        if !self.persistence_enabled() {
+            return Ok(());
+        }
+        self.ensure_turn_store_context().await?;
+        let Some(store) = self.turn_store.clone() else {
+            return Ok(());
+        };
+        let Some(context_id) = self.turn_store_context_id.clone() else {
+            return Ok(());
+        };
+
+        let sequence_no = self.next_turn_store_sequence();
+        let envelope = StoredTurnEnvelope {
+            schema_version: 1,
+            run_id: None,
+            session_id: Some(self.id.clone()),
+            node_id: None,
+            stage_attempt_id: None,
+            event_kind: event_kind.to_string(),
+            timestamp,
+            payload,
+            correlation: CorrelationMetadata {
+                agent_session_id: Some(self.id.clone()),
+                agent_context_id: Some(context_id.clone()),
+                sequence_no: Some(sequence_no),
+                thread_key: self.thread_key.clone(),
+                ..CorrelationMetadata::default()
+            },
+        };
+        let payload_bytes = serde_json::to_vec(&envelope)
+            .map_err(|err| SessionError::Persistence(err.to_string()))?;
+        let idempotency_key = agent_idempotency_key(&self.id, sequence_no, event_kind);
+        let request = AppendTurnRequest {
+            context_id,
+            parent_turn_id: None,
+            type_id: type_id.to_string(),
+            type_version,
+            payload: payload_bytes,
+            idempotency_key,
+        };
+        match store.append_turn(request).await {
+            Ok(_) => Ok(()),
+            Err(error) => self.handle_persistence_error(error, "append_turn"),
+        }
     }
 
     pub fn steer(&mut self, message: impl Into<String>) -> Result<(), AgentError> {
@@ -651,15 +869,14 @@ impl Session {
         });
 
         self.transition_to(SessionState::Processing)?;
-        self.push_turn(Turn::User(UserTurn::new(
-            user_input.clone(),
-            current_timestamp(),
-        )));
+        let user_turn = Turn::User(UserTurn::new(user_input.clone(), current_timestamp()));
+        self.push_turn(user_turn.clone());
+        self.persist_turn_if_enabled(&user_turn).await?;
         self.emit(
             EventKind::UserInput,
             EventData::from_serializable(serde_json::json!({ "content": user_input }))?,
         )?;
-        self.drain_steering_queue()?;
+        self.drain_steering_queue().await?;
 
         let mut round_count = 0usize;
         let mut completed_naturally = false;
@@ -727,14 +944,16 @@ impl Session {
                     text.clone(),
                 ))?;
             }
-            self.push_turn(Turn::Assistant(AssistantTurn::new(
+            let assistant_turn = Turn::Assistant(AssistantTurn::new(
                 text.clone(),
                 tool_calls.clone(),
                 reasoning.clone(),
                 response.usage.clone(),
                 Some(response.id),
                 current_timestamp(),
-            )));
+            ));
+            self.push_turn(assistant_turn.clone());
+            self.persist_turn_if_enabled(&assistant_turn).await?;
             self.event_emitter.emit(SessionEvent::assistant_text_end(
                 self.id.clone(),
                 text.clone(),
@@ -760,12 +979,12 @@ impl Session {
                     is_error: result.is_error,
                 })
                 .collect();
-            self.push_turn(Turn::ToolResults(ToolResultsTurn::new(
-                result_turns,
-                current_timestamp(),
-            )));
-            self.drain_steering_queue()?;
-            self.inject_loop_detection_warning_if_needed()?;
+            let tool_results_turn =
+                Turn::ToolResults(ToolResultsTurn::new(result_turns, current_timestamp()));
+            self.push_turn(tool_results_turn.clone());
+            self.persist_turn_if_enabled(&tool_results_turn).await?;
+            self.drain_steering_queue().await?;
+            self.inject_loop_detection_warning_if_needed().await?;
         }
 
         abort_kill_watchdog.abort();
@@ -780,6 +999,19 @@ impl Session {
         tool_calls: Vec<ToolCall>,
         options: &SubmitOptions,
     ) -> Result<Vec<ToolResult>, AgentError> {
+        for tool_call in &tool_calls {
+            let args = parse_tool_call_arguments(tool_call)?;
+            self.persist_event_turn(
+                "tool_call_start",
+                serde_json::json!({
+                    "call_id": tool_call.id,
+                    "tool_name": tool_call.name,
+                    "arguments": args,
+                }),
+            )
+            .await?;
+        }
+
         let supports_parallel = self
             .resolve_provider_profile(options.provider.as_deref())?
             .capabilities()
@@ -788,7 +1020,7 @@ impl Session {
             .iter()
             .all(|tool_call| !is_subagent_tool(&tool_call.name))
         {
-            return self
+            let results = self
                 .provider_profile
                 .tool_registry()
                 .dispatch(
@@ -803,13 +1035,35 @@ impl Session {
                         hook_strict: self.config.tool_hook_strict,
                     },
                 )
-                .await;
+                .await?;
+            for result in &results {
+                self.persist_event_turn(
+                    "tool_call_end",
+                    serde_json::json!({
+                        "call_id": result.tool_call_id.clone(),
+                        "is_error": result.is_error,
+                        "output": result.content.clone(),
+                    }),
+                )
+                .await?;
+            }
+            return Ok(results);
         }
 
         let mut results = Vec::with_capacity(tool_calls.len());
         for tool_call in tool_calls {
             if is_subagent_tool(&tool_call.name) {
-                results.push(self.execute_subagent_tool_call(tool_call).await?);
+                let result = self.execute_subagent_tool_call(tool_call).await?;
+                self.persist_event_turn(
+                    "tool_call_end",
+                    serde_json::json!({
+                        "call_id": result.tool_call_id.clone(),
+                        "is_error": result.is_error,
+                        "output": result.content.clone(),
+                    }),
+                )
+                .await?;
+                results.push(result);
                 continue;
             }
 
@@ -830,6 +1084,15 @@ impl Session {
                 )
                 .await?;
             if let Some(result) = standard.pop() {
+                self.persist_event_turn(
+                    "tool_call_end",
+                    serde_json::json!({
+                        "call_id": result.tool_call_id.clone(),
+                        "is_error": result.is_error,
+                        "output": result.content.clone(),
+                    }),
+                )
+                .await?;
                 results.push(result);
             }
         }
@@ -1107,6 +1370,7 @@ impl Session {
             self.llm_client.clone(),
             child_config,
             self.event_emitter.clone(),
+            self.turn_store.clone(),
             self.subagent_depth + 1,
         )?;
         let active_task = Some(spawn_subagent_submit_task(Box::new(child_session), task));
@@ -1308,6 +1572,7 @@ impl Session {
             llm_client,
             checkpoint.config.clone(),
             event_emitter,
+            None,
             0,
         )?;
         session.id = checkpoint.session_id;
@@ -1336,11 +1601,16 @@ impl Session {
             .emit(SessionEvent::new(kind, self.id.clone(), data))
     }
 
-    fn emit_session_end(&self) -> Result<(), AgentError> {
+    fn emit_session_end(&mut self) -> Result<(), AgentError> {
         self.event_emitter.emit(SessionEvent::session_end(
             self.id.clone(),
             self.state.to_string(),
-        ))
+        ))?;
+        self.persist_session_event_blocking(
+            "session_end",
+            serde_json::json!({ "final_state": self.state.to_string() }),
+        )?;
+        Ok(())
     }
 
     fn close_all_subagents(&mut self) -> Result<(), AgentError> {
@@ -1359,19 +1629,18 @@ impl Session {
         Ok(())
     }
 
-    fn drain_steering_queue(&mut self) -> Result<(), AgentError> {
+    async fn drain_steering_queue(&mut self) -> Result<(), AgentError> {
         while let Some(content) = self.pop_steering_message() {
-            self.push_turn(Turn::Steering(SteeringTurn::new(
-                content.clone(),
-                current_timestamp(),
-            )));
+            let turn = Turn::Steering(SteeringTurn::new(content.clone(), current_timestamp()));
+            self.push_turn(turn.clone());
+            self.persist_turn_if_enabled(&turn).await?;
             self.event_emitter
                 .emit(SessionEvent::steering_injected(self.id.clone(), content))?;
         }
         Ok(())
     }
 
-    fn inject_loop_detection_warning_if_needed(&mut self) -> Result<(), AgentError> {
+    async fn inject_loop_detection_warning_if_needed(&mut self) -> Result<(), AgentError> {
         if !self.config.enable_loop_detection {
             return Ok(());
         }
@@ -1391,10 +1660,9 @@ impl Session {
             return Ok(());
         }
 
-        self.push_turn(Turn::Steering(SteeringTurn::new(
-            warning.clone(),
-            current_timestamp(),
-        )));
+        let turn = Turn::Steering(SteeringTurn::new(warning.clone(), current_timestamp()));
+        self.push_turn(turn.clone());
+        self.persist_turn_if_enabled(&turn).await?;
         self.event_emitter
             .emit(SessionEvent::loop_detection(self.id.clone(), warning))?;
         Ok(())
@@ -2093,6 +2361,11 @@ mod tests {
         Client, ConfigurationError, ContentPart, FinishReason, Message, ProviderAdapter, Request,
         Response, SDKError, StreamEventStream, ToolCallData, Usage,
     };
+    use forge_turnstore::{
+        AppendTurnRequest as StoreAppendTurnRequest, ContextId as StoreContextId, StoreContext,
+        StoredTurn, StoredTurnEnvelope, StoredTurnRef, TurnId as StoreTurnId, TurnStore,
+        TurnStoreError,
+    };
     use futures::{StreamExt, executor::block_on};
     use serde_json::Value;
     use std::collections::{HashMap, VecDeque};
@@ -2139,6 +2412,112 @@ mod tests {
         pre_calls: Mutex<Vec<String>>,
         post_calls: Mutex<Vec<String>>,
         skip_tool_name: Option<String>,
+    }
+
+    #[derive(Default)]
+    struct RecordingTurnStore {
+        next_context_id: Mutex<u64>,
+        next_turn_id: Mutex<u64>,
+        append_requests: Mutex<Vec<StoreAppendTurnRequest>>,
+        fail_create: bool,
+        fail_append: bool,
+    }
+
+    impl RecordingTurnStore {
+        fn with_failures(fail_create: bool, fail_append: bool) -> Self {
+            Self {
+                next_context_id: Mutex::new(1),
+                next_turn_id: Mutex::new(1),
+                append_requests: Mutex::new(Vec::new()),
+                fail_create,
+                fail_append,
+            }
+        }
+
+        fn appended(&self) -> Vec<StoreAppendTurnRequest> {
+            self.append_requests
+                .lock()
+                .expect("append requests mutex")
+                .clone()
+        }
+    }
+
+    #[async_trait]
+    impl TurnStore for RecordingTurnStore {
+        async fn create_context(
+            &self,
+            _base_turn_id: Option<StoreTurnId>,
+        ) -> Result<StoreContext, TurnStoreError> {
+            if self.fail_create {
+                return Err(TurnStoreError::Backend("forced create failure".to_string()));
+            }
+            let mut next = self.next_context_id.lock().expect("next context mutex");
+            let context_id = next.to_string();
+            *next += 1;
+            Ok(StoreContext {
+                context_id,
+                head_turn_id: "0".to_string(),
+                head_depth: 0,
+            })
+        }
+
+        async fn append_turn(
+            &self,
+            request: StoreAppendTurnRequest,
+        ) -> Result<StoredTurn, TurnStoreError> {
+            if self.fail_append {
+                return Err(TurnStoreError::Backend("forced append failure".to_string()));
+            }
+            self.append_requests
+                .lock()
+                .expect("append requests mutex")
+                .push(request.clone());
+            let mut next = self.next_turn_id.lock().expect("next turn mutex");
+            let turn_id = next.to_string();
+            *next += 1;
+            Ok(StoredTurn {
+                context_id: request.context_id,
+                turn_id,
+                parent_turn_id: request.parent_turn_id.unwrap_or_else(|| "0".to_string()),
+                depth: 1,
+                type_id: request.type_id,
+                type_version: request.type_version,
+                payload: request.payload,
+                idempotency_key: Some(request.idempotency_key),
+                content_hash: None,
+            })
+        }
+
+        async fn fork_context(
+            &self,
+            from_turn_id: StoreTurnId,
+        ) -> Result<StoreContext, TurnStoreError> {
+            Ok(StoreContext {
+                context_id: "fork-ctx".to_string(),
+                head_turn_id: from_turn_id,
+                head_depth: 1,
+            })
+        }
+
+        async fn get_head(
+            &self,
+            context_id: &StoreContextId,
+        ) -> Result<StoredTurnRef, TurnStoreError> {
+            Ok(StoredTurnRef {
+                context_id: context_id.clone(),
+                turn_id: "0".to_string(),
+                depth: 0,
+            })
+        }
+
+        async fn list_turns(
+            &self,
+            _context_id: &StoreContextId,
+            _before_turn_id: Option<&StoreTurnId>,
+            _limit: usize,
+        ) -> Result<Vec<StoredTurn>, TurnStoreError> {
+            Ok(Vec::new())
+        }
     }
 
     #[async_trait]
@@ -2322,6 +2701,107 @@ mod tests {
         let events = emitter.snapshot();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, EventKind::SessionStart);
+    }
+
+    #[test]
+    fn session_new_with_required_turnstore_failure_returns_error() {
+        let profile = Arc::new(StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let client = Arc::new(Client::default());
+        let mut config = SessionConfig::default();
+        config.turn_store_mode = TurnStoreWriteMode::Required;
+        let store = Arc::new(RecordingTurnStore::with_failures(true, false));
+
+        let error = Session::new_with_turn_store(profile, env, client, config, Some(store))
+            .err()
+            .expect("required turnstore create failure should fail constructor");
+        assert!(error.to_string().contains("turnstore persistence failed"));
+    }
+
+    #[test]
+    fn session_new_with_best_effort_turnstore_failure_succeeds() {
+        let profile = Arc::new(StaticProviderProfile {
+            id: "openai".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: Arc::new(ToolRegistry::default()),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let client = Arc::new(Client::default());
+        let config = SessionConfig::default();
+        let store = Arc::new(RecordingTurnStore::with_failures(true, false));
+
+        let session = Session::new_with_turn_store(profile, env, client, config, Some(store))
+            .expect("best effort should keep constructor successful");
+        assert_eq!(session.state(), &SessionState::Idle);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submit_with_turnstore_persists_turns_and_tool_events() {
+        let profile = Arc::new(StaticProviderProfile {
+            id: "test".to_string(),
+            model: "gpt-5.2-codex".to_string(),
+            base_system_prompt: "base".to_string(),
+            tool_registry: tool_registry_with_echo(),
+            provider_options: None,
+            capabilities: ProviderCapabilities::default(),
+        });
+        let env = Arc::new(LocalExecutionEnvironment::new(PathBuf::from(".")));
+        let (client, _) = build_test_client(vec![
+            tool_call_response(
+                "resp-1",
+                "call-1",
+                "echo_tool",
+                serde_json::json!({"value":"hello"}),
+            ),
+            text_response("resp-2", "done"),
+        ]);
+        let mut config = SessionConfig::default();
+        config.turn_store_mode = TurnStoreWriteMode::Required;
+        let store = Arc::new(RecordingTurnStore::default());
+        let mut session =
+            Session::new_with_turn_store(profile, env, client, config, Some(store.clone()))
+                .expect("session should initialize");
+
+        session
+            .submit("hi")
+            .await
+            .expect("submit should succeed with turnstore");
+        session.close().expect("close should succeed");
+
+        let appended = store.appended();
+        assert!(!appended.is_empty());
+        let type_ids: Vec<&str> = appended
+            .iter()
+            .map(|request| request.type_id.as_str())
+            .collect();
+        assert!(type_ids.contains(&"forge.agent.user_turn"));
+        assert!(type_ids.contains(&"forge.agent.assistant_turn"));
+        assert!(type_ids.contains(&"forge.agent.tool_results_turn"));
+        assert!(type_ids.contains(&"forge.agent.event"));
+
+        let event_kinds: Vec<String> = appended
+            .iter()
+            .filter(|request| request.type_id == "forge.agent.event")
+            .filter_map(|request| {
+                serde_json::from_slice::<StoredTurnEnvelope>(&request.payload)
+                    .ok()
+                    .map(|envelope| envelope.event_kind)
+            })
+            .collect();
+        assert!(event_kinds.iter().any(|kind| kind == "session_start"));
+        assert!(event_kinds.iter().any(|kind| kind == "tool_call_start"));
+        assert!(event_kinds.iter().any(|kind| kind == "tool_call_end"));
+        assert!(event_kinds.iter().any(|kind| kind == "session_end"));
     }
 
     #[test]

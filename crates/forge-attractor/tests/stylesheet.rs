@@ -1,4 +1,4 @@
-use forge_attractor::{apply_builtin_transforms, parse_dot, AttrValue};
+use forge_attractor::{AttrValue, apply_builtin_transforms, parse_dot};
 
 #[test]
 fn stylesheet_transform_explicit_attr_not_overridden_expected_explicit_kept() {

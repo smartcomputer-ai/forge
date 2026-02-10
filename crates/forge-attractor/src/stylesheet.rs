@@ -172,13 +172,9 @@ fn parse_declarations(block: &str) -> Result<Vec<(String, String)>, AttractorErr
             continue;
         }
 
-        let (property, value) = declaration
-            .split_once(':')
-            .ok_or_else(|| {
-                AttractorError::StylesheetParse(format!(
-                    "declaration '{declaration}' is missing ':'"
-                ))
-            })?;
+        let (property, value) = declaration.split_once(':').ok_or_else(|| {
+            AttractorError::StylesheetParse(format!("declaration '{declaration}' is missing ':'"))
+        })?;
 
         let property = property.trim();
         let value = value.trim();
@@ -199,9 +195,7 @@ fn parse_declarations(block: &str) -> Result<Vec<(String, String)>, AttractorErr
                 .strip_prefix('"')
                 .and_then(|v| v.strip_suffix('"'))
                 .ok_or_else(|| {
-                    AttractorError::StylesheetParse(format!(
-                        "value '{value}' has unmatched quotes"
-                    ))
+                    AttractorError::StylesheetParse(format!("value '{value}' has unmatched quotes"))
                 })?
                 .to_string()
         } else {
@@ -263,7 +257,7 @@ fn is_class_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{parse_dot, AttrValue};
+    use crate::{AttrValue, parse_dot};
 
     #[test]
     fn parse_stylesheet_valid_rules_expected_count() {
@@ -296,7 +290,10 @@ mod tests {
         .expect("graph should parse");
 
         apply_model_stylesheet(&mut graph).expect("stylesheet should apply");
-        let node = graph.nodes.get("critical_review").expect("node should exist");
+        let node = graph
+            .nodes
+            .get("critical_review")
+            .expect("node should exist");
 
         assert_eq!(
             node.attrs.get("llm_model"),

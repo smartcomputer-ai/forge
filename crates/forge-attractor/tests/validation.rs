@@ -1,4 +1,4 @@
-use forge_attractor::{parse_dot, validate, validate_or_raise, Severity};
+use forge_attractor::{Severity, parse_dot, validate, validate_or_raise};
 
 #[test]
 fn validate_reachability_orphan_expected_error() {
@@ -15,9 +15,11 @@ fn validate_reachability_orphan_expected_error() {
     .expect("graph should parse");
 
     let diagnostics = validate(&graph, &[]);
-    assert!(diagnostics
-        .iter()
-        .any(|d| d.rule == "reachability" && d.severity == Severity::Error));
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.rule == "reachability" && d.severity == Severity::Error)
+    );
 }
 
 #[test]

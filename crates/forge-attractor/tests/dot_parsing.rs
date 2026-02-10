@@ -1,4 +1,4 @@
-use forge_attractor::{parse_dot, AttrValue, DurationValue};
+use forge_attractor::{AttrValue, DurationValue, parse_dot};
 
 #[test]
 fn parse_dot_chained_edges_and_defaults_expected_expansion_and_inheritance() {
@@ -22,7 +22,10 @@ fn parse_dot_chained_edges_and_defaults_expected_expansion_and_inheritance() {
     let a = graph.nodes.get("a").expect("node a should exist");
     assert!(matches!(
         a.attrs.get("timeout"),
-        Some(AttrValue::Duration(DurationValue { millis: 900_000, .. }))
+        Some(AttrValue::Duration(DurationValue {
+            millis: 900_000,
+            ..
+        }))
     ));
 
     for edge in &graph.edges {
