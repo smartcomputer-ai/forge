@@ -1,7 +1,7 @@
 # P29: Attractor State, Checkpoint/Fidelity, and Advanced Handlers (Spec 03 §5 + advanced §4)
 
 **Status**
-- Planned (2026-02-09)
+- In Progress (2026-02-10)
 
 **Goal**
 Implement production-grade runtime state behavior: context/artifacts, checkpoint/resume semantics, fidelity/thread resolution, and advanced handlers (`parallel`, `fan_in`, `stack.manager_loop`) on top of storage abstractions.
@@ -34,7 +34,7 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Context store and artifact store implementation
+### [x] G1. Context store and artifact store implementation
 - Work:
   - Implement thread-safe context map with serializable snapshot behavior.
   - Implement artifact store:
@@ -47,6 +47,11 @@ Implement production-grade runtime state behavior: context/artifacts, checkpoint
 - DoD:
   - Context updates propagate correctly across stages.
   - Large artifacts are file-backed with stable references.
+- Completed:
+  - Added `ContextStore` with thread-safe read/write access, serializable snapshots, isolated cloning, update merge support, and key validation.
+  - Added `ArtifactStore` with threshold-based in-memory vs filesystem-backed persistence and stable `artifact://<id>` references.
+  - Wired runtime traversal to use `ContextStore` snapshots and mutation APIs so context propagation remains deterministic across stage boundaries.
+  - Added deterministic unit tests covering context snapshot/clone behavior and artifact threshold/file lifecycle behavior.
 
 ### [ ] G2. Checkpoint save/load and resume semantics (store-aware)
 - Work:

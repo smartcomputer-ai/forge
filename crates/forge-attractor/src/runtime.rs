@@ -1,10 +1,7 @@
-use crate::{AttractorError, Graph, Node, handlers};
+use crate::{AttractorError, Graph, Node, RuntimeContext, handlers};
 use async_trait::async_trait;
 use forge_turnstore::TurnId;
-use serde_json::Value;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
-
-pub type RuntimeContext = BTreeMap<String, Value>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeStatus {

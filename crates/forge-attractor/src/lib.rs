@@ -4,7 +4,9 @@
 //! parse DOT -> normalize to internal IR -> apply transforms -> validate.
 
 pub mod backends;
+pub mod artifacts;
 pub mod condition;
+pub mod context;
 pub mod diagnostics;
 pub mod errors;
 pub mod graph;
@@ -21,7 +23,9 @@ pub mod stylesheet;
 pub mod transforms;
 
 pub use backends::*;
+pub use artifacts::*;
 pub use condition::*;
+pub use context::*;
 pub use diagnostics::*;
 pub use errors::*;
 pub use graph::*;

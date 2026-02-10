@@ -1,7 +1,8 @@
 use crate::{
     AttrValue, AttractorCheckpointEventRecord, AttractorCorrelation, AttractorError,
-    AttractorRunEventRecord, AttractorStageEventRecord, Graph, Node, NodeOutcome, NodeStatus,
-    PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig, RuntimeContext, build_retry_policy,
+    AttractorRunEventRecord, AttractorStageEventRecord, ContextStore, Graph, Node, NodeOutcome,
+    NodeStatus, PipelineRunResult, PipelineStatus, RetryPolicy, RunConfig, RuntimeContext,
+    build_retry_policy,
     delay_for_attempt_ms, finalize_retry_exhausted, select_next_edge, should_retry_outcome,
     validate_or_raise,
 };
@@ -27,12 +28,12 @@ impl PipelineRunner {
             .run_id
             .take()
             .unwrap_or_else(|| format!("{}-run", graph.id));
-        let mut context = mirror_graph_attributes(graph);
+        let context_store = ContextStore::from_values(mirror_graph_attributes(graph));
         if let Some(logs_root) = config.logs_root.as_ref() {
-            context.insert(
-                "runtime.logs_root".to_string(),
+            context_store.set(
+                "runtime.logs_root",
                 Value::String(logs_root.to_string_lossy().to_string()),
-            );
+            )?;
         }
         let mut completed_nodes = Vec::new();
         let mut node_outcomes = BTreeMap::new();
@@ -58,6 +59,7 @@ impl PipelineRunner {
                     current_node_id
                 ))
             })?;
+            context_store.set("current_node", Value::String(node.id.clone()))?;
 
             if is_terminal_node(node) {
                 if let Some(failed_gate_id) = first_unsatisfied_goal_gate(graph, &node_outcomes) {
@@ -75,10 +77,11 @@ impl PipelineRunner {
             }
 
             let retry_policy = build_retry_policy(node, graph, config.retry_backoff.clone());
+            let context_snapshot = context_store.snapshot()?;
             let (outcome, attempts_used) = execute_with_retry(
                 node,
                 graph,
-                &context,
+                &context_snapshot.values,
                 &*config.executor,
                 &retry_policy,
                 &mut storage,
@@ -88,7 +91,7 @@ impl PipelineRunner {
 
             completed_nodes.push(node.id.clone());
             node_outcomes.insert(node.id.clone(), outcome.clone());
-            apply_outcome_to_context(&mut context, &outcome);
+            apply_outcome_to_context(&context_store, &outcome)?;
 
             storage
                 .append_checkpoint_event(
@@ -97,7 +100,7 @@ impl PipelineRunner {
                     json!({
                         "current_node_id": node.id,
                         "completed_nodes_count": completed_nodes.len(),
-                        "context_keys_count": context.len(),
+                        "context_keys_count": context_store.snapshot()?.values.len(),
                     }),
                 )
                 .await?;
@@ -120,7 +123,10 @@ impl PipelineRunner {
                 break;
             }
 
-            let Some(next_edge) = select_next_edge(graph, &node.id, &outcome, &context) else {
+            let routing_context = context_store.snapshot()?;
+            let Some(next_edge) =
+                select_next_edge(graph, &node.id, &outcome, &routing_context.values)
+            else {
                 break;
             };
             current_node_id = next_edge.to.clone();
@@ -151,7 +157,7 @@ impl PipelineRunner {
             failure_reason: terminal_failure,
             completed_nodes,
             node_outcomes,
-            context,
+            context: context_store.snapshot()?.values,
         })
     }
 }
@@ -240,17 +246,16 @@ fn edge_weight(edge: &crate::Edge) -> i64 {
         .unwrap_or(0)
 }
 
-fn apply_outcome_to_context(context: &mut RuntimeContext, outcome: &NodeOutcome) {
-    for (key, value) in &outcome.context_updates {
-        context.insert(key.clone(), value.clone());
-    }
-    context.insert(
-        "outcome".to_string(),
+fn apply_outcome_to_context(context: &ContextStore, outcome: &NodeOutcome) -> Result<(), AttractorError> {
+    context.apply_updates(&outcome.context_updates)?;
+    context.set(
+        "outcome",
         Value::String(outcome.status.as_str().to_string()),
-    );
+    )?;
     if let Some(label) = &outcome.preferred_label {
-        context.insert("preferred_label".to_string(), Value::String(label.clone()));
+        context.set("preferred_label", Value::String(label.clone()))?;
     }
+    Ok(())
 }
 
 fn mirror_graph_attributes(graph: &Graph) -> RuntimeContext {
