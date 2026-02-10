@@ -39,10 +39,21 @@ cargo test -p forge-attractor --test conformance_stylesheet
 cargo test -p forge-attractor --test integration_smoke
 ```
 
+Optional live smoke (ignored by default):
+
+```bash
+RUN_LIVE_ATTRACTOR_TESTS=1 cargo test -p forge-attractor --test live -- --ignored
+```
+
+Defaults:
+
+- Provider: OpenAI (`OPENAI_API_KEY` required)
+- Model: `gpt-5.2-codex` (override with `OPENAI_LIVE_MODEL`)
+
 ## Known gaps
 
 - HTTP server mode (`spec/03` section 9.5 and 11.11 optional HTTP endpoints) is intentionally deferred.
-- Live provider smoke tests are tracked separately as optional/env-gated coverage under P31 G5.
+- Live smoke is optional/env-gated and intentionally low-coverage to reduce token/cost and brittleness.
 
 ## Roadmap references
 

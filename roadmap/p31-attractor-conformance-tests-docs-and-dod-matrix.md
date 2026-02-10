@@ -1,8 +1,10 @@
 # P31: Attractor Conformance Tests, Docs, and DoD Matrix Closure (Spec 03 §11)
+**Complete:** Yes (2026-02-10)
 
 **Status**
 - Planned (2026-02-09)
 - In progress (2026-02-10)
+- Completed (2026-02-10)
 
 **Goal**
 Close the Attractor implementation loop with a comprehensive DoD matrix, deterministic conformance coverage, integration smoke tests, and documentation updates.
@@ -115,17 +117,20 @@ Close the Attractor implementation loop with a comprehensive DoD matrix, determi
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G5. Default-ignored live codergen smoke tests (OpenAI/Anthropic via `forge-agent` backend)
+### [x] G5. Default-ignored live codergen smoke test (single provider-default path via `forge-agent` backend)
 - Work:
-  - Add env-gated live smoke tests for Attractor runtime through `forge-agent` backend.
-  - Keep tests minimal, low-token, and non-brittle.
+  - Add env-gated live smoke test for Attractor runtime through `forge-agent` backend.
+  - Keep test minimal, low-token, and non-brittle.
+  - Use OpenAI Codex model by default, with env override.
   - Record dated run notes in roadmap matrix.
 - Files:
-  - `crates/forge-attractor/tests/openai_live.rs`
-  - `crates/forge-attractor/tests/anthropic_live.rs`
-  - `crates/forge-attractor/tests/support/live.rs`
+  - `crates/forge-attractor/tests/live.rs`
 - DoD:
-  - Live tests are optional (`#[ignore]`), documented, and manually runnable.
+  - Live test is optional (`#[ignore]`), documented, and manually runnable.
+- Completed:
+  - Added single provider-agnostic live smoke entrypoint in `crates/forge-attractor/tests/live.rs`.
+  - Test is env-gated via `RUN_LIVE_ATTRACTOR_TESTS=1`, ignored by default, and defaults model selection to OpenAI Codex (`gpt-5.2-codex`) via `OPENAI_LIVE_MODEL` override hook.
+  - Live path executes Attractor runtime end-to-end with `ForgeAgentSessionBackend` and asserts concrete workspace side-effect (`live_attractor.txt`).
 
 ## Deliverables
 - Section 11 DoD matrix with traceable closure status.

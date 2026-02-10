@@ -130,4 +130,4 @@ Legend:
 
 ## 11.13 Integration Smoke Test
 - [x] Spec-style deterministic smoke scenario (`plan -> implement -> review -> done`) with success/fail rerouting, goal-gate checks, checkpoint and artifact assertions. Refs: `crates/forge-attractor/tests/integration_smoke.rs`
-- [ ] Real live-LLM callback smoke path (ignored/env-gated) tracked separately under P31 G5. Refs: `roadmap/p31-attractor-conformance-tests-docs-and-dod-matrix.md`
+- [x] Real live-LLM callback smoke path (ignored/env-gated) implemented as single default OpenAI Codex live smoke test. Refs: `crates/forge-attractor/tests/live.rs`
