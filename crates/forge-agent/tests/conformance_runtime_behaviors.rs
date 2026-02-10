@@ -1,16 +1,16 @@
 mod support;
 
-use support::{
-    all_fixtures, client_with_adapter, enqueue, text_response, tool_call_response,
-    tool_result_by_call_id,
-};
 use forge_agent::{
     BufferedEventEmitter, EventKind, ExecutionEnvironment, LocalExecutionEnvironment, Session,
-    SessionConfig, Turn,
+    SessionConfig, SessionState, Turn,
 };
 use forge_llm::Role;
 use serde_json::json;
 use std::sync::Arc;
+use support::{
+    all_fixtures, client_with_adapter, enqueue, text_response, tool_call_response,
+    tool_result_by_call_id,
+};
 use tempfile::tempdir;
 
 #[tokio::test(flavor = "current_thread")]
@@ -107,7 +107,13 @@ async fn cross_profile_steering_message_is_injected_before_next_tool_round() {
             "expected steering user turn in second request for {}",
             fixture.id()
         );
-        assert!(matches!(session.history().iter().find(|turn| matches!(turn, Turn::Steering(_))), Some(Turn::Steering(_))));
+        assert!(matches!(
+            session
+                .history()
+                .iter()
+                .find(|turn| matches!(turn, Turn::Steering(_))),
+            Some(Turn::Steering(_))
+        ));
     }
 }
 
@@ -156,10 +162,12 @@ async fn cross_profile_loop_detection_warning_behavior() {
         assert!(session.history().iter().any(|turn| {
             matches!(turn, Turn::Steering(turn) if turn.content.contains("Loop detected"))
         }));
-        assert!(emitter
-            .snapshot()
-            .iter()
-            .any(|event| event.kind == EventKind::LoopDetection));
+        assert!(
+            emitter
+                .snapshot()
+                .iter()
+                .any(|event| event.kind == EventKind::LoopDetection)
+        );
     }
 }
 
@@ -212,7 +220,12 @@ async fn cross_profile_error_recovery_after_tool_failure() {
         let bad = tool_result_by_call_id(session.history(), "call-bad")
             .expect("bad call result should exist");
         assert!(bad.is_error);
-        assert!(bad.content.as_str().unwrap_or_default().contains("Unknown tool"));
+        assert!(
+            bad.content
+                .as_str()
+                .unwrap_or_default()
+                .contains("Unknown tool")
+        );
 
         let good = tool_result_by_call_id(session.history(), "call-good")
             .expect("good call result should exist");
@@ -259,11 +272,61 @@ async fn cross_profile_subagent_depth_limit_returns_tool_error() {
         let result = tool_result_by_call_id(session.history(), "call-spawn")
             .expect("spawn result should exist");
         assert!(result.is_error);
-        assert!(result
-            .content
-            .as_str()
-            .unwrap_or_default()
-            .contains("max_subagent_depth"));
+        assert!(
+            result
+                .content
+                .as_str()
+                .unwrap_or_default()
+                .contains("max_subagent_depth")
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cross_profile_question_response_transitions_awaiting_input_state() {
+    for fixture in all_fixtures() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        let (client, responses, _requests) = client_with_adapter(fixture.id());
+        let profile = fixture.profile();
+        let mut session = Session::new(profile, env, client, SessionConfig::default())
+            .expect("session should initialize");
+
+        enqueue(
+            &responses,
+            text_response(
+                fixture.id(),
+                fixture.model(),
+                "resp-1",
+                "Which file should I update?",
+            ),
+        );
+        enqueue(
+            &responses,
+            text_response(fixture.id(), fixture.model(), "resp-2", "Thanks."),
+        );
+
+        session
+            .submit("start")
+            .await
+            .expect("first submit should succeed");
+        assert_eq!(
+            session.state(),
+            &SessionState::AwaitingInput,
+            "expected awaiting-input state for {}",
+            fixture.id()
+        );
+
+        session
+            .submit("Update src/lib.rs")
+            .await
+            .expect("second submit should succeed");
+        assert_eq!(
+            session.state(),
+            &SessionState::Idle,
+            "expected idle state after answer for {}",
+            fixture.id()
+        );
     }
 }
 
@@ -279,7 +342,9 @@ async fn cross_profile_large_output_truncation_behavior() {
         let (client, responses, _requests) = client_with_adapter(fixture.id());
         let profile = fixture.profile();
         let mut config = SessionConfig::default();
-        config.tool_output_limits.insert("read_file".to_string(), 80);
+        config
+            .tool_output_limits
+            .insert("read_file".to_string(), 80);
         let mut session =
             Session::new(profile, env, client, config).expect("session should initialize");
 

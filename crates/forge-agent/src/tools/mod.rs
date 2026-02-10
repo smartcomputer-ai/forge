@@ -1,184 +1,71 @@
-use crate::{
-    AgentError, EventEmitter, ExecutionEnvironment, GrepOptions, SessionConfig, SessionEvent,
-    ToolError, truncate_tool_output,
+mod apply_patch;
+mod edit_file;
+mod glob;
+mod grep;
+mod read_file;
+mod registry;
+mod shell;
+mod subagents;
+mod write_file;
+
+use crate::{SessionConfig, ToolError};
+use forge_llm::{ToolCall, ToolResult};
+use serde_json::Value;
+
+pub use registry::{
+    RegisteredTool, ToolCallHook, ToolDispatchOptions, ToolExecutor, ToolFuture, ToolHookContext,
+    ToolPostHookContext, ToolPreHookOutcome, ToolRegistry,
 };
-use forge_llm::{ToolCall, ToolDefinition, ToolResult};
-use futures::future::join_all;
-use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
-use std::sync::Arc;
 
-pub type ToolFuture = Pin<Box<dyn Future<Output = Result<String, AgentError>> + Send>>;
-pub type ToolExecutor =
-    Arc<dyn Fn(Value, Arc<dyn ExecutionEnvironment>) -> ToolFuture + Send + Sync>;
+pub const READ_FILE_TOOL: &str = "read_file";
+pub const WRITE_FILE_TOOL: &str = "write_file";
+pub const EDIT_FILE_TOOL: &str = "edit_file";
+pub const APPLY_PATCH_TOOL: &str = "apply_patch";
+pub const SHELL_TOOL: &str = "shell";
+pub const GREP_TOOL: &str = "grep";
+pub const GLOB_TOOL: &str = "glob";
+pub const SPAWN_AGENT_TOOL: &str = "spawn_agent";
+pub const SEND_INPUT_TOOL: &str = "send_input";
+pub const WAIT_TOOL: &str = "wait";
+pub const CLOSE_AGENT_TOOL: &str = "close_agent";
 
-#[derive(Clone)]
-pub struct ToolDispatchOptions {
-    pub session_id: String,
-    pub supports_parallel_tool_calls: bool,
+pub fn build_openai_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
+    registry.register(apply_patch::apply_patch_tool());
+    registry
 }
 
-#[derive(Clone)]
-pub struct RegisteredTool {
-    pub definition: ToolDefinition,
-    pub executor: ToolExecutor,
+pub fn build_anthropic_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
+    registry.register(edit_file::edit_file_tool());
+    registry
 }
 
-#[derive(Clone, Default)]
-pub struct ToolRegistry {
-    tools: HashMap<String, RegisteredTool>,
+pub fn build_gemini_tool_registry() -> ToolRegistry {
+    let mut registry = ToolRegistry::default();
+    register_shared_core_tools(&mut registry);
+    register_subagent_tools(&mut registry);
+    registry.register(edit_file::edit_file_tool());
+    registry
 }
 
-impl ToolRegistry {
-    pub fn register(&mut self, tool: RegisteredTool) {
-        self.tools.insert(tool.definition.name.clone(), tool);
-    }
+pub fn register_shared_core_tools(registry: &mut ToolRegistry) {
+    registry.register(read_file::read_file_tool());
+    registry.register(write_file::write_file_tool());
+    registry.register(shell::shell_tool());
+    registry.register(grep::grep_tool());
+    registry.register(glob::glob_tool());
+}
 
-    pub fn unregister(&mut self, name: &str) -> Option<RegisteredTool> {
-        self.tools.remove(name)
-    }
-
-    pub fn get(&self, name: &str) -> Option<&RegisteredTool> {
-        self.tools.get(name)
-    }
-
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
-        let mut definitions: Vec<ToolDefinition> = self
-            .tools
-            .values()
-            .map(|tool| tool.definition.clone())
-            .collect();
-        definitions.sort_by(|a, b| a.name.cmp(&b.name));
-        definitions
-    }
-
-    pub fn names(&self) -> Vec<String> {
-        let mut names: Vec<String> = self.tools.keys().cloned().collect();
-        names.sort_unstable();
-        names
-    }
-
-    pub async fn dispatch(
-        &self,
-        tool_calls: Vec<ToolCall>,
-        execution_env: Arc<dyn ExecutionEnvironment>,
-        config: &SessionConfig,
-        event_emitter: Arc<dyn EventEmitter>,
-        options: ToolDispatchOptions,
-    ) -> Result<Vec<ToolResult>, AgentError> {
-        if options.supports_parallel_tool_calls && tool_calls.len() > 1 {
-            let futures = tool_calls.into_iter().map(|tool_call| {
-                self.dispatch_single(
-                    tool_call,
-                    execution_env.clone(),
-                    config,
-                    event_emitter.clone(),
-                    &options.session_id,
-                )
-            });
-            return Ok(join_all(futures)
-                .await
-                .into_iter()
-                .collect::<Result<Vec<_>, _>>()?);
-        }
-
-        let mut results = Vec::with_capacity(tool_calls.len());
-        for tool_call in tool_calls {
-            results.push(
-                self.dispatch_single(
-                    tool_call,
-                    execution_env.clone(),
-                    config,
-                    event_emitter.clone(),
-                    &options.session_id,
-                )
-                .await?,
-            );
-        }
-        Ok(results)
-    }
-
-    async fn dispatch_single(
-        &self,
-        tool_call: ToolCall,
-        execution_env: Arc<dyn ExecutionEnvironment>,
-        config: &SessionConfig,
-        event_emitter: Arc<dyn EventEmitter>,
-        session_id: &str,
-    ) -> Result<ToolResult, AgentError> {
-        event_emitter.emit(SessionEvent::tool_call_start(
-            session_id.to_string(),
-            tool_call.name.clone(),
-            tool_call.id.clone(),
-        ))?;
-
-        let Some(registered) = self.get(&tool_call.name) else {
-            let message = format!("Unknown tool: {}", tool_call.name);
-            event_emitter.emit(SessionEvent::tool_call_end_error(
-                session_id.to_string(),
-                tool_call.id.clone(),
-                message.clone(),
-            ))?;
-            return Ok(tool_error_result(tool_call.id, message));
-        };
-
-        let parsed_arguments = match parse_tool_arguments(&tool_call) {
-            Ok(arguments) => arguments,
-            Err(error) => {
-                event_emitter.emit(SessionEvent::tool_call_end_error(
-                    session_id.to_string(),
-                    tool_call.id.clone(),
-                    error.to_string(),
-                ))?;
-                return Ok(tool_error_result(tool_call.id, error.to_string()));
-            }
-        };
-        let parsed_arguments = normalize_tool_arguments_for_dispatch(
-            &tool_call.name,
-            parsed_arguments,
-            &registered.definition.parameters,
-            config,
-        );
-
-        if let Err(error) =
-            validate_tool_arguments(&registered.definition.parameters, &parsed_arguments)
-        {
-            event_emitter.emit(SessionEvent::tool_call_end_error(
-                session_id.to_string(),
-                tool_call.id.clone(),
-                error.to_string(),
-            ))?;
-            return Ok(tool_error_result(tool_call.id, error.to_string()));
-        }
-
-        let raw_output = match (registered.executor)(parsed_arguments, execution_env).await {
-            Ok(output) => output,
-            Err(error) => {
-                let error_text = error.to_string();
-                event_emitter.emit(SessionEvent::tool_call_end_error(
-                    session_id.to_string(),
-                    tool_call.id.clone(),
-                    error_text.clone(),
-                ))?;
-                return Ok(tool_error_result(tool_call.id, error_text));
-            }
-        };
-
-        let truncated = truncate_tool_output(&raw_output, &tool_call.name, config);
-        event_emitter.emit(SessionEvent::tool_call_end_output(
-            session_id.to_string(),
-            tool_call.id.clone(),
-            raw_output,
-        ))?;
-
-        Ok(ToolResult {
-            tool_call_id: tool_call.id,
-            content: Value::String(truncated),
-            is_error: false,
-        })
-    }
+pub fn register_subagent_tools(registry: &mut ToolRegistry) {
+    registry.register(subagents::spawn_agent_tool());
+    registry.register(subagents::send_input_tool());
+    registry.register(subagents::wait_tool());
+    registry.register(subagents::close_agent_tool());
 }
 
 fn normalize_tool_arguments_for_dispatch(
@@ -236,715 +123,6 @@ fn effective_shell_timeout_policy(config: &SessionConfig) -> (u64, u64) {
     let max_timeout_ms = max_timeout_ms.max(default_timeout_ms);
     (default_timeout_ms, max_timeout_ms)
 }
-
-pub const READ_FILE_TOOL: &str = "read_file";
-pub const WRITE_FILE_TOOL: &str = "write_file";
-pub const EDIT_FILE_TOOL: &str = "edit_file";
-pub const APPLY_PATCH_TOOL: &str = "apply_patch";
-pub const SHELL_TOOL: &str = "shell";
-pub const GREP_TOOL: &str = "grep";
-pub const GLOB_TOOL: &str = "glob";
-pub const SPAWN_AGENT_TOOL: &str = "spawn_agent";
-pub const SEND_INPUT_TOOL: &str = "send_input";
-pub const WAIT_TOOL: &str = "wait";
-pub const CLOSE_AGENT_TOOL: &str = "close_agent";
-
-pub fn build_openai_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::default();
-    register_shared_core_tools(&mut registry);
-    register_subagent_tools(&mut registry);
-    registry.register(apply_patch_tool());
-    registry
-}
-
-pub fn build_anthropic_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::default();
-    register_shared_core_tools(&mut registry);
-    register_subagent_tools(&mut registry);
-    registry.register(edit_file_tool());
-    registry
-}
-
-pub fn build_gemini_tool_registry() -> ToolRegistry {
-    let mut registry = ToolRegistry::default();
-    register_shared_core_tools(&mut registry);
-    register_subagent_tools(&mut registry);
-    registry.register(edit_file_tool());
-    registry
-}
-
-pub fn register_shared_core_tools(registry: &mut ToolRegistry) {
-    registry.register(read_file_tool());
-    registry.register(write_file_tool());
-    registry.register(shell_tool());
-    registry.register(grep_tool());
-    registry.register(glob_tool());
-}
-
-pub fn register_subagent_tools(registry: &mut ToolRegistry) {
-    registry.register(spawn_agent_tool());
-    registry.register(send_input_tool());
-    registry.register(wait_tool());
-    registry.register(close_agent_tool());
-}
-
-fn read_file_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: READ_FILE_TOOL.to_string(),
-            description: "Read a file from the filesystem. Returns line-numbered content."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["file_path"],
-                "properties": {
-                    "file_path": { "type": "string" },
-                    "offset": { "type": "integer" },
-                    "limit": { "type": "integer" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let file_path = required_string_argument(&args, "file_path")?;
-                let offset = optional_usize_argument(&args, "offset")?;
-                let limit = optional_usize_argument(&args, "limit")?;
-
-                let content = env.read_file(&file_path, offset, limit).await?;
-                Ok(format_line_numbered_content(&content, offset.unwrap_or(1)))
-            })
-        }),
-    }
-}
-
-fn write_file_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: WRITE_FILE_TOOL.to_string(),
-            description:
-                "Write content to a file. Creates the file and parent directories if needed."
-                    .to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["file_path", "content"],
-                "properties": {
-                    "file_path": { "type": "string" },
-                    "content": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let file_path = required_string_argument(&args, "file_path")?;
-                let content = required_string_argument(&args, "content")?;
-                env.write_file(&file_path, &content).await?;
-                Ok(format!(
-                    "Wrote {} bytes to {}",
-                    content.as_bytes().len(),
-                    file_path
-                ))
-            })
-        }),
-    }
-}
-
-fn shell_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: SHELL_TOOL.to_string(),
-            description: "Execute a shell command. Returns stdout, stderr, and exit code."
-                .to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["command"],
-                "properties": {
-                    "command": { "type": "string" },
-                    "timeout_ms": { "type": "integer" },
-                    "description": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let command = required_string_argument(&args, "command")?;
-                let timeout_ms = optional_u64_argument(&args, "timeout_ms")?.unwrap_or(0);
-                let result = env.exec_command(&command, timeout_ms, None, None).await?;
-                Ok(format_exec_result(&result))
-            })
-        }),
-    }
-}
-
-fn grep_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: GREP_TOOL.to_string(),
-            description: "Search file contents using regex patterns.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["pattern"],
-                "properties": {
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" },
-                    "glob_filter": { "type": "string" },
-                    "case_insensitive": { "type": "boolean" },
-                    "max_results": { "type": "integer" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let pattern = required_string_argument(&args, "pattern")?;
-                let path = optional_string_argument(&args, "path")?.unwrap_or(".".to_string());
-                let options = GrepOptions {
-                    glob_filter: optional_string_argument(&args, "glob_filter")?,
-                    case_insensitive: optional_bool_argument(&args, "case_insensitive")?
-                        .unwrap_or(false),
-                    max_results: optional_usize_argument(&args, "max_results")?.or(Some(100)),
-                };
-
-                let output = env.grep(&pattern, &path, options).await?;
-                if output.trim().is_empty() {
-                    Ok("No matches found".to_string())
-                } else {
-                    Ok(output)
-                }
-            })
-        }),
-    }
-}
-
-fn glob_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: GLOB_TOOL.to_string(),
-            description: "Find files matching a glob pattern.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["pattern"],
-                "properties": {
-                    "pattern": { "type": "string" },
-                    "path": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let pattern = required_string_argument(&args, "pattern")?;
-                let path = optional_string_argument(&args, "path")?.unwrap_or(".".to_string());
-                let matches = env.glob(&pattern, &path).await?;
-                if matches.is_empty() {
-                    Ok("No files matched".to_string())
-                } else {
-                    Ok(matches.join("\n"))
-                }
-            })
-        }),
-    }
-}
-
-fn spawn_agent_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: SPAWN_AGENT_TOOL.to_string(),
-            description: "Spawn a subagent to handle a scoped task autonomously.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["task"],
-                "properties": {
-                    "task": { "type": "string" },
-                    "working_dir": { "type": "string" },
-                    "model": { "type": "string" },
-                    "max_turns": { "type": "integer" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: unsupported_subagent_executor(SPAWN_AGENT_TOOL),
-    }
-}
-
-fn send_input_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: SEND_INPUT_TOOL.to_string(),
-            description: "Send a message to a running subagent.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["agent_id", "message"],
-                "properties": {
-                    "agent_id": { "type": "string" },
-                    "message": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: unsupported_subagent_executor(SEND_INPUT_TOOL),
-    }
-}
-
-fn wait_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: WAIT_TOOL.to_string(),
-            description: "Wait for a subagent to complete and return its result.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["agent_id"],
-                "properties": {
-                    "agent_id": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: unsupported_subagent_executor(WAIT_TOOL),
-    }
-}
-
-fn close_agent_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: CLOSE_AGENT_TOOL.to_string(),
-            description: "Terminate a subagent.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["agent_id"],
-                "properties": {
-                    "agent_id": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: unsupported_subagent_executor(CLOSE_AGENT_TOOL),
-    }
-}
-
-fn unsupported_subagent_executor(tool_name: &'static str) -> ToolExecutor {
-    Arc::new(move |_args, _env| {
-        Box::pin(async move {
-            Err(ToolError::Execution(format!(
-                "{} can only run inside a live Session dispatcher",
-                tool_name
-            ))
-            .into())
-        })
-    })
-}
-
-fn edit_file_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: EDIT_FILE_TOOL.to_string(),
-            description: "Replace an exact string occurrence in a file.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["file_path", "old_string", "new_string"],
-                "properties": {
-                    "file_path": { "type": "string" },
-                    "old_string": { "type": "string" },
-                    "new_string": { "type": "string" },
-                    "replace_all": { "type": "boolean" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let file_path = required_string_argument(&args, "file_path")?;
-                let old_string = required_string_argument(&args, "old_string")?;
-                let new_string = required_string_argument(&args, "new_string")?;
-                let replace_all = optional_bool_argument(&args, "replace_all")?.unwrap_or(false);
-                if old_string.is_empty() {
-                    return Err(
-                        ToolError::Execution("old_string must not be empty".to_string()).into(),
-                    );
-                }
-
-                let content = env.read_file(&file_path, None, None).await?;
-                let replacement_count = content.match_indices(&old_string).count();
-                if replacement_count == 0 {
-                    return Err(ToolError::Execution(format!(
-                        "old_string not found in '{}'",
-                        file_path
-                    ))
-                    .into());
-                }
-                if replacement_count > 1 && !replace_all {
-                    return Err(ToolError::Execution(format!(
-                        "old_string is not unique in '{}': found {} matches; provide more context or set replace_all=true",
-                        file_path, replacement_count
-                    ))
-                    .into());
-                }
-
-                let next_content = if replace_all {
-                    content.replace(&old_string, &new_string)
-                } else {
-                    content.replacen(&old_string, &new_string, 1)
-                };
-                env.write_file(&file_path, &next_content).await?;
-
-                Ok(format!(
-                    "Updated {} ({} replacement{})",
-                    file_path,
-                    replacement_count,
-                    if replacement_count == 1 { "" } else { "s" }
-                ))
-            })
-        }),
-    }
-}
-
-fn apply_patch_tool() -> RegisteredTool {
-    RegisteredTool {
-        definition: ToolDefinition {
-            name: APPLY_PATCH_TOOL.to_string(),
-            description: "Apply code changes using the patch format. Supports creating, deleting, and modifying files in a single operation.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "required": ["patch"],
-                "properties": {
-                    "patch": { "type": "string" }
-                },
-                "additionalProperties": false
-            }),
-        },
-        executor: Arc::new(|args, env| {
-            Box::pin(async move {
-                let patch = required_string_argument(&args, "patch")?;
-                let operations = parse_apply_patch(&patch)?;
-                apply_patch_operations(&operations, env).await
-            })
-        }),
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PatchOperation {
-    AddFile {
-        path: String,
-        lines: Vec<String>,
-    },
-    DeleteFile {
-        path: String,
-    },
-    UpdateFile {
-        path: String,
-        move_to: Option<String>,
-        hunks: Vec<PatchHunk>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct PatchHunk {
-    header: String,
-    lines: Vec<PatchHunkLine>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PatchHunkLine {
-    Context(String),
-    Delete(String),
-    Add(String),
-    EndOfFile,
-}
-
-fn parse_apply_patch(patch: &str) -> Result<Vec<PatchOperation>, ToolError> {
-    let lines: Vec<&str> = patch.lines().collect();
-    if lines.first().copied() != Some("*** Begin Patch") {
-        return Err(ToolError::Validation(
-            "apply_patch payload must start with '*** Begin Patch'".to_string(),
-        ));
-    }
-    if lines.last().copied() != Some("*** End Patch") {
-        return Err(ToolError::Validation(
-            "apply_patch payload must end with '*** End Patch'".to_string(),
-        ));
-    }
-
-    let mut operations = Vec::new();
-    let mut idx = 1usize;
-    let end = lines.len().saturating_sub(1);
-    while idx < end {
-        let line = lines[idx];
-        if line.trim().is_empty() {
-            idx += 1;
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Add File: ") {
-            idx += 1;
-            let mut added = Vec::new();
-            while idx < end && !is_patch_operation_start(lines[idx]) {
-                let Some(payload) = lines[idx].strip_prefix('+') else {
-                    return Err(ToolError::Validation(format!(
-                        "invalid add-file line: '{}'",
-                        lines[idx]
-                    )));
-                };
-                added.push(payload.to_string());
-                idx += 1;
-            }
-            operations.push(PatchOperation::AddFile {
-                path: path.to_string(),
-                lines: added,
-            });
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Delete File: ") {
-            operations.push(PatchOperation::DeleteFile {
-                path: path.to_string(),
-            });
-            idx += 1;
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("*** Update File: ") {
-            idx += 1;
-            let mut move_to = None;
-            if idx < end {
-                if let Some(target) = lines[idx].strip_prefix("*** Move to: ") {
-                    move_to = Some(target.to_string());
-                    idx += 1;
-                }
-            }
-
-            let mut hunks = Vec::new();
-            while idx < end && !is_patch_operation_start(lines[idx]) {
-                let header = lines[idx];
-                if !header.starts_with("@@") {
-                    return Err(ToolError::Validation(format!(
-                        "invalid hunk header in update '{}': '{}'",
-                        path, header
-                    )));
-                }
-                idx += 1;
-
-                let mut hunk_lines = Vec::new();
-                while idx < end
-                    && !is_patch_operation_start(lines[idx])
-                    && !lines[idx].starts_with("@@")
-                {
-                    let hunk_line = lines[idx];
-                    if hunk_line == "*** End of File" {
-                        hunk_lines.push(PatchHunkLine::EndOfFile);
-                        idx += 1;
-                        continue;
-                    }
-                    let Some(prefix) = hunk_line.chars().next() else {
-                        return Err(ToolError::Validation(
-                            "empty hunk line is not allowed".to_string(),
-                        ));
-                    };
-                    let value = hunk_line[1..].to_string();
-                    let parsed = match prefix {
-                        ' ' => PatchHunkLine::Context(value),
-                        '-' => PatchHunkLine::Delete(value),
-                        '+' => PatchHunkLine::Add(value),
-                        _ => {
-                            return Err(ToolError::Validation(format!(
-                                "invalid hunk line prefix '{}' in '{}'",
-                                prefix, hunk_line
-                            )));
-                        }
-                    };
-                    hunk_lines.push(parsed);
-                    idx += 1;
-                }
-
-                if hunk_lines.is_empty() {
-                    return Err(ToolError::Validation(format!(
-                        "empty hunk in update '{}'",
-                        path
-                    )));
-                }
-                hunks.push(PatchHunk {
-                    header: header.to_string(),
-                    lines: hunk_lines,
-                });
-            }
-
-            if hunks.is_empty() {
-                return Err(ToolError::Validation(format!(
-                    "update operation for '{}' must include at least one hunk",
-                    path
-                )));
-            }
-
-            operations.push(PatchOperation::UpdateFile {
-                path: path.to_string(),
-                move_to,
-                hunks,
-            });
-            continue;
-        }
-
-        return Err(ToolError::Validation(format!(
-            "unknown patch operation line: '{}'",
-            line
-        )));
-    }
-
-    if operations.is_empty() {
-        return Err(ToolError::Validation(
-            "patch must contain at least one operation".to_string(),
-        ));
-    }
-
-    Ok(operations)
-}
-
-fn is_patch_operation_start(line: &str) -> bool {
-    line.starts_with("*** Add File: ")
-        || line.starts_with("*** Delete File: ")
-        || line.starts_with("*** Update File: ")
-}
-
-async fn apply_patch_operations(
-    operations: &[PatchOperation],
-    env: Arc<dyn ExecutionEnvironment>,
-) -> Result<String, AgentError> {
-    let mut summaries = Vec::new();
-    for operation in operations {
-        match operation {
-            PatchOperation::AddFile { path, lines } => {
-                if env.file_exists(path).await? {
-                    return Err(
-                        ToolError::Execution(format!("file already exists: '{}'", path)).into(),
-                    );
-                }
-                env.write_file(path, &lines.join("\n")).await?;
-                summaries.push(format!("A {}", path));
-            }
-            PatchOperation::DeleteFile { path } => {
-                if !env.file_exists(path).await? {
-                    return Err(ToolError::Execution(format!("file not found: '{}'", path)).into());
-                }
-                env.delete_file(path).await?;
-                summaries.push(format!("D {}", path));
-            }
-            PatchOperation::UpdateFile {
-                path,
-                move_to,
-                hunks,
-            } => {
-                if !env.file_exists(path).await? {
-                    return Err(ToolError::Execution(format!(
-                        "cannot update missing file '{}'",
-                        path
-                    ))
-                    .into());
-                }
-
-                let original = env.read_file(path, None, None).await?;
-                let updated = apply_hunks_to_content(&original, hunks).map_err(AgentError::from)?;
-
-                let move_target = move_to.as_deref().filter(|target| *target != path.as_str());
-                if let Some(target_path) = move_target {
-                    if env.file_exists(target_path).await? {
-                        return Err(ToolError::Execution(format!(
-                            "move target already exists: '{}'",
-                            target_path
-                        ))
-                        .into());
-                    }
-                    env.write_file(path, &updated).await?;
-                    env.move_file(path, target_path).await?;
-                    summaries.push(format!("R {} -> {}", path, target_path));
-                } else {
-                    env.write_file(path, &updated).await?;
-                    summaries.push(format!("M {}", path));
-                }
-            }
-        }
-    }
-
-    Ok(format!("Applied patch:\n{}", summaries.join("\n")))
-}
-
-fn apply_hunks_to_content(content: &str, hunks: &[PatchHunk]) -> Result<String, ToolError> {
-    let mut lines = split_content_lines(content);
-    let had_trailing_newline = content.ends_with('\n');
-    let mut search_from = 0usize;
-
-    for hunk in hunks {
-        let (old_lines, new_lines) = hunk_old_new_lines(hunk);
-        if old_lines.is_empty() {
-            let insert_at = search_from.min(lines.len());
-            lines.splice(insert_at..insert_at, new_lines.clone());
-            search_from = insert_at + new_lines.len();
-            continue;
-        }
-
-        let position = find_subsequence(&lines, &old_lines, search_from)
-            .or_else(|| find_subsequence(&lines, &old_lines, 0))
-            .ok_or_else(|| {
-                ToolError::Execution(format!("failed to match hunk '{}'", hunk.header))
-            })?;
-        let end = position + old_lines.len();
-        lines.splice(position..end, new_lines.clone());
-        search_from = position + new_lines.len();
-    }
-
-    let mut updated = lines.join("\n");
-    if had_trailing_newline {
-        updated.push('\n');
-    }
-    Ok(updated)
-}
-
-fn split_content_lines(content: &str) -> Vec<String> {
-    if content.is_empty() {
-        return Vec::new();
-    }
-
-    let mut lines: Vec<String> = content.split('\n').map(str::to_string).collect();
-    if content.ends_with('\n') && lines.last().is_some_and(String::is_empty) {
-        lines.pop();
-    }
-    lines
-}
-
-fn hunk_old_new_lines(hunk: &PatchHunk) -> (Vec<String>, Vec<String>) {
-    let mut old_lines = Vec::new();
-    let mut new_lines = Vec::new();
-    for line in &hunk.lines {
-        match line {
-            PatchHunkLine::Context(value) => {
-                old_lines.push(value.clone());
-                new_lines.push(value.clone());
-            }
-            PatchHunkLine::Delete(value) => old_lines.push(value.clone()),
-            PatchHunkLine::Add(value) => new_lines.push(value.clone()),
-            PatchHunkLine::EndOfFile => {}
-        }
-    }
-    (old_lines, new_lines)
-}
-
-fn find_subsequence(haystack: &[String], needle: &[String], start: usize) -> Option<usize> {
-    if needle.is_empty() {
-        return Some(start.min(haystack.len()));
-    }
-    if start >= haystack.len() || needle.len() > haystack.len() {
-        return None;
-    }
-
-    let limit = haystack.len().saturating_sub(needle.len());
-    for idx in start..=limit {
-        if haystack[idx..idx + needle.len()] == *needle {
-            return Some(idx);
-        }
-    }
-    None
-}
-
 fn required_string_argument(arguments: &Value, key: &str) -> Result<String, ToolError> {
     optional_string_argument(arguments, key)?
         .ok_or_else(|| ToolError::Validation(format!("missing required argument '{}'", key)))
@@ -1139,10 +317,16 @@ fn json_type_name(value: &Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{BufferedEventEmitter, EventKind, LocalExecutionEnvironment, NoopEventEmitter};
+    use crate::{
+        AgentError, BufferedEventEmitter, EventKind, ExecutionEnvironment,
+        LocalExecutionEnvironment, NoopEventEmitter,
+    };
     use async_trait::async_trait;
+    use forge_llm::ToolDefinition;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
     use tempfile::tempdir;
     use tokio::time::{Duration, Instant, sleep};
@@ -1277,8 +461,7 @@ mod tests {
             _working_dir: Option<&str>,
             _env_vars: Option<HashMap<String, String>>,
         ) -> Result<crate::ExecResult, AgentError> {
-            self.observed_timeout_ms
-                .store(timeout_ms, Ordering::SeqCst);
+            self.observed_timeout_ms.store(timeout_ms, Ordering::SeqCst);
             Ok(crate::ExecResult {
                 stdout: "ok".to_string(),
                 stderr: String::new(),
@@ -1420,6 +603,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1466,6 +651,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1512,6 +699,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1589,6 +778,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: true,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1627,6 +818,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1634,12 +827,15 @@ mod tests {
 
         assert!(!results[0].is_error);
         let events = emitter.snapshot();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 3);
         assert_eq!(events[0].kind, EventKind::ToolCallStart);
-        assert_eq!(events[1].kind, EventKind::ToolCallEnd);
+        assert_eq!(events[1].kind, EventKind::ToolCallOutputDelta);
+        assert_eq!(events[2].kind, EventKind::ToolCallEnd);
         assert_eq!(events[0].data.get_str("call_id"), Some("call-1"));
         assert_eq!(events[1].data.get_str("call_id"), Some("call-1"));
-        assert_eq!(events[1].data.get_str("output"), Some("done"));
+        assert_eq!(events[1].data.get_str("delta"), Some("done"));
+        assert_eq!(events[2].data.get_str("call_id"), Some("call-1"));
+        assert_eq!(events[2].data.get_str("output"), Some("done"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1666,6 +862,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1696,7 +894,7 @@ mod tests {
         let observed_timeout = Arc::new(AtomicU64::new(0));
         let env = Arc::new(TimeoutCaptureEnv::new(observed_timeout.clone()));
         let mut registry = ToolRegistry::default();
-        registry.register(shell_tool());
+        registry.register(shell::shell_tool());
 
         let mut config = SessionConfig::default();
         config.default_command_timeout_ms = 12_345;
@@ -1716,6 +914,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1730,7 +930,7 @@ mod tests {
         let observed_timeout = Arc::new(AtomicU64::new(0));
         let env = Arc::new(TimeoutCaptureEnv::new(observed_timeout.clone()));
         let mut registry = ToolRegistry::default();
-        registry.register(shell_tool());
+        registry.register(shell::shell_tool());
 
         let mut config = SessionConfig::default();
         config.default_command_timeout_ms = 1_000;
@@ -1750,6 +950,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1804,6 +1006,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1817,6 +1021,48 @@ mod tests {
                 .unwrap_or_default()
                 .contains("not unique")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn edit_file_fuzzy_fallback_matches_whitespace_variants() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("target.txt", "fn  main() {\n    println!(\"hi\");\n}\n")
+            .await
+            .expect("seed file should write");
+
+        let registry = build_anthropic_tool_registry();
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: EDIT_FILE_TOOL.to_string(),
+                    arguments: json!({
+                        "file_path": "target.txt",
+                        "old_string": "fn main() {\n println!(\"hi\");\n}",
+                        "new_string": "fn main() {\n    println!(\"hello\");\n}"
+                    }),
+                    raw_arguments: None,
+                }],
+                env.clone(),
+                &SessionConfig::default(),
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!results[0].is_error);
+        let updated = env
+            .read_file("target.txt", None, None)
+            .await
+            .expect("updated file should read");
+        assert!(updated.contains("println!(\"hello\")"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1845,6 +1091,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1909,6 +1157,8 @@ mod tests {
                 ToolDispatchOptions {
                     session_id: "session-1".to_string(),
                     supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
                 },
             )
             .await
@@ -1949,5 +1199,54 @@ mod tests {
                 .await
                 .expect("delete target existence should be checked")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn apply_patch_fuzzy_hunk_matching_recovers_on_whitespace_differences() {
+        let dir = tempdir().expect("temp dir should be created");
+        let env = Arc::new(LocalExecutionEnvironment::new(dir.path()));
+        env.write_file("fuzzy.txt", "fn  greet() {\n    println!(\"hi\");\n}\n")
+            .await
+            .expect("seed file should write");
+
+        let registry = build_openai_tool_registry();
+        let patch = "\
+*** Begin Patch
+*** Update File: fuzzy.txt
+@@ update greeting
+-fn greet() {
+-    println!(\"hi\");
++fn greet() {
++    println!(\"hello\");
+ }
+*** End Patch";
+
+        let results = registry
+            .dispatch(
+                vec![ToolCall {
+                    id: "call-1".to_string(),
+                    name: APPLY_PATCH_TOOL.to_string(),
+                    arguments: json!({ "patch": patch }),
+                    raw_arguments: None,
+                }],
+                env.clone(),
+                &SessionConfig::default(),
+                Arc::new(NoopEventEmitter),
+                ToolDispatchOptions {
+                    session_id: "session-1".to_string(),
+                    supports_parallel_tool_calls: false,
+                    hook: None,
+                    hook_strict: false,
+                },
+            )
+            .await
+            .expect("dispatch should succeed");
+
+        assert!(!results[0].is_error);
+        let updated = env
+            .read_file("fuzzy.txt", None, None)
+            .await
+            .expect("updated file should read");
+        assert!(updated.contains("println!(\"hello\")"));
     }
 }

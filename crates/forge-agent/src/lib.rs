@@ -9,6 +9,7 @@ pub mod config;
 pub mod errors;
 pub mod events;
 pub mod execution;
+mod patch;
 pub mod profiles;
 pub mod session;
 pub mod tools;
