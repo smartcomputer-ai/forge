@@ -3,6 +3,7 @@
 //! This crate implements the spec/03 front-end pipeline:
 //! parse DOT -> normalize to internal IR -> apply transforms -> validate.
 
+pub mod backends;
 pub mod condition;
 pub mod diagnostics;
 pub mod errors;
@@ -19,6 +20,7 @@ pub mod storage;
 pub mod stylesheet;
 pub mod transforms;
 
+pub use backends::*;
 pub use condition::*;
 pub use diagnostics::*;
 pub use errors::*;

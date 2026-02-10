@@ -217,6 +217,7 @@ name = "forge-attractor"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "forge-agent",
  "forge-turnstore",
  "graphviz-rust",
  "serde",

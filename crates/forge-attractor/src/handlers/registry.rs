@@ -121,7 +121,9 @@ fn default_shape_mapping() -> BTreeMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{AttractorError, Graph, Node, NodeExecutor, NodeOutcome, RuntimeContext, parse_dot};
+    use crate::{
+        AttractorError, Graph, Node, NodeExecutor, NodeOutcome, RuntimeContext, parse_dot,
+    };
     use async_trait::async_trait;
     use std::sync::Arc;
 

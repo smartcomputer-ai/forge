@@ -153,7 +153,7 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G6. `forge-agent` codergen backend adapter
+### [x] G6. `forge-agent` codergen backend adapter
 - Work:
   - Implement an adapter that maps node model/provider/reasoning overrides into `forge-agent::SubmitOptions`.
   - Map `SubmitResult` and tool error summaries into Attractor `Outcome`.
@@ -163,6 +163,14 @@ Implement the runtime traversal engine, deterministic edge routing, retry/failur
   - `crates/forge-attractor/src/backends/forge_agent.rs`
 - DoD:
   - Attractor codergen nodes can be executed through `forge-agent` without replaying raw history.
+- Completed:
+  - Added `backends::forge_agent` adapter module with:
+    - node override -> `forge_agent::SubmitOptions` mapping (`llm_provider`, `llm_model`, `reasoning_effort`)
+    - prompt build with label fallback + `$goal` expansion
+    - submit/result mapping from `forge_agent::SubmitResult` into Attractor `NodeOutcome`
+  - Added thread-key continuity handling (`thread_id` + context fallback) when invoking the agent submitter.
+  - Added stage-to-agent linkage emission helper writing `forge.link.stage_to_agent` records via Attractor storage interface.
+  - Added deterministic unit tests for options mapping, outcome mapping, thread-key precedence, and link-record emission.
 
 ### [ ] G7. Execution tests for Sections 11.3/11.4/11.5/11.6/11.9
 - Work:
