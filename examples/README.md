@@ -2,6 +2,9 @@
 
 These examples are ordered from simple to more complex and are runnable with `forge-cli`.
 
+By default, `forge-cli` uses the real `forge-agent` codergen backend (`--backend agent`), which requires provider credentials in environment (for example `OPENAI_API_KEY` or `ANTHROPIC_API_KEY`).
+For deterministic/local simulation, pass `--backend mock`.
+
 ## 1) `01-linear-foundation.dot`
 A minimal linear pipeline: `start -> plan -> summarize -> exit`.
 Use this first to verify parse/execute behavior.
@@ -9,6 +12,9 @@ Use this first to verify parse/execute behavior.
 Run:
 ```bash
 cargo run -p forge-cli -- run --dot-file examples/01-linear-foundation.dot
+
+# deterministic simulated run:
+cargo run -p forge-cli -- run --dot-file examples/01-linear-foundation.dot --backend mock
 ```
 
 ## 2) `02-hitl-review-gate.dot`

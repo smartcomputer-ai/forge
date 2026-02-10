@@ -84,6 +84,8 @@ fn run_command_dot_file_event_json_expected_success_output() {
             "run",
             "--dot-file",
             dot_file.to_str().expect("dot file path should be utf8"),
+            "--backend",
+            "mock",
             "--event-json",
             "--interviewer",
             "auto",
@@ -121,6 +123,8 @@ fn resume_command_checkpoint_expected_success_output() {
             checkpoint_path
                 .to_str()
                 .expect("checkpoint path should be utf8"),
+            "--backend",
+            "mock",
             "--no-stream-events",
             "--interviewer",
             "auto",

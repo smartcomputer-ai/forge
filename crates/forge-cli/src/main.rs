@@ -1,4 +1,9 @@
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
+use forge_agent::{
+    AnthropicProviderProfile, LocalExecutionEnvironment, OpenAiProviderProfile, ProviderProfile,
+    Session, SessionConfig,
+};
+use forge_attractor::forge_agent::{ForgeAgentCodergenAdapter, ForgeAgentSessionBackend};
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
 use forge_attractor::handlers::wait_human::{
     AutoApproveInterviewer, ConsoleInterviewer, HumanAnswer, QueueInterviewer, WaitHumanHandler,
@@ -7,6 +12,7 @@ use forge_attractor::{
     CheckpointState, PipelineRunResult, PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent,
     RuntimeEventKind, RuntimeEventSink, parse_dot, runtime_event_channel,
 };
+use forge_llm::Client;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -43,6 +49,8 @@ struct RunArgs {
     event_json: bool,
     #[arg(long, value_enum, default_value_t = InterviewerMode::Auto)]
     interviewer: InterviewerMode,
+    #[arg(long, value_enum, default_value_t = BackendMode::Agent)]
+    backend: BackendMode,
     #[arg(long = "human-answer")]
     human_answers: Vec<String>,
 }
@@ -65,6 +73,8 @@ struct ResumeArgs {
     event_json: bool,
     #[arg(long, value_enum, default_value_t = InterviewerMode::Auto)]
     interviewer: InterviewerMode,
+    #[arg(long, value_enum, default_value_t = BackendMode::Agent)]
+    backend: BackendMode,
     #[arg(long = "human-answer")]
     human_answers: Vec<String>,
 }
@@ -84,8 +94,15 @@ enum InterviewerMode {
     Queue,
 }
 
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum BackendMode {
+    Agent,
+    Mock,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
+    load_env_files();
     let cli = Cli::parse();
     let result = match cli.command {
         Commands::Run(args) => run_command(args).await,
@@ -102,13 +119,18 @@ async fn main() -> ExitCode {
     }
 }
 
+fn load_env_files() {
+    let _ = dotenvy::from_filename(".env.local");
+    let _ = dotenvy::from_filename(".env");
+}
+
 async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
     let graph = parse_dot(&source).map_err(|error| error.to_string())?;
 
     let (event_sink, event_task) = event_stream(!args.no_stream_events, args.event_json);
 
-    let executor = build_executor(args.interviewer, args.human_answers);
+    let executor = build_executor(args.interviewer, args.backend, args.human_answers)?;
     let run_result = PipelineRunner
         .run(
             &graph,
@@ -137,7 +159,7 @@ async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
 
     let (event_sink, event_task) = event_stream(!args.no_stream_events, args.event_json);
 
-    let executor = build_executor(args.interviewer, args.human_answers);
+    let executor = build_executor(args.interviewer, args.backend, args.human_answers)?;
     let run_result = PipelineRunner
         .run(
             &graph,
@@ -231,8 +253,9 @@ fn event_stream(
 
 fn build_executor(
     mode: InterviewerMode,
+    backend_mode: BackendMode,
     human_answers: Vec<String>,
-) -> Arc<dyn forge_attractor::NodeExecutor> {
+) -> Result<Arc<dyn forge_attractor::NodeExecutor>, String> {
     let interviewer: Arc<dyn forge_attractor::Interviewer> = match mode {
         InterviewerMode::Auto => {
             if is_interactive_terminal() {
@@ -248,9 +271,14 @@ fn build_executor(
         }
     };
 
-    let mut registry = forge_attractor::handlers::core_registry();
+    let codergen_backend = match backend_mode {
+        BackendMode::Mock => None,
+        BackendMode::Agent => Some(build_agent_codergen_backend()?),
+    };
+    let mut registry =
+        forge_attractor::handlers::core_registry_with_codergen_backend(codergen_backend);
     registry.register_type("wait.human", Arc::new(WaitHumanHandler::new(interviewer)));
-    Arc::new(RegistryNodeExecutor::new(registry))
+    Ok(Arc::new(RegistryNodeExecutor::new(registry)))
 }
 
 fn print_event_text(event: &RuntimeEvent) {
@@ -296,4 +324,44 @@ fn exit_code_for_status(status: PipelineStatus) -> ExitCode {
 
 fn is_interactive_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+fn build_agent_codergen_backend()
+-> Result<Arc<dyn forge_attractor::handlers::codergen::CodergenBackend>, String> {
+    let provider_profile = select_provider_profile_from_env()?;
+    let llm_client =
+        Arc::new(Client::from_env().map_err(|error| {
+            format!("failed to initialize LLM client from environment: {error}")
+        })?);
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory for agent env: {error}"))?;
+    let execution_env = Arc::new(LocalExecutionEnvironment::new(cwd));
+    let session = Session::new(
+        provider_profile,
+        execution_env,
+        llm_client,
+        SessionConfig::default(),
+    )
+    .map_err(|error| format!("failed to initialize forge-agent session: {error}"))?;
+
+    let backend =
+        ForgeAgentSessionBackend::new(ForgeAgentCodergenAdapter::default(), Box::new(session));
+    Ok(Arc::new(backend))
+}
+
+fn select_provider_profile_from_env() -> Result<Arc<dyn ProviderProfile>, String> {
+    if std::env::var("OPENAI_API_KEY").ok().is_some() {
+        return Ok(Arc::new(OpenAiProviderProfile::with_default_tools(
+            "gpt-5.2-codex",
+        )));
+    }
+    if std::env::var("ANTHROPIC_API_KEY").ok().is_some() {
+        return Ok(Arc::new(AnthropicProviderProfile::with_default_tools(
+            "claude-sonnet-4.5",
+        )));
+    }
+
+    Err(
+        "no supported provider credentials found for agent backend; set OPENAI_API_KEY or ANTHROPIC_API_KEY, or pass --backend mock".to_string(),
+    )
 }

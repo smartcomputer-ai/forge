@@ -99,6 +99,7 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - Implemented `forge-cli resume` to continue from `--checkpoint` using the same in-process runtime entrypoints.
   - Implemented `forge-cli inspect-checkpoint` for checkpoint/context/run-status inspection (human-readable and JSON output modes).
   - Integrated interviewer-backed human-gate behavior selection via CLI (`--interviewer auto|console|queue` + `--human-answer` for queue mode) while keeping runtime transport-agnostic.
+  - Added codergen backend selection for host runs with `--backend agent|mock`, defaulting to `agent` in CLI usage and reserving `mock` for deterministic smoke/local simulation paths.
 
 ### [ ] G4. Storage-backed host query surfaces
 - Work:
