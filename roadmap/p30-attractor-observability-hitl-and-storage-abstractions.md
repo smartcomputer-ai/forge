@@ -140,6 +140,11 @@ Implement host-facing integration surfaces for a CLI-first in-process host: type
   - `crates/forge-attractor/tests/queries.rs`
 - DoD:
   - Host integration surfaces are stable and deterministic in test runs.
+- Partial completion:
+  - Added CLI host smoke integration coverage in `crates/forge-cli/tests/smoke.rs` for:
+    - `run` from DOT file with event JSON streaming
+    - `resume` from checkpoint with in-process host path
+    - `inspect-checkpoint --json` output shape checks
 
 ## Deliverables
 - Event stream contract for UI/logging integration.

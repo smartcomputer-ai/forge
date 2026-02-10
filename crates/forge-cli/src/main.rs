@@ -7,6 +7,7 @@ use forge_attractor::{
     CheckpointState, PipelineRunResult, PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent,
     RuntimeEventKind, RuntimeEventSink, parse_dot, runtime_event_channel,
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -233,7 +234,13 @@ fn build_executor(
     human_answers: Vec<String>,
 ) -> Arc<dyn forge_attractor::NodeExecutor> {
     let interviewer: Arc<dyn forge_attractor::Interviewer> = match mode {
-        InterviewerMode::Auto => Arc::new(AutoApproveInterviewer),
+        InterviewerMode::Auto => {
+            if is_interactive_terminal() {
+                Arc::new(ConsoleInterviewer)
+            } else {
+                Arc::new(AutoApproveInterviewer)
+            }
+        }
         InterviewerMode::Console => Arc::new(ConsoleInterviewer),
         InterviewerMode::Queue => {
             let answers = human_answers.into_iter().map(HumanAnswer::Selected);
@@ -285,4 +292,8 @@ fn exit_code_for_status(status: PipelineStatus) -> ExitCode {
         PipelineStatus::Success => ExitCode::SUCCESS,
         PipelineStatus::Fail => ExitCode::from(2),
     }
+}
+
+fn is_interactive_terminal() -> bool {
+    std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
