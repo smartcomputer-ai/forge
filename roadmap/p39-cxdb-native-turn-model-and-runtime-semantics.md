@@ -1,166 +1,223 @@
-# P39: CXDB-Native Turn Model and Runtime Semantics Rebase
+# P39: CXDB-Native Turn Model and Forge Runtime Semantics Rebase
 
 **Status**
 - Planned (2026-02-10)
 
 **Goal**
-Rebase Forge runtime persistence on CXDB-native primitives and typed records, removing redundant envelope indirection (`event_kind` + `payload_json`) and duplicated lineage fields that CXDB already provides.
+Move Forge persistence from envelope-over-turn records to Forge-native typed turns that match actual Agent and Attractor runtime semantics, while relying on CXDB turn graph primitives for lineage.
 
 **Source**
 - Spec of record: `spec/04-cxdb-integration-spec.md`
+- Semantic source of truth for Attractor behavior: `spec/03-attractor-spec.md`
+- Runtime code shape baseline:
+  - `crates/forge-attractor/src/events.rs`
+  - `crates/forge-attractor/src/runner.rs`
+  - `crates/forge-agent/src/session.rs`
 - CXDB references:
   - `crates/forge-cxdb/docs/architecture.md`
   - `crates/forge-cxdb/docs/protocol.md`
-  - `crates/forge-cxdb/docs/http-api.md`
   - `crates/forge-cxdb/docs/type-registry.md`
 - Prerequisites:
   - `roadmap/completed/p33-cxdb-first-architecture-pivot-and-spec-rebaseline.md`
   - `roadmap/completed/p38-cxdb-fstree-and-workspace-snapshot-integration.md`
 
 **Context**
-- Forge currently writes distinct type IDs for agent and attractor records, but both are wrapped in a generic envelope shape with `event_kind` and stringified `payload_json`.
-- Query/read paths re-decode nested payload JSON instead of consuming strongly typed projection fields directly.
-- CXDB already provides core turn graph semantics (`turn_id`, `parent_turn_id`, `depth`, declared type/version, content hash, append timestamp), so duplicating these semantics in payload correlation creates drift risk.
-- Project is early-stage and can adopt a clean break without compatibility shims.
+- Current persistence still serializes a generic `StoredTurnEnvelope` with `event_kind` + `payload_json`.
+- Attractor runtime already has explicit semantic categories in code (`PipelineEvent`, `StageEvent`, `ParallelEvent`, `InterviewEvent`, `CheckpointEvent`) but persistence flattens these into envelope events.
+- Agent runtime already has distinct message turn types, but operational lifecycle/tool telemetry is collapsed into generic `forge.agent.event`.
+- CXDB already stores turn graph structure (`context_id`, `turn_id`, `parent_turn_id`, `depth`, `type_id`, `type_version`, append timestamp, content hash); re-encoding these as Forge payload fields creates duplication.
+
+## Core Modeling Decision
+Do not adopt external schemas verbatim. Model persistence around Forge runtime semantics as implemented today:
+- Attractor stages are stage-attempt lifecycle facts, not agent message turns.
+- Agent messages remain transcript turns; agent operational telemetry is separate typed facts.
+- Cross-runtime linkage is explicit (`stage -> agent`) and minimal.
+- Contexts represent execution threads, not graph nodes.
+
+## Context Topology (v2)
+- One Attractor run-attempt context is the orchestration spine for that attempt.
+- Agent work runs in agent-session contexts that may span multiple stage attempts/nodes when thread/session continuity is intended.
+- `forge.link.stage_to_agent` is the authoritative join between stage-attempt facts and agent-session turns.
+- Do not create one context per attractor node by default.
+- Parallel branch contexts are introduced only when true branch execution is implemented (see `roadmap/later/p81-attractor-true-parallel-and-fan-in-semantics.md`).
+
+## Field Ownership Contract
+CXDB-native fields (do not duplicate in payload unless strictly required for cross-context navigation):
+- `context_id`, `turn_id`, `parent_turn_id`, `depth`
+- `type_id`, `type_version`
+- append timestamp and content hash
+
+Forge-domain fields (payload/typed fields):
+- `run_id`, `graph_id`, `node_id`, `stage_attempt_id`, `attempt`
+- stage status/outcome fields, routing intent, human-gate result
+- agent session/tool lifecycle details
+- cross-context link keys (`agent_context_id`, `agent_head_turn_id`) where needed
 
 ## Scope
-- Replace envelope-style event encoding with concrete typed record schemas.
-- Align Forge lineage semantics with CXDB turn graph semantics first.
-- Remove or minimize duplicated metadata that CXDB already owns.
-- Rework query surfaces to rely on typed projections directly.
-- Keep agent and attractor type families distinct while making causality explicit.
+- Replace generic envelope encoding with typed record schemas per Forge semantic family.
+- Align Attractor persistence with runtime event categories already defined in code.
+- Split agent operational events from agent transcript turns.
+- Lock context topology to run-spine + agent-session contexts (not per-node contexts).
+- Use CXDB `parent_turn_id` as canonical in-context causality.
+- Keep only cross-context linkage metadata as explicit typed fields.
+- Update query surfaces to projection-first typed reads.
 
 ## Out of Scope
-- Backward compatibility for existing persisted Forge envelope records.
-- Transitional dual-read or migration adapters.
-- UI renderer design work.
+- Backward compatibility for old envelope payloads.
+- Dual-write and migration adapters.
+- UI renderer changes.
 
-## Design Constraints (Hard Requirements)
-- No `payload_json` field in runtime record schemas.
-- No synthetic parent linkage fields when CXDB `parent_turn_id` already represents causality.
-- `event_kind` only exists when it is domain data, not as a generic envelope requirement.
-- Registry descriptors must map directly to domain fields with stable numeric tags.
+## Proposed Forge Semantic Type Families (v2)
+
+### Attractor
+- `forge.attractor.run_lifecycle`  
+  kinds: `initialized`, `resumed`, `finalized`
+- `forge.attractor.stage_lifecycle`  
+  kinds: `started`, `completed`, `failed`, `retrying`
+- `forge.attractor.parallel_lifecycle`  
+  kinds: `started`, `branch_started`, `branch_completed`, `completed`
+- `forge.attractor.interview_lifecycle`  
+  kinds: `started`, `completed`, `timeout`
+- `forge.attractor.checkpoint_saved`
+- `forge.attractor.route_decision` (new; record selected next step explicitly instead of only inferring from checkpoint payload)
+- `forge.attractor.dot_source`
+- `forge.attractor.graph_snapshot`
+- `forge.link.stage_to_agent`
+
+### Agent
+- Keep transcript turn families:
+  - `forge.agent.user_turn`
+  - `forge.agent.assistant_turn`
+  - `forge.agent.tool_results_turn`
+  - `forge.agent.system_turn`
+  - `forge.agent.steering_turn`
+- Replace generic `forge.agent.event` with:
+  - `forge.agent.session_lifecycle` (`started`, `ended`)
+  - `forge.agent.tool_call_lifecycle` (`started`, `ended`)
+
+## CAS/Artifact Note (Non-blocking in P39)
+CXDB already uses content-hash-addressed blobs. Forge may keep hash references in typed payloads for domain linkage (for example `dot_source_ref`, `graph_snapshot_ref`, artifact refs), but should not add a parallel hash identity system.
 
 ## Priority 0 (Must-have)
 
-### [ ] G1. Runtime data model contract rewrite (clean break)
+### [ ] G1. Semantic inventory freeze from Forge runtime code
 - Work:
-  - Define a new runtime schema contract for agent and attractor records with explicit type sets.
-  - Remove envelope contract as primary runtime record shape.
-  - Update `spec/04-cxdb-integration-spec.md` sections that currently describe generic envelope framing.
+  - Document canonical persisted semantic facts directly from current runtime behavior.
+  - Freeze v2 type families and per-type required fields before implementation.
+  - Freeze context-topology contract (run-spine context, agent-session contexts, optional branch contexts).
 - Files:
   - `spec/04-cxdb-integration-spec.md`
+  - `roadmap/p39-dod-matrix.md`
+- DoD:
+  - No event/type naming in the implementation is derived from external schema examples; all names map to Forge runtime semantics.
+  - No implicit one-context-per-node model is introduced.
+
+### [ ] G2. Envelope removal and typed schema contract
+- Work:
+  - Remove `payload_json`-centric schema contract from runtime write paths.
+  - Replace generic `event_kind` envelope with typed fields per family.
+  - Publish new clean-break registry bundle IDs for agent and attractor runtime schemas.
+- Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-attractor/src/storage/mod.rs`
   - `crates/forge-attractor/src/storage/types.rs`
+  - `spec/04-cxdb-integration-spec.md`
 - DoD:
-  - Runtime write contract is defined in CXDB-native terms with concrete typed records and no generic payload wrapper.
+  - Runtime writes use typed payloads only; no envelope reconstruction required.
 
-### [ ] G2. Agent records as first-class typed turns
+### [ ] G3. Attractor persistence rebased to runtime event categories
 - Work:
-  - Replace generic `forge.agent.event` envelope usage with concrete typed event records (for example session lifecycle, tool call lifecycle, model response summaries).
-  - Keep message turns (`forge.agent.user_turn`, `forge.agent.assistant_turn`, etc.) but remove unnecessary envelope-only fields.
-  - Use CXDB parent linkage (`parent_turn_id`) as the canonical turn ordering/causality mechanism.
+  - Map persisted attractor turns to `Pipeline/Stage/Parallel/Interview/Checkpoint` lifecycle categories.
+  - Add explicit route decision records.
+  - Keep stage-attempt semantics first-class (`node_id`, `stage_attempt_id`, `attempt`).
+- Files:
+  - `crates/forge-attractor/src/runner.rs`
+  - `crates/forge-attractor/src/storage/types.rs`
+  - `crates/forge-attractor/src/storage/mod.rs`
+  - `crates/forge-attractor/src/queries.rs`
+- DoD:
+  - Attractor trace can be read as stage/run lifecycle without interpreting generic `event_kind` strings.
+
+### [ ] G4. Agent persistence split: transcript vs operational lifecycle
+- Work:
+  - Keep message turns as transcript records.
+  - Replace `forge.agent.event` with typed session/tool lifecycle records.
+  - Ensure tool call start/end joins via `call_id`.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-agent/tests/*`
 - DoD:
-  - Agent turns project as explicit typed records without nested JSON decoding.
+  - Agent trace no longer encodes operational lifecycle in a generic event envelope.
 
-### [ ] G3. Attractor stage/run/checkpoint records as first-class typed turns
+### [ ] G5. CXDB DAG-first causality cleanup
 - Work:
-  - Replace event envelope dependence for attractor run/stage/checkpoint records with concrete typed schemas.
-  - Keep stage-to-agent linkage as explicit typed records, but remove duplicated IDs where representable via context/turn lineage.
-  - Encode stage causality primarily through real parent edges and explicit typed fields only when semantically necessary.
-- Files:
-  - `crates/forge-attractor/src/storage/types.rs`
-  - `crates/forge-attractor/src/storage/mod.rs`
-  - `crates/forge-attractor/src/runner.rs`
-  - `crates/forge-attractor/tests/*`
-- DoD:
-  - Attractor runtime records are projection-native and do not require `event_kind` dispatch + payload reparse.
-
-### [ ] G4. CXDB linkage-first write semantics
-- Work:
-  - Set explicit `parent_turn_id` where required for deterministic causal chains.
-  - Remove duplicated correlation fields that re-state CXDB graph primitives.
-  - Keep only correlation fields that are genuinely cross-context/cross-runtime.
+  - Set `parent_turn_id` deterministically for in-context causal chain.
+  - Drop payload fields that duplicate CXDB turn lineage primitives.
+  - Preserve only cross-context joins (for example stage->agent link context/head refs).
+  - Ensure run-stages remain on run context spine while agent turns remain in agent-session contexts.
 - Files:
   - `crates/forge-agent/src/session.rs`
   - `crates/forge-attractor/src/runner.rs`
   - `crates/forge-attractor/src/backends/forge_agent.rs`
 - DoD:
-  - Causality is represented primarily by CXDB turn DAG primitives, with minimal supplemental metadata.
+  - Causality is represented by CXDB DAG, not mirrored in payload correlation fields.
 
-### [ ] G5. Query surface rewrite to typed projection-first
+### [ ] G6. Typed projection-first queries
 - Work:
-  - Remove envelope reconstruction and nested JSON decode assumptions from query helpers.
-  - Read typed fields directly from projected turn data.
-  - Ensure run/stage/checkpoint/link query APIs are stable over typed records.
+  - Rewrite query helpers to consume typed fields directly.
+  - Remove envelope decoding and nested payload reparsing.
+  - Keep run/stage/checkpoint/link queries stable over new schemas.
 - Files:
   - `crates/forge-attractor/src/queries.rs`
   - `crates/forge-cxdb-runtime/src/adapter.rs`
   - `crates/forge-cxdb-runtime/src/runtime.rs`
 - DoD:
-  - Query paths are projection-native and no longer depend on envelope-specific parsing logic.
+  - Query paths are projection-native and schema-driven.
 
 ## Priority 1 (Strongly recommended)
 
-### [ ] G6. Registry bundle simplification and semantic field discipline
+### [ ] G7. Deterministic and live conformance refresh
 - Work:
-  - Publish new bundle IDs for clean-break schemas.
-  - Add semantic hints (`unix_ms`, `duration_ms`, etc.) where appropriate.
-  - Eliminate fields whose values duplicate CXDB metadata (for example turn parent/depth surrogates).
-- Files:
-  - `crates/forge-agent/src/session.rs`
-  - `crates/forge-attractor/src/runner.rs`
-  - `spec/04-cxdb-integration-spec.md`
-- DoD:
-  - Registry descriptors are lean, semantically clear, and projection-friendly.
-
-### [ ] G7. Deterministic conformance and live validation refresh
-- Work:
-  - Replace envelope-specific tests with typed-schema conformance tests.
-  - Validate CXDB query/read behavior against new record schemas.
-  - Keep live suites for provider + CXDB integration intact.
+  - Replace envelope-oriented tests with typed-schema conformance tests.
+  - Validate stage/agent linkage and route-decision queries under new schemas.
 - Files:
   - `crates/forge-agent/tests/*`
   - `crates/forge-attractor/tests/*`
   - `crates/forge-cxdb-runtime/tests/live.rs`
 - DoD:
-  - New schema model is test-backed across deterministic and live paths.
+  - Deterministic and live test suites cover new semantic families.
 
-### [ ] G8. Docs and operator mental-model update
+### [ ] G8. Docs and operator model update
 - Work:
-  - Update repository docs to describe CXDB-native runtime modeling.
-  - Document what metadata is CXDB-native vs Forge-domain.
-  - Provide guidance for reading traces directly from typed projection fields.
+  - Document CXDB-native vs Forge-domain field ownership.
+  - Document how to read agent transcript vs attractor stage lifecycle traces.
 - Files:
   - `README.md`
   - `crates/forge-agent/README.md`
   - `crates/forge-attractor/README.md`
   - `crates/forge-cli/README.md`
-  - `AGENTS.md` (if architecture summaries change)
+  - `AGENTS.md` (if architecture index wording changes)
 - DoD:
-  - Documentation matches the new runtime data model and removes envelope-era assumptions.
+  - Docs reflect Forge-native schema families and CXDB DAG-first modeling.
 
 ## Deliverables
-- Clean-break runtime record model aligned to CXDB primitives.
-- Distinct agent and attractor typed turn families without envelope indirection.
-- Query surfaces that read typed projection directly.
-- Updated spec/docs/test coverage for the new model.
+- Clean-break typed runtime schema families aligned to Forge semantics.
+- Clear separation between attractor stage lifecycle and agent transcript lifecycle.
+- CXDB DAG-first causality with minimal cross-context join metadata.
+- Projection-native query and test coverage for the new model.
 
 ## Execution order
-1. G1 contract rewrite in spec + crate boundaries
-2. G2 agent write model
-3. G3 attractor write model
-4. G4 linkage-first causality cleanup
-5. G5 query surface rewrite
-6. G6 registry discipline
+1. G1 semantic inventory freeze
+2. G2 envelope removal + registry contract
+3. G3 attractor semantic family implementation
+4. G4 agent semantic family implementation
+5. G5 DAG-first causality cleanup
+6. G6 query rewrite
 7. G7 conformance/live validation
-8. G8 docs update
+8. G8 docs refresh
 
 ## Exit criteria for this file
-- Forge runtime data model uses CXDB turns as primary semantic structure, not an envelope-over-turn pattern.
-- Agent and attractor traces are directly understandable from typed projected fields.
-- No core query path requires nested payload JSON reconstruction.
+- Attractor nodes are represented as stage/run lifecycle facts, not as generic agent-like messages.
+- Agent transcript turns and agent operational lifecycle are distinct typed records.
+- Context model is run-spine + agent-session (+ optional branch contexts), not per-node contexts.
+- No core runtime write/query path depends on `payload_json` envelope parsing.
