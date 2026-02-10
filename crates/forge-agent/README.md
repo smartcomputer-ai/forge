@@ -25,6 +25,12 @@ Run deterministic unit/integration tests:
 cargo test -p forge-agent
 ```
 
+Run the turnstore integration suite only:
+
+```bash
+cargo test -p forge-agent --test turnstore_integration
+```
+
 Run default-ignored live smoke tests (OpenAI):
 
 ```bash
@@ -42,6 +48,25 @@ RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-agent --test anthropic_live -- --
 
 Live Anthropic tests require `ANTHROPIC_API_KEY` (read from env or project-root `.env`).
 Optional overrides: `ANTHROPIC_LIVE_MODEL`, `ANTHROPIC_BASE_URL`.
+
+## Persistence In Tests
+
+`SessionConfig.turn_store_mode` controls persistence behavior:
+
+- `off`: no turnstore calls; useful for baseline behavior tests.
+- `best_effort`: write failures emit warnings and execution continues.
+- `required`: write failures are terminal; use for strict persistence assertions.
+
+Integration tests can wire a concrete backend with `Session::new_with_turn_store(...)`:
+
+- in-memory backend (`forge_turnstore::MemoryTurnStore`) for fast deterministic tests
+- filesystem backend (`forge_turnstore::FsTurnStore`) for reopen/persistence parity tests
+
+The dedicated suite `tests/turnstore_integration.rs` demonstrates:
+
+- enabling persistence with `required` mode for memory/fs backends
+- querying persisted turns from the selected backend
+- disabling persistence with `off` mode
 
 
 ## `forge-agent` orchestration APIs

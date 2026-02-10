@@ -8,6 +8,7 @@ pub mod errors;
 pub mod graph;
 pub mod lint;
 pub mod parse;
+pub mod storage;
 pub mod stylesheet;
 pub mod transforms;
 
@@ -16,5 +17,6 @@ pub use errors::*;
 pub use graph::*;
 pub use lint::*;
 pub use parse::*;
+pub use storage::*;
 pub use stylesheet::*;
 pub use transforms::*;

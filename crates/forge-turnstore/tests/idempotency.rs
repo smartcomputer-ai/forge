@@ -1,5 +1,5 @@
 use forge_turnstore::{
-    AppendTurnRequest, FsTurnStore, MemoryTurnStore, TurnStore, TurnStoreResult,
+    AppendTurnRequest, ArtifactStore, FsTurnStore, MemoryTurnStore, TurnStore, TurnStoreResult,
 };
 
 fn append_request(context_id: &str, payload: &[u8], key: &str) -> AppendTurnRequest {
@@ -54,6 +54,21 @@ async fn exercise_fork_and_list<T: TurnStore>(store: &T) -> TurnStoreResult<()> 
     Ok(())
 }
 
+async fn exercise_artifact_roundtrip<T: TurnStore + ArtifactStore>(store: &T) -> TurnStoreResult<()> {
+    let context = store.create_context(None).await?;
+    let turn = store
+        .append_turn(append_request(&context.context_id, b"payload", "artifact-k1"))
+        .await?;
+
+    let blob = b"immutable-blob-bytes";
+    let hash = store.put_blob(blob).await?;
+    let fetched = store.get_blob(&hash).await?;
+    assert_eq!(fetched.as_deref(), Some(blob.as_slice()));
+
+    store.attach_fs(&turn.turn_id, &hash).await?;
+    Ok(())
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn memory_store_idempotent_append_expected_single_turn() {
     let store = MemoryTurnStore::new();
@@ -83,4 +98,18 @@ async fn memory_and_fs_fork_list_expected_same_behavior() {
     exercise_fork_and_list(&fs)
         .await
         .expect("fs fork/list should succeed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn memory_and_fs_artifact_store_expected_same_behavior() {
+    let memory = MemoryTurnStore::new();
+    exercise_artifact_roundtrip(&memory)
+        .await
+        .expect("memory artifact roundtrip should succeed");
+
+    let tmp = tempfile::tempdir().expect("tempdir should be created");
+    let fs = FsTurnStore::new(tmp.path()).expect("fs store should initialize");
+    exercise_artifact_roundtrip(&fs)
+        .await
+        .expect("fs artifact roundtrip should succeed");
 }
