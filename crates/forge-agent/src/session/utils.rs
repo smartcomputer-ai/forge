@@ -128,7 +128,7 @@ pub(super) fn subagent_status_label(status: &SubAgentStatus) -> &'static str {
     }
 }
 
-pub(super) fn should_transition_to_awaiting_input(text: &str) -> bool {
+pub(crate) fn should_transition_to_awaiting_input(text: &str) -> bool {
     let trimmed = text.trim();
     if !trimmed.ends_with('?') {
         return false;
@@ -141,7 +141,7 @@ pub(super) fn should_transition_to_awaiting_input(text: &str) -> bool {
     word_count >= 3
 }
 
-pub(super) fn convert_history_to_messages(history: &[Turn]) -> Vec<Message> {
+pub(crate) fn convert_history_to_messages(history: &[Turn]) -> Vec<Message> {
     let mut messages = Vec::new();
 
     for turn in history {
@@ -200,7 +200,7 @@ pub(super) fn convert_history_to_messages(history: &[Turn]) -> Vec<Message> {
     messages
 }
 
-pub(super) fn current_timestamp() -> String {
+pub(crate) fn current_timestamp() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -228,7 +228,7 @@ pub(super) fn current_date_yyyy_mm_dd() -> String {
     "1970-01-01".to_string()
 }
 
-pub(super) fn build_environment_context_snapshot(
+pub(crate) fn build_environment_context_snapshot(
     provider_profile: &dyn ProviderProfile,
     execution_env: &dyn ExecutionEnvironment,
 ) -> EnvironmentContext {
@@ -262,7 +262,7 @@ pub(super) fn build_environment_context_snapshot(
     }
 }
 
-pub(super) fn discover_project_documents(
+pub(crate) fn discover_project_documents(
     working_directory: &Path,
     provider_profile: &dyn ProviderProfile,
 ) -> Vec<ProjectDocument> {
@@ -452,7 +452,7 @@ pub(super) fn run_git_command(repository_root: &Path, args: &[&str]) -> Option<S
     Some(text)
 }
 
-pub(super) fn validate_reasoning_effort(value: &str) -> Result<(), AgentError> {
+pub(crate) fn validate_reasoning_effort(value: &str) -> Result<(), AgentError> {
     let normalized = value.to_ascii_lowercase();
     match normalized.as_str() {
         "low" | "medium" | "high" => Ok(()),
@@ -464,7 +464,7 @@ pub(super) fn validate_reasoning_effort(value: &str) -> Result<(), AgentError> {
     }
 }
 
-pub(super) fn detect_loop(history: &[Turn], window_size: usize) -> bool {
+pub(crate) fn detect_loop(history: &[Turn], window_size: usize) -> bool {
     if window_size == 0 {
         return false;
     }
@@ -512,7 +512,7 @@ pub(super) fn detect_loop(history: &[Turn], window_size: usize) -> bool {
     false
 }
 
-pub(super) fn tool_call_signature(tool_call: &forge_llm::ToolCall) -> u64 {
+pub(crate) fn tool_call_signature(tool_call: &forge_llm::ToolCall) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     tool_call.name.hash(&mut hasher);
     if let Ok(serialized) = serde_json::to_string(&tool_call.arguments) {
@@ -526,7 +526,7 @@ pub(super) fn tool_call_signature(tool_call: &forge_llm::ToolCall) -> u64 {
     hasher.finish()
 }
 
-pub(super) fn approximate_context_tokens(history: &[Turn]) -> usize {
+pub(crate) fn approximate_context_tokens(history: &[Turn]) -> usize {
     total_chars_in_history(history) / 4
 }
 

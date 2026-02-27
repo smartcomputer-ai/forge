@@ -3,8 +3,10 @@
 //! This crate follows the specification in `spec/01-unified-llm-spec.md` and
 //! is organized into the four-layer architecture described there.
 
+pub mod agent_provider;
 pub mod anthropic;
 pub mod catalog;
+pub mod cli_adapters;
 pub mod client;
 pub mod errors;
 pub mod high_level;
@@ -14,6 +16,8 @@ pub mod stream;
 pub mod types;
 pub mod utils;
 
+#[allow(unused_imports)]
+pub use agent_provider::*;
 #[allow(unused_imports)]
 pub use anthropic::*;
 #[allow(unused_imports)]

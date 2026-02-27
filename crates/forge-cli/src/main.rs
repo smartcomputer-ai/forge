@@ -3,6 +3,7 @@ use forge_agent::{
     AnthropicProviderProfile, CxdbPersistenceMode as AgentCxdbPersistenceMode,
     LocalExecutionEnvironment, OpenAiProviderProfile, ProviderProfile, Session, SessionConfig,
 };
+use forge_attractor::agent_provider::AgentProviderSubmitter;
 use forge_attractor::forge_agent::{ForgeAgentCodergenAdapter, ForgeAgentSessionBackend};
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
 use forge_attractor::handlers::wait_human::{
@@ -18,6 +19,10 @@ use forge_cxdb_runtime::{
     DEFAULT_CXDB_BINARY_ADDR, DEFAULT_CXDB_HTTP_BASE_URL,
 };
 use forge_llm::Client;
+use forge_llm::agent_provider::AgentProvider;
+use forge_llm::cli_adapters::claude_code::ClaudeCodeAgentProvider;
+use forge_llm::cli_adapters::codex::CodexAgentProvider;
+use forge_llm::cli_adapters::gemini::GeminiAgentProvider;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -103,6 +108,9 @@ enum InterviewerMode {
 enum BackendMode {
     Agent,
     Mock,
+    ClaudeCode,
+    CodexCli,
+    GeminiCli,
 }
 
 #[derive(Clone, Debug)]
@@ -382,6 +390,9 @@ fn build_executor(
     let codergen_backend = match backend_mode {
         BackendMode::Mock => None,
         BackendMode::Agent => Some(build_agent_codergen_backend(cxdb, stage_link_writer)?),
+        BackendMode::ClaudeCode | BackendMode::CodexCli | BackendMode::GeminiCli => {
+            Some(build_cli_agent_codergen_backend(backend_mode)?)
+        }
     };
     let mut registry =
         forge_attractor::handlers::core_registry_with_codergen_backend(codergen_backend);
@@ -477,6 +488,42 @@ fn build_agent_codergen_backend(
         backend
     };
     Ok(Arc::new(backend))
+}
+
+fn build_cli_agent_codergen_backend(
+    mode: BackendMode,
+) -> Result<Arc<dyn forge_attractor::handlers::codergen::CodergenBackend>, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+
+    let provider: Arc<dyn AgentProvider> = match mode {
+        BackendMode::ClaudeCode => {
+            let bin = resolve_cli_binary("FORGE_CLAUDE_BIN", "claude");
+            Arc::new(ClaudeCodeAgentProvider::new(bin))
+        }
+        BackendMode::CodexCli => {
+            let bin = resolve_cli_binary("FORGE_CODEX_BIN", "codex");
+            Arc::new(CodexAgentProvider::new(bin))
+        }
+        BackendMode::GeminiCli => {
+            let bin = resolve_cli_binary("FORGE_GEMINI_BIN", "gemini");
+            Arc::new(GeminiAgentProvider::new(bin))
+        }
+        _ => unreachable!(),
+    };
+
+    let submitter = AgentProviderSubmitter::new(provider, cwd);
+    let backend =
+        ForgeAgentSessionBackend::new(ForgeAgentCodergenAdapter::default(), Box::new(submitter));
+    Ok(Arc::new(backend))
+}
+
+fn resolve_cli_binary(env_var: &str, default_name: &str) -> String {
+    std::env::var(env_var).unwrap_or_else(|_| {
+        let home =
+            std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+        format!("{}/.local/bin/{}", home, default_name)
+    })
 }
 
 fn select_provider_profile_from_env() -> Result<Arc<dyn ProviderProfile>, String> {

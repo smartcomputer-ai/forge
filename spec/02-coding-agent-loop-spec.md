@@ -2,7 +2,9 @@
 
 This document is a language-agnostic specification for building a coding agent -- an autonomous system that pairs a large language model with developer tools through an agentic loop. It is designed to be implementable from scratch by any developer or coding agent in any programming language.
 
-This spec layers on top of the [Unified LLM Client Specification](./unified-llm-spec.md), which handles all LLM communication. The agent loop uses the SDK's low-level `Client.complete()` and `Client.stream()` methods directly, implementing its own turn loop to interleave tool execution with truncation, steering, events, and loop detection.
+This spec layers on top of the [Unified LLM Client Specification](./01-unified-llm-spec.md), which handles all LLM communication. The agent loop uses the SDK's low-level `Client.complete()` and `Client.stream()` methods directly, implementing its own turn loop to interleave tool execution with truncation, steering, events, and loop detection.
+
+> **Superseded in part:** The [Unified Agent Provider Specification](./06-unified-agent-provider-spec.md) restructures the boundary between the Session and the LLM layer. The tool loop described in section 2.5 of this spec is extracted from the Session into an `HttpApiAgentProvider` that implements the unified `AgentProvider` trait. The Session delegates to `AgentProvider.run_to_completion()` instead of calling `Client.complete()` directly. This enables CLI agent providers (Claude Code, Codex, Gemini CLI) to own their tool loops internally while presenting the same interface. The tool definitions, execution environment, and provider profiles described in this spec remain the building blocks used by `HttpApiAgentProvider`.
 
 ---
 
@@ -95,6 +97,8 @@ The fidelity of control is the point. Every coding agent CLI is built on an agen
 ```
 
 The agent loop does NOT use the Unified LLM SDK's `generate()` high-level function (which has its own tool loop). It uses the low-level `Client.complete()` and implements its own loop because it needs to interleave tool execution with output truncation, steering message injection, event emission, timeout enforcement, and loop detection -- concerns that the SDK's generic tool loop does not handle.
+
+> **Note:** Per [spec/06](./06-unified-agent-provider-spec.md), this loop is extracted from the Session into `HttpApiAgentProvider`, and the Session delegates to the unified `AgentProvider.run_to_completion()` interface. This architectural change enables CLI agent providers to run their own trained tool loops internally.
 
 ### 1.4 Reference Projects
 
