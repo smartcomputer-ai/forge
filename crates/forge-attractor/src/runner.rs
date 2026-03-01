@@ -522,6 +522,7 @@ impl PipelineRunner {
                     "goal": graph.attrs.get("goal").and_then(|v| v.as_str()).unwrap_or(""),
                     "start_time": timestamp_now(),
                     "run_id": active_run_id,
+                    "cxdb_context_id": storage.context_id(),
                 });
                 let manifest_path = logs_root.join("manifest.json");
                 if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {

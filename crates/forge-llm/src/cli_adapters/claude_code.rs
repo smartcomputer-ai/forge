@@ -304,7 +304,9 @@ fn truncate_json(value: &serde_json::Value, max_len: usize) -> String {
     if s.len() <= max_len {
         s
     } else {
-        format!("{}...", &s[..max_len])
+        // Find the nearest char boundary at or before max_len
+        let boundary = s.floor_char_boundary(max_len);
+        format!("{}...", &s[..boundary])
     }
 }
 

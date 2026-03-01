@@ -451,6 +451,7 @@ dependencies = [
  "forge-attractor",
  "forge-cxdb-runtime",
  "forge-llm",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",
