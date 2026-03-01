@@ -284,7 +284,16 @@ cargo test -p cxdb --test integration -- --ignored           # 2 tests
 
 # CLI agent e2e — need claude/codex/gemini CLIs (OAuth, no API keys)
 cargo test -p forge-llm --test cli_agent_e2e -- --ignored    # 9 tests
+
+# Full-stack e2e pipeline — DOT file → CLI agent → JSONL events → disk artifacts → CXDB
+cargo test -p forge-cli --test e2e_pipeline -- --ignored     # 8 tests
 ```
+
+The e2e pipeline tests exercise the complete stack end-to-end: parse a real DOT file,
+run it through `forge-cli` with a real CLI agent backend (Claude Code, Codex, Gemini),
+verify JSONL event streams, check disk artifacts (`manifest.json`, `status.json`,
+`prompt.md`, `response.md`), and validate CXDB persistence records. Each test runs
+in an isolated git sandbox in `/tmp` — no project files are touched.
 
 ### Tier 3: Provider API keys (costs real money)
 

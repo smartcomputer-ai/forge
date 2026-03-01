@@ -23,6 +23,7 @@ Opt-in infrastructure tests (ignored by default, require local services or CLIs)
 cargo test -p forge-cxdb-runtime --test live -- --ignored      # needs running CXDB server
 cargo test -p cxdb --test integration -- --ignored             # needs running CXDB server
 cargo test -p forge-llm --test cli_agent_e2e -- --ignored      # needs claude/codex/gemini CLIs (OAuth, no API keys)
+cargo test -p forge-cli --test e2e_pipeline -- --ignored        # full-stack e2e: DOT → CLI agent → JSONL → artifacts → CXDB
 ```
 
 Live provider tests (ignored by default, require API keys — costs real money):

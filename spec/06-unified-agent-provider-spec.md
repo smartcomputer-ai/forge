@@ -627,5 +627,10 @@ The Session's event types (from spec/02) are unchanged. The translation is:
 - [x] End-to-end: pipeline runs with `HttpApiAgentProvider` (existing behavior, `--backend agent`)
 - [x] End-to-end: pipeline runs with `ClaudeCodeAgentProvider` (new behavior, `--backend claude-code`)
 - [x] Attractor codergen nodes work transparently with both provider types
-- [x] `cargo test` passes across all workspace crates (647 passed, 0 failed, 43 ignored)
+- [x] `cargo test` passes across all workspace crates (647 passed, 0 failed, 51 ignored)
 - [x] Attractor `AgentProvider` integration tests: mock provider, error propagation, goal expansion (5 tests in `agent_provider_integration.rs`)
+- [x] Full-stack e2e pipeline tests: DOT → forge-cli → real CLI agent → JSONL events → disk artifacts → CXDB (8 tests in `e2e_pipeline.rs`)
+  - Linear pipeline × 3 backends (Claude Code, Codex, Gemini)
+  - HITL auto-approve, parallel fan-out, CXDB persistence, cross-provider parity, resume from checkpoint
+  - Each test runs in an isolated git sandbox (`/tmp`) — no project files touched
+  - Found and fixed: `truncate` char-boundary panic in all 3 CLI adapters, Codex trusted-directory requirement
