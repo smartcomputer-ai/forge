@@ -7,17 +7,22 @@ use serde_json::Value;
 fn outcome(status: NodeStatus, preferred_label: Option<&str>) -> NodeOutcome {
     NodeOutcome {
         status,
-        notes: None,
-        context_updates: RuntimeContext::new(),
         preferred_label: preferred_label.map(ToOwned::to_owned),
-        suggested_next_ids: vec![],
+        ..Default::default()
     }
 }
 
 #[test]
 fn condition_validate_invalid_expected_error() {
-    let error = validate_condition_expression("bad=1").expect_err("should fail");
+    // Keys starting with digits are invalid
+    let error = validate_condition_expression("123bad=1").expect_err("should fail");
     assert!(error.contains("invalid"));
+}
+
+#[test]
+fn condition_validate_bare_key_expected_ok() {
+    // Per spec: bare identifier keys are valid for direct context lookup
+    validate_condition_expression("bad=1").expect("bare key should be valid");
 }
 
 #[test]

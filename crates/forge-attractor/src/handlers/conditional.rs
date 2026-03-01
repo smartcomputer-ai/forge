@@ -17,9 +17,7 @@ impl NodeHandler for ConditionalHandler {
         Ok(NodeOutcome {
             status: NodeStatus::Success,
             notes: Some(format!("Conditional node evaluated: {}", node.id)),
-            context_updates: RuntimeContext::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         })
     }
 }

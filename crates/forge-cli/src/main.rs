@@ -12,7 +12,7 @@ use forge_attractor::handlers::wait_human::{
 use forge_attractor::{
     CheckpointState, CxdbPersistenceMode as AttractorCxdbPersistenceMode, PipelineRunResult,
     PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent, RuntimeEventKind, RuntimeEventSink,
-    parse_dot, runtime_event_channel,
+    prepare_pipeline, runtime_event_channel,
 };
 use forge_cxdb_runtime::{
     CxdbBinaryClient, CxdbHttpClient, CxdbReqwestHttpClient, CxdbSdkBinaryClient,
@@ -155,14 +155,14 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
 
 fn cxdb_host_config_from_env() -> Result<CxdbHostConfig, String> {
     let persistence_raw = first_non_empty_env(&["FORGE_CXDB_PERSISTENCE", "CXDB_PERSISTENCE_MODE"])
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "required".to_string())
         .to_ascii_lowercase();
     let persistence = match persistence_raw.as_str() {
         "off" => AttractorCxdbPersistenceMode::Off,
         "required" => AttractorCxdbPersistenceMode::Required,
         _ => {
             return Err(format!(
-                "invalid FORGE_CXDB_PERSISTENCE value '{}'; expected 'off' or 'required'",
+                "invalid FORGE_CXDB_PERSISTENCE value '{}'; expected 'required' or 'off'",
                 persistence_raw
             ));
         }
@@ -187,8 +187,17 @@ fn build_cxdb_clients(
     let binary: Arc<dyn CxdbBinaryClient> = Arc::new(
         CxdbSdkBinaryClient::connect(&cxdb.binary_addr).map_err(|error| {
             format!(
-                "failed to connect CXDB binary '{}': {error}",
-                cxdb.binary_addr
+                "CXDB connection failed at '{}': {error}\n\n\
+                 CXDB is required for pipeline run tracking and playback.\n\
+                 To start CXDB:\n\
+                   1. Install: see https://github.com/strongdm/cxdb\n\
+                   2. Start:   cxdb start\n\
+                   3. Verify:  cxdb status\n\n\
+                 Default addresses:\n\
+                   Binary protocol: {} (set FORGE_CXDB_BINARY_ADDR to override)\n\
+                   HTTP API:        {} (set FORGE_CXDB_HTTP_BASE_URL to override)\n\n\
+                 To run without persistence (not recommended): FORGE_CXDB_PERSISTENCE=off",
+                cxdb.binary_addr, cxdb.binary_addr, cxdb.http_base_url
             )
         })?,
     );
@@ -218,7 +227,10 @@ fn build_runtime_persistence(
 
 async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    for diag in &diagnostics {
+        eprintln!("warning: {}", diag.message);
+    }
     let cxdb = cxdb_host_config_from_env()?;
     let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 
@@ -258,7 +270,10 @@ async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
 
 async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    for diag in &diagnostics {
+        eprintln!("warning: {}", diag.message);
+    }
     let cxdb = cxdb_host_config_from_env()?;
     let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 

@@ -1,9 +1,10 @@
 use crate::{
-    AttractorError, Graph, Node, NodeOutcome, NodeStatus, RuntimeContext, handlers::NodeHandler,
+    AttractorError, Graph, Node, NodeExecutor, NodeOutcome, NodeStatus, RuntimeContext,
+    handlers::NodeHandler,
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
-use std::thread;
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct BranchResult {
@@ -22,8 +23,38 @@ enum JoinPolicy {
     Ignore,
 }
 
-#[derive(Debug, Default)]
-pub struct ParallelHandler;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ErrorPolicy {
+    Continue,
+    FailFast,
+    Ignore,
+}
+
+pub struct ParallelHandler {
+    executor: Option<Arc<dyn NodeExecutor>>,
+}
+
+impl Default for ParallelHandler {
+    fn default() -> Self {
+        Self { executor: None }
+    }
+}
+
+impl std::fmt::Debug for ParallelHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelHandler")
+            .field("has_executor", &self.executor.is_some())
+            .finish()
+    }
+}
+
+impl ParallelHandler {
+    pub fn with_executor(executor: Arc<dyn NodeExecutor>) -> Self {
+        Self {
+            executor: Some(executor),
+        }
+    }
+}
 
 #[async_trait]
 impl NodeHandler for ParallelHandler {
@@ -55,11 +86,25 @@ impl NodeHandler for ParallelHandler {
         }
 
         let join_policy = parse_join_policy(node);
+        let error_policy = parse_error_policy(node);
         let max_parallel = parse_usize_attr(node, "max_parallel", 4).max(1);
         let quorum_needed = quorum_target_count(node, branches.len());
 
-        let mut results = run_branch_batches(branches, context, max_parallel)?;
+        let mut results = if let Some(executor) = &self.executor {
+            run_branch_batches_with_executor(branches, context, graph, executor.as_ref(), max_parallel, error_policy).await?
+        } else {
+            run_branch_batches_from_context(branches, context, max_parallel)?
+        };
         results.sort_by(|left, right| left.branch_id.cmp(&right.branch_id));
+
+        // error_policy=ignore: downgrade failures to success before join evaluation
+        if error_policy == ErrorPolicy::Ignore {
+            for result in &mut results {
+                if result.status == NodeStatus::Fail {
+                    result.status = NodeStatus::Success;
+                }
+            }
+        }
 
         let success_count = results
             .iter()
@@ -79,9 +124,9 @@ impl NodeHandler for ParallelHandler {
                     )
                 } else {
                     (
-                        NodeStatus::Fail,
+                        NodeStatus::PartialSuccess,
                         format!(
-                            "all_success policy failed: {} of {} branches failed",
+                            "wait_all policy: {} of {} branches failed",
                             fail_count,
                             results.len()
                         ),
@@ -159,8 +204,7 @@ impl NodeHandler for ParallelHandler {
             status,
             notes: Some(notes),
             context_updates: updates,
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         })
     }
 }
@@ -176,31 +220,82 @@ impl JoinPolicy {
     }
 }
 
-fn run_branch_batches(
+/// Execute branches using a real NodeExecutor — each branch target node is executed
+/// with an isolated context clone.
+async fn run_branch_batches_with_executor(
     branches: Vec<(String, String)>,
     context: &RuntimeContext,
+    graph: &Graph,
+    executor: &dyn NodeExecutor,
     max_parallel: usize,
+    error_policy: ErrorPolicy,
 ) -> Result<Vec<BranchResult>, AttractorError> {
     let mut out = Vec::with_capacity(branches.len());
+
     for batch in branches.chunks(max_parallel) {
-        let mut handles = Vec::with_capacity(batch.len());
+        let mut futures = Vec::with_capacity(batch.len());
         for (branch_id, target_node) in batch {
             let local_context = branch_context(context, branch_id, target_node);
+            let target = graph.nodes.get(target_node.as_str());
             let branch_id = branch_id.clone();
             let target_node = target_node.clone();
-            handles.push(thread::spawn(move || {
-                resolve_branch_result(&branch_id, &target_node, &local_context)
-            }));
+
+            if let Some(target_node_ref) = target {
+                futures.push(async move {
+                    match executor.execute(target_node_ref, &local_context, graph).await {
+                        Ok(outcome) => BranchResult {
+                            branch_id,
+                            target_node,
+                            status: outcome.status,
+                            score: 0.0,
+                            notes: outcome.notes,
+                        },
+                        Err(error) => BranchResult {
+                            branch_id,
+                            target_node,
+                            status: NodeStatus::Fail,
+                            score: 0.0,
+                            notes: Some(error.to_string()),
+                        },
+                    }
+                });
+            } else {
+                out.push(BranchResult {
+                    branch_id,
+                    target_node,
+                    status: NodeStatus::Fail,
+                    score: 0.0,
+                    notes: Some("target node not found in graph".to_string()),
+                });
+            }
         }
 
-        for handle in handles {
-            let branch_result = handle.join().map_err(|_| {
-                AttractorError::Runtime("parallel branch thread panicked".to_string())
-            })?;
-            out.push(branch_result);
+        // Execute all futures in the batch concurrently
+        let batch_results = futures::future::join_all(futures).await;
+        out.extend(batch_results);
+
+        // fail_fast: abort remaining batches on first failure
+        if error_policy == ErrorPolicy::FailFast
+            && out.iter().any(|r| r.status == NodeStatus::Fail)
+        {
+            break;
         }
     }
 
+    Ok(out)
+}
+
+/// Context-driven branch resolution (backward compat for tests without executor)
+fn run_branch_batches_from_context(
+    branches: Vec<(String, String)>,
+    context: &RuntimeContext,
+    _max_parallel: usize,
+) -> Result<Vec<BranchResult>, AttractorError> {
+    let mut out = Vec::with_capacity(branches.len());
+    for (branch_id, target_node) in &branches {
+        let local_context = branch_context(context, branch_id, target_node);
+        out.push(resolve_branch_result(branch_id, target_node, &local_context));
+    }
     Ok(out)
 }
 
@@ -271,10 +366,19 @@ fn resolve_branch_result(
 fn parse_join_policy(node: &Node) -> JoinPolicy {
     let value = attr_str(node, &["join_policy"]).unwrap_or("all_success");
     match value.trim() {
-        "any_success" => JoinPolicy::AnySuccess,
-        "quorum" => JoinPolicy::Quorum,
+        "any_success" | "first_success" => JoinPolicy::AnySuccess,
+        "quorum" | "k_of_n" => JoinPolicy::Quorum,
         "ignore" => JoinPolicy::Ignore,
-        _ => JoinPolicy::AllSuccess,
+        "all_success" | "wait_all" | _ => JoinPolicy::AllSuccess,
+    }
+}
+
+fn parse_error_policy(node: &Node) -> ErrorPolicy {
+    let value = attr_str(node, &["error_policy"]).unwrap_or("continue");
+    match value.trim() {
+        "fail_fast" => ErrorPolicy::FailFast,
+        "ignore" => ErrorPolicy::Ignore,
+        "continue" | _ => ErrorPolicy::Continue,
     }
 }
 
@@ -345,6 +449,7 @@ fn parse_status(value: &str) -> Option<NodeStatus> {
         "partial_success" => Some(NodeStatus::PartialSuccess),
         "retry" => Some(NodeStatus::Retry),
         "fail" => Some(NodeStatus::Fail),
+        "skipped" => Some(NodeStatus::Skipped),
         _ => None,
     }
 }
@@ -363,6 +468,7 @@ fn branch_result_to_value(result: &BranchResult) -> Value {
 mod tests {
     use super::*;
     use crate::parse_dot;
+    use crate::handlers::NodeHandler as _;
 
     #[tokio::test(flavor = "current_thread")]
     async fn parallel_handler_all_success_expected_success_and_results() {
@@ -378,10 +484,14 @@ mod tests {
         .expect("graph should parse");
         let node = graph.nodes.get("p").expect("node should exist");
 
-        let outcome = ParallelHandler
-            .execute(node, &RuntimeContext::new(), &graph)
-            .await
-            .expect("execution should succeed");
+        let outcome = NodeHandler::execute(
+            &ParallelHandler::default(),
+            node,
+            &RuntimeContext::new(),
+            &graph,
+        )
+        .await
+        .expect("execution should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Success);
         assert_eq!(
@@ -413,8 +523,12 @@ mod tests {
             json!({"a": "fail", "b": "success"}),
         );
 
-        let outcome = ParallelHandler
-            .execute(node, &context, &graph)
+        let outcome = NodeHandler::execute(
+            &ParallelHandler::default(),
+            node,
+            &context,
+            &graph,
+        )
             .await
             .expect("execution should succeed");
 
@@ -441,11 +555,72 @@ mod tests {
             json!({"a": "success", "b": "fail", "c": "fail"}),
         );
 
-        let outcome = ParallelHandler
-            .execute(node, &context, &graph)
+        let outcome = NodeHandler::execute(
+            &ParallelHandler::default(),
+            node,
+            &context,
+            &graph,
+        )
             .await
             .expect("execution should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Fail);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parallel_handler_wait_all_alias_expected_all_success_policy() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                p [shape=component, join_policy="wait_all"]
+                p -> a
+                p -> b
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("p").expect("node should exist");
+
+        let outcome = NodeHandler::execute(
+            &ParallelHandler::default(),
+            node,
+            &RuntimeContext::new(),
+            &graph,
+        )
+            .await
+            .expect("execution should succeed");
+
+        assert_eq!(outcome.status, NodeStatus::Success);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn parallel_handler_first_success_alias_expected_any_success_policy() {
+        let graph = parse_dot(
+            r#"
+            digraph G {
+                p [shape=component, join_policy="first_success"]
+                p -> a
+                p -> b
+            }
+            "#,
+        )
+        .expect("graph should parse");
+        let node = graph.nodes.get("p").expect("node should exist");
+        let mut context = RuntimeContext::new();
+        context.insert(
+            "parallel.branch_outcomes".to_string(),
+            json!({"a": "fail", "b": "success"}),
+        );
+
+        let outcome = NodeHandler::execute(
+            &ParallelHandler::default(),
+            node,
+            &context,
+            &graph,
+        )
+            .await
+            .expect("execution should succeed");
+
+        assert_eq!(outcome.status, NodeStatus::Success);
     }
 }

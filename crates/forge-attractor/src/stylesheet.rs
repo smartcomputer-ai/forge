@@ -3,6 +3,7 @@ use crate::{AttrValue, AttractorError, Graph};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Selector {
     Universal,
+    Shape(String),
     NodeId(String),
     Class(String),
 }
@@ -18,14 +19,16 @@ impl StylesheetRule {
     fn specificity(&self) -> usize {
         match self.selector {
             Selector::Universal => 0,
-            Selector::Class(_) => 1,
-            Selector::NodeId(_) => 2,
+            Selector::Shape(_) => 1,
+            Selector::Class(_) => 2,
+            Selector::NodeId(_) => 3,
         }
     }
 
-    fn matches_node(&self, node_id: &str, classes: &[String]) -> bool {
+    fn matches_node(&self, node_id: &str, classes: &[String], shape: Option<&str>) -> bool {
         match &self.selector {
             Selector::Universal => true,
+            Selector::Shape(s) => shape == Some(s.as_str()),
             Selector::NodeId(id) => id == node_id,
             Selector::Class(class_name) => classes.iter().any(|class| class == class_name),
         }
@@ -92,6 +95,12 @@ pub fn apply_model_stylesheet(graph: &mut Graph) -> Result<(), AttractorError> {
 
     for node in graph.nodes.values_mut() {
         let node_classes = parse_class_list(node.attrs.get_str("class").unwrap_or_default());
+        let node_shape = Some(
+            node.attrs
+                .get_str("shape")
+                .unwrap_or("box")
+                .to_string(),
+        );
 
         for property in recognized {
             if node.attrs.is_explicit(property) {
@@ -100,7 +109,7 @@ pub fn apply_model_stylesheet(graph: &mut Graph) -> Result<(), AttractorError> {
 
             let mut selected: Option<(usize, usize, String)> = None;
             for rule in &rules {
-                if !rule.matches_node(&node.id, &node_classes) {
+                if !rule.matches_node(&node.id, &node_classes, node_shape.as_deref()) {
                     continue;
                 }
 
@@ -156,6 +165,11 @@ fn parse_selector(selector_raw: &str) -> Result<Selector, AttractorError> {
             )));
         }
         return Ok(Selector::Class(rest.to_string()));
+    }
+
+    // Bare identifier = shape selector (e.g., `box { ... }`)
+    if is_identifier(selector_raw) {
+        return Ok(Selector::Shape(selector_raw.to_string()));
     }
 
     Err(AttractorError::StylesheetParse(format!(

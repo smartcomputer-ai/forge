@@ -38,9 +38,9 @@ impl CheckpointNodeOutcome {
         Ok(NodeOutcome {
             status,
             notes: self.notes.clone(),
-            context_updates: RuntimeContext::new(),
             preferred_label: self.preferred_label.clone(),
             suggested_next_ids: self.suggested_next_ids.clone(),
+            ..Default::default()
         })
     }
 }
@@ -135,6 +135,7 @@ impl TryFrom<&str> for NodeStatus {
             "partial_success" => Ok(Self::PartialSuccess),
             "retry" => Ok(Self::Retry),
             "fail" => Ok(Self::Fail),
+            "skipped" => Ok(Self::Skipped),
             other => Err(AttractorError::Runtime(format!(
                 "unknown node status '{other}' in checkpoint"
             ))),

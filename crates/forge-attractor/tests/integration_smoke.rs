@@ -34,8 +34,7 @@ impl CodergenBackend for SpecSmokeBackend {
                     status: NodeStatus::Fail,
                     notes: Some("mock fail once".to_string()),
                     context_updates: updates,
-                    preferred_label: None,
-                    suggested_next_ids: vec![],
+                    ..Default::default()
                 }));
             }
         }
@@ -44,8 +43,7 @@ impl CodergenBackend for SpecSmokeBackend {
             status: NodeStatus::Success,
             notes: Some(format!("mock success {}", node.id)),
             context_updates: updates,
-            preferred_label: None,
-            suggested_next_ids: vec![],
+            ..Default::default()
         }))
     }
 }

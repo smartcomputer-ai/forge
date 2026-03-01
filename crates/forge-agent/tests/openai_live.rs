@@ -7,19 +7,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use support::live::{
     bootstrap_live_session, build_openai_live_client, collect_tool_results,
-    find_tool_call_end_output, find_tool_result_with_substring, live_tests_enabled,
+    find_tool_call_end_output, find_tool_result_with_substring,
     openai_live_model, run_with_retries, submit_with_options_timeout, submit_with_timeout,
 };
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_create_then_edit_file_smoke_applies_expected_side_effects() {
-    if !live_tests_enabled("RUN_LIVE_OPENAI_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_openai_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_openai_live_client();
     let model = openai_live_model();
     let profile = Arc::new(OpenAiProviderProfile::with_default_tools(model));
 
@@ -52,14 +47,9 @@ async fn openai_live_create_then_edit_file_smoke_applies_expected_side_effects()
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_read_file_truncation_smoke_preserves_full_tool_call_end_output() {
-    if !live_tests_enabled("RUN_LIVE_OPENAI_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_openai_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_openai_live_client();
     let model = openai_live_model();
     let profile = Arc::new(OpenAiProviderProfile::with_default_tools(model));
 
@@ -102,14 +92,9 @@ async fn openai_live_read_file_truncation_smoke_preserves_full_tool_call_end_out
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_shell_timeout_smoke_returns_timeout_tool_result() {
-    if !live_tests_enabled("RUN_LIVE_OPENAI_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_openai_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_openai_live_client();
     let model = openai_live_model();
     let profile = Arc::new(OpenAiProviderProfile::with_default_tools(model));
 
@@ -144,14 +129,9 @@ async fn openai_live_shell_timeout_smoke_returns_timeout_tool_result() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_submit_with_options_smoke_applies_request_overrides() {
-    if !live_tests_enabled("RUN_LIVE_OPENAI_TESTS") {
-        return;
-    }
-    let Some((client, requests)) = build_openai_live_client() else {
-        return;
-    };
+    let (client, requests) = build_openai_live_client();
     let model = openai_live_model();
     let profile = Arc::new(OpenAiProviderProfile::with_default_tools(model.clone()));
 

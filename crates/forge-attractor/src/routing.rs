@@ -125,10 +125,7 @@ mod tests {
     fn base_outcome() -> NodeOutcome {
         NodeOutcome {
             status: NodeStatus::Success,
-            notes: None,
-            context_updates: BTreeMap::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         }
     }
 

@@ -18,19 +18,26 @@ fn home_dir() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string()))
 }
 
+fn resolve_bin(env_var: &str, default_name: &str) -> String {
+    let path = std::env::var(env_var)
+        .unwrap_or_else(|_| home_dir().join(".local/bin").join(default_name).to_string_lossy().to_string());
+    assert!(
+        std::path::Path::new(&path).exists(),
+        "CLI binary not found at '{path}'. Install it or set {env_var} to the correct path."
+    );
+    path
+}
+
 fn claude_bin() -> String {
-    std::env::var("FORGE_CLAUDE_BIN")
-        .unwrap_or_else(|_| home_dir().join(".local/bin/claude").to_string_lossy().to_string())
+    resolve_bin("FORGE_CLAUDE_BIN", "claude")
 }
 
 fn codex_bin() -> String {
-    std::env::var("FORGE_CODEX_BIN")
-        .unwrap_or_else(|_| home_dir().join(".local/bin/codex").to_string_lossy().to_string())
+    resolve_bin("FORGE_CODEX_BIN", "codex")
 }
 
 fn gemini_bin() -> String {
-    std::env::var("FORGE_GEMINI_BIN")
-        .unwrap_or_else(|_| home_dir().join(".local/bin/gemini").to_string_lossy().to_string())
+    resolve_bin("FORGE_GEMINI_BIN", "gemini")
 }
 
 fn default_options() -> AgentRunOptions {
@@ -69,6 +76,7 @@ const SIMPLE_PROMPT: &str = "What is 2+2? Reply with ONLY the number, nothing el
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn claude_code_simple_text_response() {
     let provider = ClaudeCodeAgentProvider::new(claude_bin());
     let result = provider
@@ -91,6 +99,7 @@ async fn claude_code_simple_text_response() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn claude_code_emits_events() {
     let provider = ClaudeCodeAgentProvider::new(claude_bin());
     let (opts, events) = options_with_event_collector();
@@ -110,6 +119,7 @@ async fn claude_code_emits_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn claude_code_reports_usage() {
     let provider = ClaudeCodeAgentProvider::new(claude_bin());
     let result = provider
@@ -126,6 +136,7 @@ async fn claude_code_reports_usage() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn claude_code_reports_cost() {
     let provider = ClaudeCodeAgentProvider::new(claude_bin());
     let result = provider
@@ -144,6 +155,7 @@ async fn claude_code_reports_cost() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn codex_simple_text_response() {
     let provider = CodexAgentProvider::new(codex_bin());
     let result = provider
@@ -166,6 +178,7 @@ async fn codex_simple_text_response() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn codex_emits_events() {
     let provider = CodexAgentProvider::new(codex_bin());
     let (opts, events) = options_with_event_collector();
@@ -190,6 +203,7 @@ async fn codex_emits_events() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn gemini_simple_text_response() {
     let provider = GeminiAgentProvider::new(gemini_bin());
     let result = provider
@@ -212,6 +226,7 @@ async fn gemini_simple_text_response() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn gemini_emits_events() {
     let provider = GeminiAgentProvider::new(gemini_bin());
     let (opts, events) = options_with_event_collector();
@@ -235,6 +250,7 @@ async fn gemini_emits_events() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "spawns real CLI agents (slow, requires authentication)"]
 async fn all_providers_return_valid_agent_run_result() {
     let providers: Vec<Box<dyn AgentProvider>> = vec![
         Box::new(ClaudeCodeAgentProvider::new(claude_bin())),

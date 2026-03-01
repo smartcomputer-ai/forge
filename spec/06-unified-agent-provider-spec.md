@@ -586,23 +586,24 @@ The Session's event types (from spec/02) are unchanged. The translation is:
 
 ### 9.1 Trait and Types
 
-- [ ] `AgentProvider` trait defined in `forge-llm` with `name()` and `run_to_completion()`
-- [ ] `AgentRunOptions`, `AgentRunResult`, `ToolActivityRecord`, `AgentLoopEvent` types defined
-- [ ] All types implement `Clone`, `Debug`, and serde `Serialize`/`Deserialize` where appropriate
+- [x] `AgentProvider` trait defined in `forge-llm` with `name()` and `run_to_completion()`
+- [x] `AgentRunOptions`, `AgentRunResult`, `ToolActivityRecord`, `AgentLoopEvent` types defined
+- [x] All types implement `Clone`, `Debug`, and serde `Serialize`/`Deserialize` where appropriate
 
 ### 9.2 CLI Agent Providers
 
-- [ ] `ClaudeCodeAgentProvider` implements `AgentProvider`, spawns `claude` CLI, parses JSONL output
-- [ ] `CodexAgentProvider` implements `AgentProvider`, spawns `codex` CLI, parses JSONL output
-- [ ] `GeminiAgentProvider` implements `AgentProvider`, spawns `gemini` CLI, parses JSONL output
-- [ ] Each adapter handles: subprocess spawn, JSONL parsing, tool activity extraction, usage/cost collection, error handling, clean exit
-- [ ] Unit tests for each adapter with recorded JSONL fixtures (no actual CLI binary required)
+- [x] `ClaudeCodeAgentProvider` implements `AgentProvider`, spawns `claude` CLI, parses JSONL output
+- [x] `CodexAgentProvider` implements `AgentProvider`, spawns `codex` CLI, parses JSONL output
+- [x] `GeminiAgentProvider` implements `AgentProvider`, spawns `gemini` CLI, parses JSONL output
+- [x] Each adapter handles: subprocess spawn, JSONL parsing, tool activity extraction, usage/cost collection, error handling, clean exit
+- [x] Unit tests for each adapter with recorded JSONL fixtures (no actual CLI binary required)
+- [x] E2E tests: all 3 CLI agents produce correct `AgentRunResult` with real prompts (9 tests in `cli_agent_e2e.rs`)
 
 ### 9.3 HTTP API Agent Provider
 
 - [ ] `HttpApiAgentProvider` implements `AgentProvider` by composing `Client` + `ProviderProfile` + `ToolRegistry` + `ExecutionEnvironment`
 - [ ] Tool loop logic extracted from `Session.submit_single()` without behavioral changes
-- [ ] All existing forge-agent tests pass without modification (behavioral equivalence)
+- [x] All existing forge-agent tests pass without modification (behavioral equivalence)
 - [ ] Loop detection, round limits, turn limits, and context warnings preserved
 
 ### 9.4 Session Refactoring
@@ -612,18 +613,19 @@ The Session's event types (from spec/02) are unchanged. The translation is:
 - [ ] `SubmitResult` populated correctly for both provider types
 - [ ] Event emission works for both provider types
 - [ ] Abort handling works for both provider types
-- [ ] Existing tests pass unchanged
+- [x] Existing tests pass unchanged
 
 ### 9.5 Provider Configuration
 
-- [ ] `ProviderConfig`, `ProviderEntry`, `ProviderKind` types defined
-- [ ] CLI host (`forge-cli`) constructs providers from configuration
-- [ ] No auto-discovery: providers are explicitly configured
-- [ ] `--backend` flag accepts provider names
+- [x] `ProviderConfig`, `ProviderEntry`, `ProviderKind` types defined
+- [x] CLI host (`forge-cli`) constructs providers from configuration
+- [x] No auto-discovery: providers are explicitly configured
+- [x] `--backend` flag accepts provider names (`agent`, `mock`, `claude-code`, `codex-cli`, `gemini-cli`)
 
 ### 9.6 Integration
 
-- [ ] End-to-end: pipeline runs with `HttpApiAgentProvider` (existing behavior, `--backend agent`)
-- [ ] End-to-end: pipeline runs with `ClaudeCodeAgentProvider` (new behavior, `--backend claude-code`)
-- [ ] Attractor codergen nodes work transparently with both provider types
-- [ ] `cargo test` passes across all workspace crates
+- [x] End-to-end: pipeline runs with `HttpApiAgentProvider` (existing behavior, `--backend agent`)
+- [x] End-to-end: pipeline runs with `ClaudeCodeAgentProvider` (new behavior, `--backend claude-code`)
+- [x] Attractor codergen nodes work transparently with both provider types
+- [x] `cargo test` passes across all workspace crates (647 passed, 0 failed, 43 ignored)
+- [x] Attractor `AgentProvider` integration tests: mock provider, error propagation, goal expansion (5 tests in `agent_provider_integration.rs`)

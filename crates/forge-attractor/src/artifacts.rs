@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub const DEFAULT_FILE_BACKING_THRESHOLD_BYTES: usize = 64 * 1024;
+pub const DEFAULT_FILE_BACKING_THRESHOLD_BYTES: usize = 100 * 1024;
 const ARTIFACT_REFERENCE_PREFIX: &str = "artifact://";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

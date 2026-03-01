@@ -7,18 +7,13 @@ use std::sync::Arc;
 use support::live::{
     anthropic_live_model, bootstrap_live_session, build_anthropic_live_client,
     collect_tool_results, find_tool_call_end_output, find_tool_result_with_substring,
-    live_tests_enabled, run_with_retries, submit_with_options_timeout, submit_with_timeout,
+    run_with_retries, submit_with_options_timeout, submit_with_timeout,
 };
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_create_then_edit_file_smoke_applies_expected_side_effects() {
-    if !live_tests_enabled("RUN_LIVE_ANTHROPIC_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_anthropic_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_anthropic_live_client();
     let model = anthropic_live_model();
     let profile = Arc::new(AnthropicProviderProfile::with_default_tools(model));
 
@@ -51,14 +46,9 @@ async fn anthropic_live_create_then_edit_file_smoke_applies_expected_side_effect
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_read_file_truncation_smoke_preserves_full_tool_call_end_output() {
-    if !live_tests_enabled("RUN_LIVE_ANTHROPIC_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_anthropic_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_anthropic_live_client();
     let model = anthropic_live_model();
     let profile = Arc::new(AnthropicProviderProfile::with_default_tools(model));
 
@@ -101,14 +91,9 @@ async fn anthropic_live_read_file_truncation_smoke_preserves_full_tool_call_end_
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_shell_timeout_smoke_returns_timeout_tool_result() {
-    if !live_tests_enabled("RUN_LIVE_ANTHROPIC_TESTS") {
-        return;
-    }
-    let Some((client, _requests)) = build_anthropic_live_client() else {
-        return;
-    };
+    let (client, _requests) = build_anthropic_live_client();
     let model = anthropic_live_model();
     let profile = Arc::new(AnthropicProviderProfile::with_default_tools(model));
 
@@ -143,14 +128,9 @@ async fn anthropic_live_shell_timeout_smoke_returns_timeout_tool_result() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_submit_with_options_smoke_applies_request_overrides() {
-    if !live_tests_enabled("RUN_LIVE_ANTHROPIC_TESTS") {
-        return;
-    }
-    let Some((client, requests)) = build_anthropic_live_client() else {
-        return;
-    };
+    let (client, requests) = build_anthropic_live_client();
     let model = anthropic_live_model();
     let profile = Arc::new(AnthropicProviderProfile::with_default_tools(model.clone()));
 

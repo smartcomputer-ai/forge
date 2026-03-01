@@ -18,10 +18,20 @@ cargo test -p forge-llm test_name              # Run a single test by name
 cargo test -p forge-llm -- --nocapture         # Run tests with stdout visible
 ```
 
-Live provider tests (ignored by default, require API keys):
+Opt-in infrastructure tests (ignored by default, require local services or CLIs):
 ```bash
-RUN_LIVE_OPENAI_TESTS=1 cargo test -p forge-llm --test openai_live -- --ignored
-RUN_LIVE_ANTHROPIC_TESTS=1 cargo test -p forge-llm --test anthropic_live -- --ignored
+cargo test -p forge-cxdb-runtime --test live -- --ignored      # needs running CXDB server
+cargo test -p cxdb --test integration -- --ignored             # needs running CXDB server
+cargo test -p forge-llm --test cli_agent_e2e -- --ignored      # needs claude/codex/gemini CLIs (OAuth, no API keys)
+```
+
+Live provider tests (ignored by default, require API keys — costs real money):
+```bash
+cargo test -p forge-llm --test openai_live -- --ignored        # needs OPENAI_API_KEY
+cargo test -p forge-llm --test anthropic_live -- --ignored      # needs ANTHROPIC_API_KEY
+cargo test -p forge-agent --test openai_live -- --ignored       # needs OPENAI_API_KEY
+cargo test -p forge-agent --test anthropic_live -- --ignored    # needs ANTHROPIC_API_KEY
+cargo test -p forge-attractor --test live -- --ignored          # needs OPENAI_API_KEY
 ```
 
 CLI host usage:
@@ -59,6 +69,10 @@ Key architectural patterns:
 - **Serialization** — JSON for external interfaces, msgpack (`rmp-serde`) for CXDB binary protocol and internal persistence.
 - **Async runtime** — `tokio` with `current_thread` flavor everywhere (main and tests).
 - **Rust edition 2024** for all Forge crates; vendored `cxdb` uses edition 2021.
+- **Centralized status.json** — The runner writes `status.json` for ALL node types (not individual handlers). Fields: `outcome`, `preferred_next_label`, `suggested_next_ids`, `context_updates`, `notes`, `failure_reason`.
+- **Model stylesheet specificity** — Selectors: `*` (universal, 0) < shape name (1) < `.class` (2) < `#node_id` (3). Nodes without an explicit `shape` attribute default to `"box"`.
+- **Parallel error_policy** — Parallel handler supports `error_policy` attribute: `continue` (default), `fail_fast` (abort on first failure), `ignore` (downgrade failures to success).
+- **Goal-gate enforcement** — Engine checks ALL graph nodes with `goal_gate=true` before allowing exit, including nodes never visited during execution.
 
 ## Specifications
 
@@ -98,9 +112,12 @@ When making changes, align behavior and terminology to these documents first.
 | `ANTHROPIC_API_KEY` | Anthropic provider authentication |
 | `OPENAI_BASE_URL` | Override OpenAI API endpoint |
 | `ANTHROPIC_BASE_URL` | Override Anthropic API endpoint |
-| `FORGE_CXDB_PERSISTENCE` | CXDB persistence mode (`off` or `required`) |
-| `FORGE_CXDB_BINARY_ADDR` | CXDB binary protocol address (default: `127.0.0.1:26257`) |
-| `FORGE_CXDB_HTTP_BASE_URL` | CXDB HTTP base URL (default: `http://127.0.0.1:26258`) |
+| `FORGE_CXDB_PERSISTENCE` | CXDB persistence mode (default: `required`; set to `off` to disable) |
+| `FORGE_CXDB_BINARY_ADDR` | CXDB binary protocol address (default: `127.0.0.1:9009`) |
+| `FORGE_CXDB_HTTP_BASE_URL` | CXDB HTTP base URL (default: `http://127.0.0.1:9010`) |
+| `FORGE_CLAUDE_BIN` | Path to Claude Code CLI binary (default: `~/.local/bin/claude`) |
+| `FORGE_CODEX_BIN` | Path to Codex CLI binary (default: `~/.local/bin/codex`) |
+| `FORGE_GEMINI_BIN` | Path to Gemini CLI binary (default: `~/.local/bin/gemini`) |
 
 ## Test Strategy (Concise, Deterministic)
 
@@ -112,6 +129,14 @@ When making changes, align behavior and terminology to these documents first.
 - Property tests (optional): add a small number of targeted property tests (e.g., canonical encoding invariants). Gate heavier fuzzing behind a feature.
 - Doctests: keep crate-level examples compilable; simple examples belong in doc comments and are run with `cargo test --doc`.
 - Async tests: if needed, use `#[tokio::test(flavor = "current_thread")]` to keep scheduling deterministic.
+
+### Testing Rules (Non-Negotiable)
+
+- **Tests must fail when the thing they test doesn't work.** A test that silently passes when its preconditions aren't met is worse than no test — it gives false confidence. If a test can't run, it must fail loudly with a clear error explaining what's missing.
+- **Never use runtime env-var gating that hides failures.** Patterns like `if !enabled() { return; }` inside a test body are banned. If a test requires external resources (API keys, CLI binaries, running services), use `#[ignore]` so it doesn't run by default — but when it IS run, it must fail hard if those resources are missing.
+- **`#[ignore]` is the ONLY acceptable gating mechanism.** Use `#[ignore = "reason"]` for tests that cost money (API calls) or require infrastructure that isn't always available. Never double-gate with `#[ignore]` + runtime early-return.
+- **CXDB is required, not optional.** Pipeline tests that need CXDB must fail with a clear error if CXDB is unreachable. Do not silently skip persistence.
+- **CLI agent binaries (claude, codex, gemini) are installed at `~/.local/bin/`.** Tests that spawn these binaries should fail with a clear error if the binary is not found, not silently skip.
 
 ## Important
 

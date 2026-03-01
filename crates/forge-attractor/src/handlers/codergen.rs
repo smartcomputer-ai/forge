@@ -2,7 +2,7 @@ use crate::{
     AttractorError, Graph, Node, NodeOutcome, NodeStatus, RuntimeContext, handlers::NodeHandler,
 };
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{fs, path::PathBuf, sync::Arc};
 
 pub enum CodergenBackendResult {
@@ -87,7 +87,7 @@ impl NodeHandler for CodergenHandler {
             (response, outcome)
         };
 
-        write_artifacts_if_configured(node, context, &prompt, &response_text, &outcome)?;
+        write_artifacts_if_configured(node, context, &prompt, &response_text)?;
         Ok(outcome)
     }
 }
@@ -97,7 +97,6 @@ fn write_artifacts_if_configured(
     context: &RuntimeContext,
     prompt: &str,
     response_text: &str,
-    outcome: &NodeOutcome,
 ) -> Result<(), AttractorError> {
     let Some(logs_root) = context.get("runtime.logs_root").and_then(Value::as_str) else {
         return Ok(());
@@ -108,17 +107,8 @@ fn write_artifacts_if_configured(
     fs::write(stage_dir.join("prompt.md"), prompt).map_err(io_error)?;
     fs::write(stage_dir.join("response.md"), response_text).map_err(io_error)?;
 
-    let status = json!({
-        "status": outcome.status.as_str(),
-        "notes": outcome.notes,
-        "context_updates": outcome.context_updates,
-        "preferred_label": outcome.preferred_label,
-        "suggested_next_ids": outcome.suggested_next_ids,
-    });
-    let payload = serde_json::to_vec_pretty(&status).map_err(|error| {
-        AttractorError::Runtime(format!("status serialization failed: {error}"))
-    })?;
-    fs::write(stage_dir.join("status.json"), payload).map_err(io_error)?;
+    // Note: status.json is written centrally by the runner for ALL node types.
+    // Codergen only writes prompt.md and response.md here.
 
     Ok(())
 }
@@ -138,8 +128,7 @@ fn simulated_success(node: &Node, response_text: String) -> NodeOutcome {
         status: NodeStatus::Success,
         notes: Some(format!("Stage completed: {}", node.id)),
         context_updates: updates,
-        preferred_label: None,
-        suggested_next_ids: Vec::new(),
+        ..Default::default()
     }
 }
 
@@ -223,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codergen_handler_with_logs_root_expected_writes_prompt_response_status_files() {
+    async fn codergen_handler_with_logs_root_expected_writes_prompt_response_files() {
         let graph = parse_dot(
             r#"
             digraph G {
@@ -246,6 +235,6 @@ mod tests {
             .expect("execute");
         assert!(dir.path().join("n1").join("prompt.md").exists());
         assert!(dir.path().join("n1").join("response.md").exists());
-        assert!(dir.path().join("n1").join("status.json").exists());
+        // status.json is now written centrally by the runner, not the handler
     }
 }

@@ -1,8 +1,11 @@
 use crate::{
-    AttractorError, Graph, Node, NodeOutcome, NodeStatus, RuntimeContext, handlers::NodeHandler,
+    AttractorError, Graph, Node, NodeOutcome, NodeStatus, RuntimeContext,
+    handlers::NodeHandler,
+    handlers::codergen::{CodergenBackend, CodergenBackendResult},
 };
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 struct Candidate {
@@ -11,16 +14,39 @@ struct Candidate {
     score: f64,
 }
 
-#[derive(Debug, Default)]
-pub struct ParallelFanInHandler;
+pub struct ParallelFanInHandler {
+    backend: Option<Arc<dyn CodergenBackend>>,
+}
+
+impl Default for ParallelFanInHandler {
+    fn default() -> Self {
+        Self { backend: None }
+    }
+}
+
+impl std::fmt::Debug for ParallelFanInHandler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ParallelFanInHandler")
+            .field("has_backend", &self.backend.is_some())
+            .finish()
+    }
+}
+
+impl ParallelFanInHandler {
+    pub fn with_backend(backend: Arc<dyn CodergenBackend>) -> Self {
+        Self {
+            backend: Some(backend),
+        }
+    }
+}
 
 #[async_trait]
 impl NodeHandler for ParallelFanInHandler {
     async fn execute(
         &self,
-        _node: &Node,
+        node: &Node,
         context: &RuntimeContext,
-        _graph: &Graph,
+        graph: &Graph,
     ) -> Result<NodeOutcome, AttractorError> {
         let Some(results) = context.get("parallel.results").and_then(Value::as_array) else {
             return Ok(NodeOutcome::failure(
@@ -41,6 +67,62 @@ impl NodeHandler for ParallelFanInHandler {
             ));
         }
 
+        // If the node has a prompt attribute and we have an LLM backend,
+        // use LLM consolidation to evaluate candidates
+        let prompt = node.attrs.get_str("prompt");
+        if let (Some(prompt_text), Some(backend)) = (prompt, &self.backend) {
+            if !prompt_text.trim().is_empty() {
+                let consolidation_prompt = format!(
+                    "{}\n\nCandidates:\n{}",
+                    prompt_text,
+                    serde_json::to_string_pretty(results).unwrap_or_default()
+                );
+
+                match backend.run(node, &consolidation_prompt, context, graph).await {
+                    Ok(CodergenBackendResult::Outcome(outcome)) => {
+                        let mut updates = outcome.context_updates.clone();
+                        updates.insert(
+                            "parallel.fan_in.method".to_string(),
+                            Value::String("llm_consolidation".to_string()),
+                        );
+                        updates.insert(
+                            "parallel.fan_in.candidate_count".to_string(),
+                            Value::Number((candidates.len() as u64).into()),
+                        );
+                        return Ok(NodeOutcome {
+                            context_updates: updates,
+                            ..outcome
+                        });
+                    }
+                    Ok(CodergenBackendResult::Text(text)) => {
+                        let mut updates = RuntimeContext::new();
+                        updates.insert(
+                            "parallel.fan_in.llm_response".to_string(),
+                            Value::String(text),
+                        );
+                        updates.insert(
+                            "parallel.fan_in.method".to_string(),
+                            Value::String("llm_consolidation".to_string()),
+                        );
+                        updates.insert(
+                            "parallel.fan_in.candidate_count".to_string(),
+                            Value::Number((candidates.len() as u64).into()),
+                        );
+                        return Ok(NodeOutcome {
+                            status: NodeStatus::Success,
+                            notes: Some("LLM consolidation completed".to_string()),
+                            context_updates: updates,
+                            ..Default::default()
+                        });
+                    }
+                    Err(_) => {
+                        // Fall through to heuristic ranking
+                    }
+                }
+            }
+        }
+
+        // Heuristic ranking: sort by status rank (lower = better), then score (higher = better)
         candidates.sort_by(|left, right| {
             rank_status(left.status)
                 .cmp(&rank_status(right.status))
@@ -80,6 +162,10 @@ impl NodeHandler for ParallelFanInHandler {
             "parallel.fan_in.candidate_count".to_string(),
             Value::Number((candidates.len() as u64).into()),
         );
+        updates.insert(
+            "parallel.fan_in.method".to_string(),
+            Value::String("heuristic_ranking".to_string()),
+        );
 
         Ok(NodeOutcome {
             status,
@@ -89,8 +175,7 @@ impl NodeHandler for ParallelFanInHandler {
                 best.status.as_str()
             )),
             context_updates: updates,
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         })
     }
 }
@@ -118,6 +203,7 @@ fn parse_status(value: &str) -> Option<NodeStatus> {
         "partial_success" => Some(NodeStatus::PartialSuccess),
         "retry" => Some(NodeStatus::Retry),
         "fail" => Some(NodeStatus::Fail),
+        "skipped" => Some(NodeStatus::Skipped),
         _ => None,
     }
 }
@@ -128,6 +214,7 @@ fn rank_status(status: NodeStatus) -> u8 {
         NodeStatus::PartialSuccess => 1,
         NodeStatus::Retry => 2,
         NodeStatus::Fail => 3,
+        NodeStatus::Skipped => 4,
     }
 }
 
@@ -135,6 +222,7 @@ fn rank_status(status: NodeStatus) -> u8 {
 mod tests {
     use super::*;
     use crate::parse_dot;
+    use crate::handlers::NodeHandler;
 
     #[tokio::test(flavor = "current_thread")]
     async fn fan_in_selects_best_candidate_expected_success() {
@@ -150,8 +238,12 @@ mod tests {
             ]),
         );
 
-        let outcome = ParallelFanInHandler
-            .execute(node, &context, &graph)
+        let outcome = NodeHandler::execute(
+            &ParallelFanInHandler::default(),
+            node,
+            &context,
+            &graph,
+        )
             .await
             .expect("execute should succeed");
 
@@ -159,6 +251,10 @@ mod tests {
         assert_eq!(
             outcome.context_updates.get("parallel.fan_in.best_id"),
             Some(&Value::String("c".to_string()))
+        );
+        assert_eq!(
+            outcome.context_updates.get("parallel.fan_in.method"),
+            Some(&Value::String("heuristic_ranking".to_string()))
         );
     }
 
@@ -175,8 +271,12 @@ mod tests {
             ]),
         );
 
-        let outcome = ParallelFanInHandler
-            .execute(node, &context, &graph)
+        let outcome = NodeHandler::execute(
+            &ParallelFanInHandler::default(),
+            node,
+            &context,
+            &graph,
+        )
             .await
             .expect("execute should succeed");
 

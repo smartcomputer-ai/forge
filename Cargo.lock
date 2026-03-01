@@ -431,6 +431,7 @@ dependencies = [
  "forge-agent",
  "forge-cxdb-runtime",
  "forge-llm",
+ "futures",
  "graphviz-rust",
  "rmp-serde",
  "serde",

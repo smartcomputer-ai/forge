@@ -48,16 +48,6 @@ impl ProviderAdapter for RecordingAdapter {
     }
 }
 
-pub fn live_tests_enabled(flag_name: &str) -> bool {
-    match env::var(flag_name) {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
 pub fn openai_live_model() -> String {
     env_or_dotenv_var("OPENAI_LIVE_MODEL").unwrap_or_else(|| "gpt-5-mini".to_string())
 }
@@ -66,8 +56,10 @@ pub fn anthropic_live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_LIVE_MODEL").unwrap_or_else(|| "claude-sonnet-4-5".to_string())
 }
 
-pub fn build_openai_live_client() -> Option<(Arc<Client>, Arc<Mutex<Vec<Request>>>)> {
-    let api_key = env_or_dotenv_var("OPENAI_API_KEY")?;
+pub fn build_openai_live_client() -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
+    let api_key = env_or_dotenv_var("OPENAI_API_KEY")
+        .expect("OPENAI_API_KEY must be set (env or .env) to run live OpenAI agent tests");
+    assert!(!api_key.trim().is_empty(), "OPENAI_API_KEY is set but empty");
     let mut config = OpenAIAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("OPENAI_BASE_URL") {
         config.base_url = base_url;
@@ -78,24 +70,26 @@ pub fn build_openai_live_client() -> Option<(Arc<Client>, Arc<Mutex<Vec<Request>
     if let Some(project_id) = env_or_dotenv_var("OPENAI_PROJECT_ID") {
         config.project_id = Some(project_id);
     }
-    let adapter = OpenAIAdapter::new(config).ok()?;
+    let adapter = OpenAIAdapter::new(config).expect("OpenAI adapter creation should succeed");
     client_with_recording_adapter("openai", Arc::new(adapter))
 }
 
-pub fn build_anthropic_live_client() -> Option<(Arc<Client>, Arc<Mutex<Vec<Request>>>)> {
-    let api_key = env_or_dotenv_var("ANTHROPIC_API_KEY")?;
+pub fn build_anthropic_live_client() -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
+    let api_key = env_or_dotenv_var("ANTHROPIC_API_KEY")
+        .expect("ANTHROPIC_API_KEY must be set (env or .env) to run live Anthropic agent tests");
+    assert!(!api_key.trim().is_empty(), "ANTHROPIC_API_KEY is set but empty");
     let mut config = AnthropicAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("ANTHROPIC_BASE_URL") {
         config.base_url = base_url;
     }
-    let adapter = AnthropicAdapter::new(config).ok()?;
+    let adapter = AnthropicAdapter::new(config).expect("Anthropic adapter creation should succeed");
     client_with_recording_adapter("anthropic", Arc::new(adapter))
 }
 
 fn client_with_recording_adapter(
     provider_name: &str,
     inner: Arc<dyn ProviderAdapter>,
-) -> Option<(Arc<Client>, Arc<Mutex<Vec<Request>>>)> {
+) -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let wrapper = Arc::new(RecordingAdapter {
         name: provider_name.to_string(),
@@ -104,11 +98,11 @@ fn client_with_recording_adapter(
     });
 
     let mut client = Client::default();
-    if client.register_provider(wrapper).is_err() {
-        return None;
-    }
+    client
+        .register_provider(wrapper)
+        .expect("register provider");
 
-    Some((Arc::new(client), requests))
+    (Arc::new(client), requests)
 }
 
 pub fn bootstrap_live_session(

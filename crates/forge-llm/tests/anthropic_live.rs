@@ -13,16 +13,6 @@ use tokio::time::{Duration, sleep, timeout};
 const LIVE_RETRIES: usize = 3;
 const LIVE_MAX_TOKENS: u64 = 10_000;
 
-fn live_tests_enabled() -> bool {
-    match env::var("RUN_LIVE_ANTHROPIC_TESTS") {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_LIVE_MODEL").unwrap_or_else(|| "claude-sonnet-4-5".to_string())
 }
@@ -86,19 +76,21 @@ fn env_or_dotenv_var(key: &str) -> Option<String> {
     None
 }
 
-fn build_live_client() -> Option<Client> {
-    let api_key = env_or_dotenv_var("ANTHROPIC_API_KEY")?;
+fn build_live_client() -> Client {
+    let api_key = env_or_dotenv_var("ANTHROPIC_API_KEY")
+        .expect("ANTHROPIC_API_KEY must be set (env or .env) to run live Anthropic tests");
+    assert!(!api_key.trim().is_empty(), "ANTHROPIC_API_KEY is set but empty");
     let mut config = AnthropicAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("ANTHROPIC_BASE_URL") {
         config.base_url = base_url;
     }
-    let adapter = AnthropicAdapter::new(config).ok()?;
+    let adapter = AnthropicAdapter::new(config).expect("Anthropic adapter creation should succeed");
 
     let mut client = Client::default();
     client
         .register_provider(Arc::new(adapter))
         .expect("register provider");
-    Some(client)
+    client
 }
 
 fn greeting_request_with_max_tokens(max_tokens: u64) -> Request {
@@ -267,15 +259,9 @@ async fn stream_finish_with_retries(
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_complete_returns_non_empty_text() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response =
         complete_with_retries(&client, greeting_request_with_max_tokens(LIVE_MAX_TOKENS))
@@ -288,15 +274,9 @@ async fn anthropic_live_complete_returns_non_empty_text() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_complete_with_thinking_populates_reasoning() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response =
         complete_with_retries(&client, thinking_request_with_max_tokens(LIVE_MAX_TOKENS))
@@ -311,15 +291,9 @@ async fn anthropic_live_complete_with_thinking_populates_reasoning() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_complete_low_max_tokens_maps_length_finish_reason() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response = complete_with_retries(&client, low_token_long_output_request(16))
         .await
@@ -333,15 +307,9 @@ async fn anthropic_live_complete_low_max_tokens_maps_length_finish_reason() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_stream_emits_text_delta_and_finish_response() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let (saw_text_delta, response) =
         stream_finish_with_retries(&client, greeting_request_with_max_tokens(LIVE_MAX_TOKENS))
@@ -355,15 +323,9 @@ async fn anthropic_live_stream_emits_text_delta_and_finish_response() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_stream_low_max_tokens_maps_length_finish_reason() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let (_saw_text_delta, response) =
         stream_finish_with_retries(&client, low_token_long_output_request(16))
@@ -375,15 +337,9 @@ async fn anthropic_live_stream_low_max_tokens_maps_length_finish_reason() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_complete_required_tool_choice_returns_tool_call() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response = complete_with_retries(&client, required_tool_call_request(LIVE_MAX_TOKENS))
         .await
@@ -408,15 +364,9 @@ async fn anthropic_live_complete_required_tool_choice_returns_tool_call() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_stream_required_tool_choice_emits_tool_call_events() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let request = required_tool_call_request(LIVE_MAX_TOKENS);
     let mut last_error: Option<SDKError> = None;
@@ -518,15 +468,9 @@ async fn anthropic_live_stream_required_tool_choice_emits_tool_call_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ANTHROPIC_TESTS=1 and ANTHROPIC_API_KEY (env or .env)"]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_live_invalid_model_returns_provider_error() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let mut request = greeting_request_with_max_tokens(64);
     request.model = "claude-this-model-should-not-exist-live-test".to_string();

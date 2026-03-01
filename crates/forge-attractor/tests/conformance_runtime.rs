@@ -45,9 +45,7 @@ impl CodergenBackend for MockCodergenBackend {
                 return Ok(CodergenBackendResult::Outcome(NodeOutcome {
                     status: NodeStatus::Retry,
                     notes: Some("retry implement".to_string()),
-                    context_updates: RuntimeContext::new(),
-                    preferred_label: None,
-                    suggested_next_ids: vec![],
+                    ..Default::default()
                 }));
             }
         }
@@ -58,8 +56,7 @@ impl CodergenBackend for MockCodergenBackend {
             status: NodeStatus::Success,
             notes: Some(format!("mock completed {}", node.id)),
             context_updates: updates,
-            preferred_label: None,
-            suggested_next_ids: vec![],
+            ..Default::default()
         }))
     }
 }

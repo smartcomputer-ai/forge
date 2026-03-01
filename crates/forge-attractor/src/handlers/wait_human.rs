@@ -95,6 +95,7 @@ impl NodeHandler for WaitHumanHandler {
             context_updates: updates,
             preferred_label: Some(selected.label.clone()),
             suggested_next_ids: vec![selected.to_node.clone()],
+            ..Default::default()
         })
     }
 }
@@ -103,9 +104,7 @@ fn retry_on_timeout() -> NodeOutcome {
     NodeOutcome {
         status: NodeStatus::Retry,
         notes: Some("human gate timeout, no default".to_string()),
-        context_updates: RuntimeContext::new(),
-        preferred_label: None,
-        suggested_next_ids: Vec::new(),
+        ..Default::default()
     }
 }
 

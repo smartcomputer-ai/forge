@@ -19,6 +19,79 @@ impl Default for RetryBackoffConfig {
     }
 }
 
+/// Named retry presets from the spec (Section 3.6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryPreset {
+    /// No retries. Fail immediately on error.
+    None,
+    /// General-purpose. 5 attempts, 200ms initial, 2x backoff.
+    Standard,
+    /// For unreliable operations. 5 attempts, 500ms initial, 2x backoff.
+    Aggressive,
+    /// Fixed delay between attempts. 3 attempts, 500ms, 1x factor.
+    Linear,
+    /// Long-running operations. 3 attempts, 2000ms initial, 3x backoff.
+    Patient,
+}
+
+impl RetryPreset {
+    pub fn to_policy(self) -> RetryPolicy {
+        match self {
+            Self::None => RetryPolicy {
+                max_attempts: 1,
+                backoff: RetryBackoffConfig::default(),
+            },
+            Self::Standard => RetryPolicy {
+                max_attempts: 5,
+                backoff: RetryBackoffConfig {
+                    initial_delay_ms: 200,
+                    backoff_factor: 2.0,
+                    max_delay_ms: 60_000,
+                    jitter: true,
+                },
+            },
+            Self::Aggressive => RetryPolicy {
+                max_attempts: 5,
+                backoff: RetryBackoffConfig {
+                    initial_delay_ms: 500,
+                    backoff_factor: 2.0,
+                    max_delay_ms: 60_000,
+                    jitter: true,
+                },
+            },
+            Self::Linear => RetryPolicy {
+                max_attempts: 3,
+                backoff: RetryBackoffConfig {
+                    initial_delay_ms: 500,
+                    backoff_factor: 1.0,
+                    max_delay_ms: 60_000,
+                    jitter: true,
+                },
+            },
+            Self::Patient => RetryPolicy {
+                max_attempts: 3,
+                backoff: RetryBackoffConfig {
+                    initial_delay_ms: 2000,
+                    backoff_factor: 3.0,
+                    max_delay_ms: 60_000,
+                    jitter: true,
+                },
+            },
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "none" => Some(Self::None),
+            "standard" => Some(Self::Standard),
+            "aggressive" => Some(Self::Aggressive),
+            "linear" => Some(Self::Linear),
+            "patient" => Some(Self::Patient),
+            _ => Option::None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct RetryPolicy {
     pub max_attempts: u32,
@@ -26,6 +99,13 @@ pub struct RetryPolicy {
 }
 
 pub fn build_retry_policy(node: &Node, graph: &Graph, backoff: RetryBackoffConfig) -> RetryPolicy {
+    // Check for named retry_preset attribute first
+    if let Some(preset_name) = node.attrs.get_str("retry_preset") {
+        if let Some(preset) = RetryPreset::from_str(preset_name) {
+            return preset.to_policy();
+        }
+    }
+
     let max_retries = node
         .attrs
         .get("max_retries")
@@ -46,7 +126,8 @@ pub fn build_retry_policy(node: &Node, graph: &Graph, backoff: RetryBackoffConfi
 }
 
 pub fn should_retry_outcome(outcome: &NodeOutcome) -> bool {
-    matches!(outcome.status, NodeStatus::Retry | NodeStatus::Fail)
+    // Per spec: only RETRY status triggers retry. FAIL goes to failure routing.
+    matches!(outcome.status, NodeStatus::Retry)
 }
 
 pub fn finalize_retry_exhausted(node: &Node) -> NodeOutcome {
@@ -54,9 +135,7 @@ pub fn finalize_retry_exhausted(node: &Node) -> NodeOutcome {
         return NodeOutcome {
             status: NodeStatus::PartialSuccess,
             notes: Some("retries exhausted, partial accepted".to_string()),
-            context_updates: Default::default(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         };
     }
 

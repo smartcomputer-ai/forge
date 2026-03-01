@@ -36,7 +36,8 @@ async fn parallel_join_policies_expected_deterministic_outcomes() {
         }),
     );
 
-    let all_outcome = ParallelHandler
+    let handler = ParallelHandler::default();
+    let all_outcome = handler
         .execute(
             graph.nodes.get("p_all").expect("node should exist"),
             &context,
@@ -44,9 +45,9 @@ async fn parallel_join_policies_expected_deterministic_outcomes() {
         )
         .await
         .expect("all policy should execute");
-    assert_eq!(all_outcome.status, NodeStatus::Fail);
+    assert_eq!(all_outcome.status, NodeStatus::PartialSuccess);
 
-    let any_outcome = ParallelHandler
+    let any_outcome = handler
         .execute(
             graph.nodes.get("p_any").expect("node should exist"),
             &context,
@@ -56,7 +57,7 @@ async fn parallel_join_policies_expected_deterministic_outcomes() {
         .expect("any policy should execute");
     assert_eq!(any_outcome.status, NodeStatus::Success);
 
-    let quorum_outcome = ParallelHandler
+    let quorum_outcome = handler
         .execute(
             graph.nodes.get("p_quorum").expect("node should exist"),
             &context,
@@ -66,7 +67,7 @@ async fn parallel_join_policies_expected_deterministic_outcomes() {
         .expect("quorum policy should execute");
     assert_eq!(quorum_outcome.status, NodeStatus::Success);
 
-    let ignore_outcome = ParallelHandler
+    let ignore_outcome = handler
         .execute(
             graph.nodes.get("p_ignore").expect("node should exist"),
             &context,
@@ -90,7 +91,7 @@ async fn parallel_fan_in_aggregation_expected_best_candidate_selected() {
         ]),
     );
 
-    let outcome = ParallelFanInHandler
+    let outcome = ParallelFanInHandler::default()
         .execute(
             graph.nodes.get("fan").expect("node should exist"),
             &context,

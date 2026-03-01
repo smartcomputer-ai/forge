@@ -61,10 +61,10 @@ pub fn core_registry_with_codergen_backend(
             wait_human::AutoApproveInterviewer,
         ))),
     );
-    registry.register_type("parallel", Arc::new(parallel::ParallelHandler));
+    registry.register_type("parallel", Arc::new(parallel::ParallelHandler::default()));
     registry.register_type(
         "parallel.fan_in",
-        Arc::new(parallel_fan_in::ParallelFanInHandler),
+        Arc::new(parallel_fan_in::ParallelFanInHandler::default()),
     );
     registry.register_type(
         "stack.manager_loop",

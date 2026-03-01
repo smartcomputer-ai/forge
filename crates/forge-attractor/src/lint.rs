@@ -63,14 +63,17 @@ fn rule_start_node(graph: &Graph) -> Vec<Diagnostic> {
 
 fn rule_terminal_node(graph: &Graph) -> Vec<Diagnostic> {
     let exits = graph.terminal_candidates();
-    if exits.is_empty() {
+    if exits.len() == 1 {
+        Vec::new()
+    } else {
         vec![Diagnostic::new(
             "terminal_node",
             Severity::Error,
-            "pipeline must have at least one terminal node",
+            format!(
+                "pipeline must have exactly one terminal node; found {}",
+                exits.len()
+            ),
         )]
-    } else {
-        Vec::new()
     }
 }
 
@@ -312,6 +315,18 @@ fn rule_retry_target_exists(graph: &Graph) -> Vec<Diagnostic> {
 fn rule_goal_gate_has_retry(graph: &Graph) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
 
+    // Check graph-level retry targets (these apply as fallback for all goal gates)
+    let graph_has_retry = !graph
+        .attrs
+        .get_str("retry_target")
+        .unwrap_or_default()
+        .is_empty()
+        || !graph
+            .attrs
+            .get_str("fallback_retry_target")
+            .unwrap_or_default()
+            .is_empty();
+
     for node in graph.nodes.values() {
         if node.attrs.get_bool("goal_gate") == Some(true) {
             let has_retry_target = !node
@@ -325,7 +340,7 @@ fn rule_goal_gate_has_retry(graph: &Graph) -> Vec<Diagnostic> {
                 .unwrap_or_default()
                 .is_empty();
 
-            if !has_retry_target && !has_fallback {
+            if !has_retry_target && !has_fallback && !graph_has_retry {
                 diagnostics.push(
                     Diagnostic::new(
                         "goal_gate_has_retry",
