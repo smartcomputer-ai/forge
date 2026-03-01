@@ -20,12 +20,31 @@ use tempfile::TempDir;
 
 const PIPELINE_TIMEOUT_SECS: u64 = 300; // 5 minutes per test
 
-fn workspace_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..")
+fn examples_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples")
 }
 
-fn examples_dir() -> PathBuf {
-    workspace_root().join("examples")
+/// Create an isolated git repo inside the tempdir so CLI agents (especially
+/// Codex) have a trusted working directory without polluting the real project.
+fn init_sandbox(temp: &TempDir) {
+    let status = Command::new("git")
+        .args(["init", "--initial-branch=main"])
+        .current_dir(temp.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("git init should succeed");
+    assert!(status.success(), "git init failed in sandbox");
+
+    // Codex requires at least one commit in the repo
+    let status = Command::new("git")
+        .args(["commit", "--allow-empty", "-m", "sandbox init"])
+        .current_dir(temp.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("git commit should succeed");
+    assert!(status.success(), "git commit failed in sandbox");
 }
 
 fn dot_file(name: &str) -> String {
@@ -252,6 +271,7 @@ fn run_linear_pipeline(backend: &str, env_var: &str, bin_name: &str) {
     let _bin = resolve_bin(env_var, bin_name);
 
     let temp = TempDir::new().expect("tempdir");
+    init_sandbox(&temp);
     let logs_root = temp.path().join("logs");
     let run_id = format!("e2e-linear-{backend}");
 
@@ -270,7 +290,7 @@ fn run_linear_pipeline(backend: &str, env_var: &str, bin_name: &str) {
             "--run-id",
             &run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "off")],
         PIPELINE_TIMEOUT_SECS,
     );
@@ -372,6 +392,7 @@ fn e2e_hitl_auto_approve() {
     let _bin = resolve_bin("FORGE_CLAUDE_BIN", "claude");
 
     let temp = TempDir::new().expect("tempdir");
+    init_sandbox(&temp);
     let logs_root = temp.path().join("logs");
     let run_id = "e2e-hitl";
 
@@ -390,7 +411,7 @@ fn e2e_hitl_auto_approve() {
             "--run-id",
             run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "off")],
         PIPELINE_TIMEOUT_SECS,
     );
@@ -438,6 +459,7 @@ fn e2e_parallel_pipeline() {
     let _bin = resolve_bin("FORGE_CLAUDE_BIN", "claude");
 
     let temp = TempDir::new().expect("tempdir");
+    init_sandbox(&temp);
     let logs_root = temp.path().join("logs");
     let run_id = "e2e-parallel";
 
@@ -456,7 +478,7 @@ fn e2e_parallel_pipeline() {
             "--run-id",
             run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "off")],
         PIPELINE_TIMEOUT_SECS,
     );
@@ -527,6 +549,7 @@ fn e2e_cxdb_persistence() {
     let _bin = resolve_bin("FORGE_CLAUDE_BIN", "claude");
 
     let temp = TempDir::new().expect("tempdir");
+    init_sandbox(&temp);
     let logs_root = temp.path().join("logs");
     let run_id = "e2e-cxdb-persist";
 
@@ -545,7 +568,7 @@ fn e2e_cxdb_persistence() {
             "--run-id",
             run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "required")],
         PIPELINE_TIMEOUT_SECS,
     );
@@ -701,6 +724,7 @@ fn e2e_cross_provider_parity() {
     for (backend, env_var, bin_name) in &backends {
         let _bin = resolve_bin(env_var, bin_name);
         let temp = TempDir::new().expect("tempdir");
+        init_sandbox(&temp);
         let logs_root = temp.path().join("logs");
         let run_id = format!("e2e-parity-{backend}");
 
@@ -719,7 +743,7 @@ fn e2e_cross_provider_parity() {
                 "--run-id",
                 &run_id,
             ],
-            &workspace_root(),
+            temp.path(),
             &[("FORGE_CXDB_PERSISTENCE", "off")],
             PIPELINE_TIMEOUT_SECS,
         );
@@ -801,6 +825,7 @@ fn e2e_resume_from_checkpoint() {
     let _bin = resolve_bin("FORGE_CLAUDE_BIN", "claude");
 
     let temp = TempDir::new().expect("tempdir");
+    init_sandbox(&temp);
     let logs_root = temp.path().join("logs");
     let run_id = "e2e-resume";
 
@@ -820,7 +845,7 @@ fn e2e_resume_from_checkpoint() {
             "--run-id",
             run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "off")],
         PIPELINE_TIMEOUT_SECS,
     );
@@ -858,7 +883,7 @@ fn e2e_resume_from_checkpoint() {
             "--run-id",
             run_id,
         ],
-        &workspace_root(),
+        temp.path(),
         &[("FORGE_CXDB_PERSISTENCE", "off")],
         PIPELINE_TIMEOUT_SECS,
     );
