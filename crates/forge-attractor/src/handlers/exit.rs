@@ -17,9 +17,7 @@ impl NodeHandler for ExitHandler {
         Ok(NodeOutcome {
             status: NodeStatus::Success,
             notes: Some("exit reached".to_string()),
-            context_updates: RuntimeContext::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         })
     }
 }

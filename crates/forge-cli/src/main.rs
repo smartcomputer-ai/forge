@@ -3,6 +3,7 @@ use forge_agent::{
     AnthropicProviderProfile, CxdbPersistenceMode as AgentCxdbPersistenceMode,
     LocalExecutionEnvironment, OpenAiProviderProfile, ProviderProfile, Session, SessionConfig,
 };
+use forge_attractor::agent_provider::AgentProviderSubmitter;
 use forge_attractor::forge_agent::{ForgeAgentCodergenAdapter, ForgeAgentSessionBackend};
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
 use forge_attractor::handlers::wait_human::{
@@ -11,13 +12,17 @@ use forge_attractor::handlers::wait_human::{
 use forge_attractor::{
     CheckpointState, CxdbPersistenceMode as AttractorCxdbPersistenceMode, PipelineRunResult,
     PipelineRunner, PipelineStatus, RunConfig, RuntimeEvent, RuntimeEventKind, RuntimeEventSink,
-    parse_dot, runtime_event_channel,
+    prepare_pipeline, runtime_event_channel,
 };
 use forge_cxdb_runtime::{
     CxdbBinaryClient, CxdbHttpClient, CxdbReqwestHttpClient, CxdbSdkBinaryClient,
     DEFAULT_CXDB_BINARY_ADDR, DEFAULT_CXDB_HTTP_BASE_URL,
 };
 use forge_llm::Client;
+use forge_llm::agent_provider::AgentProvider;
+use forge_llm::cli_adapters::claude_code::ClaudeCodeAgentProvider;
+use forge_llm::cli_adapters::codex::CodexAgentProvider;
+use forge_llm::cli_adapters::gemini::GeminiAgentProvider;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -103,6 +108,9 @@ enum InterviewerMode {
 enum BackendMode {
     Agent,
     Mock,
+    ClaudeCode,
+    CodexCli,
+    GeminiCli,
 }
 
 #[derive(Clone, Debug)]
@@ -147,14 +155,14 @@ fn first_non_empty_env(keys: &[&str]) -> Option<String> {
 
 fn cxdb_host_config_from_env() -> Result<CxdbHostConfig, String> {
     let persistence_raw = first_non_empty_env(&["FORGE_CXDB_PERSISTENCE", "CXDB_PERSISTENCE_MODE"])
-        .unwrap_or_else(|| "off".to_string())
+        .unwrap_or_else(|| "required".to_string())
         .to_ascii_lowercase();
     let persistence = match persistence_raw.as_str() {
         "off" => AttractorCxdbPersistenceMode::Off,
         "required" => AttractorCxdbPersistenceMode::Required,
         _ => {
             return Err(format!(
-                "invalid FORGE_CXDB_PERSISTENCE value '{}'; expected 'off' or 'required'",
+                "invalid FORGE_CXDB_PERSISTENCE value '{}'; expected 'required' or 'off'",
                 persistence_raw
             ));
         }
@@ -179,8 +187,17 @@ fn build_cxdb_clients(
     let binary: Arc<dyn CxdbBinaryClient> = Arc::new(
         CxdbSdkBinaryClient::connect(&cxdb.binary_addr).map_err(|error| {
             format!(
-                "failed to connect CXDB binary '{}': {error}",
-                cxdb.binary_addr
+                "CXDB connection failed at '{}': {error}\n\n\
+                 CXDB is required for pipeline run tracking and playback.\n\
+                 To start CXDB:\n\
+                   1. Install: see https://github.com/strongdm/cxdb\n\
+                   2. Start:   cxdb start\n\
+                   3. Verify:  cxdb status\n\n\
+                 Default addresses:\n\
+                   Binary protocol: {} (set FORGE_CXDB_BINARY_ADDR to override)\n\
+                   HTTP API:        {} (set FORGE_CXDB_HTTP_BASE_URL to override)\n\n\
+                 To run without persistence (not recommended): FORGE_CXDB_PERSISTENCE=off",
+                cxdb.binary_addr, cxdb.binary_addr, cxdb.http_base_url
             )
         })?,
     );
@@ -210,7 +227,10 @@ fn build_runtime_persistence(
 
 async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    for diag in &diagnostics {
+        eprintln!("warning: {}", diag.message);
+    }
     let cxdb = cxdb_host_config_from_env()?;
     let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 
@@ -250,7 +270,10 @@ async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
 
 async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let graph = parse_dot(&source).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    for diag in &diagnostics {
+        eprintln!("warning: {}", diag.message);
+    }
     let cxdb = cxdb_host_config_from_env()?;
     let (storage, artifacts) = build_runtime_persistence(&cxdb)?;
 
@@ -382,6 +405,9 @@ fn build_executor(
     let codergen_backend = match backend_mode {
         BackendMode::Mock => None,
         BackendMode::Agent => Some(build_agent_codergen_backend(cxdb, stage_link_writer)?),
+        BackendMode::ClaudeCode | BackendMode::CodexCli | BackendMode::GeminiCli => {
+            Some(build_cli_agent_codergen_backend(backend_mode)?)
+        }
     };
     let mut registry =
         forge_attractor::handlers::core_registry_with_codergen_backend(codergen_backend);
@@ -477,6 +503,42 @@ fn build_agent_codergen_backend(
         backend
     };
     Ok(Arc::new(backend))
+}
+
+fn build_cli_agent_codergen_backend(
+    mode: BackendMode,
+) -> Result<Arc<dyn forge_attractor::handlers::codergen::CodergenBackend>, String> {
+    let cwd = std::env::current_dir()
+        .map_err(|error| format!("failed to resolve current directory: {error}"))?;
+
+    let provider: Arc<dyn AgentProvider> = match mode {
+        BackendMode::ClaudeCode => {
+            let bin = resolve_cli_binary("FORGE_CLAUDE_BIN", "claude");
+            Arc::new(ClaudeCodeAgentProvider::new(bin))
+        }
+        BackendMode::CodexCli => {
+            let bin = resolve_cli_binary("FORGE_CODEX_BIN", "codex");
+            Arc::new(CodexAgentProvider::new(bin))
+        }
+        BackendMode::GeminiCli => {
+            let bin = resolve_cli_binary("FORGE_GEMINI_BIN", "gemini");
+            Arc::new(GeminiAgentProvider::new(bin))
+        }
+        _ => unreachable!(),
+    };
+
+    let submitter = AgentProviderSubmitter::new(provider, cwd);
+    let backend =
+        ForgeAgentSessionBackend::new(ForgeAgentCodergenAdapter::default(), Box::new(submitter));
+    Ok(Arc::new(backend))
+}
+
+fn resolve_cli_binary(env_var: &str, default_name: &str) -> String {
+    std::env::var(env_var).unwrap_or_else(|_| {
+        let home =
+            std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+        format!("{}/.local/bin/{}", home, default_name)
+    })
 }
 
 fn select_provider_profile_from_env() -> Result<Arc<dyn ProviderProfile>, String> {

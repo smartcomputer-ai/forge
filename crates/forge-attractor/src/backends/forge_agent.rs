@@ -473,8 +473,7 @@ fn map_submit_result_to_outcome(
         status,
         notes,
         context_updates: updates,
-        preferred_label: None,
-        suggested_next_ids: Vec::new(),
+        ..Default::default()
     }
 }
 

@@ -12,16 +12,6 @@ use tokio::time::{Duration, sleep, timeout};
 
 const LIVE_RETRIES: usize = 3;
 
-fn live_tests_enabled() -> bool {
-    match env::var("RUN_LIVE_OPENAI_TESTS") {
-        Ok(value) => {
-            let normalized = value.trim().to_ascii_lowercase();
-            normalized == "1" || normalized == "true" || normalized == "yes"
-        }
-        Err(_) => false,
-    }
-}
-
 fn live_model() -> String {
     env_or_dotenv_var("OPENAI_LIVE_MODEL").unwrap_or_else(|| "gpt-5-mini".to_string())
 }
@@ -85,8 +75,10 @@ fn env_or_dotenv_var(key: &str) -> Option<String> {
     None
 }
 
-fn build_live_client() -> Option<Client> {
-    let api_key = env_or_dotenv_var("OPENAI_API_KEY")?;
+fn build_live_client() -> Client {
+    let api_key = env_or_dotenv_var("OPENAI_API_KEY")
+        .expect("OPENAI_API_KEY must be set (env or .env) to run live OpenAI tests");
+    assert!(!api_key.trim().is_empty(), "OPENAI_API_KEY is set but empty");
     let mut config = OpenAIAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("OPENAI_BASE_URL") {
         config.base_url = base_url;
@@ -97,13 +89,13 @@ fn build_live_client() -> Option<Client> {
     if let Some(project_id) = env_or_dotenv_var("OPENAI_PROJECT_ID") {
         config.project_id = Some(project_id);
     }
-    let adapter = OpenAIAdapter::new(config).ok()?;
+    let adapter = OpenAIAdapter::new(config).expect("OpenAI adapter creation should succeed");
 
     let mut client = Client::default();
     client
         .register_provider(Arc::new(adapter))
         .expect("register provider");
-    Some(client)
+    client
 }
 
 fn greeting_request_with_max_tokens(max_tokens: u64) -> Request {
@@ -258,15 +250,9 @@ async fn stream_finish_with_retries(
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_complete_returns_non_empty_text() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
     let response = complete_with_retries(&client, greeting_request_with_max_tokens(10_000))
         .await
         .expect("openai live complete");
@@ -277,15 +263,9 @@ async fn openai_live_complete_returns_non_empty_text() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_complete_populates_reasoning_tokens_field() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response = complete_with_retries(&client, greeting_request_with_max_tokens(10_000))
         .await
@@ -299,15 +279,9 @@ async fn openai_live_complete_populates_reasoning_tokens_field() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_complete_low_max_tokens_maps_length_finish_reason() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let request = low_token_long_output_request(16);
 
@@ -323,15 +297,9 @@ async fn openai_live_complete_low_max_tokens_maps_length_finish_reason() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_stream_emits_text_delta_and_finish_response() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let (saw_text_delta, response) =
         stream_finish_with_retries(&client, greeting_request_with_max_tokens(10_000))
@@ -345,15 +313,9 @@ async fn openai_live_stream_emits_text_delta_and_finish_response() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_stream_low_max_tokens_maps_length_finish_reason() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let (_saw_text_delta, response) =
         stream_finish_with_retries(&client, low_token_long_output_request(16))
@@ -365,15 +327,9 @@ async fn openai_live_stream_low_max_tokens_maps_length_finish_reason() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_complete_required_tool_choice_returns_tool_call() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let response = complete_with_retries(&client, required_tool_call_request(512))
         .await
@@ -398,15 +354,9 @@ async fn openai_live_complete_required_tool_choice_returns_tool_call() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_stream_required_tool_choice_emits_tool_call_events() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let request = required_tool_call_request(512);
     let mut last_error: Option<SDKError> = None;
@@ -508,15 +458,9 @@ async fn openai_live_stream_required_tool_choice_emits_tool_call_events() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_OPENAI_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_live_invalid_model_maps_provider_invalid_request() {
-    if !live_tests_enabled() {
-        return;
-    }
-
-    let Some(client) = build_live_client() else {
-        return;
-    };
+    let client = build_live_client();
 
     let mut request = greeting_request_with_max_tokens(32);
     request.model = "gpt-this-model-should-not-exist-live-test".to_string();

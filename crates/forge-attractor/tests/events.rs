@@ -23,9 +23,7 @@ impl NodeExecutor for RetryOnceExecutor {
             return Ok(NodeOutcome {
                 status: NodeStatus::Retry,
                 notes: Some("retry please".to_string()),
-                context_updates: RuntimeContext::new(),
-                preferred_label: None,
-                suggested_next_ids: Vec::new(),
+                ..Default::default()
             });
         }
         Ok(NodeOutcome::success())

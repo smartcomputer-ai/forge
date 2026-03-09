@@ -87,6 +87,7 @@ fn run_cli(args: &[&str], cwd: &Path) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_forge-cli"))
         .args(args)
         .current_dir(cwd)
+        .env("FORGE_CXDB_PERSISTENCE", "off")
         .output()
         .expect("cli process should start")
 }

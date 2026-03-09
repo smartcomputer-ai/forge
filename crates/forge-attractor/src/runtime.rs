@@ -4,12 +4,14 @@ use async_trait::async_trait;
 use forge_cxdb_runtime::{CxdbFsSnapshotPolicy, CxdbTurnId as TurnId};
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum NodeStatus {
+    #[default]
     Success,
     PartialSuccess,
     Retry,
     Fail,
+    Skipped,
 }
 
 impl NodeStatus {
@@ -19,6 +21,7 @@ impl NodeStatus {
             Self::PartialSuccess => "partial_success",
             Self::Retry => "retry",
             Self::Fail => "fail",
+            Self::Skipped => "skipped",
         }
     }
 
@@ -27,10 +30,11 @@ impl NodeStatus {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct NodeOutcome {
     pub status: NodeStatus,
     pub notes: Option<String>,
+    pub failure_reason: Option<String>,
     pub context_updates: RuntimeContext,
     pub preferred_label: Option<String>,
     pub suggested_next_ids: Vec<String>,
@@ -40,20 +44,17 @@ impl NodeOutcome {
     pub fn success() -> Self {
         Self {
             status: NodeStatus::Success,
-            notes: None,
-            context_updates: RuntimeContext::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         }
     }
 
     pub fn failure(reason: impl Into<String>) -> Self {
+        let reason = reason.into();
         Self {
             status: NodeStatus::Fail,
-            notes: Some(reason.into()),
-            context_updates: RuntimeContext::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            notes: Some(reason.clone()),
+            failure_reason: Some(reason),
+            ..Default::default()
         }
     }
 }

@@ -35,6 +35,15 @@ fn decode_hash(hex_str: &str) -> [u8; 32] {
 
 fn seed_workspace(root: &std::path::Path) {
     fs::create_dir_all(root.join("src")).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            root.join("src"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+    }
     write_file(root.join("README.md"), b"# Test", 0o644);
     write_file(root.join("src").join("main.go"), b"package main", 0o644);
     write_file(

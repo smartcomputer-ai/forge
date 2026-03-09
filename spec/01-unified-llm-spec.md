@@ -2,6 +2,8 @@
 
 This document is a consolidated, language-agnostic specification for building a unified client library that provides a single interface across multiple LLM providers (OpenAI, Anthropic, Google Gemini, and others). It is designed to be implementable from scratch by any developer or coding agent in any programming language.
 
+> **Extension:** The [Unified Agent Provider Specification](./06-unified-agent-provider-spec.md) extends this spec by defining the `AgentProvider` trait -- a higher-level abstraction where providers own the complete agent cycle (prompt → tool execution → iteration → final answer). The `AgentProvider` trait lives in this crate (`forge-llm`) alongside `ProviderAdapter`. CLI agent providers (Claude Code, Codex, Gemini CLI) implement `AgentProvider` directly.
+
 ---
 
 ## Table of Contents

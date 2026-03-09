@@ -515,6 +515,21 @@ impl PipelineRunner {
             context_store.set("run_id", Value::String(active_run_id.clone()))?;
             let graph_metadata = storage.persist_run_graph_metadata(graph).await?;
 
+            // Write manifest.json at the start of a run
+            if let Some(logs_root) = attempt_logs_root.as_ref() {
+                let manifest = json!({
+                    "pipeline_name": graph.id,
+                    "goal": graph.attrs.get("goal").and_then(|v| v.as_str()).unwrap_or(""),
+                    "start_time": timestamp_now(),
+                    "run_id": active_run_id,
+                    "cxdb_context_id": storage.context_id(),
+                });
+                let manifest_path = logs_root.join("manifest.json");
+                if let Ok(bytes) = serde_json::to_vec_pretty(&manifest) {
+                    let _ = fs::write(&manifest_path, bytes);
+                }
+            }
+
             emit_runtime_event(
                 &event_sink,
                 &mut event_sequence_no,
@@ -683,6 +698,24 @@ impl PipelineRunner {
 
                 completed_nodes.push(node.id.clone());
                 node_outcomes.insert(node.id.clone(), outcome.clone());
+
+                // Write status.json for every node outcome (uniform artifact contract)
+                if let Some(logs_root) = attempt_logs_root.as_ref() {
+                    let stage_dir = logs_root.join(&node.id);
+                    let _ = fs::create_dir_all(&stage_dir);
+                    let status_json = json!({
+                        "outcome": outcome.status.as_str(),
+                        "notes": outcome.notes,
+                        "failure_reason": outcome.failure_reason,
+                        "context_updates": outcome.context_updates,
+                        "preferred_next_label": outcome.preferred_label,
+                        "suggested_next_ids": outcome.suggested_next_ids,
+                    });
+                    if let Ok(bytes) = serde_json::to_vec_pretty(&status_json) {
+                        let _ = fs::write(stage_dir.join("status.json"), bytes);
+                    }
+                }
+
                 let retries_used = attempts_used.saturating_sub(1);
                 node_retry_counts.insert(node.id.clone(), retries_used);
                 context_store.set(
@@ -918,6 +951,28 @@ fn resolve_start_node(graph: &Graph) -> Result<&Node, AttractorError> {
         .ok_or_else(|| AttractorError::InvalidGraph("graph does not have a start node".to_string()))
 }
 
+fn resolve_node_timeout(node: &Node) -> Option<Duration> {
+    // Check for timeout attribute (in seconds)
+    for key in &["timeout", "timeout_seconds"] {
+        if let Some(value) = node.attrs.get(key) {
+            let seconds = match value {
+                AttrValue::Integer(v) if *v > 0 => *v as f64,
+                AttrValue::Float(v) if *v > 0.0 => *v,
+                AttrValue::String(v) => v.parse::<f64>().ok().unwrap_or(0.0),
+                AttrValue::Duration(d) => {
+                    return Some(Duration::from_millis(d.millis.max(1)));
+                }
+                _ => 0.0,
+            };
+            if seconds > 0.0 {
+                let millis = (seconds * 1000.0).round() as u64;
+                return Some(Duration::from_millis(millis.max(1)));
+            }
+        }
+    }
+    None
+}
+
 fn is_terminal_node(node: &Node) -> bool {
     node.attrs.get_str("shape") == Some("Msquare")
         || matches!(node.id.to_ascii_lowercase().as_str(), "exit" | "end")
@@ -927,12 +982,15 @@ fn first_unsatisfied_goal_gate(
     graph: &Graph,
     node_outcomes: &BTreeMap<String, NodeOutcome>,
 ) -> Option<String> {
-    for (node_id, outcome) in node_outcomes {
-        let Some(node) = graph.nodes.get(node_id) else {
+    // Check ALL graph nodes with goal_gate=true, not just executed ones.
+    // Unvisited goal gates are unsatisfied by definition.
+    for node in graph.nodes.values() {
+        if node.attrs.get_bool("goal_gate") != Some(true) {
             continue;
-        };
-        if node.attrs.get_bool("goal_gate") == Some(true) && !outcome.status.is_success_like() {
-            return Some(node_id.clone());
+        }
+        match node_outcomes.get(&node.id) {
+            Some(outcome) if outcome.status.is_success_like() => {}
+            _ => return Some(node.id.clone()),
         }
     }
     None
@@ -1154,9 +1212,36 @@ async fn execute_with_retry(
             )
             .await?;
 
-        let outcome = match executor.execute(node, &attempt_context, graph).await {
-            Ok(outcome) => outcome,
-            Err(error) => NodeOutcome::failure(error.to_string()),
+        let outcome = {
+            let node_timeout = resolve_node_timeout(node);
+            let execute_future = executor.execute(node, &attempt_context, graph);
+            match node_timeout {
+                Some(timeout_duration) => {
+                    match tokio::time::timeout(timeout_duration, execute_future).await {
+                        Ok(Ok(outcome)) => outcome,
+                        Ok(Err(error)) => NodeOutcome::failure(error.to_string()),
+                        Err(_elapsed) => NodeOutcome::failure("timed out"),
+                    }
+                }
+                None => match execute_future.await {
+                    Ok(outcome) => outcome,
+                    Err(error) => NodeOutcome::failure(error.to_string()),
+                },
+            }
+        };
+
+        // auto_status: if node has auto_status=true and handler returned failure,
+        // synthesize SUCCESS to allow pipeline to continue
+        let outcome = if node.attrs.get_bool("auto_status") == Some(true)
+            && outcome.status == NodeStatus::Fail
+        {
+            NodeOutcome {
+                status: NodeStatus::Success,
+                notes: Some("auto_status: synthesized success from failure".to_string()),
+                ..outcome
+            }
+        } else {
+            outcome
         };
 
         let completion_kind = if outcome.status == NodeStatus::Fail {
@@ -2511,10 +2596,8 @@ mod tests {
             if node.id == "gate" {
                 return Ok(NodeOutcome {
                     status: NodeStatus::Success,
-                    notes: None,
-                    context_updates: RuntimeContext::new(),
                     preferred_label: Some("No".to_string()),
-                    suggested_next_ids: Vec::new(),
+                    ..Default::default()
                 });
             }
             Ok(NodeOutcome::success())
@@ -2535,9 +2618,8 @@ mod tests {
                 return Ok(NodeOutcome {
                     status: NodeStatus::Fail,
                     notes: Some("intentional failure".to_string()),
-                    context_updates: RuntimeContext::new(),
-                    preferred_label: None,
-                    suggested_next_ids: Vec::new(),
+                    failure_reason: Some("intentional failure".to_string()),
+                    ..Default::default()
                 });
             }
             Ok(NodeOutcome::success())
@@ -2564,9 +2646,7 @@ mod tests {
                 return Ok(NodeOutcome {
                     status: NodeStatus::Retry,
                     notes: Some("retry requested".to_string()),
-                    context_updates: RuntimeContext::new(),
-                    preferred_label: None,
-                    suggested_next_ids: Vec::new(),
+                    ..Default::default()
                 });
             }
             Ok(NodeOutcome::success())
@@ -2612,9 +2692,7 @@ mod tests {
             Ok(NodeOutcome {
                 status: NodeStatus::Retry,
                 notes: Some("keep retrying".to_string()),
-                context_updates: RuntimeContext::new(),
-                preferred_label: None,
-                suggested_next_ids: Vec::new(),
+                ..Default::default()
             })
         }
     }
@@ -2847,7 +2925,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn run_retries_on_fail_status_expected_attempts_and_success() {
+    async fn run_fail_status_no_retry_expected_pipeline_fail() {
+        // Per spec: only RETRY status triggers retry. FAIL goes to failure routing.
         let graph = parse_dot(
             r#"
             digraph G {
@@ -2880,8 +2959,10 @@ mod tests {
             .await
             .expect("run should succeed");
 
-        assert_eq!(result.status, PipelineStatus::Success);
-        assert_eq!(executor.calls.load(Ordering::SeqCst), 2);
+        // FAIL status does NOT retry; pipeline terminates with failure
+        assert_eq!(result.status, PipelineStatus::Fail);
+        // Only called once — no retry
+        assert_eq!(executor.calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -191,6 +191,9 @@ pub enum SDKError {
     NoObjectGenerated(NoObjectGeneratedError),
     #[error("{0}")]
     Configuration(ConfigurationError),
+    /// Catch-all for errors from higher-level agent provider implementations.
+    #[error("{0}")]
+    Other(String),
 }
 
 impl std::fmt::Display for ProviderError {
@@ -252,6 +255,7 @@ impl SDKError {
             SDKError::InvalidToolCall(err) => &err.info.message,
             SDKError::NoObjectGenerated(err) => &err.info.message,
             SDKError::Configuration(err) => &err.info.message,
+            SDKError::Other(msg) => msg.as_str(),
         }
     }
 
@@ -265,6 +269,7 @@ impl SDKError {
             SDKError::InvalidToolCall(err) => err.retryable,
             SDKError::NoObjectGenerated(err) => err.retryable,
             SDKError::Configuration(err) => err.retryable,
+            SDKError::Other(_) => false,
         }
     }
 }

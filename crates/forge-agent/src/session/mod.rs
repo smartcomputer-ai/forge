@@ -25,7 +25,7 @@ mod persistence;
 use persistence::*;
 mod adapters;
 use adapters::*;
-mod utils;
+pub(crate) mod utils;
 use utils::*;
 mod persistence_flow;
 mod runner;

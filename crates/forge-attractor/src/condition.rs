@@ -99,10 +99,13 @@ fn is_condition_key(key: &str) -> bool {
     if key == "outcome" || key == "preferred_label" {
         return true;
     }
-    if !key.starts_with("context.") {
-        return false;
-    }
-    let suffix = &key["context.".len()..];
+    // Accept context-prefixed keys
+    let suffix = if key.starts_with("context.") {
+        &key["context.".len()..]
+    } else {
+        // Also accept bare identifier keys for direct context lookup
+        key
+    };
     let mut chars = suffix.chars();
     match chars.next() {
         Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
@@ -111,16 +114,35 @@ fn is_condition_key(key: &str) -> bool {
     chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '.')
 }
 
-fn resolve_key<'a>(
+fn resolve_key(
     key: &str,
-    outcome: &'a NodeOutcome,
-    context: &'a RuntimeContext,
+    outcome: &NodeOutcome,
+    context: &RuntimeContext,
 ) -> Result<Option<Value>, String> {
     match key {
         "outcome" => Ok(Some(Value::String(outcome.status.as_str().to_string()))),
-        "preferred_label" => Ok(outcome.preferred_label.clone().map(Value::String)),
-        _ if key.starts_with("context.") => Ok(context.get(&key["context.".len()..]).cloned()),
-        _ => Err(format!("condition key '{}' is invalid", key)),
+        "preferred_label" => Ok(Some(Value::String(
+            outcome.preferred_label.clone().unwrap_or_default(),
+        ))),
+        _ if key.starts_with("context.") => {
+            let suffix = &key["context.".len()..];
+            // Try with the suffix first, then with full key
+            if let Some(value) = context.get(suffix) {
+                return Ok(Some(value.clone()));
+            }
+            if let Some(value) = context.get(key) {
+                return Ok(Some(value.clone()));
+            }
+            // Missing keys compare as empty strings
+            Ok(Some(Value::String(String::new())))
+        }
+        _ => {
+            // Direct context lookup for unqualified keys
+            if let Some(value) = context.get(key) {
+                return Ok(Some(value.clone()));
+            }
+            Ok(Some(Value::String(String::new())))
+        }
     }
 }
 
@@ -189,17 +211,23 @@ mod tests {
     fn outcome() -> NodeOutcome {
         NodeOutcome {
             status: NodeStatus::Success,
-            notes: None,
-            context_updates: BTreeMap::new(),
             preferred_label: Some("Yes".to_string()),
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         }
     }
 
     #[test]
     fn validate_condition_expression_invalid_key_expected_err() {
-        let error = validate_condition_expression("foo=bar").expect_err("validation should fail");
+        // Keys starting with digits or special chars are invalid
+        let error =
+            validate_condition_expression("123bad=bar").expect_err("validation should fail");
         assert!(error.contains("invalid"));
+    }
+
+    #[test]
+    fn validate_condition_expression_bare_key_expected_ok() {
+        // Per spec: unqualified keys do direct context lookup
+        validate_condition_expression("foo=bar").expect("bare key should be valid");
     }
 
     #[test]
@@ -262,10 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn evaluate_condition_expression_missing_key_null_compare_expected_true() {
+    fn evaluate_condition_expression_missing_key_not_equal_to_nonempty_expected_true() {
+        // Per spec: missing keys compare as empty strings, so != non-empty is true
         let context = RuntimeContext::new();
-        let ok = evaluate_condition_expression("context.missing=null", &outcome(), &context)
-            .expect("evaluation should succeed");
+        let ok =
+            evaluate_condition_expression("context.missing!=something", &outcome(), &context)
+                .expect("evaluation should succeed");
         assert!(ok);
     }
 

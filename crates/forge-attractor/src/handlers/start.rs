@@ -17,9 +17,7 @@ impl NodeHandler for StartHandler {
         Ok(NodeOutcome {
             status: NodeStatus::Success,
             notes: Some("start reached".to_string()),
-            context_updates: RuntimeContext::new(),
-            preferred_label: None,
-            suggested_next_ids: Vec::new(),
+            ..Default::default()
         })
     }
 }

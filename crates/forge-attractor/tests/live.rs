@@ -13,30 +13,23 @@ fn load_env_files() {
     let _ = dotenvy::from_filename(".env");
 }
 
-fn live_tests_enabled(flag_name: &str) -> bool {
-    match std::env::var(flag_name) {
-        Ok(value) => matches!(
-            value.trim().to_ascii_lowercase().as_str(),
-            "1" | "true" | "yes"
-        ),
-        Err(_) => false,
-    }
-}
-
 fn openai_live_model() -> String {
     std::env::var("OPENAI_LIVE_MODEL").unwrap_or_else(|_| "gpt-5.2-codex".to_string())
 }
 
+/// Runs a real pipeline with an OpenAI-backed agent that creates a file.
+/// Requires: OPENAI_API_KEY set in environment or .env file.
+/// Run with: cargo test -p forge-attractor --test live -- --ignored
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires RUN_LIVE_ATTRACTOR_TESTS=1 and OPENAI_API_KEY (env or .env)"]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn attractor_live_codergen_smoke_expected_file_side_effect() {
     load_env_files();
-    if !live_tests_enabled("RUN_LIVE_ATTRACTOR_TESTS") {
-        return;
-    }
-    if std::env::var("OPENAI_API_KEY").is_err() {
-        return;
-    }
+    let api_key = std::env::var("OPENAI_API_KEY")
+        .expect("OPENAI_API_KEY must be set to run this test");
+    assert!(
+        !api_key.trim().is_empty(),
+        "OPENAI_API_KEY is set but empty"
+    );
 
     let model = openai_live_model();
     let provider_profile = Arc::new(OpenAiProviderProfile::with_default_tools(model));

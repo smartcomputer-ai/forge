@@ -173,10 +173,8 @@ impl NodeExecutor for PreferredNoExecutor {
         if node.id == "gate" {
             return Ok(NodeOutcome {
                 status: NodeStatus::Success,
-                notes: None,
-                context_updates: RuntimeContext::new(),
                 preferred_label: Some("No".to_string()),
-                suggested_next_ids: vec![],
+                ..Default::default()
             });
         }
         Ok(NodeOutcome::success())
@@ -201,9 +199,7 @@ impl NodeExecutor for RetryOnceExecutor {
                 return Ok(NodeOutcome {
                     status: NodeStatus::Retry,
                     notes: Some("retry".to_string()),
-                    context_updates: RuntimeContext::new(),
-                    preferred_label: None,
-                    suggested_next_ids: vec![],
+                    ..Default::default()
                 });
             }
         }

@@ -29,6 +29,9 @@ pub mod storage;
 pub mod stylesheet;
 pub mod transforms;
 
+#[cfg(feature = "http")]
+pub mod http;
+
 pub use artifacts::*;
 pub use backends::*;
 pub use checkpoint::*;

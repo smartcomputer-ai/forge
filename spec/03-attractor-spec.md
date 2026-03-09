@@ -159,7 +159,7 @@ Graph attributes are declared in a `graph [ ... ]` block or as top-level `key = 
 | `llm_model`         | String   | inherited       | LLM model identifier. Overridable by stylesheet. |
 | `llm_provider`      | String   | auto-detected   | LLM provider key. Auto-detected from model if unset. |
 | `reasoning_effort`  | String   | `"high"`        | LLM reasoning effort: `low`, `medium`, `high`. |
-| `auto_status`       | Boolean  | `false`         | If `true` and the handler writes no status, the engine auto-generates a SUCCESS outcome. |
+| `auto_status`       | Boolean  | `false`         | If `true` and the handler returns a FAIL outcome, the engine synthesizes a SUCCESS outcome instead. |
 | `allow_partial`     | Boolean  | `false`         | Accept PARTIAL_SUCCESS when retries are exhausted instead of failing. |
 
 ### 2.7 Edge Attributes
@@ -456,16 +456,18 @@ FUNCTION best_by_weight_then_lexical(edges):
 
 Nodes with `goal_gate=true` represent critical stages that must succeed before the pipeline can exit. When the traversal reaches a terminal node (shape=Msquare):
 
-1. Check all visited nodes that have `goal_gate=true`.
-2. If any goal gate node has a non-success outcome (not SUCCESS or PARTIAL_SUCCESS), the pipeline cannot exit.
+1. Check **all** nodes in the graph that have `goal_gate=true` — including nodes that were never visited during execution.
+2. If any goal gate node was not visited, or has a non-success outcome (not SUCCESS or PARTIAL_SUCCESS), the pipeline cannot exit.
 3. Instead, jump to the `retry_target` of the unsatisfied goal gate node. If that is not set, try `fallback_retry_target`. If that is also not set, try the graph-level `retry_target` and `fallback_retry_target`.
 4. If no retry target exists at any level, the pipeline fails with an error.
 
 ```
 FUNCTION check_goal_gates(graph, node_outcomes):
-    FOR EACH (node_id, outcome) IN node_outcomes:
-        node = graph.nodes[node_id]
+    FOR EACH node IN graph.nodes:
         IF node.goal_gate == true:
+            outcome = node_outcomes.get(node.id)
+            IF outcome is NONE:
+                RETURN (false, node)  -- never visited
             IF outcome.status NOT IN {SUCCESS, PARTIAL_SUCCESS}:
                 RETURN (false, node)
     RETURN (true, NONE)
@@ -1397,7 +1399,7 @@ Severity:
 | Rule ID                  | Severity | Description |
 |--------------------------|----------|-------------|
 | `start_node`             | ERROR    | Pipeline must have exactly one start node (shape=Mdiamond or id matching `start`/`Start`). |
-| `terminal_node`          | ERROR    | Pipeline must have at least one terminal node (shape=Msquare or id matching `exit`/`end`). |
+| `terminal_node`          | ERROR    | Pipeline must have exactly one terminal node (shape=Msquare or id matching `exit`/`end`). |
 | `reachability`           | ERROR    | All nodes must be reachable from the start node via BFS/DFS traversal. |
 | `edge_target_exists`     | ERROR    | Every edge target must reference an existing node ID. |
 | `start_no_incoming`      | ERROR    | The start node must have no incoming edges. |
@@ -1456,7 +1458,8 @@ The `model_stylesheet` graph attribute provides CSS-like rules for setting defau
 ```
 Stylesheet    ::= Rule+
 Rule          ::= Selector '{' Declaration ( ';' Declaration )* ';'? '}'
-Selector      ::= '*' | '#' Identifier | '.' ClassName
+Selector      ::= '*' | ShapeName | '.' ClassName | '#' Identifier
+ShapeName     ::= Identifier                       -- matches nodes by shape attribute (e.g., box, hexagon)
 ClassName     ::= [a-z0-9-]+
 Declaration   ::= Property ':' PropertyValue
 Property      ::= 'llm_model' | 'llm_provider' | 'reasoning_effort'
@@ -1468,8 +1471,9 @@ PropertyValue ::= String | 'low' | 'medium' | 'high'
 | Selector      | Matches                      | Specificity |
 |---------------|------------------------------|-------------|
 | `*`           | All nodes                    | 0 (lowest)  |
-| `.class_name` | Nodes with that class        | 1 (medium)  |
-| `#node_id`    | Specific node by ID          | 2 (highest) |
+| `shape_name`  | Nodes with that shape        | 1           |
+| `.class_name` | Nodes with that class        | 2           |
+| `#node_id`    | Specific node by ID          | 3 (highest) |
 
 Later rules of equal specificity override earlier ones. Explicit node attributes always override stylesheet values (highest precedence).
 
@@ -1486,7 +1490,7 @@ Later rules of equal specificity override earlier ones. Explicit node attributes
 The resolution order for any model-related property on a node is:
 
 1. Explicit node attribute (e.g., `llm_model="gpt-5.2"` on the node) -- highest precedence
-2. Stylesheet rule matching by specificity (ID > class > universal)
+2. Stylesheet rule matching by specificity (ID > class > shape > universal)
 3. Graph-level default attribute
 4. Handler/system default
 
@@ -1669,14 +1673,17 @@ Edge conditions use a minimal boolean expression language to gate edge eligibili
 
 ```
 ConditionExpr  ::= Clause ( '&&' Clause )*
-Clause         ::= Key Operator Literal
+Clause         ::= Key Operator Literal | Key
 Key            ::= 'outcome'
                  | 'preferred_label'
                  | 'context.' Path
+                 | Identifier
 Path           ::= Identifier ( '.' Identifier )*
 Operator       ::= '=' | '!='
 Literal        ::= String | Integer | Boolean
 ```
+
+A bare `Key` without an operator is a truthiness check: the clause evaluates to true if the resolved value is non-empty and not `"false"` or `"0"`.
 
 ### 10.3 Semantics
 
@@ -1779,112 +1786,112 @@ This section defines how to validate that an implementation of this spec is comp
 
 ### 11.1 DOT Parsing
 
-- [ ] Parser accepts the supported DOT subset (digraph with graph/node/edge attribute blocks)
-- [ ] Graph-level attributes (`goal`, `label`, `model_stylesheet`) are extracted correctly
-- [ ] Node attributes are parsed including multi-line attribute blocks (attributes spanning multiple lines within `[...]`)
-- [ ] Edge attributes (`label`, `condition`, `weight`) are parsed correctly
-- [ ] Chained edges (`A -> B -> C`) produce individual edges for each pair
-- [ ] Node/edge default blocks (`node [...]`, `edge [...]`) apply to subsequent declarations
-- [ ] Subgraph blocks are flattened (contents kept, wrapper removed)
-- [ ] `class` attribute on nodes merges in attributes from the stylesheet
-- [ ] Quoted and unquoted attribute values both work
-- [ ] Comments (`//` and `/* */`) are stripped before parsing
+- [x] Parser accepts the supported DOT subset (digraph with graph/node/edge attribute blocks)
+- [x] Graph-level attributes (`goal`, `label`, `model_stylesheet`) are extracted correctly
+- [x] Node attributes are parsed including multi-line attribute blocks (attributes spanning multiple lines within `[...]`)
+- [x] Edge attributes (`label`, `condition`, `weight`) are parsed correctly
+- [x] Chained edges (`A -> B -> C`) produce individual edges for each pair
+- [x] Node/edge default blocks (`node [...]`, `edge [...]`) apply to subsequent declarations
+- [x] Subgraph blocks are flattened (contents kept, wrapper removed)
+- [x] `class` attribute on nodes merges in attributes from the stylesheet
+- [x] Quoted and unquoted attribute values both work
+- [x] Comments (`//` and `/* */`) are stripped before parsing
 
 ### 11.2 Validation and Linting
 
-- [ ] Exactly one start node (shape=Mdiamond) is required
-- [ ] Exactly one exit node (shape=Msquare) is required
-- [ ] Start node has no incoming edges
-- [ ] Exit node has no outgoing edges
-- [ ] All nodes are reachable from start (no orphans)
-- [ ] All edges reference valid node IDs
-- [ ] Codergen nodes (shape=box) have non-empty `prompt` attribute (warning if missing)
-- [ ] Condition expressions on edges parse without errors
-- [ ] `validate_or_raise()` throws on error-severity violations
-- [ ] Lint results include rule name, severity (error/warning), node/edge ID, and message
+- [x] Exactly one start node (shape=Mdiamond) is required
+- [x] Exactly one exit node (shape=Msquare) is required
+- [x] Start node has no incoming edges
+- [x] Exit node has no outgoing edges
+- [x] All nodes are reachable from start (no orphans)
+- [x] All edges reference valid node IDs
+- [x] Codergen nodes (shape=box) have non-empty `prompt` attribute (warning if missing)
+- [x] Condition expressions on edges parse without errors
+- [x] `validate_or_raise()` throws on error-severity violations
+- [x] Lint results include rule name, severity (error/warning), node/edge ID, and message
 
 ### 11.3 Execution Engine
 
-- [ ] Engine resolves the start node and begins execution there
-- [ ] Each node's handler is resolved via shape-to-handler-type mapping
-- [ ] Handler is called with (node, context, graph, logs_root) and returns an Outcome
-- [ ] Outcome is written to `{logs_root}/{node_id}/status.json`
-- [ ] Edge selection follows the 5-step priority: condition match -> preferred label -> suggested IDs -> weight -> lexical
-- [ ] Engine loops: execute node -> select edge -> advance to next node -> repeat
-- [ ] Terminal node (shape=Msquare) stops execution
-- [ ] Pipeline outcome is "success" if all goal_gate nodes succeeded, "fail" otherwise
+- [x] Engine resolves the start node and begins execution there
+- [x] Each node's handler is resolved via shape-to-handler-type mapping
+- [x] Handler is called with (node, context, graph, logs_root) and returns an Outcome
+- [x] Outcome is written to `{logs_root}/{node_id}/status.json`
+- [x] Edge selection follows the 5-step priority: condition match -> preferred label -> suggested IDs -> weight -> lexical
+- [x] Engine loops: execute node -> select edge -> advance to next node -> repeat
+- [x] Terminal node (shape=Msquare) stops execution
+- [x] Pipeline outcome is "success" if all goal_gate nodes succeeded, "fail" otherwise
 
 ### 11.4 Goal Gate Enforcement
 
-- [ ] Nodes with `goal_gate=true` are tracked throughout execution
-- [ ] Before allowing exit via a terminal node, the engine checks all goal gate nodes have status SUCCESS
-- [ ] If any goal gate node has not succeeded, the engine routes to `retry_target` (if configured) instead of exiting
-- [ ] If no retry_target and goal gates unsatisfied, pipeline outcome is "fail"
+- [x] Nodes with `goal_gate=true` are tracked throughout execution
+- [x] Before allowing exit via a terminal node, the engine checks all goal gate nodes have status SUCCESS
+- [x] If any goal gate node has not succeeded, the engine routes to `retry_target` (if configured) instead of exiting
+- [x] If no retry_target and goal gates unsatisfied, pipeline outcome is "fail"
 
 ### 11.5 Retry Logic
 
-- [ ] Nodes with `max_retries > 0` are retried on RETRY or FAIL outcomes
-- [ ] Retry count is tracked per-node and respects the configured limit
-- [ ] Backoff between retries works (constant, linear, or exponential as configured)
-- [ ] Jitter is applied to backoff delays when configured
-- [ ] After retry exhaustion, the node's final outcome is used for edge selection
+- [x] Nodes with `max_retries > 0` are retried on RETRY outcomes (FAIL routes to failure path immediately)
+- [x] Retry count is tracked per-node and respects the configured limit
+- [x] Backoff between retries works (constant, linear, or exponential as configured)
+- [x] Jitter is applied to backoff delays when configured
+- [x] After retry exhaustion, the node's final outcome is used for edge selection
 
 ### 11.6 Node Handlers
 
-- [ ] **Start handler:** Returns SUCCESS immediately (no-op)
-- [ ] **Exit handler:** Returns SUCCESS immediately (no-op, engine checks goal gates)
-- [ ] **Codergen handler:** Expands `$goal` in prompt, calls `CodergenBackend.run()`, writes prompt.md and response.md to stage dir
-- [ ] **Wait.human handler:** Presents outgoing edge labels as choices to the interviewer, returns selected label as preferred_label
-- [ ] **Conditional handler:** Passes through; engine evaluates edge conditions against outcome/context
-- [ ] **Parallel handler:** Fans out to multiple target nodes concurrently (or sequentially as fallback)
-- [ ] **Fan-in handler:** Waits for all parallel branches to complete before proceeding
-- [ ] **Tool handler:** Executes configured tool/command and returns result
-- [ ] Custom handlers can be registered by type string
+- [x] **Start handler:** Returns SUCCESS immediately (no-op)
+- [x] **Exit handler:** Returns SUCCESS immediately (no-op, engine checks goal gates)
+- [x] **Codergen handler:** Expands `$goal` in prompt, calls `CodergenBackend.run()`, writes prompt.md and response.md to stage dir
+- [x] **Wait.human handler:** Presents outgoing edge labels as choices to the interviewer, returns selected label as preferred_label
+- [x] **Conditional handler:** Passes through; engine evaluates edge conditions against outcome/context
+- [x] **Parallel handler:** Fans out to multiple target nodes concurrently (or sequentially as fallback)
+- [x] **Fan-in handler:** Waits for all parallel branches to complete before proceeding
+- [x] **Tool handler:** Executes configured tool/command and returns result
+- [x] Custom handlers can be registered by type string
 
 ### 11.7 State and Context
 
-- [ ] Context is a key-value store accessible to all handlers
-- [ ] Handlers can read context and return `context_updates` in the Outcome
-- [ ] Context updates are merged after each node execution
-- [ ] Checkpoint is saved after each node completion (current_node, completed_nodes, context, retry counts)
-- [ ] Resume from checkpoint: load checkpoint -> restore state -> continue from current_node
-- [ ] Artifacts are written to `{logs_root}/{node_id}/` (prompt.md, response.md, status.json)
+- [x] Context is a key-value store accessible to all handlers
+- [x] Handlers can read context and return `context_updates` in the Outcome
+- [x] Context updates are merged after each node execution
+- [x] Checkpoint is saved after each node completion (current_node, completed_nodes, context, retry counts)
+- [x] Resume from checkpoint: load checkpoint -> restore state -> continue from current_node
+- [x] Artifacts are written to `{logs_root}/{node_id}/` (prompt.md, response.md, status.json)
 
 ### 11.8 Human-in-the-Loop
 
-- [ ] Interviewer interface works: `ask(question) -> Answer`
-- [ ] Question supports types: SINGLE_SELECT, MULTI_SELECT, FREE_TEXT, CONFIRM
-- [ ] AutoApproveInterviewer always selects the first option (for automation/testing)
-- [ ] ConsoleInterviewer prompts in terminal and reads user input
-- [ ] CallbackInterviewer delegates to a provided function
-- [ ] QueueInterviewer reads from a pre-filled answer queue (for testing)
+- [x] Interviewer interface works: `ask(question) -> Answer`
+- [x] Question supports types: YesNo, MultipleChoice, FreeText, Confirmation
+- [x] AutoApproveInterviewer always selects the first option (for automation/testing)
+- [x] ConsoleInterviewer prompts in terminal and reads user input
+- [x] CallbackInterviewer delegates to a provided function
+- [x] QueueInterviewer reads from a pre-filled answer queue (for testing)
 
 ### 11.9 Condition Expressions
 
-- [ ] `=` (equals) operator works for string comparison
-- [ ] `!=` (not equals) operator works
-- [ ] `&&` (AND) conjunction works with multiple clauses
-- [ ] `outcome` variable resolves to the current node's outcome status
-- [ ] `preferred_label` variable resolves to the outcome's preferred label
-- [ ] `context.*` variables resolve to context values (missing keys = empty string)
-- [ ] Empty condition always evaluates to true (unconditional edge)
+- [x] `=` (equals) operator works for string comparison
+- [x] `!=` (not equals) operator works
+- [x] `&&` (AND) conjunction works with multiple clauses
+- [x] `outcome` variable resolves to the current node's outcome status
+- [x] `preferred_label` variable resolves to the outcome's preferred label
+- [x] `context.*` variables resolve to context values (missing keys = empty string)
+- [x] Empty condition always evaluates to true (unconditional edge)
 
 ### 11.10 Model Stylesheet
 
-- [ ] Stylesheet is parsed from the graph's `model_stylesheet` attribute
-- [ ] Selectors by shape name work (e.g., `box { model = "claude-opus-4-6" }`)
-- [ ] Selectors by class name work (e.g., `.fast { model = "gemini-3-flash-preview" }`)
-- [ ] Selectors by node ID work (e.g., `#review { reasoning_effort = "high" }`)
-- [ ] Specificity order: universal < shape < class < ID
-- [ ] Stylesheet properties are overridden by explicit node attributes
+- [x] Stylesheet is parsed from the graph's `model_stylesheet` attribute
+- [x] Selectors by shape name work (e.g., `box { llm_model: claude-opus-4-6; }`)
+- [x] Selectors by class name work (e.g., `.fast { llm_model: gemini-3-flash-preview; }`)
+- [x] Selectors by node ID work (e.g., `#review { reasoning_effort: high; }`)
+- [x] Specificity order: universal < shape < class < ID
+- [x] Stylesheet properties are overridden by explicit node attributes
 
 ### 11.11 Transforms and Extensibility
 
-- [ ] AST transforms can modify the Graph between parsing and validation
-- [ ] Transform interface: `transform(graph) -> graph`
-- [ ] Built-in variable expansion transform replaces `$goal` in prompts
-- [ ] Custom transforms can be registered and run in order
-- [ ] HTTP server mode (if implemented): POST /run starts pipeline, GET /status checks state, POST /answer submits human input
+- [x] AST transforms can modify the Graph between parsing and validation
+- [x] Transform interface: `transform(graph) -> graph`
+- [x] Built-in variable expansion transform replaces `$goal` in prompts
+- [x] Custom transforms can be registered and run in order
+- [ ] HTTP server mode (if implemented): POST /run starts pipeline, GET /status checks state, POST /answer submits human input (MAY — not yet implemented)
 
 ### 11.12 Cross-Feature Parity Matrix
 
@@ -1892,28 +1899,28 @@ Run this validation matrix -- each cell must pass:
 
 | Test Case                                        | Pass |
 |--------------------------------------------------|------|
-| Parse a simple linear pipeline (start -> A -> B -> done) | [ ] |
-| Parse a pipeline with graph-level attributes (goal, label) | [ ] |
-| Parse multi-line node attributes                 | [ ] |
-| Validate: missing start node -> error            | [ ] |
-| Validate: missing exit node -> error             | [ ] |
-| Validate: orphan node -> warning                 | [ ] |
-| Execute a linear 3-node pipeline end-to-end      | [ ] |
-| Execute with conditional branching (success/fail paths) | [ ] |
-| Execute with retry on failure (max_retries=2)    | [ ] |
-| Goal gate blocks exit when unsatisfied            | [ ] |
-| Goal gate allows exit when all satisfied          | [ ] |
-| Wait.human presents choices and routes on selection | [ ] |
-| Edge selection: condition match wins over weight  | [ ] |
-| Edge selection: weight breaks ties for unconditional edges | [ ] |
-| Edge selection: lexical tiebreak as final fallback | [ ] |
-| Context updates from one node are visible to the next | [ ] |
-| Checkpoint save and resume produces same result   | [ ] |
-| Stylesheet applies model override to nodes by shape | [ ] |
-| Prompt variable expansion ($goal) works           | [ ] |
-| Parallel fan-out and fan-in complete correctly    | [ ] |
-| Custom handler registration and execution works   | [ ] |
-| Pipeline with 10+ nodes completes without errors  | [ ] |
+| Parse a simple linear pipeline (start -> A -> B -> done) | [x] |
+| Parse a pipeline with graph-level attributes (goal, label) | [x] |
+| Parse multi-line node attributes                 | [x] |
+| Validate: missing start node -> error            | [x] |
+| Validate: missing exit node -> error             | [x] |
+| Validate: orphan node -> warning                 | [x] |
+| Execute a linear 3-node pipeline end-to-end      | [x] |
+| Execute with conditional branching (success/fail paths) | [x] |
+| Execute with retry on failure (max_retries=2)    | [x] |
+| Goal gate blocks exit when unsatisfied            | [x] |
+| Goal gate allows exit when all satisfied          | [x] |
+| Wait.human presents choices and routes on selection | [x] |
+| Edge selection: condition match wins over weight  | [x] |
+| Edge selection: weight breaks ties for unconditional edges | [x] |
+| Edge selection: lexical tiebreak as final fallback | [x] |
+| Context updates from one node are visible to the next | [x] |
+| Checkpoint save and resume produces same result   | [x] |
+| Stylesheet applies model override to nodes by shape | [x] |
+| Prompt variable expansion ($goal) works           | [x] |
+| Parallel fan-out and fan-in complete correctly    | [x] |
+| Custom handler registration and execution works   | [x] |
+| Pipeline with 10+ nodes completes without errors  | [x] |
 
 ### 11.13 Integration Smoke Test
 
@@ -2011,7 +2018,7 @@ ASSERT "review" IN checkpoint.completed_nodes
 | `llm_model`             | String   | inherited     | LLM model override |
 | `llm_provider`          | String   | auto-detected | LLM provider override |
 | `reasoning_effort`      | String   | `"high"`      | Reasoning depth: low/medium/high |
-| `auto_status`           | Boolean  | `false`       | Auto-generate SUCCESS if no status written |
+| `auto_status`           | Boolean  | `false`       | Synthesize SUCCESS if handler returns FAIL |
 | `allow_partial`         | Boolean  | `false`       | Accept PARTIAL_SUCCESS on retry exhaustion |
 
 ### Edge Attributes
@@ -2056,7 +2063,8 @@ Each non-terminal node writes a `status.json` file in its stage directory. This 
         "key": "value",
         "nested.key": "value"
     },
-    "notes": "Human-readable execution summary"
+    "notes": "Human-readable execution summary",
+    "failure_reason": "Detailed failure description or null"
 }
 ```
 
@@ -2067,8 +2075,9 @@ Each non-terminal node writes a `status.json` file in its stage directory. This 
 | `suggested_next_ids`   | List of Strings | No       | Fallback target node IDs if no label match. |
 | `context_updates`      | Map             | No       | Key-value pairs merged into the run context. |
 | `notes`                | String          | No       | Human-readable log entries. |
+| `failure_reason`       | String          | No       | Detailed description of why the node failed. Present when `outcome` is `fail` or `retry`. |
 
-When `auto_status=true` on a node and no `status.json` was written by the handler, the engine synthesizes: `{"outcome": "success", "notes": "auto-status: handler completed without writing status"}`.
+When `auto_status=true` on a node and the handler returns a FAIL outcome, the engine synthesizes a SUCCESS outcome instead: `{"outcome": "success", "notes": "auto_status: synthesized success from failure"}`. This allows pipelines to use `auto_status` on non-critical nodes where failure should not block pipeline progression.
 
 ---
 

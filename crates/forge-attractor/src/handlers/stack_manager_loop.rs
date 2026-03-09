@@ -132,8 +132,7 @@ fn success_with_updates(cycle: usize, poll_interval_ms: u64, notes: Option<Strin
         status: NodeStatus::Success,
         notes,
         context_updates: updates,
-        preferred_label: None,
-        suggested_next_ids: Vec::new(),
+        ..Default::default()
     }
 }
 
