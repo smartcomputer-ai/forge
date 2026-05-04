@@ -59,7 +59,10 @@ pub fn anthropic_live_model() -> String {
 pub fn build_openai_live_client() -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
     let api_key = env_or_dotenv_var("OPENAI_API_KEY")
         .expect("OPENAI_API_KEY must be set (env or .env) to run live OpenAI agent tests");
-    assert!(!api_key.trim().is_empty(), "OPENAI_API_KEY is set but empty");
+    assert!(
+        !api_key.trim().is_empty(),
+        "OPENAI_API_KEY is set but empty"
+    );
     let mut config = OpenAIAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("OPENAI_BASE_URL") {
         config.base_url = base_url;
@@ -77,7 +80,10 @@ pub fn build_openai_live_client() -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
 pub fn build_anthropic_live_client() -> (Arc<Client>, Arc<Mutex<Vec<Request>>>) {
     let api_key = env_or_dotenv_var("ANTHROPIC_API_KEY")
         .expect("ANTHROPIC_API_KEY must be set (env or .env) to run live Anthropic agent tests");
-    assert!(!api_key.trim().is_empty(), "ANTHROPIC_API_KEY is set but empty");
+    assert!(
+        !api_key.trim().is_empty(),
+        "ANTHROPIC_API_KEY is set but empty"
+    );
     let mut config = AnthropicAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("ANTHROPIC_BASE_URL") {
         config.base_url = base_url;

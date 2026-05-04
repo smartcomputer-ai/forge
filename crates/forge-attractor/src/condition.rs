@@ -206,7 +206,6 @@ fn is_truthy(value: Option<Value>) -> bool {
 mod tests {
     use super::*;
     use crate::{NodeStatus, RuntimeContext};
-    use std::collections::BTreeMap;
 
     fn outcome() -> NodeOutcome {
         NodeOutcome {
@@ -293,9 +292,8 @@ mod tests {
     fn evaluate_condition_expression_missing_key_not_equal_to_nonempty_expected_true() {
         // Per spec: missing keys compare as empty strings, so != non-empty is true
         let context = RuntimeContext::new();
-        let ok =
-            evaluate_condition_expression("context.missing!=something", &outcome(), &context)
-                .expect("evaluation should succeed");
+        let ok = evaluate_condition_expression("context.missing!=something", &outcome(), &context)
+            .expect("evaluation should succeed");
         assert!(ok);
     }
 

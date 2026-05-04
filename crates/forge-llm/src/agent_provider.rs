@@ -115,9 +115,7 @@ pub struct ToolActivityRecord {
 #[derive(Clone, Debug)]
 pub enum AgentLoopEvent {
     /// The agent produced a text delta.
-    TextDelta {
-        delta: String,
-    },
+    TextDelta { delta: String },
     /// The agent started a tool call.
     ToolCallStart {
         call_id: String,
@@ -132,7 +130,5 @@ pub enum AgentLoopEvent {
         duration_ms: u64,
     },
     /// A warning from the agent loop (e.g., context window usage).
-    Warning {
-        message: String,
-    },
+    Warning { message: String },
 }

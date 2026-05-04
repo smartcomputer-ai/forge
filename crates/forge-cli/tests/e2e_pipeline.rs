@@ -84,12 +84,7 @@ fn resolve_bin(env_var: &str, default_name: &str) -> String {
 // CLI execution with timeout
 // ---------------------------------------------------------------------------
 
-fn run_pipeline(
-    args: &[&str],
-    cwd: &Path,
-    env_vars: &[(&str, &str)],
-    timeout_secs: u64,
-) -> Output {
+fn run_pipeline(args: &[&str], cwd: &Path, env_vars: &[(&str, &str)], timeout_secs: u64) -> Output {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_forge-cli"));
     cmd.args(args)
         .current_dir(cwd)
@@ -151,12 +146,8 @@ fn events_by<'a>(events: &'a [Value], category: &str, kind: &str) -> Vec<&'a Val
         .iter()
         .filter(|e| {
             let k = e.get("kind");
-            k.and_then(|k| k.get("category"))
-                .and_then(Value::as_str)
-                == Some(category)
-                && k.and_then(|k| k.get("kind"))
-                    .and_then(Value::as_str)
-                    == Some(kind)
+            k.and_then(|k| k.get("category")).and_then(Value::as_str) == Some(category)
+                && k.and_then(|k| k.get("kind")).and_then(Value::as_str) == Some(kind)
         })
         .collect()
 }
@@ -495,10 +486,7 @@ fn e2e_parallel_pipeline() {
 
     // Parallel lifecycle events
     let par_started = events_by(&events, "parallel", "started");
-    assert!(
-        !par_started.is_empty(),
-        "missing parallel.started event"
-    );
+    assert!(!par_started.is_empty(), "missing parallel.started event");
 
     let branch_started = events_by(&events, "parallel", "branch_started");
     assert_eq!(
@@ -585,18 +573,17 @@ fn e2e_cxdb_persistence() {
 
     // Read cxdb_context_id from manifest.json
     let manifest_path = logs_root.join("manifest.json");
-    let manifest: Value = serde_json::from_str(
-        &std::fs::read_to_string(&manifest_path).expect("read manifest.json"),
-    )
-    .expect("parse manifest.json");
+    let manifest: Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("read manifest.json"))
+            .expect("parse manifest.json");
     let context_id = manifest
         .get("cxdb_context_id")
         .and_then(Value::as_str)
         .expect("manifest.json should contain cxdb_context_id when persistence=required");
 
     // Connect to CXDB and verify records
-    let binary_addr = std::env::var("FORGE_CXDB_BINARY_ADDR")
-        .unwrap_or_else(|_| "127.0.0.1:9009".to_string());
+    let binary_addr =
+        std::env::var("FORGE_CXDB_BINARY_ADDR").unwrap_or_else(|_| "127.0.0.1:9009".to_string());
     let http_base_url = std::env::var("FORGE_CXDB_HTTP_BASE_URL")
         .unwrap_or_else(|_| "http://127.0.0.1:9010".to_string());
 
@@ -615,8 +602,8 @@ fn e2e_cxdb_persistence() {
 
     rt.block_on(async {
         use forge_attractor::storage::types::{
-            RunLifecycleRecord, StageLifecycleRecord,
-            ATTRACTOR_RUN_LIFECYCLE_TYPE_ID, ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID,
+            ATTRACTOR_RUN_LIFECYCLE_TYPE_ID, ATTRACTOR_STAGE_LIFECYCLE_TYPE_ID, RunLifecycleRecord,
+            StageLifecycleRecord,
         };
 
         // List all turns and filter by type_id before decoding, since the
@@ -799,19 +786,39 @@ fn e2e_cross_provider_parity() {
     let ref_result = &results[0];
     for result in &results[1..] {
         assert_eq!(
-            result.event_categories, ref_result.event_categories,
+            result.event_categories,
+            ref_result.event_categories,
             "event categories differ: {} has {:?}, {} has {:?}",
-            result.backend, result.event_categories, ref_result.backend, ref_result.event_categories
+            result.backend,
+            result.event_categories,
+            ref_result.backend,
+            ref_result.event_categories
         );
         assert_eq!(
             result.completed_nodes, ref_result.completed_nodes,
             "completed nodes differ: {} has {:?}, {} has {:?}",
             result.backend, result.completed_nodes, ref_result.backend, ref_result.completed_nodes
         );
-        assert!(result.has_plan_status, "{}: missing plan/status.json", result.backend);
-        assert!(result.has_plan_prompt, "{}: missing plan/prompt.md", result.backend);
-        assert!(result.has_plan_response, "{}: missing plan/response.md", result.backend);
-        assert!(result.has_summarize_status, "{}: missing summarize/status.json", result.backend);
+        assert!(
+            result.has_plan_status,
+            "{}: missing plan/status.json",
+            result.backend
+        );
+        assert!(
+            result.has_plan_prompt,
+            "{}: missing plan/prompt.md",
+            result.backend
+        );
+        assert!(
+            result.has_plan_response,
+            "{}: missing plan/response.md",
+            result.backend
+        );
+        assert!(
+            result.has_summarize_status,
+            "{}: missing summarize/status.json",
+            result.backend
+        );
     }
 }
 
@@ -905,7 +912,10 @@ fn e2e_resume_from_checkpoint() {
         "expected pipeline.resumed event on resume. Events: {:?}",
         resume_events
             .iter()
-            .filter_map(|e| e.get("kind").and_then(|k| k.get("kind")).and_then(Value::as_str))
+            .filter_map(|e| e
+                .get("kind")
+                .and_then(|k| k.get("kind"))
+                .and_then(Value::as_str))
             .collect::<Vec<_>>()
     );
 

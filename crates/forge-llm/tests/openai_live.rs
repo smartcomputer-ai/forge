@@ -1,6 +1,7 @@
 use forge_llm::{
-    Client, Message, OpenAIAdapter, OpenAIAdapterConfig, ProviderErrorKind, Request, Response,
-    SDKError, StreamEventType, StreamEventTypeOrString, ToolChoice, ToolDefinition,
+    Client, CompactionItemKind, CompactionRequest, Message, OpenAIAdapter, OpenAIAdapterConfig,
+    ProviderErrorKind, Request, Response, SDKError, StreamEventType, StreamEventTypeOrString,
+    TokenCountQuality, TokenCountRequest, ToolChoice, ToolDefinition,
 };
 use futures::StreamExt;
 use serde_json::json;
@@ -78,7 +79,10 @@ fn env_or_dotenv_var(key: &str) -> Option<String> {
 fn build_live_client() -> Client {
     let api_key = env_or_dotenv_var("OPENAI_API_KEY")
         .expect("OPENAI_API_KEY must be set (env or .env) to run live OpenAI tests");
-    assert!(!api_key.trim().is_empty(), "OPENAI_API_KEY is set but empty");
+    assert!(
+        !api_key.trim().is_empty(),
+        "OPENAI_API_KEY is set but empty"
+    );
     let mut config = OpenAIAdapterConfig::new(api_key);
     if let Some(base_url) = env_or_dotenv_var("OPENAI_BASE_URL") {
         config.base_url = base_url;
@@ -260,6 +264,74 @@ async fn openai_live_complete_returns_non_empty_text() {
     assert_eq!(response.provider, "openai");
     assert!(!response.text().trim().is_empty());
     assert!(response.usage.total_tokens > 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
+async fn openai_live_compact_returns_provider_items() {
+    let client = build_live_client();
+
+    let response = client
+        .compact(CompactionRequest {
+            model: live_model(),
+            messages: vec![
+                Message::user("Remember that project codename is cobalt."),
+                Message::assistant("Noted: project codename is cobalt."),
+                Message::user(
+                    "Compact this short conversation. Preserve the codename fact exactly.",
+                ),
+            ],
+            provider: Some("openai".to_string()),
+            target_tokens: Some(1024),
+            provider_options: None,
+        })
+        .await
+        .expect("openai live compact");
+
+    assert_eq!(response.provider, "openai");
+    assert!(
+        !response.output_items.is_empty(),
+        "expected compact output items"
+    );
+    assert!(
+        response.output_items.iter().any(|item| matches!(
+            item.kind,
+            CompactionItemKind::Compaction | CompactionItemKind::Message
+        )),
+        "expected compaction or retained message item, got {:?}",
+        response.output_items
+    );
+    assert!(response.raw.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
+async fn openai_live_count_tokens_returns_input_count() {
+    let client = build_live_client();
+
+    let response = client
+        .count_tokens(TokenCountRequest {
+            model: live_model(),
+            messages: vec![Message::user(
+                "Count the input tokens for this short live test request.",
+            )],
+            provider: Some("openai".to_string()),
+            tools: None,
+            tool_choice: None,
+            response_format: None,
+            provider_options: None,
+        })
+        .await
+        .expect("openai live count_tokens");
+
+    assert_eq!(response.provider, "openai");
+    assert_eq!(response.quality, TokenCountQuality::Exact);
+    assert!(
+        response.input_tokens.unwrap_or_default() > 0,
+        "expected positive input token count: {:?}",
+        response
+    );
+    assert!(response.raw.is_some());
 }
 
 #[tokio::test(flavor = "current_thread")]

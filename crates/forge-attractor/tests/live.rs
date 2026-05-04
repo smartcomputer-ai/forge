@@ -24,8 +24,8 @@ fn openai_live_model() -> String {
 #[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn attractor_live_codergen_smoke_expected_file_side_effect() {
     load_env_files();
-    let api_key = std::env::var("OPENAI_API_KEY")
-        .expect("OPENAI_API_KEY must be set to run this test");
+    let api_key =
+        std::env::var("OPENAI_API_KEY").expect("OPENAI_API_KEY must be set to run this test");
     assert!(
         !api_key.trim().is_empty(),
         "OPENAI_API_KEY is set but empty"

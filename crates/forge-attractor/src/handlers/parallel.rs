@@ -91,7 +91,15 @@ impl NodeHandler for ParallelHandler {
         let quorum_needed = quorum_target_count(node, branches.len());
 
         let mut results = if let Some(executor) = &self.executor {
-            run_branch_batches_with_executor(branches, context, graph, executor.as_ref(), max_parallel, error_policy).await?
+            run_branch_batches_with_executor(
+                branches,
+                context,
+                graph,
+                executor.as_ref(),
+                max_parallel,
+                error_policy,
+            )
+            .await?
         } else {
             run_branch_batches_from_context(branches, context, max_parallel)?
         };
@@ -242,7 +250,10 @@ async fn run_branch_batches_with_executor(
 
             if let Some(target_node_ref) = target {
                 futures.push(async move {
-                    match executor.execute(target_node_ref, &local_context, graph).await {
+                    match executor
+                        .execute(target_node_ref, &local_context, graph)
+                        .await
+                    {
                         Ok(outcome) => BranchResult {
                             branch_id,
                             target_node,
@@ -275,8 +286,7 @@ async fn run_branch_batches_with_executor(
         out.extend(batch_results);
 
         // fail_fast: abort remaining batches on first failure
-        if error_policy == ErrorPolicy::FailFast
-            && out.iter().any(|r| r.status == NodeStatus::Fail)
+        if error_policy == ErrorPolicy::FailFast && out.iter().any(|r| r.status == NodeStatus::Fail)
         {
             break;
         }
@@ -294,7 +304,11 @@ fn run_branch_batches_from_context(
     let mut out = Vec::with_capacity(branches.len());
     for (branch_id, target_node) in &branches {
         let local_context = branch_context(context, branch_id, target_node);
-        out.push(resolve_branch_result(branch_id, target_node, &local_context));
+        out.push(resolve_branch_result(
+            branch_id,
+            target_node,
+            &local_context,
+        ));
     }
     Ok(out)
 }
@@ -468,7 +482,6 @@ fn branch_result_to_value(result: &BranchResult) -> Value {
 mod tests {
     use super::*;
     use crate::parse_dot;
-    use crate::handlers::NodeHandler as _;
 
     #[tokio::test(flavor = "current_thread")]
     async fn parallel_handler_all_success_expected_success_and_results() {
@@ -523,12 +536,7 @@ mod tests {
             json!({"a": "fail", "b": "success"}),
         );
 
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
             .await
             .expect("execution should succeed");
 
@@ -555,12 +563,7 @@ mod tests {
             json!({"a": "success", "b": "fail", "c": "fail"}),
         );
 
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
             .await
             .expect("execution should succeed");
 
@@ -587,8 +590,8 @@ mod tests {
             &RuntimeContext::new(),
             &graph,
         )
-            .await
-            .expect("execution should succeed");
+        .await
+        .expect("execution should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Success);
     }
@@ -612,12 +615,7 @@ mod tests {
             json!({"a": "fail", "b": "success"}),
         );
 
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
             .await
             .expect("execution should succeed");
 

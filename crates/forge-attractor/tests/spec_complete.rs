@@ -5,14 +5,14 @@
 use async_trait::async_trait;
 use forge_attractor::{
     ArtifactStore, AttrValue, AttractorError, CheckpointMetadata, CheckpointNodeOutcome,
-    CheckpointState, ContextStore, Diagnostic, Graph, Node, NodeExecutor, NodeOutcome,
-    NodeStatus, PipelineRunner, PipelineStatus, RetryBackoffConfig, RetryPreset, RunConfig,
-    RuntimeContext, RuntimeEvent, Selector, Severity, ValidationError, apply_model_stylesheet,
-    build_retry_policy, checkpoint_file_path, delay_for_attempt_ms,
-    evaluate_condition_expression, finalize_retry_exhausted, find_incoming_edge,
-    is_valid_fidelity_mode, parse_dot, parse_stylesheet, resolve_fidelity_mode,
-    resolve_thread_key, select_next_edge, should_retry_outcome, validate, validate_or_raise,
-    validate_condition_expression, validate_context_key,
+    CheckpointState, ContextStore, Diagnostic, Graph, Node, NodeExecutor, NodeOutcome, NodeStatus,
+    PipelineRunner, PipelineStatus, RetryBackoffConfig, RetryPreset, RunConfig, RuntimeContext,
+    RuntimeEvent, Selector, Severity, ValidationError, apply_model_stylesheet, build_retry_policy,
+    checkpoint_file_path, delay_for_attempt_ms, evaluate_condition_expression,
+    finalize_retry_exhausted, find_incoming_edge, is_valid_fidelity_mode, parse_dot,
+    parse_stylesheet, resolve_fidelity_mode, resolve_thread_key, select_next_edge,
+    should_retry_outcome, validate, validate_condition_expression, validate_context_key,
+    validate_or_raise,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -127,10 +127,7 @@ mod section_2_dot_dsl {
     fn parse_dot_integer_value_expected_integer_attr() {
         let graph = parse_dot("digraph G { a [max_retries=3] }").expect("should parse");
         let node = graph.nodes.get("a").unwrap();
-        assert_eq!(
-            node.attrs.get("max_retries"),
-            Some(&AttrValue::Integer(3))
-        );
+        assert_eq!(node.attrs.get("max_retries"), Some(&AttrValue::Integer(3)));
     }
 
     #[test]
@@ -145,8 +142,8 @@ mod section_2_dot_dsl {
 
     #[test]
     fn parse_dot_boolean_values_expected_boolean_attr() {
-        let graph =
-            parse_dot("digraph G { a [goal_gate=true, allow_partial=false] }").expect("should parse");
+        let graph = parse_dot("digraph G { a [goal_gate=true, allow_partial=false] }")
+            .expect("should parse");
         let node = graph.nodes.get("a").unwrap();
         assert_eq!(node.attrs.get("goal_gate"), Some(&AttrValue::Boolean(true)));
         assert_eq!(
@@ -247,8 +244,7 @@ mod section_2_dot_dsl {
 
     #[test]
     fn parse_dot_chained_edge_attributes_shared_expected_all_edges_inherit() {
-        let graph =
-            parse_dot(r#"digraph G { a -> b -> c [weight=5] }"#).expect("should parse");
+        let graph = parse_dot(r#"digraph G { a -> b -> c [weight=5] }"#).expect("should parse");
         for edge in &graph.edges {
             assert_eq!(edge.attrs.get("weight"), Some(&AttrValue::Integer(5)));
         }
@@ -411,9 +407,8 @@ mod section_3_execution {
             "#,
         )
         .expect("parse");
-        let executor = Arc::new(
-            ScriptedExecutor::new().script("work", vec![NodeOutcome::failure("broken")]),
-        );
+        let executor =
+            Arc::new(ScriptedExecutor::new().script("work", vec![NodeOutcome::failure("broken")]));
         let result = PipelineRunner
             .run(&graph, run_cfg(executor))
             .await
@@ -650,9 +645,8 @@ mod section_3_execution {
             "#,
         )
         .expect("parse");
-        let executor = Arc::new(
-            ScriptedExecutor::new().script("work", vec![NodeOutcome::failure("fail")]),
-        );
+        let executor =
+            Arc::new(ScriptedExecutor::new().script("work", vec![NodeOutcome::failure("fail")]));
         let result = PipelineRunner
             .run(&graph, run_cfg(executor))
             .await
@@ -665,8 +659,7 @@ mod section_3_execution {
 
     #[test]
     fn parse_dot_timeout_attr_expected_duration_value() {
-        let graph =
-            parse_dot("digraph G { a [timeout=900s] }").expect("should parse");
+        let graph = parse_dot("digraph G { a [timeout=900s] }").expect("should parse");
         let node = graph.nodes.get("a").unwrap();
         match node.attrs.get("timeout") {
             Some(AttrValue::Duration(d)) => assert_eq!(d.millis, 900_000),
@@ -777,17 +770,10 @@ mod section_3_execution {
 mod section_4_handlers {
     use super::*;
     use forge_attractor::handlers::{
-        NodeHandler,
-        codergen::CodergenHandler,
-        conditional::ConditionalHandler,
-        exit::ExitHandler,
-        parallel::ParallelHandler,
-        parallel_fan_in::ParallelFanInHandler,
-        registry::HandlerRegistry,
-        stack_manager_loop::StackManagerLoopHandler,
-        start::StartHandler,
-        tool::ToolHandler,
-        wait_human::WaitHumanHandler,
+        NodeHandler, codergen::CodergenHandler, conditional::ConditionalHandler, exit::ExitHandler,
+        parallel::ParallelHandler, parallel_fan_in::ParallelFanInHandler,
+        registry::HandlerRegistry, stack_manager_loop::StackManagerLoopHandler,
+        start::StartHandler, tool::ToolHandler, wait_human::WaitHumanHandler,
     };
 
     // -- 4.1 Start handler --
@@ -818,8 +804,7 @@ mod section_4_handlers {
 
     #[tokio::test(flavor = "current_thread")]
     async fn codergen_handler_no_backend_expected_simulated_success() {
-        let graph =
-            parse_dot(r#"digraph G { n1 [prompt="Do thing"] }"#).expect("parse");
+        let graph = parse_dot(r#"digraph G { n1 [prompt="Do thing"] }"#).expect("parse");
         let node = graph.nodes.get("n1").unwrap();
         let handler = CodergenHandler::new(None);
         let outcome = NodeHandler::execute(&handler, node, &RuntimeContext::new(), &graph)
@@ -854,9 +839,10 @@ mod section_4_handlers {
     async fn conditional_handler_expected_success() {
         let graph = parse_dot("digraph G { gate [shape=diamond] }").expect("parse");
         let node = graph.nodes.get("gate").unwrap();
-        let outcome = NodeHandler::execute(&ConditionalHandler, node, &RuntimeContext::new(), &graph)
-            .await
-            .expect("execute");
+        let outcome =
+            NodeHandler::execute(&ConditionalHandler, node, &RuntimeContext::new(), &graph)
+                .await
+                .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Success);
     }
 
@@ -877,9 +863,7 @@ mod section_4_handlers {
         )
         .expect("parse");
         let node = graph.nodes.get("gate").unwrap();
-        let handler = WaitHumanHandler::new(Arc::new(
-            forge_attractor::AutoApproveInterviewer,
-        ));
+        let handler = WaitHumanHandler::new(Arc::new(forge_attractor::AutoApproveInterviewer));
         let outcome = NodeHandler::execute(&handler, node, &RuntimeContext::new(), &graph)
             .await
             .expect("execute");
@@ -891,9 +875,7 @@ mod section_4_handlers {
     async fn wait_human_handler_no_outgoing_edges_expected_fail() {
         let graph = parse_dot("digraph G { gate [shape=hexagon] }").expect("parse");
         let node = graph.nodes.get("gate").unwrap();
-        let handler = WaitHumanHandler::new(Arc::new(
-            forge_attractor::AutoApproveInterviewer,
-        ));
+        let handler = WaitHumanHandler::new(Arc::new(forge_attractor::AutoApproveInterviewer));
         let outcome = NodeHandler::execute(&handler, node, &RuntimeContext::new(), &graph)
             .await
             .expect("execute");
@@ -951,14 +933,9 @@ mod section_4_handlers {
             "parallel.branch_outcomes".to_string(),
             json!({"a": "fail", "b": "success"}),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+            .await
+            .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Success);
     }
 
@@ -980,14 +957,9 @@ mod section_4_handlers {
             "parallel.branch_outcomes".to_string(),
             json!({"a": "fail", "b": "fail"}),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+            .await
+            .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Fail);
     }
 
@@ -1010,14 +982,9 @@ mod section_4_handlers {
             "parallel.branch_outcomes".to_string(),
             json!({"a": "success", "b": "fail", "c": "fail"}),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+            .await
+            .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Fail);
     }
 
@@ -1039,21 +1006,15 @@ mod section_4_handlers {
             "parallel.branch_outcomes".to_string(),
             json!({"a": "fail", "b": "fail"}),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+            .await
+            .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Success);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn parallel_handler_no_branches_expected_fail() {
-        let graph =
-            parse_dot("digraph G { p [shape=component] }").expect("parse");
+        let graph = parse_dot("digraph G { p [shape=component] }").expect("parse");
         let node = graph.nodes.get("p").unwrap();
         let outcome = NodeHandler::execute(
             &ParallelHandler::default(),
@@ -1070,8 +1031,7 @@ mod section_4_handlers {
 
     #[tokio::test(flavor = "current_thread")]
     async fn fan_in_handler_selects_best_expected_highest_score() {
-        let graph =
-            parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
+        let graph = parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
         let node = graph.nodes.get("fi").unwrap();
         let mut context = RuntimeContext::new();
         context.insert(
@@ -1081,14 +1041,10 @@ mod section_4_handlers {
                 {"branch_id": "b", "status": "success", "score": 0.9}
             ]),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelFanInHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome =
+            NodeHandler::execute(&ParallelFanInHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Success);
         assert_eq!(
             outcome.context_updates.get("parallel.fan_in.best_id"),
@@ -1098,8 +1054,7 @@ mod section_4_handlers {
 
     #[tokio::test(flavor = "current_thread")]
     async fn fan_in_handler_all_failed_expected_fail() {
-        let graph =
-            parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
+        let graph = parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
         let node = graph.nodes.get("fi").unwrap();
         let mut context = RuntimeContext::new();
         context.insert(
@@ -1109,21 +1064,16 @@ mod section_4_handlers {
                 {"branch_id": "b", "status": "fail", "score": 0.0}
             ]),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelFanInHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome =
+            NodeHandler::execute(&ParallelFanInHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Fail);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn fan_in_handler_no_results_expected_fail() {
-        let graph =
-            parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
+        let graph = parse_dot("digraph G { fi [shape=tripleoctagon] }").expect("parse");
         let node = graph.nodes.get("fi").unwrap();
         let outcome = NodeHandler::execute(
             &ParallelFanInHandler::default(),
@@ -1140,8 +1090,7 @@ mod section_4_handlers {
 
     #[tokio::test(flavor = "current_thread")]
     async fn tool_handler_missing_command_expected_fail() {
-        let graph =
-            parse_dot("digraph G { t [shape=parallelogram] }").expect("parse");
+        let graph = parse_dot("digraph G { t [shape=parallelogram] }").expect("parse");
         let node = graph.nodes.get("t").unwrap();
         let outcome = NodeHandler::execute(&ToolHandler, node, &RuntimeContext::new(), &graph)
             .await
@@ -1165,7 +1114,10 @@ mod section_4_handlers {
             .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Success);
         assert_eq!(
-            outcome.context_updates.get("tool.output").and_then(Value::as_str),
+            outcome
+                .context_updates
+                .get("tool.output")
+                .and_then(Value::as_str),
             Some("preset")
         );
     }
@@ -1236,9 +1188,14 @@ mod section_4_handlers {
         let graph =
             parse_dot("digraph G { m [shape=house, manager_max_cycles=2] }").expect("parse");
         let node = graph.nodes.get("m").unwrap();
-        let outcome = NodeHandler::execute(&StackManagerLoopHandler, node, &RuntimeContext::new(), &graph)
-            .await
-            .expect("execute");
+        let outcome = NodeHandler::execute(
+            &StackManagerLoopHandler,
+            node,
+            &RuntimeContext::new(),
+            &graph,
+        )
+        .await
+        .expect("execute");
         assert_eq!(outcome.status, NodeStatus::Fail);
     }
 
@@ -1266,8 +1223,7 @@ mod section_4_handlers {
     #[test]
     fn handler_registry_explicit_type_expected_highest_precedence() {
         let registry = HandlerRegistry::new();
-        let graph =
-            parse_dot(r#"digraph G { n1 [shape=diamond, type="tool"] }"#).expect("parse");
+        let graph = parse_dot(r#"digraph G { n1 [shape=diamond, type="tool"] }"#).expect("parse");
         let node = graph.nodes.get("n1").unwrap();
         assert_eq!(registry.resolve_handler_type(node), "tool");
     }
@@ -1303,8 +1259,7 @@ mod section_4_handlers {
             ("house", "stack.manager_loop"),
         ];
         for (shape, expected_type) in mappings {
-            let graph =
-                parse_dot(&format!("digraph G {{ n1 [shape={shape}] }}")).expect("parse");
+            let graph = parse_dot(&format!("digraph G {{ n1 [shape={shape}] }}")).expect("parse");
             let node = graph.nodes.get("n1").unwrap();
             assert_eq!(
                 registry.resolve_handler_type(node),
@@ -1337,10 +1292,8 @@ mod section_5_state {
 
     #[test]
     fn context_store_apply_updates_merges_expected() {
-        let store = ContextStore::from_values(BTreeMap::from([(
-            "existing".to_string(),
-            json!("yes"),
-        )]));
+        let store =
+            ContextStore::from_values(BTreeMap::from([("existing".to_string(), json!("yes"))]));
         store
             .apply_updates(&BTreeMap::from([("new_key".to_string(), json!(42))]))
             .expect("apply");
@@ -1352,9 +1305,7 @@ mod section_5_state {
     #[test]
     fn context_store_clone_isolated_expected_independent() {
         let original = ContextStore::new();
-        original
-            .set("context.key", json!("original"))
-            .expect("set");
+        original.set("context.key", json!("original")).expect("set");
         let cloned = original.clone_isolated().expect("clone");
         cloned.set("context.key", json!("cloned")).expect("set");
         assert_eq!(
@@ -1434,10 +1385,7 @@ mod section_5_state {
             context_updates: updates,
             ..Default::default()
         };
-        assert_eq!(
-            outcome.context_updates.get("key"),
-            Some(&json!("value"))
-        );
+        assert_eq!(outcome.context_updates.get("key"), Some(&json!("value")));
     }
 
     // -- 5.3 Checkpoint --
@@ -1562,22 +1510,22 @@ mod section_5_state {
             graph_snapshot_hash: None,
             graph_snapshot_ref: None,
         };
-        assert_eq!(
-            checkpoint.terminal_pipeline_status().expect("ok"),
-            None
-        );
+        assert_eq!(checkpoint.terminal_pipeline_status().expect("ok"), None);
     }
 
     // -- 5.4 Fidelity --
 
     #[test]
     fn is_valid_fidelity_mode_all_valid_expected_true() {
-        for mode in ["full", "truncate", "compact", "summary:low", "summary:medium", "summary:high"]
-        {
-            assert!(
-                is_valid_fidelity_mode(mode),
-                "expected valid: {mode}"
-            );
+        for mode in [
+            "full",
+            "truncate",
+            "compact",
+            "summary:low",
+            "summary:medium",
+            "summary:high",
+        ] {
+            assert!(is_valid_fidelity_mode(mode), "expected valid: {mode}");
         }
     }
 
@@ -1663,9 +1611,7 @@ mod section_5_state {
         let temp = TempDir::new().expect("temp dir");
         let store = ArtifactStore::new(Some(temp.path().to_path_buf()), 64).expect("create");
         let payload = json!({"content": "x".repeat(512)});
-        let info = store
-            .store_json("large", "Large", &payload)
-            .expect("store");
+        let info = store.store_json("large", "Large", &payload).expect("store");
         assert!(info.is_file_backed);
         assert!(temp.path().join("artifacts/large.json").exists());
     }
@@ -1682,9 +1628,7 @@ mod section_5_state {
     #[test]
     fn artifact_store_retrieve_by_reference_expected_works() {
         let store = ArtifactStore::new(None, 1024).expect("create");
-        store
-            .store_json("art2", "Art", &json!(42))
-            .expect("store");
+        store.store_json("art2", "Art", &json!(42)).expect("store");
         let retrieved = store
             .retrieve_json_by_reference("artifact://art2")
             .expect("retrieve");
@@ -1845,9 +1789,8 @@ mod section_5_state {
 mod section_6_hitl {
     use super::*;
     use forge_attractor::{
-        AutoApproveInterviewer, CallbackInterviewer, HumanAnswer, HumanChoice,
-        HumanQuestion, HumanQuestionType, Interviewer, QueueInterviewer,
-        RecordingInterviewer,
+        AutoApproveInterviewer, CallbackInterviewer, HumanAnswer, HumanChoice, HumanQuestion,
+        HumanQuestionType, Interviewer, QueueInterviewer, RecordingInterviewer,
     };
 
     #[tokio::test(flavor = "current_thread")]
@@ -1936,10 +1879,7 @@ mod section_6_hitl {
 
     #[tokio::test(flavor = "current_thread")]
     async fn queue_interviewer_pending_count_expected_correct() {
-        let interviewer = QueueInterviewer::with_answers(vec![
-            HumanAnswer::Yes,
-            HumanAnswer::No,
-        ]);
+        let interviewer = QueueInterviewer::with_answers(vec![HumanAnswer::Yes, HumanAnswer::No]);
         assert_eq!(interviewer.pending(), 2);
     }
 
@@ -2176,8 +2116,15 @@ mod section_7_validation {
     #[test]
     fn validate_known_types_no_warning_expected() {
         for node_type in [
-            "start", "exit", "codergen", "wait.human", "conditional", "parallel",
-            "parallel.fan_in", "tool", "stack.manager_loop",
+            "start",
+            "exit",
+            "codergen",
+            "wait.human",
+            "conditional",
+            "parallel",
+            "parallel.fan_in",
+            "tool",
+            "stack.manager_loop",
         ] {
             let graph = parse_dot(&format!(
                 r#"
@@ -2233,9 +2180,7 @@ mod section_7_validation {
         )
         .expect("parse");
         let diags = validate(&graph, &[]);
-        assert!(
-            !diags.iter().any(|d| d.rule == "fidelity_valid"),
-        );
+        assert!(!diags.iter().any(|d| d.rule == "fidelity_valid"),);
     }
 
     #[test]
@@ -2297,11 +2242,7 @@ mod section_7_validation {
         )
         .expect("parse");
         let diags = validate(&graph, &[]);
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.rule == "goal_gate_has_retry")
-        );
+        assert!(!diags.iter().any(|d| d.rule == "goal_gate_has_retry"));
     }
 
     #[test]
@@ -2339,11 +2280,7 @@ mod section_7_validation {
         )
         .expect("parse");
         let diags = validate(&graph, &[]);
-        assert!(
-            !diags
-                .iter()
-                .any(|d| d.rule == "prompt_on_llm_nodes")
-        );
+        assert!(!diags.iter().any(|d| d.rule == "prompt_on_llm_nodes"));
     }
 
     #[test]
@@ -2411,10 +2348,9 @@ mod section_8_stylesheet {
 
     #[test]
     fn parse_stylesheet_multiple_declarations_expected() {
-        let rules = parse_stylesheet(
-            "* { llm_model: m1; llm_provider: openai; reasoning_effort: high; }",
-        )
-        .expect("parse");
+        let rules =
+            parse_stylesheet("* { llm_model: m1; llm_provider: openai; reasoning_effort: high; }")
+                .expect("parse");
         assert_eq!(rules[0].declarations.len(), 3);
     }
 
@@ -2448,15 +2384,13 @@ mod section_8_stylesheet {
 
     #[test]
     fn parse_stylesheet_unsupported_property_expected_error() {
-        let err =
-            parse_stylesheet("* { color: red; }").expect_err("should fail");
+        let err = parse_stylesheet("* { color: red; }").expect_err("should fail");
         assert!(err.to_string().contains("not supported"));
     }
 
     #[test]
     fn parse_stylesheet_invalid_reasoning_effort_expected_error() {
-        let err = parse_stylesheet("* { reasoning_effort: extreme; }")
-            .expect_err("should fail");
+        let err = parse_stylesheet("* { reasoning_effort: extreme; }").expect_err("should fail");
         assert!(err.to_string().contains("low|medium|high"));
     }
 
@@ -2535,13 +2469,20 @@ mod section_8_stylesheet {
         let mut graph = parse_dot("digraph G { n1 }").expect("parse");
         apply_model_stylesheet(&mut graph).expect("apply");
         // No llm_model should be set
-        assert!(graph.nodes.get("n1").unwrap().attrs.get("llm_model").is_none());
+        assert!(
+            graph
+                .nodes
+                .get("n1")
+                .unwrap()
+                .attrs
+                .get("llm_model")
+                .is_none()
+        );
     }
 
     #[test]
     fn parse_stylesheet_quoted_value_expected_unquoted() {
-        let rules =
-            parse_stylesheet(r#"* { llm_model: "gpt-4o"; }"#).expect("parse");
+        let rules = parse_stylesheet(r#"* { llm_model: "gpt-4o"; }"#).expect("parse");
         assert_eq!(rules[0].declarations[0].1, "gpt-4o");
     }
 
@@ -2604,8 +2545,7 @@ mod section_8_stylesheet {
 mod section_9_transforms {
     use super::*;
     use forge_attractor::{
-        Transform, VariableExpansionTransform,
-        apply_builtin_transforms, prepare_pipeline,
+        Transform, VariableExpansionTransform, apply_builtin_transforms, prepare_pipeline,
     };
 
     #[test]
@@ -2621,10 +2561,7 @@ mod section_9_transforms {
         .expect("parse");
         VariableExpansionTransform.apply(&mut graph).expect("apply");
         let node = graph.nodes.get("plan").unwrap();
-        assert_eq!(
-            node.attrs.get_str("prompt"),
-            Some("Plan for Ship feature")
-        );
+        assert_eq!(node.attrs.get_str("prompt"), Some("Plan for Ship feature"));
     }
 
     #[test]
@@ -2655,10 +2592,7 @@ mod section_9_transforms {
         .expect("parse");
         apply_builtin_transforms(&mut graph).expect("apply");
         let node = graph.nodes.get("plan").unwrap();
-        assert_eq!(
-            node.attrs.get_str("prompt"),
-            Some("Plan for ship")
-        );
+        assert_eq!(node.attrs.get_str("prompt"), Some("Plan for ship"));
         assert_eq!(
             node.attrs.get("llm_model"),
             Some(&AttrValue::String("base".to_string()))
@@ -2693,8 +2627,7 @@ mod section_9_transforms {
                 for node in graph.nodes.values_mut() {
                     if let Some(prompt) = node.attrs.get_str("prompt") {
                         let upper = prompt.to_uppercase();
-                        node.attrs
-                            .set_inherited("prompt", AttrValue::String(upper));
+                        node.attrs.set_inherited("prompt", AttrValue::String(upper));
                     }
                 }
                 Ok(())
@@ -2774,9 +2707,7 @@ mod section_10_conditions {
     #[test]
     fn evaluate_condition_outcome_eq_fail_expected_false() {
         let ctx = RuntimeContext::new();
-        assert!(
-            !evaluate_condition_expression("outcome=fail", &success_outcome(), &ctx).unwrap()
-        );
+        assert!(!evaluate_condition_expression("outcome=fail", &success_outcome(), &ctx).unwrap());
     }
 
     #[test]
@@ -2818,9 +2749,7 @@ mod section_10_conditions {
     #[test]
     fn evaluate_condition_ne_match_expected_true() {
         let ctx = RuntimeContext::new();
-        assert!(
-            evaluate_condition_expression("outcome!=fail", &success_outcome(), &ctx).unwrap()
-        );
+        assert!(evaluate_condition_expression("outcome!=fail", &success_outcome(), &ctx).unwrap());
     }
 
     // -- Evaluate: exists --
@@ -2829,17 +2758,13 @@ mod section_10_conditions {
     fn evaluate_condition_exists_present_expected_true() {
         let mut ctx = RuntimeContext::new();
         ctx.insert("ready".to_string(), json!(true));
-        assert!(
-            evaluate_condition_expression("context.ready", &success_outcome(), &ctx).unwrap()
-        );
+        assert!(evaluate_condition_expression("context.ready", &success_outcome(), &ctx).unwrap());
     }
 
     #[test]
     fn evaluate_condition_exists_missing_expected_false() {
         let ctx = RuntimeContext::new();
-        assert!(
-            !evaluate_condition_expression("context.ready", &success_outcome(), &ctx).unwrap()
-        );
+        assert!(!evaluate_condition_expression("context.ready", &success_outcome(), &ctx).unwrap());
     }
 
     #[test]
@@ -2856,23 +2781,27 @@ mod section_10_conditions {
     fn evaluate_condition_multiple_clauses_all_true_expected_true() {
         let mut ctx = RuntimeContext::new();
         ctx.insert("ready".to_string(), json!(true));
-        assert!(evaluate_condition_expression(
-            "outcome=success && context.ready=true",
-            &success_outcome(),
-            &ctx
-        )
-        .unwrap());
+        assert!(
+            evaluate_condition_expression(
+                "outcome=success && context.ready=true",
+                &success_outcome(),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     #[test]
     fn evaluate_condition_multiple_clauses_one_false_expected_false() {
         let ctx = RuntimeContext::new();
-        assert!(!evaluate_condition_expression(
-            "outcome=success && context.ready=true",
-            &success_outcome(),
-            &ctx
-        )
-        .unwrap());
+        assert!(
+            !evaluate_condition_expression(
+                "outcome=success && context.ready=true",
+                &success_outcome(),
+                &ctx
+            )
+            .unwrap()
+        );
     }
 
     // -- Missing keys --
@@ -2883,23 +2812,19 @@ mod section_10_conditions {
         let ctx = RuntimeContext::new();
         // missing key == "" should be true (both empty)
         // but "context.missing=something" should be false
-        assert!(!evaluate_condition_expression(
-            "context.missing=something",
-            &success_outcome(),
-            &ctx
-        )
-        .unwrap());
+        assert!(
+            !evaluate_condition_expression("context.missing=something", &success_outcome(), &ctx)
+                .unwrap()
+        );
     }
 
     #[test]
     fn evaluate_condition_missing_key_ne_nonempty_expected_true() {
         let ctx = RuntimeContext::new();
-        assert!(evaluate_condition_expression(
-            "context.missing!=something",
-            &success_outcome(),
-            &ctx
-        )
-        .unwrap());
+        assert!(
+            evaluate_condition_expression("context.missing!=something", &success_outcome(), &ctx)
+                .unwrap()
+        );
     }
 
     // -- Quoted strings --
@@ -2908,12 +2833,10 @@ mod section_10_conditions {
     fn evaluate_condition_quoted_string_expected_match() {
         let mut ctx = RuntimeContext::new();
         ctx.insert("choice".to_string(), json!("ship now"));
-        assert!(evaluate_condition_expression(
-            "context.choice=\"ship now\"",
-            &success_outcome(),
-            &ctx
-        )
-        .unwrap());
+        assert!(
+            evaluate_condition_expression("context.choice=\"ship now\"", &success_outcome(), &ctx)
+                .unwrap()
+        );
     }
 
     // -- Bare key (direct context lookup) --
@@ -2922,9 +2845,7 @@ mod section_10_conditions {
     fn evaluate_condition_bare_key_eq_expected_direct_lookup() {
         let mut ctx = RuntimeContext::new();
         ctx.insert("status".to_string(), json!("ok"));
-        assert!(
-            evaluate_condition_expression("status=ok", &success_outcome(), &ctx).unwrap()
-        );
+        assert!(evaluate_condition_expression("status=ok", &success_outcome(), &ctx).unwrap());
     }
 }
 
@@ -2971,8 +2892,14 @@ mod section_retry_unit {
     #[test]
     fn retry_preset_from_str_all_variants_expected() {
         assert_eq!(RetryPreset::from_str("none"), Some(RetryPreset::None));
-        assert_eq!(RetryPreset::from_str("standard"), Some(RetryPreset::Standard));
-        assert_eq!(RetryPreset::from_str("aggressive"), Some(RetryPreset::Aggressive));
+        assert_eq!(
+            RetryPreset::from_str("standard"),
+            Some(RetryPreset::Standard)
+        );
+        assert_eq!(
+            RetryPreset::from_str("aggressive"),
+            Some(RetryPreset::Aggressive)
+        );
         assert_eq!(RetryPreset::from_str("linear"), Some(RetryPreset::Linear));
         assert_eq!(RetryPreset::from_str("patient"), Some(RetryPreset::Patient));
         assert_eq!(RetryPreset::from_str("unknown"), None);
@@ -3065,8 +2992,7 @@ mod section_retry_unit {
 
     #[test]
     fn finalize_retry_exhausted_allow_partial_expected_partial_success() {
-        let graph =
-            parse_dot("digraph G { work [allow_partial=true] }").expect("parse");
+        let graph = parse_dot("digraph G { work [allow_partial=true] }").expect("parse");
         let node = graph.nodes.get("work").unwrap();
         let outcome = finalize_retry_exhausted(node);
         assert_eq!(outcome.status, NodeStatus::PartialSuccess);
@@ -3117,8 +3043,8 @@ mod section_retry_unit {
 mod section_events {
     use super::*;
     use forge_attractor::{
-        PipelineEvent, RuntimeEventKind, RuntimeEventSink,
-        SharedRuntimeEventObserver, runtime_event_channel,
+        PipelineEvent, RuntimeEventKind, RuntimeEventSink, SharedRuntimeEventObserver,
+        runtime_event_channel,
     };
 
     #[test]
@@ -3243,7 +3169,8 @@ mod section_logs_artifacts {
     use super::*;
 
     #[tokio::test(flavor = "current_thread")]
-    async fn pipeline_status_json_uses_spec_field_names_expected_outcome_and_preferred_next_label() {
+    async fn pipeline_status_json_uses_spec_field_names_expected_outcome_and_preferred_next_label()
+    {
         let graph = parse_dot(
             r#"
             digraph G {
@@ -3277,7 +3204,11 @@ mod section_logs_artifacts {
         let mut status_path = temp.path().join("work").join("status.json");
         if !status_path.exists() {
             // With lineage, first attempt is under attempt-1
-            status_path = temp.path().join("attempt-1").join("work").join("status.json");
+            status_path = temp
+                .path()
+                .join("attempt-1")
+                .join("work")
+                .join("status.json");
         }
         assert!(
             status_path.exists(),
@@ -3379,10 +3310,7 @@ mod section_logs_artifacts {
 // =========================================================================
 mod section_4_parallel_extended {
     use super::*;
-    use forge_attractor::handlers::{
-        NodeHandler,
-        parallel::ParallelHandler,
-    };
+    use forge_attractor::handlers::{NodeHandler, parallel::ParallelHandler};
 
     #[tokio::test(flavor = "current_thread")]
     async fn parallel_wait_all_with_failures_expected_partial_success() {
@@ -3403,14 +3331,9 @@ mod section_4_parallel_extended {
             "parallel.branch_outcomes".to_string(),
             json!({"a": "success", "b": "fail"}),
         );
-        let outcome = NodeHandler::execute(
-            &ParallelHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-        .await
-        .expect("execute");
+        let outcome = NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+            .await
+            .expect("execute");
         // wait_all with failures should produce PartialSuccess, not Fail
         assert_eq!(
             outcome.status,
@@ -3445,14 +3368,9 @@ mod section_4_parallel_extended {
             .build()
             .unwrap();
         let outcome = rt.block_on(async {
-            NodeHandler::execute(
-                &ParallelHandler::default(),
-                node,
-                &context,
-                &graph,
-            )
-            .await
-            .expect("execute")
+            NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute")
         });
         assert_eq!(
             outcome.status,
@@ -3485,14 +3403,9 @@ mod section_4_parallel_extended {
             .build()
             .unwrap();
         let outcome = rt.block_on(async {
-            NodeHandler::execute(
-                &ParallelHandler::default(),
-                node,
-                &context,
-                &graph,
-            )
-            .await
-            .expect("execute")
+            NodeHandler::execute(&ParallelHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute")
         });
         // error_policy=ignore downgrades failures to success before join evaluation
         assert_eq!(
@@ -3542,7 +3455,11 @@ mod section_pipeline_integration {
             "pipeline should fail because unvisited goal_gate node was never satisfied"
         );
         assert!(
-            result.failure_reason.as_deref().unwrap_or("").contains("goal gate"),
+            result
+                .failure_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("goal gate"),
             "failure reason should mention goal gate: {:?}",
             result.failure_reason
         );
@@ -3563,9 +3480,8 @@ mod section_pipeline_integration {
         )
         .expect("parse");
         // The flaky node will fail, but auto_status=true should synthesize success
-        let executor = Arc::new(
-            ScriptedExecutor::new().script("flaky", vec![NodeOutcome::failure("oops")]),
-        );
+        let executor =
+            Arc::new(ScriptedExecutor::new().script("flaky", vec![NodeOutcome::failure("oops")]));
         let result = PipelineRunner
             .run(&graph, run_cfg(executor))
             .await
@@ -3684,7 +3600,10 @@ mod section_pipeline_integration {
         )
         .expect("parse");
         let err = validate_or_raise(&graph, &[]);
-        assert!(err.is_err(), "pipeline with two exit nodes should be rejected");
+        assert!(
+            err.is_err(),
+            "pipeline with two exit nodes should be rejected"
+        );
     }
 }
 

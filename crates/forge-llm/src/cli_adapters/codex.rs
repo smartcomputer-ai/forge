@@ -41,10 +41,7 @@ impl CodexAgentProvider {
         let mut cmd = Command::new(&self.binary_path);
         cmd.arg("exec").arg("--json").arg(prompt);
 
-        let model = options
-            .model_override
-            .as_deref()
-            .or(self.model.as_deref());
+        let model = options.model_override.as_deref().or(self.model.as_deref());
         if let Some(model) = model {
             cmd.arg("--model").arg(model);
         }
@@ -186,17 +183,13 @@ impl AgentProvider for CodexAgentProvider {
                                 }
                             }
                             "command_execution" => {
-                                let exit_code = item
-                                    .get("exitCode")
-                                    .and_then(|v| v.as_i64())
-                                    .unwrap_or(-1);
+                                let exit_code =
+                                    item.get("exitCode").and_then(|v| v.as_i64()).unwrap_or(-1);
                                 let output = item
                                     .get("aggregatedOutput")
                                     .and_then(|v| v.as_str())
                                     .unwrap_or("");
-                                let duration = item
-                                    .get("durationMs")
-                                    .and_then(|v| v.as_u64());
+                                let duration = item.get("durationMs").and_then(|v| v.as_u64());
                                 let is_error = exit_code != 0;
 
                                 if let Some(record) = tool_activity

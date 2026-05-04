@@ -24,9 +24,7 @@ use crate::session::utils::{
     current_timestamp, detect_loop, discover_project_documents, validate_reasoning_effort,
 };
 use crate::tools::ToolDispatchOptions;
-use crate::turn::{
-    AssistantTurn, SteeringTurn, ToolResultTurn, ToolResultsTurn, Turn, UserTurn,
-};
+use crate::turn::{AssistantTurn, SteeringTurn, ToolResultTurn, ToolResultsTurn, Turn, UserTurn};
 
 /// Agent provider backed by a raw HTTP LLM API + forge's tool registry.
 ///
@@ -102,10 +100,7 @@ impl AgentProvider for HttpApiAgentProvider {
             if round_count >= max_tool_rounds {
                 if let Some(ref on_event) = options.on_event {
                     on_event(AgentLoopEvent::Warning {
-                        message: format!(
-                            "Tool round limit reached ({} rounds)",
-                            max_tool_rounds
-                        ),
+                        message: format!("Tool round limit reached ({} rounds)", max_tool_rounds),
                     });
                 }
                 break;
@@ -123,16 +118,14 @@ impl AgentProvider for HttpApiAgentProvider {
 
             // Context window warning.
             if !context_warning_emitted {
-                let context_window_size =
-                    self.provider_profile.capabilities().context_window_size;
+                let context_window_size = self.provider_profile.capabilities().context_window_size;
                 if context_window_size > 0 {
                     let approx_tokens = approximate_context_tokens(&history);
                     let warning_threshold = context_window_size.saturating_mul(8) / 10;
                     if approx_tokens > warning_threshold {
                         context_warning_emitted = true;
                         if let Some(ref on_event) = options.on_event {
-                            let usage_pct = ((approx_tokens as f64
-                                / context_window_size as f64)
+                            let usage_pct = ((approx_tokens as f64 / context_window_size as f64)
                                 * 100.0)
                                 .round();
                             on_event(AgentLoopEvent::Warning {
@@ -331,7 +324,9 @@ impl HttpApiAgentProvider {
             &environment_context,
             &tools,
             &project_docs,
-            options.system_prompt_override.as_deref()
+            options
+                .system_prompt_override
+                .as_deref()
                 .or(self.config.system_prompt_override.as_deref()),
         );
 

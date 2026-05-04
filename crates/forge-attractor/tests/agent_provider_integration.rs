@@ -9,7 +9,9 @@ use forge_attractor::agent_provider::AgentProviderSubmitter;
 use forge_attractor::forge_agent::{ForgeAgentCodergenAdapter, ForgeAgentSessionBackend};
 use forge_attractor::handlers::registry::RegistryNodeExecutor;
 use forge_attractor::{PipelineRunner, PipelineStatus, RunConfig, prepare_pipeline};
-use forge_llm::agent_provider::{AgentProvider, AgentRunOptions, AgentRunResult, ToolActivityRecord};
+use forge_llm::agent_provider::{
+    AgentProvider, AgentRunOptions, AgentRunResult, ToolActivityRecord,
+};
 use forge_llm::errors::{ErrorInfo, ProviderError, ProviderErrorKind, SDKError};
 use forge_llm::types::Usage;
 use std::path::PathBuf;

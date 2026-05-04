@@ -227,7 +227,8 @@ fn build_runtime_persistence(
 
 async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) =
+        prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
     for diag in &diagnostics {
         eprintln!("warning: {}", diag.message);
     }
@@ -270,7 +271,8 @@ async fn run_command(args: RunArgs) -> Result<ExitCode, String> {
 
 async fn resume_command(args: ResumeArgs) -> Result<ExitCode, String> {
     let source = load_dot_source(args.dot_file.as_deref(), args.dot_source.as_deref())?;
-    let (graph, diagnostics) = prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
+    let (graph, diagnostics) =
+        prepare_pipeline(&source, &[], &[]).map_err(|error| error.to_string())?;
     for diag in &diagnostics {
         eprintln!("warning: {}", diag.message);
     }
@@ -535,8 +537,7 @@ fn build_cli_agent_codergen_backend(
 
 fn resolve_cli_binary(env_var: &str, default_name: &str) -> String {
     std::env::var(env_var).unwrap_or_else(|_| {
-        let home =
-            std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home/ubuntu".to_string());
         format!("{}/.local/bin/{}", home, default_name)
     })
 }

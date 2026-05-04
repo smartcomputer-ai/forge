@@ -7,8 +7,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use support::live::{
     bootstrap_live_session, build_openai_live_client, collect_tool_results,
-    find_tool_call_end_output, find_tool_result_with_substring,
-    openai_live_model, run_with_retries, submit_with_options_timeout, submit_with_timeout,
+    find_tool_call_end_output, find_tool_result_with_substring, openai_live_model,
+    run_with_retries, submit_with_options_timeout, submit_with_timeout,
 };
 
 #[tokio::test(flavor = "current_thread")]

@@ -120,7 +120,6 @@ fn normalize_label(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::{NodeOutcome, NodeStatus, parse_dot};
-    use std::collections::BTreeMap;
 
     fn base_outcome() -> NodeOutcome {
         NodeOutcome {

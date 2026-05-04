@@ -1,4 +1,3 @@
-
 use super::*;
 use crate::{
     BufferedEventEmitter, LocalExecutionEnvironment, PROJECT_DOC_TRUNCATION_MARKER,

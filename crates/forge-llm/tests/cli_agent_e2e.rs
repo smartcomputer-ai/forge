@@ -19,8 +19,13 @@ fn home_dir() -> PathBuf {
 }
 
 fn resolve_bin(env_var: &str, default_name: &str) -> String {
-    let path = std::env::var(env_var)
-        .unwrap_or_else(|_| home_dir().join(".local/bin").join(default_name).to_string_lossy().to_string());
+    let path = std::env::var(env_var).unwrap_or_else(|_| {
+        home_dir()
+            .join(".local/bin")
+            .join(default_name)
+            .to_string_lossy()
+            .to_string()
+    });
     assert!(
         std::path::Path::new(&path).exists(),
         "CLI binary not found at '{path}'. Install it or set {env_var} to the correct path."
@@ -95,7 +100,10 @@ async fn claude_code_simple_text_response() {
     );
     assert_eq!(result.provider, "claude-code");
     assert!(!result.id.is_empty(), "expected non-empty run id");
-    assert!(result.duration_ms.unwrap_or(0) > 0, "expected positive duration");
+    assert!(
+        result.duration_ms.unwrap_or(0) > 0,
+        "expected positive duration"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

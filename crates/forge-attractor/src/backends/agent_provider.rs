@@ -5,8 +5,7 @@
 use crate::backends::forge_agent::AgentSubmitter;
 use async_trait::async_trait;
 use forge_agent::{
-    AgentError, SessionPersistenceSnapshot, SessionState, SubmitOptions, SubmitResult,
-    ToolCallHook,
+    AgentError, SessionPersistenceSnapshot, SessionState, SubmitOptions, SubmitResult, ToolCallHook,
 };
 use forge_llm::agent_provider::{AgentProvider, AgentRunOptions};
 use std::path::PathBuf;

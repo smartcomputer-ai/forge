@@ -78,7 +78,10 @@ impl NodeHandler for ParallelFanInHandler {
                     serde_json::to_string_pretty(results).unwrap_or_default()
                 );
 
-                match backend.run(node, &consolidation_prompt, context, graph).await {
+                match backend
+                    .run(node, &consolidation_prompt, context, graph)
+                    .await
+                {
                     Ok(CodergenBackendResult::Outcome(outcome)) => {
                         let mut updates = outcome.context_updates.clone();
                         updates.insert(
@@ -221,8 +224,8 @@ fn rank_status(status: NodeStatus) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parse_dot;
     use crate::handlers::NodeHandler;
+    use crate::parse_dot;
 
     #[tokio::test(flavor = "current_thread")]
     async fn fan_in_selects_best_candidate_expected_success() {
@@ -238,14 +241,10 @@ mod tests {
             ]),
         );
 
-        let outcome = NodeHandler::execute(
-            &ParallelFanInHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-            .await
-            .expect("execute should succeed");
+        let outcome =
+            NodeHandler::execute(&ParallelFanInHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Success);
         assert_eq!(
@@ -271,14 +270,10 @@ mod tests {
             ]),
         );
 
-        let outcome = NodeHandler::execute(
-            &ParallelFanInHandler::default(),
-            node,
-            &context,
-            &graph,
-        )
-            .await
-            .expect("execute should succeed");
+        let outcome =
+            NodeHandler::execute(&ParallelFanInHandler::default(), node, &context, &graph)
+                .await
+                .expect("execute should succeed");
 
         assert_eq!(outcome.status, NodeStatus::Fail);
     }

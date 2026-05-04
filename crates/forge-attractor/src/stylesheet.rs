@@ -95,12 +95,7 @@ pub fn apply_model_stylesheet(graph: &mut Graph) -> Result<(), AttractorError> {
 
     for node in graph.nodes.values_mut() {
         let node_classes = parse_class_list(node.attrs.get_str("class").unwrap_or_default());
-        let node_shape = Some(
-            node.attrs
-                .get_str("shape")
-                .unwrap_or("box")
-                .to_string(),
-        );
+        let node_shape = Some(node.attrs.get_str("shape").unwrap_or("box").to_string());
 
         for property in recognized {
             if node.attrs.is_explicit(property) {

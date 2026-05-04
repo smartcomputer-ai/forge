@@ -42,15 +42,9 @@ impl GeminiAgentProvider {
 
     fn build_command(&self, prompt: &str, options: &AgentRunOptions) -> Command {
         let mut cmd = Command::new(&self.binary_path);
-        cmd.arg("-p")
-            .arg(prompt)
-            .arg("-o")
-            .arg("stream-json");
+        cmd.arg("-p").arg(prompt).arg("-o").arg("stream-json");
 
-        let model = options
-            .model_override
-            .as_deref()
-            .or(self.model.as_deref());
+        let model = options.model_override.as_deref().or(self.model.as_deref());
         if let Some(model) = model {
             cmd.arg("--model").arg(model);
         }
@@ -83,7 +77,9 @@ impl AgentProvider for GeminiAgentProvider {
     ) -> Result<AgentRunResult, SDKError> {
         let start = Instant::now();
         let mut cmd = self.build_command(prompt, options);
-        let mut child = cmd.spawn().map_err(|e| gemini_error(&self.binary_path, e))?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| gemini_error(&self.binary_path, e))?;
 
         let stdout = child.stdout.take().expect("stdout should be piped");
         let reader = BufReader::new(stdout);
@@ -93,7 +89,10 @@ impl AgentProvider for GeminiAgentProvider {
         let mut tool_activity = Vec::new();
         let mut total_usage = Usage::default();
         let mut call_counter = 0u64;
-        let mut session_model = self.model.clone().unwrap_or_else(|| "gemini-cli".to_string());
+        let mut session_model = self
+            .model
+            .clone()
+            .unwrap_or_else(|| "gemini-cli".to_string());
 
         while let Some(line) = lines
             .next_line()
@@ -133,12 +132,17 @@ impl AgentProvider for GeminiAgentProvider {
                                         });
                                     }
                                 }
-                            } else if let Some(parts) = event.get("content").and_then(|v| v.as_array()) {
+                            } else if let Some(parts) =
+                                event.get("content").and_then(|v| v.as_array())
+                            {
                                 for part in parts {
-                                    let part_type = part.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                    let part_type =
+                                        part.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                     match part_type {
                                         "text" => {
-                                            if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                                            if let Some(text) =
+                                                part.get("text").and_then(|v| v.as_str())
+                                            {
                                                 final_text = text.to_string();
                                                 if let Some(ref on_event) = options.on_event {
                                                     on_event(AgentLoopEvent::TextDelta {
@@ -158,7 +162,9 @@ impl AgentProvider for GeminiAgentProvider {
                                                 .get("id")
                                                 .and_then(|v| v.as_str())
                                                 .map(|s| s.to_string())
-                                                .unwrap_or_else(|| format!("gemini-tc-{}", call_counter));
+                                                .unwrap_or_else(|| {
+                                                    format!("gemini-tc-{}", call_counter)
+                                                });
                                             let arguments = part
                                                 .get("input")
                                                 .or_else(|| part.get("args"))
@@ -176,7 +182,9 @@ impl AgentProvider for GeminiAgentProvider {
                                             tool_activity.push(ToolActivityRecord {
                                                 tool_name,
                                                 call_id,
-                                                arguments_summary: Some(truncate_json(&arguments, 200)),
+                                                arguments_summary: Some(truncate_json(
+                                                    &arguments, 200,
+                                                )),
                                                 result_summary: None,
                                                 is_error: false,
                                                 duration_ms: None,
@@ -202,9 +210,15 @@ impl AgentProvider for GeminiAgentProvider {
                                                 .iter()
                                                 .rposition(|r| r.call_id == tool_use_id)
                                                 .or_else(|| {
-                                                    if tool_activity.is_empty() { None } else { Some(tool_activity.len() - 1) }
+                                                    if tool_activity.is_empty() {
+                                                        None
+                                                    } else {
+                                                        Some(tool_activity.len() - 1)
+                                                    }
                                                 });
-                                            if let Some(record) = idx.and_then(|i| tool_activity.get_mut(i)) {
+                                            if let Some(record) =
+                                                idx.and_then(|i| tool_activity.get_mut(i))
+                                            {
                                                 record.result_summary = Some(result_text.clone());
                                                 record.is_error = is_error;
 
@@ -227,7 +241,9 @@ impl AgentProvider for GeminiAgentProvider {
                     "result" => {
                         // {"type":"result","status":"success","stats":{"total_tokens":...,"input_tokens":...,"output_tokens":...}}
                         if let Some(stats) = event.get("stats") {
-                            if let Some(v) = stats.get("input_tokens").and_then(|v| v.as_u64())
+                            if let Some(v) = stats
+                                .get("input_tokens")
+                                .and_then(|v| v.as_u64())
                                 .or_else(|| stats.get("input").and_then(|v| v.as_u64()))
                             {
                                 total_usage.input_tokens = v;
@@ -238,7 +254,8 @@ impl AgentProvider for GeminiAgentProvider {
                             if let Some(v) = stats.get("total_tokens").and_then(|v| v.as_u64()) {
                                 total_usage.total_tokens = v;
                             } else {
-                                total_usage.total_tokens = total_usage.input_tokens + total_usage.output_tokens;
+                                total_usage.total_tokens =
+                                    total_usage.input_tokens + total_usage.output_tokens;
                             }
                         }
                     }
@@ -279,10 +296,8 @@ impl AgentProvider for GeminiAgentProvider {
                                         .unwrap_or("unknown")
                                         .to_string();
                                     let call_id = format!("gemini-tc-{}", call_counter);
-                                    let arguments = fc
-                                        .get("args")
-                                        .cloned()
-                                        .unwrap_or(serde_json::Value::Null);
+                                    let arguments =
+                                        fc.get("args").cloned().unwrap_or(serde_json::Value::Null);
 
                                     tool_activity.push(ToolActivityRecord {
                                         tool_name,
@@ -301,10 +316,7 @@ impl AgentProvider for GeminiAgentProvider {
 
             // Handle usageMetadata (Gemini native).
             if let Some(usage_meta) = event.get("usageMetadata") {
-                if let Some(v) = usage_meta
-                    .get("promptTokenCount")
-                    .and_then(|v| v.as_u64())
-                {
+                if let Some(v) = usage_meta.get("promptTokenCount").and_then(|v| v.as_u64()) {
                     total_usage.input_tokens = v;
                 }
                 if let Some(v) = usage_meta
@@ -367,8 +379,6 @@ fn gemini_io_error(context: &str, error: std::io::Error) -> SDKError {
     gemini_error(context, error)
 }
 
-
-
 fn truncate_json(value: &serde_json::Value, max_len: usize) -> String {
     let s = value.to_string();
     if s.len() <= max_len {
@@ -413,10 +423,7 @@ mod tests {
             }
         }
         if let Some(usage_meta) = event.get("usageMetadata") {
-            if let Some(v) = usage_meta
-                .get("promptTokenCount")
-                .and_then(|v| v.as_u64())
-            {
+            if let Some(v) = usage_meta.get("promptTokenCount").and_then(|v| v.as_u64()) {
                 usage.input_tokens = v;
             }
             if let Some(v) = usage_meta
@@ -481,9 +488,18 @@ mod tests {
         let event: serde_json::Value = serde_json::from_str(line).unwrap();
 
         let stats = event.get("stats").unwrap();
-        assert_eq!(stats.get("input_tokens").and_then(|v| v.as_u64()), Some(18234));
-        assert_eq!(stats.get("output_tokens").and_then(|v| v.as_u64()), Some(26));
-        assert_eq!(stats.get("total_tokens").and_then(|v| v.as_u64()), Some(18613));
+        assert_eq!(
+            stats.get("input_tokens").and_then(|v| v.as_u64()),
+            Some(18234)
+        );
+        assert_eq!(
+            stats.get("output_tokens").and_then(|v| v.as_u64()),
+            Some(26)
+        );
+        assert_eq!(
+            stats.get("total_tokens").and_then(|v| v.as_u64()),
+            Some(18613)
+        );
     }
 
     #[test]

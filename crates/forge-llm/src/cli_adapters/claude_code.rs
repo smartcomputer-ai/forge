@@ -46,10 +46,7 @@ impl ClaudeCodeAgentProvider {
             .arg("stream-json")
             .arg("--verbose");
 
-        let model = options
-            .model_override
-            .as_deref()
-            .or(self.model.as_deref());
+        let model = options.model_override.as_deref().or(self.model.as_deref());
         if let Some(model) = model {
             cmd.arg("--model").arg(model);
         }
@@ -98,7 +95,10 @@ impl AgentProvider for ClaudeCodeAgentProvider {
         let mut tool_activity = Vec::new();
         let mut total_usage = Usage::default();
         let mut cost_usd = None;
-        let mut session_model = self.model.clone().unwrap_or_else(|| "claude-code".to_string());
+        let mut session_model = self
+            .model
+            .clone()
+            .unwrap_or_else(|| "claude-code".to_string());
 
         while let Some(line) = lines
             .next_line()
@@ -161,10 +161,7 @@ impl AgentProvider for ClaudeCodeAgentProvider {
                                         tool_activity.push(ToolActivityRecord {
                                             tool_name,
                                             call_id: call_id.clone(),
-                                            arguments_summary: Some(truncate_json(
-                                                &arguments,
-                                                200,
-                                            )),
+                                            arguments_summary: Some(truncate_json(&arguments, 200)),
                                             result_summary: None,
                                             is_error: false,
                                             duration_ms: None,
@@ -185,8 +182,7 @@ impl AgentProvider for ClaudeCodeAgentProvider {
                     if let Some(message) = event.get("message") {
                         if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                             for block in content {
-                                if block.get("type").and_then(|v| v.as_str())
-                                    == Some("tool_result")
+                                if block.get("type").and_then(|v| v.as_str()) == Some("tool_result")
                                 {
                                     let tool_use_id = block
                                         .get("tool_use_id")
@@ -406,11 +402,13 @@ mod tests {
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].tool_name, "Read");
         assert_eq!(tools[0].call_id, "toolu_abc");
-        assert!(tools[0]
-            .arguments_summary
-            .as_ref()
-            .unwrap()
-            .contains("main.rs"));
+        assert!(
+            tools[0]
+                .arguments_summary
+                .as_ref()
+                .unwrap()
+                .contains("main.rs")
+        );
     }
 
     #[test]

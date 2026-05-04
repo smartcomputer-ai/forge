@@ -119,10 +119,7 @@ impl NodeHandler for ToolHandler {
                     "Tool failed with exit code {}: {command}",
                     output.status.code().unwrap_or(-1)
                 )),
-                failure_reason: Some(format!(
-                    "exit code {}",
-                    output.status.code().unwrap_or(-1)
-                )),
+                failure_reason: Some(format!("exit code {}", output.status.code().unwrap_or(-1))),
                 context_updates: updates,
                 ..Default::default()
             })
