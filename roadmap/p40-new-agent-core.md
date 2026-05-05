@@ -394,7 +394,7 @@ layout in `crates/forge-agent/src/`:
   - Added `ActiveToolBatch`, per-call `ToolCallStatus`, pending tool effects,
     and model-visible result refs.
 
-### [ ] G7. Event and effect model
+### [x] G7. Event and effect model
 - Work:
   - Define input events from spec section 6.1.
   - Define lifecycle events from spec section 6.2.
@@ -413,8 +413,19 @@ layout in `crates/forge-agent/src/`:
   - Receipt records can settle an effect without requiring runner-specific
     error types.
   - Hook/policy/approval events are absent or clearly deferred placeholders.
+- Completed:
+  - Added `AgentEffectIntent`, `AgentEffectKind`, effect metadata, LLM,
+    artifact/blob, host, MCP, human input, and subagent request records.
+  - Added `AgentEffectReceipt`, receipt variants, effect failures,
+    cancellations, retry metadata, and stream-frame records.
+  - Added `AgentEvent` with input, lifecycle, effect, and observation families
+    covering the first-cut spec event set.
+  - Added helper accessors/tests proving effect events carry the `EffectId`
+    idempotency key through intent, stream, and receipt phases.
+  - Kept hook, approval, permission, sandbox, and policy-review events out of
+    the first-cut event model.
 
-### [ ] G8. Session, run, pending effect, fork, and rewrite state
+### [x] G8. Session, run, pending effect, fork, and rewrite state
 - Work:
   - Define `SessionState`, `RunState`, `RunRecord`, `RunCause`, `RunOutcome`,
     pending input queues, pending effects, and current active run/tool batch.
@@ -429,8 +440,22 @@ layout in `crates/forge-agent/src/`:
   - State can represent a new session, active run, waiting run, completed run,
     interrupted run, forked session, and rewritten transcript.
   - Unit tests cover core state construction and lifecycle invariants.
+- Completed:
+  - Added `SessionState`, `RunState`, `RunRecord`, `RunCause`, `RunOutcome`,
+    pending run/steering/human queues, pending effect records, and current
+    active run/tool-batch fields.
+  - Added deterministic helpers for session status transitions, starting and
+    finishing foreground runs, queueing inputs, recording/settling pending
+    effects, and recording history rewrites/rollbacks.
+  - Added session lineage/fork source records plus history rewrite and rollback
+    records that keep rollback model-context-only.
+  - Added subagent parent/child relationship, status, routing, cancellation,
+    and final-output/failure metadata records.
+  - Added unit tests for new session construction, active/completed/interrupted
+    runs, fork/rewrite representation, pending effect settlement, and subagent
+    status invariants.
 
-### [ ] G9. Run trace and projection item model
+### [x] G9. Run trace and projection item model
 - Work:
   - Define bounded run trace entries, refs, push behavior, dropped-entry
     accounting, and trace summaries.
@@ -444,6 +469,14 @@ layout in `crates/forge-agent/src/`:
   - Trace retention is bounded and summarized deterministically.
   - Projection records carry enough ids to join back to session/run/turn/effect
     or tool-call state.
+- Completed:
+  - Added bounded `RunTrace`, `RunTraceEntry`, typed trace refs, trace entry
+    kinds, push behavior, dropped-entry accounting, and `RunTraceSummary`.
+  - Added projection item lifecycle states, join ids, projection item kinds for
+    user/assistant/reasoning/tool/patch/compaction/warning/status/file
+    change/token/cost/custom entries, and item update/complete/fail helpers.
+  - Added tests for deterministic trace retention/summary behavior and
+    projection item joins/lifecycle/serde round-trips.
 
 ### [ ] G10. Serialization and invariant tests
 - Work:
