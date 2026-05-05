@@ -1,6 +1,12 @@
 # P42: Agent Tool Dispatcher and SDK Contracts
 
-**Status** - Planned
+**Status** - In Progress
+
+Implemented so far:
+
+- G1-G7 are implemented in `forge-agent` as the first progressive slice.
+- `cargo test -p forge-agent` passes with deterministic unit coverage.
+- G8-G9 remain open.
 
 ## Goal
 
@@ -134,7 +140,7 @@ Existing model modules remain data-only:
 
 ## Priority 0: SDK Boundary
 
-### [ ] G1. Tool handler contract
+### [x] G1. Tool handler contract
 
 - Define the implementer-facing async handler trait.
 - Handler input must be normalized `ToolInvocationRequest` plus context.
@@ -149,7 +155,14 @@ Acceptance:
   dependency.
 - Handler API does not require Tokio-specific types.
 
-### [ ] G2. Dispatcher registry and validation
+Implementation:
+
+- Added `tools/handler.rs` with `ToolHandler`, `ToolInvocationContext`, and
+  `ToolExecutionError`.
+- Added `tools/artifacts.rs` with minimal artifact access for argument refs and
+  output refs.
+
+### [x] G2. Dispatcher registry and validation
 
 - Add a dispatcher-side handler registry keyed by handler id and/or tool id.
 - Validate duplicate bindings, missing handlers, unknown tools, and invalid
@@ -165,7 +178,16 @@ Acceptance:
 - Runner/system failures remain distinguishable from model-visible tool
   failures.
 
-### [ ] G3. Artifact and output shaping contract
+Implementation:
+
+- Added `ToolDispatcher` and `ToolDispatcherBuilder`.
+- Validates unknown tools, missing handlers, invalid JSON, required schema
+  fields, and required tool capabilities.
+- Added `ToolSpec::required_capabilities`.
+- Model-visible tool failures become failed `ToolInvocationReceipt` records;
+  system handler failures remain dispatcher errors.
+
+### [x] G3. Artifact and output shaping contract
 
 - Provide a minimal artifact access trait for handlers and dispatcher output
   shaping.
@@ -178,9 +200,16 @@ Acceptance:
 - A handler can return full output and model-visible output separately.
 - Dispatcher can construct receipts without embedding large output bodies.
 
+Implementation:
+
+- Added `ToolArtifactStore`, `ToolArtifactWrite`, and
+  `InMemoryToolArtifactStore`.
+- Dispatcher loads argument refs before validation.
+- Synthetic tool errors use deterministic `forge://tool-error/{call_id}` refs.
+
 ## Priority 1: Dispatch Semantics
 
-### [ ] G4. Dispatch request and group preparation
+### [x] G4. Dispatch request and group preparation
 
 - Convert active batch planned calls into runtime-neutral dispatch requests.
 - Preserve planned-call order and execution group membership.
@@ -194,7 +223,13 @@ Acceptance:
 - Non-parallel/resource-conflicting calls are separated before reaching the
   runtime driver.
 
-### [ ] G5. Runtime driver abstraction
+Implementation:
+
+- Added `DispatchRunRequest::from_active_batch`, `DispatchGroup`, and
+  `DispatchCall`.
+- Added `PreparedToolDispatch::from_intent` for effect-intent joins.
+
+### [x] G5. Runtime driver abstraction
 
 - Define driver-owned group execution.
 - Driver receives a dispatch group and returns observed dispatch events or
@@ -208,7 +243,14 @@ Acceptance:
 - A mocked Temporal-style driver can schedule activities without changing
   dispatcher code.
 
-### [ ] G6. Out-of-order completion with stable model order
+Implementation:
+
+- Added runtime-neutral `ToolDispatchDriver`.
+- Added `InProcessToolDispatchDriver`, which owns async group execution using
+  runtime-neutral futures rather than Tokio task APIs.
+- Temporal activity-style driver coverage remains in G9.
+
+### [x] G6. Out-of-order completion with stable model order
 
 - Let runtime drivers return receipts in completion order.
 - Reducer can apply receipts as they arrive.
@@ -220,9 +262,15 @@ Acceptance:
 - A test where call B finishes before call A still produces deterministic
   model-visible tool-result ordering.
 
+Implementation:
+
+- Added `DispatchOutcome::stable_model_order`.
+- Added deterministic fake driver coverage where completion order differs from
+  planned/model order.
+
 ## Priority 2: Long-Running and Temporal-Friendly Tools
 
-### [ ] G7. Resumable/background tool contract
+### [x] G7. Resumable/background tool contract
 
 - Define receipt metadata for "still running" logical completions:
   handle/process/job id, output snapshot ref, continuation tool ids, and status.
@@ -234,6 +282,13 @@ Acceptance:
 - The model can receive a terminal tool result indicating work is still running.
 - A later tool call can poll or interact with the same background handle.
 - The dispatcher does not keep the LLM turn open for arbitrary background work.
+
+Implementation:
+
+- Added `ToolResultMetadata`, `ToolResultStatus`, `ToolRuntimeHandle`, and
+  `ToolRuntimeSnapshot`.
+- Added deterministic `BackgroundStartHandler` and `BackgroundPollHandler`
+  test helpers.
 
 ### [ ] G8. Cancellation and interruption mapping
 
@@ -265,17 +320,18 @@ Default tests must remain deterministic and provider-free.
 
 Required tests:
 
-- custom handler success receipt
-- unknown handler/tool -> model-visible failed receipt
-- JSON argument validation failure
-- capability failure
-- full output ref plus model-visible output ref
-- parallel group with two calls completing out of order
-- serial grouping for non-parallel/resource-conflicting calls
-- resumable/background tool returns handle and output snapshot
-- poll/interaction tool consumes background handle
-- cancellation/interruption settles or abandons pending calls
-- mocked Temporal driver schedules activity-like calls without Tokio-specific
+- [x] custom handler success receipt
+- [x] unknown handler/tool -> model-visible failed receipt
+- [x] invalid executor binding -> model-visible failed receipt
+- [x] JSON argument validation failure
+- [x] capability failure
+- [x] full output ref plus model-visible output ref
+- [x] parallel group with two calls completing out of order
+- [x] serial grouping for non-parallel/resource-conflicting calls
+- [x] resumable/background tool returns handle and output snapshot
+- [x] poll/interaction tool consumes background handle
+- [ ] cancellation/interruption settles or abandons pending calls
+- [ ] mocked Temporal driver schedules activity-like calls without Tokio-specific
   API leakage
 
 ## Acceptance

@@ -52,6 +52,8 @@ pub struct ToolSpec {
     pub mapper: ToolMapperKind,
     pub executor: ToolExecutorKind,
     pub parallelism_hint: ToolParallelismHint,
+    #[serde(default)]
+    pub required_capabilities: Vec<String>,
     pub definition_ref: Option<ArtifactRef>,
     pub estimated_tokens: Option<u64>,
     pub metadata: BTreeMap<String, String>,
@@ -72,6 +74,7 @@ impl ToolSpec {
             mapper: ToolMapperKind::Custom,
             executor: ToolExecutorKind::Runner,
             parallelism_hint: ToolParallelismHint::default(),
+            required_capabilities: Vec::new(),
             definition_ref: None,
             estimated_tokens: None,
             metadata: BTreeMap::new(),

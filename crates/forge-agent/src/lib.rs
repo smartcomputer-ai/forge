@@ -15,6 +15,7 @@ pub mod error;
 pub mod r#loop;
 pub mod model;
 pub mod testing;
+pub mod tools;
 
 pub use r#loop::{decider, journal, planner, projection as loop_projection, reducer};
 pub use model::{
