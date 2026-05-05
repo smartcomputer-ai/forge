@@ -1,7 +1,7 @@
 # P41: Agent Reducer, Decider, and Local Stepper
 
 **Status**
-- Planned (2026-05-05)
+- Complete (2026-05-05)
 
 **Goal**
 Implement the first executable Forge-native agent loop on top of the p40 core
@@ -83,7 +83,7 @@ The exact file split can change, but p41 should add or clarify:
 - `loop/decider.rs`
   - `decide_next(state) -> Vec<AgentEffectIntent>`
   - run/turn/tool/context decision rules
-- `loop/stepper.rs`
+- `testing/stepper.rs`
   - local deterministic stepper over fake stores/executors
 - `loop/planner.rs`
   - first turn/context planning implementation
@@ -205,7 +205,7 @@ The exact file split can change, but p41 should add or clarify:
 
 ## Priority 1: Decider and Planner
 
-### [ ] G5. Run/turn decider
+### [x] G5. Run/turn decider
 - Work:
   - Start a queued run when the session can accept foreground work.
   - Allocate turn ids deterministically.
@@ -214,15 +214,17 @@ The exact file split can change, but p41 should add or clarify:
 - DoD:
   - `decide_next` emits no duplicate effect intents for already-pending work.
   - Loop limits are enforced from state/config.
-- Partial:
-  - G7 introduced the first deterministic decider API and continuation rules:
-    queued runs start, turn ids/effect ids are allocated from snapshot state,
-    ready turns emit LLM intents, queued accepted tool calls emit generic tool
-    intents, and pending effects suppress duplicate work.
+- Completed:
+  - Added the first deterministic decider API and continuation rules:
+    queued runs start, follow-up inputs can be promoted after a terminal run,
+    turn ids/effect ids are allocated from snapshot state, ready turns emit LLM
+    intents, queued accepted tool calls emit generic tool intents, and pending
+    effects suppress duplicate work.
   - `max_turns` is checked before planning the next LLM turn.
-  - Remaining G5 work is to broaden decision states for explicit waiting,
-    context count/compaction prerequisites, richer failure/cancellation
-    outcomes, and follow-up promotion after a terminal run.
+  - Context count/compaction prerequisites emit fake-supported
+    `LlmCountTokens`/`LlmCompact` intents before generation.
+  - Final outputs, non-retryable failures, and interrupted runs now drive
+    terminal lifecycle decisions in the pure loop.
 
 ### [x] G6. First context planner
 - Work:
@@ -290,7 +292,7 @@ The exact file split can change, but p41 should add or clarify:
 
 ## Priority 2: Local Stepper and Projections
 
-### [ ] G8. Local stepper with fake executors
+### [x] G8. Local stepper with fake executors
 - Work:
   - Implement an in-process stepper that drives state to quiescence using fake
     LLM/tool/confirmation/subagent executors.
@@ -299,8 +301,20 @@ The exact file split can change, but p41 should add or clarify:
 - DoD:
   - Stepper tests require no live services or CLI binaries.
   - The stepper emits journal events and bounded state snapshots.
+- Completed:
+  - Added `testing/stepper.rs` with `LocalStepper`, `LocalEffectExecutor`,
+    `FakeEffectExecutor`, and `StepperQuiescence`.
+  - The local stepper appends events through `InMemoryJournal`, reduces them
+    into bounded `SessionState`, drives `decide_next`, executes fake effects,
+    appends receipts, and stops at a classified quiescent state.
+  - Fake LLM, tool, token-count, and compaction receipts require no live
+    provider, CLI binary, MCP server, Temporal worker, or artifact service.
+  - Added deterministic local-stepper tests for direct final answers, tool
+    round trips, unavailable-tool recovery, follow-up promotion, steering
+    inclusion, context compaction prerequisites, and pending-effect
+    interruption.
 
-### [ ] G9. Transcript/projection emission
+### [x] G9. Transcript/projection emission
 - Work:
   - Derive transcript/projection items from journal/effect/lifecycle events.
   - Include joins for session/run/turn/effect/tool ids.
@@ -308,8 +322,18 @@ The exact file split can change, but p41 should add or clarify:
 - DoD:
   - A fake run yields user, assistant, reasoning, tool-call, tool-output, and
     status projection items as applicable.
+- Completed:
+  - Added `loop/projection.rs` with `ProjectionBuilder` and `ProjectionOutput`
+    for deriving projection and transcript items from authoritative journal
+    events.
+  - Derived items include stable joins for session, run, turn, effect, tool
+    batch, and tool call ids where available.
+  - Projection/transcript records store previews and artifact refs only; large
+    content remains behind `ArtifactRef`.
+  - Stepper tests assert user, assistant, reasoning, tool-call, tool-output,
+    compaction, status, and transcript tool-result projection paths.
 
-### [ ] G10. Quiescence and interruption semantics
+### [x] G10. Quiescence and interruption semantics
 - Work:
   - Define quiescent states: waiting for input, waiting for confirmation response,
     waiting on pending effects, completed, failed, cancelled, interrupted.
@@ -317,6 +341,15 @@ The exact file split can change, but p41 should add or clarify:
 - DoD:
   - No stepper loop spins without new input/effect receipts.
   - Cancellation settles or abandons pending effects explicitly.
+- Completed:
+  - Added explicit stepper quiescence classification for waiting for input,
+    confirmation, pending effects, context prerequisites, completed, failed,
+    cancelled, and interrupted states.
+  - The stepper stops when `decide_next` emits no work, so it does not spin
+    without new input or effect receipts.
+  - `RunInterruptRequested` now abandons pending session/run effects, clears the
+    active LLM effect, cancels pending tool calls, and records the interrupted
+    run in history.
 
 ## Testing
 

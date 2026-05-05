@@ -16,7 +16,7 @@ pub mod r#loop;
 pub mod model;
 pub mod testing;
 
-pub use r#loop::{decider, journal, planner, reducer};
+pub use r#loop::{decider, journal, planner, projection as loop_projection, reducer};
 pub use model::{
     agent, batch, config, context, effects, events, ids, lifecycle, projection, refs, state,
     subagent, tooling, transcript, turn,

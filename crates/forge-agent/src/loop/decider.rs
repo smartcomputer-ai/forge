@@ -2,15 +2,19 @@
 
 use crate::batch::ToolCallStatus;
 use crate::effects::{
-    AgentEffectIntent, AgentEffectKind, LlmGenerationRequest, ToolInvocationRequest,
+    AgentEffectIntent, AgentEffectKind, LlmCompactRequest, LlmCountTokensRequest,
+    LlmGenerationRequest, ToolInvocationRequest,
 };
 use crate::error::ModelError;
-use crate::events::{AgentEvent, AgentEventJoins, AgentEventKind, EffectEvent, LifecycleEvent};
+use crate::events::{
+    AgentEvent, AgentEventJoins, AgentEventKind, EffectEvent, InputEvent, LifecycleEvent,
+};
 use crate::ids::{EffectId, IdAllocator, TurnId};
 use crate::lifecycle::RunLifecycle;
 use crate::planner::{DefaultTurnPlanner, PlannerError, TurnPlanner, TurnPlanningRequest};
-use crate::state::{DecideResult, DeciderOutcome, RunState, SessionState};
+use crate::state::{DecideResult, DeciderOutcome, QueuedRunInput, RunState, SessionState};
 use crate::tooling::{PlannedToolCall, ToolExecutorKind};
+use crate::turn::TurnPrerequisiteKind;
 use std::collections::BTreeMap;
 
 static DEFAULT_TURN_PLANNER: DefaultTurnPlanner = DefaultTurnPlanner;
@@ -41,6 +45,18 @@ pub fn decide_next(state: &SessionState) -> DecideResult {
 pub fn decide_next_with<P: TurnPlanner>(request: DecideRequest<'_, P>) -> DecideResult {
     let state = request.state;
     let Some(run) = state.current_run.as_ref() else {
+        if state.status.accepts_new_runs()
+            && let Some(input) = state.pending_follow_up_inputs.front()
+        {
+            return Ok(DeciderOutcome {
+                events: vec![promote_follow_up_event(
+                    state,
+                    input,
+                    request.observed_at_ms,
+                )],
+                intents: Vec::new(),
+            });
+        }
         return Ok(DeciderOutcome::default());
     };
     if !state.status.accepts_new_runs() || run.lifecycle.is_terminal() {
@@ -132,6 +148,66 @@ pub fn decide_next_with<P: TurnPlanner>(request: DecideRequest<'_, P>) -> Decide
         .plan_turn(TurnPlanningRequest::from_state(state, run, turn_id.clone()))
         .map_err(planner_error)?;
     if !planned.plan.is_ready_for_generation() {
+        if let Some(prerequisite) = planned.plan.prerequisites.first() {
+            let effect_id = ids.allocate_effect_id();
+            let kind = match prerequisite.kind {
+                TurnPrerequisiteKind::CountTokens => {
+                    AgentEffectKind::LlmCountTokens(LlmCountTokensRequest {
+                        resolved_context: planned.resolved_context,
+                        candidate_plan_id: Some(prerequisite.prerequisite_id.clone()),
+                    })
+                }
+                TurnPrerequisiteKind::CompactContext => {
+                    AgentEffectKind::LlmCompact(LlmCompactRequest {
+                        resolved_context: planned.resolved_context.clone(),
+                        source_items: planned
+                            .plan
+                            .active_window_items
+                            .iter()
+                            .map(|item| item.content_ref.clone())
+                            .collect(),
+                        strategy: state
+                            .context_state
+                            .pending_context_operation
+                            .as_ref()
+                            .map(|operation| operation.strategy)
+                            .unwrap_or_default(),
+                        source_range_start: state
+                            .context_state
+                            .pending_context_operation
+                            .as_ref()
+                            .and_then(|operation| operation.source_range.as_ref())
+                            .map(|range| range.start_seq),
+                        source_range_end: state
+                            .context_state
+                            .pending_context_operation
+                            .as_ref()
+                            .and_then(|operation| operation.source_range.as_ref())
+                            .map(|range| range.end_seq),
+                    })
+                }
+                TurnPrerequisiteKind::MaterializeToolDefinitions
+                | TurnPrerequisiteKind::PrepareToolRuntime
+                | TurnPrerequisiteKind::Custom => return Ok(outcome),
+            };
+            let mut intent = AgentEffectIntent::new(
+                effect_id.clone(),
+                state.session_id.clone(),
+                kind,
+                request.observed_at_ms,
+            );
+            intent.run_id = Some(run.run_id.clone());
+            intent.turn_id = Some(turn_id.clone());
+            outcome.events.push(effect_intent_event(
+                state,
+                run,
+                Some(&turn_id),
+                &effect_id,
+                intent.clone(),
+                request.observed_at_ms,
+            ));
+            outcome.intents.push(intent);
+        }
         return Ok(outcome);
     }
 
@@ -183,6 +259,29 @@ pub fn decide_next_with<P: TurnPlanner>(request: DecideRequest<'_, P>) -> Decide
     outcome.intents.push(intent);
 
     Ok(outcome)
+}
+
+fn promote_follow_up_event(
+    state: &SessionState,
+    input: &QueuedRunInput,
+    observed_at_ms: u64,
+) -> AgentEvent {
+    AgentEvent::new(
+        format!(
+            "promote-follow-up:{}:{}",
+            input.queued_at_ms, input.input_ref.uri
+        ),
+        state.session_id.clone(),
+        observed_at_ms,
+        AgentEventKind::Input(InputEvent::RunRequested {
+            input_ref: input.input_ref.clone(),
+            run_overrides: input.run_overrides.clone(),
+        }),
+    )
+    .with_joins(AgentEventJoins {
+        submission_id: input.submission_id.clone(),
+        ..Default::default()
+    })
 }
 
 fn tool_intent(

@@ -2,7 +2,10 @@
 
 use crate::batch::{ActiveToolBatch, PendingToolEffect, ToolCallModelResult, ToolCallStatus};
 use crate::config::{RunConfig, SessionConfig};
-use crate::effects::{AgentEffectIntent, AgentReceiptKind, ToolInvocationReceipt};
+use crate::context::{
+    ActiveWindowItem, CompactionArtifactKind, CompactionRecord, ContextInputLane,
+};
+use crate::effects::{AgentEffectIntent, AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt};
 use crate::error::ModelError;
 use crate::events::{
     AgentEvent, AgentEventKind, EffectEvent, InputEvent, LifecycleEvent, ToolOverrideScope,
@@ -40,10 +43,12 @@ fn apply_effect_event(state: &mut SessionState, effect: &EffectEvent) -> Result<
             mark_pending_effect_streaming(state, &frame.effect_id);
         }
         EffectEvent::EffectReceiptRecorded { receipt } => {
+            let pending = state.pending_effects.get(&receipt.effect_id).cloned();
             settle_pending_effect(state, &receipt.effect_id);
             if let Some(run) = state.current_run.as_mut()
                 && receipt.run_id.as_ref() == Some(&run.run_id)
             {
+                let completed_at_ms = receipt.completed_at_ms;
                 match &receipt.kind {
                     AgentReceiptKind::LlmComplete(receipt)
                     | AgentReceiptKind::LlmStream(receipt) => {
@@ -74,6 +79,20 @@ fn apply_effect_event(state: &mut SessionState, effect: &EffectEvent) -> Result<
                     }
                     AgentReceiptKind::LlmCountTokens(receipt) => {
                         state.context_state.last_token_count = Some(receipt.token_count.clone());
+                        state.context_state.clear_pending_operation();
+                    }
+                    AgentReceiptKind::LlmCompact(receipt) => {
+                        if let Some(record) = compaction_record_from_pending(
+                            pending.as_ref(),
+                            receipt.artifact_refs.clone(),
+                            receipt.warnings.clone(),
+                            receipt.usage,
+                            completed_at_ms,
+                        ) {
+                            state.context_state.apply_compaction(record);
+                        } else {
+                            state.context_state.clear_pending_operation();
+                        }
                     }
                     AgentReceiptKind::ToolInvoke(receipt) => {
                         apply_tool_receipt(state, receipt);
@@ -288,6 +307,60 @@ fn complete_batch_if_settled(state: &mut SessionState, batch: ActiveToolBatch) {
     }
 }
 
+fn compaction_record_from_pending(
+    pending: Option<&PendingEffectRecord>,
+    artifact_refs: Vec<ArtifactRef>,
+    warnings: Vec<String>,
+    usage: Option<crate::context::LlmUsageRecord>,
+    created_at_ms: u64,
+) -> Option<CompactionRecord> {
+    let Some(PendingEffectRecord {
+        intent:
+            AgentEffectIntent {
+                kind: AgentEffectKind::LlmCompact(request),
+                ..
+            },
+        ..
+    }) = pending
+    else {
+        return None;
+    };
+
+    let first_artifact = artifact_refs.first()?.clone();
+    let source_range = crate::transcript::TranscriptRange {
+        start_seq: request.source_range_start.unwrap_or_default(),
+        end_seq: request.source_range_end.unwrap_or_else(|| {
+            request
+                .source_range_start
+                .unwrap_or_default()
+                .saturating_add(request.source_items.len() as u64)
+        }),
+    };
+
+    Some(CompactionRecord {
+        operation_id: request
+            .resolved_context
+            .turn_id
+            .to_string()
+            .replace(':', "-"),
+        strategy: request.strategy,
+        artifact_kind: CompactionArtifactKind::Summary,
+        artifact_refs: artifact_refs.clone(),
+        source_range: source_range.clone(),
+        source_refs: request.source_items.clone(),
+        active_window_items: vec![ActiveWindowItem::message_ref(
+            "compaction-summary",
+            first_artifact,
+            Some(ContextInputLane::Summary),
+            Some(source_range),
+        )],
+        provider_compatibility: None,
+        usage,
+        created_at_ms,
+        warnings,
+    })
+}
+
 fn record_effect_intent(
     state: &mut SessionState,
     intent: &AgentEffectIntent,
@@ -488,6 +561,7 @@ fn apply_input_event(
             });
         }
         InputEvent::RunInterruptRequested { reason_ref } => {
+            abandon_pending_effects(state);
             state.finish_current_run(
                 RunLifecycle::Interrupted,
                 RunOutcome {
@@ -667,6 +741,13 @@ fn bump_config_revision(state: &mut SessionState) {
 
 fn request_or_queue_run(state: &mut SessionState, event: &AgentEvent, input: QueuedRunInput) {
     if state.current_run.is_none() && state.status.accepts_new_runs() {
+        if state
+            .pending_follow_up_inputs
+            .front()
+            .is_some_and(|queued| queued_run_input_matches(queued, &input))
+        {
+            state.pending_follow_up_inputs.pop_front();
+        }
         let run_id = state.id_allocator.allocate_run_id();
         let cause = RunCause::direct_input(input.input_ref.clone(), input.submission_id.clone());
         let run = RunState::queued(
@@ -680,6 +761,37 @@ fn request_or_queue_run(state: &mut SessionState, event: &AgentEvent, input: Que
         state.current_run = Some(run);
     } else {
         state.enqueue_follow_up(input);
+    }
+}
+
+fn queued_run_input_matches(left: &QueuedRunInput, right: &QueuedRunInput) -> bool {
+    left.submission_id == right.submission_id
+        && left.input_ref == right.input_ref
+        && left.run_overrides == right.run_overrides
+}
+
+fn abandon_pending_effects(state: &mut SessionState) {
+    for record in state.pending_effects.values_mut() {
+        record.status = PendingEffectStatus::Abandoned;
+    }
+    state.pending_effects.clear();
+    if let Some(run) = state.current_run.as_mut() {
+        for record in run.pending_effects.values_mut() {
+            record.status = PendingEffectStatus::Abandoned;
+        }
+        run.pending_effects.clear();
+        run.active_llm_effect_id = None;
+        if let Some(batch) = run.active_tool_batch.as_mut() {
+            let pending_call_ids = batch
+                .pending_effects
+                .values()
+                .map(|pending| pending.call_id.clone())
+                .collect::<Vec<_>>();
+            for call_id in pending_call_ids {
+                batch.set_call_status(call_id, ToolCallStatus::Cancelled);
+            }
+            batch.pending_effects.clear();
+        }
     }
 }
 
