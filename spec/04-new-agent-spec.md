@@ -45,7 +45,7 @@ The new agent should borrow from `refs/aos-agent/` for:
 - pending effect tracking
 - tool registry and tool profiles
 - turn planning and active context window construction
-- transcript records/projections, source ranges, and provider-native context artifacts
+- transcript records/projections, source ranges, and provider-native context blobs
 - context pressure, token counting, and compaction operation state
 - per-call tool batch status, execution groups, and composite tool progress
 - runner workspace and tool-runtime concepts
@@ -134,7 +134,7 @@ parity with the useful parts of `refs/aos-agent/`:
 - session/run/turn lifecycle
 - deterministic event/effect state transitions
 - scoped agent journal events with large payloads stored by ref
-- transcript records/projections and artifact refs
+- transcript records/projections and blob refs
 - active context planning, token counting, and context pressure handling
 - LLM generation through `forge-llm`
 - SDK tool invocation contracts for runner-provided tools
@@ -206,13 +206,13 @@ boundary must remain clear:
 Forge is journaled, ref-backed, and snapshot-driven:
 
 ```text
-agent = journal + artifacts/CAS + bounded session state
+agent = journal + blob/CAS + bounded session state
 ```
 
 The journal is scoped to agent/session events and is the product-level audit and
 follow stream. It is not a fully generic event store and does not need to be the
 only source from which every runtime optimization can be rebuilt. Large or
-opaque payloads live in an artifact/CAS store and are referenced by journal
+opaque payloads live in a blob/CAS store and are referenced by journal
 events, transcript items, receipts, and state snapshots. `SessionState` is the
 compact control snapshot actively managed by a local runner or Temporal
 workflow.
@@ -286,9 +286,9 @@ ecosystem-level effects:
 - confirmation where the runner supports it
 - generic tool invocation
 
-Artifact storage is runner/adapter infrastructure, not a core agent effect.
-Effects and receipts carry artifact refs; adapters read and write bytes through
-an injected artifact store while materializing LLM context, tool results, raw
+Blob storage is runner/adapter infrastructure, not a core agent effect.
+Effects and receipts carry blob refs; adapters read and write bytes through
+an injected blob store while materializing LLM context, tool results, raw
 provider payloads, and transcript content.
 
 Host execution is not an agent-core effect family. Shell commands, filesystem
@@ -354,9 +354,10 @@ stable.
 - `ProjectionItemId`: stable id for a user, assistant, reasoning, tool,
   patch, or compaction item in UI/event projections.
 - `JournalSeq`: monotonically increasing sequence within one session journal.
-- `ArtifactRef`: content-addressed or store-addressed large payload reference.
-  Semantic role belongs to transcript, context, turn, projection, or compaction
-  records rather than the storage reference itself.
+- `BlobRef`: content-addressed large payload reference serialized as a
+  `sha256:<64hex>` string. Semantic role, preview text, media type, and display
+  metadata belong to transcript, context, turn, projection, or compaction records
+  rather than the storage reference itself.
 - `TranscriptBoundary`: stable boundary marker for a transcript entry/event
   position used by forks, rewrites, rollbacks, and active context control.
 
@@ -423,14 +424,14 @@ Session state includes:
 - pending follow-up inputs
 - pending steering inputs
 - pending confirmation requests
-- active transcript boundary and active context/artifact refs
+- active transcript boundary and active context/blob refs
 - thread metadata, such as name, memory mode, and external linkage
 - extension config refs for future hooks, policy, and dynamic tools
 - latest journal sequence applied
 
 Session state is a bounded control snapshot. It should not contain the full
 transcript, full raw provider responses, full tool outputs, or unbounded run
-history. Those belong in journal/projection records plus artifact refs.
+history. Those belong in journal/projection records plus blob refs.
 
 Only one foreground run is active in a session at a time. Subagents are separate
 sessions with parent/child metadata.
@@ -450,7 +451,7 @@ A new session may be created with an optional source:
 
 The forked session gets a new `SessionId` and independent future event log. It
 retains lineage metadata pointing at the source session, source message/event
-boundary, optional materialized history artifact refs, and fork reason. New
+boundary, optional materialized history blob refs, and fork reason. New
 events never mutate the source session.
 
 Fork semantics are used for:
@@ -476,7 +477,7 @@ A rewrite records:
 
 - rewrite id and cause
 - source transcript range
-- replacement transcript/artifact refs
+- replacement transcript/blob refs
 - whether local filesystem changes were affected, if known
 - resulting active transcript boundary
 
@@ -599,7 +600,7 @@ The context state should include:
 - token count records with quality (`exact`, provider estimate, local estimate)
 - context pressure records with reason and provider/model metadata
 - pending context operation state
-- latest compaction summary with source range, replacement artifacts, and
+- latest compaction summary with source range, replacement blobs, and
   warnings
 
 Full transcript ledgers and full compaction history live in journal/projection
@@ -608,11 +609,11 @@ decisions from active window items, transcript range/sequence counters,
 `compacted_through`, pending context operation, and latest count/pressure
 summaries.
 
-Provider-native or opaque context artifacts are allowed, but they must carry
+Provider-native or opaque context blobs are allowed, but they must carry
 provider compatibility metadata and cannot be silently reused with incompatible
 providers.
 
-### 5.8 Transcript and artifacts
+### 5.8 Transcript and blobs
 
 Large data should be stored by reference, not embedded everywhere.
 
@@ -643,7 +644,7 @@ workflow state. A transcript item includes:
 - source event id
 - timestamps
 
-UIs follow the journal and transcript/projection records, then fetch artifact
+UIs follow the journal and transcript/projection records, then fetch blob
 bodies as needed. They should not depend on Temporal workflow state.
 
 ### 5.9 Tool batch state
@@ -849,8 +850,8 @@ Tool execution may be parallel when:
 - resource keys do not conflict
 - the provider/tool profile permits parallel results
 
-The model receives truncated tool output when needed. The event stream and
-artifact store retain the full output.
+The model receives truncated tool output when needed. The event stream and blob
+store retain the full output.
 
 Tool routing must be explicit enough to support static Forge tools, MCP tools,
 provider-native tools, runner-local tools, remote tools, and dynamically
@@ -875,7 +876,7 @@ execution, where workflow code must use Temporal activity futures, selectors,
 cancellation scopes, and timers instead of Tokio scheduling primitives.
 
 Tool handlers implement one logical invocation. A handler receives a normalized
-`ToolInvocationRequest`, runtime context, and artifact access. It returns
+`ToolInvocationRequest`, runtime context, and blob access. It returns
 exactly one terminal `ToolInvocationReceipt` for that invocation. Handlers
 should not read or mutate `SessionState`, call the reducer or decider, or decide
 when the next LLM turn starts.
@@ -940,7 +941,7 @@ future `forge-agent-tools-host`.
 Host tools should be registered like any other tool. Their implementation may
 maintain adapter-local session state, but the core should only need stable tool
 ids, schemas, capability requirements, parallelism/resource hints, invocation
-intents, receipts, artifacts, and observations.
+intents, receipts, blob refs, and observations.
 
 Host tool receipts should include enough execution metadata to explain what was
 attempted: cwd/environment, command/process details, exit status, output refs,
@@ -1046,7 +1047,7 @@ control-plane configuration. Hook outcomes may:
 - emit warnings or diagnostics
 - block/stop a tool or turn
 - answer a permission request
-- produce output stored by artifact ref when large
+- produce output stored by blob ref when large
 
 When implemented, hook execution must be idempotency-aware and observable
 through hook started, completed, failed, blocked, or stopped events.
@@ -1086,7 +1087,7 @@ All non-deterministic or effectful work is an activity:
 - generic tool invocation
 - runner-provided host tools, when a host tool package is installed
 - MCP calls
-- blob/artifact store operations
+- blob/CAS store operations
 - external notification
 - black-box CLI agent invocation
 
@@ -1108,7 +1109,7 @@ advances the reducer.
 
 Temporal history must not become the transcript store.
 
-Large payloads go into an artifact/blob store and are referenced by events.
+Large payloads go into a blob/CAS store and are referenced by events.
 The workflow should continue-as-new at safe boundaries, such as:
 
 - after a run completes
@@ -1198,7 +1199,7 @@ The CLI should support:
 - show compaction and rollback status
 - fork or roll back a session transcript
 - inspect transcript and run state
-- inspect tool calls and artifacts
+- inspect tool calls and blob-backed outputs
 
 Future hook/policy extensions may add CLI surfaces for permissions, sandbox
 state, approval requests, hook status, and elicitation requests.
@@ -1231,7 +1232,7 @@ agent as a durable codergen backend with structured observability.
 The core storage contract is logical:
 
 - append/read scoped agent journal events
-- put/get artifact bytes
+- put/get content-addressed blob bytes
 - read/write bounded session state snapshots
 - read agent definitions and immutable agent versions
 - read transcript/projection items
@@ -1245,7 +1246,7 @@ Future hook/policy extensions may add storage for permission grants, approval
 decisions, hook outputs, and policy-review records.
 
 The local runner may initially use filesystem storage. The Temporal runner may
-use Temporal history for execution recovery and an external artifact/event store
+use Temporal history for execution recovery and an external event/blob store
 for product-facing logs and large payloads.
 
 Payload rule:
@@ -1262,22 +1263,22 @@ First-cut `forge-agent` storage contracts should live under `storage/`:
 
 - `storage::JournalStore` for scoped event append/read
 - `storage::SnapshotStore` for bounded `SessionState` snapshots
-- `storage::ArtifactStore` for artifact/blob bytes referenced by model
+- `storage::BlobStore` for content-addressed blob bytes referenced by model
   records
 - `storage::AgentDefinitionStore` for reusable agent definitions and immutable
   agent versions
 
 Tool, LLM, planner, and runner code should depend on these logical contracts
-instead of defining surface-specific artifact readers. More specialized stores,
+instead of defining surface-specific blob readers. More specialized stores,
 such as projection/query stores, idempotency indexes, and runtime handle stores,
 can be added as those phases need them.
 
 The first production backend may use explicit tables for agent definitions,
 agent versions, sessions, session snapshots, journal events, transcript items,
-runs/tool-call indexes, and artifacts. These tables are not all equally
+runs/tool-call indexes, and blobs. These tables are not all equally
 authoritative: agent versions define reusable configuration, the journal
 records what happened in a session, transcript/projection rows support UI and
-query, snapshots support execution resume, and artifacts/CAS own large bytes.
+query, snapshots support execution resume, and blob/CAS storage owns large bytes.
 
 ### 12.1 Storage backend direction
 
@@ -1285,14 +1286,14 @@ Forge is expected to sunset CXDB and use Postgres as the primary production
 runtime store. This does not change the core agent design.
 
 The agent core should continue to target the logical storage contract above:
-append/read events, store artifacts, read projections, and query linkage. A
+append/read events, store blobs, read projections, and query linkage. A
 Postgres implementation should satisfy that contract with ordinary tables,
 indexes, transactions, idempotency constraints, JSONB/bytea payloads, and
 migrations.
 
 Temporal storage remains separate. Temporal may use Postgres internally for its
 own service state, but Forge must not treat Temporal history as the product
-event/artifact store.
+event/blob store.
 
 ## 13. Error Handling
 
@@ -1340,7 +1341,7 @@ debug and retry from the host.
 Examples:
 
 - Temporal activity worker unavailable
-- artifact store unavailable
+- blob store unavailable
 - local runner task panic
 - filesystem persistence failure in required mode
 
@@ -1399,7 +1400,7 @@ after the agent runtime is stable.
 These are intentionally left open until implementation pressure clarifies them:
 
 - Should the first Temporal workflow be per session or per run?
-- Which artifact store should be the first production target?
+- Which blob/CAS backend should be the first production target?
 - How much of the old `refs/forge-agent/` tool implementation should be copied
   versus reimplemented from AOS concepts?
 - Which provider/tool profile should be implemented first?
