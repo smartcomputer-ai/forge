@@ -42,6 +42,9 @@ stack:
 - Do not rebuild the old Forge session loop.
 - Do not vendor Codex protocol types directly.
 - Keep the core deterministic, serializable, and Temporal-agnostic.
+- Keep `forge-agent` as an agent core SDK. Host shell/filesystem/process
+  execution is tool-package/runner-specific and must not be hardcoded into the
+  core crate.
 - Use explicit ids for persisted identity. `SubmissionId` is the external
   queue/idempotency id; `CorrelationId` is trace/correlation metadata.
 - Keep large payloads behind artifact/transcript refs.
@@ -64,10 +67,9 @@ stack:
   - Terminal-state helpers and valid transition checks.
 - `refs/aos-agent/src/helpers/lifecycle.rs`
   - Lifecycle transition validation.
-  - Host command applicability becomes model rules only; execution is later.
+  - Host command applicability should not be lifted into core model rules.
 - `refs/aos-agent/src/contracts/config.rs`
   - Provider/model/reasoning/run override model.
-  - Host session open config as data only.
   - Forge additions: context/token settings, loop limits, profile ids,
     persistence mode references where needed.
 - `refs/aos-agent/src/contracts/state.rs`
@@ -88,15 +90,16 @@ stack:
 - `refs/aos-agent/src/contracts/tooling.rs`
   - Tool specs, tool mappers/executors as data, parallelism hints, runtime
     context, observed/planned tool calls, and profile builders.
-  - Forge should not use AOS mapper names verbatim where Forge effect names are
-    clearer.
+  - Forge should use open mapper/executor ids and handler bindings instead of
+    AOS host-specific mapper names.
 - `refs/aos-agent/src/contracts/batch.rs`
   - Per-call `ToolCallStatus`, active tool batch, execution groups, pending
     effect set, result refs, and settlement state.
 - `refs/aos-agent/src/contracts/trace.rs`
   - Bounded run trace and summary records.
 - `refs/aos-agent/src/contracts/host.rs`
-  - Host command/status vocabulary as state and event data only.
+  - Defer host command/status vocabulary to runner/tool packages outside
+    `forge-agent`.
 
 ### AOS helpers to study but not implement fully in p40
 - `refs/aos-agent/src/helpers/turn.rs`
@@ -142,11 +145,11 @@ stack:
     submissions, effects, and projection items.
 - Resolved turn context snapshot:
   - provider/model/reasoning
-  - cwd/environment/shell hints
   - current date/timezone
   - tool profile and model-visible tool specs
   - model/provider options
   - context refs
+  - runtime/extension refs for runner-provided context
 - Stable item lifecycle projection:
   - item ids for user/assistant/reasoning/tool/patch/compaction entries.
   - started/updated/completed state is projection data, not authoritative
@@ -179,7 +182,7 @@ layout in `crates/forge-agent/src/`:
   - session/run lifecycle enums and transition checks.
 - `config.rs`
   - `SessionConfig`, `RunConfig`, `TurnConfig`, context/token/tool limits,
-    host-open config, and persistence mode references.
+    opaque extension refs, and persistence mode references.
 - `refs.rs`
   - `ArtifactRef`, `TranscriptRef`, typed ref metadata, previews, payload kind.
 - `transcript.rs`
@@ -195,7 +198,8 @@ layout in `crates/forge-agent/src/`:
 - `batch.rs`
   - active tool batch, call status, execution groups, per-call refs.
 - `effects.rs`
-  - effect intent enum, receipt enum, stream frame enum, failure classification.
+  - core effect intent envelope, receipt enum, stream frame enum, failure
+    classification.
 - `events.rs`
   - input/lifecycle/effect/observation event families.
 - `state.rs`
@@ -286,8 +290,8 @@ layout in `crates/forge-agent/src/`:
   - Define session status, session lifecycle, run lifecycle, turn lifecycle
     where needed.
   - Define transition validation helpers.
-  - Define `SessionConfig`, `RunConfig`, `TurnConfig`, `HostSessionOpenConfig`,
-    and config override records.
+  - Define `SessionConfig`, `RunConfig`, `TurnConfig`, and config override
+    records.
   - Include tool/profile/context/token/loop/subagent limits as data.
   - Exclude hook/policy config from first-cut core except optional opaque future
     extension refs if the spec requires placeholders.
@@ -304,8 +308,8 @@ layout in `crates/forge-agent/src/`:
     terminal-state helpers and transition validation.
   - Added the first core `ModelError` taxonomy for deterministic model helper
     failures.
-  - Added session/run/turn config records, host session open config, context
-    budgets, loop limits, tool output limits, and CXDB persistence mode.
+  - Added session/run/turn config records, context budgets, loop limits, tool
+    output limits, opaque extension refs, and CXDB persistence mode.
   - Kept hook/policy/approval/sandbox behavior out of config; only future
     extension refs remain as opaque data.
 
@@ -341,9 +345,9 @@ layout in `crates/forge-agent/src/`:
   - Define turn input lanes, kinds, priorities, budgets, tool choice, reports,
     prerequisites, and turn plans.
   - Define `ResolvedTurnContext` as an immutable snapshot of effective provider,
-    model, cwd, environment, current date/timezone, context refs, selected tool
-    profile, model-visible tool specs, response format, provider options, and
-    trace/correlation metadata.
+    model, current date/timezone, context refs, selected tool profile,
+    model-visible tool specs, response format, provider options,
+    trace/correlation metadata, and runtime/extension refs.
   - Include extension refs only as future placeholders, not executable hooks or
     policies.
 - Files:
@@ -358,15 +362,15 @@ layout in `crates/forge-agent/src/`:
   - Added turn input lanes, input kinds, priorities, budgets, tool choice,
     token estimates, prerequisites, state updates, plans, and reports.
   - Added `ResolvedTurnContext` with provider/model/reasoning settings,
-    environment/shell/date/timezone fields, context refs, selected tool
-    profile, model-visible tools, active window items, provider options,
-    response format refs, budget, trace metadata, and future extension refs.
+    date/timezone fields, context refs, selected tool profile,
+    model-visible tools, active window items, provider options, response format
+    refs, budget, trace metadata, and future runtime/extension refs.
   - Added deterministic resolution from `RunConfig`, optional `TurnConfig`,
     and `TurnPlan`.
 
 ### [x] G6. Tool registry/profile/batch model
 - Work:
-  - Define `ToolSpec`, `ToolExecutorKind`, `ToolMapperKind`,
+  - Define `ToolSpec`, open `ToolExecutorKind`/`ToolMapperKind` records,
     `ToolParallelismHint`, `ToolProfile`, and `ToolRuntimeContext`.
   - Define observed tool calls, planned tool calls, execution groups, per-call
     status, and active tool batch state.
@@ -401,8 +405,8 @@ layout in `crates/forge-agent/src/`:
   - Define effect intent, receipt, and stream-frame event records from spec
     section 6.3.
   - Define observation/projection events from spec section 6.4.
-  - Define `AgentEffectIntent` variants for LLM, artifact/blob, host, human
-    input, MCP, and subagent effects as data only.
+  - Define `AgentEffectIntent` variants for LLM, artifact/blob, human input,
+    MCP, generic tool invocation, and subagent effects as data only.
   - Define receipts with success/failure/metadata fields sufficient for later
     state reduction.
 - Files:
@@ -415,7 +419,8 @@ layout in `crates/forge-agent/src/`:
   - Hook/policy/approval events are absent or clearly deferred placeholders.
 - Completed:
   - Added `AgentEffectIntent`, `AgentEffectKind`, effect metadata, LLM,
-    artifact/blob, host, MCP, human input, and subagent request records.
+    artifact/blob, MCP, human input, generic tool invocation, and subagent
+    request records.
   - Added `AgentEffectReceipt`, receipt variants, effect failures,
     cancellations, retry metadata, and stream-frame records.
   - Added `AgentEvent` with input, lifecycle, effect, and observation families
@@ -432,7 +437,7 @@ layout in `crates/forge-agent/src/`:
   - Define session lineage/fork records and history rewrite/rollback records.
   - Define subagent parent/child metadata and status records.
   - Keep old filesystem-revert semantics out of rollback records. Rollback is
-    model-context only unless a later host effect says otherwise.
+    model-context only unless a later external tool effect says otherwise.
 - Files:
   - `crates/forge-agent/src/state.rs`
   - `crates/forge-agent/src/subagent.rs`
@@ -539,17 +544,20 @@ layout in `crates/forge-agent/src/`:
   - transcript ledger and artifact refs
   - resolved turn context
   - context pressure and compaction records
-  - LLM/tool/host/human/MCP/subagent effect intents and receipts
+  - LLM/artifact/human/MCP/generic tool/subagent effect intents and receipts
   - tool registry/profile/batch state
   - bounded trace and projection items
   - fork/rollback/history rewrite metadata
-- No LLM, tool, host, MCP, Temporal, CXDB, or CLI execution is implemented.
+- No LLM, tool, MCP, Temporal, CXDB, or CLI execution is implemented.
+- Host shell/filesystem/process support is not part of `forge-agent`; it belongs
+  in runner/tool-package follow-on work.
 - Hook/policy/approval/sandbox concepts are documented as deferred.
 - `cargo test -p forge-agent` passes with deterministic model tests only.
 
 ## Follow-on Work
 - `roadmap/p41-agent-loop.md`: implement the pure reducer/decider and local
   stepper over these model types.
-- `roadmap/p42-agent-tools.md`: implement tool registry execution, host
-  filesystem/shell effects, tool batches, and receipts.
+- `roadmap/p42-agent-tools.md`: implement tool registry execution, generic
+  tool-batch dispatch, and standard host filesystem/shell tools outside the
+  core crate.
 - `roadmap/p45-new-cli.md`: implement the CLI projection/control surface.

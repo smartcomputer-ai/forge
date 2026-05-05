@@ -3,7 +3,6 @@
 //! Effects are the core model's representation of work that runners and
 //! adapters perform outside deterministic state reduction.
 
-use crate::config::HostSessionOpenConfig;
 use crate::context::{CompactionStrategy, LlmTokenCountRecord, LlmUsageRecord};
 use crate::ids::{CorrelationId, EffectId, RunId, SessionId, SubmissionId, ToolCallId, TurnId};
 use crate::refs::ArtifactRef;
@@ -73,13 +72,9 @@ pub enum AgentEffectKind {
     LlmCompact(LlmCompactRequest),
     ArtifactPut(ArtifactPutRequest),
     ArtifactGet(ArtifactGetRequest),
-    HostSessionOpen(HostSessionOpenRequest),
-    HostSessionClose(HostSessionCloseRequest),
-    HostExec(HostExecRequest),
-    HostSessionSignal(HostSessionSignalRequest),
-    HostFs(HostFsRequest),
     McpCall(McpCallRequest),
     HumanInput(HumanInputRequest),
+    ToolInvoke(ToolInvocationRequest),
     Subagent(SubagentRequest),
 }
 
@@ -118,76 +113,24 @@ pub struct ArtifactGetRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionOpenRequest {
-    pub config: HostSessionOpenConfig,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionCloseRequest {
-    pub host_session_id: String,
-    pub reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostExecRequest {
-    pub host_session_id: Option<String>,
-    pub command: String,
-    pub args: Vec<String>,
-    pub cwd: Option<String>,
-    pub env: BTreeMap<String, String>,
-    pub stdin_ref: Option<ArtifactRef>,
-    pub timeout_ms: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionSignalRequest {
-    pub host_session_id: String,
-    pub signal: String,
-    pub target: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "op")]
-pub enum HostFsRequest {
-    Read {
-        path: String,
-    },
-    Write {
-        path: String,
-        content_ref: ArtifactRef,
-    },
-    Edit {
-        path: String,
-        edit_ref: ArtifactRef,
-    },
-    ApplyPatch {
-        patch_ref: ArtifactRef,
-    },
-    Grep {
-        pattern: String,
-        path: Option<String>,
-    },
-    Glob {
-        pattern: String,
-        cwd: Option<String>,
-    },
-    Stat {
-        path: String,
-    },
-    Exists {
-        path: String,
-    },
-    ListDir {
-        path: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpCallRequest {
     pub server_id: String,
     pub tool_name: String,
     pub arguments: Value,
     pub arguments_ref: Option<ArtifactRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolInvocationRequest {
+    pub call_id: ToolCallId,
+    pub provider_call_id: Option<String>,
+    pub tool_id: Option<String>,
+    pub tool_name: String,
+    pub arguments_json: Option<String>,
+    pub arguments_ref: Option<ArtifactRef>,
+    pub handler_id: Option<String>,
+    pub context_ref: Option<ArtifactRef>,
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -250,13 +193,9 @@ pub enum AgentReceiptKind {
     LlmCompact(LlmCompactReceipt),
     ArtifactPut(ArtifactReceipt),
     ArtifactGet(ArtifactReceipt),
-    HostSessionOpen(HostSessionReceipt),
-    HostSessionClose(HostSessionReceipt),
-    HostExec(HostExecReceipt),
-    HostSessionSignal(HostSessionSignalReceipt),
-    HostFs(HostFsReceipt),
     McpCall(McpCallReceipt),
     HumanInput(HumanInputReceipt),
+    ToolInvoke(ToolInvocationReceipt),
     Subagent(SubagentReceipt),
     Failed(EffectFailure),
     Cancelled(EffectCancellation),
@@ -299,41 +238,19 @@ pub struct ArtifactReceipt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionReceipt {
-    pub host_session_id: Option<String>,
-    pub status: String,
-    pub metadata_ref: Option<ArtifactRef>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostExecReceipt {
-    pub exit_status: Option<i32>,
-    pub stdout_ref: Option<ArtifactRef>,
-    pub stderr_ref: Option<ArtifactRef>,
-    pub combined_output_ref: Option<ArtifactRef>,
-    pub cwd: Option<String>,
-    pub command: String,
-    pub duration_ms: Option<u64>,
-    pub adapter_metadata_ref: Option<ArtifactRef>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionSignalReceipt {
-    pub delivered: bool,
-    pub detail: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostFsReceipt {
-    pub path: Option<String>,
-    pub output_ref: Option<ArtifactRef>,
-    pub changed: bool,
+pub struct McpCallReceipt {
+    pub result_ref: Option<ArtifactRef>,
+    pub is_error: bool,
     pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpCallReceipt {
-    pub result_ref: Option<ArtifactRef>,
+pub struct ToolInvocationReceipt {
+    pub call_id: ToolCallId,
+    pub tool_id: Option<String>,
+    pub tool_name: String,
+    pub output_ref: Option<ArtifactRef>,
+    pub model_visible_output_ref: Option<ArtifactRef>,
     pub is_error: bool,
     pub metadata: BTreeMap<String, String>,
 }
@@ -473,6 +390,32 @@ mod tests {
         };
 
         assert!(receipt.is_failure());
+    }
+
+    #[test]
+    fn generic_tool_invocation_effect_round_trips() {
+        let mut ids = IdAllocator::new(SessionId::new("session-a"));
+        let intent = AgentEffectIntent::new(
+            ids.allocate_effect_id(),
+            ids.session_id.clone(),
+            AgentEffectKind::ToolInvoke(ToolInvocationRequest {
+                call_id: ToolCallId::new("call-1"),
+                provider_call_id: Some("provider-call-1".into()),
+                tool_id: Some("tool.fs.read".into()),
+                tool_name: "read_file".into(),
+                arguments_json: Some(r#"{"path":"README.md"}"#.into()),
+                arguments_ref: None,
+                handler_id: Some("local.fs".into()),
+                context_ref: None,
+                metadata: BTreeMap::new(),
+            }),
+            10,
+        );
+
+        let encoded = serde_json::to_string(&intent).expect("serialize intent");
+        let decoded: AgentEffectIntent = serde_json::from_str(&encoded).expect("decode intent");
+
+        assert_eq!(decoded, intent);
     }
 
     #[test]

@@ -140,7 +140,7 @@ pub struct TurnReport {
 #[serde(rename_all = "snake_case")]
 pub enum TurnPrerequisiteKind {
     MaterializeToolDefinitions,
-    OpenHostSession,
+    PrepareToolRuntime,
     CompactContext,
     CountTokens,
     #[default]
@@ -203,14 +203,6 @@ pub struct TraceContext {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ShellRuntimeHints {
-    pub shell: Option<String>,
-    pub path_separator: Option<String>,
-    pub os: Option<String>,
-    pub arch: Option<String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTurnContext {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -219,9 +211,6 @@ pub struct ResolvedTurnContext {
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u64>,
-    pub working_directory: Option<String>,
-    pub environment: BTreeMap<String, String>,
-    pub shell_hints: ShellRuntimeHints,
     pub current_date: Option<String>,
     pub timezone: Option<String>,
     pub base_context_refs: Vec<ArtifactRef>,
@@ -303,9 +292,9 @@ mod tests {
 
         let blocked = TurnPlan {
             prerequisites: vec![TurnPrerequisite {
-                prerequisite_id: "host".into(),
-                kind: TurnPrerequisiteKind::OpenHostSession,
-                reason: "host tools selected".into(),
+                prerequisite_id: "tool-runtime".into(),
+                kind: TurnPrerequisiteKind::PrepareToolRuntime,
+                reason: "selected tools require runner preparation".into(),
                 input_ids: Vec::new(),
                 tool_ids: vec!["shell".into()],
             }],

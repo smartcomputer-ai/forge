@@ -1,18 +1,20 @@
 # forge-agent
 
-`forge-agent` is the Forge-native coding agent runtime crate.
+`forge-agent` is the Forge-native agent core SDK crate.
 
 The current implementation target is
 [`spec/04-new-agent-spec.md`](../../spec/04-new-agent-spec.md). The crate is
-being rebuilt as a deterministic core model plus runners/adapters. The first
-cut focuses on the core contracts; it does not yet implement the full agent
-loop, tool execution, Temporal workflows, CXDB persistence, or CLI UI.
+being rebuilt as a deterministic core model plus runner/adapter contracts. The
+first cut focuses on the core SDK contracts; it does not yet implement the full
+agent loop, tool execution, Temporal workflows, CXDB persistence, or CLI UI.
+Host shell/filesystem/process tools are provided by runner/tool packages, not
+by this core crate.
 
 ## Core Modules
 
 - `ids`: durable ids and allocation helpers
 - `lifecycle`: session/run/turn lifecycle states and transition rules
-- `config`: session, run, turn, and host configuration records
+- `config`: session, run, turn, and extension configuration records
 - `refs`: artifact and transcript references for large payloads
 - `transcript`: transcript ledger and message records
 - `context`: context windows, token counts, pressure, and compaction records

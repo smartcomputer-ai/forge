@@ -1,4 +1,4 @@
-//! Session, run, turn, and host configuration records.
+//! Session, run, and turn configuration records.
 //!
 //! This module will contain first-cut core configuration only. Hook, approval,
 //! permission, sandbox, and policy configuration is deferred.
@@ -13,52 +13,6 @@ pub enum ReasoningEffort {
     Low,
     Medium,
     High,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostMountConfig {
-    pub host_path: String,
-    pub guest_path: String,
-    pub mode: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case", tag = "kind")]
-pub enum HostTargetConfig {
-    Local {
-        workdir: Option<String>,
-        env: BTreeMap<String, String>,
-        network_mode: Option<String>,
-        mounts: Vec<HostMountConfig>,
-    },
-    Sandbox {
-        image: String,
-        runtime_class: Option<String>,
-        workdir: Option<String>,
-        env: BTreeMap<String, String>,
-        network_mode: Option<String>,
-        mounts: Vec<HostMountConfig>,
-        cpu_limit_millis: Option<u64>,
-        memory_limit_bytes: Option<u64>,
-    },
-}
-
-impl Default for HostTargetConfig {
-    fn default() -> Self {
-        Self::Local {
-            workdir: None,
-            env: BTreeMap::new(),
-            network_mode: Some("none".into()),
-            mounts: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HostSessionOpenConfig {
-    pub target: HostTargetConfig,
-    pub session_ttl_ms: Option<u64>,
-    pub labels: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,7 +58,6 @@ pub struct SessionConfig {
     pub default_tool_enable: Vec<String>,
     pub default_tool_disable: Vec<String>,
     pub default_tool_force: Vec<String>,
-    pub default_host_session_open: Option<HostSessionOpenConfig>,
     pub context_budget: ContextBudgetConfig,
     pub loop_limits: LoopLimitConfig,
     pub tool_limits: ToolLimitConfig,
@@ -124,7 +77,6 @@ pub struct RunConfig {
     pub tool_enable: Vec<String>,
     pub tool_disable: Vec<String>,
     pub tool_force: Vec<String>,
-    pub host_session_open: Option<HostSessionOpenConfig>,
     pub context_budget: ContextBudgetConfig,
     pub loop_limits: LoopLimitConfig,
 }
@@ -148,7 +100,6 @@ pub struct RunConfigOverride {
     pub max_output_tokens: Option<u64>,
     pub prompt_refs: Option<Vec<ArtifactRef>>,
     pub tool_profile: Option<String>,
-    pub host_session_open: Option<HostSessionOpenConfig>,
     pub context_budget: Option<ContextBudgetConfig>,
     pub loop_limits: Option<LoopLimitConfig>,
 }
@@ -165,7 +116,6 @@ impl RunConfig {
             tool_enable: session.default_tool_enable.clone(),
             tool_disable: session.default_tool_disable.clone(),
             tool_force: session.default_tool_force.clone(),
-            host_session_open: session.default_host_session_open.clone(),
             context_budget: session.context_budget.clone(),
             loop_limits: session.loop_limits.clone(),
         };
@@ -188,9 +138,6 @@ impl RunConfig {
             }
             if let Some(tool_profile) = &override_.tool_profile {
                 run.tool_profile = Some(tool_profile.clone());
-            }
-            if let Some(host_session_open) = &override_.host_session_open {
-                run.host_session_open = Some(host_session_open.clone());
             }
             if let Some(context_budget) = &override_.context_budget {
                 run.context_budget = context_budget.clone();

@@ -48,7 +48,7 @@ The new agent should borrow from `refs/aos-agent/` for:
 - transcript ledger, source ranges, and provider-native context artifacts
 - context pressure, token counting, and compaction operation state
 - per-call tool batch status, execution groups, and composite tool progress
-- host session and workspace concepts
+- runner workspace and tool-runtime concepts
 - bounded run traces for diagnostics and replay explanation
 - chat/CLI projection from an event stream
 
@@ -88,7 +88,7 @@ wholesale.
 Forge should lift these Codex concepts into its own contracts:
 
 - submission/event queue correlation ids and trace propagation
-- resolved turn context snapshots, including cwd, environment, model, and tools
+- resolved turn context snapshots, including model, tools, and runtime refs
 - stable item lifecycle projections (`started`/`updated`/`completed`) for UI,
   CLI, JSONL, and future service clients
 - explicit fork/rollback/history-rewrite operations
@@ -114,8 +114,8 @@ That backend is a bridge, not the primary Forge agent implementation.
 - Preserve every meaningful action as typed state, event, intent, or receipt.
 - Support local in-process execution and Temporal-backed durable execution.
 - Use `forge-llm` provider adapters for OpenAI, Anthropic, and future providers.
-- Keep LLM calls, shell commands, filesystem writes, MCP calls, and subagent
-  operations outside deterministic state reduction.
+- Keep LLM calls, tool execution, MCP calls, and subagent operations outside
+  deterministic state reduction.
 - Make the CLI a projection/control surface over the same runtime.
 - Make Attractor able to call the agent as a durable backend later.
 - Support explicit context pressure handling, compaction, fork, and rollback
@@ -136,7 +136,7 @@ parity with the useful parts of `refs/aos-agent/`:
 - transcript ledger and artifact refs
 - active context planning, token counting, and context pressure handling
 - LLM generation through `forge-llm`
-- host/session/filesystem/shell effects
+- SDK tool/effect extension contracts for runner-provided tools
 - tool registry, tool profiles, tool batches, and per-call tool status
 - compaction as a first-class context operation if needed to keep the loop
   viable
@@ -173,13 +173,16 @@ Runners
   local runner, Temporal runner
 
 Agent core
-  pure state transitions, event model, effect intent model, projections
+  pure state transitions, event model, effect intent envelope, projections
 
 Effect adapters
-  forge-llm, host filesystem/shell, MCP, blob/artifact store, subagents
+  forge-llm, MCP, blob/artifact store, human input, generic tool invocation
+
+Runner/tool packages
+  local host filesystem/shell tools, remote executors, subagents, provider-native tools
 
 Future SDK extensions
-  hooks, policy reviewers, approval surfaces, dynamic tools
+  hooks, policy reviewers, approval surfaces, dynamic tools, third-party effect handlers
 ```
 
 ### 4.1 Agent core
@@ -260,17 +263,22 @@ updates, and uses Temporal timers/retries/cancellation where appropriate.
 Effect adapters turn `AgentEffectIntent` into `AgentReceipt` events. They are
 ordinary async Rust code and may perform I/O.
 
-Initial adapters:
+The `forge-agent` crate should define only core agent SDK contracts and
+ecosystem-level effects:
 
 - LLM generation via `forge-llm`
 - token counting and compaction via `forge-llm` when provider-supported
 - blob/artifact put/get
-- host session open/close
-- shell command execution
-- filesystem read/write/edit/apply-patch/list/glob/grep/stat
 - MCP tool calls
-- subagent spawn/send/wait/close
 - human input where the runner supports it
+- generic tool invocation
+
+Host execution is not an agent-core effect family. Shell commands, filesystem
+operations, host sessions, sandboxes, containers, and remote executors are
+runner/tool-package concerns. A local runner may provide standard host tools,
+and a Temporal runner may map the same logical tools to activities or remote
+workers, but `forge-agent` should not hardcode `HostExec`, `HostFs`, or
+host-session effect variants.
 
 Adapters must be idempotency-aware. The intent id is the idempotency key. A
 Temporal activity retry must not turn one logical tool call into multiple
@@ -282,6 +290,7 @@ Deferred extension adapters:
 - policy review and permission resolution
 - approval surfaces beyond basic human input
 - dynamic tool discovery/loading
+- runner-specific tool packages
 
 ### 4.4 Projections
 
@@ -337,7 +346,7 @@ or policy-review ids without changing the core id scheme.
 ### 5.2 Session
 
 A session is the long-lived container for configuration, transcript, tool
-registry, host runtime context, and run history.
+registry, tool runtime context, and run history.
 
 Session lifecycle:
 
@@ -355,7 +364,7 @@ Session state includes:
 - completed run summaries
 - turn/context state
 - tool registry and selected profile
-- host runtime context
+- tool runtime context
 - pending follow-up inputs
 - pending steering inputs
 - pending human requests
@@ -411,8 +420,9 @@ A rewrite records:
 - whether local filesystem changes were affected, if known
 - resulting active transcript boundary
 
-Rollback changes model context only. It must not imply that host filesystem
-effects have been reverted.
+Rollback changes model context only. It must not imply that external tool
+effects, such as filesystem changes performed by a host tool package, have been
+reverted.
 
 ### 5.4 Run
 
@@ -454,8 +464,7 @@ The resolved turn context includes:
 
 - provider, model, reasoning effort, reasoning summary, service tier, and
   response/structured-output settings
-- working directory, selected environment, shell/runtime hints, current date,
-  and timezone
+- current date/timezone and runtime/extension refs supplied by the runner
 - base, developer, user, skill, plugin, app, domain, and runtime context refs
 - selected tool profile and model-visible tool specs
 - truncation and compaction policy
@@ -715,7 +724,10 @@ Replay must not require re-streaming from the provider.
 
 ### 7.2 Tool effects
 
-The tool registry maps model-visible tools to executor effects.
+The tool registry maps model-visible tools to logical tool invocations. Tool
+execution is an SDK extension point: the core records tool calls, plans batches,
+emits generic invocation intents, and records receipts, while a runner or tool
+package decides how those invocations are executed.
 
 A tool spec includes:
 
@@ -723,10 +735,12 @@ A tool spec includes:
 - provider-visible tool name
 - description
 - JSON schema for arguments
-- mapper
-- executor
+- mapper id or mapping strategy
+- executor binding or handler id
 - parallelism hint
 - resource key
+- required capabilities
+- extension config refs, when needed
 
 Tool execution may be parallel when:
 
@@ -738,36 +752,23 @@ The model receives truncated tool output when needed. The event stream and
 artifact store retain the full output.
 
 Tool routing must be explicit enough to support static Forge tools, MCP tools,
-and provider-native tools. Future SDK extensions may add deferred/discoverable
-tools and dynamically registered tools. If a tool is visible to the model but
-unavailable at execution time, the tool result should explain that failure to
-the model instead of disappearing.
+provider-native tools, runner-local tools, remote tools, and dynamically
+registered third-party tools. If a tool is visible to the model but unavailable
+at execution time, the tool result should explain that failure to the model
+instead of disappearing.
 
-### 7.3 Host session effects
+### 7.3 Host tools
 
-Some tools require a host session: local process context, sandbox, container,
-or future remote executor.
+Host access is a tool package, not part of the `forge-agent` core crate.
+Shell/process execution, filesystem read/write/edit/apply-patch/list/glob/grep,
+host sessions, local sandboxes, containers, and remote executors may be provided
+by a local runner, a Temporal activity worker, or a separate crate such as a
+future `forge-agent-tools-host`.
 
-Host effects:
-
-- `HostSessionOpen`
-- `HostSessionClose`
-- `HostExec`
-- `HostSessionSignal`
-- `HostFsRead`
-- `HostFsWrite`
-- `HostFsEdit`
-- `HostFsApplyPatch`
-- `HostFsGrep`
-- `HostFsGlob`
-- `HostFsStat`
-- `HostFsExists`
-- `HostFsListDir`
-
-The host runtime context records the current host session id and status. If a
-turn selects host tools before the host is ready, the turn planner emits an
-`OpenHostSession` prerequisite instead of letting generation proceed with
-unusable tools.
+Host tools should be registered like any other tool. Their implementation may
+maintain adapter-local session state, but the core should only need stable tool
+ids, schemas, capability requirements, parallelism/resource hints, invocation
+intents, receipts, artifacts, and observations.
 
 Host tool receipts should include enough execution metadata to explain what was
 attempted: cwd/environment, command/process details, exit status, output refs,
@@ -831,7 +832,7 @@ a local parent should spawn local sessions.
 Depth limits are enforced by the parent runner/core. Parent and child
 relationships should also define:
 
-- inherited context, environment, and shell/session configuration
+- inherited context and runner/tool capability configuration
 - agent role/type metadata
 - event forwarding and filtering
 - cancellation propagation
@@ -901,8 +902,8 @@ decisions, permission grants, and elicitation decisions.
 All non-deterministic or effectful work is an activity:
 
 - LLM complete/stream/count/compact
-- shell/process execution
-- filesystem operations
+- generic tool invocation
+- runner-provided host tools, when a host tool package is installed
 - MCP calls
 - blob/artifact store operations
 - external notification
@@ -1091,7 +1092,7 @@ and can recover.
 
 Examples:
 
-- shell command exits non-zero
+- runner-provided shell tool exits non-zero
 - grep finds no matches when that is represented as an error by the tool
 - patch failed to apply
 - file not found for a requested read

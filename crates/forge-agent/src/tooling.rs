@@ -12,8 +12,10 @@ use std::collections::{BTreeMap, BTreeSet};
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolExecutorKind {
-    Effect {
-        effect: String,
+    #[default]
+    Runner,
+    Handler {
+        handler_id: String,
     },
     Mcp {
         server: String,
@@ -22,30 +24,13 @@ pub enum ToolExecutorKind {
     ProviderNative {
         provider: String,
     },
-    #[default]
-    HostLoop,
-    FutureExtension {
-        extension: String,
-    },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolMapperKind {
     LlmPassthrough,
-    HostSessionOpen,
-    HostSessionClose,
-    HostExec,
-    HostSessionSignal,
-    HostFsRead,
-    HostFsWrite,
-    HostFsEdit,
-    HostFsApplyPatch,
-    HostFsGrep,
-    HostFsGlob,
-    HostFsStat,
-    HostFsExists,
-    HostFsListDir,
+    JsonSchema,
     Mcp,
     ProviderNative,
     #[default]
@@ -85,7 +70,7 @@ impl ToolSpec {
             description: description.into(),
             args_schema,
             mapper: ToolMapperKind::Custom,
-            executor: ToolExecutorKind::HostLoop,
+            executor: ToolExecutorKind::Runner,
             parallelism_hint: ToolParallelismHint::default(),
             definition_ref: None,
             estimated_tokens: None,
@@ -149,22 +134,11 @@ impl ToolRegistry {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HostSessionStatus {
-    #[default]
-    Ready,
-    Closed,
-    Expired,
-    Error,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRuntimeContext {
-    pub host_session_id: Option<String>,
-    pub host_session_status: Option<HostSessionStatus>,
-    pub working_directory: Option<String>,
-    pub environment: BTreeMap<String, String>,
+    pub active_capabilities: BTreeSet<String>,
+    pub runtime_refs: Vec<ArtifactRef>,
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -220,9 +194,7 @@ impl PlannedToolCall {
             arguments_json: observed.arguments_json.clone(),
             arguments_ref: observed.arguments_ref.clone(),
             mapper: ToolMapperKind::Custom,
-            executor: ToolExecutorKind::FutureExtension {
-                extension: "unavailable_tool".into(),
-            },
+            executor: ToolExecutorKind::Runner,
             parallel_safe: false,
             resource_key: None,
             accepted: false,

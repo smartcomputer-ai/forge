@@ -55,7 +55,7 @@ forge-cxdb-runtime    CXDB runtime integration (typed store, client traits, test
     ↓
 forge-llm             unified multi-provider LLM client (OpenAI + Anthropic adapters)
     ↓
-forge-agent           Forge-native event/effect coding agent runtime (Temporal-ready)
+forge-agent           Forge-native agent core SDK: event/effect contracts and state machine (Temporal-ready)
     ↓
 forge-attractor       DOT pipeline parser → graph IR → execution engine + handlers
     ↓
@@ -64,11 +64,11 @@ forge-cli             CLI binary (clap) — run/resume/inspect Attractor pipelin
 
 Key architectural patterns:
 - **Trait-based adapters** — `ProviderAdapter` (stateless LLM call), `AgentProvider` (provider-owned CLI/black-box agent loop), `NodeHandler` (pipeline nodes), `ExecutionEnvironment` (file/shell), `Interviewer` (HITL), `CxdbBinaryClient`/`CxdbHttpClient` (persistence). Shared via `Arc<dyn Trait>`.
-- **Forge-native agent core** — The rewritten `forge-agent` is an AOS-inspired event/effect state machine built on `forge-llm` and designed for Temporal runners. The domain core is Temporal-agnostic; Temporal owns durable execution, activities, retries, timers, cancellation, and signals.
+- **Forge-native agent core** — The rewritten `forge-agent` is an AOS-inspired event/effect state machine built on `forge-llm` and designed for Temporal runners. The domain core is Temporal-agnostic; Temporal owns durable execution, activities, retries, timers, cancellation, and signals. `forge-agent` should stay an agent core SDK; host shell/filesystem/process tools belong in runner/tool packages, not in the core crate.
 - **External CLI agent backends** — Claude Code, Codex, and Gemini CLI remain useful `AgentProvider`/effect-style backends for compatibility and comparison, but they are not the foundation of the native Forge agent loop.
 - **Middleware chain** — LLM client composes middleware in onion model for `complete()`/`stream()`.
 - **Explicit provider configuration** — Providers are explicitly configured, not auto-discovered from environment variables.
-- **Session/run lifecycle** — Agent work is represented as typed sessions, runs, turns, effect intents, and receipts. LLM calls, shell/filesystem work, MCP calls, and subagents execute through effect adapters.
+- **Session/run lifecycle** — Agent work is represented as typed sessions, runs, turns, effect intents, and receipts. LLM calls, artifacts, MCP calls, human input, and generic tool invocations execute through effect adapters; host shell/filesystem work is modeled as registered tools provided outside the core crate.
 - **Hierarchical errors** — Each crate defines its own `thiserror` error enums wrapping child crate errors.
 - **Serialization** — JSON for external interfaces, msgpack (`rmp-serde`) for CXDB binary protocol and internal persistence.
 - **Async runtime** — `tokio` with `current_thread` flavor everywhere (main and tests).
@@ -99,7 +99,7 @@ When making changes, align behavior and terminology to these documents first.
 - Workspace root: `Cargo.toml` (workspace only)
 - Crates:
   - `crates/forge-llm/` — unified LLM client library (primary target for spec/01)
-  - `crates/forge-agent/` — Forge-native coding agent runtime (primary target for spec/04-new-agent-spec)
+  - `crates/forge-agent/` — Forge-native agent core SDK (primary target for spec/04-new-agent-spec)
   - `crates/forge-attractor/` — Attractor DOT front-end and runtime (primary target for spec/03)
   - `crates/forge-cli/` — in-process CLI host for Attractor runtime surfaces
   - `crates/forge-cxdb/` — vendored CXDB Rust client (package name: `cxdb`, not `forge-cxdb`)
