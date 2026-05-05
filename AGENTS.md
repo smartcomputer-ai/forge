@@ -44,7 +44,9 @@ cargo run -p forge-cli -- inspect-checkpoint --checkpoint <PATH> --json
 
 ## Architecture
 
-Forge is a spec-first software factory stack centered on Attractor-style DOT pipeline orchestration. Crate dependency graph (bottom-up):
+Forge is a spec-first software factory stack centered on a Forge-native coding
+agent and Attractor-style DOT pipeline orchestration. Crate dependency graph
+(bottom-up):
 
 ```
 forge-cxdb            vendored CXDB client SDK (binary protocol, TLS, reconnect)
@@ -53,7 +55,7 @@ forge-cxdb-runtime    CXDB runtime integration (typed store, client traits, test
     ↓
 forge-llm             unified multi-provider LLM client (OpenAI + Anthropic adapters)
     ↓
-forge-agent           coding agent loop (session state machine, tools, provider profiles)
+forge-agent           Forge-native event/effect coding agent runtime (Temporal-ready)
     ↓
 forge-attractor       DOT pipeline parser → graph IR → execution engine + handlers
     ↓
@@ -61,11 +63,12 @@ forge-cli             CLI binary (clap) — run/resume/inspect Attractor pipelin
 ```
 
 Key architectural patterns:
-- **Trait-based adapters** — `ProviderAdapter` (stateless LLM call), `AgentProvider` (provider-owned agent loop), `NodeHandler` (pipeline nodes), `ExecutionEnvironment` (file/shell), `Interviewer` (HITL), `CxdbBinaryClient`/`CxdbHttpClient` (persistence). Shared via `Arc<dyn Trait>`.
-- **Unified agent provider** — Every provider (HTTP API or CLI subprocess) implements `AgentProvider::run_to_completion()`. HTTP providers compose `ProviderAdapter` + `ToolRegistry` + `ExecutionEnvironment`. CLI providers (Claude Code, Codex, Gemini) spawn subprocess and parse JSONL. Session delegates to the provider. See `spec/06-unified-agent-provider-spec.md`.
+- **Trait-based adapters** — `ProviderAdapter` (stateless LLM call), `AgentProvider` (provider-owned CLI/black-box agent loop), `NodeHandler` (pipeline nodes), `ExecutionEnvironment` (file/shell), `Interviewer` (HITL), `CxdbBinaryClient`/`CxdbHttpClient` (persistence). Shared via `Arc<dyn Trait>`.
+- **Forge-native agent core** — The rewritten `forge-agent` is an AOS-inspired event/effect state machine built on `forge-llm` and designed for Temporal runners. The domain core is Temporal-agnostic; Temporal owns durable execution, activities, retries, timers, cancellation, and signals.
+- **External CLI agent backends** — Claude Code, Codex, and Gemini CLI remain useful `AgentProvider`/effect-style backends for compatibility and comparison, but they are not the foundation of the native Forge agent loop.
 - **Middleware chain** — LLM client composes middleware in onion model for `complete()`/`stream()`.
 - **Explicit provider configuration** — Providers are explicitly configured, not auto-discovered from environment variables.
-- **Session state machine** — `SessionState` enum (Idle/Processing/AwaitingInput/Closed) with explicit `can_transition_to()` validation.
+- **Session/run lifecycle** — Agent work is represented as typed sessions, runs, turns, effect intents, and receipts. LLM calls, shell/filesystem work, MCP calls, and subagents execute through effect adapters.
 - **Hierarchical errors** — Each crate defines its own `thiserror` error enums wrapping child crate errors.
 - **Serialization** — JSON for external interfaces, msgpack (`rmp-serde`) for CXDB binary protocol and internal persistence.
 - **Async runtime** — `tokio` with `current_thread` flavor everywhere (main and tests).
@@ -81,11 +84,13 @@ Primary specs live in `spec/` — these are the source of truth:
 
 - `spec/00-vision.md` — vision + principles + techniques
 - `spec/01-unified-llm-spec.md` — unified LLM spec
-- `spec/02-coding-agent-loop-spec.md` — coding agent loop spec
+- `spec/02-coding-agent-loop-spec.md` — legacy/reference coding agent loop spec
 - `spec/03-attractor-spec.md` — attractor spec
-- `spec/04-cxdb-integration-spec.md` — CXDB-first runtime persistence integration extension
-- `spec/05-factory-control-plane-spec.md` — factory control-plane ideation (outer-loop goals and principles)
-- `spec/06-unified-agent-provider-spec.md` — unified agent provider spec (provider-owned tool loops, CLI agent adapters)
+- `spec/04-new-agent-spec.md` — new Forge agent runtime spec (primary target for `forge-agent`)
+- `spec/04-new-agent-idea.md` — scratchpad for the new agent direction
+- `spec/archive/04-cxdb-integration-spec.md` — archived CXDB-first runtime persistence integration extension
+- `spec/archive/05-factory-control-plane-spec.md` — archived factory control-plane ideation
+- `spec/archive/06-unified-agent-provider-spec.md` — archived unified agent provider spec
 
 When making changes, align behavior and terminology to these documents first.
 
@@ -94,7 +99,7 @@ When making changes, align behavior and terminology to these documents first.
 - Workspace root: `Cargo.toml` (workspace only)
 - Crates:
   - `crates/forge-llm/` — unified LLM client library (primary target for spec/01)
-  - `crates/forge-agent/` — coding agent loop library (primary target for spec/02)
+  - `crates/forge-agent/` — Forge-native coding agent runtime (primary target for spec/04-new-agent-spec)
   - `crates/forge-attractor/` — Attractor DOT front-end and runtime (primary target for spec/03)
   - `crates/forge-cli/` — in-process CLI host for Attractor runtime surfaces
   - `crates/forge-cxdb/` — vendored CXDB Rust client (package name: `cxdb`, not `forge-cxdb`)
