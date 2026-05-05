@@ -1,13 +1,13 @@
 //! Transcript ledger and message records.
 //!
-//! This module will contain source-ranged transcript entries and artifact-backed
+//! This module will contain source-ranged transcript entries and blob-backed
 //! user, assistant, tool result, system, developer, steering, and summary
 //! records.
 
 use crate::ids::{
     EffectId, JournalSeq, ProjectionItemId, RunId, SessionId, ToolBatchId, ToolCallId, TurnId,
 };
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use serde::{Deserialize, Serialize};
 
 pub const TRANSCRIPT_LEDGER_RECORD_KIND: &str = "forge.agent.runtime.v2.transcript_ledger";
@@ -46,7 +46,7 @@ pub enum TranscriptEntryKind {
     Reasoning,
     ToolResult,
     Summary,
-    ProviderArtifact,
+    ProviderBlob,
     Custom,
 }
 
@@ -54,7 +54,7 @@ pub enum TranscriptEntryKind {
 pub struct TranscriptLedgerEntry {
     pub seq: u64,
     pub kind: TranscriptEntryKind,
-    pub content_ref: ArtifactRef,
+    pub content_ref: BlobRef,
     pub source: String,
     pub source_range: Option<TranscriptRange>,
     pub appended_at_ms: u64,
@@ -83,7 +83,7 @@ pub struct TranscriptItem {
     pub joins: TranscriptItemJoins,
     pub kind: TranscriptEntryKind,
     pub source_event_id: Option<String>,
-    pub content_ref: Option<ArtifactRef>,
+    pub content_ref: Option<BlobRef>,
     pub preview: Option<String>,
     pub source_range: Option<TranscriptRange>,
     pub metadata: std::collections::BTreeMap<String, String>,
@@ -95,7 +95,7 @@ impl TranscriptLedger {
     pub fn append(
         &mut self,
         kind: TranscriptEntryKind,
-        content_ref: ArtifactRef,
+        content_ref: BlobRef,
         source: impl Into<String>,
         appended_at_ms: u64,
     ) -> TranscriptLedgerEntry {
@@ -139,16 +139,16 @@ pub enum MessageRole {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MessageRecord {
     pub role: MessageRole,
-    pub content_ref: ArtifactRef,
+    pub content_ref: BlobRef,
     pub name: Option<String>,
     pub source_range: Option<TranscriptRange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AssistantMessageRecord {
-    pub content_ref: Option<ArtifactRef>,
-    pub reasoning_ref: Option<ArtifactRef>,
-    pub raw_response_ref: Option<ArtifactRef>,
+    pub content_ref: Option<BlobRef>,
+    pub reasoning_ref: Option<BlobRef>,
+    pub raw_response_ref: Option<BlobRef>,
     pub provider_response_id: Option<String>,
     pub source_range: Option<TranscriptRange>,
 }
@@ -156,15 +156,15 @@ pub struct AssistantMessageRecord {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolResultRecord {
     pub tool_call_id: ToolCallId,
-    pub content_ref: ArtifactRef,
-    pub model_visible_ref: Option<ArtifactRef>,
+    pub content_ref: BlobRef,
+    pub model_visible_ref: Option<BlobRef>,
     pub is_error: bool,
     pub source_range: Option<TranscriptRange>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SummaryRecord {
-    pub summary_ref: ArtifactRef,
+    pub summary_ref: BlobRef,
     pub source_range: TranscriptRange,
     pub warnings: Vec<String>,
 }
@@ -175,7 +175,7 @@ pub enum TranscriptRecord {
     User(MessageRecord),
     Assistant(AssistantMessageRecord),
     Reasoning {
-        content_ref: ArtifactRef,
+        content_ref: BlobRef,
         source_range: Option<TranscriptRange>,
     },
     ToolResult(ToolResultRecord),
@@ -185,7 +185,7 @@ pub enum TranscriptRecord {
     Summary(SummaryRecord),
     Custom {
         custom_kind: String,
-        content_ref: ArtifactRef,
+        content_ref: BlobRef,
         source_range: Option<TranscriptRange>,
     },
 }
@@ -198,13 +198,13 @@ mod tests {
         let mut ledger = TranscriptLedger::default();
         let first = ledger.append(
             TranscriptEntryKind::Message,
-            ArtifactRef::new("blob://user-1"),
+            BlobRef::new_unchecked_for_tests("blob://user-1"),
             "user",
             10,
         );
         let second = ledger.append(
             TranscriptEntryKind::Summary,
-            ArtifactRef::new("blob://summary-1"),
+            BlobRef::new_unchecked_for_tests("blob://summary-1"),
             "compaction",
             11,
         );
@@ -244,7 +244,7 @@ mod tests {
     fn transcript_record_round_trips_through_msgpack() {
         let record = TranscriptRecord::ToolResult(ToolResultRecord {
             tool_call_id: ToolCallId::new("call-1"),
-            content_ref: ArtifactRef::new("blob://tool-output"),
+            content_ref: BlobRef::new_unchecked_for_tests("blob://tool-output"),
             model_visible_ref: None,
             is_error: false,
             source_range: Some(TranscriptRange::single(4)),
@@ -271,7 +271,7 @@ mod tests {
             },
             kind: TranscriptEntryKind::ToolResult,
             source_event_id: Some("event-7".into()),
-            content_ref: Some(ArtifactRef::new("blob://tool-output")),
+            content_ref: Some(BlobRef::new_unchecked_for_tests("blob://tool-output")),
             preview: Some("ok".into()),
             source_range: None,
             metadata: std::collections::BTreeMap::new(),

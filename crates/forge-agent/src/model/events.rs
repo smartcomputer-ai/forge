@@ -12,7 +12,7 @@ use crate::ids::{
     ToolBatchId, ToolCallId, TurnId,
 };
 use crate::lifecycle::{RunLifecycle, SessionStatus, TurnLifecycle};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::{ToolCallObserved, ToolProfile, ToolRegistry};
 use crate::transcript::{TranscriptBoundary, TranscriptRange};
 use serde::{Deserialize, Serialize};
@@ -90,18 +90,18 @@ pub enum InputEvent {
         config: SessionConfig,
     },
     RunRequested {
-        input_ref: ArtifactRef,
+        input_ref: BlobRef,
         run_overrides: Option<RunConfigOverride>,
     },
     FollowUpInputAppended {
-        input_ref: ArtifactRef,
+        input_ref: BlobRef,
         run_overrides: Option<RunConfigOverride>,
     },
     RunSteerRequested {
-        instruction_ref: ArtifactRef,
+        instruction_ref: BlobRef,
     },
     RunInterruptRequested {
-        reason_ref: Option<ArtifactRef>,
+        reason_ref: Option<BlobRef>,
     },
     SessionPaused,
     SessionResumed,
@@ -127,7 +127,7 @@ pub enum InputEvent {
     },
     ConfirmationProvided {
         request_id: String,
-        response_ref: ArtifactRef,
+        response_ref: BlobRef,
     },
 }
 
@@ -137,7 +137,7 @@ pub struct HistoryRewriteRequest {
     pub cause: String,
     pub source_range: Option<TranscriptRange>,
     pub replacement_boundary: Option<TranscriptBoundary>,
-    pub replacement_artifact_refs: Vec<ArtifactRef>,
+    pub replacement_blob_refs: Vec<BlobRef>,
     pub filesystem_changes_affected: Option<bool>,
 }
 
@@ -146,7 +146,7 @@ pub struct HistoryRollbackRequest {
     pub rollback_id: String,
     pub user_turns: u64,
     pub reason: Option<String>,
-    pub reason_ref: Option<ArtifactRef>,
+    pub reason_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,7 +191,7 @@ pub enum LifecycleEvent {
     },
     TurnFailed {
         turn_id: TurnId,
-        failure_ref: Option<ArtifactRef>,
+        failure_ref: Option<BlobRef>,
     },
     TurnLifecycleChanged {
         turn_id: TurnId,
@@ -203,7 +203,7 @@ pub enum LifecycleEvent {
     },
     ToolBatchCompleted {
         tool_batch_id: ToolBatchId,
-        results_ref: Option<ArtifactRef>,
+        results_ref: Option<BlobRef>,
     },
     ContextOperationStarted {
         operation: ContextOperationState,
@@ -242,15 +242,15 @@ impl EffectEvent {
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ObservationEvent {
     UserMessageObserved {
-        message_ref: ArtifactRef,
+        message_ref: BlobRef,
         preview: Option<String>,
     },
     AssistantMessageObserved {
-        message_ref: Option<ArtifactRef>,
+        message_ref: Option<BlobRef>,
         preview: Option<String>,
     },
     ReasoningObserved {
-        reasoning_ref: ArtifactRef,
+        reasoning_ref: BlobRef,
         preview: Option<String>,
     },
     ToolCallObserved {
@@ -259,8 +259,8 @@ pub enum ObservationEvent {
     ToolOutputObserved {
         call_id: ToolCallId,
         status: ToolCallStatus,
-        output_ref: Option<ArtifactRef>,
-        model_visible_output_ref: Option<ArtifactRef>,
+        output_ref: Option<BlobRef>,
+        model_visible_output_ref: Option<BlobRef>,
     },
     FileChangeObserved {
         change: FileChangeObservation,
@@ -268,7 +268,7 @@ pub enum ObservationEvent {
     ProjectionItemObserved {
         item_id: ProjectionItemId,
         item_kind: String,
-        item_ref: Option<ArtifactRef>,
+        item_ref: Option<BlobRef>,
     },
     TokenUsageObserved {
         usage: LlmUsageRecord,
@@ -276,7 +276,7 @@ pub enum ObservationEvent {
     WarningObserved {
         code: String,
         message: String,
-        detail_ref: Option<ArtifactRef>,
+        detail_ref: Option<BlobRef>,
     },
     CostObserved {
         amount_micros: u64,
@@ -289,9 +289,9 @@ pub enum ObservationEvent {
 pub struct FileChangeObservation {
     pub path: String,
     pub change_kind: FileChangeKind,
-    pub before_ref: Option<ArtifactRef>,
-    pub after_ref: Option<ArtifactRef>,
-    pub patch_ref: Option<ArtifactRef>,
+    pub before_ref: Option<BlobRef>,
+    pub after_ref: Option<BlobRef>,
+    pub patch_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::effects::{AgentEffectKind, ToolInvocationRequest};
     use crate::ids::{EffectId, IdAllocator};
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use std::collections::BTreeMap;
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
             SessionId::new("session-a"),
             10,
             AgentEventKind::Input(InputEvent::RunRequested {
-                input_ref: ArtifactRef::new("blob://prompt"),
+                input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                 run_overrides: None,
             }),
         );

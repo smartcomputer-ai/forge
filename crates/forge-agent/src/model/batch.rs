@@ -4,7 +4,7 @@
 //! groups, and result references.
 
 use crate::ids::{EffectId, ToolBatchId, ToolCallId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::{ToolBatchPlan, ToolCallObserved, ToolExecutionGroup, ToolExecutionPlan};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -41,8 +41,8 @@ pub struct ToolCallModelResult {
     pub tool_id: Option<String>,
     pub tool_name: String,
     pub is_error: bool,
-    pub output_ref: ArtifactRef,
-    pub model_visible_output_ref: Option<ArtifactRef>,
+    pub output_ref: BlobRef,
+    pub model_visible_output_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -56,21 +56,21 @@ pub struct PendingToolEffect {
 pub struct ActiveToolBatch {
     pub tool_batch_id: ToolBatchId,
     pub source_effect_id: EffectId,
-    pub source_output_ref: Option<ArtifactRef>,
+    pub source_output_ref: Option<BlobRef>,
     pub params_hash: Option<String>,
     pub plan: ToolBatchPlan,
     pub call_status: BTreeMap<ToolCallId, ToolCallStatus>,
     pub execution_plan: ToolExecutionPlan,
     pub pending_effects: BTreeMap<ToolCallId, PendingToolEffect>,
     pub model_results: BTreeMap<ToolCallId, ToolCallModelResult>,
-    pub results_ref: Option<ArtifactRef>,
+    pub results_ref: Option<BlobRef>,
 }
 
 impl ActiveToolBatch {
     pub fn new(
         tool_batch_id: ToolBatchId,
         source_effect_id: EffectId,
-        source_output_ref: Option<ArtifactRef>,
+        source_output_ref: Option<BlobRef>,
         plan: ToolBatchPlan,
     ) -> Self {
         let mut call_status = BTreeMap::new();

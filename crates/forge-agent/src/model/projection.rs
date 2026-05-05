@@ -7,7 +7,7 @@ use crate::batch::ToolCallStatus;
 use crate::context::LlmUsageRecord;
 use crate::events::FileChangeObservation;
 use crate::ids::{EffectId, ProjectionItemId, RunId, SessionId, ToolBatchId, ToolCallId, TurnId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -47,7 +47,7 @@ pub struct ProjectionItem {
     pub kind: ProjectionItemKind,
     pub title: Option<String>,
     pub preview: Option<String>,
-    pub content_ref: Option<ArtifactRef>,
+    pub content_ref: Option<BlobRef>,
     pub metadata: BTreeMap<String, String>,
     pub started_at_ms: u64,
     pub updated_at_ms: u64,
@@ -83,7 +83,7 @@ impl ProjectionItem {
         self.updated_at_ms = at_ms;
     }
 
-    pub fn complete(&mut self, content_ref: Option<ArtifactRef>, at_ms: u64) {
+    pub fn complete(&mut self, content_ref: Option<BlobRef>, at_ms: u64) {
         self.content_ref = content_ref;
         self.lifecycle = ProjectionItemLifecycle::Completed;
         self.updated_at_ms = at_ms;
@@ -149,7 +149,7 @@ pub struct ProjectionItemPatch {
     pub lifecycle: Option<ProjectionItemLifecycle>,
     pub title: Option<String>,
     pub preview: Option<String>,
-    pub content_ref: Option<ArtifactRef>,
+    pub content_ref: Option<BlobRef>,
     pub metadata: BTreeMap<String, String>,
     pub observed_at_ms: u64,
 }
@@ -159,7 +159,7 @@ mod tests {
     use super::*;
     use crate::events::FileChangeKind;
     use crate::ids::IdAllocator;
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
 
     #[test]
     fn projection_item_tracks_lifecycle_and_join_ids() {
@@ -179,7 +179,10 @@ mod tests {
 
         let mut item = ProjectionItem::new(item_id, joins, ProjectionItemKind::Assistant, 10);
         item.update_preview("partial", 11);
-        item.complete(Some(ArtifactRef::new("blob://assistant")), 12);
+        item.complete(
+            Some(BlobRef::new_unchecked_for_tests("blob://assistant")),
+            12,
+        );
 
         assert_eq!(item.lifecycle, ProjectionItemLifecycle::Completed);
         assert!(item.lifecycle.is_terminal());
@@ -205,7 +208,7 @@ mod tests {
                     path: "src/lib.rs".into(),
                     change_kind: FileChangeKind::Modified,
                     before_ref: None,
-                    after_ref: Some(ArtifactRef::new("blob://after")),
+                    after_ref: Some(BlobRef::new_unchecked_for_tests("blob://after")),
                     patch_ref: None,
                 },
             },

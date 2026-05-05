@@ -5,7 +5,7 @@
 
 use crate::context::{CompactionStrategy, LlmTokenCountRecord, LlmUsageRecord};
 use crate::ids::{CorrelationId, EffectId, RunId, SessionId, SubmissionId, ToolCallId, TurnId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::ToolCallObserved;
 use crate::turn::ResolvedTurnContext;
 use serde::{Deserialize, Serialize};
@@ -77,7 +77,7 @@ pub enum AgentEffectKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmGenerationRequest {
     pub resolved_context: ResolvedTurnContext,
-    pub request_ref: Option<ArtifactRef>,
+    pub request_ref: Option<BlobRef>,
     pub stream: bool,
 }
 
@@ -90,7 +90,7 @@ pub struct LlmCountTokensRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmCompactRequest {
     pub resolved_context: ResolvedTurnContext,
-    pub source_items: Vec<ArtifactRef>,
+    pub source_items: Vec<BlobRef>,
     pub strategy: CompactionStrategy,
     pub source_range_start: Option<u64>,
     pub source_range_end: Option<u64>,
@@ -101,7 +101,7 @@ pub struct McpCallRequest {
     pub server_id: String,
     pub tool_name: String,
     pub arguments: Value,
-    pub arguments_ref: Option<ArtifactRef>,
+    pub arguments_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,17 +111,17 @@ pub struct ToolInvocationRequest {
     pub tool_id: Option<String>,
     pub tool_name: String,
     pub arguments_json: Option<String>,
-    pub arguments_ref: Option<ArtifactRef>,
+    pub arguments_ref: Option<BlobRef>,
     pub handler_id: Option<String>,
-    pub context_ref: Option<ArtifactRef>,
+    pub context_ref: Option<BlobRef>,
     pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfirmationRequest {
     pub request_id: String,
-    pub prompt_ref: ArtifactRef,
-    pub response_schema_ref: Option<ArtifactRef>,
+    pub prompt_ref: BlobRef,
+    pub response_schema_ref: Option<BlobRef>,
     pub timeout_ms: Option<u64>,
 }
 
@@ -130,13 +130,13 @@ pub struct ConfirmationRequest {
 pub enum SubagentRequest {
     Spawn {
         parent_session_id: SessionId,
-        task_ref: ArtifactRef,
+        task_ref: BlobRef,
         role: Option<String>,
-        inherited_context_refs: Vec<ArtifactRef>,
+        inherited_context_refs: Vec<BlobRef>,
     },
     Send {
         child_session_id: SessionId,
-        input_ref: ArtifactRef,
+        input_ref: BlobRef,
     },
     Wait {
         child_session_id: SessionId,
@@ -144,7 +144,7 @@ pub enum SubagentRequest {
     },
     Interrupt {
         child_session_id: SessionId,
-        reason_ref: Option<ArtifactRef>,
+        reason_ref: Option<BlobRef>,
     },
     Close {
         child_session_id: SessionId,
@@ -192,9 +192,9 @@ pub struct RetryMetadata {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmGenerationReceipt {
-    pub assistant_message_ref: Option<ArtifactRef>,
-    pub reasoning_summary_ref: Option<ArtifactRef>,
-    pub raw_provider_response_ref: Option<ArtifactRef>,
+    pub assistant_message_ref: Option<BlobRef>,
+    pub reasoning_summary_ref: Option<BlobRef>,
+    pub raw_provider_response_ref: Option<BlobRef>,
     pub tool_calls: Vec<ToolCallObserved>,
     pub usage: Option<LlmUsageRecord>,
     pub finish_reason: Option<String>,
@@ -209,14 +209,14 @@ pub struct LlmCountTokensReceipt {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmCompactReceipt {
-    pub artifact_refs: Vec<ArtifactRef>,
+    pub blob_refs: Vec<BlobRef>,
     pub warnings: Vec<String>,
     pub usage: Option<LlmUsageRecord>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpCallReceipt {
-    pub result_ref: Option<ArtifactRef>,
+    pub result_ref: Option<BlobRef>,
     pub is_error: bool,
     pub metadata: BTreeMap<String, String>,
 }
@@ -226,8 +226,8 @@ pub struct ToolInvocationReceipt {
     pub call_id: ToolCallId,
     pub tool_id: Option<String>,
     pub tool_name: String,
-    pub output_ref: Option<ArtifactRef>,
-    pub model_visible_output_ref: Option<ArtifactRef>,
+    pub output_ref: Option<BlobRef>,
+    pub model_visible_output_ref: Option<BlobRef>,
     pub is_error: bool,
     pub metadata: BTreeMap<String, String>,
 }
@@ -235,7 +235,7 @@ pub struct ToolInvocationReceipt {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConfirmationReceipt {
     pub request_id: String,
-    pub response_ref: ArtifactRef,
+    pub response_ref: BlobRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -246,11 +246,11 @@ pub enum SubagentReceipt {
     },
     Completed {
         child_session_id: SessionId,
-        output_ref: Option<ArtifactRef>,
+        output_ref: Option<BlobRef>,
     },
     Interrupted {
         child_session_id: SessionId,
-        reason_ref: Option<ArtifactRef>,
+        reason_ref: Option<BlobRef>,
     },
     Errored {
         child_session_id: Option<SessionId>,
@@ -269,13 +269,13 @@ pub struct EffectFailure {
     pub code: String,
     pub detail: String,
     pub retryable: bool,
-    pub failure_ref: Option<ArtifactRef>,
+    pub failure_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EffectCancellation {
     pub reason: Option<String>,
-    pub reason_ref: Option<ArtifactRef>,
+    pub reason_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -307,11 +307,11 @@ pub enum EffectStreamFrameKind {
         progress: Option<u64>,
         total: Option<u64>,
     },
-    Artifact {
-        artifact_ref: ArtifactRef,
+    Blob {
+        blob_ref: BlobRef,
     },
     Raw {
-        frame_ref: ArtifactRef,
+        frame_ref: BlobRef,
     },
 }
 

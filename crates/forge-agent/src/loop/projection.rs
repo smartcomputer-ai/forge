@@ -7,7 +7,7 @@ use crate::lifecycle::RunLifecycle;
 use crate::projection::{
     ProjectionItem, ProjectionItemKind, ProjectionItemLifecycle, ProjectionJoinIds,
 };
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::transcript::{TranscriptEntryKind, TranscriptItem, TranscriptItemJoins};
 use std::collections::BTreeMap;
 
@@ -45,7 +45,7 @@ impl ProjectionBuilder {
                     ProjectionItemKind::User,
                     TranscriptEntryKind::Message,
                     Some(input_ref.clone()),
-                    input_ref.preview.clone(),
+                    None,
                     &mut output,
                 );
             }
@@ -57,7 +57,7 @@ impl ProjectionBuilder {
                     },
                     TranscriptEntryKind::Message,
                     Some(instruction_ref.clone()),
-                    instruction_ref.preview.clone(),
+                    None,
                     &mut output,
                 );
             }
@@ -94,7 +94,7 @@ impl ProjectionBuilder {
                                 ProjectionItemKind::Assistant,
                                 TranscriptEntryKind::Message,
                                 Some(message_ref.clone()),
-                                message_ref.preview.clone(),
+                                None,
                                 &mut output,
                             );
                         }
@@ -104,7 +104,7 @@ impl ProjectionBuilder {
                                 ProjectionItemKind::Reasoning,
                                 TranscriptEntryKind::Reasoning,
                                 Some(reasoning_ref.clone()),
-                                reasoning_ref.preview.clone(),
+                                None,
                                 &mut output,
                             );
                         }
@@ -151,7 +151,7 @@ impl ProjectionBuilder {
                                 .model_visible_output_ref
                                 .as_ref()
                                 .or(receipt.output_ref.as_ref())
-                                .and_then(|ref_| ref_.preview.clone()),
+                                .map(|ref_| ref_.as_str().to_string()),
                             &mut output,
                         );
                     }
@@ -160,11 +160,11 @@ impl ProjectionBuilder {
                             event,
                             ProjectionItemKind::Compaction,
                             TranscriptEntryKind::Summary,
-                            receipt.artifact_refs.first().cloned(),
+                            receipt.blob_refs.first().cloned(),
                             receipt
-                                .artifact_refs
+                                .blob_refs
                                 .first()
-                                .and_then(|ref_| ref_.preview.clone()),
+                                .map(|ref_| ref_.as_str().to_string()),
                             &mut output,
                         );
                     }
@@ -222,7 +222,7 @@ impl ProjectionBuilder {
         event: &AgentEvent,
         projection_kind: ProjectionItemKind,
         transcript_kind: TranscriptEntryKind,
-        content_ref: Option<ArtifactRef>,
+        content_ref: Option<BlobRef>,
         preview: Option<String>,
         output: &mut ProjectionOutput,
     ) {

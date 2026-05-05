@@ -4,7 +4,7 @@
 //! planned calls, and runtime context. Tool execution is implemented later.
 
 use crate::ids::ToolCallId;
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -54,7 +54,7 @@ pub struct ToolSpec {
     pub parallelism_hint: ToolParallelismHint,
     #[serde(default)]
     pub required_capabilities: Vec<String>,
-    pub definition_ref: Option<ArtifactRef>,
+    pub definition_ref: Option<BlobRef>,
     pub estimated_tokens: Option<u64>,
     pub metadata: BTreeMap<String, String>,
 }
@@ -140,7 +140,7 @@ impl ToolRegistry {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRuntimeContext {
     pub active_capabilities: BTreeSet<String>,
-    pub runtime_refs: Vec<ArtifactRef>,
+    pub runtime_refs: Vec<BlobRef>,
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -150,8 +150,8 @@ pub struct ToolCallObserved {
     pub provider_call_id: Option<String>,
     pub tool_name: String,
     pub arguments_json: Option<String>,
-    pub arguments_ref: Option<ArtifactRef>,
-    pub raw_call_ref: Option<ArtifactRef>,
+    pub arguments_ref: Option<BlobRef>,
+    pub raw_call_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -161,7 +161,7 @@ pub struct PlannedToolCall {
     pub tool_id: Option<String>,
     pub tool_name: String,
     pub arguments_json: Option<String>,
-    pub arguments_ref: Option<ArtifactRef>,
+    pub arguments_ref: Option<BlobRef>,
     pub mapper: ToolMapperKind,
     pub executor: ToolExecutorKind,
     pub parallel_safe: bool,

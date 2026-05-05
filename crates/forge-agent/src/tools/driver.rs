@@ -6,7 +6,7 @@ use crate::effects::{
 };
 use crate::error::ModelError;
 use crate::ids::{EffectId, RunId, SessionId, ToolCallId, TurnId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::PlannedToolCall;
 use crate::tooling::ToolRuntimeContext;
 use crate::tools::dispatcher::{ToolDispatcher, ToolDispatcherError};
@@ -154,7 +154,7 @@ impl DispatchOutcome {
 pub struct DispatchCancellation {
     pub mode: DispatchCancellationMode,
     pub reason: Option<String>,
-    pub reason_ref: Option<ArtifactRef>,
+    pub reason_ref: Option<BlobRef>,
 }
 
 impl DispatchCancellation {
@@ -229,16 +229,16 @@ fn cancelled_receipt_for_call(
     metadata.insert("cancellation_mode".into(), status.as_str().into());
     metadata.insert("cancellation_reason".into(), reason.clone());
     if let Some(reason_ref) = cancellation.reason_ref.as_ref() {
-        metadata.insert("cancellation_reason_ref".into(), reason_ref.uri.clone());
+        metadata.insert(
+            "cancellation_reason_ref".into(),
+            reason_ref.as_str().to_string(),
+        );
     }
     ToolInvocationReceipt {
         call_id: call.request.call_id.clone(),
         tool_id: call.request.tool_id.clone(),
         tool_name: call.request.tool_name.clone(),
-        output_ref: Some(
-            ArtifactRef::new(format!("forge://tool-cancelled/{}", call.request.call_id))
-                .with_preview(reason),
-        ),
+        output_ref: Some(BlobRef::from_bytes(reason.as_bytes())),
         model_visible_output_ref: None,
         is_error: true,
         metadata,

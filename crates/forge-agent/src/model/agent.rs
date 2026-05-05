@@ -4,7 +4,7 @@
 
 use crate::config::RunConfig;
 use crate::ids::{AgentId, AgentVersionId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::ToolRegistry;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -27,8 +27,8 @@ pub struct AgentVersion {
     pub name: String,
     /// Versioned display or prompt-facing description.
     pub description: Option<String>,
-    pub system_prompt_refs: Vec<ArtifactRef>,
-    pub developer_prompt_refs: Vec<ArtifactRef>,
+    pub system_prompt_refs: Vec<BlobRef>,
+    pub developer_prompt_refs: Vec<BlobRef>,
     pub default_run_config: RunConfig,
     pub tool_registry: ToolRegistry,
     pub default_tool_profile: Option<String>,
@@ -39,7 +39,7 @@ pub struct AgentVersion {
 mod tests {
     use super::*;
     use crate::config::RunConfig;
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
 
     #[test]
     fn agent_definition_round_trips_with_stable_handle() {
@@ -62,7 +62,7 @@ mod tests {
             agent_id: AgentId::new("agent"),
             name: "Builder".into(),
             description: Some("Builds software from specs".into()),
-            system_prompt_refs: vec![ArtifactRef::new("blob://system")],
+            system_prompt_refs: vec![BlobRef::new_unchecked_for_tests("blob://system")],
             default_run_config: RunConfig {
                 provider: "openai".into(),
                 model: "gpt-x".into(),

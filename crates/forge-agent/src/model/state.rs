@@ -13,7 +13,7 @@ use crate::ids::{
     AgentVersionId, EffectId, IdAllocator, JournalSeq, RunId, SessionId, SubmissionId, TurnId,
 };
 use crate::lifecycle::{RunLifecycle, SessionStatus};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::subagent::SubagentRecord;
 use crate::tooling::{ToolRegistry, ToolRuntimeContext};
 use crate::transcript::TranscriptBoundary;
@@ -27,7 +27,7 @@ pub const DEFAULT_RUN_HISTORY_LIMIT: usize = 32;
 pub struct CauseRef {
     pub kind: String,
     pub id: String,
-    pub ref_: Option<ArtifactRef>,
+    pub ref_: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,16 +36,16 @@ pub enum RunCauseOrigin {
     DirectSubmission {
         submission_id: Option<SubmissionId>,
         source: String,
-        request_ref: Option<ArtifactRef>,
+        request_ref: Option<BlobRef>,
     },
     DomainEvent {
         schema: String,
-        event_ref: Option<ArtifactRef>,
+        event_ref: Option<BlobRef>,
         key: Option<String>,
     },
     Internal {
         reason: String,
-        ref_: Option<ArtifactRef>,
+        ref_: Option<BlobRef>,
     },
 }
 
@@ -62,14 +62,14 @@ impl Default for RunCauseOrigin {
 pub struct RunCause {
     pub kind: String,
     pub origin: RunCauseOrigin,
-    pub input_refs: Vec<ArtifactRef>,
+    pub input_refs: Vec<BlobRef>,
     pub payload_schema: Option<String>,
-    pub payload_ref: Option<ArtifactRef>,
+    pub payload_ref: Option<BlobRef>,
     pub subject_refs: Vec<CauseRef>,
 }
 
 impl RunCause {
-    pub fn direct_input(input_ref: ArtifactRef, submission_id: Option<SubmissionId>) -> Self {
+    pub fn direct_input(input_ref: BlobRef, submission_id: Option<SubmissionId>) -> Self {
         Self {
             kind: "forge.agent/user_input".into(),
             origin: RunCauseOrigin::DirectSubmission {
@@ -89,19 +89,19 @@ impl RunCause {
 pub struct RunFailure {
     pub code: String,
     pub detail: String,
-    pub failure_ref: Option<ArtifactRef>,
+    pub failure_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunOutcome {
-    pub output_ref: Option<ArtifactRef>,
+    pub output_ref: Option<BlobRef>,
     pub failure: Option<RunFailure>,
     pub cancelled_reason: Option<String>,
-    pub interrupted_reason_ref: Option<ArtifactRef>,
+    pub interrupted_reason_ref: Option<BlobRef>,
 }
 
 impl RunOutcome {
-    pub fn completed(output_ref: Option<ArtifactRef>) -> Self {
+    pub fn completed(output_ref: Option<BlobRef>) -> Self {
         Self {
             output_ref,
             ..Default::default()
@@ -145,22 +145,22 @@ impl PendingEffectStatus {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedRunInput {
     pub submission_id: Option<SubmissionId>,
-    pub input_ref: ArtifactRef,
+    pub input_ref: BlobRef,
     pub run_overrides: Option<RunConfigOverride>,
     pub queued_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QueuedSteeringInput {
-    pub instruction_ref: ArtifactRef,
+    pub instruction_ref: BlobRef,
     pub queued_at_ms: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingConfirmationRequest {
     pub request_id: String,
-    pub prompt_ref: ArtifactRef,
-    pub response_schema_ref: Option<ArtifactRef>,
+    pub prompt_ref: BlobRef,
+    pub response_schema_ref: Option<BlobRef>,
     pub requested_at_ms: u64,
 }
 
@@ -208,14 +208,14 @@ pub struct RunState {
     pub config_revision: u64,
     pub cause: RunCause,
     pub config: RunConfig,
-    pub input_refs: Vec<ArtifactRef>,
+    pub input_refs: Vec<BlobRef>,
     pub current_turn_plan: Option<TurnPlan>,
     pub active_turn_id: Option<TurnId>,
     pub active_llm_effect_id: Option<EffectId>,
     pub completed_tool_batches: Vec<ActiveToolBatch>,
     pub active_tool_batch: Option<ActiveToolBatch>,
     pub pending_effects: BTreeMap<EffectId, PendingEffectRecord>,
-    pub latest_output_ref: Option<ArtifactRef>,
+    pub latest_output_ref: Option<BlobRef>,
     pub usage_records: Vec<LlmUsageRecord>,
     pub outcome: Option<RunOutcome>,
     pub started_at_ms: u64,
@@ -263,13 +263,13 @@ pub struct RunRecord {
     pub effective_agent_version_id: Option<AgentVersionId>,
     pub config_revision: u64,
     pub cause: RunCause,
-    pub input_refs: Vec<ArtifactRef>,
+    pub input_refs: Vec<BlobRef>,
     pub completed_tool_batch_count: u64,
-    pub completed_tool_batch_result_refs: Vec<ArtifactRef>,
+    pub completed_tool_batch_result_refs: Vec<BlobRef>,
     pub outcome: Option<RunOutcome>,
     pub usage_record_count: u64,
     pub usage_summary: LlmUsageRecord,
-    pub usage_records_ref: Option<ArtifactRef>,
+    pub usage_records_ref: Option<BlobRef>,
     pub started_at_ms: u64,
     pub ended_at_ms: u64,
 }
@@ -335,16 +335,16 @@ pub enum SessionSource {
     },
     TranscriptSnapshot {
         source_session_id: Option<SessionId>,
-        snapshot_ref: ArtifactRef,
+        snapshot_ref: BlobRef,
         boundary: Option<TranscriptBoundary>,
     },
     ParentSessionRun {
         parent_session_id: SessionId,
         parent_run_id: Option<RunId>,
-        inherited_context_refs: Vec<ArtifactRef>,
+        inherited_context_refs: Vec<BlobRef>,
     },
     ImportedHistory {
-        history_ref: ArtifactRef,
+        history_ref: BlobRef,
         boundary: Option<TranscriptBoundary>,
     },
 }
@@ -375,7 +375,7 @@ pub struct HistoryControlState {
     pub latest_rollback_id: Option<String>,
     /// Optional ref to compact rewrite/rollback metadata for diagnostics or
     /// resume. Large details stay outside `SessionState`.
-    pub latest_history_ref: Option<ArtifactRef>,
+    pub latest_history_ref: Option<BlobRef>,
     /// Monotonic count of applied history rewrites for quick state inspection.
     pub rewrite_count: u64,
     /// Monotonic count of applied history rollbacks for quick state inspection.
@@ -388,7 +388,7 @@ pub struct HistoryControlState {
 /// decide the next deterministic step. It intentionally does not contain full
 /// transcript bodies, full event history, full compaction history, or settled
 /// effect receipts; those live in the scoped journal, transcript/projection
-/// records, and artifact/CAS storage.
+/// records, and blob/CAS storage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionState {
     /// Stable identity for this concrete session timeline.
@@ -590,7 +590,7 @@ impl SessionState {
         &mut self,
         rewrite_id: impl Into<String>,
         resulting_active_boundary: Option<TranscriptBoundary>,
-        latest_history_ref: Option<ArtifactRef>,
+        latest_history_ref: Option<BlobRef>,
     ) {
         self.history.latest_rewrite_id = Some(rewrite_id.into());
         self.history.rewrite_count = self.history.rewrite_count.saturating_add(1);
@@ -606,7 +606,7 @@ impl SessionState {
         &mut self,
         rollback_id: impl Into<String>,
         resulting_active_boundary: Option<TranscriptBoundary>,
-        latest_history_ref: Option<ArtifactRef>,
+        latest_history_ref: Option<BlobRef>,
     ) {
         self.history.latest_rollback_id = Some(rollback_id.into());
         self.history.rollback_count = self.history.rollback_count.saturating_add(1);
@@ -626,7 +626,7 @@ mod tests {
         AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt, ToolInvocationRequest,
     };
     use crate::ids::ToolCallId;
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
 
     fn active_session() -> SessionState {
         let mut session =
@@ -641,7 +641,7 @@ mod tests {
     fn session_state_represents_new_and_active_run() {
         let mut session = active_session();
         let run_id = session.id_allocator.allocate_run_id();
-        let input_ref = ArtifactRef::new("blob://prompt");
+        let input_ref = BlobRef::new_unchecked_for_tests("blob://prompt");
         let cause = RunCause::direct_input(input_ref.clone(), Some(SubmissionId::new("submit-1")));
         let run = RunState::queued(
             run_id.clone(),
@@ -683,7 +683,7 @@ mod tests {
         let record = session
             .finish_current_run(
                 RunLifecycle::Completed,
-                RunOutcome::completed(Some(ArtifactRef::new("blob://answer"))),
+                RunOutcome::completed(Some(BlobRef::new_unchecked_for_tests("blob://answer"))),
                 5,
             )
             .expect("finish run");
@@ -743,7 +743,7 @@ mod tests {
             .finish_current_run(
                 RunLifecycle::Interrupted,
                 RunOutcome {
-                    interrupted_reason_ref: Some(ArtifactRef::new("blob://reason")),
+                    interrupted_reason_ref: Some(BlobRef::new_unchecked_for_tests("blob://reason")),
                     ..Default::default()
                 },
                 5,
@@ -782,7 +782,7 @@ mod tests {
                 entry_seq: Some(1),
                 event_id: None,
             }),
-            Some(ArtifactRef::new("blob://rewrite")),
+            Some(BlobRef::new_unchecked_for_tests("blob://rewrite")),
         );
 
         assert!(matches!(

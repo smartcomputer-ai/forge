@@ -6,7 +6,7 @@ use crate::context::{
     ContextOperationState,
 };
 use crate::ids::{CorrelationId, TurnId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::state::{RunState, SessionState};
 use crate::tooling::ToolSpec;
 use crate::turn::{
@@ -178,7 +178,7 @@ pub fn plan_default_turn(
     for input in inputs {
         match input.kind {
             TurnInputKind::MessageRef => {
-                if !seen_refs.insert(input.content_ref.uri.clone()) {
+                if !seen_refs.insert(input.content_ref.as_str().to_string()) {
                     dropped_message_count = dropped_message_count.saturating_add(1);
                     decision_codes.push(format!("drop_message_duplicate:{}", input.input_id));
                     continue;
@@ -231,9 +231,7 @@ pub fn plan_default_turn(
                     decision_codes.push(format!("drop_provider_options_extra:{}", input.input_id));
                 }
             }
-            TurnInputKind::ArtifactRef
-            | TurnInputKind::ToolDefinitionRef
-            | TurnInputKind::Custom => {
+            TurnInputKind::BlobRef | TurnInputKind::ToolDefinitionRef | TurnInputKind::Custom => {
                 dropped_message_count = dropped_message_count.saturating_add(1);
                 decision_codes.push(format!("drop_non_message_input:{}", input.input_id));
             }
@@ -515,7 +513,7 @@ fn message_input(
     input_id: impl Into<String>,
     lane: TurnInputLane,
     priority: TurnPriority,
-    content_ref: ArtifactRef,
+    content_ref: BlobRef,
     source_kind: impl Into<String>,
 ) -> TurnInput {
     TurnInput {
@@ -540,8 +538,8 @@ fn input_from_active_window(item: &ActiveWindowItem) -> TurnInput {
             ActiveWindowItemKind::ResponseFormatRef => TurnInputKind::ResponseFormatRef,
             ActiveWindowItemKind::ProviderOptionsRef => TurnInputKind::ProviderOptionsRef,
             ActiveWindowItemKind::ToolDefinitionRef => TurnInputKind::ToolDefinitionRef,
-            ActiveWindowItemKind::Custom | ActiveWindowItemKind::ProviderNativeArtifactRef => {
-                TurnInputKind::ArtifactRef
+            ActiveWindowItemKind::Custom | ActiveWindowItemKind::ProviderNativeBlobRef => {
+                TurnInputKind::BlobRef
             }
             ActiveWindowItemKind::MessageRef
             | ActiveWindowItemKind::SummaryRef
@@ -583,7 +581,7 @@ fn input_kind_rank(kind: TurnInputKind) -> u8 {
         TurnInputKind::ResponseFormatRef => 1,
         TurnInputKind::MessageRef => 2,
         TurnInputKind::ToolDefinitionRef => 3,
-        TurnInputKind::ArtifactRef => 4,
+        TurnInputKind::BlobRef => 4,
         TurnInputKind::Custom => 5,
     }
 }
@@ -669,7 +667,7 @@ mod tests {
         CompactionStrategy, ContextOperationPhase, ContextOperationState, ContextPressureReason,
     };
     use crate::ids::{SessionId, ToolCallId};
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use crate::state::RunCause;
     use crate::tooling::{
         PlannedToolCall, ToolBatchPlan, ToolCallObserved, ToolProfile, ToolRegistry,
@@ -682,7 +680,7 @@ mod tests {
         let turn_id = state.id_allocator.allocate_turn_id(&run_id);
         let run = RunState::queued(
             run_id,
-            RunCause::direct_input(ArtifactRef::new("blob://prompt"), None),
+            RunCause::direct_input(BlobRef::new_unchecked_for_tests("blob://prompt"), None),
             None,
             0,
             RunConfig::from_session(&state.config, None),
@@ -704,7 +702,7 @@ mod tests {
                 lane: TurnInputLane::Summary,
                 kind: TurnInputKind::MessageRef,
                 priority: TurnPriority::High,
-                content_ref: ArtifactRef::new("blob://summary"),
+                content_ref: BlobRef::new_unchecked_for_tests("blob://summary"),
                 estimated_tokens: Some(10),
                 ..Default::default()
             });
@@ -722,11 +720,11 @@ mod tests {
         assert_eq!(outcome.plan.active_window_items.len(), 2);
         assert_eq!(
             outcome.plan.active_window_items[0].content_ref,
-            ArtifactRef::new("blob://summary")
+            BlobRef::new_unchecked_for_tests("blob://summary")
         );
         assert_eq!(
             outcome.plan.active_window_items[1].content_ref,
-            ArtifactRef::new("blob://prompt")
+            BlobRef::new_unchecked_for_tests("blob://prompt")
         );
         assert_eq!(outcome.plan.report.selected_message_count, 2);
     }
@@ -819,8 +817,10 @@ mod tests {
                 tool_id: Some("echo".into()),
                 tool_name: "echo".into(),
                 is_error: false,
-                output_ref: ArtifactRef::new("blob://tool-output"),
-                model_visible_output_ref: Some(ArtifactRef::new("blob://tool-visible")),
+                output_ref: BlobRef::new_unchecked_for_tests("blob://tool-output"),
+                model_visible_output_ref: Some(BlobRef::new_unchecked_for_tests(
+                    "blob://tool-visible",
+                )),
             },
         );
         run.completed_tool_batches.push(batch);
@@ -838,13 +838,9 @@ mod tests {
             .plan_turn(TurnPlanningRequest::from_state(&state, &run, turn_id))
             .expect("plan");
 
-        assert!(
-            outcome
-                .plan
-                .active_window_items
-                .iter()
-                .any(|item| item.content_ref == ArtifactRef::new("blob://tool-visible"))
-        );
+        assert!(outcome.plan.active_window_items.iter().any(
+            |item| item.content_ref == BlobRef::new_unchecked_for_tests("blob://tool-visible")
+        ));
         assert!(matches!(
             outcome.plan.prerequisites.first().map(|value| &value.kind),
             Some(TurnPrerequisiteKind::CompactContext)

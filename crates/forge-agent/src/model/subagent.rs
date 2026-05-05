@@ -4,7 +4,7 @@
 //! explicit routing/cancellation state.
 
 use crate::ids::{RunId, SessionId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -21,7 +21,7 @@ pub struct SubagentRelationship {
     pub child_session_id: SessionId,
     pub depth: u64,
     pub role: Option<SubagentRole>,
-    pub inherited_context_refs: Vec<ArtifactRef>,
+    pub inherited_context_refs: Vec<BlobRef>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,8 +69,8 @@ pub struct SubagentRecord {
     pub event_routing: SubagentEventRouting,
     pub spawned_at_ms: u64,
     pub updated_at_ms: u64,
-    pub final_output_ref: Option<ArtifactRef>,
-    pub failure_ref: Option<ArtifactRef>,
+    pub final_output_ref: Option<BlobRef>,
+    pub failure_ref: Option<BlobRef>,
 }
 
 impl SubagentRecord {

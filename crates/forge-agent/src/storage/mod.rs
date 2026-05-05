@@ -6,11 +6,11 @@
 //! durability model.
 
 pub mod agents;
-pub mod artifacts;
+pub mod blobs;
 pub mod journal;
 pub mod snapshots;
 
 pub use agents::{AgentDefinitionStore, AgentDefinitionStoreError, InMemoryAgentDefinitionStore};
-pub use artifacts::{ArtifactStore, ArtifactStoreError, ArtifactWrite, InMemoryArtifactStore};
+pub use blobs::{BlobInfo, BlobStore, BlobStoreError, BlobWrite, InMemoryBlobStore};
 pub use journal::{InMemoryJournalStore, JournalStore};
 pub use snapshots::{InMemorySnapshotStore, SnapshotStore, SnapshotStoreError, StateSnapshot};

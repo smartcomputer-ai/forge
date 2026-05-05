@@ -1,8 +1,8 @@
 //! Implementer-facing tool handler contract.
 
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
-use crate::refs::ArtifactRef;
-use crate::storage::ArtifactStore;
+use crate::refs::BlobRef;
+use crate::storage::BlobStore;
 use crate::tooling::ToolRuntimeContext;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -13,12 +13,12 @@ use thiserror::Error;
 #[derive(Clone)]
 pub struct ToolInvocationContext {
     pub runtime: ToolRuntimeContext,
-    pub artifacts: Arc<dyn ArtifactStore>,
+    pub blobs: Arc<dyn BlobStore>,
 }
 
 impl ToolInvocationContext {
-    pub fn new(runtime: ToolRuntimeContext, artifacts: Arc<dyn ArtifactStore>) -> Self {
-        Self { runtime, artifacts }
+    pub fn new(runtime: ToolRuntimeContext, blobs: Arc<dyn BlobStore>) -> Self {
+        Self { runtime, blobs }
     }
 }
 
@@ -38,8 +38,8 @@ pub struct ToolExecutionError {
     pub detail: String,
     pub retryable: bool,
     pub model_visible: bool,
-    pub output_ref: Option<ArtifactRef>,
-    pub model_visible_output_ref: Option<ArtifactRef>,
+    pub output_ref: Option<BlobRef>,
+    pub model_visible_output_ref: Option<BlobRef>,
     pub metadata: BTreeMap<String, String>,
 }
 
@@ -99,7 +99,7 @@ pub struct ToolRuntimeHandle {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolRuntimeSnapshot {
-    pub output_snapshot_ref: Option<ArtifactRef>,
+    pub output_snapshot_ref: Option<BlobRef>,
     pub observed_at_ms: Option<u64>,
 }
 
@@ -148,9 +148,10 @@ impl ToolResultMetadata {
         }
         if let Some(snapshot) = self.snapshot.as_ref() {
             if let Some(snapshot_ref) = snapshot.output_snapshot_ref.as_ref() {
-                receipt
-                    .metadata
-                    .insert("output_snapshot_ref".into(), snapshot_ref.uri.clone());
+                receipt.metadata.insert(
+                    "output_snapshot_ref".into(),
+                    snapshot_ref.as_str().to_string(),
+                );
             }
             if let Some(observed_at_ms) = snapshot.observed_at_ms {
                 receipt

@@ -280,7 +280,7 @@ mod tests {
     };
     use crate::events::{AgentEventJoins, InputEvent};
     use crate::ids::{EffectId, ToolCallId};
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use std::collections::BTreeMap;
 
     fn input_event(event_id: &str, observed_at_ms: u64) -> AgentEvent {
@@ -289,7 +289,7 @@ mod tests {
             SessionId::new("session-a"),
             observed_at_ms,
             AgentEventKind::Input(InputEvent::RunRequested {
-                input_ref: ArtifactRef::new("blob://input"),
+                input_ref: BlobRef::new_unchecked_for_tests("blob://input"),
                 run_overrides: None,
             }),
         )

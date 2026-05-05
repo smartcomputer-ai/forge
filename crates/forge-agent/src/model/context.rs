@@ -4,7 +4,7 @@
 //! next turn. Full transcript and compaction history lives in journal and
 //! projection records.
 
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::transcript::TranscriptRange;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ pub struct ProviderCompatibility {
     pub api_kind: String,
     pub model: Option<String>,
     pub model_family: Option<String>,
-    pub artifact_type: String,
+    pub blob_type: String,
     pub opaque: bool,
     pub encrypted: bool,
 }
@@ -26,7 +26,7 @@ pub enum ActiveWindowItemKind {
     #[default]
     MessageRef,
     SummaryRef,
-    ProviderNativeArtifactRef,
+    ProviderNativeBlobRef,
     ProviderRawWindowRef,
     ToolDefinitionRef,
     ResponseFormatRef,
@@ -61,10 +61,10 @@ pub struct ContextMetadataEntry {
 pub struct ActiveWindowItem {
     pub item_id: String,
     pub kind: ActiveWindowItemKind,
-    pub content_ref: ArtifactRef,
+    pub content_ref: BlobRef,
     pub lane: Option<ContextInputLane>,
     pub source_range: Option<TranscriptRange>,
-    pub source_refs: Vec<ArtifactRef>,
+    pub source_refs: Vec<BlobRef>,
     pub provider_compatibility: Option<ProviderCompatibility>,
     pub estimated_tokens: Option<u64>,
     pub metadata: BTreeMap<String, String>,
@@ -73,7 +73,7 @@ pub struct ActiveWindowItem {
 impl ActiveWindowItem {
     pub fn message_ref(
         item_id: impl Into<String>,
-        content_ref: ArtifactRef,
+        content_ref: BlobRef,
         lane: Option<ContextInputLane>,
         source_range: Option<TranscriptRange>,
     ) -> Self {
@@ -121,8 +121,8 @@ pub struct LlmTokenCountRecord {
     pub provider: String,
     pub model: String,
     pub candidate_plan_id: Option<String>,
-    pub provider_metadata_ref: Option<ArtifactRef>,
-    pub warnings_ref: Option<ArtifactRef>,
+    pub provider_metadata_ref: Option<BlobRef>,
+    pub warnings_ref: Option<BlobRef>,
     pub counted_at_ms: u64,
 }
 
@@ -137,7 +137,7 @@ pub enum CompactionStrategy {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CompactionArtifactKind {
+pub enum CompactionBlobKind {
     Summary,
     ProviderNative,
     #[default]
@@ -165,7 +165,7 @@ pub struct ContextPressureRecord {
     pub candidate_plan_id: Option<String>,
     pub observed_usage: Option<LlmUsageRecord>,
     pub error_kind: Option<String>,
-    pub error_ref: Option<ArtifactRef>,
+    pub error_ref: Option<BlobRef>,
     pub recommended_strategy: Option<CompactionStrategy>,
     pub observed_at_ms: u64,
 }
@@ -196,7 +196,7 @@ pub struct ContextOperationState {
     pub candidate_plan_id: Option<String>,
     pub strategy: CompactionStrategy,
     pub source_range: Option<TranscriptRange>,
-    pub source_items_ref: Option<ArtifactRef>,
+    pub source_items_ref: Option<BlobRef>,
     pub effect_intent_id: Option<String>,
     pub params_hash: Option<String>,
     pub failure: Option<String>,
@@ -214,10 +214,10 @@ impl ContextOperationState {
 pub struct CompactionRecord {
     pub operation_id: String,
     pub strategy: CompactionStrategy,
-    pub artifact_kind: CompactionArtifactKind,
-    pub artifact_refs: Vec<ArtifactRef>,
+    pub blob_kind: CompactionBlobKind,
+    pub blob_refs: Vec<BlobRef>,
     pub source_range: TranscriptRange,
-    pub source_refs: Vec<ArtifactRef>,
+    pub source_refs: Vec<BlobRef>,
     pub active_window_items: Vec<ActiveWindowItem>,
     pub provider_compatibility: Option<ProviderCompatibility>,
     pub usage: Option<LlmUsageRecord>,
@@ -229,8 +229,8 @@ pub struct CompactionRecord {
 pub struct CompactionSummary {
     pub operation_id: String,
     pub strategy: CompactionStrategy,
-    pub artifact_kind: CompactionArtifactKind,
-    pub artifact_refs: Vec<ArtifactRef>,
+    pub blob_kind: CompactionBlobKind,
+    pub blob_refs: Vec<BlobRef>,
     pub source_range: TranscriptRange,
     pub compacted_through: Option<u64>,
     pub active_window_item_count: u64,
@@ -244,8 +244,8 @@ impl From<&CompactionRecord> for CompactionSummary {
         Self {
             operation_id: record.operation_id.clone(),
             strategy: record.strategy,
-            artifact_kind: record.artifact_kind,
-            artifact_refs: record.artifact_refs.clone(),
+            blob_kind: record.blob_kind,
+            blob_refs: record.blob_refs.clone(),
             source_range: record.source_range.clone(),
             compacted_through: Some(record.source_range.end_seq),
             active_window_item_count: record.active_window_items.len() as u64,
@@ -285,7 +285,7 @@ impl ContextState {
     pub fn append_message_ref(
         &mut self,
         item_id: impl Into<String>,
-        content_ref: ArtifactRef,
+        content_ref: BlobRef,
         lane: Option<ContextInputLane>,
     ) -> ActiveWindowItem {
         let seq = self.next_transcript_seq;
@@ -323,7 +323,7 @@ mod tests {
         let mut state = ContextState::default();
         let item = state.append_message_ref(
             "item-1",
-            ArtifactRef::new("blob://user-1"),
+            BlobRef::new_unchecked_for_tests("blob://user-1"),
             Some(ContextInputLane::Conversation),
         );
 
@@ -353,22 +353,22 @@ mod tests {
     }
 
     #[test]
-    fn compaction_record_preserves_source_range_and_artifact_refs() {
+    fn compaction_record_preserves_source_range_and_blob_refs() {
         let record = CompactionRecord {
             operation_id: "compact-1".into(),
             strategy: CompactionStrategy::Summary,
-            artifact_kind: CompactionArtifactKind::Summary,
-            artifact_refs: vec![ArtifactRef::new("blob://summary")],
+            blob_kind: CompactionBlobKind::Summary,
+            blob_refs: vec![BlobRef::new_unchecked_for_tests("blob://summary")],
             source_range: TranscriptRange {
                 start_seq: 0,
                 end_seq: 4,
             },
-            source_refs: vec![ArtifactRef::new("blob://source")],
+            source_refs: vec![BlobRef::new_unchecked_for_tests("blob://source")],
             ..Default::default()
         };
 
         assert_eq!(record.source_range.end_seq, 4);
-        assert_eq!(record.artifact_refs.len(), 1);
+        assert_eq!(record.blob_refs.len(), 1);
     }
 
     #[test]
@@ -378,15 +378,15 @@ mod tests {
         let record = CompactionRecord {
             operation_id: "compact-1".into(),
             strategy: CompactionStrategy::Summary,
-            artifact_kind: CompactionArtifactKind::Summary,
-            artifact_refs: vec![ArtifactRef::new("blob://summary")],
+            blob_kind: CompactionBlobKind::Summary,
+            blob_refs: vec![BlobRef::new_unchecked_for_tests("blob://summary")],
             source_range: TranscriptRange {
                 start_seq: 0,
                 end_seq: 4,
             },
             active_window_items: vec![ActiveWindowItem::message_ref(
                 "summary",
-                ArtifactRef::new("blob://summary"),
+                BlobRef::new_unchecked_for_tests("blob://summary"),
                 Some(ContextInputLane::Summary),
                 Some(TranscriptRange {
                     start_seq: 0,

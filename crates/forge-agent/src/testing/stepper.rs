@@ -12,7 +12,7 @@ use crate::journal::InMemoryJournal;
 use crate::loop_projection::{ProjectionBuilder, ProjectionOutput};
 use crate::planner::{DefaultTurnPlanner, TurnPlanner};
 use crate::reducer::apply_event;
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::state::SessionState;
 use std::collections::{BTreeMap, VecDeque};
 
@@ -225,14 +225,12 @@ impl LocalEffectExecutor for FakeEffectExecutor {
                         call_id: request.call_id.clone(),
                         tool_id: request.tool_id.clone(),
                         tool_name: request.tool_name.clone(),
-                        output_ref: Some(
-                            ArtifactRef::new(format!("blob://tool-output/{}", request.call_id))
-                                .with_preview("ok"),
-                        ),
-                        model_visible_output_ref: Some(
-                            ArtifactRef::new(format!("blob://tool-visible/{}", request.call_id))
-                                .with_preview("ok"),
-                        ),
+                        output_ref: Some(BlobRef::from_bytes(
+                            format!("tool-output:{}", request.call_id).as_bytes(),
+                        )),
+                        model_visible_output_ref: Some(BlobRef::from_bytes(
+                            format!("tool-visible:{}", request.call_id).as_bytes(),
+                        )),
                         is_error: false,
                         metadata: BTreeMap::new(),
                     });
@@ -256,10 +254,9 @@ impl LocalEffectExecutor for FakeEffectExecutor {
             )),
             AgentEffectKind::LlmCompact(_request) => Some(intent.receipt(
                 AgentReceiptKind::LlmCompact(LlmCompactReceipt {
-                    artifact_refs: vec![
-                        ArtifactRef::new(format!("blob://compaction/{}", intent.effect_id))
-                            .with_preview("summary"),
-                    ],
+                    blob_refs: vec![BlobRef::from_bytes(
+                        format!("compaction:{}", intent.effect_id).as_bytes(),
+                    )],
                     warnings: Vec::new(),
                     usage: None,
                 }),
@@ -281,7 +278,7 @@ mod tests {
     use crate::effects::LlmGenerationReceipt;
     use crate::events::{AgentEventKind, InputEvent, LifecycleEvent};
     use crate::ids::{SessionId, ToolCallId};
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use crate::state::SessionState;
     use crate::tooling::{ToolCallObserved, ToolProfile, ToolRegistry, ToolSpec};
     use serde_json::json;
@@ -297,7 +294,7 @@ mod tests {
         AgentEvent::new(id, SessionId::new("session-a"), at_ms, kind)
     }
 
-    fn open_and_request(stepper: &mut LocalStepper<FakeEffectExecutor>, input_ref: ArtifactRef) {
+    fn open_and_request(stepper: &mut LocalStepper<FakeEffectExecutor>, input_ref: BlobRef) {
         stepper
             .append_event(event(
                 "open",
@@ -352,23 +349,21 @@ mod tests {
     fn local_stepper_drives_fake_llm_run_to_completion_with_projections() {
         let mut stepper = stepper(FakeEffectExecutor::with_llm_receipts([
             LlmGenerationReceipt {
-                assistant_message_ref: Some(ArtifactRef::new("blob://answer").with_preview("done")),
-                reasoning_summary_ref: Some(
-                    ArtifactRef::new("blob://reasoning").with_preview("reason"),
-                ),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://answer")),
+                reasoning_summary_ref: Some(BlobRef::new_unchecked_for_tests("blob://reasoning")),
                 ..Default::default()
             },
         ]));
         open_and_request(
             &mut stepper,
-            ArtifactRef::new("blob://prompt").with_preview("hello"),
+            BlobRef::new_unchecked_for_tests("blob://prompt"),
         );
         stepper
             .append_event(event(
                 "steer",
                 12,
                 AgentEventKind::Input(InputEvent::RunSteerRequested {
-                    instruction_ref: ArtifactRef::new("blob://steer").with_preview("be brief"),
+                    instruction_ref: BlobRef::new_unchecked_for_tests("blob://steer"),
                 }),
             ))
             .expect("steer");
@@ -411,7 +406,7 @@ mod tests {
                     .resolved_context
                     .active_window_items
                     .iter()
-                    .any(|item| item.content_ref.uri == "blob://steer"))
+                    .any(|item| item.content_ref.as_str() == "blob://steer"))
         );
     }
 
@@ -428,11 +423,14 @@ mod tests {
                 ..Default::default()
             },
             LlmGenerationReceipt {
-                assistant_message_ref: Some(ArtifactRef::new("blob://final").with_preview("final")),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://final")),
                 ..Default::default()
             },
         ]));
-        open_and_request(&mut stepper, ArtifactRef::new("blob://prompt"));
+        open_and_request(
+            &mut stepper,
+            BlobRef::new_unchecked_for_tests("blob://prompt"),
+        );
         install_echo(&mut stepper);
 
         let result = stepper.drive_until_quiescent(32).expect("drive");
@@ -480,13 +478,14 @@ mod tests {
                 ..Default::default()
             },
             LlmGenerationReceipt {
-                assistant_message_ref: Some(
-                    ArtifactRef::new("blob://recovery").with_preview("recovered"),
-                ),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://recovery")),
                 ..Default::default()
             },
         ]));
-        open_and_request(&mut stepper, ArtifactRef::new("blob://prompt"));
+        open_and_request(
+            &mut stepper,
+            BlobRef::new_unchecked_for_tests("blob://prompt"),
+        );
 
         let result = stepper.drive_until_quiescent(32).expect("drive");
 
@@ -505,7 +504,7 @@ mod tests {
                 .first()
                 .and_then(|run| run.outcome.as_ref())
                 .and_then(|outcome| outcome.output_ref.as_ref())
-                .is_some_and(|ref_| ref_.uri == "blob://recovery")
+                .is_some_and(|ref_| ref_.as_str() == "blob://recovery")
         );
     }
 
@@ -513,21 +512,24 @@ mod tests {
     fn local_stepper_promotes_follow_up_after_active_run_completes() {
         let mut stepper = stepper(FakeEffectExecutor::with_llm_receipts([
             LlmGenerationReceipt {
-                assistant_message_ref: Some(ArtifactRef::new("blob://first")),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://first")),
                 ..Default::default()
             },
             LlmGenerationReceipt {
-                assistant_message_ref: Some(ArtifactRef::new("blob://second")),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://second")),
                 ..Default::default()
             },
         ]));
-        open_and_request(&mut stepper, ArtifactRef::new("blob://first-prompt"));
+        open_and_request(
+            &mut stepper,
+            BlobRef::new_unchecked_for_tests("blob://first-prompt"),
+        );
         stepper
             .append_event(event(
                 "follow-up",
                 12,
                 AgentEventKind::Input(InputEvent::FollowUpInputAppended {
-                    input_ref: ArtifactRef::new("blob://second-prompt"),
+                    input_ref: BlobRef::new_unchecked_for_tests("blob://second-prompt"),
                     run_overrides: None,
                 }),
             ))
@@ -543,7 +545,7 @@ mod tests {
                 .outcome
                 .as_ref()
                 .and_then(|outcome| outcome.output_ref.as_ref()),
-            Some(&ArtifactRef::new("blob://second"))
+            Some(&BlobRef::new_unchecked_for_tests("blob://second"))
         );
     }
 
@@ -551,13 +553,16 @@ mod tests {
     fn local_stepper_handles_context_compaction_prerequisite() {
         let mut stepper = stepper(FakeEffectExecutor::with_llm_receipts([
             LlmGenerationReceipt {
-                assistant_message_ref: Some(
-                    ArtifactRef::new("blob://after-compact").with_preview("ok"),
-                ),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests(
+                    "blob://after-compact",
+                )),
                 ..Default::default()
             },
         ]));
-        open_and_request(&mut stepper, ArtifactRef::new("blob://prompt"));
+        open_and_request(
+            &mut stepper,
+            BlobRef::new_unchecked_for_tests("blob://prompt"),
+        );
         stepper
             .append_event(event(
                 "context-op",
@@ -597,7 +602,10 @@ mod tests {
     #[test]
     fn interrupt_abandons_pending_effects_and_quiesces() {
         let mut stepper = stepper(FakeEffectExecutor::default());
-        open_and_request(&mut stepper, ArtifactRef::new("blob://prompt"));
+        open_and_request(
+            &mut stepper,
+            BlobRef::new_unchecked_for_tests("blob://prompt"),
+        );
         let result = stepper.drive_until_quiescent(8).expect("drive pending");
         assert_eq!(result.quiescence, StepperQuiescence::WaitingForEffects);
         assert!(!stepper.state.pending_effects.is_empty());
@@ -607,7 +615,7 @@ mod tests {
                 "interrupt",
                 20,
                 AgentEventKind::Input(InputEvent::RunInterruptRequested {
-                    reason_ref: Some(ArtifactRef::new("blob://reason")),
+                    reason_ref: Some(BlobRef::new_unchecked_for_tests("blob://reason")),
                 }),
             ))
             .expect("interrupt");

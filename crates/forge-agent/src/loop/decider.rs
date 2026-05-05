@@ -269,7 +269,8 @@ fn promote_follow_up_event(
     AgentEvent::new(
         format!(
             "promote-follow-up:{}:{}",
-            input.queued_at_ms, input.input_ref.uri
+            input.queued_at_ms,
+            input.input_ref.as_str()
         ),
         state.session_id.clone(),
         observed_at_ms,
@@ -470,7 +471,7 @@ mod tests {
     use crate::ids::{JournalSeq, SessionId, ToolCallId};
     use crate::journal::InMemoryJournal;
     use crate::reducer::apply_event;
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use crate::state::SessionState;
     use crate::tooling::{ToolCallObserved, ToolProfile, ToolRegistry, ToolSpec};
     use serde_json::json;
@@ -515,7 +516,7 @@ mod tests {
                 state.session_id.clone(),
                 11,
                 AgentEventKind::Input(InputEvent::RunRequested {
-                    input_ref: ArtifactRef::new("blob://prompt"),
+                    input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                     run_overrides: None,
                 }),
             ),
@@ -619,7 +620,7 @@ mod tests {
             receipt_event(
                 &llm_intent,
                 AgentReceiptKind::LlmComplete(LlmGenerationReceipt {
-                    assistant_message_ref: Some(ArtifactRef::new("blob://answer")),
+                    assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://answer")),
                     ..Default::default()
                 }),
                 30,
@@ -637,7 +638,7 @@ mod tests {
                 .outcome
                 .as_ref()
                 .and_then(|outcome| outcome.output_ref.as_ref()),
-            Some(&ArtifactRef::new("blob://answer"))
+            Some(&BlobRef::new_unchecked_for_tests("blob://answer"))
         );
         assert_eq!(journal.latest_seq(), Some(JournalSeq(8)));
     }
@@ -672,7 +673,9 @@ mod tests {
             receipt_event(
                 &llm_intent,
                 AgentReceiptKind::LlmComplete(LlmGenerationReceipt {
-                    raw_provider_response_ref: Some(ArtifactRef::new("blob://raw-tool-call")),
+                    raw_provider_response_ref: Some(BlobRef::new_unchecked_for_tests(
+                        "blob://raw-tool-call",
+                    )),
                     tool_calls: vec![ToolCallObserved {
                         call_id: ToolCallId::new("call-1"),
                         tool_name: "echo".into(),
@@ -700,8 +703,10 @@ mod tests {
                     call_id: ToolCallId::new("call-1"),
                     tool_id: Some("echo".into()),
                     tool_name: "echo".into(),
-                    output_ref: Some(ArtifactRef::new("blob://tool-output")),
-                    model_visible_output_ref: Some(ArtifactRef::new("blob://tool-visible")),
+                    output_ref: Some(BlobRef::new_unchecked_for_tests("blob://tool-output")),
+                    model_visible_output_ref: Some(BlobRef::new_unchecked_for_tests(
+                        "blob://tool-visible",
+                    )),
                     is_error: false,
                     metadata: BTreeMap::new(),
                 }),
@@ -716,13 +721,9 @@ mod tests {
         let AgentEffectKind::LlmComplete(request) = &second_llm.kind else {
             panic!("expected llm completion intent");
         };
-        assert!(
-            request
-                .resolved_context
-                .active_window_items
-                .iter()
-                .any(|item| item.content_ref == ArtifactRef::new("blob://tool-visible"))
-        );
+        assert!(request.resolved_context.active_window_items.iter().any(
+            |item| item.content_ref == BlobRef::new_unchecked_for_tests("blob://tool-visible")
+        ));
         append_apply_all(&mut state, &mut journal, continuation.events);
 
         append_apply(
@@ -731,7 +732,9 @@ mod tests {
             receipt_event(
                 &second_llm,
                 AgentReceiptKind::LlmComplete(LlmGenerationReceipt {
-                    assistant_message_ref: Some(ArtifactRef::new("blob://final-answer")),
+                    assistant_message_ref: Some(BlobRef::new_unchecked_for_tests(
+                        "blob://final-answer",
+                    )),
                     ..Default::default()
                 }),
                 50,
@@ -746,7 +749,7 @@ mod tests {
                 .outcome
                 .as_ref()
                 .and_then(|outcome| outcome.output_ref.as_ref()),
-            Some(&ArtifactRef::new("blob://final-answer"))
+            Some(&BlobRef::new_unchecked_for_tests("blob://final-answer"))
         );
     }
 }

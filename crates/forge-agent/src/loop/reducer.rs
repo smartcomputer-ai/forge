@@ -2,9 +2,7 @@
 
 use crate::batch::{ActiveToolBatch, PendingToolEffect, ToolCallModelResult, ToolCallStatus};
 use crate::config::{RunConfig, SessionConfig};
-use crate::context::{
-    ActiveWindowItem, CompactionArtifactKind, CompactionRecord, ContextInputLane,
-};
+use crate::context::{ActiveWindowItem, CompactionBlobKind, CompactionRecord, ContextInputLane};
 use crate::effects::{AgentEffectIntent, AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt};
 use crate::error::ModelError;
 use crate::events::{
@@ -12,7 +10,7 @@ use crate::events::{
 };
 use crate::ids::{EffectId, JournalSeq, RunId, ToolCallId, TurnId};
 use crate::lifecycle::{RunLifecycle, SessionStatus, TurnLifecycle};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::state::{
     PendingEffectRecord, PendingEffectStatus, QueuedRunInput, QueuedSteeringInput, ReduceResult,
     ReducerOutcome, RunCause, RunOutcome, RunState, SessionState,
@@ -84,7 +82,7 @@ fn apply_effect_event(state: &mut SessionState, effect: &EffectEvent) -> Result<
                     AgentReceiptKind::LlmCompact(receipt) => {
                         if let Some(record) = compaction_record_from_pending(
                             pending.as_ref(),
-                            receipt.artifact_refs.clone(),
+                            receipt.blob_refs.clone(),
                             receipt.warnings.clone(),
                             receipt.usage,
                             completed_at_ms,
@@ -115,7 +113,7 @@ fn create_active_tool_batch(
     state: &mut SessionState,
     run_id: &RunId,
     source_effect_id: EffectId,
-    source_output_ref: Option<ArtifactRef>,
+    source_output_ref: Option<BlobRef>,
     observed_calls: Vec<ToolCallObserved>,
 ) -> Result<(), ModelError> {
     let profile_id = state
@@ -248,8 +246,9 @@ fn mark_unavailable_tool_results(batch: &mut ActiveToolBatch) {
     }
 }
 
-fn synthetic_tool_result_ref(call_id: &ToolCallId, preview: &str) -> ArtifactRef {
-    ArtifactRef::new(format!("forge://tool-result/{}", call_id)).with_preview(preview)
+fn synthetic_tool_result_ref(call_id: &ToolCallId, preview: &str) -> BlobRef {
+    let payload = format!("{call_id}:{preview}");
+    BlobRef::from_bytes(payload.as_bytes())
 }
 
 fn apply_tool_receipt(state: &mut SessionState, receipt: &ToolInvocationReceipt) {
@@ -309,7 +308,7 @@ fn complete_batch_if_settled(state: &mut SessionState, batch: ActiveToolBatch) {
 
 fn compaction_record_from_pending(
     pending: Option<&PendingEffectRecord>,
-    artifact_refs: Vec<ArtifactRef>,
+    blob_refs: Vec<BlobRef>,
     warnings: Vec<String>,
     usage: Option<crate::context::LlmUsageRecord>,
     created_at_ms: u64,
@@ -326,7 +325,7 @@ fn compaction_record_from_pending(
         return None;
     };
 
-    let first_artifact = artifact_refs.first()?.clone();
+    let first_blob = blob_refs.first()?.clone();
     let source_range = crate::transcript::TranscriptRange {
         start_seq: request.source_range_start.unwrap_or_default(),
         end_seq: request.source_range_end.unwrap_or_else(|| {
@@ -344,13 +343,13 @@ fn compaction_record_from_pending(
             .to_string()
             .replace(':', "-"),
         strategy: request.strategy,
-        artifact_kind: CompactionArtifactKind::Summary,
-        artifact_refs: artifact_refs.clone(),
+        blob_kind: CompactionBlobKind::Summary,
+        blob_refs: blob_refs.clone(),
         source_range: source_range.clone(),
         source_refs: request.source_items.clone(),
         active_window_items: vec![ActiveWindowItem::message_ref(
             "compaction-summary",
-            first_artifact,
+            first_blob,
             Some(ContextInputLane::Summary),
             Some(source_range),
         )],
@@ -589,7 +588,7 @@ fn apply_input_event(
             state.apply_history_rewrite(
                 request.rewrite_id.clone(),
                 request.replacement_boundary.clone(),
-                request.replacement_artifact_refs.first().cloned(),
+                request.replacement_blob_refs.first().cloned(),
             );
         }
         InputEvent::SessionHistoryRollbackRequested { request } => {
@@ -992,7 +991,7 @@ mod tests {
     };
     use crate::events::{AgentEventJoins, HistoryRewriteRequest};
     use crate::ids::{IdAllocator, SessionId, SubmissionId, ToolCallId};
-    use crate::refs::ArtifactRef;
+    use crate::refs::BlobRef;
     use crate::tooling::{ToolCallObserved, ToolProfile, ToolRegistry, ToolSpec};
     use serde_json::json;
 
@@ -1021,7 +1020,7 @@ mod tests {
                 event(
                     2,
                     AgentEventKind::Input(InputEvent::RunRequested {
-                        input_ref: ArtifactRef::new("blob://prompt"),
+                        input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                         run_overrides: None,
                     }),
                 ),
@@ -1121,7 +1120,7 @@ mod tests {
             2,
             "run",
             AgentEventKind::Input(InputEvent::RunRequested {
-                input_ref: ArtifactRef::new("blob://prompt"),
+                input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                 run_overrides: Some(RunConfigOverride {
                     model: Some("override-model".into()),
                     ..Default::default()
@@ -1163,21 +1162,21 @@ mod tests {
                 event(
                     2,
                     AgentEventKind::Input(InputEvent::RunRequested {
-                        input_ref: ArtifactRef::new("blob://prompt"),
+                        input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                         run_overrides: None,
                     }),
                 ),
                 event(
                     3,
                     AgentEventKind::Input(InputEvent::FollowUpInputAppended {
-                        input_ref: ArtifactRef::new("blob://follow-up"),
+                        input_ref: BlobRef::new_unchecked_for_tests("blob://follow-up"),
                         run_overrides: None,
                     }),
                 ),
                 event(
                     4,
                     AgentEventKind::Input(InputEvent::RunSteerRequested {
-                        instruction_ref: ArtifactRef::new("blob://steer"),
+                        instruction_ref: BlobRef::new_unchecked_for_tests("blob://steer"),
                     }),
                 ),
             ]
@@ -1263,7 +1262,7 @@ mod tests {
             AgentEventKind::Input(InputEvent::SessionHistoryRewriteRequested {
                 request: HistoryRewriteRequest {
                     rewrite_id: "rewrite-1".into(),
-                    replacement_artifact_refs: vec![ArtifactRef::new("blob://rewrite")],
+                    replacement_blob_refs: vec![BlobRef::new_unchecked_for_tests("blob://rewrite")],
                     ..Default::default()
                 },
             }),
@@ -1274,7 +1273,7 @@ mod tests {
             AgentEventKind::Input(InputEvent::SessionHistoryRollbackRequested {
                 request: crate::events::HistoryRollbackRequest {
                     rollback_id: "rollback-1".into(),
-                    reason_ref: Some(ArtifactRef::new("blob://rollback")),
+                    reason_ref: Some(BlobRef::new_unchecked_for_tests("blob://rollback")),
                     ..Default::default()
                 },
             }),
@@ -1291,7 +1290,7 @@ mod tests {
         );
         assert_eq!(
             state.history.latest_history_ref,
-            Some(ArtifactRef::new("blob://rollback"))
+            Some(BlobRef::new_unchecked_for_tests("blob://rollback"))
         );
         assert_eq!(state.history.rewrite_count, 1);
         assert_eq!(state.history.rollback_count, 1);
@@ -1310,7 +1309,7 @@ mod tests {
                 event(
                     2,
                     AgentEventKind::Input(InputEvent::RunRequested {
-                        input_ref: ArtifactRef::new("blob://prompt"),
+                        input_ref: BlobRef::new_unchecked_for_tests("blob://prompt"),
                         run_overrides: None,
                     }),
                 ),
@@ -1508,8 +1507,10 @@ mod tests {
                 call_id: ToolCallId::new("call-1"),
                 tool_id: Some("tool.echo".into()),
                 tool_name: "echo".into(),
-                output_ref: Some(ArtifactRef::new("blob://tool-output")),
-                model_visible_output_ref: Some(ArtifactRef::new("blob://tool-visible")),
+                output_ref: Some(BlobRef::new_unchecked_for_tests("blob://tool-output")),
+                model_visible_output_ref: Some(BlobRef::new_unchecked_for_tests(
+                    "blob://tool-visible",
+                )),
                 is_error: false,
                 metadata: Default::default(),
             }),
@@ -1607,7 +1608,7 @@ mod tests {
                 code: "provider_auth".into(),
                 detail: "bad credentials".into(),
                 retryable: false,
-                failure_ref: Some(ArtifactRef::new("blob://failure")),
+                failure_ref: Some(BlobRef::new_unchecked_for_tests("blob://failure")),
             }),
             14,
         );
@@ -1650,7 +1651,7 @@ mod tests {
         .expect("record llm intent");
         let receipt = intent.receipt(
             AgentReceiptKind::LlmComplete(LlmGenerationReceipt {
-                assistant_message_ref: Some(ArtifactRef::new("blob://assistant")),
+                assistant_message_ref: Some(BlobRef::new_unchecked_for_tests("blob://assistant")),
                 tool_calls: vec![
                     ToolCallObserved {
                         call_id: ToolCallId::new("call-echo"),
@@ -1784,8 +1785,10 @@ mod tests {
                 call_id: ToolCallId::new("call-echo"),
                 tool_id: Some("echo".into()),
                 tool_name: "echo".into(),
-                output_ref: Some(ArtifactRef::new("blob://tool-output")),
-                model_visible_output_ref: Some(ArtifactRef::new("blob://tool-visible")),
+                output_ref: Some(BlobRef::new_unchecked_for_tests("blob://tool-output")),
+                model_visible_output_ref: Some(BlobRef::new_unchecked_for_tests(
+                    "blob://tool-visible",
+                )),
                 is_error: false,
                 metadata: Default::default(),
             }),
@@ -1816,7 +1819,7 @@ mod tests {
                 .get(&ToolCallId::new("call-echo"))
                 .expect("tool result")
                 .output_ref,
-            ArtifactRef::new("blob://tool-output")
+            BlobRef::new_unchecked_for_tests("blob://tool-output")
         );
     }
 }

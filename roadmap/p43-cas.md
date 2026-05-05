@@ -1,6 +1,15 @@
 # P43: CAS and Blob References
 
-**Status** - Planned
+**Status** - Priority 0-1 complete; Priority 2 deferred
+
+Implemented so far:
+
+- G1-G5 are implemented in `forge-agent`.
+- `BlobRef` is the public model reference and serializes as a plain
+  `sha256:<64hex>` string.
+- `storage::BlobStore` is the byte substrate with in-memory test support.
+- Artifact refs/storage aliases were removed directly without compatibility
+  shims.
 
 ## Goal
 
@@ -218,7 +227,7 @@ Steps:
 
 ## Priority 0: Model and Interface
 
-### [ ] G1. Define BlobRef
+### [x] G1. Define BlobRef
 
 - Add transparent-string `BlobRef`.
 - Validate canonical `sha256:<64hex>` format.
@@ -231,7 +240,13 @@ Acceptance:
 - Invalid hash strings fail loudly.
 - Unit tests cover valid/invalid refs and byte hashing.
 
-### [ ] G2. Define BlobStore
+Implementation:
+
+- Added transparent `BlobRef`, `BlobRef::parse`, `BlobRef::from_bytes`,
+  `BlobRef::as_str`, and `BlobRef::new_unchecked_for_tests`.
+- Added SHA-256 hash computation and canonical format validation.
+
+### [x] G2. Define BlobStore
 
 - Add `storage::BlobStore` and in-memory implementation.
 - Support put/read/has/stat.
@@ -243,7 +258,13 @@ Acceptance:
 - Reading verifies identity by hash in implementations that materialize bytes.
 - `BlobInfo` includes byte length and explicit child refs.
 
-### [ ] G3. Wire tools to BlobStore
+Implementation:
+
+- Added `storage::BlobStore`, `BlobWrite`, `BlobInfo`, `BlobStoreError`, and
+  `InMemoryBlobStore`.
+- In-memory storage dedupes by blob hash and records explicit child refs.
+
+### [x] G3. Wire tools to BlobStore
 
 - Update `ToolInvocationContext` to expose blob storage.
 - Update dispatcher argument-ref loading.
@@ -254,9 +275,15 @@ Acceptance:
 - Existing tool dispatcher tests pass after replacing artifact terminology.
 - Handler authors no longer import artifact storage types.
 
+Implementation:
+
+- Updated `ToolInvocationContext` to expose `blobs: Arc<dyn BlobStore>`.
+- Updated dispatcher argument-ref loading to use `BlobStore`.
+- Updated testing handlers to write model-visible output through `BlobStore`.
+
 ## Priority 1: Model Migration
 
-### [ ] G4. Replace ArtifactRef in model records
+### [x] G4. Replace ArtifactRef in model records
 
 - Migrate state, context, transcript, effect, batch, and projection records to
   `BlobRef`.
@@ -268,7 +295,14 @@ Acceptance:
 - Public model no longer exposes `ArtifactRef`.
 - Existing tests pass with updated blob refs.
 
-### [ ] G5. Remove artifact storage aliases
+Implementation:
+
+- Replaced model, loop, tool, storage, and testing call sites with `BlobRef`.
+- Renamed generic compaction/artifact fields and variants to blob terminology.
+- Removed preview/media/metadata from refs; previews stay on projection and
+  transcript records.
+
+### [x] G5. Remove artifact storage aliases
 
 - Delete `storage/artifacts.rs`.
 - Remove artifact re-exports from `storage/mod.rs`.
@@ -279,6 +313,11 @@ Acceptance:
 - `rg "ArtifactRef|ArtifactStore|ArtifactWrite|artifact store"` returns no
   public SDK usage in `crates/forge-agent/src`.
 - `cargo test -p forge-agent` passes.
+
+Implementation:
+
+- Replaced `storage/artifacts.rs` with `storage/blobs.rs`.
+- Removed artifact storage re-exports from `storage/mod.rs`.
 
 ## Priority 2: Future Backend Notes
 

@@ -6,7 +6,7 @@
 use crate::config::{ContextBudgetConfig, ReasoningEffort, RunConfig, TurnConfig};
 use crate::context::ActiveWindowItem;
 use crate::ids::{AgentVersionId, CorrelationId, RunId, SessionId, TurnId};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use crate::tooling::ToolSpec;
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +36,7 @@ pub enum TurnInputKind {
     MessageRef,
     ResponseFormatRef,
     ProviderOptionsRef,
-    ArtifactRef,
+    BlobRef,
     ToolDefinitionRef,
     Custom,
 }
@@ -76,7 +76,7 @@ pub struct TurnInput {
     pub lane: TurnInputLane,
     pub kind: TurnInputKind,
     pub priority: TurnPriority,
-    pub content_ref: ArtifactRef,
+    pub content_ref: BlobRef,
     pub estimated_tokens: Option<u64>,
     pub source_kind: Option<String>,
     pub source_id: Option<String>,
@@ -119,7 +119,7 @@ pub struct TurnTokenEstimate {
 pub struct PlannerStateRef {
     pub planner_id: String,
     pub key: String,
-    pub state_ref: ArtifactRef,
+    pub state_ref: BlobRef,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,8 +179,8 @@ pub struct TurnPlan {
     pub active_window_items: Vec<ActiveWindowItem>,
     pub selected_tool_ids: Vec<String>,
     pub tool_choice: Option<TurnToolChoice>,
-    pub response_format_ref: Option<ArtifactRef>,
-    pub provider_options_ref: Option<ArtifactRef>,
+    pub response_format_ref: Option<BlobRef>,
+    pub provider_options_ref: Option<BlobRef>,
     pub prerequisites: Vec<TurnPrerequisite>,
     pub state_updates: Vec<TurnStateUpdate>,
     pub report: TurnReport,
@@ -205,23 +205,23 @@ pub struct ResolvedTurnContext {
     pub max_output_tokens: Option<u64>,
     pub current_date: Option<String>,
     pub timezone: Option<String>,
-    pub base_context_refs: Vec<ArtifactRef>,
-    pub developer_context_refs: Vec<ArtifactRef>,
-    pub user_context_refs: Vec<ArtifactRef>,
-    pub skill_context_refs: Vec<ArtifactRef>,
-    pub plugin_context_refs: Vec<ArtifactRef>,
-    pub app_context_refs: Vec<ArtifactRef>,
-    pub domain_context_refs: Vec<ArtifactRef>,
-    pub runtime_context_refs: Vec<ArtifactRef>,
+    pub base_context_refs: Vec<BlobRef>,
+    pub developer_context_refs: Vec<BlobRef>,
+    pub user_context_refs: Vec<BlobRef>,
+    pub skill_context_refs: Vec<BlobRef>,
+    pub plugin_context_refs: Vec<BlobRef>,
+    pub app_context_refs: Vec<BlobRef>,
+    pub domain_context_refs: Vec<BlobRef>,
+    pub runtime_context_refs: Vec<BlobRef>,
     pub selected_tool_profile: Option<String>,
     pub model_visible_tools: Vec<ToolSpec>,
     pub active_window_items: Vec<ActiveWindowItem>,
     pub tool_choice: Option<TurnToolChoice>,
-    pub response_format_ref: Option<ArtifactRef>,
-    pub provider_options_ref: Option<ArtifactRef>,
+    pub response_format_ref: Option<BlobRef>,
+    pub provider_options_ref: Option<BlobRef>,
     pub budget: TurnBudget,
     pub correlation_id: Option<CorrelationId>,
-    pub extension_context_refs: Vec<ArtifactRef>,
+    pub extension_context_refs: Vec<BlobRef>,
 }
 
 impl ResolvedTurnContext {

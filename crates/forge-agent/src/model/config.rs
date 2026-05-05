@@ -4,7 +4,7 @@
 //! permission, sandbox, and policy configuration is deferred.
 
 use crate::ids::AgentVersionId;
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -55,7 +55,7 @@ pub struct SessionConfig {
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u64>,
-    pub default_prompt_refs: Vec<ArtifactRef>,
+    pub default_prompt_refs: Vec<BlobRef>,
     pub default_tool_profile: Option<String>,
     pub default_tool_enable: Vec<String>,
     pub default_tool_disable: Vec<String>,
@@ -65,7 +65,7 @@ pub struct SessionConfig {
     pub tool_limits: ToolLimitConfig,
     pub thread_key: Option<String>,
     pub cxdb_persistence: CxdbPersistenceMode,
-    pub extension_config_refs: Vec<ArtifactRef>,
+    pub extension_config_refs: Vec<BlobRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +74,7 @@ pub struct RunConfig {
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u64>,
-    pub prompt_refs: Vec<ArtifactRef>,
+    pub prompt_refs: Vec<BlobRef>,
     pub tool_profile: Option<String>,
     pub tool_enable: Vec<String>,
     pub tool_disable: Vec<String>,
@@ -90,8 +90,8 @@ pub struct TurnConfig {
     pub reasoning_effort: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u64>,
     pub context_budget: Option<ContextBudgetConfig>,
-    pub response_format_ref: Option<ArtifactRef>,
-    pub provider_options_ref: Option<ArtifactRef>,
+    pub response_format_ref: Option<BlobRef>,
+    pub provider_options_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,7 +100,7 @@ pub struct RunConfigOverride {
     pub model: Option<String>,
     pub reasoning_effort: Option<ReasoningEffort>,
     pub max_output_tokens: Option<u64>,
-    pub prompt_refs: Option<Vec<ArtifactRef>>,
+    pub prompt_refs: Option<Vec<BlobRef>>,
     pub tool_profile: Option<String>,
     pub context_budget: Option<ContextBudgetConfig>,
     pub loop_limits: Option<LoopLimitConfig>,

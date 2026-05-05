@@ -1,7 +1,8 @@
 //! Deterministic tool handlers and drivers for tests.
 
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
-use crate::refs::ArtifactRef;
+use crate::refs::BlobRef;
+use crate::storage::BlobWrite;
 use crate::tools::{
     DispatchCancellation, DispatchCompletion, DispatchGroup, DispatchOutcome, ToolDispatchDriver,
     ToolDispatchDriverError, ToolExecutionError, ToolHandler, ToolInvocationContext,
@@ -29,12 +30,19 @@ impl ToolHandler for EchoToolHandler {
     async fn invoke(
         &self,
         request: ToolInvocationRequest,
-        _context: ToolInvocationContext,
+        context: ToolInvocationContext,
     ) -> Result<ToolInvocationReceipt, ToolExecutionError> {
         let preview = request.arguments_json.clone().unwrap_or_default();
-        let output_ref =
-            ArtifactRef::new(format!("{}/{}", self.output_uri_prefix, request.call_id))
-                .with_preview(preview);
+        let output_ref = context
+            .blobs
+            .put_bytes(BlobWrite {
+                bytes: preview.into_bytes(),
+                child_refs: Vec::new(),
+            })
+            .await
+            .map_err(|error| {
+                ToolExecutionError::system_failure("blob_write_failed", error.to_string())
+            })?;
         Ok(ToolInvocationReceipt {
             call_id: request.call_id,
             tool_id: request.tool_id,
@@ -56,7 +64,7 @@ pub struct StaticToolHandler {
 pub struct BackgroundStartHandler {
     pub handle_id: String,
     pub poll_tool_id: String,
-    pub snapshot_ref: ArtifactRef,
+    pub snapshot_ref: BlobRef,
 }
 
 #[async_trait]
@@ -94,7 +102,7 @@ impl ToolHandler for BackgroundStartHandler {
 
 #[derive(Clone, Debug)]
 pub struct BackgroundPollHandler {
-    pub completed_ref: ArtifactRef,
+    pub completed_ref: BlobRef,
 }
 
 #[async_trait]
@@ -120,7 +128,7 @@ impl ToolHandler for BackgroundPollHandler {
 
 #[derive(Clone, Debug)]
 pub struct BackgroundInterruptHandler {
-    pub interrupted_ref: ArtifactRef,
+    pub interrupted_ref: BlobRef,
 }
 
 #[async_trait]
@@ -194,9 +202,9 @@ fn completion_for_call(order: usize, request: ToolInvocationRequest) -> Dispatch
             call_id: request.call_id,
             tool_id: request.tool_id,
             tool_name: request.tool_name,
-            output_ref: Some(ArtifactRef::new(format!(
-                "forge://test-tool-output/{order}"
-            ))),
+            output_ref: Some(BlobRef::from_bytes(
+                format!("forge://test-tool-output/{order}").as_bytes(),
+            )),
             model_visible_output_ref: None,
             is_error: false,
             metadata: BTreeMap::new(),

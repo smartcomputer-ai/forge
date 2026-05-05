@@ -1,8 +1,8 @@
 //! Tool dispatcher and handler registry.
 
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
-use crate::refs::ArtifactRef;
-use crate::storage::{ArtifactStore, ArtifactStoreError, InMemoryArtifactStore};
+use crate::refs::BlobRef;
+use crate::storage::{BlobStore, BlobStoreError, InMemoryBlobStore};
 use crate::tooling::{ToolExecutorKind, ToolRegistry, ToolRuntimeContext, ToolSpec};
 use crate::tools::handler::{ToolExecutionError, ToolHandler, ToolInvocationContext};
 use serde_json::Value;
@@ -21,8 +21,8 @@ pub enum ToolDispatcherError {
     #[error("handler '{handler_id}' failed outside model-visible tool semantics: {detail}")]
     HandlerSystemFailure { handler_id: String, detail: String },
 
-    #[error("artifact store error: {0}")]
-    ArtifactStore(#[from] ArtifactStoreError),
+    #[error("blob store error: {0}")]
+    BlobStore(#[from] BlobStoreError),
 }
 
 #[derive(Default)]
@@ -30,7 +30,7 @@ pub struct ToolDispatcherBuilder {
     tool_registry: ToolRegistry,
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     tool_handler_bindings: BTreeMap<String, String>,
-    artifacts: Option<Arc<dyn ArtifactStore>>,
+    blobs: Option<Arc<dyn BlobStore>>,
 }
 
 impl ToolDispatcherBuilder {
@@ -39,12 +39,12 @@ impl ToolDispatcherBuilder {
             tool_registry,
             handlers: BTreeMap::new(),
             tool_handler_bindings: BTreeMap::new(),
-            artifacts: None,
+            blobs: None,
         }
     }
 
-    pub fn with_artifacts(mut self, artifacts: Arc<dyn ArtifactStore>) -> Self {
-        self.artifacts = Some(artifacts);
+    pub fn with_blobs(mut self, blobs: Arc<dyn BlobStore>) -> Self {
+        self.blobs = Some(blobs);
         self
     }
 
@@ -80,9 +80,9 @@ impl ToolDispatcherBuilder {
             tool_registry: self.tool_registry,
             handlers: self.handlers,
             tool_handler_bindings: self.tool_handler_bindings,
-            artifacts: self
-                .artifacts
-                .unwrap_or_else(|| Arc::new(InMemoryArtifactStore::new())),
+            blobs: self
+                .blobs
+                .unwrap_or_else(|| Arc::new(InMemoryBlobStore::new())),
         }
     }
 }
@@ -92,7 +92,7 @@ pub struct ToolDispatcher {
     tool_registry: ToolRegistry,
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     tool_handler_bindings: BTreeMap<String, String>,
-    artifacts: Arc<dyn ArtifactStore>,
+    blobs: Arc<dyn BlobStore>,
 }
 
 impl ToolDispatcher {
@@ -143,7 +143,7 @@ impl ToolDispatcher {
             ));
         };
 
-        let context = ToolInvocationContext::new(runtime, self.artifacts.clone());
+        let context = ToolInvocationContext::new(runtime, self.blobs.clone());
         match handler.invoke(request.clone(), context).await {
             Ok(receipt) => Ok(receipt),
             Err(error) if error.model_visible => Ok(handler_error_receipt(&request, error)),
@@ -217,7 +217,7 @@ impl ToolDispatcher {
         if request.arguments_json.is_none()
             && let Some(arguments_ref) = request.arguments_ref.as_ref()
         {
-            request.arguments_json = Some(self.artifacts.read_text(arguments_ref).await?);
+            request.arguments_json = Some(self.blobs.read_text(arguments_ref).await?);
         }
 
         let Some(arguments_json) = request.arguments_json.as_ref() else {
@@ -355,8 +355,8 @@ fn handler_error_receipt(
     receipt
 }
 
-fn synthetic_error_ref(call_id: &str, detail: &str) -> ArtifactRef {
-    ArtifactRef::new(format!("forge://tool-error/{call_id}")).with_preview(detail)
+fn synthetic_error_ref(call_id: &str, detail: &str) -> BlobRef {
+    BlobRef::from_bytes(format!("{call_id}:{detail}").as_bytes())
 }
 
 #[cfg(test)]
@@ -433,11 +433,8 @@ mod tests {
         assert!(!receipt.is_error);
         assert_eq!(receipt.call_id, ToolCallId::new("call-1"));
         assert_eq!(
-            receipt
-                .model_visible_output_ref
-                .as_ref()
-                .and_then(|artifact| artifact.preview.as_deref()),
-            Some(r#"{"text":"hi"}"#)
+            receipt.model_visible_output_ref,
+            Some(BlobRef::from_bytes(r#"{"text":"hi"}"#.as_bytes()))
         );
     }
 
@@ -458,11 +455,10 @@ mod tests {
             Some("unknown_tool")
         );
         assert_eq!(
-            receipt
-                .model_visible_output_ref
-                .as_ref()
-                .and_then(|artifact| artifact.preview.as_deref()),
-            Some("unknown or unavailable tool")
+            receipt.model_visible_output_ref,
+            Some(BlobRef::from_bytes(
+                "call-1:unknown or unavailable tool".as_bytes()
+            ))
         );
     }
 
@@ -559,13 +555,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn dispatch_loads_arguments_from_ref_before_validation() {
-        let artifacts = Arc::new(InMemoryArtifactStore::new());
-        let arguments_ref = artifacts.insert_text("mem://args/1", r#"{"text":"from-ref"}"#);
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let arguments_ref = blobs.insert_text(r#"{"text":"from-ref"}"#).await;
         let mut request = request();
         request.arguments_json = None;
         request.arguments_ref = Some(arguments_ref);
         let dispatcher = ToolDispatcher::builder(registry(echo_tool()))
-            .with_artifacts(artifacts)
+            .with_blobs(blobs)
             .register_handler("echo-handler", Arc::new(EchoToolHandler::default()))
             .expect("register handler")
             .build();
@@ -577,11 +573,8 @@ mod tests {
 
         assert!(!receipt.is_error);
         assert_eq!(
-            receipt
-                .model_visible_output_ref
-                .as_ref()
-                .and_then(|artifact| artifact.preview.as_deref()),
-            Some(r#"{"text":"from-ref"}"#)
+            receipt.model_visible_output_ref,
+            Some(BlobRef::from_bytes(r#"{"text":"from-ref"}"#.as_bytes()))
         );
     }
 
@@ -642,7 +635,7 @@ mod tests {
                 metadata: BTreeMap::new(),
             },
             crate::tools::ToolRuntimeSnapshot {
-                output_snapshot_ref: Some(ArtifactRef::new("mem://snapshot/1")),
+                output_snapshot_ref: Some(BlobRef::new_unchecked_for_tests("mem://snapshot/1")),
                 observed_at_ms: Some(42),
             },
         );
@@ -708,22 +701,21 @@ mod tests {
                 Arc::new(BackgroundStartHandler {
                     handle_id: "job-1".into(),
                     poll_tool_id: "poll".into(),
-                    snapshot_ref: ArtifactRef::new("mem://snapshot/1").with_preview("running"),
+                    snapshot_ref: BlobRef::from_bytes(b"running"),
                 }),
             )
             .expect("register start")
             .register_handler(
                 "poll-handler",
                 Arc::new(BackgroundPollHandler {
-                    completed_ref: ArtifactRef::new("mem://complete/1").with_preview("done"),
+                    completed_ref: BlobRef::from_bytes(b"done"),
                 }),
             )
             .expect("register poll")
             .register_handler(
                 "interrupt-handler",
                 Arc::new(BackgroundInterruptHandler {
-                    interrupted_ref: ArtifactRef::new("mem://interrupted/1")
-                        .with_preview("interrupted"),
+                    interrupted_ref: BlobRef::from_bytes(b"interrupted"),
                 }),
             )
             .expect("register interrupt")

@@ -1,37 +1,74 @@
-//! Artifact reference records.
+//! Content-addressed blob references.
 //!
 //! Large prompts, responses, tool arguments, outputs, patches, and compaction
-//! artifacts are represented by refs plus short optional previews.
+//! payloads are represented by `BlobRef` values. Semantic metadata such as
+//! preview text and media type belongs to the owning transcript, context, tool,
+//! or projection record.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use sha2::{Digest, Sha256};
+use std::fmt;
+use thiserror::Error;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactRef {
-    pub uri: String,
-    pub media_type: Option<String>,
-    pub digest: Option<String>,
-    pub byte_len: Option<u64>,
-    pub preview: Option<String>,
-    pub metadata: BTreeMap<String, String>,
+const SHA256_PREFIX: &str = "sha256:";
+const SHA256_HEX_LEN: usize = 64;
+const SHA256_REF_LEN: usize = SHA256_PREFIX.len() + SHA256_HEX_LEN;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct BlobRef(String);
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+pub enum BlobRefError {
+    #[error("blob ref must use sha256:<64 lowercase hex> format: {value}")]
+    InvalidFormat { value: String },
 }
 
-impl ArtifactRef {
-    pub fn new(uri: impl Into<String>) -> Self {
-        Self {
-            uri: uri.into(),
-            media_type: None,
-            digest: None,
-            byte_len: None,
-            preview: None,
-            metadata: BTreeMap::new(),
+impl BlobRef {
+    pub fn parse(value: impl Into<String>) -> Result<Self, BlobRefError> {
+        let value = value.into();
+        if is_canonical_sha256_ref(&value) {
+            Ok(Self(value))
+        } else {
+            Err(BlobRefError::InvalidFormat { value })
         }
     }
 
-    pub fn with_preview(mut self, preview: impl Into<String>) -> Self {
-        self.preview = Some(preview.into());
-        self
+    pub fn from_bytes(bytes: &[u8]) -> Self {
+        let digest = Sha256::digest(bytes);
+        Self(format!("{SHA256_PREFIX}{}", hex::encode(digest)))
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn new_unchecked_for_tests(value: impl Into<String>) -> Self {
+        Self(value.into())
+    }
+}
+
+impl Default for BlobRef {
+    fn default() -> Self {
+        Self::from_bytes(&[])
+    }
+}
+
+impl fmt::Display for BlobRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+fn is_canonical_sha256_ref(value: &str) -> bool {
+    let Some(hex) = value.strip_prefix(SHA256_PREFIX) else {
+        return false;
+    };
+    hex.len() == SHA256_HEX_LEN
+        && value.len() == SHA256_REF_LEN
+        && hex
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 #[cfg(test)]
@@ -39,11 +76,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn artifact_ref_round_trips_through_json() {
-        let artifact = ArtifactRef::new("blob://payload").with_preview("payload");
+    fn blob_ref_round_trips_as_json_string() {
+        let blob_ref = BlobRef::from_bytes(b"payload");
 
-        let encoded = serde_json::to_string(&artifact).expect("serialize artifact ref");
-        let decoded: ArtifactRef = serde_json::from_str(&encoded).expect("decode artifact ref");
-        assert_eq!(decoded, artifact);
+        let encoded = serde_json::to_string(&blob_ref).expect("serialize blob ref");
+        assert_eq!(
+            encoded,
+            "\"sha256:239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5\""
+        );
+        let decoded: BlobRef = serde_json::from_str(&encoded).expect("decode blob ref");
+        assert_eq!(decoded, blob_ref);
+    }
+
+    #[test]
+    fn blob_ref_parse_rejects_non_canonical_values() {
+        assert!(BlobRef::parse("blob://payload").is_err());
+        assert!(BlobRef::parse("sha256:ABCDEF").is_err());
+        assert!(BlobRef::parse("sha256:1234").is_err());
     }
 }
