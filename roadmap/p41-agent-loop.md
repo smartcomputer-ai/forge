@@ -107,7 +107,7 @@ The exact file split can change, but p41 should add or clarify:
 ### [ ] G2. Input and lifecycle reduction
 - Work:
   - Apply session open/pause/resume/close events.
-  - Apply run requested/follow-up/steer/interrupt/human input events.
+  - Apply run requested/follow-up/steer/interrupt/confirmation events.
   - Apply lifecycle events for run/turn transitions.
 - DoD:
   - Invalid lifecycle transitions fail with typed model errors.
@@ -175,7 +175,7 @@ The exact file split can change, but p41 should add or clarify:
 ### [ ] G8. Local stepper with fake executors
 - Work:
   - Implement an in-process stepper that drives state to quiescence using fake
-    LLM/tool/human/subagent executors.
+    LLM/tool/confirmation/subagent executors.
   - Keep artifact reads/writes in fake adapter infrastructure, not core
     effects.
 - DoD:
@@ -193,7 +193,7 @@ The exact file split can change, but p41 should add or clarify:
 
 ### [ ] G10. Quiescence and interruption semantics
 - Work:
-  - Define quiescent states: waiting for input, waiting for human response,
+  - Define quiescent states: waiting for input, waiting for confirmation response,
     waiting on pending effects, completed, failed, cancelled, interrupted.
   - Apply interrupt/cancel events to active runs and pending effects.
 - DoD:

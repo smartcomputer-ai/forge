@@ -89,9 +89,10 @@ stack:
     `TurnPlan`, and `TurnReport`.
   - This phase defines the structs; p41 builds the planner behavior.
 - `refs/aos-agent/src/contracts/context.rs`
-  - Transcript ledger, transcript ranges, active window items, provider
-    compatibility metadata, context pressure, token count quality, compaction
-    operation state, and compaction records.
+  - Transcript ranges, active window items, provider compatibility metadata,
+    context pressure, token count quality, compaction operation state, and
+    compaction records. Forge keeps full transcript/compaction history out of
+    active session state.
 - `refs/aos-agent/src/contracts/tooling.rs`
   - Tool specs, tool mappers/executors as data, parallelism hints, runtime
     context, observed/planned tool calls, and profile builders.
@@ -196,7 +197,7 @@ layout in `crates/forge-agent/src/`:
   - transcript item/entry records and source ranges.
 - `context.rs`
   - active window items, provider compatibility, context state, token count,
-    pressure, compaction records.
+    pressure, and latest compaction summary.
 - `turn.rs`
   - turn input lanes, priorities, budgets, prerequisites, plans, reports, and
     resolved turn context snapshots.
@@ -212,7 +213,7 @@ layout in `crates/forge-agent/src/`:
     families.
 - `state.rs`
   - bounded `SessionState`, `RunState`, compact `RunRecord`, pending effects,
-    queues, fork/rewrite state.
+    queues, fork lineage, and compact history boundary state.
 - `trace.rs`
   - bounded run trace and summaries.
 - `projection.rs`
@@ -299,6 +300,8 @@ layout in `crates/forge-agent/src/`:
 - Work:
   - Add `AgentId` and `AgentVersionId` newtypes.
   - Add reusable `AgentDefinition` and immutable `AgentVersion` records.
+  - Agent definitions carry a stable string handle; prompt-facing name and
+    description live on immutable agent versions.
   - Agent versions carry prompt refs, default run config, tool registry/profile
     defaults, skill/plugin/app refs where applicable, and opaque extension refs.
   - Sessions reference an initial/effective `AgentVersionId`; config changes
@@ -317,7 +320,8 @@ layout in `crates/forge-agent/src/`:
 - Completed:
   - Added `AgentId`, `AgentVersionId`, reusable `AgentDefinition`, and
     immutable `AgentVersion` records in `agent.rs`.
-  - Agent versions carry prompt refs, default run config, tool registry/profile
+  - Agent definitions carry stable handles; agent versions carry display name,
+    description, prompt refs, default run config, tool registry/profile
     defaults, skill/plugin/app refs, opaque config refs, and metadata.
   - Session state, run state, run records, and resolved turn context can carry
     the effective agent version/config revision; `RunConfig` remains execution
@@ -358,7 +362,8 @@ layout in `crates/forge-agent/src/`:
     system, developer, steering, summary, and custom records.
   - Define transcript ledger entries with sequence numbers and source ranges.
   - Define active window items, provider compatibility, token count quality,
-    context pressure records, context operation state, and compaction records.
+    context pressure records, context operation state, and bounded compaction
+    summary state.
   - Model provider-native artifacts explicitly with compatibility metadata.
 - Files:
   - `crates/forge-agent/src/transcript.rs`
@@ -366,16 +371,18 @@ layout in `crates/forge-agent/src/`:
   - `crates/forge-agent/src/refs.rs`
 - DoD:
   - Large text/output bodies can be represented by refs with optional previews.
-  - Compaction records preserve source range and replacement refs.
+  - Compaction records preserve source range and replacement refs outside the
+    active session snapshot; context state retains only the latest summary.
   - Unit tests cover ledger append/source-range behavior.
 - Completed:
   - Added artifact-backed transcript records for user/assistant/reasoning/tool
     result/system/developer/steering/summary/custom content.
-  - Added transcript ledger entries, sequence allocation, source ranges, and
-    append helpers.
+  - Added transcript ledger records for projection/storage plus bounded context
+    sequence/range tracking for active state.
   - Added active window items, context lanes, provider compatibility reuse,
     token usage/count records, context pressure records, context operation
-    state, compaction records, and context state helpers.
+    state, compaction records, latest compaction summaries, and context state
+    helpers.
   - Added focused unit tests for ledger append/source ranges, msgpack
     round-trips, provider-native artifacts, and compaction/context invariants.
 
@@ -444,7 +451,7 @@ layout in `crates/forge-agent/src/`:
   - Define effect intent, receipt, and stream-frame event records from spec
     section 6.3.
   - Define observation/projection events from spec section 6.4.
-  - Define `AgentEffectIntent` variants for LLM, human input, MCP, generic tool
+  - Define `AgentEffectIntent` variants for LLM, confirmation, MCP, generic tool
     invocation, and subagent effects as data only.
   - Define receipts with success/failure/metadata fields sufficient for later
     state reduction.
@@ -460,7 +467,7 @@ layout in `crates/forge-agent/src/`:
   - Hook/policy/approval events are absent or clearly deferred placeholders.
 - Completed:
   - Added `AgentEffectIntent`, `AgentEffectKind`, effect metadata, LLM, MCP,
-    human input, generic tool invocation, and subagent request records.
+    confirmation, generic tool invocation, and subagent request records.
   - Added `AgentEffectReceipt`, receipt variants, effect failures,
     cancellations, retry metadata, and stream-frame records.
   - Added `AgentEvent` with input, lifecycle, effect, and observation families
@@ -489,10 +496,10 @@ layout in `crates/forge-agent/src/`:
   - Effects do not represent artifact store CRUD.
   - Unit tests cover journal sequencing and effect id causality.
 - Completed:
-  - Added `JournalSeq` allocation and optional journal sequence/correlation
-    fields to `AgentEvent`.
-  - Added event causality joins for effect id, tool batch id, tool call id,
-    parent event id, and parent effect id.
+  - Added `JournalSeq` allocation to `AgentEvent`.
+  - Added `AgentEventJoins` for optional event causality and lookup ids:
+    run, turn, effect, tool batch, tool call, submission, correlation,
+    parent event, and parent effect.
   - Removed artifact store put/get effect and receipt variants from the core
     effect model while keeping `ArtifactRef`.
   - Added unit coverage for journal sequence and effect causality.
@@ -514,18 +521,19 @@ layout in `crates/forge-agent/src/`:
   - Unit tests cover core state construction and lifecycle invariants.
 - Completed:
   - Added `SessionState`, `RunState`, `RunRecord`, `RunCause`, `RunOutcome`,
-    pending run/steering/human queues, pending effect records, and current
+    pending run/steering/confirmation queues, pending effect records, and current
     active run/tool-batch fields.
   - Added deterministic helpers for session status transitions, starting and
-    finishing foreground runs, queueing inputs, recording/settling pending
-    effects, and recording history rewrites/rollbacks.
-  - Added session lineage/fork source records plus history rewrite and rollback
-    records that keep rollback model-context-only.
+    finishing foreground runs, queueing inputs, recording pending effects,
+    settling effects by removing them from active pending state, and applying
+    compact history rewrite/rollback boundary updates.
+  - Added session lineage/fork source records plus compact history control
+    state that keeps rollback model-context-only.
   - Added subagent parent/child relationship, status, routing, cancellation,
     and final-output/failure metadata records.
   - Added unit tests for new session construction, active/completed/interrupted
-    runs, fork/rewrite representation, pending effect settlement, and subagent
-    status invariants.
+    runs, fork/history-boundary representation, pending effect settlement, and
+    subagent status invariants.
 
 ### [x] G8a. Bounded active session state
 - Work:
@@ -676,11 +684,11 @@ layout in `crates/forge-agent/src/`:
 - The model can represent:
   - agent definitions and immutable agent versions
   - session/run/turn lifecycle
-  - transcript ledger and artifact refs
+  - transcript records/projections and artifact refs
   - scoped journal events with sequence and causality refs
   - resolved turn context
-  - context pressure and compaction records
-  - LLM/human/MCP/generic tool/subagent effect intents and receipts
+  - context pressure and bounded compaction summary state
+  - LLM/confirmation/MCP/generic tool/subagent effect intents and receipts
   - tool registry/profile/batch state
   - bounded trace and projection items
   - fork/rollback/history rewrite metadata

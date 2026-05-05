@@ -21,14 +21,14 @@ and `SessionState` stays a compact control snapshot for runners.
 - `lifecycle`: session/run/turn lifecycle states and transition rules
 - `config`: session, run, turn, and extension configuration records
 - `refs`: artifact and transcript references for large payloads
-- `transcript`: transcript ledger and message records
-- `context`: context windows, token counts, pressure, and compaction records
+- `transcript`: transcript ledger, projection, and message records
+- `context`: bounded context window, token count, pressure, and compaction summary records
 - `turn`: turn inputs, plans, reports, and resolved turn context snapshots
 - `tooling`: tool specs, profiles, observed calls, and planned calls
 - `batch`: active tool-batch state and per-call statuses
 - `effects`: effect intents, receipts, and stream frames
 - `events`: input, lifecycle, effect, and observation events
-- `state`: session/run state, pending effects, queues, forks, and rewrites
+- `state`: session/run state, pending effects, queues, forks, and active history boundary
 - `trace`: bounded run trace records
 - `projection`: stable CLI/JSONL/web projection items
 - `subagent`: parent/child session metadata

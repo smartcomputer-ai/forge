@@ -20,11 +20,8 @@ use std::collections::BTreeMap;
 
 pub const AGENT_EVENT_RECORD_KIND: &str = "forge.agent.runtime.v2.journal_event";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentEvent {
-    pub event_id: String,
-    pub journal_seq: Option<JournalSeq>,
-    pub session_id: SessionId,
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentEventJoins {
     pub run_id: Option<RunId>,
     pub turn_id: Option<TurnId>,
     pub effect_id: Option<EffectId>,
@@ -34,6 +31,14 @@ pub struct AgentEvent {
     pub correlation_id: Option<CorrelationId>,
     pub parent_event_id: Option<String>,
     pub parent_effect_id: Option<EffectId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentEvent {
+    pub event_id: String,
+    pub journal_seq: Option<JournalSeq>,
+    pub session_id: SessionId,
+    pub joins: AgentEventJoins,
     pub observed_at_ms: u64,
     pub kind: AgentEventKind,
 }
@@ -49,15 +54,7 @@ impl AgentEvent {
             event_id: event_id.into(),
             journal_seq: None,
             session_id,
-            run_id: None,
-            turn_id: None,
-            effect_id: None,
-            tool_batch_id: None,
-            tool_call_id: None,
-            submission_id: None,
-            correlation_id: None,
-            parent_event_id: None,
-            parent_effect_id: None,
+            joins: AgentEventJoins::default(),
             observed_at_ms,
             kind,
         }
@@ -65,6 +62,11 @@ impl AgentEvent {
 
     pub fn with_journal_seq(mut self, journal_seq: JournalSeq) -> Self {
         self.journal_seq = Some(journal_seq);
+        self
+    }
+
+    pub fn with_joins(mut self, joins: AgentEventJoins) -> Self {
+        self.joins = joins;
         self
     }
 }
@@ -123,7 +125,7 @@ pub enum InputEvent {
     ToolOverridesSet {
         overrides: ToolOverrides,
     },
-    HumanInputProvided {
+    ConfirmationProvided {
         request_id: String,
         response_ref: ArtifactRef,
     },
@@ -380,9 +382,16 @@ mod tests {
                 },
             }),
         )
-        .with_journal_seq(ids.allocate_journal_seq());
+        .with_journal_seq(ids.allocate_journal_seq())
+        .with_joins(AgentEventJoins {
+            effect_id: Some(effect_id.clone()),
+            parent_effect_id: Some(effect_id.clone()),
+            ..Default::default()
+        });
 
         assert_eq!(event.journal_seq, Some(JournalSeq(1)));
+        assert_eq!(event.joins.effect_id, Some(effect_id.clone()));
+        assert_eq!(event.joins.parent_effect_id, Some(effect_id.clone()));
         let AgentEventKind::Effect(effect_event) = &event.kind else {
             panic!("expected effect event");
         };

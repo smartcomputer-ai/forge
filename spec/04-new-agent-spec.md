@@ -45,7 +45,7 @@ The new agent should borrow from `refs/aos-agent/` for:
 - pending effect tracking
 - tool registry and tool profiles
 - turn planning and active context window construction
-- transcript ledger, source ranges, and provider-native context artifacts
+- transcript records/projections, source ranges, and provider-native context artifacts
 - context pressure, token counting, and compaction operation state
 - per-call tool batch status, execution groups, and composite tool progress
 - runner workspace and tool-runtime concepts
@@ -135,7 +135,7 @@ parity with the useful parts of `refs/aos-agent/`:
 - session/run/turn lifecycle
 - deterministic event/effect state transitions
 - scoped agent journal events with large payloads stored by ref
-- transcript ledger and artifact refs
+- transcript records/projections and artifact refs
 - active context planning, token counting, and context pressure handling
 - LLM generation through `forge-llm`
 - SDK tool invocation contracts for runner-provided tools
@@ -178,7 +178,7 @@ Agent core
   pure state transitions, event model, effect intent envelope, projections
 
 Effect adapters
-  forge-llm, MCP, human input, generic tool invocation
+  forge-llm, MCP, confirmation, generic tool invocation
 
 Runner/tool packages
   local host filesystem/shell tools, remote executors, subagents, provider-native tools
@@ -227,8 +227,7 @@ The core owns:
 - pending effects
 - tool registry/profile state
 - resolved turn context snapshots
-- transcript references
-- transcript ledger and context pressure state
+- active transcript/context refs and context pressure state
 - per-call tool batch state
 - bounded run trace summaries
 - lifecycle and status transitions
@@ -272,7 +271,7 @@ There are two target runners.
 development, and the first CLI.
 
 **Temporal runner:** runs one session as a Temporal workflow. It schedules LLM
-and tool effects as activities, receives human/user control as signals or
+and tool effects as activities, receives user/control-plane input as signals or
 updates, and uses Temporal timers/retries/cancellation where appropriate.
 
 ### 4.3 Effect adapters
@@ -286,7 +285,7 @@ ecosystem-level effects:
 - LLM generation via `forge-llm`
 - token counting and compaction via `forge-llm` when provider-supported
 - MCP tool calls
-- human input where the runner supports it
+- confirmation where the runner supports it
 - generic tool invocation
 
 Artifact storage is runner/adapter infrastructure, not a core agent effect.
@@ -309,7 +308,7 @@ Deferred extension adapters:
 
 - hook execution
 - policy review and permission resolution
-- approval surfaces beyond basic human input
+- approval surfaces beyond basic confirmation
 - dynamic tool discovery/loading
 - runner-specific tool packages
 
@@ -375,13 +374,15 @@ An agent is a reusable, versioned configuration bundle. It is not a session.
 An agent definition includes:
 
 - agent id
-- name and metadata
+- stable string handle
 - optional aliases/deployment labels outside the core crate
 
 An agent version includes:
 
 - agent version id
 - agent id
+- display name and description, because these may feed prompts and can change
+  by version
 - system and developer prompt refs
 - default run config: provider, model, reasoning effort, output limits
 - context and loop limits
@@ -422,8 +423,8 @@ Session state includes:
 - tool runtime context
 - pending follow-up inputs
 - pending steering inputs
-- pending human requests
-- transcript/artifact refs
+- pending confirmation requests
+- active transcript ref and active context/artifact refs
 - thread metadata, such as name, memory mode, and external linkage
 - extension config refs for future hooks, policy, and dynamic tools
 - latest journal sequence applied
@@ -479,6 +480,11 @@ A rewrite records:
 - replacement transcript/artifact refs
 - whether local filesystem changes were affected, if known
 - resulting active transcript boundary
+
+The full rewrite/rollback audit trail lives in the scoped journal and transcript
+or projection records. Active `SessionState` only needs compact history control
+state: the resulting active boundary, latest rewrite/rollback ids or refs, and
+counts useful for deterministic next-step decisions.
 
 Rollback changes model context only. It must not imply that external tool
 effects, such as filesystem changes performed by a host tool package, have been
@@ -590,12 +596,19 @@ turn report. Non-required inputs may be dropped by priority and budget.
 
 The context state should include:
 
-- transcript ledger with sequence numbers and source ranges
+- next transcript sequence and active transcript range
 - active window items with provenance and provider compatibility metadata
 - token count records with quality (`exact`, provider estimate, local estimate)
 - context pressure records with reason and provider/model metadata
-- compaction records with source range, preserved items, replacement artifacts,
-  and warnings
+- pending context operation state
+- latest compaction summary with source range, replacement artifacts, and
+  warnings
+
+Full transcript ledgers and full compaction history live in journal/projection
+surfaces, not unbounded workflow state. The planner should make context
+decisions from active window items, transcript range/sequence counters,
+`compacted_through`, pending context operation, and latest count/pressure
+summaries.
 
 Provider-native or opaque context artifacts are allowed, but they must carry
 provider compatibility metadata and cannot be silently reused with incompatible
@@ -682,11 +695,11 @@ A journal event includes:
 
 - event id and monotonically increasing session-local sequence
 - session id
-- optional run id, turn id, effect id, tool batch id, tool call id, submission
-  id, and correlation id
+- optional join ids grouped in a join block: run id, turn id, effect id, tool
+  batch id, tool call id, submission id, correlation id, and causal
+  parent event/effect ids
 - observed timestamp supplied by the runner
 - event kind with small inline data and refs for large payloads
-- optional causal parent event/effect ids when useful
 
 The journal is replay-informative and forkable, but the system is not required
 to rebuild every in-memory optimization from journal replay alone. Bounded
@@ -714,7 +727,7 @@ Core input events:
 - `ToolRegistrySet`
 - `ToolProfileSelected`
 - `ToolOverridesSet`
-- `HumanInputProvided`
+- `ConfirmationProvided`
 
 Deferred hook/policy extensions may add events such as `HookRegistrySet`,
 `ApprovalDecisionProvided`, `PermissionGrantProvided`, or
@@ -877,16 +890,18 @@ attempted: cwd/environment, command/process details, exit status, output refs,
 and any adapter-local sandbox or permission information when the adapter
 enforces one. A full policy/approval framework is deferred.
 
-### 7.4 Human input effects
+### 7.4 Confirmation effects
 
-Human input is an effect from the agent's perspective. The core may enter
-`waiting` with a pending human request. The runner decides how to surface that
-request:
+Confirmation is an effect from the agent's perspective. The core may enter
+`waiting` with a pending confirmation request. The runner decides how to surface
+that request:
 
 - local CLI prompt
 - web/API request
 - Temporal signal/update
 - Attractor HITL bridge
+- policy service
+- another agent
 
 The response is appended as an input event and the run resumes.
 
@@ -992,7 +1007,7 @@ External control enters through signals or updates:
 - append follow-up
 - steer active run
 - interrupt active run
-- provide human input
+- provide confirmation
 - request history rewrite/rollback
 - pause/resume/close
 
@@ -1107,7 +1122,7 @@ The CLI should support:
 - select provider/model/reasoning
 - select tool mode/profile
 - inspect resolved turn context
-- respond to human-input requests
+- respond to confirmation requests
 - show compaction and rollback status
 - fork or roll back a session transcript
 - inspect transcript and run state

@@ -1,11 +1,11 @@
 //! Context-window, token, pressure, and compaction model records.
 //!
-//! This module will contain transcript ledgers, active window items, provider
-//! compatibility metadata, token-count records, context pressure records, and
-//! compaction records.
+//! This module keeps the bounded context-control snapshot needed to plan the
+//! next turn. Full transcript and compaction history lives in journal and
+//! projection records.
 
 use crate::refs::{ArtifactRef, ProviderCompatibility};
-use crate::transcript::{TranscriptLedger, TranscriptRange};
+use crate::transcript::TranscriptRange;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -215,16 +215,47 @@ pub struct CompactionRecord {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionSummary {
+    pub operation_id: String,
+    pub strategy: CompactionStrategy,
+    pub artifact_kind: CompactionArtifactKind,
+    pub artifact_refs: Vec<ArtifactRef>,
+    pub source_range: TranscriptRange,
+    pub compacted_through: Option<u64>,
+    pub active_window_item_count: u64,
+    pub usage: Option<LlmUsageRecord>,
+    pub created_at_ms: u64,
+    pub warnings: Vec<String>,
+}
+
+impl From<&CompactionRecord> for CompactionSummary {
+    fn from(record: &CompactionRecord) -> Self {
+        Self {
+            operation_id: record.operation_id.clone(),
+            strategy: record.strategy,
+            artifact_kind: record.artifact_kind,
+            artifact_refs: record.artifact_refs.clone(),
+            source_range: record.source_range.clone(),
+            compacted_through: Some(record.source_range.end_seq),
+            active_window_item_count: record.active_window_items.len() as u64,
+            usage: record.usage,
+            created_at_ms: record.created_at_ms,
+            warnings: record.warnings.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextState {
-    pub transcript_ledger: TranscriptLedger,
+    pub next_transcript_seq: u64,
+    pub active_transcript_range: Option<TranscriptRange>,
     pub active_window_items: Vec<ActiveWindowItem>,
-    pub compaction_records: Vec<CompactionRecord>,
     pub compacted_through: Option<u64>,
     pub pending_context_operation: Option<ContextOperationState>,
     pub last_llm_usage: Option<LlmUsageRecord>,
     pub last_context_pressure: Option<ContextPressureRecord>,
     pub last_token_count: Option<LlmTokenCountRecord>,
-    pub last_compaction: Option<CompactionRecord>,
+    pub last_compaction: Option<CompactionSummary>,
 }
 
 impl ContextState {
@@ -245,19 +276,31 @@ impl ContextState {
         item_id: impl Into<String>,
         content_ref: ArtifactRef,
         lane: Option<ContextInputLane>,
-        source: impl Into<String>,
-        appended_at_ms: u64,
     ) -> ActiveWindowItem {
-        let entry = self.transcript_ledger.append(
-            crate::transcript::TranscriptEntryKind::Message,
-            content_ref.clone(),
-            source,
-            appended_at_ms,
-        );
-        let item =
-            ActiveWindowItem::message_ref(item_id, content_ref, lane, entry.source_range.clone());
+        let seq = self.next_transcript_seq;
+        self.next_transcript_seq = self.next_transcript_seq.saturating_add(1);
+        let source_range = TranscriptRange::single(seq);
+        self.active_transcript_range = Some(match self.active_transcript_range.take() {
+            Some(mut range) => {
+                range.end_seq = range.end_seq.max(source_range.end_seq);
+                range
+            }
+            None => source_range.clone(),
+        });
+        let item = ActiveWindowItem::message_ref(item_id, content_ref, lane, Some(source_range));
         self.active_window_items.push(item.clone());
         item
+    }
+
+    pub fn apply_compaction(&mut self, record: CompactionRecord) {
+        self.active_window_items = record.active_window_items.clone();
+        self.compacted_through = Some(record.source_range.end_seq);
+        self.active_transcript_range = Some(TranscriptRange {
+            start_seq: record.source_range.end_seq,
+            end_seq: self.next_transcript_seq.max(record.source_range.end_seq),
+        });
+        self.last_compaction = Some(CompactionSummary::from(&record));
+        self.clear_pending_operation();
     }
 }
 
@@ -267,20 +310,22 @@ mod tests {
     use crate::refs::ArtifactKind;
 
     #[test]
-    fn context_state_appends_message_to_ledger_and_window() {
+    fn context_state_appends_message_to_active_window_with_bounded_sequence() {
         let mut state = ContextState::default();
         let item = state.append_message_ref(
             "item-1",
             ArtifactRef::new("blob://user-1", ArtifactKind::UserPrompt),
             Some(ContextInputLane::Conversation),
-            "user",
-            10,
         );
 
-        assert_eq!(state.transcript_ledger.entries.len(), 1);
+        assert_eq!(state.next_transcript_seq, 1);
         assert_eq!(state.active_window_items, vec![item]);
         assert_eq!(
             state.active_window_items[0].source_range,
+            Some(TranscriptRange::single(0))
+        );
+        assert_eq!(
+            state.active_transcript_range,
             Some(TranscriptRange::single(0))
         );
     }
@@ -315,5 +360,43 @@ mod tests {
 
         assert_eq!(record.source_range.end_seq, 4);
         assert_eq!(record.artifact_refs.len(), 1);
+    }
+
+    #[test]
+    fn context_state_applies_compaction_without_retaining_history_vector() {
+        let mut state = ContextState::default();
+        state.next_transcript_seq = 4;
+        let record = CompactionRecord {
+            operation_id: "compact-1".into(),
+            strategy: CompactionStrategy::Summary,
+            artifact_kind: CompactionArtifactKind::Summary,
+            artifact_refs: vec![ArtifactRef::new("blob://summary", ArtifactKind::Compaction)],
+            source_range: TranscriptRange {
+                start_seq: 0,
+                end_seq: 4,
+            },
+            active_window_items: vec![ActiveWindowItem::message_ref(
+                "summary",
+                ArtifactRef::new("blob://summary", ArtifactKind::Compaction),
+                Some(ContextInputLane::Summary),
+                Some(TranscriptRange {
+                    start_seq: 0,
+                    end_seq: 4,
+                }),
+            )],
+            ..Default::default()
+        };
+
+        state.apply_compaction(record);
+
+        assert_eq!(state.compacted_through, Some(4));
+        assert_eq!(state.active_window_items.len(), 1);
+        assert_eq!(
+            state
+                .last_compaction
+                .as_ref()
+                .map(|summary| summary.active_window_item_count),
+            Some(1)
+        );
     }
 }

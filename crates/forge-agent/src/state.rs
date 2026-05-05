@@ -16,7 +16,6 @@ use crate::lifecycle::{RunLifecycle, SessionStatus};
 use crate::refs::{ArtifactRef, TranscriptBoundary, TranscriptRef};
 use crate::subagent::SubagentRecord;
 use crate::tooling::{ToolRegistry, ToolRuntimeContext};
-use crate::transcript::TranscriptRange;
 use crate::turn::TurnPlan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -124,7 +123,6 @@ impl RunOutcome {
 pub struct PendingEffectRecord {
     pub intent: AgentEffectIntent,
     pub status: PendingEffectStatus,
-    pub receipt: Option<AgentEffectReceipt>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -158,7 +156,7 @@ pub struct QueuedSteeringInput {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingHumanRequest {
+pub struct PendingConfirmationRequest {
     pub request_id: String,
     pub prompt_ref: ArtifactRef,
     pub response_schema_ref: Option<ArtifactRef>,
@@ -174,6 +172,8 @@ pub struct ThreadMetadata {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateRetentionPolicy {
+    /// Maximum number of completed run summaries retained in active workflow
+    /// state. Full run history belongs in the journal/projection store.
     pub completed_run_history_limit: usize,
 }
 
@@ -361,58 +361,90 @@ pub struct SessionLineage {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryRewriteRecord {
-    pub rewrite_id: String,
-    pub cause: String,
-    pub source_range: Option<TranscriptRange>,
-    pub replacement_transcript_ref: Option<TranscriptRef>,
-    pub replacement_artifact_refs: Vec<ArtifactRef>,
-    pub filesystem_changes_affected: Option<bool>,
-    pub resulting_active_boundary: Option<TranscriptBoundary>,
-    pub recorded_at_ms: u64,
+pub struct HistoryControlState {
+    /// Current transcript boundary visible to future context planning after
+    /// forks, rewrites, rollbacks, or compaction.
+    pub active_boundary: Option<TranscriptBoundary>,
+    /// Last rewrite operation applied to active context. The journal owns the
+    /// full rewrite event and payload refs.
+    pub latest_rewrite_id: Option<String>,
+    /// Last rollback operation applied to active context. Rollback is
+    /// model-context-only unless an external tool package records otherwise.
+    pub latest_rollback_id: Option<String>,
+    /// Optional ref to compact rewrite/rollback metadata for diagnostics or
+    /// resume. Large details stay outside `SessionState`.
+    pub latest_history_ref: Option<ArtifactRef>,
+    /// Monotonic count of applied history rewrites for quick state inspection.
+    pub rewrite_count: u64,
+    /// Monotonic count of applied history rollbacks for quick state inspection.
+    pub rollback_count: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HistoryRollbackRecord {
-    pub rollback_id: String,
-    pub source_range: Option<TranscriptRange>,
-    pub user_turns: u64,
-    pub reason: Option<String>,
-    pub reason_ref: Option<ArtifactRef>,
-    pub resulting_active_boundary: Option<TranscriptBoundary>,
-    pub recorded_at_ms: u64,
-}
-
+/// Bounded control snapshot for a session.
+///
+/// This is the state a local runner or Temporal workflow actively manages to
+/// decide the next deterministic step. It intentionally does not contain full
+/// transcript bodies, full event history, full compaction history, or settled
+/// effect receipts; those live in the scoped journal, transcript/projection
+/// records, and artifact/CAS storage.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionState {
+    /// Stable identity for this concrete session timeline.
     pub session_id: SessionId,
+    /// Coarse session lifecycle used to decide whether new work is accepted.
     pub status: SessionStatus,
+    /// Agent version currently effective for new runs in this session.
     pub effective_agent_version_id: Option<AgentVersionId>,
+    /// Session-local configuration revision currently effective for new runs.
     pub config_revision: u64,
+    /// Current session defaults used to derive per-run config.
     pub config: SessionConfig,
+    /// Deterministic id allocator carried in workflow state so replay produces
+    /// stable run/turn/effect/tool/projection ids.
     pub id_allocator: IdAllocator,
+    /// Bounded context-management state used by the turn planner.
     pub context_state: ContextState,
+    /// Effective tool definitions visible to the session. Future persistence
+    /// may replace large registries with refs/version ids.
     pub tool_registry: ToolRegistry,
+    /// Tool profile selected for planning model-visible tools.
     pub selected_tool_profile: Option<String>,
+    /// Runner-provided runtime facts/refs needed to plan or execute tools.
     pub tool_runtime_context: ToolRuntimeContext,
+    /// Foreground run currently being planned/executed. Only one foreground run
+    /// is active per session.
     pub current_run: Option<RunState>,
+    /// Retention knobs for keeping this snapshot bounded across long sessions.
     pub retention: StateRetentionPolicy,
+    /// Bounded recent completed run summaries. The journal/projection store owns
+    /// full long-term run history.
     pub run_history: Vec<RunRecord>,
+    /// Number of completed run summaries dropped due to retention limits.
     pub dropped_run_history_count: u64,
-    pub completed_run_refs: Vec<ArtifactRef>,
+    /// User/domain inputs queued while another foreground run is active.
     pub pending_follow_up_inputs: VecDeque<QueuedRunInput>,
+    /// Steering instructions queued for the active or next model turn.
     pub pending_steering_inputs: VecDeque<QueuedSteeringInput>,
-    pub pending_human_requests: BTreeMap<String, PendingHumanRequest>,
+    /// Confirmation requests currently awaiting an external response.
+    pub pending_confirmation_requests: BTreeMap<String, PendingConfirmationRequest>,
+    /// In-flight effects that have been emitted but not yet settled. Settled
+    /// receipts are journaled and removed from this map.
     pub pending_effects: BTreeMap<EffectId, PendingEffectRecord>,
-    pub transcript_refs: Vec<TranscriptRef>,
-    pub artifact_refs: Vec<ArtifactRef>,
+    /// Current transcript snapshot/prefix ref used as the active history base.
+    pub active_transcript_ref: Option<TranscriptRef>,
+    /// Source metadata when this session was forked/imported/derived.
     pub lineage: Option<SessionLineage>,
-    pub history_rewrites: Vec<HistoryRewriteRecord>,
-    pub history_rollbacks: Vec<HistoryRollbackRecord>,
+    /// Compact history rewrite/rollback control state needed for planning.
+    pub history: HistoryControlState,
+    /// Child/subagent sessions currently known to this session.
     pub subagents: BTreeMap<SessionId, SubagentRecord>,
+    /// Human-facing thread metadata and external links.
     pub thread_metadata: ThreadMetadata,
+    /// Last journal sequence applied to this snapshot.
     pub latest_journal_seq: Option<JournalSeq>,
+    /// Runner-supplied creation timestamp.
     pub created_at_ms: u64,
+    /// Runner-supplied timestamp of the last state mutation.
     pub updated_at_ms: u64,
 }
 
@@ -433,16 +465,13 @@ impl SessionState {
             retention: StateRetentionPolicy::default(),
             run_history: Vec::new(),
             dropped_run_history_count: 0,
-            completed_run_refs: Vec::new(),
             pending_follow_up_inputs: VecDeque::new(),
             pending_steering_inputs: VecDeque::new(),
-            pending_human_requests: BTreeMap::new(),
+            pending_confirmation_requests: BTreeMap::new(),
             pending_effects: BTreeMap::new(),
-            transcript_refs: Vec::new(),
-            artifact_refs: Vec::new(),
+            active_transcript_ref: None,
             lineage: None,
-            history_rewrites: Vec::new(),
-            history_rollbacks: Vec::new(),
+            history: HistoryControlState::default(),
             subagents: BTreeMap::new(),
             thread_metadata: ThreadMetadata::default(),
             latest_journal_seq: None,
@@ -452,6 +481,20 @@ impl SessionState {
     }
 
     pub fn with_lineage(mut self, lineage: SessionLineage) -> Self {
+        match &lineage.source {
+            SessionSource::TranscriptPrefix {
+                transcript_ref,
+                boundary,
+            } => {
+                self.active_transcript_ref = Some(transcript_ref.clone());
+                self.history.active_boundary = boundary.clone();
+            }
+            SessionSource::TranscriptSnapshot { transcript_ref }
+            | SessionSource::ImportedHistory { transcript_ref } => {
+                self.active_transcript_ref = Some(transcript_ref.clone());
+            }
+            SessionSource::Empty | SessionSource::ParentSessionRun { .. } => {}
+        }
         self.lineage = Some(lineage);
         self
     }
@@ -538,25 +581,48 @@ impl SessionState {
         let record = PendingEffectRecord {
             intent: intent.clone(),
             status: PendingEffectStatus::Pending,
-            receipt: None,
         };
         self.pending_effects
             .insert(intent.effect_id.clone(), record);
     }
 
-    pub fn settle_pending_effect(&mut self, receipt: AgentEffectReceipt) {
-        if let Some(record) = self.pending_effects.get_mut(&receipt.effect_id) {
-            record.status = PendingEffectStatus::Settled;
-            record.receipt = Some(receipt);
+    pub fn settle_pending_effect(
+        &mut self,
+        receipt: AgentEffectReceipt,
+    ) -> Option<PendingEffectRecord> {
+        self.pending_effects.remove(&receipt.effect_id)
+    }
+
+    pub fn apply_history_rewrite(
+        &mut self,
+        rewrite_id: impl Into<String>,
+        resulting_active_boundary: Option<TranscriptBoundary>,
+        latest_history_ref: Option<ArtifactRef>,
+    ) {
+        self.history.latest_rewrite_id = Some(rewrite_id.into());
+        self.history.rewrite_count = self.history.rewrite_count.saturating_add(1);
+        if resulting_active_boundary.is_some() {
+            self.history.active_boundary = resulting_active_boundary;
+        }
+        if latest_history_ref.is_some() {
+            self.history.latest_history_ref = latest_history_ref;
         }
     }
 
-    pub fn record_history_rewrite(&mut self, record: HistoryRewriteRecord) {
-        self.history_rewrites.push(record);
-    }
-
-    pub fn record_history_rollback(&mut self, record: HistoryRollbackRecord) {
-        self.history_rollbacks.push(record);
+    pub fn apply_history_rollback(
+        &mut self,
+        rollback_id: impl Into<String>,
+        resulting_active_boundary: Option<TranscriptBoundary>,
+        latest_history_ref: Option<ArtifactRef>,
+    ) {
+        self.history.latest_rollback_id = Some(rollback_id.into());
+        self.history.rollback_count = self.history.rollback_count.saturating_add(1);
+        if resulting_active_boundary.is_some() {
+            self.history.active_boundary = resulting_active_boundary;
+        }
+        if latest_history_ref.is_some() {
+            self.history.latest_history_ref = latest_history_ref;
+        }
     }
 }
 
@@ -708,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn session_state_can_represent_fork_and_history_rewrite() {
+    fn session_state_can_represent_fork_and_active_history_boundary() {
         let lineage = SessionLineage {
             source: SessionSource::TranscriptPrefix {
                 transcript_ref: TranscriptRef::new(
@@ -726,34 +792,38 @@ mod tests {
         let mut session = SessionState::new(SessionId::new("fork"), SessionConfig::default(), 1)
             .with_lineage(lineage);
 
-        session.record_history_rewrite(HistoryRewriteRecord {
-            rewrite_id: "rewrite-1".into(),
-            cause: "compaction".into(),
-            source_range: Some(TranscriptRange {
-                start_seq: 0,
-                end_seq: 3,
-            }),
-            replacement_transcript_ref: Some(TranscriptRef::new(
-                "transcript://fork/compacted",
-                TranscriptRefKind::CompactedSnapshot,
-            )),
-            resulting_active_boundary: Some(TranscriptBoundary {
+        session.apply_history_rewrite(
+            "rewrite-1",
+            Some(TranscriptBoundary {
                 entry_seq: Some(1),
                 event_id: None,
             }),
-            recorded_at_ms: 10,
-            ..Default::default()
-        });
+            Some(ArtifactRef::new("blob://rewrite", ArtifactKind::Compaction)),
+        );
 
         assert!(matches!(
             session.lineage.as_ref().map(|lineage| &lineage.source),
             Some(SessionSource::TranscriptPrefix { .. })
         ));
-        assert_eq!(session.history_rewrites.len(), 1);
         assert_eq!(
-            session.history_rewrites[0].filesystem_changes_affected,
-            None
+            session
+                .active_transcript_ref
+                .as_ref()
+                .map(|value| value.uri.as_str()),
+            Some("transcript://source/prefix")
         );
+        assert_eq!(
+            session.history.active_boundary,
+            Some(TranscriptBoundary {
+                entry_seq: Some(1),
+                event_id: None,
+            })
+        );
+        assert_eq!(
+            session.history.latest_rewrite_id.as_deref(),
+            Some("rewrite-1")
+        );
+        assert_eq!(session.history.rewrite_count, 1);
     }
 
     #[test]
@@ -789,10 +859,9 @@ mod tests {
             }),
             11,
         );
-        session.settle_pending_effect(receipt);
+        let settled = session.settle_pending_effect(receipt);
 
-        let record = session.pending_effects.get(&effect_id).expect("effect");
-        assert_eq!(record.status, PendingEffectStatus::Settled);
-        assert!(record.receipt.is_some());
+        assert!(settled.is_some());
+        assert!(!session.pending_effects.contains_key(&effect_id));
     }
 }

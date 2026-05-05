@@ -71,7 +71,7 @@ pub enum AgentEffectKind {
     LlmCountTokens(LlmCountTokensRequest),
     LlmCompact(LlmCompactRequest),
     McpCall(McpCallRequest),
-    HumanInput(HumanInputRequest),
+    Confirmation(ConfirmationRequest),
     ToolInvoke(ToolInvocationRequest),
     Subagent(SubagentRequest),
 }
@@ -120,7 +120,7 @@ pub struct ToolInvocationRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HumanInputRequest {
+pub struct ConfirmationRequest {
     pub request_id: String,
     pub prompt_ref: ArtifactRef,
     pub response_schema_ref: Option<ArtifactRef>,
@@ -178,7 +178,7 @@ pub enum AgentReceiptKind {
     LlmCountTokens(LlmCountTokensReceipt),
     LlmCompact(LlmCompactReceipt),
     McpCall(McpCallReceipt),
-    HumanInput(HumanInputReceipt),
+    Confirmation(ConfirmationReceipt),
     ToolInvoke(ToolInvocationReceipt),
     Subagent(SubagentReceipt),
     Failed(EffectFailure),
@@ -235,7 +235,7 @@ pub struct ToolInvocationReceipt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HumanInputReceipt {
+pub struct ConfirmationReceipt {
     pub request_id: String,
     pub response_ref: ArtifactRef,
 }
