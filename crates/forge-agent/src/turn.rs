@@ -5,7 +5,7 @@
 
 use crate::config::{ContextBudgetConfig, ReasoningEffort, RunConfig, TurnConfig};
 use crate::context::ActiveWindowItem;
-use crate::ids::{CorrelationId, RunId, SessionId, SubmissionId, TurnId};
+use crate::ids::{AgentVersionId, CorrelationId, RunId, SessionId, SubmissionId, TurnId};
 use crate::refs::ArtifactRef;
 use crate::tooling::ToolSpec;
 use serde::{Deserialize, Serialize};
@@ -207,6 +207,8 @@ pub struct ResolvedTurnContext {
     pub session_id: SessionId,
     pub run_id: RunId,
     pub turn_id: TurnId,
+    pub agent_version_id: Option<AgentVersionId>,
+    pub config_revision: u64,
     pub provider: String,
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,
@@ -237,6 +239,8 @@ impl ResolvedTurnContext {
         session_id: SessionId,
         run_id: RunId,
         turn_id: TurnId,
+        agent_version_id: Option<AgentVersionId>,
+        config_revision: u64,
         run_config: &RunConfig,
         turn_config: Option<&TurnConfig>,
         plan: &TurnPlan,
@@ -251,6 +255,8 @@ impl ResolvedTurnContext {
             session_id,
             run_id,
             turn_id,
+            agent_version_id,
+            config_revision,
             provider: turn_config
                 .and_then(|config| config.provider.clone())
                 .unwrap_or_else(|| run_config.provider.clone()),
@@ -332,6 +338,8 @@ mod tests {
             ids.session_id.clone(),
             run_id.clone(),
             turn_id.clone(),
+            None,
+            0,
             &run_config,
             Some(&turn_config),
             &TurnPlan::default(),

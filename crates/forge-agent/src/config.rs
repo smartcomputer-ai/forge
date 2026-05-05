@@ -3,6 +3,7 @@
 //! This module will contain first-cut core configuration only. Hook, approval,
 //! permission, sandbox, and policy configuration is deferred.
 
+use crate::ids::AgentVersionId;
 use crate::refs::ArtifactRef;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -49,6 +50,7 @@ pub enum CxdbPersistenceMode {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionConfig {
+    pub initial_agent_version_id: Option<AgentVersionId>,
     pub provider: String,
     pub model: String,
     pub reasoning_effort: Option<ReasoningEffort>,

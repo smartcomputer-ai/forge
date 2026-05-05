@@ -8,8 +8,8 @@ use crate::config::{RunConfigOverride, SessionConfig, TurnConfig};
 use crate::context::{ContextOperationState, ContextPressureRecord, LlmUsageRecord};
 use crate::effects::{AgentEffectIntent, AgentEffectReceipt, EffectStreamFrame};
 use crate::ids::{
-    CorrelationId, EffectId, ProjectionItemId, RunId, SessionId, SubmissionId, ToolBatchId,
-    ToolCallId, TurnId,
+    CorrelationId, EffectId, JournalSeq, ProjectionItemId, RunId, SessionId, SubmissionId,
+    ToolBatchId, ToolCallId, TurnId,
 };
 use crate::lifecycle::{RunLifecycle, SessionStatus, TurnLifecycle};
 use crate::refs::{ArtifactRef, TranscriptRef};
@@ -18,14 +18,22 @@ use crate::transcript::TranscriptRange;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const AGENT_EVENT_RECORD_KIND: &str = "forge.agent.runtime.v2.journal_event";
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentEvent {
     pub event_id: String,
+    pub journal_seq: Option<JournalSeq>,
     pub session_id: SessionId,
     pub run_id: Option<RunId>,
     pub turn_id: Option<TurnId>,
+    pub effect_id: Option<EffectId>,
+    pub tool_batch_id: Option<ToolBatchId>,
+    pub tool_call_id: Option<ToolCallId>,
     pub submission_id: Option<SubmissionId>,
     pub correlation_id: Option<CorrelationId>,
+    pub parent_event_id: Option<String>,
+    pub parent_effect_id: Option<EffectId>,
     pub observed_at_ms: u64,
     pub kind: AgentEventKind,
 }
@@ -39,14 +47,25 @@ impl AgentEvent {
     ) -> Self {
         Self {
             event_id: event_id.into(),
+            journal_seq: None,
             session_id,
             run_id: None,
             turn_id: None,
+            effect_id: None,
+            tool_batch_id: None,
+            tool_call_id: None,
             submission_id: None,
             correlation_id: None,
+            parent_event_id: None,
+            parent_effect_id: None,
             observed_at_ms,
             kind,
         }
+    }
+
+    pub fn with_journal_seq(mut self, journal_seq: JournalSeq) -> Self {
+        self.journal_seq = Some(journal_seq);
+        self
     }
 }
 
@@ -287,9 +306,10 @@ pub enum FileChangeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::{AgentEffectKind, ArtifactGetRequest};
+    use crate::effects::{AgentEffectKind, ToolInvocationRequest};
     use crate::ids::{EffectId, IdAllocator};
     use crate::refs::{ArtifactKind, ArtifactRef};
+    use std::collections::BTreeMap;
 
     #[test]
     fn effect_event_exposes_effect_id_for_all_phases() {
@@ -298,8 +318,16 @@ mod tests {
         let intent = AgentEffectIntent::new(
             effect_id.clone(),
             ids.session_id.clone(),
-            AgentEffectKind::ArtifactGet(ArtifactGetRequest {
-                artifact: ArtifactRef::new("blob://input", ArtifactKind::Custom),
+            AgentEffectKind::ToolInvoke(ToolInvocationRequest {
+                call_id: ToolCallId::new("call-1"),
+                provider_call_id: None,
+                tool_id: Some("tool.echo".into()),
+                tool_name: "echo".into(),
+                arguments_json: None,
+                arguments_ref: None,
+                handler_id: Some("test.echo".into()),
+                context_ref: None,
+                metadata: BTreeMap::new(),
             }),
             10,
         );
@@ -326,6 +354,39 @@ mod tests {
         assert!(!encoded.contains("permission"));
         let decoded: AgentEvent = serde_json::from_str(&encoded).expect("decode event");
         assert_eq!(decoded, event);
+    }
+
+    #[test]
+    fn journal_event_carries_sequence_and_causality_refs() {
+        let mut ids = IdAllocator::new(SessionId::new("session-a"));
+        let effect_id = ids.allocate_effect_id();
+        let event = AgentEvent::new(
+            "event-1",
+            ids.session_id.clone(),
+            10,
+            AgentEventKind::Effect(EffectEvent::EffectStreamFrameObserved {
+                frame: EffectStreamFrame {
+                    effect_id: effect_id.clone(),
+                    session_id: ids.session_id.clone(),
+                    run_id: None,
+                    turn_id: None,
+                    sequence: 1,
+                    observed_at_ms: 10,
+                    kind: crate::effects::EffectStreamFrameKind::Progress {
+                        message: "working".into(),
+                        progress: None,
+                        total: None,
+                    },
+                },
+            }),
+        )
+        .with_journal_seq(ids.allocate_journal_seq());
+
+        assert_eq!(event.journal_seq, Some(JournalSeq(1)));
+        let AgentEventKind::Effect(effect_event) = &event.kind else {
+            panic!("expected effect event");
+        };
+        assert_eq!(effect_event.effect_id(), &effect_id);
     }
 
     #[test]

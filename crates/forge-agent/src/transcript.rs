@@ -4,9 +4,14 @@
 //! user, assistant, tool result, system, developer, steering, and summary
 //! records.
 
-use crate::ids::ToolCallId;
+use crate::ids::{
+    EffectId, JournalSeq, ProjectionItemId, RunId, SessionId, ToolBatchId, ToolCallId, TurnId,
+};
 use crate::refs::ArtifactRef;
 use serde::{Deserialize, Serialize};
+
+pub const TRANSCRIPT_LEDGER_RECORD_KIND: &str = "forge.agent.runtime.v2.transcript_ledger";
+pub const TRANSCRIPT_ITEM_RECORD_KIND: &str = "forge.agent.runtime.v2.transcript_item";
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TranscriptRange {
@@ -53,6 +58,31 @@ pub struct TranscriptLedgerEntry {
 pub struct TranscriptLedger {
     pub next_seq: u64,
     pub entries: Vec<TranscriptLedgerEntry>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptItemJoins {
+    pub session_id: SessionId,
+    pub journal_seq: Option<JournalSeq>,
+    pub run_id: Option<RunId>,
+    pub turn_id: Option<TurnId>,
+    pub effect_id: Option<EffectId>,
+    pub tool_batch_id: Option<ToolBatchId>,
+    pub tool_call_id: Option<ToolCallId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptItem {
+    pub item_id: ProjectionItemId,
+    pub joins: TranscriptItemJoins,
+    pub kind: TranscriptEntryKind,
+    pub source_event_id: Option<String>,
+    pub content_ref: Option<ArtifactRef>,
+    pub preview: Option<String>,
+    pub source_range: Option<TranscriptRange>,
+    pub metadata: std::collections::BTreeMap<String, String>,
+    pub created_at_ms: u64,
+    pub updated_at_ms: u64,
 }
 
 impl TranscriptLedger {
@@ -207,5 +237,38 @@ mod tests {
         let decoded: TranscriptRecord =
             rmp_serde::from_slice(&encoded).expect("decode transcript record");
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn transcript_item_carries_journal_and_join_ids() {
+        let item = TranscriptItem {
+            item_id: ProjectionItemId {
+                session_id: SessionId::new("session-a"),
+                item_seq: 1,
+            },
+            joins: TranscriptItemJoins {
+                session_id: SessionId::new("session-a"),
+                journal_seq: Some(JournalSeq(7)),
+                tool_call_id: Some(ToolCallId::new("call-1")),
+                ..Default::default()
+            },
+            kind: TranscriptEntryKind::ToolResult,
+            source_event_id: Some("event-7".into()),
+            content_ref: Some(ArtifactRef::new(
+                "blob://tool-output",
+                ArtifactKind::ToolOutput,
+            )),
+            preview: Some("ok".into()),
+            source_range: None,
+            metadata: std::collections::BTreeMap::new(),
+            created_at_ms: 10,
+            updated_at_ms: 10,
+        };
+
+        let encoded = serde_json::to_string(&item).expect("serialize transcript item");
+        let decoded: TranscriptItem =
+            serde_json::from_str(&encoded).expect("deserialize transcript item");
+
+        assert_eq!(decoded, item);
     }
 }

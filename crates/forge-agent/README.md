@@ -10,8 +10,13 @@ agent loop, tool execution, Temporal workflows, CXDB persistence, or CLI UI.
 Host shell/filesystem/process tools are provided by runner/tool packages, not
 by this core crate.
 
+The core model is journaled, ref-backed, and snapshot-driven: scoped journal
+events describe what happened, artifact/transcript refs point at large payloads,
+and `SessionState` stays a compact control snapshot for runners.
+
 ## Core Modules
 
+- `agent`: reusable agent definitions and immutable agent versions
 - `ids`: durable ids and allocation helpers
 - `lifecycle`: session/run/turn lifecycle states and transition rules
 - `config`: session, run, turn, and extension configuration records

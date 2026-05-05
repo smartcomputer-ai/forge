@@ -7,6 +7,10 @@ use crate::ids::SessionId;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const AGENT_RUNTIME_SCHEMA_FAMILY: &str = "forge.agent.runtime.v2";
+pub const ARTIFACT_REF_RECORD_KIND: &str = "forge.agent.runtime.v2.artifact_ref";
+pub const TRANSCRIPT_REF_RECORD_KIND: &str = "forge.agent.runtime.v2.transcript_ref";
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderCompatibility {
     pub provider: String,

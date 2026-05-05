@@ -131,12 +131,14 @@ That backend is a bridge, not the primary Forge agent implementation.
 The first implementation should focus on the core agent loop and rough feature
 parity with the useful parts of `refs/aos-agent/`:
 
+- agent definition/version records as reusable configuration
 - session/run/turn lifecycle
 - deterministic event/effect state transitions
+- scoped agent journal events with large payloads stored by ref
 - transcript ledger and artifact refs
 - active context planning, token counting, and context pressure handling
 - LLM generation through `forge-llm`
-- SDK tool/effect extension contracts for runner-provided tools
+- SDK tool invocation contracts for runner-provided tools
 - tool registry, tool profiles, tool batches, and per-call tool status
 - compaction as a first-class context operation if needed to keep the loop
   viable
@@ -176,13 +178,13 @@ Agent core
   pure state transitions, event model, effect intent envelope, projections
 
 Effect adapters
-  forge-llm, MCP, blob/artifact store, human input, generic tool invocation
+  forge-llm, MCP, human input, generic tool invocation
 
 Runner/tool packages
   local host filesystem/shell tools, remote executors, subagents, provider-native tools
 
 Future SDK extensions
-  hooks, policy reviewers, approval surfaces, dynamic tools, third-party effect handlers
+  hooks, policy reviewers, approval surfaces, dynamic tools, third-party tool handlers
 ```
 
 ### 4.1 Agent core
@@ -202,8 +204,23 @@ boundary must remain clear:
 - effect execution happens in runners/adapters
 - completed effects return receipts, which are appended as events
 
+Forge is journaled, ref-backed, and snapshot-driven:
+
+```text
+agent = journal + artifacts/CAS + bounded session state
+```
+
+The journal is scoped to agent/session events and is the product-level audit and
+follow stream. It is not a fully generic event store and does not need to be the
+only source from which every runtime optimization can be rebuilt. Large or
+opaque payloads live in an artifact/CAS store and are referenced by journal
+events, transcript items, receipts, and state snapshots. `SessionState` is the
+compact control snapshot actively managed by a local runner or Temporal
+workflow.
+
 The core owns:
 
+- agent definition/version records
 - `SessionState`
 - `RunState`
 - turn/context state
@@ -268,10 +285,14 @@ ecosystem-level effects:
 
 - LLM generation via `forge-llm`
 - token counting and compaction via `forge-llm` when provider-supported
-- blob/artifact put/get
 - MCP tool calls
 - human input where the runner supports it
 - generic tool invocation
+
+Artifact storage is runner/adapter infrastructure, not a core agent effect.
+Effects and receipts carry artifact refs; adapters read and write bytes through
+an injected artifact store while materializing LLM context, tool results, raw
+provider payloads, and transcript content.
 
 Host execution is not an agent-core effect family. Shell commands, filesystem
 operations, host sessions, sandboxes, containers, and remote executors are
@@ -323,6 +344,9 @@ stable.
 
 ### 5.1 Identifiers
 
+- `AgentId`: stable id for a reusable agent definition.
+- `AgentVersionId`: immutable version id for prompts, tools, defaults, and
+  other reusable agent configuration.
 - `SessionId`: stable id for a conversation/thread.
 - `RunId`: one user/task submission inside a session.
 - `TurnId`: one LLM sampling turn inside a run.
@@ -333,6 +357,7 @@ stable.
 - `ToolCallId`: a provider/model tool call id normalized by Forge.
 - `ProjectionItemId`: stable id for a user, assistant, reasoning, tool,
   patch, or compaction item in UI/event projections.
+- `JournalSeq`: monotonically increasing sequence within one session journal.
 - `ArtifactRef`: content-addressed or store-addressed large payload reference.
 - `TranscriptRef`: a stable reference to a transcript prefix or message-history
   snapshot that can seed another session.
@@ -343,10 +368,39 @@ durable identity.
 Deferred SDK extensions may add ids such as `HookRunId`, `PermissionGrantId`,
 or policy-review ids without changing the core id scheme.
 
-### 5.2 Session
+### 5.2 Agent definition and version
 
-A session is the long-lived container for configuration, transcript, tool
-registry, tool runtime context, and run history.
+An agent is a reusable, versioned configuration bundle. It is not a session.
+
+An agent definition includes:
+
+- agent id
+- name and metadata
+- optional aliases/deployment labels outside the core crate
+
+An agent version includes:
+
+- agent version id
+- agent id
+- system and developer prompt refs
+- default run config: provider, model, reasoning effort, output limits
+- context and loop limits
+- tool registry and default tool profile
+- skill/plugin/app refs where applicable
+- opaque extension config refs for future hooks, policy, and dynamic tools
+
+Agent versions should be treated as immutable once used by a session/run. If a
+prompt, model, tool profile, or skill changes mid-session, that change is
+recorded explicitly and future runs/turns use a new effective config boundary.
+The first cut does not need to model tenant or owner concepts; those can be
+metadata/external linkage outside the core model.
+
+### 5.3 Session
+
+A session is a concrete timeline under an agent/version. Some products may use
+one long-lived central session, while others may create many user/task sessions.
+The SDK should support both by keeping identity and external linkage explicit
+without baking in tenancy.
 
 Session lifecycle:
 
@@ -358,10 +412,11 @@ new -> active -> paused -> active -> closing -> closed
 Session state includes:
 
 - session id
+- agent id and effective agent version id
 - lifecycle/status
-- base `SessionConfig`
+- effective config revision
 - current run, if any
-- completed run summaries
+- compact completed run summaries and refs
 - turn/context state
 - tool registry and selected profile
 - tool runtime context
@@ -371,11 +426,16 @@ Session state includes:
 - transcript/artifact refs
 - thread metadata, such as name, memory mode, and external linkage
 - extension config refs for future hooks, policy, and dynamic tools
+- latest journal sequence applied
+
+Session state is a bounded control snapshot. It should not contain the full
+transcript, full raw provider responses, full tool outputs, or unbounded run
+history. Those belong in journal/projection records plus artifact refs.
 
 Only one foreground run is active in a session at a time. Subagents are separate
 sessions with parent/child metadata.
 
-### 5.3 Session lineage and forks
+### 5.4 Session lineage and forks
 
 Sessions must be able to continue from an existing transcript or message
 history that originated in another session. This is a first-class fork
@@ -405,7 +465,7 @@ The active context planner should treat forked transcript messages like normal
 durable inputs while preserving provenance so projections can show where the
 history came from.
 
-### 5.3.1 History rewrite and rollback
+### 5.4.1 History rewrite and rollback
 
 History rewrite is a first-class operation. The agent must support replacing
 the active transcript with a compacted transcript, rolling back the last N user
@@ -424,7 +484,7 @@ Rollback changes model context only. It must not imply that external tool
 effects, such as filesystem changes performed by a host tool package, have been
 reverted.
 
-### 5.4 Run
+### 5.5 Run
 
 A run is the unit of user-visible work: "implement this", "review that",
 "continue", or an Attractor stage prompt.
@@ -442,11 +502,12 @@ Run state includes:
 
 - run id
 - cause and source
+- effective agent version id and config revision
 - effective `RunConfig`
 - input refs
 - current turn plan
 - active LLM request, if any
-- completed tool batches
+- compact recent/completed tool-batch refs needed for next-step decisions
 - active tool batch, if any
 - pending effects
 - latest output ref
@@ -454,14 +515,17 @@ Run state includes:
 - run trace
 - outcome
 
-### 5.5 Resolved turn context
+### 5.6 Resolved turn context
 
 Before every LLM turn or tool batch, Forge resolves an immutable turn context
-from session defaults plus run/turn overrides. This mirrors Codex's `TurnContext`
-without copying its implementation.
+from session/run provenance plus effective run and turn configuration. This
+mirrors Codex's `TurnContext` without copying its implementation. `RunConfig`
+contains execution knobs; agent version id and config revision are provenance
+fields on run state and resolved turn context.
 
 The resolved turn context includes:
 
+- agent version id and config revision
 - provider, model, reasoning effort, reasoning summary, service tier, and
   response/structured-output settings
 - current date/timezone and runtime/extension refs supplied by the runner
@@ -474,7 +538,7 @@ The resolved turn context includes:
 The resolved context is persisted or reproducible from persisted events. Tool
 execution must use this snapshot, not mutable global process state.
 
-### 5.6 Turn and context window
+### 5.7 Turn and context window
 
 A turn is one LLM sampling request and the immediate response processing around
 it. The agent may perform many turns in one run:
@@ -537,7 +601,7 @@ Provider-native or opaque context artifacts are allowed, but they must carry
 provider compatibility metadata and cannot be silently reused with incompatible
 providers.
 
-### 5.7 Transcript and artifacts
+### 5.8 Transcript and artifacts
 
 Large data should be stored by reference, not embedded everywhere.
 
@@ -556,7 +620,22 @@ Examples:
 Events may include short previews for UI convenience, but durable semantics
 should point at refs.
 
-### 5.8 Tool batch state
+Transcript items are product/UI-facing projection records, not unbounded active
+workflow state. A transcript item includes:
+
+- projection item id or transcript item id
+- session id and journal sequence
+- optional run id, turn id, effect id, tool batch id, and tool call id joins
+- kind: user, assistant, reasoning, tool result, summary, patch, status, custom
+- lifecycle/status where needed
+- content ref and preview
+- source event id
+- timestamps
+
+UIs follow the journal and transcript/projection records, then fetch artifact
+bodies as needed. They should not depend on Temporal workflow state.
+
+### 5.9 Tool batch state
 
 Tool calls returned by one model response form a tool batch. The batch records:
 
@@ -573,7 +652,7 @@ Composite tools may emit multiple internal effects before producing one
 model-visible result. Their intermediate state must be durable and tied to the
 same `ToolCallId` and `ToolBatchId`.
 
-### 5.9 Run trace
+### 5.10 Run trace
 
 Each run maintains a bounded diagnostic trace separate from the authoritative
 event log and from UI projections. The trace explains why the state machine made
@@ -592,12 +671,27 @@ Trace entries should cover:
 Trace retention is bounded. When entries are dropped, the summary records how
 many were dropped and the first/last retained sequence.
 
-## 6. Event Model
+## 6. Event and Journal Model
 
-The agent has a logical event log. In the local runner this may be an explicit
-append-only log. In the Temporal runner, Temporal history provides execution
-durability, but Forge should still persist or expose logical agent events as
-the product-level transcript.
+The agent has a scoped logical journal. In the local runner this may be an
+explicit append-only SQLite/Postgres-backed log. In the Temporal runner,
+Temporal history provides execution durability, but Forge should still persist
+logical agent events as the product-level audit/follow stream.
+
+A journal event includes:
+
+- event id and monotonically increasing session-local sequence
+- session id
+- optional run id, turn id, effect id, tool batch id, tool call id, submission
+  id, and correlation id
+- observed timestamp supplied by the runner
+- event kind with small inline data and refs for large payloads
+- optional causal parent event/effect ids when useful
+
+The journal is replay-informative and forkable, but the system is not required
+to rebuild every in-memory optimization from journal replay alone. Bounded
+`SessionState` snapshots are the active control state; journal plus
+transcript/projection records are the user-visible and auditable timeline.
 
 ### 6.1 Input events
 
@@ -679,6 +773,14 @@ Deferred hook/policy extensions may add observation events such as
 
 Observation events must not be the only source of state needed for replay. They
 are projections over authoritative input/lifecycle/effect events.
+
+### 6.5 Configuration boundary events
+
+Agent/session configuration can change over time, but changes must create an
+explicit boundary in the journal. Events such as `SessionConfigUpdated`,
+`ToolRegistrySet`, `ToolProfileSelected`, or a future `AgentVersionChanged`
+record the change. Every run or resolved turn context should reference the
+effective agent version/config revision it used.
 
 ## 7. Effect Model
 
@@ -1041,8 +1143,11 @@ agent as a durable codergen backend with structured observability.
 
 The core storage contract is logical:
 
-- append/read agent events
+- append/read scoped agent journal events
 - put/get artifact bytes
+- read/write bounded session state snapshots
+- read agent definitions and immutable agent versions
+- read transcript/projection items
 - read session/run projections
 - query by session id, run id, and external linkage
 - create sessions from transcript refs or message-history snapshots
@@ -1065,6 +1170,13 @@ Payload rule:
 
 The storage abstraction should not leak CXDB, filesystem, or Temporal details
 into the agent core.
+
+The first production backend may use explicit tables for agent definitions,
+agent versions, sessions, session snapshots, journal events, transcript items,
+runs/tool-call indexes, and artifacts. These tables are not all equally
+authoritative: agent versions define reusable configuration, the journal
+records what happened in a session, transcript/projection rows support UI and
+query, snapshots support execution resume, and artifacts/CAS own large bytes.
 
 ### 12.1 Storage backend direction
 

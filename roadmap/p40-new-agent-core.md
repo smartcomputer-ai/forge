@@ -1,7 +1,7 @@
 # P40: New Agent Core Model Foundation
 
 **Status**
-- Planned (2026-05-05)
+- Complete (2026-05-05)
 
 **Goal**
 Implement the new `forge-agent` core model layer described by
@@ -13,10 +13,12 @@ Temporal, and persistence surfaces:
 
 - ids
 - lifecycle enums
+- agent definition/version records
 - config and resolved context structs
 - transcript/artifact references
+- scoped journal event records
 - turn/context planning records
-- session/run state
+- bounded session/run state snapshots
 - event and effect intent/receipt enums
 - pending effect state
 - tool registry/profile/batch model records
@@ -45,6 +47,9 @@ stack:
 - Keep `forge-agent` as an agent core SDK. Host shell/filesystem/process
   execution is tool-package/runner-specific and must not be hardcoded into the
   core crate.
+- Model Forge as journaled, ref-backed, and snapshot-driven: journal + CAS
+  artifacts + bounded session state. The journal is scoped to agent/session
+  events; it is not a fully generic event store.
 - Use explicit ids for persisted identity. `SubmissionId` is the external
   queue/idempotency id; `CorrelationId` is trace/correlation metadata.
 - Keep large payloads behind artifact/transcript refs.
@@ -174,6 +179,8 @@ layout in `crates/forge-agent/src/`:
 
 - `lib.rs`
   - public module exports and high-level crate docs.
+- `agent.rs`
+  - `AgentDefinition`, immutable `AgentVersion`, default prompts/config/tools.
 - `ids.rs`
   - id newtypes and deterministic allocation helpers.
 - `error.rs`
@@ -186,7 +193,7 @@ layout in `crates/forge-agent/src/`:
 - `refs.rs`
   - `ArtifactRef`, `TranscriptRef`, typed ref metadata, previews, payload kind.
 - `transcript.rs`
-  - transcript entry records and source ranges.
+  - transcript item/entry records and source ranges.
 - `context.rs`
   - active window items, provider compatibility, context state, token count,
     pressure, compaction records.
@@ -201,10 +208,11 @@ layout in `crates/forge-agent/src/`:
   - core effect intent envelope, receipt enum, stream frame enum, failure
     classification.
 - `events.rs`
-  - input/lifecycle/effect/observation event families.
+  - scoped journal event envelope plus input/lifecycle/effect/observation event
+    families.
 - `state.rs`
-  - `SessionState`, `RunState`, `RunRecord`, pending effects, queues,
-    fork/rewrite state.
+  - bounded `SessionState`, `RunState`, compact `RunRecord`, pending effects,
+    queues, fork/rewrite state.
 - `trace.rs`
   - bounded run trace and summaries.
 - `projection.rs`
@@ -224,6 +232,8 @@ layout in `crates/forge-agent/src/`:
 - Add simple constructors only when they encode stable invariants.
 - Add lifecycle validity helpers and terminal-state helpers.
 - Add id allocation helpers based on state counters.
+- Add agent definition/version records but do not model owner or tenant in p40.
+- Add scoped journal event sequence and ref-backed payload conventions.
 - Add bounded trace push/summarize helpers.
 - Add serde round-trip and invariant unit tests.
 - Update `crates/forge-agent/README.md` to point at spec/04 and the new module
@@ -284,6 +294,35 @@ layout in `crates/forge-agent/src/`:
     projection item ids.
   - Added artifact and transcript refs with provider compatibility metadata,
     previews, transcript boundaries, and serde/msgpack coverage.
+
+### [x] G2a. Agent definition/version primitives
+- Work:
+  - Add `AgentId` and `AgentVersionId` newtypes.
+  - Add reusable `AgentDefinition` and immutable `AgentVersion` records.
+  - Agent versions carry prompt refs, default run config, tool registry/profile
+    defaults, skill/plugin/app refs where applicable, and opaque extension refs.
+  - Sessions reference an initial/effective `AgentVersionId`; config changes
+    create explicit revision/version boundaries.
+  - Do not model tenant or owner in p40.
+- Files:
+  - `crates/forge-agent/src/agent.rs`
+  - `crates/forge-agent/src/ids.rs`
+  - `crates/forge-agent/src/config.rs`
+  - `crates/forge-agent/src/state.rs`
+- DoD:
+  - Agent definitions and versions serde round-trip.
+  - Agent versions are usable without live providers or tools.
+  - Session/run/turn records can reference the effective agent version/config
+    revision they used.
+- Completed:
+  - Added `AgentId`, `AgentVersionId`, reusable `AgentDefinition`, and
+    immutable `AgentVersion` records in `agent.rs`.
+  - Agent versions carry prompt refs, default run config, tool registry/profile
+    defaults, skill/plugin/app refs, opaque config refs, and metadata.
+  - Session state, run state, run records, and resolved turn context can carry
+    the effective agent version/config revision; `RunConfig` remains execution
+    knobs rather than provenance.
+  - Added serde round-trip coverage for agent versions.
 
 ### [x] G3. Lifecycle and configuration model
 - Work:
@@ -365,8 +404,8 @@ layout in `crates/forge-agent/src/`:
     date/timezone fields, context refs, selected tool profile,
     model-visible tools, active window items, provider options, response format
     refs, budget, trace metadata, and future runtime/extension refs.
-  - Added deterministic resolution from `RunConfig`, optional `TurnConfig`,
-    and `TurnPlan`.
+  - Added deterministic resolution from run provenance, `RunConfig`, optional
+    `TurnConfig`, and `TurnPlan`.
 
 ### [x] G6. Tool registry/profile/batch model
 - Work:
@@ -405,10 +444,12 @@ layout in `crates/forge-agent/src/`:
   - Define effect intent, receipt, and stream-frame event records from spec
     section 6.3.
   - Define observation/projection events from spec section 6.4.
-  - Define `AgentEffectIntent` variants for LLM, artifact/blob, human input,
-    MCP, generic tool invocation, and subagent effects as data only.
+  - Define `AgentEffectIntent` variants for LLM, human input, MCP, generic tool
+    invocation, and subagent effects as data only.
   - Define receipts with success/failure/metadata fields sufficient for later
     state reduction.
+  - Do not model artifact store put/get as agent effects. Artifact bytes are
+    runner/adapter infrastructure; effects and receipts carry refs.
 - Files:
   - `crates/forge-agent/src/events.rs`
   - `crates/forge-agent/src/effects.rs`
@@ -418,9 +459,8 @@ layout in `crates/forge-agent/src/`:
     error types.
   - Hook/policy/approval events are absent or clearly deferred placeholders.
 - Completed:
-  - Added `AgentEffectIntent`, `AgentEffectKind`, effect metadata, LLM,
-    artifact/blob, MCP, human input, generic tool invocation, and subagent
-    request records.
+  - Added `AgentEffectIntent`, `AgentEffectKind`, effect metadata, LLM, MCP,
+    human input, generic tool invocation, and subagent request records.
   - Added `AgentEffectReceipt`, receipt variants, effect failures,
     cancellations, retry metadata, and stream-frame records.
   - Added `AgentEvent` with input, lifecycle, effect, and observation families
@@ -429,6 +469,33 @@ layout in `crates/forge-agent/src/`:
     idempotency key through intent, stream, and receipt phases.
   - Kept hook, approval, permission, sandbox, and policy-review events out of
     the first-cut event model.
+  - Correction: artifact store put/get effect records are not part of the
+    core effect model and were removed in G7a.
+
+### [x] G7a. Journal envelope and artifact-effect correction
+- Work:
+  - Add an explicit scoped journal envelope/sequence for `AgentEvent`.
+  - Record causality joins: run, turn, effect, tool batch, tool call,
+    submission, correlation, and optional parent event/effect.
+  - Remove `ArtifactPut`/`ArtifactGet` effect and receipt variants from the
+    core effect model.
+  - Keep `ArtifactRef` records and artifact/CAS storage contracts.
+- Files:
+  - `crates/forge-agent/src/events.rs`
+  - `crates/forge-agent/src/effects.rs`
+  - `crates/forge-agent/src/refs.rs`
+- DoD:
+  - Journal events are small and ref-backed.
+  - Effects do not represent artifact store CRUD.
+  - Unit tests cover journal sequencing and effect id causality.
+- Completed:
+  - Added `JournalSeq` allocation and optional journal sequence/correlation
+    fields to `AgentEvent`.
+  - Added event causality joins for effect id, tool batch id, tool call id,
+    parent event id, and parent effect id.
+  - Removed artifact store put/get effect and receipt variants from the core
+    effect model while keeping `ArtifactRef`.
+  - Added unit coverage for journal sequence and effect causality.
 
 ### [x] G8. Session, run, pending effect, fork, and rewrite state
 - Work:
@@ -460,6 +527,35 @@ layout in `crates/forge-agent/src/`:
     runs, fork/rewrite representation, pending effect settlement, and subagent
     status invariants.
 
+### [x] G8a. Bounded active session state
+- Work:
+  - Make `SessionState` explicitly the compact control snapshot managed by
+    local/Temporal runners.
+  - Keep current run, pending queues, pending effects, active tool batch,
+    context state, selected profile, subagent handles, id allocator, effective
+    agent version/config revision, and latest journal sequence.
+  - Move unbounded full history to journal/transcript/projection records.
+  - Replace completed run/tool-batch history in active state with compact
+    summaries and refs needed for next-step decisions.
+- Files:
+  - `crates/forge-agent/src/state.rs`
+  - `crates/forge-agent/src/batch.rs`
+  - `crates/forge-agent/src/transcript.rs`
+  - `crates/forge-agent/src/projection.rs`
+- DoD:
+  - Active state remains bounded across long sessions.
+  - UIs can reconstruct history from journal/projection records plus artifacts.
+  - The reducer/decider can make the next decision without fetching full
+    historical payload bytes.
+- Completed:
+  - Added effective agent version/config revision and latest journal sequence
+    to active session state.
+  - Added compact `RunRecord` summaries for completed runs; detailed completed
+    tool batches and usage records no longer live in completed run history.
+  - Added `StateRetentionPolicy` with bounded completed run history and dropped
+    history accounting.
+  - Added tests proving completed run history retention is bounded.
+
 ### [x] G9. Run trace and projection item model
 - Work:
   - Define bounded run trace entries, refs, push behavior, dropped-entry
@@ -483,7 +579,30 @@ layout in `crates/forge-agent/src/`:
   - Added tests for deterministic trace retention/summary behavior and
     projection item joins/lifecycle/serde round-trips.
 
-### [ ] G10. Serialization and invariant tests
+### [x] G9a. Transcript item projection contract
+- Work:
+  - Make transcript items a product/UI-facing projection surface separate from
+    active `SessionState`.
+  - Each transcript item carries session id, journal sequence, join ids,
+    lifecycle/status, kind, content ref, preview, source event id, and
+    timestamps.
+  - Keep full bodies in artifacts/CAS.
+- Files:
+  - `crates/forge-agent/src/transcript.rs`
+  - `crates/forge-agent/src/projection.rs`
+  - `crates/forge-agent/src/events.rs`
+- DoD:
+  - A CLI/web UI can page transcript items and fetch artifact bodies without
+    reading Temporal workflow state.
+  - Transcript items can represent user, assistant, reasoning, tool result,
+    summary, patch, status, and custom records.
+- Completed:
+  - Added ref-backed `TranscriptItem` plus `TranscriptItemJoins` carrying
+    session id, journal sequence, run/turn/effect/tool joins, source event id,
+    content ref, preview, source range, metadata, and timestamps.
+  - Added serde coverage for transcript items.
+
+### [x] G10. Serialization and invariant tests
 - Work:
   - Add focused unit tests beside each model module.
   - Round-trip representative events, effects, state, context records, and tool
@@ -496,10 +615,15 @@ layout in `crates/forge-agent/src/`:
   - `cargo test -p forge-agent` passes.
   - Tests do not require CXDB, Temporal, CLI binaries, or live LLM keys.
   - Tests fail loudly on broken invariants instead of skipping.
+- Completed:
+  - Added focused unit coverage across agent, ids, refs, lifecycle, config,
+    transcript, context, turn, tooling, batch, effects, events, state,
+    subagent, trace, and projection modules.
+  - Verified `cargo test -p forge-agent` passes with deterministic model tests.
 
 ## Priority 1: Shape for Later Phases
 
-### [ ] G11. Reducer/decider boundary types only
+### [x] G11. Reducer/decider boundary types only
 - Work:
   - Define type aliases or traits for the future pure boundary:
     `apply(event, state) -> state/events` and `decide(state) -> intents`.
@@ -510,8 +634,11 @@ layout in `crates/forge-agent/src/`:
   - `crates/forge-agent/src/effects.rs`
 - DoD:
   - p41 can implement the loop without renaming core model concepts.
+- Completed:
+  - Added first-cut `ReducerOutcome`, `DeciderOutcome`, `ReduceResult`, and
+    `DecideResult` boundary types without implementing loop behavior.
 
-### [ ] G12. Persistence schema naming placeholders
+### [x] G12. Persistence schema naming placeholders
 - Work:
   - Keep typed family constants for future CXDB records if useful.
   - Do not implement CXDB writes.
@@ -524,8 +651,11 @@ layout in `crates/forge-agent/src/`:
 - DoD:
   - Future persistence can map records to CXDB without changing event/state
     identity fields.
+- Completed:
+  - Added schema-family and record-kind constants for agent runtime refs,
+    journal events, transcript ledgers, and transcript items.
 
-### [ ] G13. Documentation of deferred extension seams
+### [x] G13. Documentation of deferred extension seams
 - Work:
   - Add crate-level docs or README notes that hooks/policy/approval/sandbox are
     future SDK extension surfaces.
@@ -536,18 +666,26 @@ layout in `crates/forge-agent/src/`:
 - DoD:
   - The codebase does not accidentally imply hooks/policy are supported in the
     first cut.
+- Completed:
+  - Updated crate docs and README to describe the core SDK scope, journaled
+    ref-backed bounded-state model, host-tool exclusion, and deferred
+    hook/policy/approval/sandbox extension surfaces.
 
 ## Acceptance
 - `crates/forge-agent` exposes the new core model layer from spec/04.
 - The model can represent:
+  - agent definitions and immutable agent versions
   - session/run/turn lifecycle
   - transcript ledger and artifact refs
+  - scoped journal events with sequence and causality refs
   - resolved turn context
   - context pressure and compaction records
-  - LLM/artifact/human/MCP/generic tool/subagent effect intents and receipts
+  - LLM/human/MCP/generic tool/subagent effect intents and receipts
   - tool registry/profile/batch state
   - bounded trace and projection items
   - fork/rollback/history rewrite metadata
+- Artifact refs are core model primitives, but artifact store put/get is
+  adapter/storage infrastructure, not an agent effect family.
 - No LLM, tool, MCP, Temporal, CXDB, or CLI execution is implemented.
 - Host shell/filesystem/process support is not part of `forge-agent`; it belongs
   in runner/tool-package follow-on work.

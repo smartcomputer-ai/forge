@@ -8,7 +8,10 @@ use crate::config::{RunConfig, RunConfigOverride, SessionConfig};
 use crate::context::{ContextState, LlmUsageRecord};
 use crate::effects::{AgentEffectIntent, AgentEffectReceipt};
 use crate::error::ModelError;
-use crate::ids::{EffectId, IdAllocator, RunId, SessionId, SubmissionId, TurnId};
+use crate::events::AgentEvent;
+use crate::ids::{
+    AgentVersionId, EffectId, IdAllocator, JournalSeq, RunId, SessionId, SubmissionId, TurnId,
+};
 use crate::lifecycle::{RunLifecycle, SessionStatus};
 use crate::refs::{ArtifactRef, TranscriptBoundary, TranscriptRef};
 use crate::subagent::SubagentRecord;
@@ -17,6 +20,8 @@ use crate::transcript::TranscriptRange;
 use crate::turn::TurnPlan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
+
+pub const DEFAULT_RUN_HISTORY_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CauseRef {
@@ -167,10 +172,38 @@ pub struct ThreadMetadata {
     pub external_links: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateRetentionPolicy {
+    pub completed_run_history_limit: usize,
+}
+
+impl Default for StateRetentionPolicy {
+    fn default() -> Self {
+        Self {
+            completed_run_history_limit: DEFAULT_RUN_HISTORY_LIMIT,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReducerOutcome {
+    pub emitted_events: Vec<AgentEvent>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeciderOutcome {
+    pub intents: Vec<AgentEffectIntent>,
+}
+
+pub type ReduceResult = Result<ReducerOutcome, ModelError>;
+pub type DecideResult = Result<DeciderOutcome, ModelError>;
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunState {
     pub run_id: RunId,
     pub lifecycle: RunLifecycle,
+    pub effective_agent_version_id: Option<AgentVersionId>,
+    pub config_revision: u64,
     pub cause: RunCause,
     pub config: RunConfig,
     pub input_refs: Vec<ArtifactRef>,
@@ -189,9 +222,18 @@ pub struct RunState {
 }
 
 impl RunState {
-    pub fn queued(run_id: RunId, cause: RunCause, config: RunConfig, queued_at_ms: u64) -> Self {
+    pub fn queued(
+        run_id: RunId,
+        cause: RunCause,
+        effective_agent_version_id: Option<AgentVersionId>,
+        config_revision: u64,
+        config: RunConfig,
+        queued_at_ms: u64,
+    ) -> Self {
         Self {
             input_refs: cause.input_refs.clone(),
+            effective_agent_version_id,
+            config_revision,
             run_id,
             lifecycle: RunLifecycle::Queued,
             cause,
@@ -217,11 +259,16 @@ impl RunState {
 pub struct RunRecord {
     pub run_id: RunId,
     pub lifecycle: RunLifecycle,
+    pub effective_agent_version_id: Option<AgentVersionId>,
+    pub config_revision: u64,
     pub cause: RunCause,
     pub input_refs: Vec<ArtifactRef>,
-    pub completed_tool_batches: Vec<ActiveToolBatch>,
+    pub completed_tool_batch_count: u64,
+    pub completed_tool_batch_result_refs: Vec<ArtifactRef>,
     pub outcome: Option<RunOutcome>,
-    pub usage_records: Vec<LlmUsageRecord>,
+    pub usage_record_count: u64,
+    pub usage_summary: LlmUsageRecord,
+    pub usage_records_ref: Option<ArtifactRef>,
     pub run_trace_ref: Option<ArtifactRef>,
     pub started_at_ms: u64,
     pub ended_at_ms: u64,
@@ -232,15 +279,50 @@ impl From<RunState> for RunRecord {
         Self {
             run_id: run.run_id,
             lifecycle: run.lifecycle,
+            effective_agent_version_id: run.effective_agent_version_id,
+            config_revision: run.config_revision,
             cause: run.cause,
             input_refs: run.input_refs,
-            completed_tool_batches: run.completed_tool_batches,
+            completed_tool_batch_count: run.completed_tool_batches.len() as u64,
+            completed_tool_batch_result_refs: run
+                .completed_tool_batches
+                .iter()
+                .filter_map(|batch| batch.results_ref.clone())
+                .collect(),
             outcome: run.outcome,
-            usage_records: run.usage_records,
+            usage_record_count: run.usage_records.len() as u64,
+            usage_summary: summarize_usage(&run.usage_records),
+            usage_records_ref: None,
             run_trace_ref: run.run_trace_ref,
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.updated_at_ms,
         }
+    }
+}
+
+fn summarize_usage(records: &[LlmUsageRecord]) -> LlmUsageRecord {
+    let mut summary = LlmUsageRecord::default();
+    for record in records {
+        summary.prompt_tokens = summary.prompt_tokens.saturating_add(record.prompt_tokens);
+        summary.completion_tokens = summary
+            .completion_tokens
+            .saturating_add(record.completion_tokens);
+        summary.total_tokens = sum_optional(summary.total_tokens, record.total_tokens);
+        summary.reasoning_tokens = sum_optional(summary.reasoning_tokens, record.reasoning_tokens);
+        summary.cache_read_tokens =
+            sum_optional(summary.cache_read_tokens, record.cache_read_tokens);
+        summary.cache_write_tokens =
+            sum_optional(summary.cache_write_tokens, record.cache_write_tokens);
+    }
+    summary
+}
+
+fn sum_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
     }
 }
 
@@ -305,6 +387,8 @@ pub struct HistoryRollbackRecord {
 pub struct SessionState {
     pub session_id: SessionId,
     pub status: SessionStatus,
+    pub effective_agent_version_id: Option<AgentVersionId>,
+    pub config_revision: u64,
     pub config: SessionConfig,
     pub id_allocator: IdAllocator,
     pub context_state: ContextState,
@@ -312,7 +396,10 @@ pub struct SessionState {
     pub selected_tool_profile: Option<String>,
     pub tool_runtime_context: ToolRuntimeContext,
     pub current_run: Option<RunState>,
+    pub retention: StateRetentionPolicy,
     pub run_history: Vec<RunRecord>,
+    pub dropped_run_history_count: u64,
+    pub completed_run_refs: Vec<ArtifactRef>,
     pub pending_follow_up_inputs: VecDeque<QueuedRunInput>,
     pub pending_steering_inputs: VecDeque<QueuedSteeringInput>,
     pub pending_human_requests: BTreeMap<String, PendingHumanRequest>,
@@ -324,6 +411,7 @@ pub struct SessionState {
     pub history_rollbacks: Vec<HistoryRollbackRecord>,
     pub subagents: BTreeMap<SessionId, SubagentRecord>,
     pub thread_metadata: ThreadMetadata,
+    pub latest_journal_seq: Option<JournalSeq>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -334,13 +422,18 @@ impl SessionState {
             id_allocator: IdAllocator::new(session_id.clone()),
             session_id,
             status: SessionStatus::New,
+            effective_agent_version_id: config.initial_agent_version_id.clone(),
+            config_revision: 0,
             config,
             context_state: ContextState::default(),
             tool_registry: ToolRegistry::default(),
             selected_tool_profile: None,
             tool_runtime_context: ToolRuntimeContext::default(),
             current_run: None,
+            retention: StateRetentionPolicy::default(),
             run_history: Vec::new(),
+            dropped_run_history_count: 0,
+            completed_run_refs: Vec::new(),
             pending_follow_up_inputs: VecDeque::new(),
             pending_steering_inputs: VecDeque::new(),
             pending_human_requests: BTreeMap::new(),
@@ -352,6 +445,7 @@ impl SessionState {
             history_rollbacks: Vec::new(),
             subagents: BTreeMap::new(),
             thread_metadata: ThreadMetadata::default(),
+            latest_journal_seq: None,
             created_at_ms,
             updated_at_ms: created_at_ms,
         }
@@ -413,9 +507,23 @@ impl SessionState {
         run.outcome = Some(outcome);
         run.updated_at_ms = at_ms;
         let record = RunRecord::from(run);
-        self.run_history.push(record.clone());
+        self.push_run_record(record.clone());
         self.updated_at_ms = at_ms;
         Ok(record)
+    }
+
+    pub fn push_run_record(&mut self, record: RunRecord) {
+        let limit = self.retention.completed_run_history_limit;
+        if limit == 0 {
+            self.dropped_run_history_count = self.dropped_run_history_count.saturating_add(1);
+            return;
+        }
+
+        self.run_history.push(record);
+        while self.run_history.len() > limit {
+            self.run_history.remove(0);
+            self.dropped_run_history_count = self.dropped_run_history_count.saturating_add(1);
+        }
     }
 
     pub fn enqueue_follow_up(&mut self, input: QueuedRunInput) {
@@ -455,7 +563,10 @@ impl SessionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::effects::{AgentEffectKind, AgentReceiptKind, ArtifactGetRequest, ArtifactReceipt};
+    use crate::effects::{
+        AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt, ToolInvocationRequest,
+    };
+    use crate::ids::ToolCallId;
     use crate::refs::{ArtifactKind, ArtifactRef, TranscriptRef, TranscriptRefKind};
 
     fn active_session() -> SessionState {
@@ -476,6 +587,8 @@ mod tests {
         let run = RunState::queued(
             run_id.clone(),
             cause,
+            session.effective_agent_version_id.clone(),
+            session.config_revision,
             RunConfig::from_session(&session.config, None),
             3,
         );
@@ -492,12 +605,20 @@ mod tests {
     fn session_state_moves_completed_run_to_history() {
         let mut session = active_session();
         let run_id = session.id_allocator.allocate_run_id();
-        let run = RunState::queued(
+        let mut run = RunState::queued(
             run_id.clone(),
             RunCause::default(),
+            session.effective_agent_version_id.clone(),
+            session.config_revision,
             RunConfig::from_session(&session.config, None),
             3,
         );
+        run.usage_records.push(LlmUsageRecord {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            total_tokens: Some(15),
+            ..Default::default()
+        });
         session.start_run(run, 4).expect("start run");
 
         let record = session
@@ -515,6 +636,38 @@ mod tests {
         assert_eq!(session.run_history.len(), 1);
         assert_eq!(record.run_id, run_id);
         assert_eq!(record.lifecycle, RunLifecycle::Completed);
+        assert_eq!(record.usage_record_count, 1);
+        assert_eq!(record.usage_summary.total_tokens, Some(15));
+    }
+
+    #[test]
+    fn session_state_bounds_completed_run_history() {
+        let mut session = active_session();
+        session.retention.completed_run_history_limit = 2;
+
+        for index in 0..3 {
+            let run = RunState::queued(
+                session.id_allocator.allocate_run_id(),
+                RunCause::default(),
+                session.effective_agent_version_id.clone(),
+                session.config_revision,
+                RunConfig::from_session(&session.config, None),
+                3 + index,
+            );
+            session.start_run(run, 4 + index).expect("start run");
+            session
+                .finish_current_run(
+                    RunLifecycle::Completed,
+                    RunOutcome::completed(None),
+                    5 + index,
+                )
+                .expect("finish run");
+        }
+
+        assert_eq!(session.run_history.len(), 2);
+        assert_eq!(session.dropped_run_history_count, 1);
+        assert_eq!(session.run_history[0].run_id.run_seq, 2);
+        assert_eq!(session.run_history[1].run_id.run_seq, 3);
     }
 
     #[test]
@@ -523,6 +676,8 @@ mod tests {
         let run = RunState::queued(
             session.id_allocator.allocate_run_id(),
             RunCause::default(),
+            session.effective_agent_version_id.clone(),
+            session.config_revision,
             RunConfig::from_session(&session.config, None),
             3,
         );
@@ -608,15 +763,29 @@ mod tests {
         let intent = AgentEffectIntent::new(
             effect_id.clone(),
             session.session_id.clone(),
-            AgentEffectKind::ArtifactGet(ArtifactGetRequest {
-                artifact: ArtifactRef::new("blob://input", ArtifactKind::Custom),
+            AgentEffectKind::ToolInvoke(ToolInvocationRequest {
+                call_id: ToolCallId::new("call-1"),
+                provider_call_id: None,
+                tool_id: Some("tool.echo".into()),
+                tool_name: "echo".into(),
+                arguments_json: None,
+                arguments_ref: None,
+                handler_id: Some("test.echo".into()),
+                context_ref: None,
+                metadata: BTreeMap::new(),
             }),
             10,
         );
         session.record_pending_effect(intent.clone());
         let receipt = intent.receipt(
-            AgentReceiptKind::ArtifactGet(ArtifactReceipt {
-                artifact: ArtifactRef::new("blob://input", ArtifactKind::Custom),
+            AgentReceiptKind::ToolInvoke(ToolInvocationReceipt {
+                call_id: ToolCallId::new("call-1"),
+                tool_id: Some("tool.echo".into()),
+                tool_name: "echo".into(),
+                output_ref: None,
+                model_visible_output_ref: None,
+                is_error: false,
+                metadata: BTreeMap::new(),
             }),
             11,
         );

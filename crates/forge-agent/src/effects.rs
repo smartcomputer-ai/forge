@@ -70,8 +70,6 @@ pub enum AgentEffectKind {
     LlmStream(LlmGenerationRequest),
     LlmCountTokens(LlmCountTokensRequest),
     LlmCompact(LlmCompactRequest),
-    ArtifactPut(ArtifactPutRequest),
-    ArtifactGet(ArtifactGetRequest),
     McpCall(McpCallRequest),
     HumanInput(HumanInputRequest),
     ToolInvoke(ToolInvocationRequest),
@@ -98,18 +96,6 @@ pub struct LlmCompactRequest {
     pub strategy: CompactionStrategy,
     pub source_range_start: Option<u64>,
     pub source_range_end: Option<u64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactPutRequest {
-    pub artifact: ArtifactRef,
-    pub content_ref: Option<ArtifactRef>,
-    pub inline_preview: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactGetRequest {
-    pub artifact: ArtifactRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,8 +177,6 @@ pub enum AgentReceiptKind {
     LlmStream(LlmGenerationReceipt),
     LlmCountTokens(LlmCountTokensReceipt),
     LlmCompact(LlmCompactReceipt),
-    ArtifactPut(ArtifactReceipt),
-    ArtifactGet(ArtifactReceipt),
     McpCall(McpCallReceipt),
     HumanInput(HumanInputReceipt),
     ToolInvoke(ToolInvocationReceipt),
@@ -230,11 +214,6 @@ pub struct LlmCompactReceipt {
     pub artifact_refs: Vec<ArtifactRef>,
     pub warnings: Vec<String>,
     pub usage: Option<LlmUsageRecord>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ArtifactReceipt {
-    pub artifact: ArtifactRef,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,7 +321,6 @@ pub enum EffectStreamFrameKind {
 mod tests {
     use super::*;
     use crate::ids::IdAllocator;
-    use crate::refs::{ArtifactKind, ArtifactRef};
 
     #[test]
     fn effect_intent_carries_idempotency_key_into_receipt() {
@@ -351,15 +329,29 @@ mod tests {
         let intent = AgentEffectIntent::new(
             effect_id.clone(),
             ids.session_id.clone(),
-            AgentEffectKind::ArtifactGet(ArtifactGetRequest {
-                artifact: ArtifactRef::new("blob://input", ArtifactKind::Custom),
+            AgentEffectKind::ToolInvoke(ToolInvocationRequest {
+                call_id: ToolCallId::new("call-1"),
+                provider_call_id: None,
+                tool_id: Some("tool.echo".into()),
+                tool_name: "echo".into(),
+                arguments_json: Some(r#"{"text":"hi"}"#.into()),
+                arguments_ref: None,
+                handler_id: Some("test.echo".into()),
+                context_ref: None,
+                metadata: BTreeMap::new(),
             }),
             10,
         );
 
         let receipt = intent.receipt(
-            AgentReceiptKind::ArtifactGet(ArtifactReceipt {
-                artifact: ArtifactRef::new("blob://input", ArtifactKind::Custom),
+            AgentReceiptKind::ToolInvoke(ToolInvocationReceipt {
+                call_id: ToolCallId::new("call-1"),
+                tool_id: Some("tool.echo".into()),
+                tool_name: "echo".into(),
+                output_ref: None,
+                model_visible_output_ref: None,
+                is_error: false,
+                metadata: BTreeMap::new(),
             }),
             11,
         );

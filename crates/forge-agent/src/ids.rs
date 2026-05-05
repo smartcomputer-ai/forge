@@ -1,7 +1,8 @@
 //! Durable agent identifiers and allocation helpers.
 //!
-//! This module will contain explicit id newtypes for sessions, runs, turns,
-//! submissions, effects, tool batches, tool calls, and projection items.
+//! This module will contain explicit id newtypes for agents, sessions, runs,
+//! turns, submissions, effects, tool batches, tool calls, journal events, and
+//! projection items.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -48,10 +49,24 @@ macro_rules! string_id {
     };
 }
 
+string_id!(AgentId);
+string_id!(AgentVersionId);
 string_id!(SessionId);
 string_id!(SubmissionId);
 string_id!(CorrelationId);
 string_id!(ToolCallId);
+
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(transparent)]
+pub struct JournalSeq(pub u64);
+
+impl fmt::Display for JournalSeq {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct RunId {
@@ -120,6 +135,7 @@ pub struct IdAllocator {
     pub next_turn_seq: u64,
     pub next_tool_batch_seq: u64,
     pub next_effect_seq: u64,
+    pub next_journal_seq: u64,
     pub next_projection_item_seq: u64,
 }
 
@@ -131,6 +147,7 @@ impl IdAllocator {
             next_turn_seq: 1,
             next_tool_batch_seq: 1,
             next_effect_seq: 1,
+            next_journal_seq: 1,
             next_projection_item_seq: 1,
         }
     }
@@ -171,6 +188,12 @@ impl IdAllocator {
         }
     }
 
+    pub fn allocate_journal_seq(&mut self) -> JournalSeq {
+        let seq = self.next_journal_seq;
+        self.next_journal_seq = self.next_journal_seq.saturating_add(1);
+        JournalSeq(seq)
+    }
+
     pub fn allocate_projection_item_id(&mut self) -> ProjectionItemId {
         let item_seq = self.next_projection_item_seq;
         self.next_projection_item_seq = self.next_projection_item_seq.saturating_add(1);
@@ -192,12 +215,14 @@ mod tests {
         let turn = allocator.allocate_turn_id(&run);
         let batch = allocator.allocate_tool_batch_id(&run);
         let effect = allocator.allocate_effect_id();
+        let journal_seq = allocator.allocate_journal_seq();
         let item = allocator.allocate_projection_item_id();
 
         assert_eq!(run.to_string(), "session-a:run:1");
         assert_eq!(turn.to_string(), "session-a:run:1:turn:1");
         assert_eq!(batch.to_string(), "session-a:run:1:tool_batch:1");
         assert_eq!(effect.to_string(), "session-a:effect:1");
+        assert_eq!(journal_seq.to_string(), "1");
         assert_eq!(item.to_string(), "session-a:item:1");
         assert_eq!(allocator.allocate_run_id().run_seq, 2);
     }
