@@ -1,12 +1,11 @@
 # P42: Agent Tool Dispatcher and SDK Contracts
 
-**Status** - In Progress
+**Status** - Complete
 
 Implemented so far:
 
-- G1-G7 are implemented in `forge-agent` as the first progressive slice.
+- G1-G9 are implemented in `forge-agent`.
 - `cargo test -p forge-agent` passes with deterministic unit coverage.
-- G8-G9 remain open.
 
 ## Goal
 
@@ -290,7 +289,7 @@ Implementation:
 - Added deterministic `BackgroundStartHandler` and `BackgroundPollHandler`
   test helpers.
 
-### [ ] G8. Cancellation and interruption mapping
+### [x] G8. Cancellation and interruption mapping
 
 - Propagate run interruption into driver cancellation.
 - Drivers explicitly emit cancelled/abandoned receipts or lifecycle events.
@@ -302,7 +301,15 @@ Acceptance:
 - Interrupting a batch does not silently drop pending tool effects.
 - Background work has explicit cancelled/abandoned state.
 
-### [ ] G9. Temporal mapping tests and notes
+Implementation:
+
+- Added `DispatchCancellation` and `DispatchCancellationMode`.
+- Added `ToolDispatchDriver::cancel_group`.
+- Added deterministic cancelled/abandoned terminal receipt construction for
+  pending dispatch calls.
+- Added background interrupt test helper.
+
+### [x] G9. Temporal mapping tests and notes
 
 - Add mocked activity-style driver tests.
 - Show that the dispatcher can be used without Tokio spawning.
@@ -313,6 +320,24 @@ Acceptance:
 - No core dispatcher API forces Tokio task primitives.
 - Temporal runner can implement group execution using Temporal-native async
   machinery.
+
+Implementation:
+
+- Added `ActivityStyleDriver` test helper that records activity-like scheduling
+  and cancellation without exposing spawn/join APIs.
+- Added test coverage for activity-style execution and cancellation against the
+  shared `ToolDispatchDriver` trait.
+
+Temporal mapping:
+
+- `DispatchGroup` maps to the set of tool activity requests a workflow chooses
+  to schedule together.
+- `ToolDispatchDriver::execute_group` maps to scheduling activities and waiting
+  with workflow-native futures/selectors.
+- `ToolDispatchDriver::cancel_group` maps to workflow cancellation scopes and
+  explicit terminal cancelled/abandoned receipts for unsettled calls.
+- `DispatchCompletion` maps to the terminal activity result that should be
+  journaled as an effect receipt.
 
 ## Testing
 
@@ -330,8 +355,8 @@ Required tests:
 - [x] serial grouping for non-parallel/resource-conflicting calls
 - [x] resumable/background tool returns handle and output snapshot
 - [x] poll/interaction tool consumes background handle
-- [ ] cancellation/interruption settles or abandons pending calls
-- [ ] mocked Temporal driver schedules activity-like calls without Tokio-specific
+- [x] cancellation/interruption settles or abandons pending calls
+- [x] mocked Temporal driver schedules activity-like calls without Tokio-specific
   API leakage
 
 ## Acceptance

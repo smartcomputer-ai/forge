@@ -364,7 +364,8 @@ mod tests {
     use super::*;
     use crate::ids::ToolCallId;
     use crate::testing::tools::{
-        BackgroundPollHandler, BackgroundStartHandler, EchoToolHandler, StaticToolHandler,
+        BackgroundInterruptHandler, BackgroundPollHandler, BackgroundStartHandler, EchoToolHandler,
+        StaticToolHandler,
     };
     use crate::tooling::{ToolExecutorKind, ToolParallelismHint};
     use crate::tools::{ToolExecutionError, ToolInvocationStatus};
@@ -691,6 +692,16 @@ mod tests {
             },
             ..Default::default()
         });
+        registry.insert_tool(ToolSpec {
+            tool_id: "interrupt".into(),
+            tool_name: "interrupt".into(),
+            description: "Interrupt background work".into(),
+            args_schema: json!({"type":"object"}),
+            executor: ToolExecutorKind::Handler {
+                handler_id: "interrupt-handler".into(),
+            },
+            ..Default::default()
+        });
         let dispatcher = ToolDispatcher::builder(registry)
             .register_handler(
                 "start-handler",
@@ -708,6 +719,14 @@ mod tests {
                 }),
             )
             .expect("register poll")
+            .register_handler(
+                "interrupt-handler",
+                Arc::new(BackgroundInterruptHandler {
+                    interrupted_ref: ArtifactRef::new("mem://interrupted/1")
+                        .with_preview("interrupted"),
+                }),
+            )
+            .expect("register interrupt")
             .build();
 
         let running = dispatcher
@@ -761,6 +780,30 @@ mod tests {
         assert_eq!(
             completed.metadata.get("tool_status").map(String::as_str),
             Some("complete")
+        );
+
+        let interrupted = dispatcher
+            .dispatch(
+                ToolInvocationRequest {
+                    call_id: ToolCallId::new("call-interrupt"),
+                    provider_call_id: None,
+                    tool_id: Some("interrupt".into()),
+                    tool_name: "interrupt".into(),
+                    arguments_json: Some(r#"{"handle_id":"job-1"}"#.into()),
+                    arguments_ref: None,
+                    handler_id: None,
+                    context_ref: None,
+                    metadata: BTreeMap::new(),
+                },
+                ToolRuntimeContext::default(),
+            )
+            .await
+            .expect("interrupt dispatch");
+
+        assert!(interrupted.is_error);
+        assert_eq!(
+            interrupted.metadata.get("tool_status").map(String::as_str),
+            Some("cancelled")
         );
     }
 }

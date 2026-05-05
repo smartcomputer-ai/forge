@@ -14,8 +14,9 @@ pub use artifacts::{
 };
 pub use dispatcher::{ToolDispatcher, ToolDispatcherBuilder, ToolDispatcherError};
 pub use driver::{
-    DispatchCall, DispatchCompletion, DispatchGroup, DispatchOutcome, DispatchRunRequest,
-    InProcessToolDispatchDriver, PreparedToolDispatch, ToolDispatchDriver, ToolDispatchDriverError,
+    DispatchCall, DispatchCancellation, DispatchCancellationMode, DispatchCompletion,
+    DispatchGroup, DispatchOutcome, DispatchRunRequest, InProcessToolDispatchDriver,
+    PreparedToolDispatch, ToolDispatchDriver, ToolDispatchDriverError,
 };
 pub use handler::{
     ToolExecutionError, ToolHandler, ToolInvocationContext, ToolInvocationStatus,

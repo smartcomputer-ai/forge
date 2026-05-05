@@ -6,9 +6,11 @@ use crate::effects::{
 };
 use crate::error::ModelError;
 use crate::ids::{EffectId, RunId, SessionId, ToolCallId, TurnId};
+use crate::refs::ArtifactRef;
 use crate::tooling::PlannedToolCall;
 use crate::tooling::ToolRuntimeContext;
 use crate::tools::dispatcher::{ToolDispatcher, ToolDispatcherError};
+use crate::tools::handler::ToolResultStatus;
 use async_trait::async_trait;
 use futures::future::join_all;
 use std::collections::BTreeMap;
@@ -54,6 +56,22 @@ pub struct DispatchCall {
 pub struct DispatchGroup {
     pub group_index: usize,
     pub calls: Vec<DispatchCall>,
+}
+
+impl DispatchGroup {
+    pub fn cancelled_outcome(&self, cancellation: &DispatchCancellation) -> DispatchOutcome {
+        DispatchOutcome {
+            completions: self
+                .calls
+                .iter()
+                .map(|call| DispatchCompletion {
+                    order: call.order,
+                    effect_id: None,
+                    receipt: cancelled_receipt_for_call(call, cancellation),
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -132,6 +150,37 @@ impl DispatchOutcome {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DispatchCancellation {
+    pub mode: DispatchCancellationMode,
+    pub reason: Option<String>,
+    pub reason_ref: Option<ArtifactRef>,
+}
+
+impl DispatchCancellation {
+    pub fn cancelled(reason: impl Into<String>) -> Self {
+        Self {
+            mode: DispatchCancellationMode::Cancelled,
+            reason: Some(reason.into()),
+            reason_ref: None,
+        }
+    }
+
+    pub fn abandoned(reason: impl Into<String>) -> Self {
+        Self {
+            mode: DispatchCancellationMode::Abandoned,
+            reason: Some(reason.into()),
+            reason_ref: None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DispatchCancellationMode {
+    Cancelled,
+    Abandoned,
+}
+
 #[derive(Debug, Error)]
 pub enum ToolDispatchDriverError {
     #[error("tool dispatch driver error: {message}")]
@@ -147,12 +196,53 @@ pub trait ToolDispatchDriver: Send + Sync {
         &self,
         group: DispatchGroup,
     ) -> Result<DispatchOutcome, ToolDispatchDriverError>;
+
+    async fn cancel_group(
+        &self,
+        group: DispatchGroup,
+        cancellation: DispatchCancellation,
+    ) -> Result<DispatchOutcome, ToolDispatchDriverError> {
+        Ok(group.cancelled_outcome(&cancellation))
+    }
 }
 
 #[derive(Clone)]
 pub struct InProcessToolDispatchDriver {
     dispatcher: ToolDispatcher,
     runtime: ToolRuntimeContext,
+}
+
+fn cancelled_receipt_for_call(
+    call: &DispatchCall,
+    cancellation: &DispatchCancellation,
+) -> ToolInvocationReceipt {
+    let status = match cancellation.mode {
+        DispatchCancellationMode::Cancelled => ToolResultStatus::Cancelled,
+        DispatchCancellationMode::Abandoned => ToolResultStatus::Abandoned,
+    };
+    let reason = cancellation
+        .reason
+        .clone()
+        .unwrap_or_else(|| status.as_str().to_string());
+    let mut metadata = call.request.metadata.clone();
+    metadata.insert("tool_status".into(), status.as_str().into());
+    metadata.insert("cancellation_mode".into(), status.as_str().into());
+    metadata.insert("cancellation_reason".into(), reason.clone());
+    if let Some(reason_ref) = cancellation.reason_ref.as_ref() {
+        metadata.insert("cancellation_reason_ref".into(), reason_ref.uri.clone());
+    }
+    ToolInvocationReceipt {
+        call_id: call.request.call_id.clone(),
+        tool_id: call.request.tool_id.clone(),
+        tool_name: call.request.tool_name.clone(),
+        output_ref: Some(
+            ArtifactRef::new(format!("forge://tool-cancelled/{}", call.request.call_id))
+                .with_preview(reason),
+        ),
+        model_visible_output_ref: None,
+        is_error: true,
+        metadata,
+    }
 }
 
 impl InProcessToolDispatchDriver {
@@ -198,7 +288,7 @@ mod tests {
     use crate::batch::ActiveToolBatch;
     use crate::effects::{AgentEffectIntent, AgentEffectKind};
     use crate::ids::{IdAllocator, SessionId, ToolCallId};
-    use crate::testing::tools::{CompletionOrderDriver, EchoToolHandler};
+    use crate::testing::tools::{ActivityStyleDriver, CompletionOrderDriver, EchoToolHandler};
     use crate::tooling::{
         PlannedToolCall, ToolBatchPlan, ToolCallObserved, ToolExecutorKind, ToolRegistry, ToolSpec,
     };
@@ -377,5 +467,108 @@ mod tests {
 
         assert_eq!(outcome.completions.len(), 1);
         assert!(!outcome.completions[0].receipt.is_error);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancel_group_returns_terminal_cancelled_receipts() {
+        let group = DispatchGroup {
+            group_index: 0,
+            calls: vec![
+                DispatchCall {
+                    order: 0,
+                    planned: planned_call("a", true, None),
+                    request: ToolInvocationRequest {
+                        call_id: ToolCallId::new("a"),
+                        tool_id: Some("tool-a".into()),
+                        tool_name: "tool_a".into(),
+                        provider_call_id: None,
+                        arguments_json: Some("{}".into()),
+                        arguments_ref: None,
+                        handler_id: None,
+                        context_ref: None,
+                        metadata: BTreeMap::new(),
+                    },
+                },
+                DispatchCall {
+                    order: 1,
+                    planned: planned_call("b", true, None),
+                    request: ToolInvocationRequest {
+                        call_id: ToolCallId::new("b"),
+                        tool_id: Some("tool-b".into()),
+                        tool_name: "tool_b".into(),
+                        provider_call_id: None,
+                        arguments_json: Some("{}".into()),
+                        arguments_ref: None,
+                        handler_id: None,
+                        context_ref: None,
+                        metadata: BTreeMap::new(),
+                    },
+                },
+            ],
+        };
+        let driver = CompletionOrderDriver::default();
+
+        let outcome = driver
+            .cancel_group(
+                group,
+                DispatchCancellation::cancelled("user interrupted run"),
+            )
+            .await
+            .expect("cancel group");
+
+        assert_eq!(outcome.completions.len(), 2);
+        assert!(outcome.completions.iter().all(|completion| {
+            completion.receipt.is_error
+                && completion
+                    .receipt
+                    .metadata
+                    .get("tool_status")
+                    .is_some_and(|status| status == "cancelled")
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn activity_style_driver_schedules_and_cancels_without_spawn_api() {
+        let group = DispatchGroup {
+            group_index: 0,
+            calls: vec![DispatchCall {
+                order: 0,
+                planned: planned_call("activity", true, None),
+                request: ToolInvocationRequest {
+                    call_id: ToolCallId::new("activity"),
+                    tool_id: Some("tool-activity".into()),
+                    tool_name: "tool_activity".into(),
+                    provider_call_id: None,
+                    arguments_json: Some("{}".into()),
+                    arguments_ref: None,
+                    handler_id: None,
+                    context_ref: None,
+                    metadata: BTreeMap::new(),
+                },
+            }],
+        };
+        let driver = ActivityStyleDriver::default();
+
+        let outcome = driver
+            .execute_group(group.clone())
+            .await
+            .expect("execute activity group");
+        assert_eq!(outcome.completions.len(), 1);
+        assert_eq!(driver.scheduled_call_ids(), vec!["activity"]);
+
+        let cancelled = driver
+            .cancel_group(group, DispatchCancellation::abandoned("workflow cancelled"))
+            .await
+            .expect("cancel activity group");
+
+        assert_eq!(driver.cancelled_call_ids(), vec!["activity"]);
+        assert_eq!(
+            cancelled.completions[0]
+                .receipt
+                .metadata
+                .get("tool_status")
+                .map(String::as_str),
+            Some("abandoned")
+        );
     }
 }

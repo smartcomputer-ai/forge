@@ -3,12 +3,13 @@
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
 use crate::refs::ArtifactRef;
 use crate::tools::{
-    DispatchCompletion, DispatchGroup, DispatchOutcome, ToolDispatchDriver,
+    DispatchCancellation, DispatchCompletion, DispatchGroup, DispatchOutcome, ToolDispatchDriver,
     ToolDispatchDriverError, ToolExecutionError, ToolHandler, ToolInvocationContext,
     ToolResultMetadata, ToolRuntimeHandle, ToolRuntimeSnapshot,
 };
 use async_trait::async_trait;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug)]
 pub struct EchoToolHandler {
@@ -117,6 +118,32 @@ impl ToolHandler for BackgroundPollHandler {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct BackgroundInterruptHandler {
+    pub interrupted_ref: ArtifactRef,
+}
+
+#[async_trait]
+impl ToolHandler for BackgroundInterruptHandler {
+    async fn invoke(
+        &self,
+        request: ToolInvocationRequest,
+        _context: ToolInvocationContext,
+    ) -> Result<ToolInvocationReceipt, ToolExecutionError> {
+        let mut metadata = request.metadata;
+        metadata.insert("tool_status".into(), "cancelled".into());
+        Ok(ToolInvocationReceipt {
+            call_id: request.call_id,
+            tool_id: request.tool_id,
+            tool_name: request.tool_name,
+            output_ref: Some(self.interrupted_ref.clone()),
+            model_visible_output_ref: Some(self.interrupted_ref.clone()),
+            is_error: true,
+            metadata,
+        })
+    }
+}
+
 #[async_trait]
 impl ToolHandler for StaticToolHandler {
     async fn invoke(
@@ -174,5 +201,59 @@ fn completion_for_call(order: usize, request: ToolInvocationRequest) -> Dispatch
             is_error: false,
             metadata: BTreeMap::new(),
         },
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ActivityStyleDriver {
+    scheduled: Arc<Mutex<Vec<String>>>,
+    cancelled: Arc<Mutex<Vec<String>>>,
+}
+
+impl ActivityStyleDriver {
+    pub fn scheduled_call_ids(&self) -> Vec<String> {
+        self.scheduled
+            .lock()
+            .expect("activity driver lock poisoned")
+            .clone()
+    }
+
+    pub fn cancelled_call_ids(&self) -> Vec<String> {
+        self.cancelled
+            .lock()
+            .expect("activity driver lock poisoned")
+            .clone()
+    }
+}
+
+#[async_trait]
+impl ToolDispatchDriver for ActivityStyleDriver {
+    async fn execute_group(
+        &self,
+        group: DispatchGroup,
+    ) -> Result<DispatchOutcome, ToolDispatchDriverError> {
+        let mut completions = Vec::new();
+        for call in group.calls {
+            self.scheduled
+                .lock()
+                .expect("activity driver lock poisoned")
+                .push(call.request.call_id.to_string());
+            completions.push(completion_for_call(call.order, call.request));
+        }
+        Ok(DispatchOutcome { completions })
+    }
+
+    async fn cancel_group(
+        &self,
+        group: DispatchGroup,
+        cancellation: DispatchCancellation,
+    ) -> Result<DispatchOutcome, ToolDispatchDriverError> {
+        for call in &group.calls {
+            self.cancelled
+                .lock()
+                .expect("activity driver lock poisoned")
+                .push(call.request.call_id.to_string());
+        }
+        Ok(group.cancelled_outcome(&cancellation))
     }
 }
