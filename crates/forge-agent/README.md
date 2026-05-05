@@ -14,23 +14,20 @@ The core model is journaled, ref-backed, and snapshot-driven: scoped journal
 events describe what happened, artifact refs point at large payloads, and
 `SessionState` stays a compact control snapshot for runners.
 
-## Core Modules
+## Module Layout
 
-- `agent`: reusable agent definitions and immutable agent versions
-- `ids`: durable ids and allocation helpers
-- `lifecycle`: session/run/turn lifecycle states and transition rules
-- `config`: session, run, turn, and extension configuration records
-- `refs`: artifact references for large payloads
-- `transcript`: transcript ledger, projection, and message records
-- `context`: bounded context window, token count, pressure, and compaction summary records
-- `turn`: turn inputs, plans, reports, and resolved turn context snapshots
-- `tooling`: tool specs, profiles, observed calls, and planned calls
-- `batch`: active tool-batch state and per-call statuses
-- `effects`: effect intents, receipts, and stream frames
-- `events`: input, lifecycle, effect, and observation events
-- `state`: session/run state, pending effects, queues, forks, and active history boundary
-- `projection`: stable CLI/JSONL/web projection items
-- `subagent`: parent/child session metadata
+Implementation files are grouped by layer:
+
+- `model/`: serializable domain contracts such as ids, events, effects,
+  transcript records, context records, tool models, and bounded session state
+- `loop/`: deterministic loop machinery such as the journal, reducer,
+  decider, planner, and local stepper
+- `testing/`: deterministic fake stores, fake effect executors, and reusable
+  loop fixtures
+
+The crate keeps root-level public re-exports for the main SDK modules, so
+callers can continue to use paths such as `forge_agent::events::AgentEvent`,
+`forge_agent::state::SessionState`, and `forge_agent::journal::InMemoryJournal`.
 
 ## Deferred Surfaces
 

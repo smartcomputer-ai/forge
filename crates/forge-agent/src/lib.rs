@@ -11,19 +11,13 @@
 //! contracts. Hook, policy, approval, and sandbox APIs are deferred extension
 //! surfaces rather than supported first-cut behavior.
 
-pub mod agent;
-pub mod batch;
-pub mod config;
-pub mod context;
-pub mod effects;
 pub mod error;
-pub mod events;
-pub mod ids;
-pub mod lifecycle;
-pub mod projection;
-pub mod refs;
-pub mod state;
-pub mod subagent;
-pub mod tooling;
-pub mod transcript;
-pub mod turn;
+pub mod r#loop;
+pub mod model;
+pub mod testing;
+
+pub use r#loop::{decider, journal, planner, reducer};
+pub use model::{
+    agent, batch, config, context, effects, events, ids, lifecycle, projection, refs, state,
+    subagent, tooling, transcript, turn,
+};

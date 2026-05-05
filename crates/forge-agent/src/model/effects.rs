@@ -190,7 +190,7 @@ pub struct RetryMetadata {
     pub retryable: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LlmGenerationReceipt {
     pub assistant_message_ref: Option<ArtifactRef>,
     pub reasoning_summary_ref: Option<ArtifactRef>,

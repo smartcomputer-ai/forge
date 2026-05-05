@@ -193,6 +193,7 @@ pub struct ReducerOutcome {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeciderOutcome {
+    pub events: Vec<AgentEvent>,
     pub intents: Vec<AgentEffectIntent>,
 }
 
