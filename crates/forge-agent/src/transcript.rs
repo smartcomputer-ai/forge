@@ -33,6 +33,12 @@ impl TranscriptRange {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TranscriptBoundary {
+    pub entry_seq: Option<u64>,
+    pub event_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptEntryKind {
     #[default]
@@ -219,6 +225,19 @@ mod tests {
                 end_seq: 2
             })
         );
+    }
+
+    #[test]
+    fn transcript_boundary_round_trips_through_msgpack() {
+        let boundary = TranscriptBoundary {
+            entry_seq: Some(3),
+            event_id: Some("event-3".into()),
+        };
+
+        let encoded = rmp_serde::to_vec_named(&boundary).expect("encode transcript boundary");
+        let decoded: TranscriptBoundary =
+            rmp_serde::from_slice(&encoded).expect("decode transcript boundary");
+        assert_eq!(decoded, boundary);
     }
 
     #[test]

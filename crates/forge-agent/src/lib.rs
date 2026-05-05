@@ -25,6 +25,5 @@ pub mod refs;
 pub mod state;
 pub mod subagent;
 pub mod tooling;
-pub mod trace;
 pub mod transcript;
 pub mod turn;

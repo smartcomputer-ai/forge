@@ -5,11 +5,10 @@
 
 use crate::config::{ContextBudgetConfig, ReasoningEffort, RunConfig, TurnConfig};
 use crate::context::ActiveWindowItem;
-use crate::ids::{AgentVersionId, CorrelationId, RunId, SessionId, SubmissionId, TurnId};
+use crate::ids::{AgentVersionId, CorrelationId, RunId, SessionId, TurnId};
 use crate::refs::ArtifactRef;
 use crate::tooling::ToolSpec;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -194,15 +193,6 @@ impl TurnPlan {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TraceContext {
-    pub submission_id: Option<SubmissionId>,
-    pub correlation_id: Option<CorrelationId>,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolvedTurnContext {
     pub session_id: SessionId,
     pub run_id: RunId,
@@ -230,7 +220,7 @@ pub struct ResolvedTurnContext {
     pub response_format_ref: Option<ArtifactRef>,
     pub provider_options_ref: Option<ArtifactRef>,
     pub budget: TurnBudget,
-    pub trace: TraceContext,
+    pub correlation_id: Option<CorrelationId>,
     pub extension_context_refs: Vec<ArtifactRef>,
 }
 

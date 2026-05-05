@@ -13,9 +13,10 @@ use crate::ids::{
     AgentVersionId, EffectId, IdAllocator, JournalSeq, RunId, SessionId, SubmissionId, TurnId,
 };
 use crate::lifecycle::{RunLifecycle, SessionStatus};
-use crate::refs::{ArtifactRef, TranscriptBoundary, TranscriptRef};
+use crate::refs::ArtifactRef;
 use crate::subagent::SubagentRecord;
 use crate::tooling::{ToolRegistry, ToolRuntimeContext};
+use crate::transcript::TranscriptBoundary;
 use crate::turn::TurnPlan;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -215,7 +216,6 @@ pub struct RunState {
     pub pending_effects: BTreeMap<EffectId, PendingEffectRecord>,
     pub latest_output_ref: Option<ArtifactRef>,
     pub usage_records: Vec<LlmUsageRecord>,
-    pub run_trace_ref: Option<ArtifactRef>,
     pub outcome: Option<RunOutcome>,
     pub started_at_ms: u64,
     pub updated_at_ms: u64,
@@ -269,7 +269,6 @@ pub struct RunRecord {
     pub usage_record_count: u64,
     pub usage_summary: LlmUsageRecord,
     pub usage_records_ref: Option<ArtifactRef>,
-    pub run_trace_ref: Option<ArtifactRef>,
     pub started_at_ms: u64,
     pub ended_at_ms: u64,
 }
@@ -293,7 +292,6 @@ impl From<RunState> for RunRecord {
             usage_record_count: run.usage_records.len() as u64,
             usage_summary: summarize_usage(&run.usage_records),
             usage_records_ref: None,
-            run_trace_ref: run.run_trace_ref,
             started_at_ms: run.started_at_ms,
             ended_at_ms: run.updated_at_ms,
         }
@@ -331,11 +329,13 @@ fn sum_optional(left: Option<u64>, right: Option<u64>) -> Option<u64> {
 pub enum SessionSource {
     Empty,
     TranscriptPrefix {
-        transcript_ref: TranscriptRef,
+        source_session_id: SessionId,
         boundary: Option<TranscriptBoundary>,
     },
     TranscriptSnapshot {
-        transcript_ref: TranscriptRef,
+        source_session_id: Option<SessionId>,
+        snapshot_ref: ArtifactRef,
+        boundary: Option<TranscriptBoundary>,
     },
     ParentSessionRun {
         parent_session_id: SessionId,
@@ -343,7 +343,8 @@ pub enum SessionSource {
         inherited_context_refs: Vec<ArtifactRef>,
     },
     ImportedHistory {
-        transcript_ref: TranscriptRef,
+        history_ref: ArtifactRef,
+        boundary: Option<TranscriptBoundary>,
     },
 }
 
@@ -430,8 +431,6 @@ pub struct SessionState {
     /// In-flight effects that have been emitted but not yet settled. Settled
     /// receipts are journaled and removed from this map.
     pub pending_effects: BTreeMap<EffectId, PendingEffectRecord>,
-    /// Current transcript snapshot/prefix ref used as the active history base.
-    pub active_transcript_ref: Option<TranscriptRef>,
     /// Source metadata when this session was forked/imported/derived.
     pub lineage: Option<SessionLineage>,
     /// Compact history rewrite/rollback control state needed for planning.
@@ -469,7 +468,6 @@ impl SessionState {
             pending_steering_inputs: VecDeque::new(),
             pending_confirmation_requests: BTreeMap::new(),
             pending_effects: BTreeMap::new(),
-            active_transcript_ref: None,
             lineage: None,
             history: HistoryControlState::default(),
             subagents: BTreeMap::new(),
@@ -482,16 +480,10 @@ impl SessionState {
 
     pub fn with_lineage(mut self, lineage: SessionLineage) -> Self {
         match &lineage.source {
-            SessionSource::TranscriptPrefix {
-                transcript_ref,
-                boundary,
-            } => {
-                self.active_transcript_ref = Some(transcript_ref.clone());
+            SessionSource::TranscriptPrefix { boundary, .. }
+            | SessionSource::TranscriptSnapshot { boundary, .. }
+            | SessionSource::ImportedHistory { boundary, .. } => {
                 self.history.active_boundary = boundary.clone();
-            }
-            SessionSource::TranscriptSnapshot { transcript_ref }
-            | SessionSource::ImportedHistory { transcript_ref } => {
-                self.active_transcript_ref = Some(transcript_ref.clone());
             }
             SessionSource::Empty | SessionSource::ParentSessionRun { .. } => {}
         }
@@ -633,7 +625,7 @@ mod tests {
         AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt, ToolInvocationRequest,
     };
     use crate::ids::ToolCallId;
-    use crate::refs::{ArtifactRef, TranscriptRef, TranscriptRefKind};
+    use crate::refs::ArtifactRef;
 
     fn active_session() -> SessionState {
         let mut session =
@@ -771,10 +763,7 @@ mod tests {
     fn session_state_can_represent_fork_and_active_history_boundary() {
         let lineage = SessionLineage {
             source: SessionSource::TranscriptPrefix {
-                transcript_ref: TranscriptRef::new(
-                    "transcript://source/prefix",
-                    TranscriptRefKind::Prefix,
-                ),
+                source_session_id: SessionId::new("source"),
                 boundary: Some(TranscriptBoundary {
                     entry_seq: Some(3),
                     event_id: None,
@@ -799,13 +788,6 @@ mod tests {
             session.lineage.as_ref().map(|lineage| &lineage.source),
             Some(SessionSource::TranscriptPrefix { .. })
         ));
-        assert_eq!(
-            session
-                .active_transcript_ref
-                .as_ref()
-                .map(|value| value.uri.as_str()),
-            Some("transcript://source/prefix")
-        );
         assert_eq!(
             session.history.active_boundary,
             Some(TranscriptBoundary {

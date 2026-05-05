@@ -16,8 +16,6 @@ use std::collections::BTreeMap;
 pub struct EffectMetadata {
     pub submission_id: Option<SubmissionId>,
     pub correlation_id: Option<CorrelationId>,
-    pub trace_id: Option<String>,
-    pub span_id: Option<String>,
     pub labels: BTreeMap<String, String>,
 }
 

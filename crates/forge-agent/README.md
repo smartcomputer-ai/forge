@@ -11,8 +11,8 @@ Host shell/filesystem/process tools are provided by runner/tool packages, not
 by this core crate.
 
 The core model is journaled, ref-backed, and snapshot-driven: scoped journal
-events describe what happened, artifact/transcript refs point at large payloads,
-and `SessionState` stays a compact control snapshot for runners.
+events describe what happened, artifact refs point at large payloads, and
+`SessionState` stays a compact control snapshot for runners.
 
 ## Core Modules
 
@@ -20,7 +20,7 @@ and `SessionState` stays a compact control snapshot for runners.
 - `ids`: durable ids and allocation helpers
 - `lifecycle`: session/run/turn lifecycle states and transition rules
 - `config`: session, run, turn, and extension configuration records
-- `refs`: artifact and transcript references for large payloads
+- `refs`: artifact references for large payloads
 - `transcript`: transcript ledger, projection, and message records
 - `context`: bounded context window, token count, pressure, and compaction summary records
 - `turn`: turn inputs, plans, reports, and resolved turn context snapshots
@@ -29,7 +29,6 @@ and `SessionState` stays a compact control snapshot for runners.
 - `effects`: effect intents, receipts, and stream frames
 - `events`: input, lifecycle, effect, and observation events
 - `state`: session/run state, pending effects, queues, forks, and active history boundary
-- `trace`: bounded run trace records
 - `projection`: stable CLI/JSONL/web projection items
 - `subagent`: parent/child session metadata
 

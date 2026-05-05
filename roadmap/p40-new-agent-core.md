@@ -22,7 +22,7 @@ Temporal, and persistence surfaces:
 - event and effect intent/receipt enums
 - pending effect state
 - tool registry/profile/batch model records
-- run trace and projection item records
+- projection item records
 - deterministic helper functions and invariants
 
 The output should be a compiling `forge-agent` crate with focused unit tests for
@@ -51,8 +51,8 @@ stack:
   artifacts + bounded session state. The journal is scoped to agent/session
   events; it is not a fully generic event store.
 - Use explicit ids for persisted identity. `SubmissionId` is the external
-  queue/idempotency id; `CorrelationId` is trace/correlation metadata.
-- Keep large payloads behind artifact/transcript refs.
+  queue/idempotency id; `CorrelationId` is correlation metadata.
+- Keep large payloads behind artifact refs.
 - Treat hooks, approval, permission, sandbox, and policy review as deferred SDK
   extension surfaces.
 
@@ -63,7 +63,7 @@ stack:
   - `SessionId`, `RunId`, `ToolBatchId` shape.
   - Sequence-backed child ids.
   - Forge additions: `TurnId`, `EffectId`, `SubmissionId`, `ToolCallId`,
-    `ProjectionItemId`, `ArtifactRef`, `TranscriptRef`.
+    `ProjectionItemId`, and `ArtifactRef`.
 - `refs/aos-agent/src/helpers/ids.rs`
   - Deterministic allocation from state counters.
   - Adapt into pure helpers that do not depend on AOS state layout.
@@ -101,8 +101,6 @@ stack:
 - `refs/aos-agent/src/contracts/batch.rs`
   - Per-call `ToolCallStatus`, active tool batch, execution groups, pending
     effect set, result refs, and settlement state.
-- `refs/aos-agent/src/contracts/trace.rs`
-  - Bounded run trace and summary records.
 - `refs/aos-agent/src/contracts/host.rs`
   - Defer host command/status vocabulary to runner/tool packages outside
     `forge-agent`.
@@ -147,8 +145,8 @@ stack:
 
 ### Codex concepts to lift now
 - Protocol queue identity and event correlation:
-  - Forge `SubmissionId` plus optional `CorrelationId` and trace context on
-    submissions, effects, and projection items.
+  - Forge `SubmissionId` plus optional `CorrelationId` on submissions,
+    effects, and projection items.
 - Resolved turn context snapshot:
   - provider/model/reasoning
   - current date/timezone
@@ -192,10 +190,9 @@ layout in `crates/forge-agent/src/`:
   - `SessionConfig`, `RunConfig`, `TurnConfig`, context/token/tool limits,
     opaque extension refs, and persistence mode references.
 - `refs.rs`
-  - `ArtifactRef`, `TranscriptRef`, provider compatibility metadata, previews,
-    and payload storage metadata.
+  - `ArtifactRef`, previews, and payload storage metadata.
 - `transcript.rs`
-  - transcript item/entry records and source ranges.
+  - transcript item/entry records, source ranges, and transcript boundaries.
 - `context.rs`
   - active window items, provider compatibility, context state, token count,
     pressure, and latest compaction summary.
@@ -215,8 +212,6 @@ layout in `crates/forge-agent/src/`:
 - `state.rs`
   - bounded `SessionState`, `RunState`, compact `RunRecord`, pending effects,
     queues, fork lineage, and compact history boundary state.
-- `trace.rs`
-  - bounded run trace and summaries.
 - `projection.rs`
   - stable projection item records for CLI/JSONL/web clients.
 - `subagent.rs`
@@ -236,7 +231,6 @@ layout in `crates/forge-agent/src/`:
 - Add id allocation helpers based on state counters.
 - Add agent definition/version records but do not model owner or tenant in p40.
 - Add scoped journal event sequence and ref-backed payload conventions.
-- Add bounded trace push/summarize helpers.
 - Add serde round-trip and invariant unit tests.
 - Update `crates/forge-agent/README.md` to point at spec/04 and the new module
   map if it still references the legacy spec/02 implementation.
@@ -278,8 +272,9 @@ layout in `crates/forge-agent/src/`:
     `SubmissionId`, `ToolBatchId`, `ToolCallId`, `ProjectionItemId`.
   - Define `CorrelationId` as optional metadata, not a replacement for
     `SubmissionId`.
-  - Define `ArtifactRef` and `TranscriptRef` with provider compatibility
-    metadata where needed; artifact refs do not carry semantic payload kind.
+  - Define `ArtifactRef`; artifact refs do not carry semantic payload kind and
+    transcript prefixes/snapshots are represented by source session ids,
+    boundaries, and artifact refs where needed.
   - Add allocation helpers for run, turn, tool batch, effect, and projection
     item ids.
 - Files:
@@ -294,8 +289,8 @@ layout in `crates/forge-agent/src/`:
     correlations, effects, tool batches, tool calls, and projection items.
   - Added a deterministic `IdAllocator` for run, turn, batch, effect, and
     projection item ids.
-  - Added artifact and transcript refs with provider compatibility metadata,
-    previews, transcript boundaries, and serde/msgpack coverage.
+  - Added artifact refs with previews/storage metadata and serde coverage.
+  - Added transcript boundaries in the transcript model with msgpack coverage.
 
 ### [x] G2a. Agent definition/version primitives
 - Work:
@@ -394,7 +389,7 @@ layout in `crates/forge-agent/src/`:
   - Define `ResolvedTurnContext` as an immutable snapshot of effective provider,
     model, current date/timezone, context refs, selected tool profile,
     model-visible tool specs, response format, provider options,
-    trace/correlation metadata, and runtime/extension refs.
+    correlation metadata, and runtime/extension refs.
   - Include extension refs only as future placeholders, not executable hooks or
     policies.
 - Files:
@@ -411,7 +406,7 @@ layout in `crates/forge-agent/src/`:
   - Added `ResolvedTurnContext` with provider/model/reasoning settings,
     date/timezone fields, context refs, selected tool profile,
     model-visible tools, active window items, provider options, response format
-    refs, budget, trace metadata, and future runtime/extension refs.
+    refs, budget, correlation metadata, and future runtime/extension refs.
   - Added deterministic resolution from run provenance, `RunConfig`, optional
     `TurnConfig`, and `TurnPlan`.
 
@@ -565,28 +560,21 @@ layout in `crates/forge-agent/src/`:
     history accounting.
   - Added tests proving completed run history retention is bounded.
 
-### [x] G9. Run trace and projection item model
+### [x] G9. Projection item model
 - Work:
-  - Define bounded run trace entries, refs, push behavior, dropped-entry
-    accounting, and trace summaries.
   - Define projection items with stable item ids and item lifecycle states.
   - Include user, assistant, reasoning, tool, patch, compaction, warning, and
     status item kinds.
 - Files:
-  - `crates/forge-agent/src/trace.rs`
   - `crates/forge-agent/src/projection.rs`
 - DoD:
-  - Trace retention is bounded and summarized deterministically.
   - Projection records carry enough ids to join back to session/run/turn/effect
     or tool-call state.
 - Completed:
-  - Added bounded `RunTrace`, `RunTraceEntry`, typed trace refs, trace entry
-    kinds, push behavior, dropped-entry accounting, and `RunTraceSummary`.
   - Added projection item lifecycle states, join ids, projection item kinds for
     user/assistant/reasoning/tool/patch/compaction/warning/status/file
     change/token/cost/custom entries, and item update/complete/fail helpers.
-  - Added tests for deterministic trace retention/summary behavior and
-    projection item joins/lifecycle/serde round-trips.
+  - Added tests for projection item joins/lifecycle/serde round-trips.
 
 ### [x] G9a. Transcript item projection contract
 - Work:
@@ -616,8 +604,8 @@ layout in `crates/forge-agent/src/`:
   - Add focused unit tests beside each model module.
   - Round-trip representative events, effects, state, context records, and tool
     batches through JSON and msgpack where relevant.
-  - Assert transition errors, id allocation, bounded trace behavior, and
-    tool-batch terminal status helpers.
+  - Assert transition errors, id allocation, and tool-batch terminal status
+    helpers.
 - Files:
   - `crates/forge-agent/src/**/*.rs`
 - DoD:
@@ -627,7 +615,7 @@ layout in `crates/forge-agent/src/`:
 - Completed:
   - Added focused unit coverage across agent, ids, refs, lifecycle, config,
     transcript, context, turn, tooling, batch, effects, events, state,
-    subagent, trace, and projection modules.
+    subagent, and projection modules.
   - Verified `cargo test -p forge-agent` passes with deterministic model tests.
 
 ## Priority 1: Shape for Later Phases
@@ -691,7 +679,7 @@ layout in `crates/forge-agent/src/`:
   - context pressure and bounded compaction summary state
   - LLM/confirmation/MCP/generic tool/subagent effect intents and receipts
   - tool registry/profile/batch state
-  - bounded trace and projection items
+  - projection items
   - fork/rollback/history rewrite metadata
 - Artifact refs are core model primitives, but artifact store put/get is
   adapter/storage infrastructure, not an agent effect family.

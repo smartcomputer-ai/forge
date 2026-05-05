@@ -4,10 +4,21 @@
 //! next turn. Full transcript and compaction history lives in journal and
 //! projection records.
 
-use crate::refs::{ArtifactRef, ProviderCompatibility};
+use crate::refs::ArtifactRef;
 use crate::transcript::TranscriptRange;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderCompatibility {
+    pub provider: String,
+    pub api_kind: String,
+    pub model: Option<String>,
+    pub model_family: Option<String>,
+    pub artifact_type: String,
+    pub opaque: bool,
+    pub encrypted: bool,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -49,7 +49,6 @@ The new agent should borrow from `refs/aos-agent/` for:
 - context pressure, token counting, and compaction operation state
 - per-call tool batch status, execution groups, and composite tool progress
 - runner workspace and tool-runtime concepts
-- bounded run traces for diagnostics and replay explanation
 - chat/CLI projection from an event stream
 
 ### 1.3 Build on `forge-llm`
@@ -87,7 +86,7 @@ wholesale.
 
 Forge should lift these Codex concepts into its own contracts:
 
-- submission/event queue correlation ids and trace propagation
+- submission/event queue correlation ids and propagation
 - resolved turn context snapshots, including model, tools, and runtime refs
 - stable item lifecycle projections (`started`/`updated`/`completed`) for UI,
   CLI, JSONL, and future service clients
@@ -227,9 +226,8 @@ The core owns:
 - pending effects
 - tool registry/profile state
 - resolved turn context snapshots
-- active transcript/context refs and context pressure state
+- active transcript boundary/context refs and context pressure state
 - per-call tool batch state
-- bounded run trace summaries
 - lifecycle and status transitions
 - deterministic mapping from receipts to next work
 
@@ -260,8 +258,8 @@ It repeatedly:
 7. emits projection events for UI/log consumers
 
 The runner boundary also provides a submission/event queue protocol. Every
-external submission has a stable submission id, correlation id, and optional
-trace context. Projection events should carry enough ids to let clients
+external submission has a stable submission id and optional correlation id.
+Projection events should carry enough ids to let clients
 reconstruct which submission, run, turn, effect, or tool call they belong to.
 Future hook and policy extensions should use the same correlation scheme.
 
@@ -326,7 +324,6 @@ Important projections:
 - context/compaction status
 - token/cost usage
 - file change summary
-- bounded run trace
 - Attractor stage result
 
 Future extension projections should cover hook runs, approval requests,
@@ -360,8 +357,8 @@ stable.
 - `ArtifactRef`: content-addressed or store-addressed large payload reference.
   Semantic role belongs to transcript, context, turn, projection, or compaction
   records rather than the storage reference itself.
-- `TranscriptRef`: a stable reference to a transcript prefix or message-history
-  snapshot that can seed another session.
+- `TranscriptBoundary`: stable boundary marker for a transcript entry/event
+  position used by forks, rewrites, rollbacks, and active context control.
 
 IDs must be explicit in persisted events. Never depend on vector position as a
 durable identity.
@@ -426,7 +423,7 @@ Session state includes:
 - pending follow-up inputs
 - pending steering inputs
 - pending confirmation requests
-- active transcript ref and active context/artifact refs
+- active transcript boundary and active context/artifact refs
 - thread metadata, such as name, memory mode, and external linkage
 - extension config refs for future hooks, policy, and dynamic tools
 - latest journal sequence applied
@@ -452,9 +449,9 @@ A new session may be created with an optional source:
 - parent session/run: create a child/subagent session with inherited context
 
 The forked session gets a new `SessionId` and independent future event log. It
-retains lineage metadata pointing at the source session, source transcript ref,
-source message/event boundary, and fork reason. New events never mutate the
-source session.
+retains lineage metadata pointing at the source session, source message/event
+boundary, optional materialized history artifact refs, and fork reason. New
+events never mutate the source session.
 
 Fork semantics are used for:
 
@@ -520,7 +517,6 @@ Run state includes:
 - pending effects
 - latest output ref
 - usage and cost records
-- run trace
 - outcome
 
 ### 5.6 Resolved turn context
@@ -540,7 +536,7 @@ The resolved turn context includes:
 - base, developer, user, skill, plugin, app, domain, and runtime context refs
 - selected tool profile and model-visible tool specs
 - truncation and compaction policy
-- trace/correlation metadata
+- correlation metadata
 - extension context refs for future hooks, policy, and dynamic tool/MCP exposure
 
 The resolved context is persisted or reproducible from persisted events. Tool
@@ -667,24 +663,12 @@ Composite tools may emit multiple internal effects before producing one
 model-visible result. Their intermediate state must be durable and tied to the
 same `ToolCallId` and `ToolBatchId`.
 
-### 5.10 Run trace
+### 5.10 Diagnostics and projections
 
-Each run maintains a bounded diagnostic trace separate from the authoritative
-event log and from UI projections. The trace explains why the state machine made
-decisions without forcing clients to replay every low-level event.
-
-Trace entries should cover:
-
-- run start/finish
-- turn planning decisions
-- LLM request/receipt
-- tool call observation and planning
-- effect emission and receipt settlement
-- context pressure and compaction
-- intervention, interruption, cancellation, and future extension decisions
-
-Trace retention is bounded. When entries are dropped, the summary records how
-many were dropped and the first/last retained sequence.
+Diagnostics are derived from the scoped journal, resolved turn reports,
+context/compaction records, and projection items. The first-cut core does not
+maintain a separate diagnostic timeline. Runners or backends may build
+diagnostic views or debug timelines outside active session state.
 
 ## 6. Event and Journal Model
 
@@ -1167,9 +1151,9 @@ The core storage contract is logical:
 - read transcript/projection items
 - read session/run projections
 - query by session id, run id, and external linkage
-- create sessions from transcript refs or message-history snapshots
+- create sessions from transcript boundaries or message-history snapshots
 - query session lineage and fork relationships
-- store and query run trace summaries
+- store and query diagnostic projections derived from journal/projection data
 
 Future hook/policy extensions may add storage for permission grants, approval
 decisions, hook outputs, and policy-review records.
@@ -1283,7 +1267,7 @@ Important test categories:
 - history rewrite, rollback, fork lineage, and transcript source ranges
 - interruption/cancellation settlement
 - context compaction prerequisites
-- bounded run trace summaries when trace entries are dropped
+- diagnostic projection summaries when derived diagnostic records are dropped
 - local runner end-to-end with fake adapters
 - Temporal mapping tests with mocked activities or Temporal test utilities
 

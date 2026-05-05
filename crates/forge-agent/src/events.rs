@@ -12,9 +12,9 @@ use crate::ids::{
     ToolBatchId, ToolCallId, TurnId,
 };
 use crate::lifecycle::{RunLifecycle, SessionStatus, TurnLifecycle};
-use crate::refs::{ArtifactRef, TranscriptRef};
+use crate::refs::ArtifactRef;
 use crate::tooling::{ToolCallObserved, ToolProfile, ToolRegistry};
-use crate::transcript::TranscriptRange;
+use crate::transcript::{TranscriptBoundary, TranscriptRange};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -136,7 +136,7 @@ pub struct HistoryRewriteRequest {
     pub rewrite_id: String,
     pub cause: String,
     pub source_range: Option<TranscriptRange>,
-    pub replacement_transcript_ref: Option<TranscriptRef>,
+    pub replacement_boundary: Option<TranscriptBoundary>,
     pub replacement_artifact_refs: Vec<ArtifactRef>,
     pub filesystem_changes_affected: Option<bool>,
 }
@@ -216,7 +216,7 @@ pub enum LifecycleEvent {
     },
     HistoryRewriteCompleted {
         rewrite_id: String,
-        resulting_transcript_ref: Option<TranscriptRef>,
+        resulting_boundary: Option<TranscriptBoundary>,
     },
 }
 
