@@ -245,6 +245,8 @@ stable.
 - `ToolBatchId`: a group of tool calls returned by one LLM response.
 - `ToolCallId`: a provider/model tool call id normalized by Forge.
 - `ArtifactRef`: content-addressed or store-addressed large payload reference.
+- `TranscriptRef`: a stable reference to a transcript prefix or message-history
+  snapshot that can seed another session.
 
 IDs must be explicit in persisted events. Never depend on vector position as a
 durable identity.
@@ -278,7 +280,37 @@ Session state includes:
 Only one foreground run is active in a session at a time. Subagents are separate
 sessions with parent/child metadata.
 
-### 5.3 Run
+### 5.3 Session lineage and forks
+
+Sessions must be able to continue from an existing transcript or message
+history that originated in another session. This is a first-class fork
+capability, not an ad hoc copy/paste operation.
+
+A new session may be created with an optional source:
+
+- no source: start from an empty transcript plus configured initial context
+- transcript prefix: continue from all messages up to a specific message/event
+- transcript snapshot: continue from a compacted or exported message-history ref
+- parent session/run: create a child/subagent session with inherited context
+
+The forked session gets a new `SessionId` and independent future event log. It
+retains lineage metadata pointing at the source session, source transcript ref,
+source message/event boundary, and fork reason. New events never mutate the
+source session.
+
+Fork semantics are used for:
+
+- manual "continue from here" workflows
+- alternative branches from the same conversation state
+- subagent startup from parent context
+- retries or experiments that should not pollute the original session
+- importing externally captured message history into Forge-native sessions
+
+The active context planner should treat forked transcript messages like normal
+durable inputs while preserving provenance so projections can show where the
+history came from.
+
+### 5.4 Run
 
 A run is the unit of user-visible work: "implement this", "review that",
 "continue", or an Attractor stage prompt.
@@ -307,7 +339,7 @@ Run state includes:
 - usage and cost records
 - outcome
 
-### 5.4 Turn and context window
+### 5.5 Turn and context window
 
 A turn is one LLM sampling request and the immediate response processing around
 it. The agent may perform many turns in one run:
@@ -357,7 +389,7 @@ The planner returns:
 Required inputs may exceed normal budgets, but that should be visible in the
 turn report. Non-required inputs may be dropped by priority and budget.
 
-### 5.5 Transcript and artifacts
+### 5.6 Transcript and artifacts
 
 Large data should be stored by reference, not embedded everywhere.
 
@@ -730,6 +762,8 @@ The core storage contract is logical:
 - put/get artifact bytes
 - read session/run projections
 - query by session id, run id, and external linkage
+- create sessions from transcript refs or message-history snapshots
+- query session lineage and fork relationships
 
 The local runner may initially use filesystem storage. The Temporal runner may
 use Temporal history for execution recovery and an external artifact/event store
