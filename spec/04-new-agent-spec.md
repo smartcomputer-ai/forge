@@ -1258,6 +1258,20 @@ Payload rule:
 The storage abstraction should not leak CXDB, filesystem, or Temporal details
 into the agent core.
 
+First-cut `forge-agent` storage contracts should live under `storage/`:
+
+- `storage::JournalStore` for scoped event append/read
+- `storage::SnapshotStore` for bounded `SessionState` snapshots
+- `storage::ArtifactStore` for artifact/blob bytes referenced by model
+  records
+- `storage::AgentDefinitionStore` for reusable agent definitions and immutable
+  agent versions
+
+Tool, LLM, planner, and runner code should depend on these logical contracts
+instead of defining surface-specific artifact readers. More specialized stores,
+such as projection/query stores, idempotency indexes, and runtime handle stores,
+can be added as those phases need them.
+
 The first production backend may use explicit tables for agent definitions,
 agent versions, sessions, session snapshots, journal events, transcript items,
 runs/tool-call indexes, and artifacts. These tables are not all equally

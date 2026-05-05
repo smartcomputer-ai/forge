@@ -1,4 +1,4 @@
-//! Minimal artifact access used by tool handlers and dispatch validation.
+//! Artifact/blob storage contract.
 
 use crate::refs::ArtifactRef;
 use async_trait::async_trait;
@@ -16,7 +16,7 @@ pub enum ArtifactStoreError {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ToolArtifactWrite {
+pub struct ArtifactWrite {
     pub uri_hint: Option<String>,
     pub bytes: Vec<u8>,
     pub media_type: Option<String>,
@@ -25,13 +25,11 @@ pub struct ToolArtifactWrite {
 }
 
 #[async_trait]
-pub trait ToolArtifactStore: Send + Sync {
+pub trait ArtifactStore: Send + Sync {
     async fn read_bytes(&self, artifact_ref: &ArtifactRef) -> Result<Vec<u8>, ArtifactStoreError>;
 
-    async fn write_bytes(
-        &self,
-        artifact: ToolArtifactWrite,
-    ) -> Result<ArtifactRef, ArtifactStoreError>;
+    async fn write_bytes(&self, artifact: ArtifactWrite)
+    -> Result<ArtifactRef, ArtifactStoreError>;
 
     async fn read_text(&self, artifact_ref: &ArtifactRef) -> Result<String, ArtifactStoreError> {
         let bytes = self.read_bytes(artifact_ref).await?;
@@ -45,18 +43,18 @@ pub trait ToolArtifactStore: Send + Sync {
 }
 
 #[derive(Clone, Default)]
-pub struct InMemoryToolArtifactStore {
-    inner: Arc<RwLock<InMemoryToolArtifactStoreInner>>,
+pub struct InMemoryArtifactStore {
+    inner: Arc<RwLock<InMemoryArtifactStoreInner>>,
 }
 
 #[derive(Default)]
-struct InMemoryToolArtifactStoreInner {
+struct InMemoryArtifactStoreInner {
     next_seq: u64,
     bytes_by_uri: BTreeMap<String, Vec<u8>>,
     refs_by_uri: BTreeMap<String, ArtifactRef>,
 }
 
-impl InMemoryToolArtifactStore {
+impl InMemoryArtifactStore {
     pub fn new() -> Self {
         Self::default()
     }
@@ -74,7 +72,7 @@ impl InMemoryToolArtifactStore {
 }
 
 #[async_trait]
-impl ToolArtifactStore for InMemoryToolArtifactStore {
+impl ArtifactStore for InMemoryArtifactStore {
     async fn read_bytes(&self, artifact_ref: &ArtifactRef) -> Result<Vec<u8>, ArtifactStoreError> {
         self.inner
             .read()
@@ -89,13 +87,13 @@ impl ToolArtifactStore for InMemoryToolArtifactStore {
 
     async fn write_bytes(
         &self,
-        artifact: ToolArtifactWrite,
+        artifact: ArtifactWrite,
     ) -> Result<ArtifactRef, ArtifactStoreError> {
         let mut inner = self.inner.write().expect("artifact store lock poisoned");
         inner.next_seq = inner.next_seq.saturating_add(1);
         let uri = artifact
             .uri_hint
-            .unwrap_or_else(|| format!("mem://tool-artifact/{}", inner.next_seq));
+            .unwrap_or_else(|| format!("mem://agent-artifact/{}", inner.next_seq));
         let mut artifact_ref = ArtifactRef::new(uri.clone());
         artifact_ref.media_type = artifact.media_type;
         artifact_ref.byte_len = Some(artifact.bytes.len() as u64);
@@ -104,5 +102,29 @@ impl ToolArtifactStore for InMemoryToolArtifactStore {
         inner.bytes_by_uri.insert(uri.clone(), artifact.bytes);
         inner.refs_by_uri.insert(uri, artifact_ref.clone());
         Ok(artifact_ref)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_artifact_store_writes_and_reads_text() {
+        let store = InMemoryArtifactStore::new();
+        let artifact_ref = store
+            .write_bytes(ArtifactWrite {
+                bytes: b"hello".to_vec(),
+                preview: Some("hello".into()),
+                ..Default::default()
+            })
+            .await
+            .expect("write artifact");
+
+        assert_eq!(
+            store.read_text(&artifact_ref).await.expect("read artifact"),
+            "hello"
+        );
+        assert_eq!(artifact_ref.preview.as_deref(), Some("hello"));
     }
 }

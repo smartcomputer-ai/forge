@@ -2,8 +2,8 @@
 
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
 use crate::refs::ArtifactRef;
+use crate::storage::{ArtifactStore, ArtifactStoreError, InMemoryArtifactStore};
 use crate::tooling::{ToolExecutorKind, ToolRegistry, ToolRuntimeContext, ToolSpec};
-use crate::tools::artifacts::{ArtifactStoreError, InMemoryToolArtifactStore, ToolArtifactStore};
 use crate::tools::handler::{ToolExecutionError, ToolHandler, ToolInvocationContext};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -30,7 +30,7 @@ pub struct ToolDispatcherBuilder {
     tool_registry: ToolRegistry,
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     tool_handler_bindings: BTreeMap<String, String>,
-    artifacts: Option<Arc<dyn ToolArtifactStore>>,
+    artifacts: Option<Arc<dyn ArtifactStore>>,
 }
 
 impl ToolDispatcherBuilder {
@@ -43,7 +43,7 @@ impl ToolDispatcherBuilder {
         }
     }
 
-    pub fn with_artifacts(mut self, artifacts: Arc<dyn ToolArtifactStore>) -> Self {
+    pub fn with_artifacts(mut self, artifacts: Arc<dyn ArtifactStore>) -> Self {
         self.artifacts = Some(artifacts);
         self
     }
@@ -82,7 +82,7 @@ impl ToolDispatcherBuilder {
             tool_handler_bindings: self.tool_handler_bindings,
             artifacts: self
                 .artifacts
-                .unwrap_or_else(|| Arc::new(InMemoryToolArtifactStore::new())),
+                .unwrap_or_else(|| Arc::new(InMemoryArtifactStore::new())),
         }
     }
 }
@@ -92,7 +92,7 @@ pub struct ToolDispatcher {
     tool_registry: ToolRegistry,
     handlers: BTreeMap<String, Arc<dyn ToolHandler>>,
     tool_handler_bindings: BTreeMap<String, String>,
-    artifacts: Arc<dyn ToolArtifactStore>,
+    artifacts: Arc<dyn ArtifactStore>,
 }
 
 impl ToolDispatcher {
@@ -559,7 +559,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn dispatch_loads_arguments_from_ref_before_validation() {
-        let artifacts = Arc::new(InMemoryToolArtifactStore::new());
+        let artifacts = Arc::new(InMemoryArtifactStore::new());
         let arguments_ref = artifacts.insert_text("mem://args/1", r#"{"text":"from-ref"}"#);
         let mut request = request();
         request.arguments_json = None;

@@ -2,8 +2,8 @@
 
 use crate::effects::{ToolInvocationReceipt, ToolInvocationRequest};
 use crate::refs::ArtifactRef;
+use crate::storage::ArtifactStore;
 use crate::tooling::ToolRuntimeContext;
-use crate::tools::artifacts::ToolArtifactStore;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -13,11 +13,11 @@ use thiserror::Error;
 #[derive(Clone)]
 pub struct ToolInvocationContext {
     pub runtime: ToolRuntimeContext,
-    pub artifacts: Arc<dyn ToolArtifactStore>,
+    pub artifacts: Arc<dyn ArtifactStore>,
 }
 
 impl ToolInvocationContext {
-    pub fn new(runtime: ToolRuntimeContext, artifacts: Arc<dyn ToolArtifactStore>) -> Self {
+    pub fn new(runtime: ToolRuntimeContext, artifacts: Arc<dyn ArtifactStore>) -> Self {
         Self { runtime, artifacts }
     }
 }

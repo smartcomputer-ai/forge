@@ -14,6 +14,7 @@
 pub mod error;
 pub mod r#loop;
 pub mod model;
+pub mod storage;
 pub mod testing;
 pub mod tools;
 
