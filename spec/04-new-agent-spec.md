@@ -858,6 +858,77 @@ registered third-party tools. If a tool is visible to the model but unavailable
 at execution time, the tool result should explain that failure to the model
 instead of disappearing.
 
+The tool execution API is split into three responsibilities:
+
+- the core loop plans tool batches and emits `ToolInvoke` effect intents
+- the tool dispatcher resolves an intent to a registered handler, validates and
+  prepares arguments, and converts handler output into receipts
+- the runner-specific execution driver decides how to run, wait for, cancel,
+  and collect terminal outcomes for one or more dispatch requests
+
+The dispatcher must not own runtime task primitives such as Tokio spawning,
+Tokio joins, timers, channels, or Temporal workflow selectors. It may prepare
+dispatch groups and invoke a single handler through an injected driver, but the
+local runner, Temporal runner, or test harness owns the actual concurrency
+mechanics. This preserves the same tool SDK for local execution and Temporal
+execution, where workflow code must use Temporal activity futures, selectors,
+cancellation scopes, and timers instead of Tokio scheduling primitives.
+
+Tool handlers implement one logical invocation. A handler receives a normalized
+`ToolInvocationRequest`, runtime context, and artifact access. It returns
+exactly one terminal `ToolInvocationReceipt` for that invocation. Handlers
+should not read or mutate `SessionState`, call the reducer or decider, or decide
+when the next LLM turn starts.
+
+Tool progress streaming is deferred for the first dispatcher implementation.
+The core event model already has `EffectStreamFrameObserved` for
+non-authoritative streaming progress, and future tool runtimes may use it for
+stdout/stderr chunks, progress updates, adapter metadata, UI logs, and
+diagnostics. P42 should keep the handler API small and terminal-receipt driven,
+then add a tool progress sink later once local and Temporal runner needs are
+clear. Replay must not require re-running a stream.
+
+Tool results may complete out of order at runtime, but model-visible tool result
+ordering must remain deterministic. Runners should append terminal receipts as
+they are observed, while the context planner should present tool results in
+planned-call order or another explicit stable order.
+
+Long-running tools that should let the model reason before underlying work
+finishes must be modeled as resumable/background tools, not as partial reducer
+state. The Codex-style pattern is:
+
+```text
+start tool -> return model-visible "running" receipt with handle and output snapshot
+later poll/interaction tool call -> return another receipt with new output or completion
+```
+
+Future stream frames from a long-running tool remain projection-only unless the
+tool chooses to return a model-visible receipt. A background host process,
+remote job, or subagent wait may therefore continue adapter-locally after a
+terminal receipt, as long as the receipt includes a durable handle and enough
+metadata for future poll, write, interrupt, or close calls.
+
+#### Codex reference: long-running CLI updates
+
+Codex does not generally feed arbitrary intermediate tool stream frames back
+into the same active LLM request. For normal tool calls, it starts tool futures
+as completed model stream items arrive, allows parallel-safe tools to run
+concurrently, records live UI events while they execute, then drains the
+terminal tool outputs before the next follow-up LLM turn.
+
+Codex's more advanced long-running CLI behavior comes from its unified exec
+tool. A command runs under a process manager and streams stdout/stderr to the
+UI. After a configured yield window, the tool can return a model-visible
+terminal result even if the process is still alive. That result includes a
+process/session handle, elapsed time, output snapshot, and "still running"
+metadata. The next LLM turn can reason over that snapshot and choose to poll,
+write stdin, interrupt, or close the process through later tool calls.
+
+Forge should preserve this semantic pattern without copying Codex's Tokio
+implementation. For the first Forge dispatcher, the resumable/background tool
+chooses when to produce a model-visible receipt with a durable continuation
+handle; live tool stream-frame sinks are a later observability extension.
+
 ### 7.3 Host tools
 
 Host access is a tool package, not part of the `forge-agent` core crate.
@@ -875,6 +946,13 @@ Host tool receipts should include enough execution metadata to explain what was
 attempted: cwd/environment, command/process details, exit status, output refs,
 and any adapter-local sandbox or permission information when the adapter
 enforces one. A full policy/approval framework is deferred.
+
+Host process tools should prefer the resumable/background pattern for commands
+that can outlive one model turn. A command tool may return after a configured
+yield window with a process/session handle, output snapshot, and "still running"
+metadata, then expose separate poll/write/interrupt/close tools. This lets the
+model continue reasoning while long-running work proceeds without requiring the
+core dispatcher to inject partial tool outputs into an active LLM request.
 
 ### 7.4 Confirmation effects
 
@@ -1017,6 +1095,14 @@ permission resolution, and approval surfaces.
 
 Workflow code must not call `forge-llm`, shell, filesystem, network, wall-clock,
 or random APIs directly.
+
+Workflow code must also not use Tokio task-spawning or Tokio join primitives as
+the semantic implementation of agent tool parallelism. The workflow should
+record the same logical `ToolInvoke` intents as the local runner, then schedule
+activities with Temporal-native futures/selectors and cancellation scopes. A
+Temporal activity may emit progress to an external projection/event store and
+heartbeat for liveness, but the terminal activity result is the receipt that
+advances the reducer.
 
 ### 8.3 History size and continue-as-new
 
@@ -1263,6 +1349,9 @@ Important test categories:
 - tool profile selection
 - LLM receipt normalization
 - tool batch planning and parallelism grouping
+- async dispatcher behavior with out-of-order completions and stable
+  model-visible ordering
+- resumable/background tool receipts and follow-up poll/interaction calls
 - per-call tool status and composite tool progress
 - history rewrite, rollback, fork lineage, and transcript source ranges
 - interruption/cancellation settlement
