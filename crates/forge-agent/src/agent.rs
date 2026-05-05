@@ -39,7 +39,7 @@ pub struct AgentVersion {
 mod tests {
     use super::*;
     use crate::config::RunConfig;
-    use crate::refs::{ArtifactKind, ArtifactRef};
+    use crate::refs::ArtifactRef;
 
     #[test]
     fn agent_definition_round_trips_with_stable_handle() {
@@ -62,7 +62,7 @@ mod tests {
             agent_id: AgentId::new("agent"),
             name: "Builder".into(),
             description: Some("Builds software from specs".into()),
-            system_prompt_refs: vec![ArtifactRef::new("blob://system", ArtifactKind::UserPrompt)],
+            system_prompt_refs: vec![ArtifactRef::new("blob://system")],
             default_run_config: RunConfig {
                 provider: "openai".into(),
                 model: "gpt-x".into(),

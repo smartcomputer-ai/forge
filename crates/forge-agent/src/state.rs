@@ -633,7 +633,7 @@ mod tests {
         AgentEffectKind, AgentReceiptKind, ToolInvocationReceipt, ToolInvocationRequest,
     };
     use crate::ids::ToolCallId;
-    use crate::refs::{ArtifactKind, ArtifactRef, TranscriptRef, TranscriptRefKind};
+    use crate::refs::{ArtifactRef, TranscriptRef, TranscriptRefKind};
 
     fn active_session() -> SessionState {
         let mut session =
@@ -648,7 +648,7 @@ mod tests {
     fn session_state_represents_new_and_active_run() {
         let mut session = active_session();
         let run_id = session.id_allocator.allocate_run_id();
-        let input_ref = ArtifactRef::new("blob://prompt", ArtifactKind::UserPrompt);
+        let input_ref = ArtifactRef::new("blob://prompt");
         let cause = RunCause::direct_input(input_ref.clone(), Some(SubmissionId::new("submit-1")));
         let run = RunState::queued(
             run_id.clone(),
@@ -690,10 +690,7 @@ mod tests {
         let record = session
             .finish_current_run(
                 RunLifecycle::Completed,
-                RunOutcome::completed(Some(ArtifactRef::new(
-                    "blob://answer",
-                    ArtifactKind::AssistantMessage,
-                ))),
+                RunOutcome::completed(Some(ArtifactRef::new("blob://answer"))),
                 5,
             )
             .expect("finish run");
@@ -753,10 +750,7 @@ mod tests {
             .finish_current_run(
                 RunLifecycle::Interrupted,
                 RunOutcome {
-                    interrupted_reason_ref: Some(ArtifactRef::new(
-                        "blob://reason",
-                        ArtifactKind::Custom,
-                    )),
+                    interrupted_reason_ref: Some(ArtifactRef::new("blob://reason")),
                     ..Default::default()
                 },
                 5,
@@ -798,7 +792,7 @@ mod tests {
                 entry_seq: Some(1),
                 event_id: None,
             }),
-            Some(ArtifactRef::new("blob://rewrite", ArtifactKind::Compaction)),
+            Some(ArtifactRef::new("blob://rewrite")),
         );
 
         assert!(matches!(

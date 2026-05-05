@@ -358,6 +358,8 @@ stable.
   patch, or compaction item in UI/event projections.
 - `JournalSeq`: monotonically increasing sequence within one session journal.
 - `ArtifactRef`: content-addressed or store-addressed large payload reference.
+  Semantic role belongs to transcript, context, turn, projection, or compaction
+  records rather than the storage reference itself.
 - `TranscriptRef`: a stable reference to a transcript prefix or message-history
   snapshot that can seed another session.
 

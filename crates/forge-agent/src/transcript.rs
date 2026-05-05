@@ -187,20 +187,18 @@ pub enum TranscriptRecord {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::refs::ArtifactKind;
-
     #[test]
     fn ledger_append_allocates_sequence_and_source_range() {
         let mut ledger = TranscriptLedger::default();
         let first = ledger.append(
             TranscriptEntryKind::Message,
-            ArtifactRef::new("blob://user-1", ArtifactKind::UserPrompt),
+            ArtifactRef::new("blob://user-1"),
             "user",
             10,
         );
         let second = ledger.append(
             TranscriptEntryKind::Summary,
-            ArtifactRef::new("blob://summary-1", ArtifactKind::Compaction),
+            ArtifactRef::new("blob://summary-1"),
             "compaction",
             11,
         );
@@ -227,7 +225,7 @@ mod tests {
     fn transcript_record_round_trips_through_msgpack() {
         let record = TranscriptRecord::ToolResult(ToolResultRecord {
             tool_call_id: ToolCallId::new("call-1"),
-            content_ref: ArtifactRef::new("blob://tool-output", ArtifactKind::ToolOutput),
+            content_ref: ArtifactRef::new("blob://tool-output"),
             model_visible_ref: None,
             is_error: false,
             source_range: Some(TranscriptRange::single(4)),
@@ -254,10 +252,7 @@ mod tests {
             },
             kind: TranscriptEntryKind::ToolResult,
             source_event_id: Some("event-7".into()),
-            content_ref: Some(ArtifactRef::new(
-                "blob://tool-output",
-                ArtifactKind::ToolOutput,
-            )),
+            content_ref: Some(ArtifactRef::new("blob://tool-output")),
             preview: Some("ok".into()),
             source_range: None,
             metadata: std::collections::BTreeMap::new(),

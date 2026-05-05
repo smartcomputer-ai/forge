@@ -307,14 +307,12 @@ impl ContextState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::refs::ArtifactKind;
-
     #[test]
     fn context_state_appends_message_to_active_window_with_bounded_sequence() {
         let mut state = ContextState::default();
         let item = state.append_message_ref(
             "item-1",
-            ArtifactRef::new("blob://user-1", ArtifactKind::UserPrompt),
+            ArtifactRef::new("blob://user-1"),
             Some(ContextInputLane::Conversation),
         );
 
@@ -349,12 +347,12 @@ mod tests {
             operation_id: "compact-1".into(),
             strategy: CompactionStrategy::Summary,
             artifact_kind: CompactionArtifactKind::Summary,
-            artifact_refs: vec![ArtifactRef::new("blob://summary", ArtifactKind::Compaction)],
+            artifact_refs: vec![ArtifactRef::new("blob://summary")],
             source_range: TranscriptRange {
                 start_seq: 0,
                 end_seq: 4,
             },
-            source_refs: vec![ArtifactRef::new("blob://source", ArtifactKind::UserPrompt)],
+            source_refs: vec![ArtifactRef::new("blob://source")],
             ..Default::default()
         };
 
@@ -370,14 +368,14 @@ mod tests {
             operation_id: "compact-1".into(),
             strategy: CompactionStrategy::Summary,
             artifact_kind: CompactionArtifactKind::Summary,
-            artifact_refs: vec![ArtifactRef::new("blob://summary", ArtifactKind::Compaction)],
+            artifact_refs: vec![ArtifactRef::new("blob://summary")],
             source_range: TranscriptRange {
                 start_seq: 0,
                 end_seq: 4,
             },
             active_window_items: vec![ActiveWindowItem::message_ref(
                 "summary",
-                ArtifactRef::new("blob://summary", ArtifactKind::Compaction),
+                ArtifactRef::new("blob://summary"),
                 Some(ContextInputLane::Summary),
                 Some(TranscriptRange {
                     start_seq: 0,

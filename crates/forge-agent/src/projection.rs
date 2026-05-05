@@ -159,7 +159,7 @@ mod tests {
     use super::*;
     use crate::events::FileChangeKind;
     use crate::ids::IdAllocator;
-    use crate::refs::{ArtifactKind, ArtifactRef};
+    use crate::refs::ArtifactRef;
 
     #[test]
     fn projection_item_tracks_lifecycle_and_join_ids() {
@@ -179,13 +179,7 @@ mod tests {
 
         let mut item = ProjectionItem::new(item_id, joins, ProjectionItemKind::Assistant, 10);
         item.update_preview("partial", 11);
-        item.complete(
-            Some(ArtifactRef::new(
-                "blob://assistant",
-                ArtifactKind::AssistantMessage,
-            )),
-            12,
-        );
+        item.complete(Some(ArtifactRef::new("blob://assistant")), 12);
 
         assert_eq!(item.lifecycle, ProjectionItemLifecycle::Completed);
         assert!(item.lifecycle.is_terminal());
@@ -211,7 +205,7 @@ mod tests {
                     path: "src/lib.rs".into(),
                     change_kind: FileChangeKind::Modified,
                     before_ref: None,
-                    after_ref: Some(ArtifactRef::new("blob://after", ArtifactKind::FileContent)),
+                    after_ref: Some(ArtifactRef::new("blob://after")),
                     patch_ref: None,
                 },
             },

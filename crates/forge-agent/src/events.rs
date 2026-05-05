@@ -310,7 +310,7 @@ mod tests {
     use super::*;
     use crate::effects::{AgentEffectKind, ToolInvocationRequest};
     use crate::ids::{EffectId, IdAllocator};
-    use crate::refs::{ArtifactKind, ArtifactRef};
+    use crate::refs::ArtifactRef;
     use std::collections::BTreeMap;
 
     #[test]
@@ -345,7 +345,7 @@ mod tests {
             SessionId::new("session-a"),
             10,
             AgentEventKind::Input(InputEvent::RunRequested {
-                input_ref: ArtifactRef::new("blob://prompt", ArtifactKind::UserPrompt),
+                input_ref: ArtifactRef::new("blob://prompt"),
                 run_overrides: None,
             }),
         );

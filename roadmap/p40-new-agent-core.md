@@ -192,7 +192,8 @@ layout in `crates/forge-agent/src/`:
   - `SessionConfig`, `RunConfig`, `TurnConfig`, context/token/tool limits,
     opaque extension refs, and persistence mode references.
 - `refs.rs`
-  - `ArtifactRef`, `TranscriptRef`, typed ref metadata, previews, payload kind.
+  - `ArtifactRef`, `TranscriptRef`, provider compatibility metadata, previews,
+    and payload storage metadata.
 - `transcript.rs`
   - transcript item/entry records and source ranges.
 - `context.rs`
@@ -277,8 +278,8 @@ layout in `crates/forge-agent/src/`:
     `SubmissionId`, `ToolBatchId`, `ToolCallId`, `ProjectionItemId`.
   - Define `CorrelationId` as optional metadata, not a replacement for
     `SubmissionId`.
-  - Define `ArtifactRef` and `TranscriptRef` with kind/provider compatibility
-    metadata where needed.
+  - Define `ArtifactRef` and `TranscriptRef` with provider compatibility
+    metadata where needed; artifact refs do not carry semantic payload kind.
   - Add allocation helpers for run, turn, tool batch, effect, and projection
     item ids.
 - Files:

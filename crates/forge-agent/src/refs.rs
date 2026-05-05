@@ -23,26 +23,8 @@ pub struct ProviderCompatibility {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ArtifactKind {
-    UserPrompt,
-    AssistantMessage,
-    ReasoningSummary,
-    RawLlmResponse,
-    ToolArguments,
-    ToolOutput,
-    FileContent,
-    Patch,
-    Compaction,
-    ProviderNative,
-    #[default]
-    Custom,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRef {
     pub uri: String,
-    pub kind: ArtifactKind,
     pub media_type: Option<String>,
     pub digest: Option<String>,
     pub byte_len: Option<u64>,
@@ -52,10 +34,9 @@ pub struct ArtifactRef {
 }
 
 impl ArtifactRef {
-    pub fn new(uri: impl Into<String>, kind: ArtifactKind) -> Self {
+    pub fn new(uri: impl Into<String>) -> Self {
         Self {
             uri: uri.into(),
-            kind,
             media_type: None,
             digest: None,
             byte_len: None,
@@ -73,7 +54,7 @@ impl ArtifactRef {
     pub fn provider_native(uri: impl Into<String>, compatibility: ProviderCompatibility) -> Self {
         Self {
             provider_compatibility: Some(compatibility),
-            ..Self::new(uri, ArtifactKind::ProviderNative)
+            ..Self::new(uri)
         }
     }
 }
@@ -136,7 +117,6 @@ mod tests {
             },
         );
 
-        assert_eq!(artifact.kind, ArtifactKind::ProviderNative);
         assert!(
             artifact
                 .provider_compatibility
