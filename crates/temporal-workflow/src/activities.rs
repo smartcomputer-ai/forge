@@ -1,6 +1,5 @@
 use engine::{
-    BlobRef, ContextCompactionResult, LlmGenerationResult, PromiseSourceCancelRequest,
-    PromiseSourceCancelResult, PromiseSourceCheckRequest, PromiseSourceCheckResult,
+    BlobRef, ContextCompactionResult, LlmGenerationResult, PromiseSourceCheckResult,
     ToolBatchOutcome,
 };
 use temporalio_macros::activities;
@@ -10,11 +9,14 @@ use crate::{
     AppendEventsRequest, ContextCompactActivityRequest, CreateOrLoadSessionRequest,
     CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
-    EnvironmentJobStartActivityRequest, EnvironmentJobStartActivityResult,
-    LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
-    PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
-    RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
-    ToolInvokeBatchActivityRequest,
+    EnvironmentJobPrepareWorkflowToolRequest, EnvironmentJobStartActivityRequest,
+    EnvironmentJobStartActivityResult, LlmGenerateActivityRequest,
+    PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult, PutBlobRequest,
+    ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
+    RuntimeProjectionRefreshActivityResult, ToolInvokeBatchActivityRequest,
+    WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest,
+    WorkflowToolReplyValidationRequest, WorkflowToolReplyValidationResult,
+    WorkflowToolStartActivityRequest, WorkflowToolStartActivityResult,
 };
 
 pub const ACTIVITY_CREATE_OR_LOAD_SESSION: &str = "WorkflowActivities::create_or_load_session";
@@ -27,12 +29,19 @@ pub const ACTIVITY_CONTEXT_COMPACT: &str = "WorkflowActivities::context_compact"
 pub const ACTIVITY_TOOL_INVOKE_BATCH: &str = "WorkflowActivities::tool_invoke_batch";
 pub const ACTIVITY_RUNTIME_PROJECTION_REFRESH: &str =
     "WorkflowActivities::runtime_projection_refresh";
-pub const ACTIVITY_CHECK_PROMISE_SOURCE: &str = "WorkflowActivities::check_promise_source";
-pub const ACTIVITY_CANCEL_PROMISE_SOURCE: &str = "WorkflowActivities::cancel_promise_source";
-pub const ACTIVITY_SUBSCRIBE_PROMISE_SOURCE: &str = "WorkflowActivities::subscribe_promise_source";
 pub const ACTIVITY_ENVIRONMENT_JOB_START: &str = "WorkflowActivities::environment_job_start";
+pub const ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL: &str =
+    "WorkflowActivities::environment_job_prepare_workflow_tool";
 pub const ACTIVITY_ENVIRONMENT_JOB_POLL: &str = "WorkflowActivities::environment_job_poll";
 pub const ACTIVITY_ENVIRONMENT_JOB_CANCEL: &str = "WorkflowActivities::environment_job_cancel";
+pub const ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY: &str =
+    "WorkflowActivities::validate_workflow_tool_reply";
+pub const ACTIVITY_START_WORKFLOW_TOOL_EXECUTION: &str =
+    "WorkflowActivities::start_workflow_tool_execution";
+pub const ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION: &str =
+    "WorkflowActivities::check_workflow_tool_execution";
+pub const ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION: &str =
+    "WorkflowActivities::cancel_workflow_tool_execution";
 
 pub struct WorkflowActivities;
 
@@ -110,35 +119,19 @@ impl WorkflowActivities {
         unimplemented!("workflow activity definition only")
     }
 
-    #[activity(name = ACTIVITY_CHECK_PROMISE_SOURCE)]
-    pub async fn check_promise_source(
-        _ctx: ActivityContext,
-        _request: PromiseSourceCheckRequest,
-    ) -> Result<PromiseSourceCheckResult, ActivityError> {
-        unimplemented!("workflow activity definition only")
-    }
-
-    #[activity(name = ACTIVITY_CANCEL_PROMISE_SOURCE)]
-    pub async fn cancel_promise_source(
-        _ctx: ActivityContext,
-        _request: PromiseSourceCancelRequest,
-    ) -> Result<PromiseSourceCancelResult, ActivityError> {
-        unimplemented!("workflow activity definition only")
-    }
-
-    #[activity(name = ACTIVITY_SUBSCRIBE_PROMISE_SOURCE)]
-    pub async fn subscribe_promise_source(
-        _ctx: ActivityContext,
-        _request: engine::PromiseSourceSubscribeRequest,
-    ) -> Result<PromiseSourceCheckResult, ActivityError> {
-        unimplemented!("workflow activity definition only")
-    }
-
     #[activity(name = ACTIVITY_ENVIRONMENT_JOB_START)]
     pub async fn environment_job_start(
         _ctx: ActivityContext,
         _request: EnvironmentJobStartActivityRequest,
     ) -> Result<EnvironmentJobStartActivityResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    #[activity(name = ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL)]
+    pub async fn environment_job_prepare_workflow_tool(
+        _ctx: ActivityContext,
+        _request: EnvironmentJobPrepareWorkflowToolRequest,
+    ) -> Result<crate::EnvironmentJobWorkflowArgs, ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 
@@ -155,6 +148,49 @@ impl WorkflowActivities {
         _ctx: ActivityContext,
         _request: EnvironmentJobCancelActivityRequest,
     ) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Bounded CAS load + JSON Schema check of one keyed reply payload
+    /// against the binding's immutable reply schema. The deterministic
+    /// engine never performs CAS I/O; a receiver cannot bypass reply
+    /// validation by returning an arbitrary blob reference.
+    #[activity(name = ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY)]
+    pub async fn validate_workflow_tool_reply(
+        _ctx: ActivityContext,
+        _request: WorkflowToolReplyValidationRequest,
+    ) -> Result<WorkflowToolReplyValidationResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Resolve the trusted start recipe and issue the deterministic
+    /// workflow start. `AlreadyStarted` for the exact execution id is
+    /// success.
+    #[activity(name = ACTIVITY_START_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn start_workflow_tool_execution(
+        _ctx: ActivityContext,
+        _request: WorkflowToolStartActivityRequest,
+    ) -> Result<WorkflowToolStartActivityResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Recovery check for one keyed promise of a started execution:
+    /// describe the execution and, when it is closed, recover its terminal
+    /// result through the fixed recovery query.
+    #[activity(name = ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn check_workflow_tool_execution(
+        _ctx: ActivityContext,
+        _request: WorkflowToolExecutionCheckRequest,
+    ) -> Result<PromiseSourceCheckResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Best-effort cancellation of the exact system-derived execution.
+    #[activity(name = ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn cancel_workflow_tool_execution(
+        _ctx: ActivityContext,
+        _request: WorkflowToolExecutionCancelRequest,
+    ) -> Result<(), ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 }

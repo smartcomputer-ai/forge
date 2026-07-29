@@ -12,12 +12,12 @@ pub mod fleet;
 pub mod fs;
 pub mod host_protocol;
 pub mod limits;
-pub mod messaging;
 pub mod prompts;
 pub mod runtime;
 pub mod skills;
 pub mod targets;
 pub mod toolset;
 pub mod web;
+pub mod workflow_tool;
 
 pub use error::{ToolError, ToolResult};

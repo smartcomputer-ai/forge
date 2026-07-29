@@ -421,7 +421,7 @@ Implemented in `crates/environments`.
 Add `store-pg` tables and trait implementations for providers, targets, and
 session environment bindings.
 
-Implemented through `store-pg` migration `006_environments.sql` and
+Implemented through `store-pg` migration `005_environments.sql` and
 the `PgStore` environment registry trait implementations.
 
 ### G3: Internal Provider API

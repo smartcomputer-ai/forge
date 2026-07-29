@@ -11,6 +11,7 @@ mod session_state;
 mod tests;
 mod wait_loop;
 mod watchdog;
+mod workflow_starts;
 
 use std::time::Duration;
 use std::{
@@ -22,9 +23,9 @@ use engine::{
     BlobRef, CommandError, ContextEntryInput, ContextEntryKey, ContextEntryKind,
     ContextMessageRole, CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentDriveError,
     CoreAgentEntry, CoreAgentEvent, CoreAgentState, CoreAgentStatus,
-    ENVIRONMENT_ACTIVE_CONTEXT_KEY, ENVIRONMENT_CATALOG_CONTEXT_KEY, LlmGenerationRequest,
-    RunConfig, RunEvent, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionId, SessionPosition,
-    SubmissionId, ToolInvocationBatchRequest, VFS_CATALOG_CONTEXT_KEY,
+    ENVIRONMENT_ACTIVE_CONTEXT_KEY, ENVIRONMENT_CATALOG_CONTEXT_KEY, EmissionEnvelope,
+    LlmGenerationRequest, RunConfig, RunEvent, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionId,
+    SessionPosition, SubmissionId, ToolInvocationBatchRequest, VFS_CATALOG_CONTEXT_KEY,
 };
 use futures::{FutureExt, pin_mut, select};
 use temporalio_macros::{workflow, workflow_methods};
@@ -37,13 +38,12 @@ use crate::{
     AgentCompletedRunSummary, AgentMessageSubmissionConsumptionSummary, AgentQueuedRunSummary,
     AgentSessionArgs, AgentSessionStatus, AppendEventsRequest, AwaitOutcome, AwaitOutput,
     AwaitPromiseResult, CancellingWatchdog, CreateOrLoadSessionRequest,
-    DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD, LlmGenerateActivityRequest,
-    PendingPromiseCancellation, PendingPromiseNotification, PendingToolBatchResume,
+    DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD, LlmGenerateActivityRequest, PendingEmission,
+    PendingPromiseCancellation, PendingSourceResolution, PendingToolBatchResume,
     PreprocessRunInputActivityRequest, PreprocessRunInputFailure, PreprocessRunInputFailureKind,
-    PreprocessRunInputOutcome, PromiseResolutionSignal, PromiseSourcePoll,
-    PromiseSourceResolutionSignal, PutBlobRequest, RuntimeProjectionRefreshActivityRequest,
-    ToolInvokeBatchActivityRequest, WorkflowActivities, activity_options, compose_workflow_id,
-    default_instructions, split_workflow_id,
+    PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
+    RuntimeProjectionRefreshActivityRequest, ToolInvokeBatchActivityRequest, WorkflowActivities,
+    activity_options, compose_workflow_id, default_instructions, split_workflow_id,
 };
 
 use activity_calls::{call_context_compact, call_llm_generate, call_tool_invoke_batch};
@@ -55,7 +55,7 @@ use drive::{
     drive_until_idle, process_pending_tool_batch_resumes,
 };
 use errors::{record_admission_failure, record_bootstrap_error, record_error};
-use session_state::flush_pending_promise_notifications;
+use session_state::flush_pending_emissions;
 use wait_loop::{
     can_continue_as_new_at_idle, wait_for_workflow_work, workflow_state_should_complete,
 };
@@ -65,16 +65,20 @@ const DEFAULT_MAX_STEPS_PER_INPUT: usize = 256;
 
 #[workflow(name = "AgentSessionWorkflow")]
 pub struct AgentSessionWorkflow {
+    universe_id: Option<uuid::Uuid>,
     session_id: Option<SessionId>,
     initialized: bool,
     core_state: CoreAgentState,
     head: Option<SessionPosition>,
     pending_admissions: Vec<AgentAdmission>,
     pending_tool_batch_resumes: Vec<PendingToolBatchResume>,
-    pending_promise_notifications: Vec<PendingPromiseNotification>,
+    pending_emissions: Vec<PendingEmission>,
+    pending_source_resolutions: Vec<PendingSourceResolution>,
+    confirmed_workflow_starts: BTreeSet<String>,
+    workflow_start_backoffs: BTreeMap<String, (u32, u64)>,
+    cancelled_workflow_executions: BTreeSet<String>,
     pending_promise_cancellations: Vec<PendingPromiseCancellation>,
     promise_source_polls: BTreeMap<String, PromiseSourcePoll>,
-    confirmed_promise_source_subscriptions: BTreeSet<String>,
     run_submissions: BTreeMap<u64, Option<SubmissionId>>,
     cancelling_watchdog: Option<CancellingWatchdog>,
     admission_failures: Vec<AgentAdmissionFailure>,
@@ -85,16 +89,20 @@ pub struct AgentSessionWorkflow {
 impl Default for AgentSessionWorkflow {
     fn default() -> Self {
         Self {
+            universe_id: None,
             session_id: None,
             initialized: false,
             core_state: CoreAgentState::new(),
             head: None,
             pending_admissions: Vec::new(),
             pending_tool_batch_resumes: Vec::new(),
-            pending_promise_notifications: Vec::new(),
+            pending_emissions: Vec::new(),
+            pending_source_resolutions: Vec::new(),
+            confirmed_workflow_starts: BTreeSet::new(),
+            workflow_start_backoffs: BTreeMap::new(),
+            cancelled_workflow_executions: BTreeSet::new(),
             pending_promise_cancellations: Vec::new(),
             promise_source_polls: BTreeMap::new(),
-            confirmed_promise_source_subscriptions: BTreeSet::new(),
             run_submissions: BTreeMap::new(),
             cancelling_watchdog: None,
             admission_failures: Vec::new(),
@@ -123,15 +131,23 @@ impl AgentSessionWorkflow {
             reconcile_cancelling_watchdog(ctx);
             promise_sources::reconcile_polls(ctx);
             wait_for_workflow_work(ctx).await;
-            if let Err(error) = flush_pending_promise_notifications(ctx).await {
+            if let Err(error) = flush_pending_emissions(ctx).await {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
-            if let Err(error) = promise_sources::process_unconfirmed_subscriptions(ctx).await {
+            if let Err(error) = promise_sources::process_pending_source_resolutions(ctx).await {
+                record_error(ctx, &error);
+                return Err(anyhow::anyhow!("{error}").into());
+            }
+            if let Err(error) = workflow_starts::process_pending_starts(ctx).await {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
             if let Err(error) = promise_sources::flush_pending_promise_cancellations(ctx).await {
+                record_error(ctx, &error);
+                return Err(anyhow::anyhow!("{error}").into());
+            }
+            if let Err(error) = workflow_starts::process_execution_cancels(ctx).await {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
@@ -143,6 +159,7 @@ impl AgentSessionWorkflow {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
+            promise_sources::process_due_promise_deadlines(ctx);
             if let Err(error) = promise_sources::process_due(ctx).await {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
@@ -181,25 +198,23 @@ impl AgentSessionWorkflow {
         }
     }
 
-    /// Push delivery from a session this session holds a promise on: the
-    /// run behind the promise reached a terminal state. Queued as a
-    /// `ResolvePromise` admission (idempotent, first-writer-wins).
-    #[signal(name = "resolve_promise")]
-    pub fn resolve_promise(
+    /// Fixed inbound funnel for cross-workflow facts. Promise-bearing
+    /// emissions become ordinary `ResolvePromise` admissions, preserving the
+    /// engine's idempotent first-writer-wins semantics.
+    #[signal(name = "deliver_emission")]
+    pub fn deliver_emission(
         &mut self,
-        _ctx: &mut SyncWorkflowContext<Self>,
-        signal: PromiseResolutionSignal,
+        ctx: &mut SyncWorkflowContext<Self>,
+        envelope: EmissionEnvelope,
     ) {
-        self.queue_promise_resolution(signal);
-    }
-
-    #[signal(name = "resolve_promise_source")]
-    pub fn resolve_promise_source(
-        &mut self,
-        _ctx: &mut SyncWorkflowContext<Self>,
-        signal: PromiseSourceResolutionSignal,
-    ) {
-        self.queue_promise_source_resolution(signal);
+        let Some((universe_id, _)) = split_workflow_id(ctx.workflow_id()) else {
+            self.last_error = Some(format!(
+                "cannot admit emission for malformed session workflow id {}",
+                ctx.workflow_id()
+            ));
+            return;
+        };
+        self.queue_emission(universe_id, envelope);
     }
 
     #[query(name = "status")]

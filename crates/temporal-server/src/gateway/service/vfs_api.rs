@@ -360,21 +360,74 @@ impl GatewayAgentApi {
         let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
             AgentApiError::invalid_request(format!("session is missing config: {session_id}"))
         })?;
+        let jobs_granted = session_config
+            .features
+            .environments
+            .as_ref()
+            .is_some_and(|environments| environments.jobs);
+        let has_process_environment = self.session_has_process_environment(session_id).await?;
+        let has_job_read_environment = self.session_has_job_read_environment(session_id).await?;
+        let has_job_start_environment = self.session_has_job_start_environment(session_id).await?;
+        let mut refreshed = None;
+        if jobs_granted
+            && !loaded
+                .state
+                .workflow_tools
+                .bindings
+                .values()
+                .any(super::is_core_environment_job_start_binding)
+        {
+            self.ensure_core_environment_job_workflow_tool(session_id, &loaded.state)
+                .await?;
+            refreshed = Some(self.load_session_state(session_id).await?);
+        }
+        let loaded = refreshed.as_ref().unwrap_or(loaded);
+        let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
+            AgentApiError::invalid_request(format!("session is missing config: {session_id}"))
+        })?;
+        let expose_job_start = jobs_granted && has_job_start_environment;
         let target = ToolTarget::from(&session_config.model);
-        let config = self.session_toolset_config(
+        let mut config = self.session_toolset_config(
             session_config,
-            self.session_has_process_environment(session_id).await?,
-            self.session_has_job_environment(session_id).await?,
+            has_process_environment,
+            jobs_granted && has_job_read_environment,
+        );
+        let materialized_workflow_tools = loaded
+            .state
+            .workflow_tools
+            .bindings
+            .values()
+            .filter(|binding| {
+                expose_job_start || !super::is_core_environment_job_start_binding(binding)
+            })
+            .collect::<Vec<_>>();
+        enable_concurrency_for_workflow_tools(
+            &mut config,
+            materialized_workflow_tools.iter().copied(),
         );
         let fs_tools_enabled = config.builtin.fs.enabled();
-        let toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+        let mut toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
             .map_err(|error| AgentApiError::internal(format!("build session tools: {error}")))?;
+        materialize_workflow_tools(&mut toolset, materialized_workflow_tools.iter().copied())
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!("materialize workflow tool tools: {error}"))
+            })?;
         let blobs: Arc<dyn BlobStore> = self.store.clone();
         store_tool_documents(blobs.as_ref(), &toolset.documents).await?;
 
         // Remote MCP tools are derived from the config's declared links,
         // exactly like the standard toolset is derived from the features.
         let desired_mcp = self.desired_mcp_tools(&session_config.features).await?;
+        if let Some(colliding) = materialized_workflow_tools
+            .iter()
+            .copied()
+            .map(|binding| &binding.definition.tool.name)
+            .find(|tool_name| desired_mcp.contains_key(*tool_name))
+        {
+            return Err(AgentApiError::invalid_request(format!(
+                "workflow tool tool name {colliding} collides with a remote MCP tool"
+            )));
+        }
         let mut expected_tools = toolset.tools.keys().cloned().collect::<BTreeSet<_>>();
         expected_tools.extend(desired_mcp.keys().cloned());
         let patch = toolset_reconcile_patch(&loaded.state.tooling.tools, toolset, desired_mcp);

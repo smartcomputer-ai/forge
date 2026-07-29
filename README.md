@@ -43,11 +43,14 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Hosted MCP**, with API-key and OAuth authentication
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
-- [x] **Agent profiles**: reusable session setups, shared across CLI, bridges, and fleets
+- [x] **Agent profiles**: reusable session setups, shared across clients and fleets
 
 **Durability & scale**
 - [x] **Long-running agents**: sessions that last weeks to months and survive restarts
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
+- [x] **Managed sessions and workflow-backed tools**: trusted workflow
+  controllers can create sessions with immutable tool bindings, durable
+  emissions, keyed completions, deadlines, and cancellation
 - [x] **Eval harness** for regression-testing agent and tool workflows
 - [ ] **Timers, schedules, wake-ups**
 - [x] **Multi-tenancy**: many isolated universes (tenants) on one worker, with pluggable gateway auth
@@ -55,9 +58,10 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 **Borrowed compute**
 - [x] **Dedicated VMs**, connected as universe environment instances that
   sessions attach to through explicit bindings
-- [x] **Jobs** for long-running work: environment-owned downloads,
-  experiments, and delegated coding-agent runs with optional session/run
-  supervision
+- [x] **Provider-owned jobs** for long-running work: downloads, experiments,
+  and delegated coding-agent runs with optional session/run supervision. Jobs
+  are an advanced, default-off environment grant and appear as model tools
+  only when an attached ready environment advertises the required capability
 - [ ] **Ad-hoc sandboxes**
 
 **Security & auth**
@@ -69,7 +73,6 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Configurator MCP**: a configurable universe API surface as generated tools over
   multi-tenant Streamable HTTP
 - [x] **CLI** to connect to running agent sessions
-- [x] **Messaging bridges**: WhatsApp and Telegram today; media and group chats included, more channels coming
 
 The generated [JSON-RPC API reference](interop/contract/api-reference.md) is
 derived from the same Rust manifest and schemas that drive OpenRPC, the
@@ -83,6 +86,12 @@ In Lightspeed, that state machine is an event-sourced, deterministic core: it re
 Two more decisions make this practical inside a workflow engine:
 1) **Minimal provider abstraction.** We extract only the information needed to decide and branch inside the deterministic core; provider-native data stays opaque and blob-backed, instead of being converted into a fake universal LLM message model.
 2) **Offloading to CAS.** All data not directly needed by the workflow logic goes to content-addressed storage, so the payloads passed between workflow and activities are extremely thin and the workflow history stays small.
+
+Lightspeed's plugin infrastructure lets external workflows add durable tools
+to an agent. A plugin can create and manage a session, provide tools backed by
+its own workflows, and rely on Lightspeed to deliver calls, wait for results,
+handle timeouts, and cancel work. Plugins stay independent from the core
+session worker.
 
 The full design walk-through is in [docs/design.md](docs/design.md).
 
@@ -271,8 +280,8 @@ cargo run -p temporal-server -- api-key list
 cargo run -p temporal-server -- api-key revoke <key-prefix>
 ```
 
-The CLI and the messaging bridge send credentials from `LIGHTSPEED_API_KEY`
-(api-key mode) or `LIGHTSPEED_UNIVERSE` (trusted-header mode) automatically.
+The CLI sends credentials from `LIGHTSPEED_API_KEY` (api-key mode) or
+`LIGHTSPEED_UNIVERSE` (trusted-header mode) automatically.
 See [docs/roadmap/p90-multi-tenancy.md](docs/roadmap/p90-multi-tenancy.md)
 for the design.
 

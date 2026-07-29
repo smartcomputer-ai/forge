@@ -118,6 +118,194 @@ fn request_ids_accept_number_or_string() {
     assert_eq!(string.id, RequestId::String("req_7".to_owned()));
 }
 
+#[test]
+fn public_session_config_rejects_managed_workflow_tool_bindings() {
+    let config = serde_json::from_value::<SessionConfig>(json!({
+        "workflowTools": {
+            "lifecycleController": {
+                "workflowId": "work/other",
+                "workflowKind": "agent_work"
+            },
+            "bindings": []
+        }
+    }));
+
+    assert!(
+        config.is_err(),
+        "managed workflow-tool bindings must not enter through public session config"
+    );
+}
+
+#[test]
+fn managed_session_creation_exposes_targets_and_completion_contracts() {
+    let params: ManagedSessionStartParams = serde_json::from_value(json!({
+        "sessionId": "session_1",
+        "workflowTools": {
+            "version": 1,
+            "lifecycleController": {
+                "workflowId": "controller-1",
+                "workflowKind": "order.workflow"
+            },
+            "tools": [{
+                "definition": {
+                    "toolId": "accept-order",
+                    "revision": 1,
+                    "semanticType": "orders.accepted.v1",
+                    "tool": {
+                        "name": "accept_order",
+                        "kind": {
+                            "type": "function",
+                            "inputSchemaRef": "sha256:input"
+                        }
+                    }
+                },
+                "target": {
+                    "type": "bound",
+                    "receiver": {
+                        "workflowId": "receiver-1",
+                        "workflowKind": "order.receiver"
+                    }
+                },
+                "completion": {
+                    "type": "promises",
+                    "replySchemaRef": "sha256:reply",
+                    "deadlineAfterMs": 30000,
+                    "maxPromises": 4,
+                    "keySource": {
+                        "type": "arrayIndices",
+                        "pointer": "/messages",
+                        "prefix": "message-"
+                    }
+                }
+            }]
+        }
+    }))
+    .expect("managed session params");
+
+    let workflow_tools = params.workflow_tools;
+    assert_eq!(workflow_tools.version, 1);
+    assert_eq!(
+        workflow_tools.tools[0].definition.tool.parallelism,
+        ToolParallelismView::ParallelSafe
+    );
+    assert_eq!(
+        serde_json::to_value(&workflow_tools).expect("serialize workflow tools")["tools"][0]["definition"]
+            ["tool"]["parallelism"],
+        json!("parallelSafe")
+    );
+    assert!(matches!(
+        workflow_tools.tools[0].target,
+        WorkflowToolTargetInput::Bound { .. }
+    ));
+    assert!(matches!(
+        workflow_tools.tools[0].completion,
+        WorkflowToolCompletionInput::Promises {
+            key_source: WorkflowToolCompletionKeySourceInput::ArrayIndices { .. },
+            ..
+        }
+    ));
+}
+
+#[test]
+fn managed_session_creation_rejects_legacy_receiver_shortcut_and_tool_targets() {
+    for forbidden in ["receiver", "targetRequirement"] {
+        let mut tool = json!({
+            "definition": {
+                "toolId": "accept-order",
+                "revision": 1,
+                "semanticType": "orders.accepted.v1",
+                "tool": {
+                    "name": "accept_order",
+                    "kind": {
+                        "type": "function",
+                        "inputSchemaRef": "sha256:input"
+                    }
+                }
+            },
+            "target": {
+                "type": "bound",
+                "receiver": {
+                    "workflowId": "receiver-1",
+                    "workflowKind": "order.receiver"
+                }
+            },
+            "completion": {"type": "accepted"}
+        });
+        tool[forbidden] = json!({});
+        let result = serde_json::from_value::<ManagedSessionStartParams>(json!({
+            "workflowTools": {"version": 1, "tools": [tool]}
+        }));
+        assert!(result.is_err(), "{forbidden} must not be accepted");
+    }
+}
+
+#[test]
+fn ordinary_session_start_rejects_managed_creation_fields() {
+    assert!(
+        serde_json::from_value::<SessionStartParams>(json!({
+            "workflowTools": {"version": 1, "tools": []}
+        }))
+        .is_err()
+    );
+}
+
+#[test]
+fn run_terminal_notification_uses_token_only_wire_shape() {
+    let params: RunStartParams = serde_json::from_value(json!({
+        "sessionId": "session_1",
+        "source": {"type": "input", "items": []},
+        "notifyOnTerminal": {"token": "promise-1"}
+    }))
+    .expect("run terminal notification");
+    assert_eq!(
+        params.notify_on_terminal.expect("notification").token,
+        "promise-1"
+    );
+    assert!(
+        serde_json::from_value::<RunStartParams>(json!({
+            "sessionId": "session_1",
+            "source": {"type": "input", "items": []},
+            "notifyOnTerminal": {
+                "token": "promise-1",
+                "holderWorkflowId": "caller-chosen-destination"
+            }
+        }))
+        .is_err()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_managed_session_start() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_SESSION_MANAGED_START.to_owned(),
+            params: Some(json!({
+                "sessionId": "session_1",
+                "workflowTools": {
+                    "version": 1,
+                    "lifecycleController": {
+                        "workflowId": "controller-1",
+                        "workflowKind": "order.workflow"
+                    },
+                    "tools": []
+                }
+            })),
+        },
+    )
+    .await;
+
+    let error = response
+        .error
+        .expect("test service returns an internal error");
+    assert_eq!(error.code, -32603);
+    assert_eq!(
+        error.data.expect("typed error").kind,
+        AgentApiErrorKind::Internal
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_calls_api_service() {
     let response = dispatch_json_rpc(
@@ -376,44 +564,6 @@ async fn dispatch_json_rpc_routes_context_append() {
                 "status": "applied"
             }
         ])
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_outbox_read_and_ack() {
-    let read = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_OUTBOX_READ.to_owned(),
-            params: Some(json!({ "after": 7, "waitMs": 100 })),
-        },
-    )
-    .await;
-    assert!(read.error.is_none());
-    let read = read.result.expect("result");
-    assert_eq!(read["result"]["nextAfter"], json!(8));
-    assert_eq!(
-        read["result"]["entries"][0]["payload"]["type"],
-        json!("send")
-    );
-
-    let ack = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(2),
-            method: METHOD_OUTBOX_ACK.to_owned(),
-            params: Some(json!({
-                "outboxId": "outbox_1",
-                "result": { "type": "delivered", "channelMessageId": "42" }
-            })),
-        },
-    )
-    .await;
-    assert!(ack.error.is_none());
-    assert_eq!(
-        ack.result.expect("result")["result"]["status"],
-        json!("delivered")
     );
 }
 
@@ -1494,6 +1644,13 @@ impl AgentApiService for TestService {
         Err(AgentApiError::internal("not implemented"))
     }
 
+    async fn start_managed_session(
+        &self,
+        _params: ManagedSessionStartParams,
+    ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
+        Err(AgentApiError::internal("not implemented"))
+    }
+
     async fn create_profile(
         &self,
         params: ProfileCreateParams,
@@ -1586,6 +1743,7 @@ impl AgentApiService for TestService {
                 id: "session_test".to_owned(),
                 display_name: Some("Test session".to_owned()),
                 lifecycle_status: SessionLifecycleStatus::Open,
+                managed: false,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             }],
@@ -1602,6 +1760,7 @@ impl AgentApiService for TestService {
                 id: params.session_id,
                 display_name: params.display_name,
                 lifecycle_status: SessionLifecycleStatus::Open,
+                managed: false,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -1633,6 +1792,7 @@ impl AgentApiService for TestService {
                 id: params.session_id,
                 display_name: None,
                 lifecycle_status: SessionLifecycleStatus::Closed,
+                managed: false,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -1684,44 +1844,6 @@ impl AgentApiService for TestService {
                     failure: None,
                 })
                 .collect(),
-        }))
-    }
-
-    async fn read_outbox(
-        &self,
-        params: OutboxReadParams,
-    ) -> Result<AgentApiOutcome<OutboxReadResponse>, AgentApiError> {
-        let after = params.after.unwrap_or(0);
-        Ok(AgentApiOutcome::new(OutboxReadResponse {
-            entries: vec![OutboundMessageView {
-                seq: after + 1,
-                outbox_id: "outbox_1".to_owned(),
-                session_id: "session_1".to_owned(),
-                run_id: Some("run_1".to_owned()),
-                origin: OutboundOriginView::ToolCall,
-                payload: OutboundPayloadView::Send {
-                    text: "hello".to_owned(),
-                    reply_to: None,
-                },
-                attempts: 0,
-                created_at_ms: 1,
-            }],
-            next_after: after + 1,
-        }))
-    }
-
-    async fn ack_outbox(
-        &self,
-        params: OutboxAckParams,
-    ) -> Result<AgentApiOutcome<OutboxAckResponse>, AgentApiError> {
-        let status = match params.result {
-            OutboundAckInput::Delivered { .. } => OutboundStatusView::Delivered,
-            OutboundAckInput::Failed { .. } => OutboundStatusView::Failed,
-        };
-        Ok(AgentApiOutcome::new(OutboxAckResponse {
-            outbox_id: params.outbox_id,
-            status,
-            attempts: 1,
         }))
     }
 
@@ -1973,15 +2095,6 @@ impl AgentApiService for TestService {
         _params: EnvironmentJobReadParams,
     ) -> Result<AgentApiOutcome<EnvironmentJobReadResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(EnvironmentJobReadResponse {
-            jobs: Vec::new(),
-        }))
-    }
-
-    async fn list_environment_jobs(
-        &self,
-        _params: EnvironmentJobListParams,
-    ) -> Result<AgentApiOutcome<EnvironmentJobListResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(EnvironmentJobListResponse {
             jobs: Vec::new(),
         }))
     }
@@ -2552,6 +2665,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         id,
         display_name: Some("Test session".to_owned()),
         status,
+        managed: false,
         config_revision: 0,
         config: None,
         created_at_ms: 1,
@@ -2559,6 +2673,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         runs: Vec::new(),
         active_context: ContextView::default(),
         active_tools: ActiveToolsView::default(),
+        management: None,
         vfs_mounts: Vec::new(),
     }
 }
@@ -2824,32 +2939,6 @@ impl OperatorApiService for TestOperatorService {
             api_key,
         }))
     }
-
-    async fn read_outbox(
-        &self,
-        params: OperatorOutboxReadParams,
-    ) -> Result<AgentApiOutcome<OperatorOutboxReadResponse>, AgentApiError> {
-        let seq = params.after.unwrap_or(0) + 1;
-        Ok(AgentApiOutcome::new(OperatorOutboxReadResponse {
-            entries: vec![OperatorOutboundMessageView {
-                universe_id: "universe_test".to_owned(),
-                message: OutboundMessageView {
-                    seq,
-                    outbox_id: "outbox_test".to_owned(),
-                    session_id: "session_test".to_owned(),
-                    run_id: None,
-                    origin: OutboundOriginView::FinalText,
-                    payload: OutboundPayloadView::Send {
-                        text: "hello".to_owned(),
-                        reply_to: None,
-                    },
-                    attempts: 0,
-                    created_at_ms: 1,
-                },
-            }],
-            next_after: seq,
-        }))
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2983,29 +3072,4 @@ async fn operator_dispatch_rejects_universe_scoped_methods_and_vice_versa() {
     )
     .await;
     assert_eq!(response.error.expect("error").code, -32601);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_operator_json_rpc_routes_outbox_read_with_flattened_entries() {
-    let response = dispatch_operator_json_rpc(
-        &TestOperatorService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_OPERATOR_OUTBOX_READ.to_owned(),
-            params: Some(json!({ "after": 7, "limit": 10, "waitMs": 0 })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    let result = response.result.expect("result");
-    let entry = &result["result"]["entries"][0];
-    // The universe tag and the per-universe view fields share one level:
-    // bridges reuse their existing entry handling plus a universeId switch.
-    assert_eq!(entry["universeId"], json!("universe_test"));
-    assert_eq!(entry["seq"], json!(8));
-    assert_eq!(entry["outboxId"], json!("outbox_test"));
-    assert_eq!(entry["sessionId"], json!("session_test"));
-    assert_eq!(entry["payload"]["type"], json!("send"));
-    assert_eq!(result["result"]["nextAfter"], json!(8));
 }

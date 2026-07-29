@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -33,6 +36,7 @@ pub struct JobManager {
 
 #[derive(Default)]
 struct JobManagerState {
+    accepting: bool,
     jobs: BTreeMap<JobKey, JobRecord>,
     running: BTreeMap<JobKey, Arc<RunningJob>>,
     secret_envs: BTreeMap<JobKey, BTreeMap<String, SecretString>>,
@@ -43,6 +47,7 @@ type JobKey = (String, JobId);
 
 struct RunningJob {
     cancel: Notify,
+    interrupted: AtomicBool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,6 +92,7 @@ struct ResolvedJob {
 enum FinishKind {
     Exit,
     Cancelled,
+    Interrupted,
     TimedOut,
 }
 
@@ -96,7 +102,10 @@ impl JobManager {
         let fs_root = normalize_path(fs_root);
         let jobs_root = fs_root.join(".lightspeed").join("jobs");
         std::fs::create_dir_all(&jobs_root)?;
-        let mut state = JobManagerState::default();
+        let mut state = JobManagerState {
+            accepting: true,
+            ..JobManagerState::default()
+        };
         let now = now_ms();
 
         for entry in std::fs::read_dir(&jobs_root)? {
@@ -138,11 +147,13 @@ impl JobManager {
         let now = now_ms();
         let resolved = {
             let state = self.state.lock().await;
+            require_accepting(&state)?;
             validate_and_resolve_start(&state, &params)?
         };
         let mut accepted = Vec::new();
         {
             let mut state = self.state.lock().await;
+            require_accepting(&state)?;
             for job in &resolved {
                 let key = job_key(&params.namespace, &job.spec.job_id);
                 if state.jobs.contains_key(&key) {
@@ -329,7 +340,7 @@ impl JobManager {
         }
 
         for running in cancel_handles {
-            running.cancel.notify_waiters();
+            running.cancel.notify_one();
         }
         self.notify.notify_waiters();
         self.schedule_ready_jobs().await;
@@ -347,6 +358,44 @@ impl JobManager {
                 })
                 .collect(),
         })
+    }
+
+    pub async fn interrupt_all(&self) -> Result<(), HostError> {
+        let now = now_ms();
+        let mut running = Vec::new();
+        {
+            let mut state = self.state.lock().await;
+            state.accepting = false;
+            let keys = state
+                .jobs
+                .iter()
+                .filter(|(_, record)| !record.status.is_terminal())
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>();
+            for key in keys {
+                let active = state.running.get(&key).cloned();
+                let Some(record) = state.jobs.get_mut(&key) else {
+                    continue;
+                };
+                if let Some(active) = active {
+                    active.interrupted.store(true, Ordering::Release);
+                    record.status = JobStatus::CancelRequested;
+                    record.failure =
+                        Some("environment close requested job interruption".to_owned());
+                    running.push(active);
+                } else {
+                    record.status = JobStatus::Interrupted;
+                    record.finished_at_ms = Some(now);
+                    record.failure = Some("environment closed before job started".to_owned());
+                }
+                self.persist_record(record)?;
+            }
+        }
+        for active in running {
+            active.cancel.notify_one();
+        }
+        self.notify.notify_waiters();
+        Ok(())
     }
 
     async fn schedule_ready_jobs(&self) {
@@ -427,6 +476,7 @@ impl JobManager {
                         let secret_env = state.secret_envs.get(&key).cloned().unwrap_or_default();
                         let running = Arc::new(RunningJob {
                             cancel: Notify::new(),
+                            interrupted: AtomicBool::new(false),
                         });
                         state.running.insert(key, running.clone());
                         ready.push((record.clone(), running, secret_env));
@@ -521,6 +571,11 @@ impl JobManager {
                 JobStatus::Cancelled,
                 exit_code,
                 Some("job cancelled".to_owned()),
+            ),
+            Ok((FinishKind::Interrupted, exit_code)) => (
+                JobStatus::Interrupted,
+                exit_code,
+                Some("job interrupted because the environment closed".to_owned()),
             ),
             Ok((FinishKind::TimedOut, exit_code)) => (
                 JobStatus::TimedOut,
@@ -652,7 +707,12 @@ impl JobManager {
                 }
                 _ = running.cancel.notified() => {
                     let _ = child.start_kill();
-                    (FinishKind::Cancelled, child.wait().await)
+                    let finish = if running.interrupted.load(Ordering::Acquire) {
+                        FinishKind::Interrupted
+                    } else {
+                        FinishKind::Cancelled
+                    };
+                    (finish, child.wait().await)
                 }
                 _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
                     let _ = child.start_kill();
@@ -666,7 +726,12 @@ impl JobManager {
                 }
                 _ = running.cancel.notified() => {
                     let _ = child.start_kill();
-                    (FinishKind::Cancelled, child.wait().await)
+                    let finish = if running.interrupted.load(Ordering::Acquire) {
+                        FinishKind::Interrupted
+                    } else {
+                        FinishKind::Cancelled
+                    };
+                    (finish, child.wait().await)
                 }
             }
         };
@@ -712,6 +777,17 @@ impl JobManager {
                 format!("persist job {}: {error}", record.job_id),
             )
         })
+    }
+}
+
+fn require_accepting(state: &JobManagerState) -> Result<(), HostError> {
+    if state.accepting {
+        Ok(())
+    } else {
+        Err(HostError::new(
+            HostErrorCode::Conflict,
+            "environment target is closed and no longer accepts jobs",
+        ))
     }
 }
 
@@ -1494,6 +1570,46 @@ mod tests {
         let read = wait_for_jobs(&manager, ["sleep", "after"]).await;
         assert_eq!(result(&read, "sleep").summary.status, JobStatus::Cancelled);
         assert_eq!(result(&read, "after").summary.status, JobStatus::Cancelled);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn job_manager_interrupts_jobs_and_rejects_starts_after_close() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager = JobManager::new(root.clone(), root).expect("manager");
+
+        let mut dependent = job("after-close", "printf should-not-run");
+        dependent.depends_on = vec![JobDependency::job_id("active-at-close")];
+        manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "close-active".to_owned(),
+                jobs: vec![job("active-at-close", "sleep 5"), dependent],
+            })
+            .await
+            .expect("start");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        manager.interrupt_all().await.expect("interrupt all");
+        let read = wait_for_jobs(&manager, ["active-at-close", "after-close"]).await;
+        assert_eq!(
+            result(&read, "active-at-close").summary.status,
+            JobStatus::Interrupted
+        );
+        assert_eq!(
+            result(&read, "after-close").summary.status,
+            JobStatus::Interrupted
+        );
+
+        let error = manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "after-close".to_owned(),
+                jobs: vec![job("rejected", "printf should-not-run")],
+            })
+            .await
+            .expect_err("closed manager must reject starts");
+        assert_eq!(error.code, HostErrorCode::Conflict);
     }
 
     #[tokio::test(flavor = "current_thread")]

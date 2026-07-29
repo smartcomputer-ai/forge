@@ -1,8 +1,8 @@
 use super::*;
 use engine::{
-    ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentJoins, EventSeq,
-    PromiseScope, PromiseSource, PromiseStatus, RunId, RunRecord, RunStatus,
-    RunTerminalNotifyIntent, ToolBatchId, ToolCallId, TurnId,
+    ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentEntry, CoreAgentJoins,
+    EventSeq, PromiseScope, PromiseSource, PromiseStatus, RunId, RunRecord, RunStatus,
+    RunTerminalNotifyIntent, SessionPosition, ToolBatchId, ToolCallId, TurnId,
 };
 
 #[test]
@@ -115,25 +115,134 @@ fn preprocess_failures_preserve_submission_id_for_admission_failure() {
 }
 
 #[test]
-fn environment_job_resolution_signal_queues_direct_promise_resolution() {
+fn source_resolution_emission_queues_pending_resolution_with_producer() {
     let mut workflow = AgentSessionWorkflow::default();
     let payload_ref = engine::BlobRef::from_bytes(b"job output");
-    workflow.queue_promise_source_resolution(PromiseSourceResolutionSignal {
-        promise_id: "p1".to_owned(),
-        result: engine::PromiseSourceCheckResult::Resolved {
+    workflow.queue_emission(
+        test_universe(),
+        engine::EmissionEnvelope::source_resolution(
+            test_universe(),
+            "universe/envjob-job_1".to_owned(),
+            engine::PromiseId::new("p1"),
+            engine::PromiseResolution::Resolved {
+                payload_ref: Some(payload_ref.clone()),
+            },
+        ),
+    );
+
+    // Source resolutions defer to the main loop for producer authorization
+    // and optional reply-schema validation before ResolvePromise admission.
+    assert!(workflow.pending_admissions.is_empty());
+    let pending = &workflow.pending_source_resolutions[0];
+    assert_eq!(pending.promise_id.as_str(), "p1");
+    assert!(matches!(
+        &pending.resolution,
+        engine::PromiseResolution::Resolved {
+            payload_ref: Some(actual),
+        } if actual == &payload_ref
+    ));
+    assert!(matches!(
+        &pending.producer,
+        engine::EmissionProducer::Workflow { workflow_id, .. }
+            if workflow_id == "universe/envjob-job_1"
+    ));
+}
+
+#[test]
+fn duplicate_source_resolution_delivery_is_an_end_to_end_noop() {
+    let mut workflow = AgentSessionWorkflow::default();
+    workflow.core_state.lifecycle.status = CoreAgentStatus::Open;
+    workflow.core_state.promises.promises.insert(
+        engine::PromiseId::new("p1"),
+        promise("p1", PromiseStatus::Pending),
+    );
+    let payload_ref = engine::BlobRef::from_bytes(b"job output");
+    let envelope = engine::EmissionEnvelope::source_resolution(
+        test_universe(),
+        "universe/envjob-job_1".to_owned(),
+        engine::PromiseId::new("p1"),
+        engine::PromiseResolution::Resolved {
             payload_ref: Some(payload_ref.clone()),
         },
-    });
+    );
+    workflow.queue_emission(test_universe(), envelope.clone());
+    workflow.queue_emission(test_universe(), envelope);
 
-    assert!(matches!(
-        &workflow.pending_admissions[0].command,
-        CoreAgentCommand::ResolvePromise {
-            promise_id,
-            resolution: engine::PromiseResolution::Resolved {
-                payload_ref: Some(actual),
+    // Both deliveries pass through the deferred authorization stage; a
+    // non-workflow promise source needs no producer check or reply schema,
+    // so each becomes an ordinary ResolvePromise admission.
+    let pending = std::mem::take(&mut workflow.pending_source_resolutions);
+    assert_eq!(pending.len(), 2);
+    let admissions: Vec<_> = pending
+        .into_iter()
+        .map(|pending| crate::AgentAdmission {
+            command: CoreAgentCommand::ResolvePromise {
+                promise_id: pending.promise_id,
+                resolution: pending.resolution,
             },
-        } if promise_id.as_str() == "p1" && actual == &payload_ref
-    ));
+            correlation_token: None,
+        })
+        .collect();
+    assert_eq!(admissions.len(), 2);
+    let mut appended = 0u64;
+    for (index, admission) in admissions.into_iter().enumerate() {
+        let proposals =
+            engine::admit_command(&workflow.core_state, admission.command, index as u64 + 1)
+                .expect("admit duplicate emission");
+        appended += proposals.len() as u64;
+        for proposal in proposals {
+            let seq = workflow
+                .core_state
+                .reduced_to
+                .as_ref()
+                .map_or(1, |position| position.seq.as_u64() + 1);
+            engine::apply_event(
+                &mut workflow.core_state,
+                &CoreAgentEntry {
+                    position: SessionPosition {
+                        seq: EventSeq::new(seq),
+                    },
+                    observed_at_ms: index as u64 + 1,
+                    joins: proposal.joins,
+                    event: proposal.event,
+                },
+            )
+            .expect("apply first promise resolution");
+        }
+    }
+
+    assert_eq!(appended, 1);
+    let promise = workflow
+        .core_state
+        .promises
+        .promises
+        .get(&engine::PromiseId::new("p1"))
+        .expect("resolved promise");
+    assert_eq!(promise.status, PromiseStatus::Resolved);
+    assert_eq!(promise.payload_ref.as_ref(), Some(&payload_ref));
+}
+
+#[test]
+fn cross_universe_emission_is_rejected_before_admission() {
+    let mut workflow = AgentSessionWorkflow::default();
+    let producer_universe = uuid::Uuid::from_u128(2);
+    workflow.queue_emission(
+        test_universe(),
+        engine::EmissionEnvelope::source_resolution(
+            producer_universe,
+            "other-universe/envjob-job_1".to_owned(),
+            engine::PromiseId::new("p1"),
+            engine::PromiseResolution::Resolved { payload_ref: None },
+        ),
+    );
+
+    assert!(workflow.pending_admissions.is_empty());
+    assert!(
+        workflow
+            .last_error
+            .as_deref()
+            .is_some_and(|error| error.contains("cross-universe emission rejected"))
+    );
 }
 
 #[test]
@@ -247,7 +356,7 @@ fn admission(command: CoreAgentCommand) -> AgentAdmission {
 
 fn agent_session_args_with_close_on_terminal(close_on_terminal: bool) -> AgentSessionArgs {
     AgentSessionArgs {
-        universe_id: uuid::Uuid::nil(),
+        universe_id: test_universe(),
         session_id: SessionId::new("session_test"),
         display_name: None,
         session_config: crate::default_session_config(engine::ModelSelection {
@@ -255,10 +364,90 @@ fn agent_session_args_with_close_on_terminal(close_on_terminal: bool) -> AgentSe
             provider_id: "openai".to_owned(),
             model: "gpt-test".to_owned(),
         }),
+        workflow_tools: None,
         max_steps_per_input: None,
         continue_as_new_history_threshold: None,
         close_on_terminal,
     }
+}
+
+fn test_universe() -> uuid::Uuid {
+    uuid::Uuid::from_u128(1)
+}
+
+fn managed_workflow_tools(controller_workflow_id: &str) -> engine::ManagedSessionWorkflowTools {
+    engine::ManagedSessionWorkflowTools::v1(
+        Some(engine::WorkflowEndpointRef {
+            workflow_id: controller_workflow_id.to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        }),
+        Vec::new(),
+    )
+}
+
+#[test]
+fn bootstrap_creation_identity_records_source_universe_and_is_immutable() {
+    let declaration = managed_workflow_tools("deployment-global work controller 🔧");
+    bootstrap::validate_session_creation_identity(
+        test_universe(),
+        &CoreAgentState::new(),
+        true,
+        Some(&declaration),
+    )
+    .expect("fresh managed session with opaque controller id");
+
+    let mut existing = CoreAgentState::new();
+    existing.workflow_tools.session_universe_id = Some(test_universe());
+    existing.workflow_tools.managed_creation_fingerprint = Some(
+        declaration
+            .creation_fingerprint(test_universe())
+            .expect("creation fingerprint"),
+    );
+    bootstrap::validate_session_creation_identity(
+        test_universe(),
+        &existing,
+        false,
+        Some(&declaration),
+    )
+    .expect("matching restart");
+    assert!(
+        bootstrap::validate_session_creation_identity(
+            test_universe(),
+            &existing,
+            false,
+            Some(&managed_workflow_tools("another arbitrary controller id")),
+        )
+        .is_err()
+    );
+    assert!(
+        bootstrap::validate_session_creation_identity(
+            uuid::Uuid::from_u128(2),
+            &existing,
+            false,
+            Some(&declaration),
+        )
+        .is_err()
+    );
+    assert!(
+        bootstrap::validate_session_creation_identity(test_universe(), &existing, false, None)
+            .is_err()
+    );
+}
+
+fn pending_run_emission() -> PendingEmission {
+    PendingEmission::immediate(
+        "universe/parent".to_owned(),
+        engine::EmissionEnvelope::run_terminal(
+            test_universe(),
+            SessionId::new("session_child"),
+            EventSeq::new(1),
+            "promise_1".to_owned(),
+            RunId::new(1),
+            RunStatus::Completed,
+            None,
+            None,
+        ),
+    )
 }
 
 fn pending_resume(batch_id: u64) -> PendingToolBatchResume {
@@ -281,6 +470,7 @@ fn pending_promise_cancellation(promise_id: &str) -> PendingPromiseCancellation 
     PendingPromiseCancellation {
         promise_id: promise_id.to_owned(),
         source: PromiseSource::Timer { fire_at_ms: 1_000 },
+        log_seq: 0,
     }
 }
 
@@ -407,20 +597,34 @@ fn cancelling_watchdog_wake_is_since_plus_timeout() {
 }
 
 #[test]
-fn promise_resolution_signal_queues_resolve_promise_admission() {
+fn run_terminal_emission_queues_resolve_promise_admission() {
     let mut workflow = AgentSessionWorkflow::default();
-    workflow.queue_promise_resolution(PromiseResolutionSignal {
-        token: "promise_a".to_owned(),
-        status: RunStatus::Completed,
-        output_ref: Some(engine::BlobRef::from_bytes(b"result")),
-        failure_message_ref: None,
-    });
-    workflow.queue_promise_resolution(PromiseResolutionSignal {
-        token: "promise_b".to_owned(),
-        status: RunStatus::Cancelled,
-        output_ref: None,
-        failure_message_ref: None,
-    });
+    workflow.queue_emission(
+        test_universe(),
+        engine::EmissionEnvelope::run_terminal(
+            test_universe(),
+            SessionId::new("child_a"),
+            EventSeq::new(8),
+            "promise_a".to_owned(),
+            RunId::new(1),
+            RunStatus::Completed,
+            Some(engine::BlobRef::from_bytes(b"result")),
+            None,
+        ),
+    );
+    workflow.queue_emission(
+        test_universe(),
+        engine::EmissionEnvelope::run_terminal(
+            test_universe(),
+            SessionId::new("child_b"),
+            EventSeq::new(9),
+            "promise_b".to_owned(),
+            RunId::new(2),
+            RunStatus::Cancelled,
+            None,
+            None,
+        ),
+    );
 
     assert_eq!(workflow.pending_admissions.len(), 2);
     match &workflow.pending_admissions[0].command {
@@ -443,8 +647,281 @@ fn promise_resolution_signal_queues_resolve_promise_admission() {
 }
 
 #[test]
-fn terminal_run_with_notify_intent_queues_promise_notification() {
+fn promise_bearing_emitted_invocation_queues_push_delivery() {
     let mut workflow = AgentSessionWorkflow::default();
+    workflow.universe_id = Some(test_universe());
+    workflow.session_id = Some(SessionId::new("child_session"));
+
+    let binding = engine::WorkflowToolBinding::admit(
+        test_universe(),
+        engine::WorkflowToolDefinition {
+            tool_id: engine::WorkflowToolId::new("approve"),
+            revision: 1,
+            semantic_type: "lightspeed.approval.request.v1".to_owned(),
+            tool: engine::ToolSpec {
+                name: engine::ToolName::new("request_approval"),
+                kind: engine::ToolKind::Function(engine::FunctionToolSpec {
+                    description_ref: None,
+                    input_schema_ref: engine::BlobRef::from_bytes(b"{}"),
+                    output_schema_ref: None,
+                    strict: None,
+                    provider_options_ref: None,
+                }),
+                parallelism: engine::ToolParallelism::ParallelSafe,
+                target_requirement: engine::ToolTargetRequirement::None,
+            },
+        },
+        engine::WorkflowToolTarget::Bound {
+            receiver: engine::WorkflowEndpointRef {
+                workflow_id: "approval plugin id".to_owned(),
+                workflow_kind: "approvals".to_owned(),
+            },
+        },
+        engine::WorkflowToolCompletion::Promises {
+            reply_schema_ref: None,
+            deadline_after_ms: None,
+            max_promises: 1,
+            key_source: engine::WorkflowToolCompletionKeySource::Reply,
+        },
+    )
+    .expect("binding");
+    let invocation_id = engine::WorkflowToolInvocationId::for_call(
+        test_universe(),
+        &SessionId::new("child_session"),
+        RunId::new(1),
+        engine::TurnId::new(1),
+        ToolBatchId::new(1),
+        &engine::ToolCallId::new("call-1"),
+        &binding.binding_fingerprint,
+    );
+    let invocation = engine::WorkflowToolInvocation {
+        invocation_id: invocation_id.clone(),
+        tool_id: binding.definition.tool_id.clone(),
+        semantic_type: binding.definition.semantic_type.clone(),
+        schema_revision: 1,
+        binding_fingerprint: binding.binding_fingerprint.clone(),
+        session_universe_id: test_universe(),
+        session_id: SessionId::new("child_session"),
+        run_id: RunId::new(1),
+        turn_id: engine::TurnId::new(1),
+        tool_batch_id: ToolBatchId::new(1),
+        tool_call_id: engine::ToolCallId::new("call-1"),
+        arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        completion_promises: Some(std::collections::BTreeMap::from([(
+            engine::REPLY_COMPLETION_KEY.to_owned(),
+            engine::workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY),
+        )])),
+    };
+    workflow
+        .core_state
+        .workflow_tools
+        .bindings
+        .insert(binding.definition.tool_id.clone(), binding);
+
+    let entry = engine::CoreAgentEntry {
+        position: SessionPosition {
+            seq: EventSeq::new(9),
+        },
+        observed_at_ms: 100,
+        joins: CoreAgentJoins::default(),
+        event: CoreAgentEvent::WorkflowTool(engine::WorkflowToolEvent::Emitted {
+            invocation: invocation.clone(),
+        }),
+    };
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&entry))
+        .expect("queue push delivery");
+
+    assert_eq!(workflow.pending_emissions.len(), 1);
+    let pending = &workflow.pending_emissions[0];
+    assert_eq!(pending.receiver_workflow_id, "approval plugin id");
+    assert_eq!(pending.attempts, 0);
+    assert_eq!(pending.next_attempt_at_ms, 0);
+    assert_eq!(
+        pending.envelope.emission_id.as_str(),
+        invocation_id.as_str()
+    );
+    assert!(matches!(
+        &pending.envelope.body,
+        engine::EmissionBody::ToolInvocation { invocation: delivered }
+            if delivered == &invocation
+    ));
+
+    // Notify (Accepted) invocations never enter push state.
+    let mut notify_invocation = invocation;
+    notify_invocation.completion_promises = None;
+    let notify_entry = engine::CoreAgentEntry {
+        position: SessionPosition {
+            seq: EventSeq::new(10),
+        },
+        observed_at_ms: 101,
+        joins: CoreAgentJoins::default(),
+        event: CoreAgentEvent::WorkflowTool(engine::WorkflowToolEvent::Emitted {
+            invocation: notify_invocation,
+        }),
+    };
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&notify_entry))
+        .expect("notify entry is pull-only");
+    assert_eq!(workflow.pending_emissions.len(), 1);
+}
+
+#[test]
+fn start_intents_recompute_pending_start_work_from_durable_state() {
+    let mut workflow = AgentSessionWorkflow::default();
+    workflow.universe_id = Some(test_universe());
+    workflow.session_id = Some(SessionId::new("child_session"));
+
+    let start = engine::WorkflowStartRef {
+        recipe_format: 1,
+        revision: 1,
+        recipe_ref: engine::BlobRef::from_bytes(b"recipe"),
+        recipe_fingerprint: "wtr:sha256:recipe".to_owned(),
+    };
+    let binding = engine::WorkflowToolBinding::admit(
+        test_universe(),
+        engine::WorkflowToolDefinition {
+            tool_id: engine::WorkflowToolId::new("launch"),
+            revision: 1,
+            semantic_type: "lightspeed.job.launch.v1".to_owned(),
+            tool: engine::ToolSpec {
+                name: engine::ToolName::new("launch_job"),
+                kind: engine::ToolKind::Function(engine::FunctionToolSpec {
+                    description_ref: None,
+                    input_schema_ref: engine::BlobRef::from_bytes(b"{}"),
+                    output_schema_ref: None,
+                    strict: None,
+                    provider_options_ref: None,
+                }),
+                parallelism: engine::ToolParallelism::ParallelSafe,
+                target_requirement: engine::ToolTargetRequirement::None,
+            },
+        },
+        engine::WorkflowToolTarget::Start {
+            start: start.clone(),
+        },
+        engine::WorkflowToolCompletion::Promises {
+            reply_schema_ref: None,
+            deadline_after_ms: None,
+            max_promises: 1,
+            key_source: engine::WorkflowToolCompletionKeySource::Reply,
+        },
+    )
+    .expect("start binding");
+    let invocation_id = engine::WorkflowToolInvocationId::for_call(
+        test_universe(),
+        &SessionId::new("child_session"),
+        RunId::new(1),
+        engine::TurnId::new(1),
+        ToolBatchId::new(1),
+        &engine::ToolCallId::new("call-1"),
+        &binding.binding_fingerprint,
+    );
+    let promise_id = engine::workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY);
+    let execution_id =
+        engine::workflow_tool_execution_id(&invocation_id, &start.recipe_fingerprint);
+    let invocation = engine::WorkflowToolInvocation {
+        invocation_id: invocation_id.clone(),
+        tool_id: binding.definition.tool_id.clone(),
+        semantic_type: binding.definition.semantic_type.clone(),
+        schema_revision: 1,
+        binding_fingerprint: binding.binding_fingerprint.clone(),
+        session_universe_id: test_universe(),
+        session_id: SessionId::new("child_session"),
+        run_id: RunId::new(1),
+        turn_id: engine::TurnId::new(1),
+        tool_batch_id: ToolBatchId::new(1),
+        tool_call_id: engine::ToolCallId::new("call-1"),
+        arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        completion_promises: Some(std::collections::BTreeMap::from([(
+            engine::REPLY_COMPLETION_KEY.to_owned(),
+            promise_id.clone(),
+        )])),
+    };
+    workflow
+        .core_state
+        .workflow_tools
+        .bindings
+        .insert(binding.definition.tool_id.clone(), binding);
+    workflow
+        .core_state
+        .workflow_tools
+        .start_requests
+        .insert(invocation_id.clone(), invocation);
+    workflow.core_state.promises.promises.insert(
+        promise_id.clone(),
+        engine::Promise {
+            promise_id: promise_id.clone(),
+            source: engine::PromiseSource::Workflow {
+                producer_workflow_id: execution_id.clone(),
+                producer_workflow_kind: engine::WORKFLOW_TOOL_EXECUTION_KIND.to_owned(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
+            },
+            scope: engine::PromiseScope::Session,
+            status: PromiseStatus::Pending,
+            payload_ref: None,
+            error_ref: None,
+            deadline_ms: None,
+        },
+    );
+
+    // A durable start intent with a pending keyed promise is immediate
+    // start work — recomputed from state, so replay and continue-as-new
+    // rebuild it without transport bookkeeping.
+    assert!(workflow_starts::has_immediate_work(&workflow));
+
+    // A confirmed start needs no re-issue until state changes.
+    workflow
+        .confirmed_workflow_starts
+        .insert(invocation_id.as_str().to_owned());
+    assert!(!workflow_starts::has_immediate_work(&workflow));
+    workflow.confirmed_workflow_starts.clear();
+
+    // Terminal start failure removes the candidate.
+    workflow
+        .core_state
+        .workflow_tools
+        .start_failures
+        .insert(invocation_id.clone(), engine::BlobRef::from_bytes(b"err"));
+    assert!(!workflow_starts::has_immediate_work(&workflow));
+    workflow.core_state.workflow_tools.start_failures.clear();
+
+    // A terminal promise set leaves nothing to start; started executions
+    // get a recovery poll instead of a bound-receiver push.
+    workflow
+        .core_state
+        .promises
+        .promises
+        .get_mut(&promise_id)
+        .expect("promise")
+        .status = PromiseStatus::Resolved;
+    assert!(!workflow_starts::has_immediate_work(&workflow));
+
+    // Recovery polls cover pending started-execution promises only.
+    workflow
+        .core_state
+        .promises
+        .promises
+        .get_mut(&promise_id)
+        .expect("promise")
+        .status = PromiseStatus::Pending;
+    promise_sources::reconcile_polls_for_state(&mut workflow, 1_000);
+    let poll = workflow
+        .promise_source_polls
+        .get(promise_id.as_str())
+        .expect("recovery poll for started execution");
+    assert!(
+        poll.next_check_at_ms > 1_000,
+        "recovery poll is a slow backstop"
+    );
+}
+
+#[test]
+fn terminal_run_with_notify_intent_queues_emission() {
+    let mut workflow = AgentSessionWorkflow::default();
+    workflow.universe_id = Some(test_universe());
+    workflow.session_id = Some(SessionId::new("child_session"));
     let output_ref = engine::BlobRef::from_bytes(b"done");
     workflow.core_state.runs.completed.push(RunRecord {
         run_id: RunId::new(3),
@@ -471,21 +948,44 @@ fn terminal_run_with_notify_intent_queues_promise_notification() {
         }),
     };
 
-    workflow.queue_promise_notifications_for_entries(std::slice::from_ref(&entry));
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&entry))
+        .expect("queue emission");
 
-    assert_eq!(workflow.pending_promise_notifications.len(), 1);
-    let pending = &workflow.pending_promise_notifications[0];
-    assert_eq!(pending.holder_workflow_id, "universe/parent_session");
-    assert_eq!(pending.signal.token, "promise_parent");
-    assert_eq!(pending.signal.status, RunStatus::Completed);
-    assert_eq!(pending.signal.output_ref.as_ref(), Some(&output_ref));
+    assert_eq!(workflow.pending_emissions.len(), 1);
+    let pending = &workflow.pending_emissions[0];
+    assert_eq!(pending.receiver_workflow_id, "universe/parent_session");
+    assert!(matches!(
+        &pending.envelope.producer,
+        engine::EmissionProducer::Session {
+            universe_id,
+            session_id,
+            log_seq,
+        } if *universe_id == test_universe()
+            && session_id == &SessionId::new("child_session")
+            && *log_seq == EventSeq::new(1)
+    ));
+    assert!(matches!(
+        &pending.envelope.body,
+        engine::EmissionBody::RunTerminal {
+            token,
+            run_id,
+            status: RunStatus::Completed,
+            output_ref: Some(actual),
+            failure_message_ref: None,
+        } if token == "promise_parent"
+            && *run_id == RunId::new(3)
+            && actual == &output_ref
+    ));
     // A run without intents queues nothing.
-    workflow.pending_promise_notifications.clear();
+    workflow.pending_emissions.clear();
     workflow.core_state.runs.completed[0]
         .notify_on_terminal
         .clear();
-    workflow.queue_promise_notifications_for_entries(std::slice::from_ref(&entry));
-    assert!(workflow.pending_promise_notifications.is_empty());
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&entry))
+        .expect("queue no emission");
+    assert!(workflow.pending_emissions.is_empty());
 }
 
 fn promise(id: &str, status: PromiseStatus) -> engine::Promise {
@@ -633,7 +1133,6 @@ fn continue_as_new_allows_pending_sources_and_parked_awaits() {
         promise_ids: vec![
             engine::PromiseId::new("p_child"),
             engine::PromiseId::new("p_request"),
-            engine::PromiseId::new("p_env"),
             engine::PromiseId::new("p_timer"),
             engine::PromiseId::new("p_detached"),
         ],
@@ -659,17 +1158,6 @@ fn continue_as_new_allows_pending_sources_and_parked_awaits() {
             PromiseSource::Run {
                 target_session_id: "peer".to_owned(),
                 target_run_id: 11,
-            },
-            PromiseScope::Run {
-                run_id: RunId::new(1),
-            },
-        ),
-        promise_with_source(
-            "p_env",
-            PromiseStatus::Pending,
-            PromiseSource::EnvJob {
-                instance_id: "evi_1".to_owned(),
-                job_id: "job_1".to_owned(),
             },
             PromiseScope::Run {
                 run_id: RunId::new(1),
@@ -702,7 +1190,7 @@ fn continue_as_new_allows_pending_sources_and_parked_awaits() {
     }
 
     let parked = awaits::parked_await(&workflow.core_state).expect("parked await");
-    assert_eq!(parked.spec.promise_ids.len(), 5);
+    assert_eq!(parked.spec.promise_ids.len(), 4);
     assert_eq!(awaits::nearest_await_wake_ms(&workflow), Some(50_000));
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 }
@@ -719,18 +1207,8 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
             poll_attempt: 9,
         },
     );
-    let env_source = PromiseSource::EnvJob {
-        instance_id: "evi_1".to_owned(),
-        job_id: "job_1".to_owned(),
-    };
     let timer_source = PromiseSource::Timer { fire_at_ms: 60_000 };
     let promises = [
-        promise_with_source(
-            "p_env",
-            PromiseStatus::Pending,
-            env_source.clone(),
-            PromiseScope::Session,
-        ),
         promise_with_source(
             "p_timer",
             PromiseStatus::Pending,
@@ -755,15 +1233,6 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
             },
             PromiseScope::Session,
         ),
-        promise_with_source(
-            "p_resolved_env",
-            PromiseStatus::Resolved,
-            PromiseSource::EnvJob {
-                instance_id: "evi_1".to_owned(),
-                job_id: "job_done".to_owned(),
-            },
-            PromiseScope::Session,
-        ),
     ];
     for promise in promises {
         workflow
@@ -777,10 +1246,8 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
 
     assert_eq!(workflow.promise_source_polls.len(), 1);
     assert!(!workflow.promise_source_polls.contains_key("stale"));
-    assert!(!workflow.promise_source_polls.contains_key("p_env"));
     assert!(!workflow.promise_source_polls.contains_key("p_child"));
     assert!(!workflow.promise_source_polls.contains_key("p_request"));
-    assert!(!workflow.promise_source_polls.contains_key("p_resolved_env"));
     let timer_poll = workflow
         .promise_source_polls
         .get("p_timer")
@@ -789,11 +1256,6 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
     assert_eq!(timer_poll.next_check_at_ms, 60_000);
     assert_eq!(timer_poll.poll_attempt, 0);
     assert_eq!(promise_sources::nearest_wake_ms(&workflow), Some(60_000));
-    assert!(promise_sources::has_unconfirmed_subscriptions(&workflow));
-    workflow
-        .confirmed_promise_source_subscriptions
-        .insert("p_env".to_owned());
-    assert!(!promise_sources::has_unconfirmed_subscriptions(&workflow));
 }
 
 #[test]
@@ -809,19 +1271,9 @@ fn continue_as_new_is_blocked_by_transport_only() {
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
     workflow.pending_tool_batch_resumes.clear();
 
-    workflow
-        .pending_promise_notifications
-        .push(PendingPromiseNotification {
-            holder_workflow_id: "universe/parent".to_owned(),
-            signal: PromiseResolutionSignal {
-                token: "promise_1".to_owned(),
-                status: RunStatus::Completed,
-                output_ref: None,
-                failure_message_ref: None,
-            },
-        });
+    workflow.pending_emissions.push(pending_run_emission());
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
-    workflow.pending_promise_notifications.clear();
+    workflow.pending_emissions.clear();
 
     workflow
         .pending_promise_cancellations
@@ -854,21 +1306,11 @@ fn closed_quiescent_workflow_can_complete() {
     ));
     workflow.pending_tool_batch_resumes.clear();
 
-    workflow
-        .pending_promise_notifications
-        .push(PendingPromiseNotification {
-            holder_workflow_id: "universe/parent".to_owned(),
-            signal: PromiseResolutionSignal {
-                token: "promise_1".to_owned(),
-                status: RunStatus::Completed,
-                output_ref: None,
-                failure_message_ref: None,
-            },
-        });
+    workflow.pending_emissions.push(pending_run_emission());
     assert!(!wait_loop::workflow_state_is_closed_and_quiescent(
         &workflow
     ));
-    workflow.pending_promise_notifications.clear();
+    workflow.pending_emissions.clear();
 
     workflow
         .pending_promise_cancellations

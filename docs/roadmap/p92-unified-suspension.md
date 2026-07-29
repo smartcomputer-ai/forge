@@ -28,6 +28,10 @@
   `spawn/request/send` messaging cleanup, promise detach, mailbox wake, and
   continue-as-new portability. See the Implementation Plan below for per-step
   state.
+- Follow-on 2026-07-28: P100b keyed `Workflow` Promises replaced the `EnvJob`
+  source and its poll/subscribe/cancel activity paths for model-visible
+  `job_start`. References to `EnvJob` below document the original P92
+  implementation rather than the current source vocabulary.
 
 ## Goal
 
@@ -47,9 +51,9 @@ lockstep.
 There are exactly two wait implementations and one mailbox path today, and
 the first fleet-versus-cancellation race already produced an unrecoverable
 session in production. This is the moment to settle the suspension model
-once, before more wait consumers (triggers/P101, sub-workflows, approvals)
-multiply the surface. Every future async feature becomes a new *source*
-behind the same primitive, never a new primitive.
+once, before more wait consumers (the later trigger proposal, sub-workflows,
+approvals) multiply the surface. Every future async feature becomes a new
+*source* behind the same primitive, never a new primitive.
 
 ## Background: The 2026-07-06 Incident
 
@@ -222,9 +226,9 @@ Each source implements one trait with three duties:
   nothing — notify-intents live in the *observed* session's log (below), and
   signals target the workflow id, which is stable across CAN on both sides.
 
-Adding sub-workflows, approvals, webhooks (P101 triggers), or outbox delivery
-confirmations later means implementing this trait — no new workflow
-machinery.
+Adding sub-workflows, approvals, webhooks from the later trigger proposal, or
+outbox delivery confirmations later means implementing this trait — no new
+workflow machinery.
 
 **The edge event is the subscription.** P84's standalone subscription
 machinery — the `subscribe_run`/`unsubscribe_run` signals and the
@@ -585,7 +589,11 @@ Each step is independently shippable and testable:
    workflow-resident registry — so they are continue-as-new-portable by
    construction and step 6 is largely already satisfied for the push source.
    CAN-at-idle is gated on transport quiescence (admissions, unresumed
-   batches, the flush queue), not on pending promises.
+   batches, the flush queue), not on pending promises. **P100 follow-up:** the
+   originally landed `resolve_promise` signal and
+   `PendingPromiseNotification` names were subsequently generalized to the
+   fixed `deliver_emission` signal and `PendingEmission` queue; the P92
+   promise semantics and transient-transport model are unchanged.
 3. **[DONE] Job waits fold in** (poll source). Deleted the P86 model-visible
    job wait tool, `ActiveEnvironmentJobWait`, `job_waits.rs`, and the second
    deadline/resume implementation. EnvJob promises now reconcile into

@@ -64,6 +64,14 @@ pub struct PreprocessActivityDeps {
     pub(super) transcoder: Option<Arc<dyn AudioTranscoder>>,
 }
 
+/// Temporal-client deps for the generic start-on-call adapter: starting an
+/// admitted versioned recipe, describing the derived execution, running the
+/// fixed recovery query, and cancelling the exact execution.
+#[derive(Clone)]
+pub struct WorkflowToolExecutionDeps {
+    pub(super) client: temporalio_client::Client,
+}
+
 #[derive(Clone)]
 pub struct ActivityState {
     storage: StorageActivityDeps,
@@ -72,6 +80,7 @@ pub struct ActivityState {
     runtime_projection: Option<RuntimeProjectionActivityDeps>,
     preprocess: PreprocessActivityDeps,
     environment_jobs: Option<Arc<PgStore>>,
+    workflow_tool_executions: Option<WorkflowToolExecutionDeps>,
 }
 
 impl ActivityState {
@@ -101,6 +110,7 @@ impl ActivityState {
                 transcoder: None,
             },
             environment_jobs: None,
+            workflow_tool_executions: None,
         }
     }
 
@@ -123,6 +133,11 @@ impl ActivityState {
 
     pub fn with_audio_transcriber(mut self, transcriber: Arc<dyn AudioTranscriber>) -> Self {
         self.preprocess.transcriber = transcriber;
+        self
+    }
+
+    pub fn with_workflow_tool_executions(mut self, client: temporalio_client::Client) -> Self {
+        self.workflow_tool_executions = Some(WorkflowToolExecutionDeps { client });
         self
     }
 
@@ -195,8 +210,6 @@ impl ActivityState {
         fleet_runtime: Option<Arc<dyn FleetChildRuntime>>,
         clients: &DeploymentClients,
         temporal_client: temporalio_client::Client,
-        task_queue: String,
-        universe_id: uuid::Uuid,
     ) -> anyhow::Result<Self> {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let broker = registry_token_broker_with_clients(
@@ -217,24 +230,17 @@ impl ActivityState {
             clients.openai.clone(),
             clients.anthropic.clone(),
         );
+        let temporal_client_for_workflow_tools = temporal_client.clone();
         let tools: Arc<dyn CoreAgentTools> = match fleet_runtime {
-            Some(fleet_runtime) => Arc::new(
-                SessionTools::from_pg_store_with_fleet_runtime(store.clone(), fleet_runtime)
-                    .with_environment_job_workflow_runtime(
-                        temporal_client.clone(),
-                        task_queue.clone(),
-                        universe_id,
-                    ),
-            ),
-            None => Arc::new(
-                SessionTools::from_pg_store(store.clone()).with_environment_job_workflow_runtime(
-                    temporal_client,
-                    task_queue,
-                    universe_id,
-                ),
-            ),
+            Some(fleet_runtime) => Arc::new(SessionTools::from_pg_store_with_fleet_runtime(
+                store.clone(),
+                fleet_runtime,
+            )),
+            None => Arc::new(SessionTools::from_pg_store(store.clone())),
         };
-        let mut state = Self::from_pg_store(store, llm, tools).with_audio_transcriber(transcriber);
+        let mut state = Self::from_pg_store(store, llm, tools)
+            .with_audio_transcriber(transcriber)
+            .with_workflow_tool_executions(temporal_client_for_workflow_tools);
         if let Some(transcoder) = clients.audio_transcoder.clone() {
             state = state.with_audio_transcoder(transcoder);
         }
@@ -268,6 +274,10 @@ impl ActivityState {
 
     pub(super) fn environment_jobs(&self) -> Option<&Arc<PgStore>> {
         self.environment_jobs.as_ref()
+    }
+
+    pub(super) fn workflow_tool_executions(&self) -> Option<&WorkflowToolExecutionDeps> {
+        self.workflow_tool_executions.as_ref()
     }
 }
 

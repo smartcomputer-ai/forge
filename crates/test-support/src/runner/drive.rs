@@ -1271,7 +1271,6 @@ mod tests {
             ToolSpec {
                 name: tool_name.clone(),
                 kind: ToolKind::Function(FunctionToolSpec {
-                    model_name: None,
                     description_ref: None,
                     input_schema_ref: BlobRef::from_bytes(br#"{}"#),
                     output_schema_ref: None,

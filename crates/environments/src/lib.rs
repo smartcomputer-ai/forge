@@ -11,10 +11,7 @@ use std::{
 
 use async_trait::async_trait;
 use auth::{AuthGrantId, AuthProviderId, SecretId};
-use engine::{
-    RunId, SessionId, StringIdError, ToolCallId, ToolExecutionTarget, TurnId,
-    validate_general_string_id,
-};
+use engine::{SessionId, StringIdError, ToolExecutionTarget, validate_general_string_id};
 use host_protocol::{
     control::{
         handshake::ControllerCapabilities,
@@ -22,7 +19,7 @@ use host_protocol::{
     },
     shared::{
         HostCapabilities, HostConnectionSpec, HostPath, HostScope, HostTargetId, HostTransport,
-        ImplementationInfo, JobId,
+        ImplementationInfo,
     },
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
@@ -119,13 +116,10 @@ pub enum EnvironmentRegistryError {
     #[error("environment registry {kind} not found: {id}")]
     NotFound { kind: &'static str, id: String },
 
-    #[error(
-        "environment instance {instance_id} is occupied: bindings={bindings:?}, job_groups={job_groups:?}"
-    )]
+    #[error("environment instance {instance_id} is occupied: bindings={bindings:?}")]
     Occupied {
         instance_id: EnvironmentInstanceId,
         bindings: Vec<String>,
-        job_groups: Vec<EnvironmentJobGroupId>,
     },
 
     #[error("invalid environment registry request: {message}")]
@@ -612,154 +606,6 @@ pub enum SessionEnvironmentFsRouteAccess {
     ReadWrite,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentJobGroupStatus {
-    Starting,
-    Running,
-    Terminal,
-    Failed,
-}
-
-impl EnvironmentJobGroupStatus {
-    pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Terminal | Self::Failed)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentJobGroupRecord {
-    pub instance_id: EnvironmentInstanceId,
-    pub job_group_id: EnvironmentJobGroupId,
-    pub request_id: String,
-    pub start_request_hash: String,
-    pub status: EnvironmentJobGroupStatus,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-    pub terminal_at_ms: Option<i64>,
-}
-
-impl EnvironmentJobGroupRecord {
-    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
-        validate_general_string_id("job request_id", &self.request_id).map_err(|error| {
-            EnvironmentRegistryError::InvalidInput {
-                message: error.to_string(),
-            }
-        })?;
-        validate_nonempty_string("start_request_hash", &self.start_request_hash)?;
-        validate_timestamps(self.created_at_ms, self.updated_at_ms)?;
-        if self.status.is_terminal() != self.terminal_at_ms.is_some() {
-            return invalid("terminal_at_ms must be set exactly for terminal job groups");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReserveEnvironmentJobGroup {
-    pub instance_id: EnvironmentInstanceId,
-    pub job_group_id: EnvironmentJobGroupId,
-    pub request_id: String,
-    pub start_request_hash: String,
-    pub created_at_ms: i64,
-}
-
-impl ReserveEnvironmentJobGroup {
-    pub fn into_record(self) -> EnvironmentJobGroupRecord {
-        EnvironmentJobGroupRecord {
-            instance_id: self.instance_id,
-            job_group_id: self.job_group_id,
-            request_id: self.request_id,
-            start_request_hash: self.start_request_hash,
-            status: EnvironmentJobGroupStatus::Starting,
-            created_at_ms: self.created_at_ms,
-            updated_at_ms: self.created_at_ms,
-            terminal_at_ms: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateEnvironmentJobGroupStatus {
-    pub instance_id: EnvironmentInstanceId,
-    pub job_group_id: EnvironmentJobGroupId,
-    pub status: EnvironmentJobGroupStatus,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobHandleRecord {
-    pub instance_id: EnvironmentInstanceId,
-    pub job_group_id: EnvironmentJobGroupId,
-    pub job_id: JobId,
-    pub name: Option<String>,
-    pub queue_key: Option<String>,
-    pub created_by_session_id: Option<SessionId>,
-    pub created_by_run_id: Option<RunId>,
-    pub created_by_turn_id: Option<TurnId>,
-    pub created_by_tool_call_id: Option<ToolCallId>,
-    pub created_at_ms: i64,
-    pub start_request_hash: String,
-}
-
-impl JobHandleRecord {
-    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
-        validate_host_job_id(&self.job_id)?;
-        validate_nonempty_optional("job name", self.name.as_deref())?;
-        validate_nonempty_optional("queue_key", self.queue_key.as_deref())?;
-        if let Some(queue_key) = self.queue_key.as_deref() {
-            validate_general_string_id("queue_key", queue_key).map_err(|error| {
-                EnvironmentRegistryError::InvalidInput {
-                    message: error.to_string(),
-                }
-            })?;
-        }
-        validate_nonempty_string("start_request_hash", &self.start_request_hash)?;
-        validate_nonnegative_i64(self.created_at_ms, "created_at_ms")
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateJobHandle {
-    pub instance_id: EnvironmentInstanceId,
-    pub job_group_id: EnvironmentJobGroupId,
-    pub job_id: JobId,
-    pub name: Option<String>,
-    pub queue_key: Option<String>,
-    pub created_by_session_id: Option<SessionId>,
-    pub created_by_run_id: Option<RunId>,
-    pub created_by_turn_id: Option<TurnId>,
-    pub created_by_tool_call_id: Option<ToolCallId>,
-    pub created_at_ms: i64,
-    pub start_request_hash: String,
-}
-
-impl CreateJobHandle {
-    pub fn into_record(self) -> JobHandleRecord {
-        JobHandleRecord {
-            instance_id: self.instance_id,
-            job_group_id: self.job_group_id,
-            job_id: self.job_id,
-            name: self.name,
-            queue_key: self.queue_key,
-            created_by_session_id: self.created_by_session_id,
-            created_by_run_id: self.created_by_run_id,
-            created_by_turn_id: self.created_by_turn_id,
-            created_by_tool_call_id: self.created_by_tool_call_id,
-            created_at_ms: self.created_at_ms,
-            start_request_hash: self.start_request_hash,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListJobHandles {
-    pub instance_id: Option<EnvironmentInstanceId>,
-    pub job_group_id: Option<EnvironmentJobGroupId>,
-    pub created_by_session_id: Option<SessionId>,
-    pub limit: Option<usize>,
-}
-
 #[async_trait]
 pub trait EnvironmentProviderStore: Send + Sync {
     async fn register_provider(
@@ -871,41 +717,6 @@ pub trait SessionEnvironmentCredentialStore: Send + Sync {
     ) -> Result<SessionEnvironmentCredentialRecord, EnvironmentRegistryError>;
 }
 
-#[async_trait]
-pub trait JobHandleStore: Send + Sync {
-    async fn reserve_job_group(
-        &self,
-        record: ReserveEnvironmentJobGroup,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError>;
-    async fn read_job_group(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_group_id: &EnvironmentJobGroupId,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError>;
-    async fn update_job_group_status(
-        &self,
-        request: UpdateEnvironmentJobGroupStatus,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError>;
-    async fn create_job_handles(
-        &self,
-        records: Vec<CreateJobHandle>,
-    ) -> Result<Vec<JobHandleRecord>, EnvironmentRegistryError>;
-    async fn read_job_handle(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_id: &JobId,
-    ) -> Result<JobHandleRecord, EnvironmentRegistryError>;
-    async fn list_job_handles(
-        &self,
-        request: ListJobHandles,
-    ) -> Result<Vec<JobHandleRecord>, EnvironmentRegistryError>;
-    async fn delete_job_handle(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_id: &JobId,
-    ) -> Result<JobHandleRecord, EnvironmentRegistryError>;
-}
-
 mod memory;
 pub use memory::InMemoryEnvironmentRegistryStore;
 
@@ -942,14 +753,6 @@ fn validate_host_connection(value: &HostConnectionSpec) -> Result<(), Environmen
 
 fn validate_host_target_id(value: &HostTargetId) -> Result<(), EnvironmentRegistryError> {
     validate_general_string_id("target_id", value.as_str()).map_err(|error| {
-        EnvironmentRegistryError::InvalidInput {
-            message: error.to_string(),
-        }
-    })
-}
-
-fn validate_host_job_id(value: &JobId) -> Result<(), EnvironmentRegistryError> {
-    validate_general_string_id("job_id", value.as_str()).map_err(|error| {
         EnvironmentRegistryError::InvalidInput {
             message: error.to_string(),
         }

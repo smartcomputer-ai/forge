@@ -37,6 +37,24 @@
       "summary": "Create or reopen a session"
     },
     {
+      "description": "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+      "method": "session/managed/start",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ManagedSessionStartParams"
+        },
+        "type": "ManagedSessionStartParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfSessionStartResponse"
+        },
+        "type": "AgentApiOutcome<SessionStartResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create or reopen a managed session"
+    },
+    {
       "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
       "method": "session/read",
       "params": {
@@ -613,7 +631,7 @@
       "summary": "List environment instances"
     },
     {
-      "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.",
+      "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.",
       "method": "environments/close",
       "params": {
         "schema": {
@@ -665,24 +683,6 @@
       },
       "scope": "universe",
       "summary": "Read environment jobs"
-    },
-    {
-      "description": "Lists durable job records across the universe, optionally narrowed to an instance or job group.",
-      "method": "environments/jobs/list",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/EnvironmentJobListParams"
-        },
-        "type": "EnvironmentJobListParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentJobListResponse"
-        },
-        "type": "AgentApiOutcome<EnvironmentJobListResponse>"
-      },
-      "scope": "universe",
-      "summary": "List environment jobs"
     },
     {
       "description": "Requests cancellation for selected jobs, optionally including dependents. Force is provider-specific escalation; inspect each per-job result.",
@@ -1423,42 +1423,6 @@
       "summary": "Grant access to a GitHub App installation"
     },
     {
-      "description": "Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.",
-      "method": "outbox/read",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/OutboxReadParams"
-        },
-        "type": "OutboxReadParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfOutboxReadResponse"
-        },
-        "type": "AgentApiOutcome<OutboxReadResponse>"
-      },
-      "scope": "universe",
-      "summary": "Read pending outbound messages"
-    },
-    {
-      "description": "Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.",
-      "method": "outbox/ack",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/OutboxAckParams"
-        },
-        "type": "OutboxAckParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfOutboxAckResponse"
-        },
-        "type": "AgentApiOutcome<OutboxAckResponse>"
-      },
-      "scope": "universe",
-      "summary": "Acknowledge outbound delivery"
-    },
-    {
       "description": "Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.",
       "method": "operator/universes/create",
       "params": {
@@ -1583,24 +1547,6 @@
       },
       "scope": "operator",
       "summary": "Revoke a universe API key"
-    },
-    {
-      "description": "Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.",
-      "method": "operator/outbox/read",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/OperatorOutboxReadParams"
-        },
-        "type": "OperatorOutboxReadParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfOperatorOutboxReadResponse"
-        },
-        "type": "AgentApiOutcome<OperatorOutboxReadResponse>"
-      },
-      "scope": "operator",
-      "summary": "Read the deployment outbox"
     }
   ],
   "notificationSchema": {

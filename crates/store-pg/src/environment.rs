@@ -6,16 +6,15 @@ use engine::SessionId;
 use environments::{
     BeginCloseEnvironmentInstance, CreateSessionEnvironmentCredential, EnvironmentId,
     EnvironmentInstanceId, EnvironmentInstanceOrigin, EnvironmentInstanceRecord,
-    EnvironmentInstanceStore, EnvironmentJobGroupId, EnvironmentProviderHeartbeat,
-    EnvironmentProviderId, EnvironmentProviderKind, EnvironmentProviderRecord,
-    EnvironmentProviderStatus, EnvironmentProviderStore, EnvironmentRegistryError,
-    ListEnvironmentInstances, ListEnvironmentProviders, ListSessionEnvironmentCredentials,
-    ObserveEnvironmentInstance, PutSessionEnvironmentBinding, RegisterEnvironmentProvider,
-    SessionEnvironmentBindingRecord, SessionEnvironmentBindingState,
-    SessionEnvironmentBindingStore, SessionEnvironmentCredentialRecord,
-    SessionEnvironmentCredentialSource, SessionEnvironmentCredentialStore,
-    UpdateEnvironmentInstanceStatus, UpdateEnvironmentProviderStatus,
-    UpdateSessionEnvironmentBindingState,
+    EnvironmentInstanceStore, EnvironmentProviderHeartbeat, EnvironmentProviderId,
+    EnvironmentProviderKind, EnvironmentProviderRecord, EnvironmentProviderStatus,
+    EnvironmentProviderStore, EnvironmentRegistryError, ListEnvironmentInstances,
+    ListEnvironmentProviders, ListSessionEnvironmentCredentials, ObserveEnvironmentInstance,
+    PutSessionEnvironmentBinding, RegisterEnvironmentProvider, SessionEnvironmentBindingRecord,
+    SessionEnvironmentBindingState, SessionEnvironmentBindingStore,
+    SessionEnvironmentCredentialRecord, SessionEnvironmentCredentialSource,
+    SessionEnvironmentCredentialStore, UpdateEnvironmentInstanceStatus,
+    UpdateEnvironmentProviderStatus, UpdateSessionEnvironmentBindingState,
 };
 use host_protocol::{
     control::targets::HostTargetStatus,
@@ -468,27 +467,10 @@ impl EnvironmentInstanceStore for PgStore {
             })
             .collect::<Result<Vec<_>, sqlx::Error>>()
             .map_err(|error| sql_error("decode occupying environment binding", error))?;
-        let group_rows = sqlx::query(
-            "SELECT job_group_id FROM environment_job_groups WHERE universe_id = $1 AND instance_id = $2 AND status NOT IN ('terminal', 'failed') ORDER BY job_group_id",
-        )
-        .bind(self.config.universe_id)
-        .bind(request.instance_id.as_str())
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|error| sql_error("list occupying environment job groups", error))?;
-        let job_groups = group_rows
-            .iter()
-            .map(|row| {
-                row.try_get::<String, _>("job_group_id")
-                    .map(EnvironmentJobGroupId::new)
-            })
-            .collect::<Result<Vec<_>, sqlx::Error>>()
-            .map_err(|error| sql_error("decode occupying environment job group", error))?;
-        if !bindings.is_empty() || !job_groups.is_empty() {
+        if !bindings.is_empty() {
             return Err(EnvironmentRegistryError::Occupied {
                 instance_id: request.instance_id,
                 bindings,
-                job_groups,
             });
         }
         let update = format!(

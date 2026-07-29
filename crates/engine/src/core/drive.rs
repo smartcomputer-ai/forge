@@ -6,7 +6,7 @@
 //! substrates fulfill emitted actions and resume the drive with committed
 //! entries or execution results.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -162,7 +162,8 @@ impl CoreAgentDrive {
         result: ToolInvocationBatchResult,
         observed_at_ms: u64,
     ) -> Result<CoreAgentAction, CoreAgentDriveError> {
-        let proposals = tool_batch_result_proposals(&self.state, result)?;
+        let proposals =
+            tool_batch_result_proposals_for_session(&self.session_id, &self.state, result)?;
         self.append_action(proposals, observed_at_ms)
     }
 
@@ -192,8 +193,14 @@ impl CoreAgentDrive {
         spec: AwaitSpec,
         observed_at_ms: u64,
     ) -> Result<CoreAgentAction, CoreAgentDriveError> {
-        let proposals =
-            tool_batch_deferred_proposals(&self.state, batch_id, call_id, completed_results, spec)?;
+        let proposals = tool_batch_deferred_proposals(
+            &self.session_id,
+            &self.state,
+            batch_id,
+            call_id,
+            completed_results,
+            spec,
+        )?;
         self.append_action(proposals, observed_at_ms)
     }
 
@@ -671,6 +678,7 @@ pub fn next_tool_batch_request(
 }
 
 pub fn tool_batch_deferred_proposals(
+    session_id: &SessionId,
     state: &CoreAgentState,
     batch_id: ToolBatchId,
     call_id: ToolCallId,
@@ -790,7 +798,7 @@ pub fn tool_batch_deferred_proposals(
         tool_batch_id: Some(batch.batch_id),
         ..CoreAgentJoins::default()
     };
-    let mut proposals = tool_call_completed_proposals(state, completed_result)?;
+    let mut proposals = tool_call_completed_proposals(state, Some(session_id), completed_result)?;
     proposals.push(CoreAgentEventProposal::new(
         joins,
         CoreAgentEvent::Tool(ToolEvent::BatchDeferred {
@@ -808,9 +816,25 @@ pub fn tool_batch_result_proposals(
     state: &CoreAgentState,
     result: ToolInvocationBatchResult,
 ) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
+    tool_batch_result_proposals_inner(None, state, result)
+}
+
+fn tool_batch_result_proposals_for_session(
+    session_id: &SessionId,
+    state: &CoreAgentState,
+    result: ToolInvocationBatchResult,
+) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
+    tool_batch_result_proposals_inner(Some(session_id), state, result)
+}
+
+fn tool_batch_result_proposals_inner(
+    session_id: Option<&SessionId>,
+    state: &CoreAgentState,
+    result: ToolInvocationBatchResult,
+) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
     validate_tool_batch_result(&result)?;
     validate_result_matches_active_tool_batch(state, &result, false)?;
-    tool_call_completed_proposals(state, result)
+    tool_call_completed_proposals(state, session_id, result)
 }
 
 pub fn resume_await_proposals(
@@ -874,7 +898,7 @@ pub fn resume_await_proposals(
             ));
         }
     }
-    proposals.extend(tool_call_completed_proposals(state, result)?);
+    proposals.extend(tool_call_completed_proposals(state, None, result)?);
     Ok(proposals)
 }
 
@@ -1044,10 +1068,12 @@ fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvoc
 
 fn tool_call_completed_proposals(
     state: &CoreAgentState,
+    session_id: Option<&SessionId>,
     result: ToolInvocationBatchResult,
 ) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
     let mut proposals = Vec::new();
     let mut resolved_promises = BTreeSet::new();
+    let mut pending_port_emissions = BTreeMap::<crate::WorkflowToolId, u32>::new();
     for result_item in result.results {
         let call_id = result_item.call_id.clone();
         let joins = CoreAgentJoins {
@@ -1061,6 +1087,8 @@ fn tool_call_completed_proposals(
         // log event in the same append as the call completion, so promise
         // state is rebuilt from the log like everything else.
         let mut promise_proposals = Vec::new();
+        let mut tool_proposals = Vec::new();
+        let mut saw_port_effect = false;
         for effect in &result_item.effects {
             if let Some(promise) =
                 crate::core::components::promise::promise_from_create_effect(effect, result.run_id)?
@@ -1114,6 +1142,111 @@ fn tool_call_completed_proposals(
                     CoreAgentEvent::Promise(PromiseEvent::Detached { promise_id }),
                 ));
             }
+            if let Some(invocation) =
+                crate::core::components::workflow_tool::invocation_from_emit_effect(effect)?
+            {
+                if saw_port_effect {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "tool call {} produced more than one workflow tool emission effect",
+                        call_id
+                    )));
+                }
+                saw_port_effect = true;
+                if result_item.status != ToolCallStatus::Succeeded {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "failed tool call {} produced a workflow tool emission effect",
+                        call_id
+                    )));
+                }
+                let session_id = session_id.ok_or_else(|| {
+                    DomainError::InvariantViolation(
+                        "workflow tool emission effect was admitted without session identity"
+                            .to_owned(),
+                    )
+                })?;
+                let pending = pending_port_emissions
+                    .get(&invocation.tool_id)
+                    .copied()
+                    .unwrap_or(0);
+                crate::core::components::workflow_tool::validate_emit_effect(
+                    state,
+                    session_id,
+                    result.run_id,
+                    result.turn_id,
+                    result.batch_id,
+                    &call_id,
+                    &invocation,
+                    pending,
+                )?;
+                pending_port_emissions
+                    .insert(invocation.tool_id.clone(), pending.saturating_add(1));
+                // Keyed completion promises are created atomically with the
+                // invocation, before its Emitted fact, so the Emitted apply
+                // can verify every keyed promise exists with the canonical
+                // producer-authorized source.
+                if let Some(promises) = &invocation.completion_promises {
+                    let deadline_ms =
+                        crate::core::components::workflow_tool::completion_deadline_from_emit_effect(
+                            effect,
+                        )?;
+                    let binding = state
+                        .workflow_tools
+                        .bindings
+                        .get(&invocation.tool_id)
+                        .expect("binding was validated by validate_emit_effect");
+                    for (key, promise_id) in promises {
+                        let source =
+                            crate::core::components::workflow_tool::completion_promise_source(
+                                binding,
+                                &invocation,
+                                key,
+                            )?;
+                        promise_proposals.push(CoreAgentEventProposal::new(
+                            joins.clone(),
+                            CoreAgentEvent::Promise(PromiseEvent::Created {
+                                promise: crate::Promise {
+                                    promise_id: promise_id.clone(),
+                                    source,
+                                    scope: crate::PromiseScope::Run {
+                                        run_id: result.run_id,
+                                    },
+                                    status: PromiseStatus::Pending,
+                                    payload_ref: None,
+                                    error_ref: None,
+                                    deadline_ms,
+                                },
+                            }),
+                        ));
+                    }
+                }
+                // The trusted effect is one carrier; the durable event
+                // family follows the binding's target lifecycle.
+                let event = match &state
+                    .workflow_tools
+                    .bindings
+                    .get(&invocation.tool_id)
+                    .expect("binding was validated by validate_emit_effect")
+                    .target
+                {
+                    crate::WorkflowToolTarget::Start { start } => {
+                        let execution_id = crate::workflow_tool_execution_id(
+                            &invocation.invocation_id,
+                            &start.recipe_fingerprint,
+                        );
+                        crate::WorkflowToolEvent::StartRequested {
+                            invocation,
+                            execution_id,
+                        }
+                    }
+                    crate::WorkflowToolTarget::Bound { .. } => {
+                        crate::WorkflowToolEvent::Emitted { invocation }
+                    }
+                };
+                tool_proposals.push(CoreAgentEventProposal::new(
+                    joins.clone(),
+                    CoreAgentEvent::WorkflowTool(event),
+                ));
+            }
         }
         proposals.push(CoreAgentEventProposal::new(
             joins,
@@ -1125,6 +1258,7 @@ fn tool_call_completed_proposals(
             }),
         ));
         proposals.extend(promise_proposals);
+        proposals.extend(tool_proposals);
     }
     Ok(proposals)
 }
@@ -1240,7 +1374,8 @@ mod tests {
         SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SkillId,
         SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome, ToolChoice,
         ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism, ToolSpec,
-        ToolTargetRequirement, TurnStatus, skill_activation_context_key,
+        ToolTargetRequirement, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition,
+        WorkflowToolId, WorkflowToolInvocation, skill_activation_context_key,
     };
 
     fn config() -> SessionConfig {
@@ -1474,7 +1609,6 @@ mod tests {
         ToolSpec {
             name: ToolName::new(tool_name),
             kind: ToolKind::Function(FunctionToolSpec {
-                model_name: None,
                 description_ref: None,
                 input_schema_ref: BlobRef::from_bytes(br#"{"type":"object"}"#),
                 output_schema_ref: None,
@@ -3029,6 +3163,55 @@ mod tests {
     }
 
     #[test]
+    fn replace_session_config_preserves_managed_workflow_tool_bindings() {
+        let session_id = SessionId::new("session-managed");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let receiver = WorkflowEndpointRef {
+            workflow_id: "work/controller-1".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        };
+        let open = drive
+            .admit_command(
+                CoreAgentCommand::OpenManagedSession {
+                    config: config(),
+                    session_universe_id: uuid::Uuid::from_u128(7),
+                    workflow_tools: crate::ManagedSessionWorkflowTools::v1(
+                        Some(receiver.clone()),
+                        vec![crate::WorkflowToolDeclaration::bound_notify(
+                            WorkflowToolDefinition {
+                                tool_id: WorkflowToolId::new("work-report"),
+                                revision: 1,
+                                semantic_type: "lightspeed.work.report.v1".to_owned(),
+                                tool: test_tool_spec("work_report"),
+                            },
+                            receiver,
+                        )],
+                    ),
+                },
+                10,
+            )
+            .expect("open managed session");
+        commit_action(&mut drive, open);
+        let managed_bindings = drive.state().workflow_tools.clone();
+
+        let mut next = config();
+        next.generation.max_output_tokens = Some(2048);
+        let replace = drive
+            .admit_command(
+                CoreAgentCommand::ReplaceSessionConfig {
+                    expected_revision: Some(0),
+                    config: next,
+                },
+                20,
+            )
+            .expect("replace public session config");
+        commit_action(&mut drive, replace);
+
+        assert_eq!(drive.state().lifecycle.config_revision, 1);
+        assert_eq!(drive.state().workflow_tools, managed_bindings);
+    }
+
+    #[test]
     fn replace_session_config_with_identical_document_is_a_noop() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
@@ -3869,6 +4052,45 @@ mod tests {
     }
 
     #[test]
+    fn duplicate_submission_with_different_terminal_notification_is_rejected() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let command = |token: &str| {
+            let mut command = request_run_command(
+                Some(crate::SubmissionId::new("retry_notify")),
+                user_input(BlobRef::from_bytes(b"x")),
+                run_config(),
+            );
+            let CoreAgentCommand::RequestRun(request) = &mut command else {
+                unreachable!("request_run_command always constructs RequestRun");
+            };
+            request.notify_on_terminal = vec![crate::RunTerminalNotifyIntent {
+                holder_workflow_id: "controller-1".to_owned(),
+                token: token.to_owned(),
+            }];
+            command
+        };
+
+        let accepted = drive
+            .admit_command(command("token-1"), 20)
+            .expect("first request run");
+        commit_action(&mut drive, accepted);
+        let duplicate = drive
+            .admit_command(command("token-1"), 21)
+            .expect("identical notification retry");
+        assert!(!matches!(duplicate, CoreAgentAction::AppendEvents { .. }));
+
+        let error = drive
+            .admit_command(command("token-2"), 22)
+            .expect_err("different terminal token must fail");
+        let CoreAgentDriveError::Command(CommandError::Rejected(rejection)) = error else {
+            panic!("expected command rejection, got: {error:?}");
+        };
+        assert_eq!(rejection.kind, CommandRejectionKind::DuplicateSubmission);
+    }
+
+    #[test]
     fn duplicate_submission_after_mailbox_consumption_admits_as_no_op() {
         let mut drive =
             CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
@@ -4227,6 +4449,456 @@ mod tests {
             None,
         )];
         result
+    }
+
+    #[test]
+    fn workflow_tool_effect_atomically_records_successful_call_and_emission() {
+        let session_id = SessionId::new("session-tool");
+        let universe_id = uuid::Uuid::from_u128(7);
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        let definition = WorkflowToolDefinition {
+            tool_id: WorkflowToolId::new("report"),
+            revision: 1,
+            semantic_type: "lightspeed.work.report.v1".to_owned(),
+            tool: test_tool_spec("work_report"),
+        };
+        let controller = WorkflowEndpointRef {
+            workflow_id: "opaque work workflow id".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        };
+        let declaration = crate::ManagedSessionWorkflowTools::v1(
+            Some(controller.clone()),
+            vec![crate::WorkflowToolDeclaration::bound_notify(
+                definition.clone(),
+                controller,
+            )],
+        );
+        let open = drive
+            .admit_command(
+                CoreAgentCommand::OpenManagedSession {
+                    config: config(),
+                    session_universe_id: universe_id,
+                    workflow_tools: declaration,
+                },
+                10,
+            )
+            .expect("open managed session");
+        commit_action(&mut drive, open);
+        install_test_tool(&mut drive, "work_report");
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(&mut drive);
+        let request = drive_until_tool_batch_request(&mut drive, generation, "work_report");
+        let binding = drive
+            .state()
+            .workflow_tools
+            .bindings
+            .get(&definition.tool_id)
+            .cloned()
+            .expect("durable binding");
+        let call = &request.calls[0];
+        let invocation_id = crate::WorkflowToolInvocationId::for_call(
+            universe_id,
+            &session_id,
+            request.run_id,
+            request.turn_id,
+            request.batch_id,
+            &call.call_id,
+            &binding.binding_fingerprint,
+        );
+        let invocation = WorkflowToolInvocation {
+            invocation_id: invocation_id.clone(),
+            tool_id: definition.tool_id,
+            semantic_type: definition.semantic_type,
+            schema_revision: definition.revision,
+            binding_fingerprint: binding.binding_fingerprint,
+            session_universe_id: universe_id,
+            session_id,
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            tool_batch_id: request.batch_id,
+            tool_call_id: call.call_id.clone(),
+            arguments_ref: call.arguments_ref.clone(),
+            completion_promises: None,
+        };
+        let mut result = completed_tool_result(&request);
+        result.results[0].effects = vec![crate::workflow_tool_emit_effect(&invocation)];
+
+        let resumed = drive
+            .resume_tool_batch(result, 90)
+            .expect("resume workflow tool");
+        let CoreAgentAction::AppendEvents { events, .. } = &resumed else {
+            panic!("expected append");
+        };
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event.kind, "lightspeed.core.tool.call_completed");
+        assert_eq!(
+            events[1].event.kind,
+            "lightspeed.core.workflow_tool.emitted"
+        );
+
+        commit_action(&mut drive, resumed);
+        assert_eq!(
+            drive.state().workflow_tools.emissions.get(&invocation_id),
+            Some(&invocation)
+        );
+    }
+
+    #[test]
+    fn promise_bearing_workflow_tool_creates_keyed_promises_atomically() {
+        let session_id = SessionId::new("session-tool");
+        let universe_id = uuid::Uuid::from_u128(7);
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        let definition = WorkflowToolDefinition {
+            tool_id: WorkflowToolId::new("approve"),
+            revision: 1,
+            semantic_type: "lightspeed.approval.request.v1".to_owned(),
+            tool: test_tool_spec("request_approval"),
+        };
+        let controller = WorkflowEndpointRef {
+            workflow_id: "opaque work workflow id".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        };
+        let receiver = WorkflowEndpointRef {
+            workflow_id: "approval plugin workflow id".to_owned(),
+            workflow_kind: "approvals".to_owned(),
+        };
+        let declaration = crate::ManagedSessionWorkflowTools::v1(
+            Some(controller),
+            vec![crate::WorkflowToolDeclaration::new(
+                definition.clone(),
+                crate::WorkflowToolTarget::Bound {
+                    receiver: receiver.clone(),
+                },
+                crate::WorkflowToolCompletion::Promises {
+                    reply_schema_ref: None,
+                    deadline_after_ms: Some(60_000),
+                    max_promises: 1,
+                    key_source: crate::WorkflowToolCompletionKeySource::Reply,
+                },
+            )],
+        );
+        let open = drive
+            .admit_command(
+                CoreAgentCommand::OpenManagedSession {
+                    config: config(),
+                    session_universe_id: universe_id,
+                    workflow_tools: declaration,
+                },
+                10,
+            )
+            .expect("open managed session");
+        commit_action(&mut drive, open);
+        install_test_tool(&mut drive, "request_approval");
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(&mut drive);
+        let request = drive_until_tool_batch_request(&mut drive, generation, "request_approval");
+        let binding = drive
+            .state()
+            .workflow_tools
+            .bindings
+            .get(&definition.tool_id)
+            .cloned()
+            .expect("durable binding");
+        let call = &request.calls[0];
+        let invocation_id = crate::WorkflowToolInvocationId::for_call(
+            universe_id,
+            &session_id,
+            request.run_id,
+            request.turn_id,
+            request.batch_id,
+            &call.call_id,
+            &binding.binding_fingerprint,
+        );
+        let promise_id =
+            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let invocation = WorkflowToolInvocation {
+            invocation_id: invocation_id.clone(),
+            tool_id: definition.tool_id,
+            semantic_type: definition.semantic_type,
+            schema_revision: definition.revision,
+            binding_fingerprint: binding.binding_fingerprint,
+            session_universe_id: universe_id,
+            session_id,
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            tool_batch_id: request.batch_id,
+            tool_call_id: call.call_id.clone(),
+            arguments_ref: call.arguments_ref.clone(),
+            completion_promises: Some(std::collections::BTreeMap::from([(
+                crate::REPLY_COMPLETION_KEY.to_owned(),
+                promise_id.clone(),
+            )])),
+        };
+        let mut result = completed_tool_result(&request);
+        result.results[0].effects = vec![crate::with_completion_deadline(
+            crate::workflow_tool_emit_effect(&invocation),
+            Some(90_060_000),
+        )];
+
+        let resumed = drive
+            .resume_tool_batch(result, 90)
+            .expect("resume promise-bearing workflow tool");
+        let CoreAgentAction::AppendEvents { events, .. } = &resumed else {
+            panic!("expected append");
+        };
+        // One append: tool completion, keyed promise, then the emitted fact
+        // whose apply verifies the promise exists with the canonical source.
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].event.kind, "lightspeed.core.tool.call_completed");
+        assert_eq!(events[1].event.kind, "lightspeed.core.promise.created");
+        assert_eq!(
+            events[2].event.kind,
+            "lightspeed.core.workflow_tool.emitted"
+        );
+        commit_action(&mut drive, resumed);
+
+        let promise = drive
+            .state()
+            .promises
+            .promises
+            .get(&promise_id)
+            .expect("keyed completion promise");
+        assert_eq!(promise.status, crate::PromiseStatus::Pending);
+        assert_eq!(
+            promise.scope,
+            crate::PromiseScope::Run {
+                run_id: request.run_id
+            }
+        );
+        assert_eq!(promise.deadline_ms, Some(90_060_000));
+        assert_eq!(
+            promise.source,
+            crate::PromiseSource::Workflow {
+                producer_workflow_id: receiver.workflow_id.clone(),
+                producer_workflow_kind: receiver.workflow_kind.clone(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                completion_key: crate::REPLY_COMPLETION_KEY.to_owned(),
+            }
+        );
+
+        // Terminal delivery failure fails the still-pending keyed promise
+        // atomically with the DeliveryFailed fact.
+        let error_ref = BlobRef::from_bytes(b"receiver unreachable");
+        let failed = drive
+            .admit_command(
+                CoreAgentCommand::FailWorkflowToolDelivery {
+                    invocation_id: invocation_id.clone(),
+                    error_ref: error_ref.clone(),
+                },
+                95,
+            )
+            .expect("terminal delivery failure");
+        let entries = commit_action(&mut drive, failed);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::WorkflowTool(crate::WorkflowToolEvent::DeliveryFailed { .. })
+        ));
+        assert!(matches!(
+            entries[1].event,
+            CoreAgentEvent::Promise(crate::PromiseEvent::Failed { .. })
+        ));
+        let promise = drive
+            .state()
+            .promises
+            .promises
+            .get(&promise_id)
+            .expect("failed promise");
+        assert_eq!(promise.status, crate::PromiseStatus::Failed);
+        assert_eq!(promise.error_ref, Some(error_ref.clone()));
+
+        // Retried admission with the same error is an idempotent no-op.
+        let retry = drive
+            .admit_command(
+                CoreAgentCommand::FailWorkflowToolDelivery {
+                    invocation_id,
+                    error_ref,
+                },
+                96,
+            )
+            .expect("idempotent retry");
+        assert!(
+            !matches!(retry, CoreAgentAction::AppendEvents { .. }),
+            "delivery-failure retry must be a no-op: {retry:?}"
+        );
+    }
+
+    #[test]
+    fn start_on_call_tool_records_intent_and_keyed_promises_atomically() {
+        let session_id = SessionId::new("session-tool");
+        let universe_id = uuid::Uuid::from_u128(7);
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        let definition = WorkflowToolDefinition {
+            tool_id: WorkflowToolId::new("launch"),
+            revision: 1,
+            semantic_type: "lightspeed.job.launch.v1".to_owned(),
+            tool: test_tool_spec("launch_job"),
+        };
+        let start = crate::WorkflowStartRef {
+            recipe_format: 1,
+            revision: 1,
+            recipe_ref: BlobRef::from_bytes(b"{\"workflowType\":\"t\",\"taskQueue\":\"q\"}"),
+            recipe_fingerprint: "wtr:sha256:recipe".to_owned(),
+        };
+        let declaration = crate::ManagedSessionWorkflowTools::v1(
+            None,
+            vec![crate::WorkflowToolDeclaration::new(
+                definition.clone(),
+                crate::WorkflowToolTarget::Start {
+                    start: start.clone(),
+                },
+                crate::WorkflowToolCompletion::Promises {
+                    reply_schema_ref: None,
+                    deadline_after_ms: None,
+                    max_promises: 1,
+                    key_source: crate::WorkflowToolCompletionKeySource::Reply,
+                },
+            )],
+        );
+        let open = drive
+            .admit_command(
+                CoreAgentCommand::OpenManagedSession {
+                    config: config(),
+                    session_universe_id: universe_id,
+                    workflow_tools: declaration,
+                },
+                10,
+            )
+            .expect("open managed session");
+        commit_action(&mut drive, open);
+        install_test_tool(&mut drive, "launch_job");
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(&mut drive);
+        let request = drive_until_tool_batch_request(&mut drive, generation, "launch_job");
+        let binding = drive
+            .state()
+            .workflow_tools
+            .bindings
+            .get(&definition.tool_id)
+            .cloned()
+            .expect("durable binding");
+        let call = &request.calls[0];
+        let invocation_id = crate::WorkflowToolInvocationId::for_call(
+            universe_id,
+            &session_id,
+            request.run_id,
+            request.turn_id,
+            request.batch_id,
+            &call.call_id,
+            &binding.binding_fingerprint,
+        );
+        let promise_id =
+            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let execution_id =
+            crate::workflow_tool_execution_id(&invocation_id, &start.recipe_fingerprint);
+        let invocation = WorkflowToolInvocation {
+            invocation_id: invocation_id.clone(),
+            tool_id: definition.tool_id,
+            semantic_type: definition.semantic_type,
+            schema_revision: definition.revision,
+            binding_fingerprint: binding.binding_fingerprint,
+            session_universe_id: universe_id,
+            session_id,
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            tool_batch_id: request.batch_id,
+            tool_call_id: call.call_id.clone(),
+            arguments_ref: call.arguments_ref.clone(),
+            completion_promises: Some(std::collections::BTreeMap::from([(
+                crate::REPLY_COMPLETION_KEY.to_owned(),
+                promise_id.clone(),
+            )])),
+        };
+        let mut result = completed_tool_result(&request);
+        result.results[0].effects = vec![crate::workflow_tool_emit_effect(&invocation)];
+
+        let resumed = drive
+            .resume_tool_batch(result, 90)
+            .expect("resume start-on-call tool");
+        let CoreAgentAction::AppendEvents { events, .. } = &resumed else {
+            panic!("expected append");
+        };
+        assert_eq!(events.len(), 3);
+        assert_eq!(events[0].event.kind, "lightspeed.core.tool.call_completed");
+        assert_eq!(events[1].event.kind, "lightspeed.core.promise.created");
+        assert_eq!(
+            events[2].event.kind,
+            "lightspeed.core.workflow_tool.start_requested"
+        );
+        commit_action(&mut drive, resumed);
+
+        let recorded = drive
+            .state()
+            .workflow_tools
+            .start_requests
+            .get(&invocation_id)
+            .expect("durable start intent");
+        assert_eq!(recorded, &invocation);
+        assert!(drive.state().workflow_tools.emissions.is_empty());
+        let promise = drive
+            .state()
+            .promises
+            .promises
+            .get(&promise_id)
+            .expect("keyed completion promise");
+        assert_eq!(
+            promise.source,
+            crate::PromiseSource::Workflow {
+                producer_workflow_id: execution_id.clone(),
+                producer_workflow_kind: crate::WORKFLOW_TOOL_EXECUTION_KIND.to_owned(),
+                invocation_id: invocation_id.as_str().to_owned(),
+                completion_key: crate::REPLY_COMPLETION_KEY.to_owned(),
+            }
+        );
+
+        // Terminal start failure fails the still-pending keyed promise
+        // atomically with the StartFailed fact; retry is a no-op.
+        let error_ref = BlobRef::from_bytes(b"start worker unreachable");
+        let failed = drive
+            .admit_command(
+                CoreAgentCommand::FailWorkflowToolStart {
+                    invocation_id: invocation_id.clone(),
+                    error_ref: error_ref.clone(),
+                },
+                95,
+            )
+            .expect("terminal start failure");
+        let entries = commit_action(&mut drive, failed);
+        assert_eq!(entries.len(), 2);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::WorkflowTool(crate::WorkflowToolEvent::StartFailed { .. })
+        ));
+        assert!(matches!(
+            entries[1].event,
+            CoreAgentEvent::Promise(crate::PromiseEvent::Failed { .. })
+        ));
+        assert_eq!(
+            drive
+                .state()
+                .promises
+                .promises
+                .get(&promise_id)
+                .expect("failed promise")
+                .status,
+            crate::PromiseStatus::Failed
+        );
+        let retry = drive
+            .admit_command(
+                CoreAgentCommand::FailWorkflowToolStart {
+                    invocation_id,
+                    error_ref,
+                },
+                96,
+            )
+            .expect("idempotent retry");
+        assert!(
+            !matches!(retry, CoreAgentAction::AppendEvents { .. }),
+            "start-failure retry must be a no-op: {retry:?}"
+        );
     }
 
     #[test]

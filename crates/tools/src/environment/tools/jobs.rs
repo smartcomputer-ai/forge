@@ -1,16 +1,13 @@
 //! Canonical durable-job operations.
 
-use host_protocol::data::jobs::{
-    ListJobsParams, ListJobsResponse, ReadJobsParams, StartJobsParams, StartJobsResponse,
-};
+use host_protocol::data::jobs::{ReadJobsParams, StartJobsParams, StartJobsResponse};
 
 use crate::{
     environment::{
         EnvironmentToolContext,
         jobs::{
-            JobError, JobListArgs, JobListResultEntry, JobListResultSet, JobReadArgs,
-            JobReadResultEntry, JobReadResultSet, JobStartArgs, JobStartResult, JobStarted,
-            visible_job_list_output, visible_job_read_output,
+            JobError, JobReadArgs, JobReadResultEntry, JobReadResultSet, JobStartArgs,
+            JobStartResult, JobStarted, visible_job_read_output,
         },
     },
     error::ToolResult,
@@ -29,20 +26,6 @@ pub async fn invoke_job_start(
     let params = start_params_from_args(ctx, args)?;
     let response = jobs.start_jobs(params).await?;
     Ok(start_result_from_response(response))
-}
-
-pub async fn invoke_job_list(
-    ctx: &EnvironmentToolContext,
-    args: JobListArgs,
-) -> ToolResult<JobListResultSet> {
-    let jobs = ctx.jobs.as_ref().ok_or_else(unsupported_job_capability)?;
-    let response = jobs
-        .list_jobs(ListJobsParams {
-            namespace: job_namespace(ctx, args.session_id.as_deref())?,
-            limit: args.limit,
-        })
-        .await?;
-    Ok(list_result_from_response(response))
 }
 
 pub async fn invoke_job_read(
@@ -83,24 +66,13 @@ pub fn job_read_visible(result: &JobReadResultSet) -> String {
     visible_job_read_output(&result.jobs)
 }
 
-pub fn job_list_visible(result: &JobListResultSet) -> String {
-    visible_job_list_output(&result.jobs)
-}
-
 fn start_params_from_args(
     ctx: &EnvironmentToolContext,
     args: JobStartArgs,
 ) -> ToolResult<StartJobsParams> {
     let mut specs = Vec::with_capacity(args.jobs.len());
-    for (index, spec) in args.jobs.into_iter().enumerate() {
-        let Some(job_id) = spec.job_id.clone() else {
-            return Err(JobError::InvalidRequest {
-                message: format!(
-                    "job_start jobs[{index}].job_id is required unless the runtime assigns one"
-                ),
-            }
-            .into());
-        };
+    for spec in args.jobs {
+        let job_id = spec.job_id.clone();
         specs.push(spec.into_host_spec(job_id)?);
     }
     Ok(StartJobsParams {
@@ -136,20 +108,6 @@ fn start_result_from_response(response: StartJobsResponse) -> JobStartResult {
                 dependencies: summary.dependencies,
                 queue_key: summary.queue_key,
                 promise: None,
-            })
-            .collect(),
-    }
-}
-
-fn list_result_from_response(response: ListJobsResponse) -> JobListResultSet {
-    JobListResultSet {
-        jobs: response
-            .jobs
-            .into_iter()
-            .map(|summary| JobListResultEntry {
-                handle: None,
-                summary: Some(summary),
-                error: None,
             })
             .collect(),
     }

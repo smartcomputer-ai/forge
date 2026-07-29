@@ -11,7 +11,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -38,6 +38,7 @@ pub struct BridgeRuntime {
     filesystem: LocalFileSystem,
     processes: ProcessManager,
     jobs: JobManager,
+    closed: Arc<AtomicBool>,
     next_connection_id: Arc<AtomicU64>,
 }
 
@@ -59,6 +60,7 @@ impl BridgeRuntime {
             filesystem,
             processes,
             jobs,
+            closed: Arc::new(AtomicBool::new(false)),
             next_connection_id: Arc::new(AtomicU64::new(1)),
         })
     }
@@ -107,7 +109,11 @@ impl BridgeRuntime {
         Ok(HostTargetSummary {
             target_id: self.target_id(),
             display_name: Some(self.config.display_name()),
-            status: HostTargetStatus::Ready,
+            status: if self.closed.load(Ordering::Acquire) {
+                HostTargetStatus::Closed
+            } else {
+                HostTargetStatus::Ready
+            },
             scope: HostScope::Default,
             capabilities: self.capabilities(),
             default_cwd: Some(self.host_cwd()?),
@@ -147,6 +153,10 @@ impl BridgeRuntime {
 
     pub fn jobs(&self) -> &JobManager {
         &self.jobs
+    }
+
+    pub fn mark_closed(&self) {
+        self.closed.store(true, Ordering::Release);
     }
 
     fn host_cwd(&self) -> anyhow::Result<HostPath> {

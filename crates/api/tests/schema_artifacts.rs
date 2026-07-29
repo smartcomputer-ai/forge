@@ -58,6 +58,7 @@ fn serialized_fixtures_validate_against_exported_schemas() {
     let bundle = api::export_schemas().schema_bundle;
 
     let params = RunStartParams {
+        notify_on_terminal: None,
         session_id: "session_1".to_owned(),
         source: RunStartSource::Input {
             items: vec![InputItem::Text {

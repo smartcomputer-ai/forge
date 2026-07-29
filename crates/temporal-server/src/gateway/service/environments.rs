@@ -112,18 +112,25 @@ impl GatewayAgentApi {
         }))
     }
 
-    pub(super) async fn session_has_job_environment(
+    pub(super) async fn session_has_job_read_environment(
         &self,
         session_id: &SessionId,
     ) -> Result<bool, AgentApiError> {
         let runtime_environments = self.load_session_runtime_environments(session_id).await?;
         Ok(runtime_environments.iter().any(|environment| {
             let record = environment.record();
-            record.status == EnvironmentStatus::Ready
-                && (record.capabilities.job_start
-                    || record.capabilities.job_list
-                    || record.capabilities.job_read
-                    || record.capabilities.job_cancel)
+            record.status == EnvironmentStatus::Ready && record.capabilities.job_read
+        }))
+    }
+
+    pub(super) async fn session_has_job_start_environment(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<bool, AgentApiError> {
+        let runtime_environments = self.load_session_runtime_environments(session_id).await?;
+        Ok(runtime_environments.iter().any(|environment| {
+            let record = environment.record();
+            record.status == EnvironmentStatus::Ready && record.capabilities.job_start
         }))
     }
 

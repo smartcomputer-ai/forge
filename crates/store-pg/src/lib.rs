@@ -8,9 +8,7 @@ mod auth;
 mod blob;
 mod blob_cache;
 mod environment;
-mod environment_jobs;
 mod mcp;
-mod messaging;
 mod oauth;
 mod object;
 mod operator;
@@ -34,10 +32,9 @@ pub const CORE_SCHEMA_SQL: &str = include_str!("../migrations/001_core.sql");
 pub const VFS_SCHEMA_SQL: &str = include_str!("../migrations/002_vfs.sql");
 pub const MCP_SCHEMA_SQL: &str = include_str!("../migrations/003_mcp.sql");
 pub const AUTH_SCHEMA_SQL: &str = include_str!("../migrations/004_auth.sql");
-pub const MESSAGING_SCHEMA_SQL: &str = include_str!("../migrations/005_messaging.sql");
-pub const ENVIRONMENT_SCHEMA_SQL: &str = include_str!("../migrations/006_environments.sql");
-pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/007_agent_profiles.sql");
-pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/008_api_keys.sql");
+pub const ENVIRONMENT_SCHEMA_SQL: &str = include_str!("../migrations/005_environments.sql");
+pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profiles.sql");
+pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
@@ -272,7 +269,6 @@ impl PgStore {
         pool.execute(VFS_SCHEMA_SQL).await?;
         pool.execute(MCP_SCHEMA_SQL).await?;
         pool.execute(AUTH_SCHEMA_SQL).await?;
-        pool.execute(MESSAGING_SCHEMA_SQL).await?;
         pool.execute(ENVIRONMENT_SCHEMA_SQL).await?;
         pool.execute(PROFILE_SCHEMA_SQL).await?;
         pool.execute(API_KEYS_SCHEMA_SQL).await?;
@@ -304,9 +300,8 @@ impl PgStore {
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
 pub use operator::{
-    UniverseOutboundMessage, UniverseStats, create_universe, delete_universe,
-    list_universe_object_keys, list_universe_session_ids, list_universe_stats,
-    read_pending_outbound_all_universes, read_universe_stats,
+    UniverseStats, create_universe, delete_universe, list_universe_object_keys,
+    list_universe_session_ids, list_universe_stats, read_universe_stats,
 };
 
 /// Deployment-level universe listing for admin surfaces.

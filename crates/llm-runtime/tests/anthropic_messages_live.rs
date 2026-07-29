@@ -174,7 +174,6 @@ fn weather_tool_spec(schema_ref: BlobRef, description_ref: BlobRef) -> engine::T
     engine::ToolSpec {
         name: ToolName::new("get_weather"),
         kind: engine::ToolKind::Function(engine::FunctionToolSpec {
-            model_name: None,
             description_ref: Some(description_ref),
             input_schema_ref: schema_ref,
             output_schema_ref: None,

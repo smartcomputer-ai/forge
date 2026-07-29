@@ -102,7 +102,7 @@ Commands reach a running session as Temporal signals: the gateway submits admiss
 Because sessions can run for weeks to months and Temporal caps workflow history, the workflow continues-as-new whenever it is idle and Temporal suggests it (or a configured history threshold is crossed). This is where the event-sourced design pays off twice: the workflow start arguments are tiny—a session id, the session config, a blob ref for instructions—because the entire session state rehydrates from Lightspeed's own event log. Workflow history stays bounded no matter how long the agent lives, and a worker crash or deploy simply replays into the same state.
 
 ## The Client API Boundary
-Clients — the CLI, messaging bridges, editors, future frontends — consume the typed `api` crate surface through the JSON-RPC gateway, never the reducer internals. `session/runs/start` is an acceptance boundary, not a final-output boundary: it returns once the run is admitted, and clients follow `session/events/read` or refresh `session/read` for progress and completion. This keeps the public contract stable while the core evolves underneath it.
+Clients — the CLI, workflow integrations, editors, and future frontends — consume the typed `api` crate surface through the JSON-RPC gateway, never the reducer internals. `session/runs/start` is an acceptance boundary, not a final-output boundary: it returns once the run is admitted, and clients follow `session/events/read` or refresh `session/read` for progress and completion. This keeps the public contract stable while the core evolves underneath it.
 
 Collection reads do not fan out to Temporal workflows. `session/list` reads a
 materialized `new` / `open` / `closed` lifecycle projection maintained in the
@@ -111,7 +111,7 @@ authoritative. `session/delete` only removes closed sessions and rejects a
 session while a fork still inherits its history, so fork trees are deleted
 leaf-first.
 
-Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, mounts, and environments. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, messaging, fleet, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. The hosted runtime resolves and applies profiles outside the deterministic core.
+Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, mounts, and environments. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, fleet, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. Advanced environment jobs are a separate, default-off `features.environments.jobs` sub-grant. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. The hosted runtime resolves and applies profiles outside the deterministic core.
 
 ## Tools, Environments & Sub-agents
 Tool intents are executed by tool packages outside the core. The important ones for the harness-without-an-OS story: a CAS-backed virtual file system gives the agent standard file tools (read, glob, patch) with no operating system attached; web fetch/search/extract tools work the same way. When a task genuinely needs a machine, the agent borrows one; dedicated VMs connect through a bridge daemon, and durable jobs run long tasks (downloads, delegated coding agents) on that borrowed compute while the harness stays outside.
@@ -124,7 +124,7 @@ Where the pieces above live:
 - `crates/engine` — the deterministic core: session log, state, decider, codecs
 - `crates/temporal-workflow` / `crates/temporal-server` — the session workflow, worker activities, and the JSON-RPC gateway
 - `crates/llm-runtime` / `crates/llm-clients` — effect adapters from planned LLM requests down to provider-native API calls
-- `crates/tools` — tool packages: VFS, web, environments, messaging, prompts, skills, fleet
+- `crates/tools` — tool packages: VFS, web, environments, prompts, skills, fleet
 - `crates/store-pg` / `crates/store-fs` — session log and CAS storage backends
 - `crates/api` / `crates/api-projection` — the client-facing types and projection helpers
 

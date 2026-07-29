@@ -260,13 +260,6 @@ impl JobExecutor for CredentialInjectingJobExecutor {
         self.inner.start_jobs(request).await
     }
 
-    async fn list_jobs(
-        &self,
-        request: host_protocol::data::jobs::ListJobsParams,
-    ) -> JobExecResult<host_protocol::data::jobs::ListJobsResponse> {
-        self.inner.list_jobs(request).await
-    }
-
     async fn read_jobs(
         &self,
         request: host_protocol::data::jobs::ReadJobsParams,

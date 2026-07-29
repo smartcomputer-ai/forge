@@ -34,9 +34,16 @@ pub(super) async fn initialize(
 
     let is_fresh_session = loaded.replayed_event_count == 0;
     let core_state = loaded.core_state.unwrap_or_else(CoreAgentState::new);
+    validate_session_creation_identity(
+        args.universe_id,
+        &core_state,
+        is_fresh_session,
+        args.workflow_tools.as_ref(),
+    )?;
     let run_submissions = loaded.run_submissions;
     let head = loaded.head;
     ctx.state_mut(|state| {
+        state.universe_id = Some(args.universe_id);
         state.session_id = Some(args.session_id.clone());
         state.core_state = core_state;
         state.head = head;
@@ -68,14 +75,17 @@ async fn open_new_session(
     let session_config = args.session_config;
 
     let mut drive = drive_from_state(ctx)?;
-    append_command(
-        ctx,
-        &mut drive,
-        CoreAgentCommand::OpenSession {
+    let open_command = match args.workflow_tools {
+        Some(workflow_tools) => CoreAgentCommand::OpenManagedSession {
+            config: session_config,
+            session_universe_id: args.universe_id,
+            workflow_tools,
+        },
+        None => CoreAgentCommand::OpenSession {
             config: session_config,
         },
-    )
-    .await?;
+    };
+    append_command(ctx, &mut drive, open_command).await?;
     append_command(
         ctx,
         &mut drive,
@@ -87,6 +97,42 @@ async fn open_new_session(
     )
     .await?;
     Ok(())
+}
+
+pub(super) fn validate_session_creation_identity(
+    universe_id: uuid::Uuid,
+    state: &CoreAgentState,
+    is_fresh_session: bool,
+    workflow_tools: Option<&engine::ManagedSessionWorkflowTools>,
+) -> anyhow::Result<()> {
+    let admitted = workflow_tools
+        .map(|tools| tools.admit(universe_id))
+        .transpose()?;
+    if is_fresh_session {
+        return Ok(());
+    }
+
+    match (
+        state.workflow_tools.managed_creation_fingerprint.as_deref(),
+        admitted.as_ref(),
+    ) {
+        (None, None) => Ok(()),
+        (Some(actual), Some(expected))
+            if state.workflow_tools.session_universe_id == Some(universe_id)
+                && actual == expected.creation_fingerprint =>
+        {
+            Ok(())
+        }
+        (Some(_), None) => {
+            anyhow::bail!("managed session restart is missing its workflow-tool declaration")
+        }
+        (None, Some(_)) => {
+            anyhow::bail!("existing standalone session cannot be reopened as a managed session")
+        }
+        (Some(_), Some(_)) => {
+            anyhow::bail!("managed session creation fingerprint conflicts with durable state")
+        }
+    }
 }
 
 fn instruction_context_input(content_ref: BlobRef) -> ContextEntryInput {

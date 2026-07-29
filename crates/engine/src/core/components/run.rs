@@ -879,6 +879,7 @@ pub(crate) fn match_existing_run_submission(
     submission_id: &SubmissionId,
     source: &RunRequestSource,
     run_config: &RunConfig,
+    notify_on_terminal: &[RunTerminalNotifyIntent],
 ) -> Option<SubmissionMatch> {
     if let Some(active) = state
         .runs
@@ -890,6 +891,7 @@ pub(crate) fn match_existing_run_submission(
             if active.origin == RunOrigin::Requested
                 && active.source.matches_request(source)
                 && &active.run_config == run_config
+                && active.notify_on_terminal == notify_on_terminal
             {
                 SubmissionMatch::Identical
             } else {
@@ -907,6 +909,7 @@ pub(crate) fn match_existing_run_submission(
             if queued.origin == RunOrigin::Requested
                 && queued.source.matches_request(source)
                 && &queued.run_config == run_config
+                && queued.notify_on_terminal == notify_on_terminal
             {
                 SubmissionMatch::Identical
             } else {
@@ -924,7 +927,10 @@ pub(crate) fn match_existing_run_submission(
         // A record without a digest cannot be compared and is treated as a
         // retry, which is the safe behavior for retried clients.
         return Some(match completed.submission_digest {
-            Some(digest) if digest != request_run_submission_digest(source, run_config) => {
+            Some(digest)
+                if digest
+                    != request_run_submission_digest(source, run_config, notify_on_terminal) =>
+            {
                 SubmissionMatch::Different
             }
             _ => SubmissionMatch::Identical,
@@ -937,7 +943,10 @@ pub(crate) fn match_existing_run_submission(
         .find(|message| message.submission_id.as_ref() == Some(submission_id))
     {
         return Some(match message.submission_digest {
-            digest if digest != request_run_submission_digest(source, run_config) => {
+            digest
+                if digest
+                    != request_run_submission_digest(source, run_config, notify_on_terminal) =>
+            {
                 SubmissionMatch::Different
             }
             _ => SubmissionMatch::Identical,
@@ -1009,8 +1018,12 @@ pub(crate) fn match_existing_message_submission(
 /// Deterministic digest of a request-run submission's payload. FNV-1a over
 /// the serde_json encoding; collision resistance is not a goal — this guards
 /// against client bugs, not adversaries.
-pub fn request_run_submission_digest(source: &RunRequestSource, run_config: &RunConfig) -> u64 {
-    submission_digest_json(&("request_run", source, run_config))
+pub fn request_run_submission_digest(
+    source: &RunRequestSource,
+    run_config: &RunConfig,
+    notify_on_terminal: &[RunTerminalNotifyIntent],
+) -> u64 {
+    submission_digest_json(&("request_run", source, run_config, notify_on_terminal))
 }
 
 /// Deterministic digest of a message submission's payload. The command kind is
@@ -1033,9 +1046,11 @@ fn submission_digest_json<T: Serialize>(payload: &T) -> u64 {
 
 fn submission_digest_for_accepted_run(run: &AcceptedRun) -> u64 {
     match run.origin {
-        RunOrigin::Requested => {
-            request_run_submission_digest(&source_request_equivalent(&run.source), &run.run_config)
-        }
+        RunOrigin::Requested => request_run_submission_digest(
+            &source_request_equivalent(&run.source),
+            &run.run_config,
+            &run.notify_on_terminal,
+        ),
         RunOrigin::Message => message_submission_digest(run.source.input()),
     }
 }

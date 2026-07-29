@@ -12,15 +12,13 @@ describe("generated universe tools", () => {
     expect(GENERATED_TOOLS.map((tool) => tool.method)).not.toEqual(
       expect.arrayContaining([
         "initialize",
+        "session/managed/start",
         "environments/providers/register",
         "environments/providers/heartbeat",
         "environments/providers/unregister",
         "environments/jobs/create",
         "environments/jobs/read",
-        "environments/jobs/list",
         "environments/jobs/cancel",
-        "outbox/read",
-        "outbox/ack",
       ]),
     );
   });
@@ -45,6 +43,23 @@ describe("generated universe tools", () => {
     expect(GENERATED_TOOLS.find((tool) => tool.method === "auth/grants/read")).toMatchObject({
       summary: "Read authentication grant metadata",
       description: expect.stringContaining("token values are never returned"),
+    });
+  });
+
+  it("preserves literal boolean defaults while normalizing boolean schemas", () => {
+    const tool = GENERATED_TOOLS.find((candidate) => candidate.method === "session/config/put");
+    const definitions = isRecord(tool?.inputSchema.definitions)
+      ? tool.inputSchema.definitions
+      : {};
+    const environments = definitions.EnvironmentsFeature;
+    expect(environments).toMatchObject({
+      additionalProperties: { not: {} },
+      properties: {
+        jobs: {
+          default: false,
+          type: "boolean",
+        },
+      },
     });
   });
 });

@@ -1,6 +1,9 @@
 # P87: Environment Credential Injection
 
 **Status**
+- P104 completed 2026-07-29 and removed the Lightspeed-side environment job
+  tables referenced by the historical storage discussion below. Credential
+  bindings remain unchanged; job credentials are resolved at provider start.
 - Proposed 2026-06-25.
 - Implemented v1 2026-06-25.
 - Builds on **P86 (Durable Environment Jobs)**, which deliberately deferred
@@ -84,7 +87,7 @@ credential alias in tool args. Those are setup/control-plane concerns.
 
 ## Storage
 
-Add the table to `crates/store-pg/migrations/006_environments.sql`, beside
+Add the table to `crates/store-pg/migrations/005_environments.sql`, beside
 `session_environment_bindings`, because the binding is scoped to one
 session-visible environment. Do not add columns to `004_auth.sql`: the auth
 tables remain the source of truth for credential material:
@@ -328,7 +331,7 @@ records, not in the environment binding row.
 
 - [x] Add DTOs and a store trait in `environments` for
   environment credential bindings.
-- [x] Add `session_environment_credentials` to `006_environments.sql` with the
+- [x] Add `session_environment_credentials` to `005_environments.sql` with the
   normalized table above.
 - [x] Implement the store in `store-pg` and in-memory tests.
 

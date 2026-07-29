@@ -481,9 +481,8 @@ pub(super) fn map_environments_error(error: EnvironmentRegistryError) -> AgentAp
         EnvironmentRegistryError::Occupied {
             instance_id,
             bindings,
-            job_groups,
         } => AgentApiError::conflict(format!(
-            "environment instance {instance_id} is occupied by bindings {bindings:?} and job groups {job_groups:?}"
+            "environment instance {instance_id} is occupied by bindings {bindings:?}"
         )),
         EnvironmentRegistryError::InvalidInput { message } => {
             AgentApiError::invalid_request(message)

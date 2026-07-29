@@ -10,7 +10,6 @@ members = [
     "crates/engine",
     "crates/mcp",
     "crates/profiles",
-    "crates/messaging",
     "crates/vfs",
     "crates/api-projection",
     "crates/temporal-workflow",

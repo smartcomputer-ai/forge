@@ -1,6 +1,9 @@
 # P72: Audio Transcription Preprocessing
 
 **Status**
+- Updated 2026-07-29: hosted audio preprocessing remains in Lightspeed;
+  channel download/transport behavior described below moved to the external
+  Channels application.
 - Proposed.
 - Split out of P71 G6 after design discussion. P71 remains the messaging
   channel gateway; P72 owns the channel-neutral audio path.

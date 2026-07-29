@@ -1,6 +1,10 @@
 # P86: Durable Environment Jobs
 
 **Status**
+- P104 completed 2026-07-29 and supersedes the Lightspeed-side job registry
+  described below: `job_list`, the public list method, both PostgreSQL job
+  tables, and `JobHandleStore` are deleted. Model starts require explicit job
+  ids; read/cancel route directly to the provider.
 - Proposed 2026-06-25.
 - Done 2026-06-25. G1-G7 are implemented with the revised v1 shape:
   session-scoped provider jobs, optional per-job `queue_key`, explicit
@@ -20,6 +24,15 @@
   deferred-tool-batch primitive (`ToolBatchOutcome::Deferred`, parked
   `ActiveToolBatch`, and `ResumeToolBatch`) and the Temporal workflow pattern
   for cheap hours-to-days waits.
+- Boundary decision and internal adoption 2026-07-28: environments and jobs
+  remain one core subsystem rather than a P102 plugin extraction. The
+  model-visible `job_start` path now uses P100b keyed Promises; the old
+  `PromiseSource::EnvJob`, subscription/poll routing, and direct session-worker
+  start dispatch were deleted while job
+  workflows, host integration, credentials, and create/read/cancel APIs remain
+  core-owned. The refactor preserves multiple
+  per-job Promises, job-group workflows, handles, dependencies, queue keys,
+  credentials, and provider-backed create/read/cancel behavior.
 - Owns the roadmap item: *"run coding agent (CC or Codex) on sandbox"* at the
   primitive level only. Product wrappers for Codex, Claude Code, repository
   checkout, PR creation, and result interpretation are deliberately deferred.
@@ -906,9 +919,9 @@ that environment to be active at call time.
 ### Schedules and triggers
 
 Environment jobs are not a scheduler. They execute work now, subject to
-dependencies and capacity. P101-style timers/schedules may later start jobs as
-their firing action, but recurring definitions and missed-run policy stay in the
-trigger system.
+dependencies and capacity. Timers/schedules from the later trigger proposal
+may start jobs as their firing action, but recurring definitions and missed-run
+policy stay in the trigger system.
 
 ## Security And Secrets
 

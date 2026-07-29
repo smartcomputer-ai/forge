@@ -4,7 +4,7 @@
 //! methods act inside one session (params carry `sessionId`), `operator/`
 //! methods (see [`crate::operator`]) address the deployment, and every other
 //! prefix is a universe-scoped catalog or stream. Collection segments are
-//! plural; uncountable facets (`context`, `outbox`, `mcp`) are singular; the
+//! plural; uncountable facets (`context`, `mcp`) are singular; the
 //! verb is always the last segment.
 
 pub const PROTOCOL_VERSION: &str = "lightspeed.agent.api.v1";
@@ -16,6 +16,7 @@ pub const METHOD_INITIALIZE: &str = "initialize";
 // ── Sessions: lifecycle ─────────────────────────────────────────────────────
 
 pub const METHOD_SESSION_START: &str = "session/start";
+pub const METHOD_SESSION_MANAGED_START: &str = "session/managed/start";
 pub const METHOD_SESSION_READ: &str = "session/read";
 pub const METHOD_SESSION_LIST: &str = "session/list";
 pub const METHOD_SESSION_CONFIG_PUT: &str = "session/config/put";
@@ -101,7 +102,6 @@ pub const METHOD_ENVIRONMENTS_LIST: &str = "environments/list";
 pub const METHOD_ENVIRONMENTS_CLOSE: &str = "environments/close";
 pub const METHOD_ENVIRONMENTS_JOBS_CREATE: &str = "environments/jobs/create";
 pub const METHOD_ENVIRONMENTS_JOBS_READ: &str = "environments/jobs/read";
-pub const METHOD_ENVIRONMENTS_JOBS_LIST: &str = "environments/jobs/list";
 pub const METHOD_ENVIRONMENTS_JOBS_CANCEL: &str = "environments/jobs/cancel";
 
 pub const METHOD_ENVIRONMENTS_PROVIDERS_REGISTER: &str = "environments/providers/register";
@@ -127,11 +127,6 @@ pub const METHOD_AUTH_PROVIDERS_LIST: &str = "auth/providers/list";
 pub const METHOD_AUTH_PROVIDERS_DELETE: &str = "auth/providers/delete";
 pub const METHOD_AUTH_GITHUB_INSTALLATIONS_LIST: &str = "auth/github/installations/list";
 pub const METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT: &str = "auth/github/installations/grant";
-
-// ── Universe: outbound message delivery ─────────────────────────────────────
-
-pub const METHOD_OUTBOX_READ: &str = "outbox/read";
-pub const METHOD_OUTBOX_ACK: &str = "outbox/ack";
 
 // ── Notifications ───────────────────────────────────────────────────────────
 

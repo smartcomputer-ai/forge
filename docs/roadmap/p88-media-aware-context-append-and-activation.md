@@ -1,6 +1,9 @@
 # P88: Media-Aware Context Append And Activation
 
 **Status**
+- Updated 2026-07-29: media-aware context admission remains in Lightspeed;
+  channel ingestion and activation behavior described below moved to the
+  external Channels application.
 - Proposed 2026-06-29.
 - G1 completed 2026-06-30: `run/start` now uses a tagged source shape,
   `context/append` returns per-entry results, and committed contract/TypeScript

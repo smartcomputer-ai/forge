@@ -11,7 +11,6 @@ export type ToolKindView =
   | {
       descriptionRef?: string | null;
       inputSchemaRef: string;
-      modelName?: string | null;
       outputSchemaRef?: string | null;
       providerOptionsRef?: string | null;
       strict?: boolean | null;
@@ -244,6 +243,16 @@ export type ToolChoice =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ManagedWorkflowToolCompletionView".
+ */
+export type ManagedWorkflowToolCompletionView = "accepted" | "promises";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ManagedWorkflowToolTargetView".
+ */
+export type ManagedWorkflowToolTargetView = "bound" | "start";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
  */
 export type RunViewSource =
@@ -323,6 +332,72 @@ export type SessionEventKindView =
       model?: ModelConfig | null;
       revision: number;
       type: "sessionConfigChanged";
+    }
+  | {
+      creationFingerprint: string;
+      lifecycleControllerWorkflowKind?: string | null;
+      toolIds: string[];
+      type: "workflowToolsConfigured";
+    }
+  | {
+      bindingFingerprint: string;
+      toolId: string;
+      type: "systemWorkflowToolConfigured";
+    }
+  | {
+      argumentsRef: string;
+      batchId: string;
+      bindingFingerprint: string;
+      callId: string;
+      /**
+       * Keyed completion promises created atomically with the
+       * invocation; absent for notify-only (accepted) invocations.
+       */
+      completionPromises?: {
+        [k: string]: string;
+      } | null;
+      invocationId: string;
+      runId: string;
+      schemaRevision: number;
+      semanticType: string;
+      toolId: string;
+      turnId: string;
+      type: "workflowToolEmitted";
+    }
+  | {
+      errorRef: string;
+      invocationId: string;
+      type: "workflowToolDeliveryFailed";
+    }
+  | {
+      argumentsRef: string;
+      batchId: string;
+      bindingFingerprint: string;
+      callId: string;
+      /**
+       * Keyed completion promises created atomically with the start
+       * intent.
+       */
+      completionPromises: {
+        [k: string]: string;
+      };
+      /**
+       * System-derived deterministic execution id of the started plugin
+       * workflow.
+       */
+      executionId: string;
+      invocationId: string;
+      runId: string;
+      schemaRevision: number;
+      semanticType: string;
+      toolId: string;
+      turnId: string;
+      type: "workflowToolStartRequested";
+    }
+  | {
+      errorRef: string;
+      invocationId: string;
+      type: "workflowToolStartFailed";
     }
   | {
       type: "sessionClosed";
@@ -763,36 +838,6 @@ export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
 export type ModelSource = "provider";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboundOriginView".
- */
-export type OutboundOriginView = "toolCall" | "finalText" | "trigger";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboundPayloadView".
- */
-export type OutboundPayloadView =
-  | {
-      replyTo?: string | null;
-      text: string;
-      type: "send";
-    }
-  | {
-      emoji: string;
-      messageId: string;
-      type: "react";
-    }
-  | {
-      messageId: string;
-      text: string;
-      type: "edit";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboundStatusView".
- */
-export type OutboundStatusView = "pending" | "delivered" | "failed";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileEnvironmentSource".
  */
 export type ProfileEnvironmentSource =
@@ -929,20 +974,6 @@ export type SessionJobCancelScopeView = "job" | "dependents";
 export type SessionJobDependencyPolicyView = "allSucceeded" | "allTerminal";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboundAckInput".
- */
-export type OutboundAckInput =
-  | {
-      channelMessageId?: string | null;
-      type: "delivered";
-    }
-  | {
-      error: string;
-      retryable: boolean;
-      type: "failed";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileSource".
  */
 export type ProfileSource =
@@ -953,6 +984,73 @@ export type ProfileSource =
   | {
       kind: "inline";
       profile: InlineAgentProfile;
+    };
+/**
+ * Completion contract for one workflow-tool invocation. Accepted tools
+ * produce no promises. Promise-bearing tools derive one or more promise keys
+ * from validated arguments and are pushed to their target workflow.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolCompletionInput".
+ */
+export type WorkflowToolCompletionInput =
+  | {
+      type: "accepted";
+    }
+  | {
+      deadlineAfterMs?: number | null;
+      keySource: WorkflowToolCompletionKeySourceInput;
+      maxPromises: number;
+      replySchemaRef?: string | null;
+      type: "promises";
+    };
+/**
+ * Declarative promise-key derivation over schema-validated tool arguments.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolCompletionKeySourceInput".
+ */
+export type WorkflowToolCompletionKeySourceInput =
+  | {
+      type: "reply";
+    }
+  | {
+      pointer: string;
+      type: "stringArray";
+    }
+  | {
+      pointer: string;
+      prefix: string;
+      type: "arrayIndices";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolKindInput".
+ */
+export type WorkflowToolKindInput = {
+  descriptionRef?: string | null;
+  inputSchemaRef: string;
+  outputSchemaRef?: string | null;
+  providerOptionsRef?: string | null;
+  strict?: boolean | null;
+  type: "function";
+};
+/**
+ * Lifecycle target of a workflow-backed tool. Bound tools deliver to an
+ * existing execution; start tools create an execution from an immutable,
+ * CAS-backed recipe for every invocation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolTargetInput".
+ */
+export type WorkflowToolTargetInput =
+  | {
+      receiver: WorkflowEndpointInput;
+      type: "bound";
+    }
+  | {
+      start: WorkflowStartRefInput;
+      type: "start";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1033,6 +1131,16 @@ export interface SessionView {
   createdAtMs: number;
   displayName?: string | null;
   id: string;
+  /**
+   * True only when immutable lifecycle ownership was admitted with a
+   * lifecycle controller at managed-session creation.
+   */
+  managed: boolean;
+  /**
+   * Immutable workflow-backed tool declaration. A lifecycle controller
+   * indicates external session ownership; tool-only declarations do not.
+   */
+  management?: SessionManagementView | null;
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
@@ -1142,19 +1250,24 @@ export interface FeaturesConfig {
   environments?: EnvironmentsFeature | null;
   fleet?: FleetFeature | null;
   mcp?: McpFeature | null;
-  messaging?: MessagingFeature | null;
   timers?: TimersFeature | null;
   vfs?: VfsFeature | null;
   web?: WebFeature | null;
 }
 /**
- * Grants attaching/activating session environments and their process/job
- * tool surface.
+ * Grants attaching/activating session environments and their process tool
+ * surface. Durable jobs are an independent, default-off sub-grant.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentsFeature".
  */
 export interface EnvironmentsFeature {
+  /**
+   * Grants the advanced durable-job tool surface. The workflow binding is
+   * installed for the session when granted; model-visible tools still
+   * require a ready attached environment with matching job capabilities.
+   */
+  jobs?: boolean;
   /**
    * Absent means every registered provider is allowed.
    */
@@ -1226,16 +1339,6 @@ export interface McpServerLink {
   authGrantId?: string | null;
   deferLoading?: boolean | null;
   serverId: string;
-}
-/**
- * Grants the messaging toolset (message_send/react/edit/noop) for sessions
- * bound to a chat channel.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "MessagingFeature".
- */
-export interface MessagingFeature {
-  version?: number;
 }
 /**
  * Grants timer promises through the sleep tool plus the base concurrency
@@ -1360,6 +1463,34 @@ export interface ModelConfig {
   apiKind: string;
   model: string;
   providerId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionManagementView".
+ */
+export interface SessionManagementView {
+  lifecycleController?: WorkflowEndpointView | null;
+  tools?: ManagedWorkflowToolView[];
+  version: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowEndpointView".
+ */
+export interface WorkflowEndpointView {
+  workflowId: string;
+  workflowKind: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ManagedWorkflowToolView".
+ */
+export interface ManagedWorkflowToolView {
+  completion: ManagedWorkflowToolCompletionView;
+  name: string;
+  semanticType: string;
+  target: ManagedWorkflowToolTargetView;
+  toolId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2124,37 +2255,6 @@ export interface SessionJobStartedView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfEnvironmentJobListResponse".
- */
-export interface AgentApiOutcomeOfEnvironmentJobListResponse {
-  notifications?: AgentNotification[];
-  result: EnvironmentJobListResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentJobListResponse".
- */
-export interface EnvironmentJobListResponse {
-  jobs?: SessionJobHandleRecordView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionJobHandleRecordView".
- */
-export interface SessionJobHandleRecordView {
-  createdAtMs: number;
-  createdByRunId?: string | null;
-  createdBySessionId?: string | null;
-  createdByToolCallId?: string | null;
-  createdByTurnId?: number | null;
-  handle: SessionJobHandleView;
-  jobGroupId: string;
-  name?: string | null;
-  queueKey?: string | null;
-  startRequestHash: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfEnvironmentJobReadResponse".
  */
 export interface AgentApiOutcomeOfEnvironmentJobReadResponse {
@@ -2589,44 +2689,6 @@ export interface OperatorApiKeyRevokeResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfOperatorOutboxReadResponse".
- */
-export interface AgentApiOutcomeOfOperatorOutboxReadResponse {
-  notifications?: AgentNotification[];
-  result: OperatorOutboxReadResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OperatorOutboxReadResponse".
- */
-export interface OperatorOutboxReadResponse {
-  entries?: OperatorOutboundMessageView[];
-  /**
-   * Cursor to pass as `after` on the next read.
-   */
-  nextAfter: number;
-}
-/**
- * One pending outbox entry with its owning universe. Acknowledge through
- * the per-universe `outbox/ack` (with the entry's universe header); the
- * global cursor only drives reading.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OperatorOutboundMessageView".
- */
-export interface OperatorOutboundMessageView {
-  attempts: number;
-  createdAtMs: number;
-  origin: OutboundOriginView;
-  outboxId: string;
-  payload: OutboundPayloadView;
-  runId?: string | null;
-  seq: number;
-  sessionId: string;
-  universeId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfOperatorUniverseCreateResponse".
  */
 export interface AgentApiOutcomeOfOperatorUniverseCreateResponse {
@@ -2721,56 +2783,6 @@ export interface AgentApiOutcomeOfOperatorUniverseReadResponse {
  */
 export interface OperatorUniverseReadResponse {
   universe: OperatorUniverseView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfOutboxAckResponse".
- */
-export interface AgentApiOutcomeOfOutboxAckResponse {
-  notifications?: AgentNotification[];
-  result: OutboxAckResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboxAckResponse".
- */
-export interface OutboxAckResponse {
-  attempts: number;
-  outboxId: string;
-  status: OutboundStatusView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfOutboxReadResponse".
- */
-export interface AgentApiOutcomeOfOutboxReadResponse {
-  notifications?: AgentNotification[];
-  result: OutboxReadResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboxReadResponse".
- */
-export interface OutboxReadResponse {
-  entries: OutboundMessageView[];
-  /**
-   * Cursor to pass as `after` on the next read.
-   */
-  nextAfter: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboundMessageView".
- */
-export interface OutboundMessageView {
-  attempts: number;
-  createdAtMs: number;
-  origin: OutboundOriginView;
-  outboxId: string;
-  payload: OutboundPayloadView;
-  runId?: string | null;
-  seq: number;
-  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3031,6 +3043,11 @@ export interface SessionSummaryView {
   displayName?: string | null;
   id: string;
   lifecycleStatus: SessionLifecycleStatus;
+  /**
+   * True only when immutable lifecycle ownership was admitted with a
+   * lifecycle controller at managed-session creation.
+   */
+  managed: boolean;
   updatedAtMs: number;
 }
 /**
@@ -3906,15 +3923,6 @@ export interface SessionJobDependencyInput {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentJobListParams".
- */
-export interface EnvironmentJobListParams {
-  instanceId?: string | null;
-  jobGroupId?: string | null;
-  limit?: number | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentJobReadParams".
  */
 export interface EnvironmentJobReadParams {
@@ -4031,6 +4039,88 @@ export interface JsonRpcError {
   message: string;
 }
 /**
+ * Creation request for a session with immutable workflow ownership and
+ * workflow-backed tools.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ManagedSessionStartParams".
+ */
+export interface ManagedSessionStartParams {
+  config?: SessionConfig | null;
+  displayName?: string | null;
+  profile?: ProfileSource | null;
+  sessionId?: string | null;
+  /**
+   * Immutable workflow tools admitted only when the session is first
+   * created. This document is not part of `SessionConfig` and cannot be
+   * changed through `session/config/put`.
+   */
+  workflowTools: ManagedSessionWorkflowToolsInput;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ManagedSessionWorkflowToolsInput".
+ */
+export interface ManagedSessionWorkflowToolsInput {
+  lifecycleController?: WorkflowEndpointInput | null;
+  tools: WorkflowToolDeclarationInput[];
+  version: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowEndpointInput".
+ */
+export interface WorkflowEndpointInput {
+  workflowId: string;
+  workflowKind: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolDeclarationInput".
+ */
+export interface WorkflowToolDeclarationInput {
+  completion: WorkflowToolCompletionInput;
+  definition: WorkflowToolDefinitionInput;
+  target: WorkflowToolTargetInput;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolDefinitionInput".
+ */
+export interface WorkflowToolDefinitionInput {
+  revision: number;
+  semanticType: string;
+  tool: WorkflowToolSpecInput;
+  toolId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolSpecInput".
+ */
+export interface WorkflowToolSpecInput {
+  kind: WorkflowToolKindInput;
+  /**
+   * Canonical effective-toolset name, also sent to the model and used for
+   * runtime dispatch.
+   */
+  name: string;
+  parallelism?: ToolParallelismView & string;
+}
+/**
+ * Opaque reference to a workflow-substrate recipe already stored through
+ * the blob API. The fingerprint authenticates the exact recipe bytes used
+ * by the workflow-start adapter.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowStartRefInput".
+ */
+export interface WorkflowStartRefInput {
+  recipeFingerprint: string;
+  recipeFormat: number;
+  recipeRef: string;
+  revision: number;
+}
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerDeleteParams".
  */
@@ -4130,27 +4220,6 @@ export interface OperatorApiKeyRevokeParams {
   universeId: string;
 }
 /**
- * Multiplexed outbox read: one long-poll serves every universe of the
- * deployment, replacing one `outbox/read` tailer per universe. `seq` is a
- * deployment-global cursor (the outbox sequence is one identity column
- * across universes), so a single `after` resumes the whole stream.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OperatorOutboxReadParams".
- */
-export interface OperatorOutboxReadParams {
-  /**
-   * Return pending entries with `seq` greater than this cursor. Restart
-   * from 0 to re-read undelivered entries after a consumer restart.
-   */
-  after?: number | null;
-  limit?: number | null;
-  /**
-   * Long-poll wait in milliseconds when no entries are pending.
-   */
-  waitMs?: number | null;
-}
-/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "OperatorUniverseCreateParams".
  */
@@ -4175,30 +4244,6 @@ export interface OperatorUniverseListParams {}
  */
 export interface OperatorUniverseReadParams {
   universeId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboxAckParams".
- */
-export interface OutboxAckParams {
-  outboxId: string;
-  result: OutboundAckInput;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "OutboxReadParams".
- */
-export interface OutboxReadParams {
-  /**
-   * Return pending entries with `seq` greater than this cursor. Restart
-   * from 0 to re-read undelivered entries after a consumer restart.
-   */
-  after?: number | null;
-  limit?: number | null;
-  /**
-   * Long-poll wait in milliseconds when no entries are pending.
-   */
-  waitMs?: number | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4279,16 +4324,29 @@ export interface RunStartConfig {
  */
 export interface RunStartParams {
   config?: RunStartConfig | null;
+  /**
+   * Request an at-least-once terminal emission to the managed session's
+   * immutable lifecycle controller. The destination is derived by the
+   * gateway; callers supply only the controller's opaque dedup token.
+   */
+  notifyOnTerminal?: RunTerminalNotificationInput | null;
   sessionId: string;
   source: RunStartSource;
   /**
    * Client-supplied idempotency key, unique per session. Retrying
    * `session/runs/start` with the same submission id and the same
-   * source/config returns the original run instead of starting a second
-   * one; reusing a submission id with different source or config is
-   * rejected.
+   * source/config/terminal notification returns the original run instead
+   * of starting a second one; reusing a submission id with any of those
+   * inputs changed is rejected.
    */
   submissionId?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunTerminalNotificationInput".
+ */
+export interface RunTerminalNotificationInput {
+  token: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

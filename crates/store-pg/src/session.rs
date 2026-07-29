@@ -26,6 +26,7 @@ const SESSION_COLUMNS: &str = r#"
     display_name,
     lifecycle_status,
     closed_at_seq,
+    managed,
     head_seq,
     source_session_id,
     source_seq,
@@ -119,7 +120,8 @@ impl PgStore {
                 SET head_seq = $3,
                     updated_at_ms = $4,
                     lifecycle_status = $5,
-                    closed_at_seq = $6
+                    closed_at_seq = $6,
+                    managed = $7
                 WHERE universe_id = $1 AND session_id = $2
                 "#,
             )
@@ -132,6 +134,7 @@ impl PgStore {
                 record.closed_at_seq,
                 "closed_at_seq",
             )?)
+            .bind(record.managed)
             .execute(&mut *tx)
             .await
             .map_err(|error| session_sql_error("update session head", error))?;
@@ -618,13 +621,18 @@ impl SessionStore for PgStore {
             .await
             .map_err(|error| session_sql_error("begin clone transaction", error))?;
 
-        lock_session(
+        let source = lock_session(
             &mut tx,
             self.config.universe_id,
             &request.source_session_id,
             "clone source",
         )
         .await?;
+        if source.managed {
+            return Err(SessionStoreError::ManagedSessionCannotBranch {
+                session_id: request.source_session_id,
+            });
+        }
         let query = format!(
             r#"
             INSERT INTO sessions (
@@ -682,6 +690,17 @@ impl SessionStore for PgStore {
         self.ensure_universe()
             .await
             .map_err(|error| session_store_error("ensure universe", error))?;
+        let source_record = self
+            .load_session(&request.source_session_id)
+            .await?
+            .ok_or_else(|| SessionStoreError::SessionNotFound {
+                session_id: request.source_session_id.clone(),
+            })?;
+        if source_record.managed {
+            return Err(SessionStoreError::ManagedSessionCannotBranch {
+                session_id: request.source_session_id,
+            });
+        }
         let source_entries = self
             .read_all_effective_events(&request.source_session_id)
             .await?;
@@ -715,6 +734,11 @@ impl SessionStore for PgStore {
             "fork source",
         )
         .await?;
+        if source.managed {
+            return Err(SessionStoreError::ManagedSessionCannotBranch {
+                session_id: request.source_session_id,
+            });
+        }
         let (lifecycle_status, closed_at_seq) = lifecycle_at_fork(&source, request.source_seq);
         let query = format!(
             r#"
@@ -723,13 +747,14 @@ impl SessionStore for PgStore {
                 session_id,
                 lifecycle_status,
                 closed_at_seq,
+                managed,
                 head_seq,
                 source_session_id,
                 source_seq,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
             ON CONFLICT (universe_id, session_id) DO NOTHING
             RETURNING {SESSION_COLUMNS}
             "#,
@@ -739,6 +764,7 @@ impl SessionStore for PgStore {
             .bind(request.session_id.as_str())
             .bind(session_lifecycle_status_str(lifecycle_status))
             .bind(optional_event_seq_to_i64(closed_at_seq, "closed_at_seq")?)
+            .bind(false)
             .bind(head_seq)
             .bind(request.source_session_id.as_str())
             .bind(u64_to_i64(source_seq_u64, "source_seq")?)
@@ -966,6 +992,9 @@ fn session_record_from_row(
         .try_get::<Option<i64>, _>("closed_at_seq")
         .map_err(|error| session_sql_error("decode closed_at_seq", error))
         .and_then(optional_event_seq_from_i64)?;
+    let managed = row
+        .try_get::<bool, _>("managed")
+        .map_err(|error| session_sql_error("decode managed", error))?;
     let head_seq = row
         .try_get::<Option<i64>, _>("head_seq")
         .map_err(|error| session_sql_error("decode session head", error))?;
@@ -1002,6 +1031,7 @@ fn session_record_from_row(
         display_name,
         lifecycle_status,
         closed_at_seq,
+        managed,
         head,
         source_session_id,
         source_seq,
@@ -1234,7 +1264,8 @@ async fn append_events_in_tx(
             SET head_seq = $3,
                 updated_at_ms = $4,
                 lifecycle_status = $5,
-                closed_at_seq = $6
+                closed_at_seq = $6,
+                managed = $7
             WHERE universe_id = $1 AND session_id = $2
             "#,
         )
@@ -1247,6 +1278,7 @@ async fn append_events_in_tx(
             record.closed_at_seq,
             "closed_at_seq",
         )?)
+        .bind(record.managed)
         .execute(&mut **tx)
         .await
         .map_err(|error| session_sql_error("update session head", error))?;

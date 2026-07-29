@@ -1,14 +1,12 @@
 {
   "excludeMethods": [
     "initialize",
+    "session/managed/start",
     "environments/providers/register",
     "environments/providers/heartbeat",
     "environments/providers/unregister",
     "environments/jobs/create",
     "environments/jobs/read",
-    "environments/jobs/list",
-    "environments/jobs/cancel",
-    "outbox/read",
-    "outbox/ack"
+    "environments/jobs/cancel"
   ]
 }

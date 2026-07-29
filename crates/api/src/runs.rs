@@ -7,13 +7,24 @@ pub struct RunStartParams {
     pub source: RunStartSource,
     /// Client-supplied idempotency key, unique per session. Retrying
     /// `session/runs/start` with the same submission id and the same
-    /// source/config returns the original run instead of starting a second
-    /// one; reusing a submission id with different source or config is
-    /// rejected.
+    /// source/config/terminal notification returns the original run instead
+    /// of starting a second one; reusing a submission id with any of those
+    /// inputs changed is rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub submission_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<RunStartConfig>,
+    /// Request an at-least-once terminal emission to the managed session's
+    /// immutable lifecycle controller. The destination is derived by the
+    /// gateway; callers supply only the controller's opaque dedup token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notify_on_terminal: Option<RunTerminalNotificationInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RunTerminalNotificationInput {
+    pub token: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

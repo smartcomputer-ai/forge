@@ -2,7 +2,7 @@ use crate::{
     CodecError, ContextEvent, CoreAgentEntry, CoreAgentEvent, CoreAgentJoins,
     CoreAgentLifecycleEvent, CorrelationId, PromiseEvent, RunEvent, RunId, StoredEvent,
     SubmissionId, ToolBatchId, ToolCallId, ToolConfigEvent, ToolEvent, TurnEvent, TurnId,
-    UncommittedCoreAgentEvent,
+    UncommittedCoreAgentEvent, WorkflowToolConfigEvent,
     session::{StoredJoins, StoredSessionEntry, UncommittedStoredEvent},
 };
 
@@ -175,6 +175,26 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
             PromiseEvent::Failed { .. } => "lightspeed.core.promise.failed",
             PromiseEvent::Cancelled { .. } => "lightspeed.core.promise.cancelled",
             PromiseEvent::Detached { .. } => "lightspeed.core.promise.detached",
+        },
+        CoreAgentEvent::WorkflowToolConfig(event) => match event {
+            WorkflowToolConfigEvent::ManagedBindingsAdmitted { .. } => {
+                "lightspeed.core.workflow_tool_config.managed_bindings_admitted"
+            }
+            WorkflowToolConfigEvent::SystemBindingAdmitted { .. } => {
+                "lightspeed.core.workflow_tool_config.system_binding_admitted"
+            }
+        },
+        CoreAgentEvent::WorkflowTool(event) => match event {
+            crate::WorkflowToolEvent::Emitted { .. } => "lightspeed.core.workflow_tool.emitted",
+            crate::WorkflowToolEvent::DeliveryFailed { .. } => {
+                "lightspeed.core.workflow_tool.delivery_failed"
+            }
+            crate::WorkflowToolEvent::StartRequested { .. } => {
+                "lightspeed.core.workflow_tool.start_requested"
+            }
+            crate::WorkflowToolEvent::StartFailed { .. } => {
+                "lightspeed.core.workflow_tool.start_failed"
+            }
         },
     }
 }

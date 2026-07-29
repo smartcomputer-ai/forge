@@ -4,13 +4,9 @@ use serde_json::{Value, json};
 
 use crate::{
     environment::{
-        jobs::{
-            JOB_LIST_TOOL_NAME, JOB_READ_TOOL_NAME, JOB_START_TOOL_NAME, visible_job_list_output,
-            visible_job_read_output,
-        },
+        jobs::{JOB_READ_TOOL_NAME, JOB_START_TOOL_NAME, visible_job_read_output},
         tools::{
-            invoke_job_list, invoke_job_read, invoke_job_start, invoke_run_process,
-            invoke_write_process_stdin,
+            invoke_job_read, invoke_job_start, invoke_run_process, invoke_write_process_stdin,
         },
     },
     error::ToolResult,
@@ -59,7 +55,6 @@ pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -
         BuiltinToolOperation::JobStart => {
             "Start one or more durable jobs on an environment and return provider-backed handles."
         }
-        BuiltinToolOperation::JobList => "List the latest durable environment jobs.",
         BuiltinToolOperation::JobRead => {
             "Read durable environment job status and bounded output tails."
         }
@@ -203,7 +198,6 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
             ["handle", "input"],
         ),
         BuiltinToolOperation::JobStart => job_start_schema(),
-        BuiltinToolOperation::JobList => job_list_schema(),
         BuiltinToolOperation::JobRead => job_read_schema(),
     }
 }
@@ -301,12 +295,6 @@ pub(super) async fn invoke_json(
                 .join("\n");
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::JobList => {
-            let env_ctx = ctx.environment()?;
-            let result = invoke_job_list(env_ctx, decode_args(arguments)?).await?;
-            let visible = visible_job_list_output(&result.jobs);
-            encode_output(&result, visible)
-        }
         BuiltinToolOperation::JobRead => {
             let env_ctx = ctx.environment()?;
             let result = invoke_job_read(env_ctx, decode_args(arguments)?).await?;
@@ -327,7 +315,7 @@ fn job_start_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "name": { "type": ["string", "null"] },
-                        "job_id": { "type": ["string", "null"], "description": "Optional durable job id. If omitted, the runtime derives one." },
+                        "job_id": { "type": "string", "description": "Durable provider job id." },
                         "argv": { "type": "array", "items": { "type": "string" } },
                         "cwd": { "type": ["string", "null"] },
                         "env": { "type": "object", "additionalProperties": { "type": "string" } },
@@ -347,7 +335,7 @@ fn job_start_schema() -> Value {
                         "dependency_policy": { "type": "string", "enum": ["allSucceeded", "allTerminal"] },
                         "queue_key": { "type": ["string", "null"] }
                     },
-                    "required": ["argv"],
+                    "required": ["job_id", "argv"],
                     "additionalProperties": false
                 }
             }
@@ -362,11 +350,10 @@ fn job_handle_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "session_id": { "type": ["string", "null"] },
-            "env_id": { "type": ["string", "null"] },
+            "instance_id": { "type": "string" },
             "job_id": { "type": "string" }
         },
-        "required": ["job_id"],
+        "required": ["instance_id", "job_id"],
         "additionalProperties": false
     })
 }
@@ -383,18 +370,5 @@ fn job_read_schema() -> Value {
         "required": ["jobs"],
         "additionalProperties": false,
         "description": JOB_READ_TOOL_NAME
-    })
-}
-
-fn job_list_schema() -> Value {
-    json!({
-        "type": "object",
-        "properties": {
-            "session_id": { "type": ["string", "null"], "description": "Session id to inspect. Defaults to the calling session." },
-            "env_id": { "type": ["string", "null"], "description": "Optional environment id filter." },
-            "limit": { "type": ["integer", "null"], "minimum": 1, "description": "Maximum number of latest jobs to return." }
-        },
-        "additionalProperties": false,
-        "description": JOB_LIST_TOOL_NAME
     })
 }

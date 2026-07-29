@@ -6,8 +6,8 @@ use async_trait::async_trait;
 use host_protocol::{
     data::jobs::{
         CancelJobsParams, CancelJobsResponse, JobArtifact, JobCancelScope, JobDependency,
-        JobDependencyPolicy, JobOutputChunk, JobStartSpec, JobStatus, JobSummary, ListJobsParams,
-        ListJobsResponse, ReadJobsParams, ReadJobsResponse, StartJobsParams, StartJobsResponse,
+        JobDependencyPolicy, JobOutputChunk, JobStartSpec, JobStatus, JobSummary, ReadJobsParams,
+        ReadJobsResponse, StartJobsParams, StartJobsResponse,
     },
     shared::{ByteChunk, HostPath, JobId},
 };
@@ -17,16 +17,15 @@ use thiserror::Error;
 use crate::fs::FsPath;
 
 pub const JOB_START_TOOL_NAME: &str = "job_start";
-pub const JOB_LIST_TOOL_NAME: &str = "job_list";
 pub const JOB_READ_TOOL_NAME: &str = "job_read";
+pub const JOB_START_WORKFLOW_TOOL_ID: &str = "environment-job-start";
+pub const JOB_START_WORKFLOW_SEMANTIC_TYPE: &str = "lightspeed.environment.job.start.v1";
 
 pub type JobExecResult<T> = Result<T, JobError>;
 
 #[async_trait]
 pub trait JobExecutor: Send + Sync {
     async fn start_jobs(&self, request: StartJobsParams) -> JobExecResult<StartJobsResponse>;
-
-    async fn list_jobs(&self, request: ListJobsParams) -> JobExecResult<ListJobsResponse>;
 
     async fn read_jobs(&self, request: ReadJobsParams) -> JobExecResult<ReadJobsResponse>;
 
@@ -68,8 +67,7 @@ pub struct JobStartArgs {
 pub struct JobStartSpecArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_id: Option<JobId>,
+    pub job_id: JobId,
     pub argv: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<FsPath>,
@@ -108,16 +106,6 @@ impl JobStartSpecArgs {
             queue_key: self.queue_key,
         })
     }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobListArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -182,21 +170,6 @@ pub struct JobReadResultSet {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobListResultSet {
-    pub jobs: Vec<JobListResultEntry>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobListResultEntry {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle: Option<JobHandle>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub summary: Option<JobSummary>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobCancelResultSet {
     pub jobs: Vec<JobCancelResultEntry>,
 }
@@ -211,11 +184,8 @@ pub struct JobCancelResultEntry {
     pub error: Option<String>,
 }
 
-pub fn is_environment_job_tool_name(name: &str) -> bool {
-    matches!(
-        name,
-        JOB_START_TOOL_NAME | JOB_LIST_TOOL_NAME | JOB_READ_TOOL_NAME
-    )
+pub fn is_environment_job_query_tool_name(name: &str) -> bool {
+    name == JOB_READ_TOOL_NAME
 }
 
 pub fn visible_job_read_output(jobs: &[JobReadResultEntry]) -> String {
@@ -238,26 +208,6 @@ pub fn visible_job_read_output(jobs: &[JobReadResultEntry]) -> String {
         if !tail.is_empty() {
             lines.push(tail);
         }
-    }
-    lines.join("\n")
-}
-
-pub fn visible_job_list_output(jobs: &[JobListResultEntry]) -> String {
-    let mut lines = Vec::new();
-    for job in jobs {
-        if let Some(error) = &job.error {
-            let label = job
-                .handle
-                .as_ref()
-                .map(|handle| handle.job_id.as_str())
-                .unwrap_or("<unknown>");
-            lines.push(format!("{label}: error: {error}"));
-            continue;
-        }
-        let Some(summary) = &job.summary else {
-            continue;
-        };
-        lines.push(format!("{}: {:?}", summary.job_id.as_str(), summary.status));
     }
     lines.join("\n")
 }

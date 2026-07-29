@@ -5,7 +5,7 @@
 Implemented as `interop/configurator-mcp`: a private Node/TypeScript package
 using the stable MCP SDK v1 Streamable HTTP transport, a generated universe-only
 descriptor map with self-contained input schemas, a committed exact-method
-filter (71 of the current 81 universe methods advertised), request-scoped
+filter (71 of the current 80 universe methods advertised), request-scoped
 single/trusted-header/API-key forwarding, upstream authentication probes,
 structured results/errors, host/origin checks, and real MCP-client integration
 tests over the HTTP edge. The optional output schemas were deliberately omitted
@@ -41,7 +41,7 @@ local/test topology.
 
 The first cut uses one committed exact-method exclusion list at generation
 time. It does not add runtime read-only/configuration/all profiles, per-client
-filtering, approval policy, or tool-safety overlays. The five deployment-scoped
+filtering, approval policy, or tool-safety overlays. Deployment-scoped
 `operator/*` methods are never eligible for this server.
 
 ## Product shape
@@ -78,16 +78,16 @@ read Lightspeed stores directly.
 ## Current contract boundary
 
 The committed manifest in `interop/contract/methods.json` is the source of
-truth. At proposal time it contains 86 methods:
+truth. It currently contains 87 methods:
 
-- 81 with `scope: "universe"`;
-- 5 with `scope: "operator"`.
+- 80 with `scope: "universe"`;
+- 7 with `scope: "operator"`.
 
 The generated TypeScript client currently includes both scope classes because
 it represents the complete HTTP JSON-RPC contract. P99 first selects manifest
 entries whose scope is `universe`, then removes the exact method names in
 `interop/configurator-mcp/tool-filter.json`. The implemented default excludes
-10 methods and advertises 71 tools.
+9 methods and advertises 71 tools.
 
 The exclusion is semantic, not only a `tools/list` filter:
 
@@ -116,8 +116,7 @@ The implemented defaults exclude:
   presence writers, while retaining `environments/providers/list` for
   visibility;
 - `environments/jobs/create|read|list|cancel` — environment execution rather
-  than configuration;
-- `outbox/read|ack` — messaging delivery-worker operations.
+  than configuration.
 
 This is a build/deployment-wide surface, not caller authorization. Editing the
 file and regenerating changes `tools/list` for every client of that artifact.
@@ -169,9 +168,9 @@ The initial server is stateless and uses JSON response mode:
 This is still the MCP Streamable HTTP transport. The server simply does not
 need its optional session and server-to-client streaming features yet. All P99
 tools are ordinary request/response operations. Upstream long-poll calls such
-as `session/events/read` and `outbox/read` may hold the POST open until their
-normal JSON-RPC response arrives; the Configurator's HTTP timeout must exceed
-the upstream long-poll cap.
+as `session/events/read` may hold the POST open until their normal JSON-RPC
+response arrives; the Configurator's HTTP timeout must exceed the upstream
+long-poll cap.
 
 Use the production-recommended stable major of the official TypeScript MCP SDK
 at implementation time. As of this proposal the SDK project still recommends
@@ -500,7 +499,7 @@ the multi-universe modes.
 - [x] A remote MCP client can initialize and list tools over Streamable HTTP;
   no stdio transport is present.
 - [x] `tools/list` advertises exactly the current universe-scoped manifest
-  entries minus `tool-filter.json` (71 of 81 at implementation time), with
+  entries minus `tool-filter.json` (currently 71 of 80), with
   valid self-contained input schemas.
 - [x] No operator method is generated, advertised, or dispatchable.
 - [x] Every generated tool forwards its exact method name and params through
