@@ -2,20 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::{ProviderApiKind, ToolName, ToolSpec};
+use engine::{ProviderApiKind, ToolName, ToolSpec, WorkflowToolBinding};
 
 use crate::{
     builtin::{BuiltinTool, BuiltinToolOperation, BuiltinToolSurface},
     concurrency::{ConcurrencyToolsetConfig, concurrency_tool_bindings, concurrency_tool_bundles},
     error::{ToolError, ToolResult},
     fleet::{FleetToolsetConfig, fleet_tool_bindings, fleet_tool_bundles},
-    messaging::{MessagingToolsetConfig, messaging_tool_bindings, messaging_tool_bundles},
-    runtime::{ToolCatalog, ToolDocument, ToolExecutionMode, ToolSpecBundle, ToolTarget},
+    runtime::{ToolCatalog, ToolDispatchMode, ToolDocument, ToolSpecBundle, ToolTarget},
     web::fetch::{WebFetchToolConfig, web_fetch_tool_binding, web_fetch_tool_bundle},
     web::search::{
         OpenAiResponsesWebSearchConfig, apply_openai_responses_web_search_includes,
         openai_responses_web_search_tool_bundle,
     },
+    workflow_tool::workflow_tool_tool_binding,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -23,7 +23,6 @@ pub struct ToolsetConfig {
     pub builtin: BuiltinToolsetConfig,
     pub openai_web_search: OpenAiResponsesWebSearchConfig,
     pub web_fetch: WebFetchToolConfig,
-    pub messaging: MessagingToolsetConfig,
     pub fleet: FleetToolsetConfig,
     pub concurrency: ConcurrencyToolsetConfig,
 }
@@ -34,7 +33,6 @@ impl ToolsetConfig {
             builtin: BuiltinToolsetConfig::disabled(),
             openai_web_search: OpenAiResponsesWebSearchConfig::default(),
             web_fetch: WebFetchToolConfig::default(),
-            messaging: MessagingToolsetConfig::default(),
             fleet: FleetToolsetConfig::default(),
             concurrency: ConcurrencyToolsetConfig::default(),
         }
@@ -59,7 +57,7 @@ pub struct BuiltinToolsetConfig {
     pub presentation: BuiltinToolPresentation,
     pub fs: FilesystemToolsetConfig,
     pub process: EnvironmentToolsetConfig,
-    pub execution: ToolExecutionMode,
+    pub dispatch: ToolDispatchMode,
 }
 
 impl BuiltinToolsetConfig {
@@ -68,7 +66,7 @@ impl BuiltinToolsetConfig {
             presentation: BuiltinToolPresentation::ProviderDefault,
             fs: FilesystemToolsetConfig::disabled(),
             process: EnvironmentToolsetConfig::disabled(),
-            execution: ToolExecutionMode::Inline,
+            dispatch: ToolDispatchMode::Local,
         }
     }
 
@@ -99,7 +97,6 @@ impl BuiltinToolsetConfig {
             BuiltinToolOperation::RunProcess => self.process.run_process = true,
             BuiltinToolOperation::WriteProcessStdin => self.process.write_process_stdin = true,
             BuiltinToolOperation::JobStart => self.process.job_start = true,
-            BuiltinToolOperation::JobList => self.process.job_list = true,
             BuiltinToolOperation::JobRead => self.process.job_read = true,
         }
     }
@@ -217,7 +214,6 @@ pub struct EnvironmentToolsetConfig {
     pub run_process: bool,
     pub write_process_stdin: bool,
     pub job_start: bool,
-    pub job_list: bool,
     pub job_read: bool,
 }
 
@@ -237,7 +233,6 @@ impl EnvironmentToolsetConfig {
     pub fn jobs() -> Self {
         Self {
             job_start: true,
-            job_list: true,
             job_read: true,
             ..Self::disabled()
         }
@@ -245,21 +240,16 @@ impl EnvironmentToolsetConfig {
 
     pub fn with_jobs(mut self) -> Self {
         self.job_start = true;
-        self.job_list = true;
         self.job_read = true;
         self
     }
 
     pub fn enabled(&self) -> bool {
-        self.run_process
-            || self.write_process_stdin
-            || self.job_start
-            || self.job_list
-            || self.job_read
+        self.run_process || self.write_process_stdin || self.job_start || self.job_read
     }
 
     pub fn jobs_enabled(&self) -> bool {
-        self.job_start || self.job_list || self.job_read
+        self.job_start || self.job_read
     }
 
     fn operations(&self) -> Vec<BuiltinToolOperation> {
@@ -272,9 +262,6 @@ impl EnvironmentToolsetConfig {
         }
         if self.job_start {
             operations.push(BuiltinToolOperation::JobStart);
-        }
-        if self.job_list {
-            operations.push(BuiltinToolOperation::JobList);
         }
         if self.job_read {
             operations.push(BuiltinToolOperation::JobRead);
@@ -331,6 +318,54 @@ pub struct ResolvedToolset {
     pub provider_params_patch: ProviderParamsPatch,
 }
 
+/// Promise-bearing workflow tools create keyed P92 promises the agent must
+/// be able to `await`/`cancel`/`detach`; their admission therefore pulls the
+/// concurrency toolset into the derivation, exactly like fleet and process
+/// jobs do.
+pub fn enable_concurrency_for_workflow_tools<'a>(
+    config: &mut ToolsetConfig,
+    bindings: impl IntoIterator<Item = &'a WorkflowToolBinding>,
+) {
+    if bindings
+        .into_iter()
+        .any(|binding| binding.completion.is_promise_bearing())
+    {
+        config.concurrency.enabled = true;
+    }
+}
+
+/// Merge trusted, already-admitted workflow tools into the effective
+/// provider-facing toolset and runtime catalog.
+pub fn materialize_workflow_tools<'a>(
+    toolset: &mut ResolvedToolset,
+    bindings: impl IntoIterator<Item = &'a WorkflowToolBinding>,
+) -> ToolResult<()> {
+    for binding in bindings {
+        binding
+            .validate()
+            .map_err(|error| ToolError::InvalidRequest {
+                message: format!(
+                    "invalid workflow tool {} binding: {error}",
+                    binding.definition.tool_id
+                ),
+            })?;
+        let tool_name = binding.definition.tool.name.clone();
+        if toolset.tools.contains_key(&tool_name) {
+            return Err(ToolError::InvalidRequest {
+                message: format!(
+                    "workflow tool {} tool name {} collides with another effective tool",
+                    binding.definition.tool_id, tool_name
+                ),
+            });
+        }
+        toolset
+            .tools
+            .insert(tool_name, binding.definition.tool.clone());
+        toolset.catalog.insert(workflow_tool_tool_binding(binding));
+    }
+    Ok(())
+}
+
 pub fn resolve_toolset(
     env: ToolsetEnvironment<'_>,
     config: &ToolsetConfig,
@@ -367,10 +402,6 @@ pub fn resolve_toolset(
                 message: "web.fetch was enabled but did not produce a function tool".to_owned(),
             })?;
         builder.add_web_fetch(bundle);
-    }
-
-    if config.messaging.enabled {
-        builder.add_messaging(messaging_tool_bundles(&config.messaging)?);
     }
 
     let mut concurrency = config.concurrency.clone();
@@ -428,7 +459,7 @@ impl ToolsetBuilder {
                 Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
                 Err(error) => return Err(error),
             };
-            let binding = tool.binding(target, config.execution.clone());
+            let binding = tool.binding(target, config.dispatch.clone());
             self.add_bundle(bundle);
             self.catalog.insert(binding);
         }
@@ -442,23 +473,14 @@ impl ToolsetBuilder {
     fn add_web_fetch(&mut self, bundle: ToolSpecBundle) {
         self.add_bundle(bundle);
         self.catalog
-            .insert(web_fetch_tool_binding(ToolExecutionMode::Inline));
-    }
-
-    fn add_messaging(&mut self, bundles: Vec<ToolSpecBundle>) {
-        for bundle in bundles {
-            self.add_bundle(bundle);
-        }
-        for binding in messaging_tool_bindings(ToolExecutionMode::Inline) {
-            self.catalog.insert(binding);
-        }
+            .insert(web_fetch_tool_binding(ToolDispatchMode::Local));
     }
 
     fn add_concurrency(&mut self, config: &ConcurrencyToolsetConfig) -> ToolResult<()> {
         for bundle in concurrency_tool_bundles(config)? {
             self.add_bundle(bundle);
         }
-        for binding in concurrency_tool_bindings(ToolExecutionMode::Inline, config) {
+        for binding in concurrency_tool_bindings(ToolDispatchMode::Local, config) {
             self.catalog.insert(binding);
         }
         Ok(())
@@ -468,7 +490,7 @@ impl ToolsetBuilder {
         for bundle in bundles {
             self.add_bundle(bundle);
         }
-        for binding in fleet_tool_bindings(ToolExecutionMode::Inline) {
+        for binding in fleet_tool_bindings(ToolDispatchMode::Local) {
             self.catalog.insert(binding);
         }
     }
@@ -559,7 +581,6 @@ mod tests {
         let names = visible_names(&toolset);
 
         assert!(names.contains(&"job_start".to_owned()));
-        assert!(names.contains(&"job_list".to_owned()));
         assert!(names.contains(&"job_read".to_owned()));
         assert!(names.contains(&AWAIT_TOOL_NAME.to_owned()));
         assert!(names.contains(&CANCEL_TOOL_NAME.to_owned()));

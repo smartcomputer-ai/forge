@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
     pub session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -10,6 +10,152 @@ pub struct SessionStartParams {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
+}
+
+/// Creation request for a session with immutable workflow ownership and
+/// workflow-backed tools.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedSessionStartParams {
+    pub session_id: Option<SessionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config: Option<SessionConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<ProfileSource>,
+    /// Immutable workflow tools admitted only when the session is first
+    /// created. This document is not part of `SessionConfig` and cannot be
+    /// changed through `session/config/put`.
+    pub workflow_tools: ManagedSessionWorkflowToolsInput,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedSessionWorkflowToolsInput {
+    pub version: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_controller: Option<WorkflowEndpointInput>,
+    pub tools: Vec<WorkflowToolDeclarationInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowEndpointInput {
+    pub workflow_id: String,
+    pub workflow_kind: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowToolDeclarationInput {
+    pub definition: WorkflowToolDefinitionInput,
+    pub target: WorkflowToolTargetInput,
+    pub completion: WorkflowToolCompletionInput,
+}
+
+/// Lifecycle target of a workflow-backed tool. Bound tools deliver to an
+/// existing execution; start tools create an execution from an immutable,
+/// CAS-backed recipe for every invocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WorkflowToolTargetInput {
+    Bound { receiver: WorkflowEndpointInput },
+    Start { start: WorkflowStartRefInput },
+}
+
+/// Opaque reference to a workflow-substrate recipe already stored through
+/// the blob API. The fingerprint authenticates the exact recipe bytes used
+/// by the workflow-start adapter.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowStartRefInput {
+    pub recipe_format: u32,
+    pub revision: u32,
+    pub recipe_ref: String,
+    pub recipe_fingerprint: String,
+}
+
+/// Completion contract for one workflow-tool invocation. Accepted tools
+/// produce no promises. Promise-bearing tools derive one or more promise keys
+/// from validated arguments and are pushed to their target workflow.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WorkflowToolCompletionInput {
+    Accepted,
+    Promises {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_schema_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        deadline_after_ms: Option<u64>,
+        max_promises: u32,
+        key_source: WorkflowToolCompletionKeySourceInput,
+    },
+}
+
+/// Declarative promise-key derivation over schema-validated tool arguments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WorkflowToolCompletionKeySourceInput {
+    Reply,
+    StringArray { pointer: String },
+    ArrayIndices { pointer: String, prefix: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowToolDefinitionInput {
+    pub tool_id: String,
+    pub revision: u32,
+    pub semantic_type: String,
+    pub tool: WorkflowToolSpecInput,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkflowToolSpecInput {
+    /// Canonical effective-toolset name, also sent to the model and used for
+    /// runtime dispatch.
+    pub name: String,
+    pub kind: WorkflowToolKindInput,
+    #[serde(default)]
+    pub parallelism: ToolParallelismView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum WorkflowToolKindInput {
+    Function {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description_ref: Option<String>,
+        input_schema_ref: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_schema_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strict: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_options_ref: Option<String>,
+    },
 }
 
 /// Current version of every feature block. Omitted versions on input decode
@@ -120,8 +266,6 @@ pub struct FeaturesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<WebFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messaging: Option<MessagingFeature>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet: Option<FleetFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<TimersFeature>,
@@ -203,15 +347,6 @@ pub struct WebSearchFeature {
     pub blocked_domains: Vec<String>,
 }
 
-/// Grants the messaging toolset (message_send/react/edit/noop) for sessions
-/// bound to a chat channel.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct MessagingFeature {
-    #[serde(default = "default_feature_version")]
-    pub version: u32,
-}
-
 /// Grants the Fleet subagent control plane
 /// (agent_spawn/send/read/list/cancel and profile_list/read).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -264,8 +399,8 @@ pub struct TimersFeature {
     pub version: u32,
 }
 
-/// Grants attaching/activating session environments and their process/job
-/// tool surface.
+/// Grants attaching/activating session environments and their process tool
+/// surface. Durable jobs are an independent, default-off sub-grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentsFeature {
@@ -274,6 +409,11 @@ pub struct EnvironmentsFeature {
     /// Absent means every registered provider is allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<EnvironmentProviderId>>,
+    /// Grants the advanced durable-job tool surface. The workflow binding is
+    /// installed for the session when granted; model-visible tools still
+    /// require a ready attached environment with matching job capabilities.
+    #[serde(default)]
+    pub jobs: bool,
 }
 
 /// Grants remote MCP tools by declaring linked servers from the universe MCP
@@ -359,8 +499,6 @@ pub struct ToolView {
 )]
 pub enum ToolKindView {
     Function {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        model_name: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description_ref: Option<String>,
         input_schema_ref: String,
@@ -542,112 +680,6 @@ pub enum ContextRemoveStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct OutboxReadParams {
-    /// Return pending entries with `seq` greater than this cursor. Restart
-    /// from 0 to re-read undelivered entries after a consumer restart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    /// Long-poll wait in milliseconds when no entries are pending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait_ms: Option<u32>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboxReadResponse {
-    pub entries: Vec<OutboundMessageView>,
-    /// Cursor to pass as `after` on the next read.
-    pub next_after: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboundMessageView {
-    pub seq: u64,
-    pub outbox_id: String,
-    pub session_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    pub origin: OutboundOriginView,
-    pub payload: OutboundPayloadView,
-    pub attempts: u32,
-    pub created_at_ms: i64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum OutboundOriginView {
-    ToolCall,
-    FinalText,
-    Trigger,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum OutboundPayloadView {
-    Send {
-        text: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        reply_to: Option<String>,
-    },
-    React {
-        message_id: String,
-        emoji: String,
-    },
-    Edit {
-        message_id: String,
-        text: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboxAckParams {
-    pub outbox_id: String,
-    pub result: OutboundAckInput,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum OutboundAckInput {
-    Delivered {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        channel_message_id: Option<String>,
-    },
-    Failed {
-        error: String,
-        retryable: bool,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboxAckResponse {
-    pub outbox_id: String,
-    pub status: OutboundStatusView,
-    pub attempts: u32,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum OutboundStatusView {
-    Pending,
-    Delivered,
-    Failed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionReadParams {
     pub session_id: SessionId,
 }
@@ -680,6 +712,9 @@ pub struct SessionSummaryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub lifecycle_status: SessionLifecycleStatus,
+    /// True only when immutable lifecycle ownership was admitted with a
+    /// lifecycle controller at managed-session creation.
+    pub managed: bool,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
 }
@@ -826,6 +861,62 @@ pub enum SessionEventKindView {
     SessionConfigChanged {
         model: Option<ModelConfig>,
         revision: u64,
+    },
+    WorkflowToolsConfigured {
+        lifecycle_controller_workflow_kind: Option<String>,
+        creation_fingerprint: String,
+        tool_ids: Vec<String>,
+    },
+    /// One system-owned workflow-backed tool was durably admitted without
+    /// assigning lifecycle ownership to the session.
+    SystemWorkflowToolConfigured {
+        tool_id: String,
+        binding_fingerprint: String,
+    },
+    WorkflowToolEmitted {
+        invocation_id: String,
+        tool_id: String,
+        semantic_type: String,
+        schema_revision: u32,
+        binding_fingerprint: String,
+        run_id: RunId,
+        turn_id: String,
+        batch_id: String,
+        call_id: String,
+        arguments_ref: String,
+        /// Keyed completion promises created atomically with the
+        /// invocation; absent for notify-only (accepted) invocations.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        completion_promises: Option<std::collections::BTreeMap<String, String>>,
+    },
+    WorkflowToolDeliveryFailed {
+        invocation_id: String,
+        error_ref: String,
+    },
+    /// Durable start intent for a start-on-call workflow tool. There is no
+    /// successful started event; the deterministic execution id makes the
+    /// start replay-safe.
+    WorkflowToolStartRequested {
+        invocation_id: String,
+        tool_id: String,
+        semantic_type: String,
+        schema_revision: u32,
+        binding_fingerprint: String,
+        run_id: RunId,
+        turn_id: String,
+        batch_id: String,
+        call_id: String,
+        arguments_ref: String,
+        /// System-derived deterministic execution id of the started plugin
+        /// workflow.
+        execution_id: String,
+        /// Keyed completion promises created atomically with the start
+        /// intent.
+        completion_promises: std::collections::BTreeMap<String, String>,
+    },
+    WorkflowToolStartFailed {
+        invocation_id: String,
+        error_ref: String,
     },
     SessionClosed,
     RunAccepted {

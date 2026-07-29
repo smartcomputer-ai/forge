@@ -6,7 +6,7 @@ universe-scoped Lightspeed JSON-RPC contract. Tools are generated from
 
 `tool-filter.json` contains the exact universe methods omitted from generation.
 The default surface excludes provider presence writes, environment jobs,
-outbox delivery, and the redundant Lightspeed handshake, leaving 71 tools.
+environment-provider internals, and the redundant Lightspeed handshake, leaving 71 tools.
 Edit that file and run `npm run generate` to tune the advertised surface.
 Tool descriptions come from the canonical Rust method manifest and focus on
 operational semantics such as revision guards, lifecycle prerequisites,

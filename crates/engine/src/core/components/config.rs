@@ -125,8 +125,6 @@ pub struct FeaturesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<WebFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub messaging: Option<MessagingFeature>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fleet: Option<FleetFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<TimersFeature>,
@@ -238,22 +236,6 @@ pub struct WebSearchFeature {
     pub blocked_domains: Vec<String>,
 }
 
-/// Grants the messaging toolset (message_send/react/edit/noop) for sessions
-/// bound to a chat channel.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MessagingFeature {
-    #[serde(default = "default_feature_version")]
-    pub version: u32,
-}
-
-impl Default for MessagingFeature {
-    fn default() -> Self {
-        Self {
-            version: CURRENT_FEATURE_VERSION,
-        }
-    }
-}
-
 /// Grants the Fleet subagent control plane
 /// (agent_spawn/send/read/list/cancel and profile_list/read).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,14 +274,18 @@ impl Default for TimersFeature {
     }
 }
 
-/// Grants attaching/activating session environments and their process/job
-/// tool surface.
+/// Grants attaching/activating session environments and their process tool
+/// surface. Durable jobs are an independent, default-off sub-grant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<String>>,
+    /// Installs the session's durable-job workflow binding. Actual tool
+    /// exposure remains gated by attached environment capabilities.
+    #[serde(default)]
+    pub jobs: bool,
 }
 
 impl Default for EnvironmentsFeature {
@@ -307,6 +293,7 @@ impl Default for EnvironmentsFeature {
         Self {
             version: CURRENT_FEATURE_VERSION,
             providers: None,
+            jobs: false,
         }
     }
 }
@@ -541,9 +528,6 @@ fn validate_features(
     if let Some(web) = &features.web {
         validate_feature_version("web", web.version)?;
         validate_web_feature(web, api_kind)?;
-    }
-    if let Some(messaging) = &features.messaging {
-        validate_feature_version("messaging", messaging.version)?;
     }
     if let Some(fleet) = &features.fleet {
         validate_feature_version("fleet", fleet.version)?;
@@ -1047,6 +1031,21 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!({ "version": CURRENT_FEATURE_VERSION })
+        );
+    }
+
+    #[test]
+    fn environment_jobs_are_default_off() {
+        let feature: EnvironmentsFeature = serde_json::from_value(serde_json::json!({}))
+            .expect("empty environment grant decodes with defaults");
+
+        assert!(!feature.jobs);
+        assert_eq!(
+            serde_json::to_value(feature).expect("serialize"),
+            serde_json::json!({
+                "version": CURRENT_FEATURE_VERSION,
+                "jobs": false,
+            })
         );
     }
 

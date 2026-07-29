@@ -6,18 +6,18 @@ use std::{
     process::Stdio,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
 
 use api::{
-    AgentApiService, AgentProfileInput, AuthProviderConfigInput, AuthProviderCreateParams,
-    ContextEntryKindView, EnvironmentCloseParams, EnvironmentCreateParams,
-    EnvironmentJobCancelParams, EnvironmentJobCreateParams, EnvironmentJobListParams,
+    AgentApiErrorKind, AgentApiService, AgentProfileInput, AuthProviderConfigInput,
+    AuthProviderCreateParams, ContextEntryKindView, EnvironmentCloseParams,
+    EnvironmentCreateParams, EnvironmentJobCancelParams, EnvironmentJobCreateParams,
     EnvironmentJobReadParams, EnvironmentListParams, EnvironmentProviderCapabilitiesView,
     EnvironmentProviderHeartbeatParams, EnvironmentProviderImplementationView,
-    EnvironmentProviderKindView, EnvironmentProviderRegisterParams,
+    EnvironmentProviderKindView, EnvironmentProviderRegisterParams, EnvironmentReadParams,
     EnvironmentTargetDescriptorView, EnvironmentTargetStatusView, EnvironmentTargetSummaryView,
     HostCapabilitiesView, HostConnectionView, HostControllerConnectionView, HostScopeView,
     HostTargetCreateRequestView, HostTransportView, InputItem, ProfileCreateParams,
@@ -29,8 +29,8 @@ use api::{
     SessionEnvironmentListParams, SessionEventsReadParams, SessionJobCancelScopeView,
     SessionJobDependencyInput, SessionJobDependencyPolicyView, SessionJobHandleInput,
     SessionJobHandleView, SessionJobReadEntryView, SessionJobStartSpecInput, SessionJobStatusView,
-    SessionReadParams, SessionStartParams, VfsMountAccess as ApiVfsMountAccess, VfsMountPutParams,
-    VfsMountSourceInput,
+    SessionListParams, SessionReadParams, SessionStartParams, VfsMountAccess as ApiVfsMountAccess,
+    VfsMountPutParams, VfsMountSourceInput,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -94,6 +94,8 @@ const BRIDGE_FILE_MARKER: &str = "LIGHTSPEED_BRIDGE_AGENT_MARKER";
 const BRIDGE_VFS_SKILL_MARKER: &str = "LIGHTSPEED_BRIDGE_VFS_SKILL_MARKER";
 const BRIDGE_JOB_FILE_NAME: &str = "job-live.txt";
 const BRIDGE_JOB_MARKER: &str = "LIGHTSPEED_BRIDGE_JOB_MARKER";
+const BRIDGE_JOB_SECOND_FILE_NAME: &str = "job-live-second.txt";
+const BRIDGE_JOB_SECOND_MARKER: &str = "LIGHTSPEED_BRIDGE_JOB_SECOND_MARKER";
 const BRIDGE_API_JOB_FILE_NAME: &str = "api-job-live.txt";
 const BRIDGE_API_JOB_MARKER: &str = "LIGHTSPEED_BRIDGE_API_JOB_MARKER";
 const BRIDGE_CREDENTIAL_ENV_NAME: &str = "P87_LIVE_TOKEN";
@@ -200,17 +202,16 @@ async fn temporal_live_host_bridge_environment_jobs_round_trip() -> anyhow::Resu
     let universe_id = store.config().universe_id;
 
     support::live::run_with_live_worker_builder(
-        move |client, task_queue| {
+        move |client, _task_queue| {
             let store = store.clone();
             let llm = llm.clone();
             async move {
-                let tools = Arc::new(
-                    SessionTools::from_pg_store(store.clone())
-                        .with_environment_job_workflow_runtime(client, task_queue, universe_id),
-                ) as Arc<dyn CoreAgentTools>;
+                let tools =
+                    Arc::new(SessionTools::from_pg_store(store.clone())) as Arc<dyn CoreAgentTools>;
                 Ok(WorkerActivities::for_universe(
                     universe_id,
-                    ActivityState::from_pg_store(store, llm, tools),
+                    ActivityState::from_pg_store(store, llm, tools)
+                        .with_workflow_tool_executions(client),
                 ))
             }
         },
@@ -281,17 +282,29 @@ async fn run_host_bridge_client(
     let provider_id = format!("host-bridge-{}", uuid::Uuid::new_v4().simple());
     let bridge = SpawnedBridge::start(&bridge_bin, &gateway_url, &provider_id, &bridge_root)?;
 
-    api.start_session(SessionStartParams {
-        session_id: Some(session_id.as_str().to_owned()),
-        display_name: None,
-        config: Some(SessionConfig {
-            model: Some(api_projection::model_to_api(&model)),
-            features: Some(env_live_features()),
-            ..SessionConfig::default()
-        }),
-        profile: None,
-    })
-    .await?;
+    let started_session = api
+        .start_session(SessionStartParams {
+            session_id: Some(session_id.as_str().to_owned()),
+            display_name: None,
+            config: Some(SessionConfig {
+                model: Some(api_projection::model_to_api(&model)),
+                features: Some(env_live_features()),
+                ..SessionConfig::default()
+            }),
+            profile: None,
+        })
+        .await?;
+    assert!(!started_session.result.session.managed);
+    assert!(started_session.result.session.management.is_none());
+    assert!(
+        started_session
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME)
+    );
 
     let skill_snapshot = vfs::create_inline_snapshot(
         blob_store.as_ref(),
@@ -324,9 +337,30 @@ async fn run_host_bridge_client(
         attached.result.environment.cwd.as_deref(),
         Some(path_str(&bridge_root)?)
     );
+    let attached_session = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+        })
+        .await?;
+    for job_tool in [
+        tools::environment::jobs::JOB_START_TOOL_NAME,
+        tools::environment::jobs::JOB_READ_TOOL_NAME,
+    ] {
+        assert!(
+            attached_session
+                .result
+                .session
+                .active_tools
+                .tools
+                .iter()
+                .all(|tool| tool.tool_id != job_tool),
+            "environment jobs must remain default-off even for a capable provider"
+        );
+    }
 
     let run = api
         .start_run(RunStartParams {
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -368,6 +402,34 @@ async fn run_host_bridge_client(
         env_id: "bridge-local".to_owned(),
     })
     .await?;
+    let detached_session = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+        })
+        .await?;
+    assert!(!detached_session.result.session.managed);
+    assert!(detached_session.result.session.management.is_none());
+    assert!(
+        detached_session
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME)
+    );
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(200),
+            wait_ms: None,
+        })
+        .await?;
+    assert!(events.result.events.iter().all(|event| !matches!(
+        event.kind,
+        api::SessionEventKindView::SystemWorkflowToolConfigured { .. }
+    )));
 
     let handle = client.get_workflow_handle::<AgentSessionWorkflow>(session_id.as_str());
     let _ = handle
@@ -414,17 +476,40 @@ async fn run_host_bridge_jobs_client(
     let provider_id = format!("host-bridge-jobs-{}", uuid::Uuid::new_v4().simple());
     let bridge = SpawnedBridge::start(&bridge_bin, &gateway_url, &provider_id, &bridge_root)?;
 
-    api.start_session(SessionStartParams {
-        session_id: Some(session_id.as_str().to_owned()),
-        display_name: None,
-        config: Some(SessionConfig {
-            model: Some(api_projection::model_to_api(&model)),
-            features: Some(env_live_features()),
-            ..SessionConfig::default()
-        }),
-        profile: None,
-    })
-    .await?;
+    let started = api
+        .start_session(SessionStartParams {
+            session_id: Some(session_id.as_str().to_owned()),
+            display_name: None,
+            config: Some(SessionConfig {
+                model: Some(api_projection::model_to_api(&model)),
+                features: Some(env_live_features_with_jobs()),
+                ..SessionConfig::default()
+            }),
+            profile: None,
+        })
+        .await?;
+    assert!(
+        started
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME),
+        "the admitted workflow binding must remain hidden without a capable attached environment"
+    );
+    let configured = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(200),
+            wait_ms: None,
+        })
+        .await?;
+    assert!(configured.result.events.iter().any(|event| matches!(
+        event.kind,
+        api::SessionEventKindView::SystemWorkflowToolConfigured { .. }
+    )));
 
     let attached =
         wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id, "bridge-local").await?;
@@ -433,14 +518,41 @@ async fn run_host_bridge_jobs_client(
         Some("bridge-local")
     );
     let instance_id = attached.result.environment.instance_id.clone();
+    let attached_session = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+        })
+        .await?;
+    assert!(!attached_session.result.session.managed);
+    assert!(attached_session.result.session.management.is_none());
+    assert!(
+        attached_session
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_START_TOOL_NAME)
+    );
+    let listed = api.list_sessions(SessionListParams::default()).await?;
+    assert!(
+        !listed
+            .result
+            .sessions
+            .iter()
+            .find(|session| session.id == session_id.as_str())
+            .expect("job session is listed")
+            .managed
+    );
 
     let run = api
         .start_run(RunStartParams {
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
-                    text: "start, list, wait for, and read a durable environment job".to_owned(),
+                    text: "start, wait for, and read a durable environment job".to_owned(),
                 }],
             },
             config: None,
@@ -461,6 +573,10 @@ async fn run_host_bridge_jobs_client(
         "final answer did not include marker from job output: {text}"
     );
     assert!(
+        text.contains(BRIDGE_JOB_SECOND_MARKER),
+        "final answer did not include marker from second job output: {text}"
+    );
+    assert!(
         text.contains("await resolved"),
         "final answer did not include a resolved await result: {text}"
     );
@@ -471,6 +587,13 @@ async fn run_host_bridge_jobs_client(
         local_contents.contains(BRIDGE_JOB_MARKER),
         "bridge job did not write marker to local file {}: {local_contents}",
         local_file.display()
+    );
+    let second_local_file = bridge_root.join(BRIDGE_JOB_SECOND_FILE_NAME);
+    let second_local_contents = tokio::fs::read_to_string(&second_local_file).await?;
+    assert!(
+        second_local_contents.contains(BRIDGE_JOB_SECOND_MARKER),
+        "second bridge job did not write marker to local file {}: {second_local_contents}",
+        second_local_file.display()
     );
 
     let api_command = format!(
@@ -498,23 +621,6 @@ async fn run_host_bridge_jobs_client(
     assert_eq!(created.result.instance_id, instance_id);
     assert_eq!(created.result.jobs.len(), 1);
     let api_job = created.result.jobs[0].handle.clone();
-
-    let listed = api
-        .list_environment_jobs(EnvironmentJobListParams {
-            instance_id: Some(instance_id.clone()),
-            job_group_id: None,
-            limit: Some(10),
-        })
-        .await?;
-    assert!(
-        listed
-            .result
-            .jobs
-            .iter()
-            .any(|record| record.handle.job_id == api_job.job_id),
-        "environments/jobs/list did not return API-created job: {:?}",
-        listed.result.jobs
-    );
 
     let mut api_job_output = None;
     let started = Instant::now();
@@ -626,11 +732,63 @@ async fn run_host_bridge_jobs_client(
         cancelled_read
     );
 
+    let close_created = api
+        .create_environment_jobs(EnvironmentJobCreateParams {
+            instance_id: instance_id.clone(),
+            request_id: "api_job_close_active".to_owned(),
+            jobs: vec![api_shell_job("active-at-close", "sleep 30")],
+        })
+        .await?;
+    let close_job = close_created.result.jobs[0].handle.clone();
+
     api.detach_session_environment(SessionEnvironmentDetachParams {
         session_id: session_id.as_str().to_owned(),
         env_id: "bridge-local".to_owned(),
     })
     .await?;
+
+    let close = api.close_environment(EnvironmentCloseParams {
+        instance_id: instance_id.clone(),
+    });
+    let racing_start = api.create_environment_jobs(EnvironmentJobCreateParams {
+        instance_id: instance_id.clone(),
+        request_id: "api_job_close_race".to_owned(),
+        jobs: vec![api_shell_job("close-race", "sleep 30")],
+    });
+    let (closed, racing_start) = tokio::join!(close, racing_start);
+    assert_eq!(
+        closed?.result.environment.status,
+        EnvironmentTargetStatusView::Closed
+    );
+
+    let interrupted = wait_for_environment_jobs_terminal(
+        api.as_ref(),
+        std::slice::from_ref(&close_job),
+        Duration::from_secs(10),
+    )
+    .await?;
+    assert_eq!(
+        interrupted[0]
+            .summary
+            .as_ref()
+            .map(|summary| summary.status),
+        Some(SessionJobStatusView::Interrupted),
+        "active job was not interrupted by provider close: {interrupted:?}"
+    );
+    if let Ok(racing_start) = racing_start {
+        let racing_job = racing_start.result.jobs[0].handle.clone();
+        let racing = wait_for_environment_jobs_terminal(
+            api.as_ref(),
+            std::slice::from_ref(&racing_job),
+            Duration::from_secs(10),
+        )
+        .await?;
+        assert_eq!(
+            racing[0].summary.as_ref().map(|summary| summary.status),
+            Some(SessionJobStatusView::Interrupted),
+            "job accepted during close race was not interrupted: {racing:?}"
+        );
+    }
 
     let handle = client.get_workflow_handle::<AgentSessionWorkflow>(session_id.as_str());
     let _ = handle
@@ -945,29 +1103,30 @@ async fn run_api_job_retry_live_check(
     .await?;
     ensure_job_statuses(&entries, SessionJobStatusView::Succeeded, "retry job")?;
 
-    let listed = api
-        .list_environment_jobs(EnvironmentJobListParams {
-            instance_id: Some(instance_id.to_owned()),
-            job_group_id: None,
-            limit: Some(200),
-        })
-        .await?;
-    let matching_records = listed
-        .result
-        .jobs
-        .iter()
-        .filter(|record| record.handle.job_id == handle.job_id)
-        .count();
-    assert_eq!(
-        matching_records, 1,
-        "retry-stable API start inserted duplicate registry rows: {:?}",
-        listed.result.jobs
-    );
-
     let contents = tokio::fs::read_to_string(&retry_file).await?;
     assert_eq!(
         contents, "R",
         "retry-stable API start executed the job more than once"
+    );
+
+    let conflict = api
+        .create_environment_jobs(EnvironmentJobCreateParams {
+            instance_id: instance_id.to_owned(),
+            request_id: "api_live_retry".to_owned(),
+            jobs: vec![api_shell_job(
+                "retry",
+                format!("printf X >> {retry_file_name}"),
+            )],
+        })
+        .await;
+    assert!(
+        conflict.is_err(),
+        "same request/job identity with different input must be rejected"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(&retry_file).await?,
+        "R",
+        "conflicting retry must not execute"
     );
     Ok(())
 }
@@ -1197,6 +1356,7 @@ async fn run_fake_provider_client(
 
     let first = api
         .start_run(RunStartParams {
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1258,6 +1418,7 @@ async fn run_fake_provider_client(
 
     let second = api
         .start_run(RunStartParams {
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1285,11 +1446,28 @@ async fn run_fake_provider_client(
         env_id: "sandbox-env".to_owned(),
     })
     .await?;
+    provider.reject_next_close();
+    let rejected = api
+        .close_environment(EnvironmentCloseParams {
+            instance_id: created_instance_id.clone(),
+        })
+        .await
+        .expect_err("provider should reject the first close");
+    assert_eq!(rejected.kind, AgentApiErrorKind::Rejected);
+    let restored = api
+        .read_environment(EnvironmentReadParams {
+            instance_id: created_instance_id.clone(),
+        })
+        .await?;
+    assert_eq!(
+        restored.result.environment.status,
+        EnvironmentTargetStatusView::Ready
+    );
     api.close_environment(EnvironmentCloseParams {
         instance_id: created_instance_id,
     })
     .await?;
-    assert_eq!(provider.close_count(), 1);
+    assert_eq!(provider.close_count(), 2);
     assert_eq!(provider.process_start_count(), 2);
     assert_eq!(
         provider.process_cwds(),
@@ -1399,6 +1577,7 @@ async fn run_profile_environment_client(
 
     let run = api
         .start_run(RunStartParams {
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1786,35 +1965,27 @@ impl BridgeJobsLlm {
             "printf '{}\\n' > {} && printf '{}\\n'",
             BRIDGE_JOB_MARKER, BRIDGE_JOB_FILE_NAME, BRIDGE_JOB_MARKER
         );
+        let second_command = format!(
+            "printf '{}\\n' > {} && printf '{}\\n'",
+            BRIDGE_JOB_SECOND_MARKER, BRIDGE_JOB_SECOND_FILE_NAME, BRIDGE_JOB_SECOND_MARKER
+        );
         self.tool_call_result(
             request,
             "job_start",
             json!({
                 "jobs": [{
                     "name": "live-job",
+                    "job_id": "live-job",
                     "argv": ["/bin/sh", "-c", command],
+                    "timeout_ms": 10000
+                }, {
+                    "name": "live-job-second",
+                    "job_id": "live-job-second",
+                    "argv": ["/bin/sh", "-c", second_command],
                     "timeout_ms": 10000
                 }]
             }),
             "bridge_job_start",
-        )
-        .await
-    }
-
-    async fn list_jobs_result(
-        &self,
-        request: &LlmGenerationRequest,
-    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        self.require_tool(request, "job_list")?;
-        let _handle = self.job_handle_from_results(request).await?;
-        self.tool_call_result(
-            request,
-            "job_list",
-            json!({
-                "session_id": request.session_id.as_str(),
-                "limit": 10
-            }),
-            "bridge_job_list",
         )
         .await
     }
@@ -1824,12 +1995,12 @@ impl BridgeJobsLlm {
         request: &LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         self.require_tool(request, AWAIT_TOOL_NAME)?;
-        let promise_id = self.job_promise_from_results(request).await?;
+        let promise_ids = self.job_promises_from_results(request).await?;
         self.tool_call_result(
             request,
             AWAIT_TOOL_NAME,
             json!({
-                "promises": [promise_id],
+                "promises": promise_ids,
                 "mode": "all",
                 "timeout_ms": 15000
             }),
@@ -1843,12 +2014,12 @@ impl BridgeJobsLlm {
         request: &LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         self.require_tool(request, "job_read")?;
-        let handle = self.job_handle_from_results(request).await?;
+        let handles = self.job_handles_from_results(request).await?;
         self.tool_call_result(
             request,
             "job_read",
             json!({
-                "jobs": [handle.json_arg()],
+                "jobs": handles.into_iter().map(|handle| handle.json_arg()).collect::<Vec<_>>(),
                 "output_bytes": 4096
             }),
             "bridge_job_read",
@@ -1919,10 +2090,11 @@ impl BridgeJobsLlm {
         })
     }
 
-    async fn job_handle_from_results(
+    async fn job_handles_from_results(
         &self,
         request: &LlmGenerationRequest,
-    ) -> Result<BridgeJobHandle, CoreAgentIoError> {
+    ) -> Result<Vec<BridgeJobHandle>, CoreAgentIoError> {
+        let mut handles = Vec::new();
         for entry in current_run_tool_results(request).into_iter().rev() {
             let output = self
                 .blobs
@@ -1931,28 +2103,57 @@ impl BridgeJobsLlm {
                 .map_err(io_error)?;
             for line in output.lines() {
                 if let Some(handle) = BridgeJobHandle::parse(line) {
-                    return Ok(handle);
+                    push_unique_job_handle(&mut handles, handle);
                 }
             }
         }
-        Err(io_error("job_start result did not include a job handle"))
+        // Once `await` resolves, its model-visible Promise payload carries the
+        // stable provider handle.
+        for entry in request.request.context.entries.iter().rev() {
+            if !entry
+                .preview
+                .as_deref()
+                .is_some_and(|preview| preview.starts_with("Promise "))
+            {
+                continue;
+            }
+            let output = self
+                .blobs
+                .read_text(&entry.content_ref)
+                .await
+                .map_err(io_error)?;
+            if let Some(handle) = BridgeJobHandle::parse_promise_payload(&output) {
+                push_unique_job_handle(&mut handles, handle);
+            }
+        }
+        if handles.len() == 2 {
+            Ok(handles)
+        } else {
+            Err(io_error(format!(
+                "job_start result included {} job handles, expected 2",
+                handles.len()
+            )))
+        }
     }
 
-    async fn job_promise_from_results(
+    async fn job_promises_from_results(
         &self,
         request: &LlmGenerationRequest,
-    ) -> Result<String, CoreAgentIoError> {
+    ) -> Result<Vec<String>, CoreAgentIoError> {
         for entry in current_run_tool_results(request).into_iter().rev() {
             let output = self
                 .blobs
                 .read_text(&entry.content_ref)
                 .await
                 .map_err(io_error)?;
-            if let Some(promise_id) = parse_job_promise(&output) {
-                return Ok(promise_id.to_owned());
+            let promise_ids = parse_job_promises(&output);
+            if promise_ids.len() == 2 {
+                return Ok(promise_ids);
             }
         }
-        Err(io_error("job_start result did not include a promise"))
+        Err(io_error(
+            "job_start result did not include two keyed promises",
+        ))
     }
 
     async fn final_result(
@@ -2012,9 +2213,8 @@ impl CoreAgentLlm for BridgeJobsLlm {
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         match current_run_tool_results(&request).len() {
             0 => self.start_job_result(&request).await,
-            1 => self.list_jobs_result(&request).await,
-            2 => self.await_job_result(&request).await,
-            3 => self.read_job_result(&request).await,
+            1 => self.await_job_result(&request).await,
+            2 => self.read_job_result(&request).await,
             _ => self.final_result(&request).await,
         }
     }
@@ -2023,6 +2223,14 @@ impl CoreAgentLlm for BridgeJobsLlm {
 struct BridgeJobHandle {
     instance_id: String,
     job_id: String,
+}
+
+fn push_unique_job_handle(handles: &mut Vec<BridgeJobHandle>, candidate: BridgeJobHandle) {
+    if !handles.iter().any(|handle| {
+        handle.instance_id == candidate.instance_id && handle.job_id == candidate.job_id
+    }) {
+        handles.push(candidate);
+    }
 }
 
 impl BridgeJobHandle {
@@ -2046,11 +2254,33 @@ impl BridgeJobHandle {
             "job_id": self.job_id
         })
     }
+
+    fn parse_promise_payload(text: &str) -> Option<Self> {
+        let value: Value = serde_json::from_str(text).ok()?;
+        let summary = value.get("summary")?;
+        Some(Self {
+            instance_id: summary.get("namespace")?.as_str()?.to_owned(),
+            job_id: summary.get("jobId")?.as_str()?.to_owned(),
+        })
+    }
 }
 
-fn parse_job_promise(text: &str) -> Option<&str> {
-    let after = text.split_once("(promise ")?.1;
-    after.split_once(')')?.0.split_whitespace().next()
+fn parse_job_promises(text: &str) -> Vec<String> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let Some(promises) = value.get("promises").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut keyed = promises
+        .iter()
+        .filter_map(|(key, value)| value.as_str().map(|value| (key, value)))
+        .collect::<Vec<_>>();
+    keyed.sort_by(|(left, _), (right, _)| left.cmp(right));
+    keyed
+        .into_iter()
+        .map(|(_, value)| value.to_owned())
+        .collect()
 }
 
 fn current_run_tool_result(request: &LlmGenerationRequest) -> Option<&engine::ContextEntry> {
@@ -2127,6 +2357,7 @@ fn env_live_features() -> api::FeaturesConfig {
         environments: Some(api::EnvironmentsFeature {
             version: api::CURRENT_FEATURE_VERSION,
             providers: None,
+            jobs: false,
         }),
         vfs: Some(api::VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
@@ -2136,6 +2367,16 @@ fn env_live_features() -> api::FeaturesConfig {
         }),
         ..api::FeaturesConfig::default()
     }
+}
+
+fn env_live_features_with_jobs() -> api::FeaturesConfig {
+    let mut features = env_live_features();
+    features
+        .environments
+        .as_mut()
+        .expect("environment feature")
+        .jobs = true;
+    features
 }
 
 async fn wait_for_bridge_attach(
@@ -2274,6 +2515,10 @@ impl FakeHostProvider {
         self.state.close_count.load(Ordering::SeqCst)
     }
 
+    fn reject_next_close(&self) {
+        self.state.reject_next_close.store(true, Ordering::SeqCst);
+    }
+
     fn process_start_count(&self) -> usize {
         self.state
             .process_starts
@@ -2306,6 +2551,7 @@ struct FakeHostProviderState {
     attach_count: AtomicUsize,
     create_count: AtomicUsize,
     close_count: AtomicUsize,
+    reject_next_close: AtomicBool,
     process_starts: Mutex<Vec<StartProcessParams>>,
 }
 
@@ -2421,6 +2667,9 @@ async fn handle_request(
         }
         CLOSE_TARGET_METHOD => {
             state.close_count.fetch_add(1, Ordering::SeqCst);
+            if state.reject_next_close.swap(false, Ordering::SeqCst) {
+                return Err("provider rejected close while target is occupied".to_owned());
+            }
             result_value(CloseTargetResponse {
                 target_id: HostTargetId::new(
                     params

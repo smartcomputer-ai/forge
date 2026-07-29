@@ -1,10 +1,55 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P100](p100-durable-work-workflow.md) — first-class durable Work with
-  Temporal-owned state, one managed session/run attempt, generic run-terminal
-  workflow notification, point read/cancel APIs, and no Work database in the
-  initial cut
+- [x] [P100](p100-workflow-tool-ports.md) — the workflow emission substrate:
+  one envelope and one fixed `deliver_emission` signal for all cross-workflow
+  facts (run-terminal notifications and env-job source resolutions folded in
+  a single push, deleting both promise-specific signals), plus workflow-bound
+  tools — schema-validated function tools whose calls become log-backed
+  emissions for one fixed opaque receiver per binding, declared by trusted
+  workflow plugins at managed-session creation (no built-in endpoint
+  registry, no plugin-specific session-worker code); Accepted tools are
+  pull-consumed at run boundaries, with promise-bearing push delivery owned by
+  P100b. Complete 2026-07-28: generic `WorkflowTool*` vocabulary, immutable
+  managed bindings, atomic emissions, receiver-authorized paginated pull,
+  retry/restart/continue-as-new coverage, and compatibility gates are closed
+- [x] [P100b](p100b-workflow-backed-tools.md) — workflow-backed tool
+  interactions over P100/P92: push to bound workflow executions (derived from
+  completion, no per-binding delivery mode), keyed promise-set completion
+  (request/reply as the single-key case), deterministic start-on-call
+  workflow tools, one unified `PromiseSource::Workflow`, and plugin-owned
+  Temporal workers/activities with no second executor protocol;
+  primitive-only, with no production feature migrations. B1-B6 completed
+  2026-07-26 incl. the live plugin-worker suite (workflow_tool_plugins_live,
+  11 scenarios), hard-promise-deadline enforcement, and concurrency-toolset
+  derivation for promise-bearing bindings. B7 completed 2026-07-28: one
+  workflow may be both lifecycle controller and promise-bearing receiver only
+  with a non-zero hard deadline; the 13-scenario live suite proves the
+  Channels-shaped enqueue/reply-before-terminal flow, deduplication,
+  controller continue-as-new, stalled-controller deadline, and absent receiver
+- [ ] [P101](p101-durable-work-workflow.md) — durable Work as a Temporal-owned
+  goal loop over one managed session and many execution runs; explicit
+  completion/blockage reports over P100 workflow tools, automatic
+  continuation, caller
+  input, and reuse of Fleet promises/run notifications without Work-specific
+  transport
+- [x] [P102](p102-workflow-plugin-extractions.md) — completed 2026-07-29:
+  environment-job dispatch adopted P100b internally while remaining core;
+  channel integration moved to the external Channels application, allowing
+  the built-in messaging feature, tools, outbox store, and delivery APIs to be
+  deleted from Lightspeed
+- [x] [P103](p103-managed-session-api.md) — expose the existing trusted
+  managed-session admission through the universe-authenticated main API by
+  adding `session/managed/start` with the complete bound/start and
+  Accepted/keyed-Promise workflow-tool vocabulary, and let
+  `session/runs/start` optionally notify the session's immutable lifecycle
+  controller; keep ordinary session creation unchanged and reuse the existing
+  emission, Promise, event, and blob protocols
+- [x] [P104](p104-provider-owned-environment-jobs.md) — completed 2026-07-29:
+  remove the PostgreSQL environment-job registry and job listing surfaces;
+  keep provider-direct
+  read/cancel, let providers reject close or interrupt active jobs, and rely
+  on Temporal plus provider idempotency instead of stored job/group rows
 
 ## Core
 - [x] [P91](p91-core-agent-structure-cleanup.md) — cleanup of CoreAgent structures: delete the SDK-era open-kernel layer, commit to a closed event vocabulary and core FSM
@@ -42,15 +87,17 @@
 - [ ] [P86](p86-durable-environment-jobs.md) — durable environment jobs for long VM/sandbox work, including parallel jobs, serial lanes, dependency DAGs, and wait/cancel/read primitives
 - [ ] run coding agent (CC or Codex) on sandbox wrappers
 
-## Message Bridge
+## External Channels Integration
 - [x] [P88](p88-media-aware-context-append-and-activation.md) — media-aware
   `context/append`, context-triggered runs, and eager bridge ingest/activation
   for current supported media types
 - [x] [P89](p89-room-context-retention.md) — room context retention and
   compaction: watermarked drop-oldest pruning via `context/remove`, then
   summarize-and-replace, so always-on group sessions stay bounded
-- [x] Password/code-based login in channel (instead of whitelisting)
-- [ ] Support Slack
+- [x] Channel transport, account sessions, delivery state, media handling,
+  authentication, and provider-specific behavior now live in the external
+  Channels application; Lightspeed exposes only generic P100/P100b managed
+  session and workflow-tool primitives
 
 ## Security Auth
 - [ ] Provider OAuth login
@@ -66,8 +113,14 @@
 - [ ] MCP orchestration by Lightspeed
 
 ## Framework/SDK
-- [ ] Temporal service design: ensure ls can be used as a Temporal service by other workflows
-- [ ] Workflows as tools (register a workflow as a tool, route to workflow)
+- [ ] External Temporal workflow SDK: authenticated access to P100's generic
+  trusted managed-session creation capability (declare workflow tools +
+  opaque receivers per binding; authorization at the control-plane boundary,
+  no endpoint registry)
+- [x] P100b promise-bearing (keyed promise set) and workflow-as-tool
+  implementation (see [P100b](p100b-workflow-backed-tools.md)); complete
+  2026-07-26 incl. live plugin-worker suite; discovery/catalog remains
+  outside the session worker
 - [x] [P90](p90-multi-tenancy.md) — multi-tenant worker: multiple universes
       per deployment, composed workflow ids, per-request universe resolution
       (`single` / `trusted-header` / `api-key` modes), principal pass-through,

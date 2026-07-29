@@ -8,13 +8,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use api::{
     ActiveToolsView, AgentApiError, ContextEntryInputView, ContextEntryKindView, ContextEntryView,
-    ContextMessageRoleView, ContextView, EventCursor, EventJoinsView, InputItem, MediaKind,
-    ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
+    ContextMessageRoleView, ContextView, EventCursor, EventJoinsView, InputItem,
+    ManagedWorkflowToolCompletionView, ManagedWorkflowToolTargetView, ManagedWorkflowToolView,
+    MediaKind, ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
     RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView,
-    TokenEstimateView, ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView,
-    ToolCallView, ToolEffectView, ToolExecutionTargetView, ToolItemStatus, ToolKindView,
-    ToolParallelismView, ToolTargetRequirementView, ToolView,
+    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
+    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
+    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolExecutionTargetView,
+    ToolItemStatus, ToolKindView, ToolParallelismView, ToolTargetRequirementView, ToolView,
+    WorkflowEndpointView,
 };
 use engine::ToolExecutionTarget;
 use engine::{
@@ -80,6 +82,7 @@ impl<'a> CoreAgentProjector<'a> {
             id: params.session_id.as_str().to_owned(),
             display_name: params.record.display_name.clone(),
             status: session_status(params.state),
+            managed: params.record.managed,
             config_revision: params.state.lifecycle.config_revision,
             config,
             created_at_ms: params.record.created_at_ms,
@@ -92,6 +95,7 @@ impl<'a> CoreAgentProjector<'a> {
                 params.state.tooling.revision,
                 &params.state.tooling.tools,
             ),
+            management: session_management_to_api(params.state),
             vfs_mounts: Vec::new(),
         })
     }
@@ -259,6 +263,97 @@ impl<'a> CoreAgentProjector<'a> {
                     })
                 }
                 CoreAgentLifecycleEvent::Closed => Ok(SessionEventKindView::SessionClosed),
+            },
+            CoreAgentEvent::WorkflowToolConfig(event) => match event {
+                engine::WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                    lifecycle_controller,
+                    creation_fingerprint,
+                    bindings,
+                    ..
+                } => Ok(SessionEventKindView::WorkflowToolsConfigured {
+                    lifecycle_controller_workflow_kind: lifecycle_controller
+                        .as_ref()
+                        .map(|controller| controller.workflow_kind.clone()),
+                    creation_fingerprint: creation_fingerprint.clone(),
+                    tool_ids: bindings
+                        .iter()
+                        .map(|binding| binding.definition.tool_id.as_str().to_owned())
+                        .collect(),
+                }),
+                engine::WorkflowToolConfigEvent::SystemBindingAdmitted { binding } => {
+                    Ok(SessionEventKindView::SystemWorkflowToolConfigured {
+                        tool_id: binding.definition.tool_id.as_str().to_owned(),
+                        binding_fingerprint: binding.binding_fingerprint.clone(),
+                    })
+                }
+            },
+            CoreAgentEvent::WorkflowTool(event) => match event {
+                engine::WorkflowToolEvent::Emitted { invocation } => {
+                    Ok(SessionEventKindView::WorkflowToolEmitted {
+                        invocation_id: invocation.invocation_id.as_str().to_owned(),
+                        tool_id: invocation.tool_id.as_str().to_owned(),
+                        semantic_type: invocation.semantic_type.clone(),
+                        schema_revision: invocation.schema_revision,
+                        binding_fingerprint: invocation.binding_fingerprint.clone(),
+                        run_id: api_run_id(invocation.run_id),
+                        turn_id: api_turn_id(invocation.turn_id),
+                        batch_id: api_tool_batch_id(invocation.tool_batch_id),
+                        call_id: invocation.tool_call_id.as_str().to_owned(),
+                        arguments_ref: invocation.arguments_ref.as_str().to_owned(),
+                        completion_promises: invocation.completion_promises.as_ref().map(
+                            |promises| {
+                                promises
+                                    .iter()
+                                    .map(|(key, promise_id)| {
+                                        (key.clone(), promise_id.as_str().to_owned())
+                                    })
+                                    .collect()
+                            },
+                        ),
+                    })
+                }
+                engine::WorkflowToolEvent::StartRequested {
+                    invocation,
+                    execution_id,
+                } => Ok(SessionEventKindView::WorkflowToolStartRequested {
+                    invocation_id: invocation.invocation_id.as_str().to_owned(),
+                    tool_id: invocation.tool_id.as_str().to_owned(),
+                    semantic_type: invocation.semantic_type.clone(),
+                    schema_revision: invocation.schema_revision,
+                    binding_fingerprint: invocation.binding_fingerprint.clone(),
+                    run_id: api_run_id(invocation.run_id),
+                    turn_id: api_turn_id(invocation.turn_id),
+                    batch_id: api_tool_batch_id(invocation.tool_batch_id),
+                    call_id: invocation.tool_call_id.as_str().to_owned(),
+                    arguments_ref: invocation.arguments_ref.as_str().to_owned(),
+                    execution_id: execution_id.clone(),
+                    completion_promises: invocation
+                        .completion_promises
+                        .as_ref()
+                        .map(|promises| {
+                            promises
+                                .iter()
+                                .map(|(key, promise_id)| {
+                                    (key.clone(), promise_id.as_str().to_owned())
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                }),
+                engine::WorkflowToolEvent::StartFailed {
+                    invocation_id,
+                    error_ref,
+                } => Ok(SessionEventKindView::WorkflowToolStartFailed {
+                    invocation_id: invocation_id.as_str().to_owned(),
+                    error_ref: error_ref.as_str().to_owned(),
+                }),
+                engine::WorkflowToolEvent::DeliveryFailed {
+                    invocation_id,
+                    error_ref,
+                } => Ok(SessionEventKindView::WorkflowToolDeliveryFailed {
+                    invocation_id: invocation_id.as_str().to_owned(),
+                    error_ref: error_ref.as_str().to_owned(),
+                }),
             },
             CoreAgentEvent::Run(event) => match event {
                 RunEvent::Accepted(accepted) => Ok(SessionEventKindView::RunAccepted {
@@ -748,6 +843,47 @@ impl<'a> CoreAgentProjector<'a> {
     }
 }
 
+fn session_management_to_api(state: &CoreAgentState) -> Option<SessionManagementView> {
+    let version = state.workflow_tools.managed_declaration_version?;
+    Some(SessionManagementView {
+        version,
+        lifecycle_controller: state.workflow_tools.lifecycle_controller.as_ref().map(
+            |controller| WorkflowEndpointView {
+                workflow_id: controller.workflow_id.clone(),
+                workflow_kind: controller.workflow_kind.clone(),
+            },
+        ),
+        tools: state
+            .workflow_tools
+            .bindings
+            .iter()
+            .filter(|(tool_id, _)| !state.workflow_tools.system_binding_ids.contains(*tool_id))
+            .map(|(_, binding)| binding)
+            .map(|binding| ManagedWorkflowToolView {
+                tool_id: binding.definition.tool_id.as_str().to_owned(),
+                name: binding.definition.tool.name.as_str().to_owned(),
+                semantic_type: binding.definition.semantic_type.clone(),
+                target: match binding.target {
+                    engine::WorkflowToolTarget::Bound { .. } => {
+                        ManagedWorkflowToolTargetView::Bound
+                    }
+                    engine::WorkflowToolTarget::Start { .. } => {
+                        ManagedWorkflowToolTargetView::Start
+                    }
+                },
+                completion: match binding.completion {
+                    engine::WorkflowToolCompletion::Accepted => {
+                        ManagedWorkflowToolCompletionView::Accepted
+                    }
+                    engine::WorkflowToolCompletion::Promises { .. } => {
+                        ManagedWorkflowToolCompletionView::Promises
+                    }
+                },
+            })
+            .collect(),
+    })
+}
+
 #[derive(Clone, Debug)]
 struct ProjectedToolResult {
     output: Option<String>,
@@ -931,8 +1067,8 @@ pub fn api_run_id(run_id: RunId) -> String {
 fn promise_source_name(source: &engine::PromiseSource) -> &'static str {
     match source {
         engine::PromiseSource::Run { .. } => "run",
-        engine::PromiseSource::EnvJob { .. } => "env_job",
         engine::PromiseSource::Timer { .. } => "timer",
+        engine::PromiseSource::Workflow { .. } => "workflow",
     }
 }
 
@@ -1130,12 +1266,6 @@ fn features_config_to_api(
     Ok(api::FeaturesConfig {
         vfs: features.vfs.as_ref().map(vfs_feature_to_api),
         web: features.web.as_ref().map(web_feature_to_api),
-        messaging: features
-            .messaging
-            .as_ref()
-            .map(|messaging| api::MessagingFeature {
-                version: messaging.version,
-            }),
         fleet: features
             .fleet
             .as_ref()
@@ -1150,6 +1280,7 @@ fn features_config_to_api(
             .map(|environments| api::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers.clone(),
+                jobs: environments.jobs,
             }),
         mcp: features.mcp.as_ref().map(mcp_feature_to_api),
     })
@@ -1280,10 +1411,6 @@ fn tool_to_api(tool: &ToolSpec) -> ToolView {
 fn tool_kind_to_api(kind: &ToolKind) -> ToolKindView {
     match kind {
         ToolKind::Function(function) => ToolKindView::Function {
-            model_name: function
-                .model_name
-                .as_ref()
-                .map(|name| name.as_str().to_owned()),
             description_ref: function
                 .description_ref
                 .as_ref()
@@ -1478,6 +1605,9 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
             AgentApiError::invalid_request(error.to_string())
         }
         SessionStoreError::SessionNotClosed { .. } => AgentApiError::rejected(error.to_string()),
+        SessionStoreError::ManagedSessionCannotBranch { .. } => {
+            AgentApiError::rejected(error.to_string())
+        }
         SessionStoreError::SessionHasForkChildren { .. } => {
             AgentApiError::conflict(error.to_string())
         }
@@ -1568,6 +1698,7 @@ fn tool_effects_for_run(
 fn tool_effects_to_api(effects: &[engine::ToolEffect]) -> Vec<ToolEffectView> {
     effects
         .iter()
+        .filter(|effect| effect.kind != engine::WORKFLOW_TOOL_EMIT_EFFECT_KIND)
         .map(|effect| ToolEffectView {
             kind: effect.kind.clone(),
             data: effect.data.clone(),
@@ -1803,6 +1934,61 @@ mod tests {
     use super::*;
 
     #[test]
+    fn managed_session_projection_exposes_controller_ownership() {
+        let mut state = CoreAgentState::new();
+        state.workflow_tools.managed_declaration_version = Some(1);
+        state.workflow_tools.lifecycle_controller = Some(engine::WorkflowEndpointRef {
+            workflow_id: "channels/session-1".to_owned(),
+            workflow_kind: "channelSessionWorkflowV1".to_owned(),
+        });
+
+        assert_eq!(
+            session_management_to_api(&state),
+            Some(SessionManagementView {
+                version: 1,
+                lifecycle_controller: Some(WorkflowEndpointView {
+                    workflow_id: "channels/session-1".to_owned(),
+                    workflow_kind: "channelSessionWorkflowV1".to_owned(),
+                }),
+                tools: Vec::new(),
+            })
+        );
+        assert_eq!(session_management_to_api(&CoreAgentState::new()), None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn detailed_session_projects_managed_catalog_flag() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let session_id = SessionId::new("managed-session");
+        let state = CoreAgentState::new();
+        let record = SessionRecord {
+            session_id: session_id.clone(),
+            display_name: None,
+            lifecycle_status: engine::storage::SessionLifecycleStatus::New,
+            closed_at_seq: None,
+            managed: true,
+            head: None,
+            source_session_id: None,
+            source_seq: None,
+            created_at_ms: 1,
+            updated_at_ms: 2,
+        };
+
+        let session = projector
+            .project_session(ProjectSession {
+                session_id: &session_id,
+                state: &state,
+                record: &record,
+                entries: &[],
+            })
+            .await
+            .expect("project detailed managed session");
+
+        assert!(session.managed);
+    }
+
+    #[test]
     fn context_entries_for_run_reads_committed_entry_events() {
         let first = context_entry(
             1,
@@ -1950,6 +2136,128 @@ mod tests {
                 reason: "providerCompacted".to_owned(),
             }
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_port_config_projects_bounded_diagnostics() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let universe_id = "00000000-0000-0000-0000-000000000001";
+        let config_event: engine::WorkflowToolConfigEvent =
+            serde_json::from_value(serde_json::json!({
+                "managed_bindings_admitted": {
+                    "session_universe_id": universe_id,
+                    "declaration_version": 1,
+                    "lifecycle_controller": {
+                        "workflow_id": "global controller/work-1",
+                        "workflow_kind": "agent_work",
+                    },
+                    "creation_fingerprint": "msc:sha256:test",
+                    "bindings": [],
+                }
+            }))
+            .expect("decode workflow tool config event");
+        let projected = projector
+            .project_event_kind(&CoreAgentEvent::WorkflowToolConfig(config_event))
+            .await
+            .expect("project managed-session tools");
+
+        assert_eq!(
+            projected,
+            SessionEventKindView::WorkflowToolsConfigured {
+                lifecycle_controller_workflow_kind: Some("agent_work".to_owned()),
+                creation_fingerprint: "msc:sha256:test".to_owned(),
+                tool_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workflow_tool_events_project_refs_without_inlining_arguments() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let arguments_ref = BlobRef::from_bytes(br#"{"status":"complete"}"#);
+        let error_ref = BlobRef::from_bytes(b"delivery failed");
+        let invocation_id = format!("wti:sha256:{}", "a".repeat(64));
+        let emitted: engine::WorkflowToolEvent = serde_json::from_value(serde_json::json!({
+            "emitted": {
+                "invocation": {
+                    "invocation_id": invocation_id,
+                    "tool_id": "report",
+                    "semantic_type": "lightspeed.work.report.v1",
+                    "schema_revision": 1,
+                    "binding_fingerprint": "wtb:sha256:test",
+                    "session_universe_id": "00000000-0000-0000-0000-000000000001",
+                    "session_id": "session-1",
+                    "run_id": 2,
+                    "turn_id": 3,
+                    "tool_batch_id": 4,
+                    "tool_call_id": "call-5",
+                    "arguments_ref": arguments_ref,
+                }
+            }
+        }))
+        .expect("decode emitted event");
+        let projected = projector
+            .project_event_kind(&CoreAgentEvent::WorkflowTool(emitted))
+            .await
+            .expect("project emitted event");
+        assert_eq!(
+            projected,
+            SessionEventKindView::WorkflowToolEmitted {
+                invocation_id: invocation_id.clone(),
+                tool_id: "report".to_owned(),
+                semantic_type: "lightspeed.work.report.v1".to_owned(),
+                schema_revision: 1,
+                binding_fingerprint: "wtb:sha256:test".to_owned(),
+                run_id: api_run_id(RunId::new(2)),
+                turn_id: "turn_3".to_owned(),
+                batch_id: "tool_batch_4".to_owned(),
+                call_id: "call-5".to_owned(),
+                arguments_ref: arguments_ref.as_str().to_owned(),
+                completion_promises: None,
+            }
+        );
+
+        let failed = engine::WorkflowToolEvent::DeliveryFailed {
+            invocation_id: engine::WorkflowToolInvocationId::new(invocation_id.clone()),
+            error_ref: error_ref.clone(),
+        };
+        let projected = projector
+            .project_event_kind(&CoreAgentEvent::WorkflowTool(failed))
+            .await
+            .expect("project failed delivery");
+        assert_eq!(
+            projected,
+            SessionEventKindView::WorkflowToolDeliveryFailed {
+                invocation_id,
+                error_ref: error_ref.as_str().to_owned(),
+            }
+        );
+
+        let completed = projector
+            .project_event_kind(&CoreAgentEvent::Tool(ToolEvent::CallCompleted {
+                run_id: RunId::new(2),
+                turn_id: TurnId::new(3),
+                batch_id: ToolBatchId::new(4),
+                result: engine::ToolCallResult {
+                    call_id: engine::ToolCallId::new("call-5"),
+                    status: engine::ToolCallStatus::Succeeded,
+                    output_ref: None,
+                    model_visible_context_entries: Vec::new(),
+                    error_ref: None,
+                    effects: vec![engine::ToolEffect {
+                        kind: engine::WORKFLOW_TOOL_EMIT_EFFECT_KIND.to_owned(),
+                        data: Default::default(),
+                    }],
+                },
+            }))
+            .await
+            .expect("project tool completion");
+        assert!(matches!(
+            completed,
+            SessionEventKindView::ToolCallCompleted { effects, .. } if effects.is_empty()
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2141,7 +2449,6 @@ mod tests {
                         blocked_domains: vec!["blocked.example".to_owned()],
                     }),
                 }),
-                messaging: Some(engine::MessagingFeature::default()),
                 fleet: Some(engine::FleetFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
                     profiles: engine::FleetProfilesConfig {
@@ -2216,9 +2523,6 @@ mod tests {
                             blocked_domains: vec!["blocked.example".to_owned()],
                         }),
                     }),
-                    messaging: Some(api::MessagingFeature {
-                        version: api::CURRENT_FEATURE_VERSION,
-                    }),
                     fleet: Some(api::FleetFeature {
                         version: api::CURRENT_FEATURE_VERSION,
                         profiles: Some(api::FleetProfilesConfig {
@@ -2244,6 +2548,7 @@ mod tests {
                     environments: Some(api::EnvironmentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
                         providers: None,
+                        jobs: false,
                     }),
                     mcp: Some(api::McpFeature {
                         version: api::CURRENT_FEATURE_VERSION,

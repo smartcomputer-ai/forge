@@ -13,7 +13,7 @@ pipeline runner.
 
 Use these files as the index:
 
-- `README.md` — current overview, crate map, runtime model, commands.
+- `README.md` — current overview, runtime model, capabilities, and commands.
 - `docs/design.md` — public design walk-through (deterministic core, context
   management, CAS offloading, Temporal hosting), moved out of the README.
 - `docs/spec/01-agent-idea.md` — working design notes for the new agent direction.
@@ -38,7 +38,6 @@ cargo test -p tools
 cargo test -p store-fs
 cargo test -p store-pg
 cargo test -p mcp
-cargo test -p messaging
 cargo test -p auth
 cargo test -p environments
 cargo test -p llm-runtime
@@ -117,21 +116,24 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
 - `crates/api-projection/` — shared CoreAgent-to-`api` projection
   helpers for local and workflow-backed gateways.
 - `crates/temporal-workflow/` — Temporal workflow, signals, queries, and
-  activity DTOs.
+  activity DTOs for sessions, workflow-backed tools, and environment jobs.
 - `crates/temporal-server/` — hosted runtime binary and modules for the Temporal
-  worker, HTTP/JSON-RPC gateway, profile applier, and combined
-  local/small-deployment mode.
+  worker, HTTP/JSON-RPC gateway, managed-session and workflow-tool admission,
+  profile applier, and combined local/small-deployment mode.
 - `crates/test-support/` — fast in-process runner harness for tests/evals. It
   is not a production runtime and must not expose an `AgentApiService`.
 - `crates/tools/` — optional tool packages for session filesystems,
-  environment actions, web, messaging, prompts, and skills.
+  environment actions, web, prompts, and skills.
+- `crates/vfs/` — virtual filesystem models, validation, snapshots, mounts,
+  and store traits.
+- `crates/host-protocol/`, `crates/host-client/`, and `crates/host-bridge/` —
+  environment host wire protocol, client, and bridge daemon used for borrowed
+  compute.
 - `crates/store-fs/` — filesystem-backed session log and content-addressed blob
   store adapters.
 - `crates/store-pg/` — PostgreSQL-backed session store, CAS catalog, MCP server
   catalog, agent profile catalog, environment registry, and AEAD-encrypted auth
   grant/secret storage.
-- `crates/messaging/` — channel-neutral outbound message types and the
-  delivery outbox store trait backing the messaging tools and bridges (P71).
 - `crates/mcp/` — provider-independent remote MCP server catalog DTOs,
   validation, and store traits.
 - `crates/profiles/` — agent profile registry validation helpers,
@@ -143,8 +145,9 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   token broker with single-flight refresh and on-demand minting (P69), and
   deployment-scoped inbound API keys for gateway authentication (P90).
 - `crates/environments/` — environment provider presence, universe
-  environment instances, session binding, credential binding, and
-  environment-owned job DTOs, validation, errors, and store traits.
+  environment instances, session binding, credential binding, validation,
+  errors, and store traits. Provider job DTOs live in `host-protocol`; no
+  Lightspeed job registry is persisted.
 - `crates/eval/` — eval harness for agent/tool workflows.
 - `crates/llm-runtime/` — CoreAgent LLM runtime from planned requests to
   provider-native client calls.
@@ -175,6 +178,15 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
 - Treat hosted `session/runs/start` as an acceptance/start boundary, not a final-output
   boundary. Clients should follow `session/events/read` or refresh
   `session/read` for progress and completion.
+- Treat `session/managed/start` as a trusted creation boundary. Lifecycle
+  ownership and caller-declared workflow tools are immutable session metadata;
+  do not expose them through ordinary `session/start` or mutable session config.
+  Runtime-owned system bindings are separate add-only admissions and do not
+  assign lifecycle ownership.
+- Reuse the generic workflow-tool protocol for workflow integrations:
+  immutable bindings, emissions, keyed Promises, workflow starts, replies,
+  deadlines, and cancellation. Do not add feature-specific transports or
+  compile external plugin workflow types into the stable session worker.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry
@@ -187,7 +199,9 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
 
 ## Environment
 
-Local commands load a root `.env` file when present. The `.env` file usually exists in most develeopment environments, and various live commands can be run checking with the developer first.
+Local commands load a root `.env` file when present. The `.env` file usually
+exists in development environments; check with the developer before running
+live commands.
 
 | Variable | Purpose |
 |---|---|

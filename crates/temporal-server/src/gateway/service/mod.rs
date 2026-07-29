@@ -58,7 +58,9 @@ use skills::{
 };
 #[cfg(test)]
 use skills::{read_skill_doc_for_activation_from_vfs, skill_active_response, skill_list_response};
-use vfs_api::{commit_vfs_snapshot, now_ms, read_vfs_snapshot, vfs_workspace_view};
+use vfs_api::{
+    commit_vfs_snapshot, now_ms, read_vfs_snapshot, store_tool_documents, vfs_workspace_view,
+};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -80,20 +82,22 @@ use api_projection::{
     project_context_entry_inputs, read_all_session_entries, replay_core_agent_state,
 };
 use async_trait::async_trait;
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
-use messaging::{MessagingError, OutboundPayload, OutboxStore, ReadPendingOutbound};
-
 use auth::{
     AuthFlowStore, AuthGrantStore, AuthProviderStore, GitHubApiClient, HttpGitHubApiClient,
     HttpOAuthMetadataClient, HttpOAuthTokenClient, McpOAuthDriver, OAuthClientStore,
     OAuthFlowService, OAuthMetadataClient, OAuthTokenClient, SecretStore, StartAuthFlow,
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
     BlobRef, CompactionPolicy, ContextEntry, ContextEntryInput, ContextEntryKey, ContextEntryKind,
-    ContextMessageRole, CoreAgentCommand, CoreAgentStatus, ModelSelection, ProviderApiKind,
-    RunConfig, RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId,
-    SkillId, SubmissionId, ToolChoice, ToolName, skill_activation_context_key,
+    ContextMessageRole, CoreAgentCommand, CoreAgentStatus, FunctionToolSpec,
+    ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig, RunId, RunStatus,
+    SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
+    SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
+    ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, WorkflowEndpointRef,
+    WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
+    skill_activation_context_key,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
 use llm_clients::{anthropic::messages as anthropic, openai::responses as openai};
@@ -106,6 +110,8 @@ use temporalio_client::{
 };
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus;
 use tools::{
+    builtin::{BuiltinTool, BuiltinToolOperation},
+    environment::jobs::{JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID},
     fs::{FileSystem, FsPath, MountedVfsFileSystem},
     runtime::{ToolDocument, ToolTarget},
     skills::{
@@ -114,9 +120,15 @@ use tools::{
         skill_catalog_context_input,
     },
     targets::ToolTargets,
-    toolset::{ResolvedToolset, ToolsetConfig, ToolsetEnvironment, resolve_toolset},
+    toolset::{
+        ResolvedToolset, ToolsetConfig, ToolsetEnvironment, enable_concurrency_for_workflow_tools,
+        materialize_workflow_tools, resolve_toolset,
+    },
     web::fetch::WebFetchToolConfig,
     web::search::OpenAiResponsesWebSearchConfig,
+    workflow_tool::{
+        validate_workflow_tool_definition_documents, validate_workflow_tool_reply_schema,
+    },
 };
 use vfs::{
     CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountAccess,
@@ -144,6 +156,8 @@ const ACTIVATION_TEXT_MAX_BYTES: usize = 4096;
 const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
 /// Server-side cap for `session/list` page sizes; larger requests are clamped.
 const MAX_SESSION_LIST_LIMIT: usize = 200;
+/// Resource bound for the opaque managed-controller run terminal token.
+const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
 
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
@@ -158,6 +172,7 @@ fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummar
             engine::storage::SessionLifecycleStatus::Open => SessionLifecycleStatus::Open,
             engine::storage::SessionLifecycleStatus::Closed => SessionLifecycleStatus::Closed,
         },
+        managed: record.managed,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
     }
@@ -229,6 +244,7 @@ fn existing_run_submission(
     submission_id: &SubmissionId,
     source: &engine::RunRequestSource,
     run_config: &RunConfig,
+    notify_on_terminal: &[engine::RunTerminalNotifyIntent],
 ) -> Option<ExistingRunSubmission> {
     if let Some(active) = state
         .runs
@@ -240,6 +256,7 @@ fn existing_run_submission(
             if active.origin == engine::RunOrigin::Requested
                 && active.source.matches_request(source)
                 && &active.run_config == run_config
+                && active.notify_on_terminal == notify_on_terminal
             {
                 ExistingRunSubmission::ReturnRun {
                     run_id: active.run_id,
@@ -259,6 +276,7 @@ fn existing_run_submission(
         if queued.origin != engine::RunOrigin::Requested
             || !queued.source.matches_request(source)
             || &queued.run_config != run_config
+            || queued.notify_on_terminal != notify_on_terminal
         {
             return Some(ExistingRunSubmission::Reject);
         }
@@ -270,7 +288,7 @@ fn existing_run_submission(
         .iter()
         .find(|run| run.submission_id.as_ref() == Some(submission_id))
     {
-        let digest = engine::request_run_submission_digest(source, run_config);
+        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
         return Some(match completed.submission_digest {
             Some(existing) if existing != digest => ExistingRunSubmission::Reject,
             _ => ExistingRunSubmission::ReturnRun {
@@ -285,7 +303,7 @@ fn existing_run_submission(
         .iter()
         .find(|message| message.submission_id.as_ref() == Some(submission_id))
     {
-        let digest = engine::request_run_submission_digest(source, run_config);
+        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
         return Some(match message.submission_digest {
             existing if existing != digest => ExistingRunSubmission::Reject,
             _ => ExistingRunSubmission::Reject,
@@ -299,6 +317,7 @@ fn existing_admitted_run_submission(
     submission_id: &SubmissionId,
     source: &engine::RunRequestSource,
     run_config: &RunConfig,
+    notify_on_terminal: &[engine::RunTerminalNotifyIntent],
 ) -> Option<ExistingAdmittedRunSubmission> {
     if let Some(active) = state
         .runs
@@ -310,6 +329,7 @@ fn existing_admitted_run_submission(
             if active.origin == engine::RunOrigin::Requested
                 && active.source.matches_request(source)
                 && &active.run_config == run_config
+                && active.notify_on_terminal == notify_on_terminal
             {
                 ExistingAdmittedRunSubmission::ReturnRun {
                     run_id: active.run_id,
@@ -329,6 +349,7 @@ fn existing_admitted_run_submission(
             if queued.origin == engine::RunOrigin::Requested
                 && queued.source.matches_request(source)
                 && &queued.run_config == run_config
+                && queued.notify_on_terminal == notify_on_terminal
             {
                 ExistingAdmittedRunSubmission::ReturnRun {
                     run_id: queued.run_id,
@@ -344,7 +365,7 @@ fn existing_admitted_run_submission(
         .iter()
         .find(|run| run.submission_id.as_ref() == Some(submission_id))
     {
-        let digest = engine::request_run_submission_digest(source, run_config);
+        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
         return Some(match completed.submission_digest {
             Some(existing) if existing != digest => ExistingAdmittedRunSubmission::Reject,
             _ => ExistingAdmittedRunSubmission::ReturnRun {
@@ -358,7 +379,7 @@ fn existing_admitted_run_submission(
         .iter()
         .find(|message| message.submission_id.as_ref() == Some(submission_id))
     {
-        let digest = engine::request_run_submission_digest(source, run_config);
+        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
         return Some(match message.submission_digest {
             existing if existing != digest => ExistingAdmittedRunSubmission::Reject,
             _ => ExistingAdmittedRunSubmission::Reject,
@@ -872,7 +893,7 @@ impl GatewayAgentApi {
         &self,
         session_config: &SessionConfig,
         include_process_tools: bool,
-        include_job_tools: bool,
+        include_job_read_tool: bool,
     ) -> ToolsetConfig {
         let features = &session_config.features;
         let mut config = ToolsetConfig::empty();
@@ -894,9 +915,6 @@ impl GatewayAgentApi {
                 config.web_fetch = WebFetchToolConfig::enabled();
             }
         }
-        if features.messaging.is_some() {
-            config.messaging = tools::messaging::MessagingToolsetConfig::enabled();
-        }
         if features.fleet.is_some() {
             config.fleet = tools::fleet::FleetToolsetConfig::enabled();
         }
@@ -909,8 +927,8 @@ impl GatewayAgentApi {
         if include_process_tools {
             config.builtin.process = tools::toolset::EnvironmentToolsetConfig::basic();
         }
-        if include_job_tools {
-            config.builtin.process = config.builtin.process.with_jobs();
+        if include_job_read_tool {
+            config.builtin.process.job_read = true;
         }
         config
     }
@@ -920,6 +938,7 @@ impl GatewayAgentApi {
         session_id: SessionId,
         display_name: Option<String>,
         session_config: SessionConfig,
+        workflow_tools: Option<ManagedSessionWorkflowTools>,
         close_on_terminal: bool,
     ) -> AgentSessionArgs {
         AgentSessionArgs {
@@ -927,6 +946,7 @@ impl GatewayAgentApi {
             session_id,
             display_name,
             session_config,
+            workflow_tools,
             max_steps_per_input: self.max_steps_per_input,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             close_on_terminal,
@@ -939,6 +959,11 @@ impl GatewayAgentApi {
         close_on_terminal: bool,
         profile: Option<ProfileSource>,
     ) -> Result<(), AgentApiError> {
+        let workflow_tools = match self.load_session_state(session_id).await {
+            Ok(loaded) => managed_workflow_tools_from_state(&loaded.state)?,
+            Err(error) if is_not_found(&error) => None,
+            Err(error) => return Err(error),
+        };
         self.start_session_internal(
             SessionStartParams {
                 session_id: Some(session_id.as_str().to_owned()),
@@ -947,6 +972,30 @@ impl GatewayAgentApi {
                 profile,
             },
             close_on_terminal,
+            workflow_tools,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Trusted in-process workflow-plugin entry point. The main API exposes
+    /// the same immutable target and completion vocabulary through wire DTOs.
+    pub async fn start_managed_session_for_workflow_with_profile(
+        &self,
+        session_id: &SessionId,
+        close_on_terminal: bool,
+        profile: Option<ProfileSource>,
+        workflow_tools: ManagedSessionWorkflowTools,
+    ) -> Result<(), AgentApiError> {
+        self.start_session_internal(
+            SessionStartParams {
+                session_id: Some(session_id.as_str().to_owned()),
+                display_name: None,
+                config: None,
+                profile,
+            },
+            close_on_terminal,
+            Some(workflow_tools),
         )
         .await?;
         Ok(())
@@ -965,9 +1014,13 @@ impl GatewayAgentApi {
         let run_config = self.run_config_for_start(session_id, None).await?;
         let input = run_input_from_api(self.store.as_ref(), &input).await?;
         let source = engine::RunRequestSource::Input { input };
-        if let Some(existing) =
-            existing_admitted_run_submission(&loaded.state, &submission_id, &source, &run_config)
-        {
+        if let Some(existing) = existing_admitted_run_submission(
+            &loaded.state,
+            &submission_id,
+            &source,
+            &run_config,
+            &notify_on_terminal,
+        ) {
             return match existing {
                 ExistingAdmittedRunSubmission::ReturnRun { run_id } => {
                     Ok(format!("run_{}", run_id.as_u64()))
@@ -1038,7 +1091,8 @@ impl GatewayAgentApi {
 
     /// Fleet-internal run start: identical to the public `session/runs/start`
     /// boundary except that the admitted `RunRequestCommand` carries the
-    /// spawn's cross-session notify-intents. The public API stays intent-free.
+    /// spawn's cross-session notify-intents. Public callers can request only
+    /// the single destination derived from the durable lifecycle controller.
     pub(crate) async fn start_run_for_fleet(
         &self,
         session_id: &SessionId,
@@ -1053,6 +1107,7 @@ impl GatewayAgentApi {
                     source: RunStartSource::Input { items: input },
                     submission_id: Some(submission_id.as_str().to_owned()),
                     config: None,
+                    notify_on_terminal: None,
                 },
                 notify_on_terminal,
             )
@@ -1063,25 +1118,35 @@ impl GatewayAgentApi {
     async fn start_run_internal(
         &self,
         params: RunStartParams,
-        notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
+        internal_notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
     ) -> Result<AgentApiOutcome<RunStartResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+        let RunStartParams {
+            session_id,
+            source,
+            submission_id,
+            config,
+            notify_on_terminal,
+        } = params;
+        let session_id = SessionId::try_new(session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;
         let loaded = self
             .load_session_state_with_current_run_context(&session_id)
             .await?;
-        let client_supplied_submission_id = params.submission_id.is_some();
-        let submission_id = match params.submission_id {
+        let notify_on_terminal = run_terminal_notify_intents(
+            loaded.state.workflow_tools.lifecycle_controller.as_ref(),
+            notify_on_terminal,
+            internal_notify_on_terminal,
+        )?;
+        let client_supplied_submission_id = submission_id.is_some();
+        let submission_id = match submission_id {
             Some(submission_id) => SubmissionId::try_new(submission_id).map_err(|error| {
                 AgentApiError::invalid_request(format!("invalid submission id: {error}"))
             })?,
             None => self.allocate_submission_id(),
         };
-        let run_config = self
-            .run_config_for_start(&session_id, params.config)
-            .await?;
-        let source = match params.source {
+        let run_config = self.run_config_for_start(&session_id, config).await?;
+        let source = match source {
             RunStartSource::Input { items } => engine::RunRequestSource::Input {
                 input: run_input_from_api(self.store.as_ref(), &items).await?,
             },
@@ -1107,9 +1172,13 @@ impl GatewayAgentApi {
                 engine::RunRequestSource::Context { keys: parsed }
             }
         };
-        if let Some(existing) =
-            existing_run_submission(&loaded.state, &submission_id, &source, &run_config)
-        {
+        if let Some(existing) = existing_run_submission(
+            &loaded.state,
+            &submission_id,
+            &source,
+            &run_config,
+            &notify_on_terminal,
+        ) {
             return match existing {
                 ExistingRunSubmission::ReturnRun { run_id, status } => {
                     let run = self.project_run_by_id(&session_id, run_id, status).await?;
@@ -1155,6 +1224,7 @@ impl GatewayAgentApi {
         &self,
         params: SessionStartParams,
         close_on_terminal: bool,
+        trusted_workflow_tools: Option<ManagedSessionWorkflowTools>,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
         let SessionStartParams {
             session_id,
@@ -1162,6 +1232,7 @@ impl GatewayAgentApi {
             config,
             profile,
         } = params;
+        let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
             Some(session_id) => SessionId::try_new(session_id).map_err(|error| {
@@ -1169,13 +1240,31 @@ impl GatewayAgentApi {
             })?,
             None => self.allocate_session_id(),
         };
+        if let Some(workflow_tools) = workflow_tools.as_ref() {
+            self.validate_managed_session_declaration(workflow_tools)?;
+        }
         if client_supplied_id {
             match self.load_session_state(&session_id).await {
                 Ok(loaded) if loaded.state.lifecycle.status == CoreAgentStatus::Closed => {
+                    if let Some(workflow_tools) = workflow_tools.as_ref() {
+                        validate_managed_session_retry(
+                            &loaded.state,
+                            self.universe_id(),
+                            workflow_tools,
+                        )?;
+                    }
                     let session = self.project_session_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
                 }
-                Ok(_) => {}
+                Ok(loaded) => {
+                    if let Some(workflow_tools) = workflow_tools.as_ref() {
+                        validate_managed_session_retry(
+                            &loaded.state,
+                            self.universe_id(),
+                            workflow_tools,
+                        )?;
+                    }
+                }
                 Err(error) if is_not_found(&error) => {}
                 Err(error) => return Err(error),
             }
@@ -1191,6 +1280,10 @@ impl GatewayAgentApi {
             config,
         );
         let session_config = self.session_config_for_start(start_config).await?;
+        if let Some(workflow_tools) = workflow_tools.as_ref() {
+            self.validate_managed_session_materialization(&session_config, workflow_tools)
+                .await?;
+        }
         let started = self
             .client
             .start_workflow(
@@ -1199,6 +1292,7 @@ impl GatewayAgentApi {
                     session_id.clone(),
                     display_name,
                     session_config,
+                    workflow_tools.clone(),
                     close_on_terminal,
                 ),
                 WorkflowStartOptions::new(
@@ -1215,6 +1309,13 @@ impl GatewayAgentApi {
                 if matches!(error.kind, AgentApiErrorKind::Conflict) && client_supplied_id =>
             {
                 let loaded = self.load_session_state(&session_id).await?;
+                if let Some(workflow_tools) = workflow_tools.as_ref() {
+                    validate_managed_session_retry(
+                        &loaded.state,
+                        self.universe_id(),
+                        workflow_tools,
+                    )?;
+                }
                 if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
                     let session = self.project_session_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
@@ -1226,6 +1327,9 @@ impl GatewayAgentApi {
         }
         self.wait_for_open_session(&session_id).await?;
         let loaded = self.load_session_state(&session_id).await?;
+        if let Some(workflow_tools) = workflow_tools.as_ref() {
+            validate_managed_session_retry(&loaded.state, self.universe_id(), workflow_tools)?;
+        }
         let _ = self.configure_session_toolset(&session_id, &loaded).await?;
         if let Some(profile) = resolved_profile {
             self.apply_profile_document(&session_id, &profile.document, false, None, None)
@@ -1235,6 +1339,245 @@ impl GatewayAgentApi {
             .await?;
         let session = self.project_session_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionStartResponse { session }))
+    }
+
+    async fn core_environment_job_workflow_tool_declaration(
+        &self,
+    ) -> Result<WorkflowToolDeclaration, AgentApiError> {
+        let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
+        let bundle = BuiltinTool::canonical(BuiltinToolOperation::JobStart)
+            .spec_bundle(&target, false)
+            .map_err(|error| {
+                AgentApiError::internal(format!("build core job_start tool: {error}"))
+            })?;
+        store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
+        let mut tool = bundle.spec;
+        tool.target_requirement = engine::ToolTargetRequirement::None;
+
+        let recipe_bytes = serde_json::to_vec(&temporal_workflow::WorkflowToolRecipeV1 {
+            workflow_type: "EnvironmentJobWorkflow".to_owned(),
+            task_queue: self.task_queue.clone(),
+        })
+        .map_err(|error| {
+            AgentApiError::internal(format!("encode core job_start workflow recipe: {error}"))
+        })?;
+        let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe_bytes);
+        let recipe_ref = self
+            .store
+            .put_bytes(recipe_bytes)
+            .await
+            .map_err(map_blob_store_error)?;
+        Ok(WorkflowToolDeclaration::new(
+            WorkflowToolDefinition {
+                tool_id: WorkflowToolId::new(JOB_START_WORKFLOW_TOOL_ID),
+                revision: 1,
+                semantic_type: JOB_START_WORKFLOW_SEMANTIC_TYPE.to_owned(),
+                tool,
+            },
+            WorkflowToolTarget::Start {
+                start: WorkflowStartRef {
+                    recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                    revision: 1,
+                    recipe_ref,
+                    recipe_fingerprint,
+                },
+            },
+            WorkflowToolCompletion::Promises {
+                reply_schema_ref: None,
+                deadline_after_ms: None,
+                max_promises: engine::MAX_COMPLETION_PROMISES,
+                key_source: WorkflowToolCompletionKeySource::ArrayIndices {
+                    pointer: "/jobs".to_owned(),
+                    prefix: "job-".to_owned(),
+                },
+            },
+        ))
+    }
+
+    async fn ensure_core_environment_job_workflow_tool(
+        &self,
+        session_id: &SessionId,
+        state: &engine::CoreAgentState,
+    ) -> Result<(), AgentApiError> {
+        if state
+            .workflow_tools
+            .bindings
+            .values()
+            .any(is_core_environment_job_start_binding)
+        {
+            return Ok(());
+        }
+        let baseline_failures = self
+            .query_status_optional(session_id)
+            .await?
+            .map(|status| status.admission_failures.len())
+            .unwrap_or(0);
+        let declaration = self
+            .core_environment_job_workflow_tool_declaration()
+            .await?;
+        self.submit_core_command(
+            session_id,
+            CoreAgentCommand::AdmitSystemWorkflowTool {
+                session_universe_id: self.universe_id(),
+                declaration,
+            },
+        )
+        .await?;
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for core job_start workflow tool admission: {session_id}"
+                )));
+            }
+            if let Some(status) = self.query_status_optional(session_id).await? {
+                if status.admission_failures.len() > baseline_failures {
+                    if let Some(failure) = status.admission_failures.last() {
+                        return Err(map_admission_failure_to_api_error(failure));
+                    }
+                }
+                if let Some(error) = status.last_error {
+                    return Err(AgentApiError::internal(format!(
+                        "agent workflow reported error: {error}"
+                    )));
+                }
+            }
+            let loaded = self.load_session_state(session_id).await?;
+            if loaded
+                .state
+                .workflow_tools
+                .bindings
+                .values()
+                .any(is_core_environment_job_start_binding)
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
+    fn validate_managed_session_declaration(
+        &self,
+        workflow_tools: &ManagedSessionWorkflowTools,
+    ) -> Result<(), AgentApiError> {
+        workflow_tools.admit(self.universe_id()).map_err(|error| {
+            AgentApiError::invalid_request(format!(
+                "invalid managed-session workflow-tool declaration: {error}"
+            ))
+        })?;
+        Ok(())
+    }
+
+    async fn validate_managed_session_materialization(
+        &self,
+        session_config: &SessionConfig,
+        workflow_tools: &ManagedSessionWorkflowTools,
+    ) -> Result<(), AgentApiError> {
+        let admitted = workflow_tools.admit(self.universe_id()).map_err(|error| {
+            AgentApiError::invalid_request(format!(
+                "invalid managed-session workflow-tool declaration: {error}"
+            ))
+        })?;
+        for binding in &admitted.bindings {
+            validate_workflow_tool_definition_documents(self.store.as_ref(), &binding.definition)
+                .await
+                .map_err(|error| {
+                    AgentApiError::invalid_request(format!(
+                        "invalid workflow tool {} documents: {error}",
+                        binding.definition.tool_id
+                    ))
+                })?;
+            if let WorkflowToolCompletion::Promises {
+                reply_schema_ref: Some(reply_schema_ref),
+                ..
+            } = &binding.completion
+            {
+                validate_workflow_tool_reply_schema(self.store.as_ref(), reply_schema_ref)
+                    .await
+                    .map_err(|error| {
+                        AgentApiError::invalid_request(format!(
+                            "invalid workflow tool {} reply schema: {error}",
+                            binding.definition.tool_id
+                        ))
+                    })?;
+            }
+            if let WorkflowToolTarget::Start { start } = &binding.target {
+                self.validate_workflow_tool_start_recipe(&binding.definition.tool_id, start)
+                    .await?;
+            }
+        }
+
+        let materialized_bindings = admitted
+            .bindings
+            .iter()
+            .filter(|binding| !is_core_environment_job_start_binding(binding))
+            .collect::<Vec<_>>();
+
+        let target = ToolTarget::from(&session_config.model);
+        let mut config = self.session_toolset_config(session_config, false, false);
+        enable_concurrency_for_workflow_tools(&mut config, materialized_bindings.iter().copied());
+        let mut toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!("build session tools: {error}"))
+            })?;
+        materialize_workflow_tools(&mut toolset, materialized_bindings.iter().copied()).map_err(
+            |error| {
+                AgentApiError::invalid_request(format!("materialize workflow tool tools: {error}"))
+            },
+        )?;
+        let desired_mcp = self.desired_mcp_tools(&session_config.features).await?;
+        if let Some(colliding) = materialized_bindings
+            .iter()
+            .copied()
+            .map(|binding| &binding.definition.tool.name)
+            .find(|tool_name| desired_mcp.contains_key(*tool_name))
+        {
+            return Err(AgentApiError::invalid_request(format!(
+                "workflow tool tool name {colliding} collides with a remote MCP tool"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn validate_workflow_tool_start_recipe(
+        &self,
+        tool_id: &WorkflowToolId,
+        start: &WorkflowStartRef,
+    ) -> Result<(), AgentApiError> {
+        let recipe_bytes = self
+            .store
+            .read_bytes(&start.recipe_ref)
+            .await
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!(
+                    "invalid workflow tool {tool_id} start recipe: {error}"
+                ))
+            })?;
+        let observed = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe_bytes);
+        if observed != start.recipe_fingerprint {
+            return Err(AgentApiError::invalid_request(format!(
+                "invalid workflow tool {tool_id} start recipe fingerprint: admitted {} observed {observed}",
+                start.recipe_fingerprint
+            )));
+        }
+        if start.recipe_format != temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1 {
+            return Err(AgentApiError::invalid_request(format!(
+                "invalid workflow tool {tool_id} start recipe format {}",
+                start.recipe_format
+            )));
+        }
+        let recipe: temporal_workflow::WorkflowToolRecipeV1 = serde_json::from_slice(&recipe_bytes)
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!(
+                    "invalid workflow tool {tool_id} start recipe v1: {error}"
+                ))
+            })?;
+        if recipe.workflow_type.is_empty() || recipe.task_queue.is_empty() {
+            return Err(AgentApiError::invalid_request(format!(
+                "invalid workflow tool {tool_id} start recipe v1: workflowType and taskQueue are required"
+            )));
+        }
+        Ok(())
     }
 
     fn projector(&self) -> CoreAgentProjector<'_> {
@@ -1319,6 +1662,280 @@ pub(super) struct LoadedSession {
     pub(super) state: engine::CoreAgentState,
 }
 
+fn managed_workflow_tools_from_api(
+    input: ManagedSessionWorkflowToolsInput,
+) -> Result<ManagedSessionWorkflowTools, AgentApiError> {
+    if input.lifecycle_controller.is_none() && input.tools.is_empty() {
+        return Err(AgentApiError::invalid_request(
+            "managed session requires a lifecycle controller or at least one workflow tool",
+        ));
+    }
+    let lifecycle_controller = input.lifecycle_controller.map(workflow_endpoint_from_api);
+    let tools = input
+        .tools
+        .into_iter()
+        .map(|declaration| {
+            let tool_id =
+                WorkflowToolId::try_new(declaration.definition.tool_id).map_err(|error| {
+                    AgentApiError::invalid_request(format!("invalid workflow tool id: {error}"))
+                })?;
+            if tool_id.as_str() == JOB_START_WORKFLOW_TOOL_ID {
+                return Err(AgentApiError::invalid_request(format!(
+                    "workflow tool id {tool_id} is reserved"
+                )));
+            }
+            let tool_name =
+                ToolName::try_new(declaration.definition.tool.name).map_err(|error| {
+                    AgentApiError::invalid_request(format!(
+                        "invalid workflow tool {tool_id} name: {error}"
+                    ))
+                })?;
+            let parallelism = match declaration.definition.tool.parallelism {
+                ToolParallelismView::Exclusive => ToolParallelism::Exclusive,
+                ToolParallelismView::ParallelSafe => ToolParallelism::ParallelSafe,
+            };
+            let kind = match declaration.definition.tool.kind {
+                WorkflowToolKindInput::Function {
+                    description_ref,
+                    input_schema_ref,
+                    output_schema_ref,
+                    strict,
+                    provider_options_ref,
+                } => ToolKind::Function(FunctionToolSpec {
+                    description_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "descriptionRef",
+                        description_ref,
+                    )?,
+                    input_schema_ref: parse_required_workflow_tool_blob_ref(
+                        &tool_id,
+                        "inputSchemaRef",
+                        input_schema_ref,
+                    )?,
+                    output_schema_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "outputSchemaRef",
+                        output_schema_ref,
+                    )?,
+                    strict,
+                    provider_options_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "providerOptionsRef",
+                        provider_options_ref,
+                    )?,
+                }),
+            };
+            let target = match declaration.target {
+                WorkflowToolTargetInput::Bound { receiver } => WorkflowToolTarget::Bound {
+                    receiver: workflow_endpoint_from_api(receiver),
+                },
+                WorkflowToolTargetInput::Start { start } => WorkflowToolTarget::Start {
+                    start: WorkflowStartRef {
+                        recipe_format: start.recipe_format,
+                        revision: start.revision,
+                        recipe_ref: parse_required_workflow_tool_blob_ref(
+                            &tool_id,
+                            "target.start.recipeRef",
+                            start.recipe_ref,
+                        )?,
+                        recipe_fingerprint: start.recipe_fingerprint,
+                    },
+                },
+            };
+            let completion = match declaration.completion {
+                WorkflowToolCompletionInput::Accepted => WorkflowToolCompletion::Accepted,
+                WorkflowToolCompletionInput::Promises {
+                    reply_schema_ref,
+                    deadline_after_ms,
+                    max_promises,
+                    key_source,
+                } => WorkflowToolCompletion::Promises {
+                    reply_schema_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "completion.replySchemaRef",
+                        reply_schema_ref,
+                    )?,
+                    deadline_after_ms,
+                    max_promises,
+                    key_source: match key_source {
+                        WorkflowToolCompletionKeySourceInput::Reply => {
+                            WorkflowToolCompletionKeySource::Reply
+                        }
+                        WorkflowToolCompletionKeySourceInput::StringArray { pointer } => {
+                            WorkflowToolCompletionKeySource::StringArray { pointer }
+                        }
+                        WorkflowToolCompletionKeySourceInput::ArrayIndices { pointer, prefix } => {
+                            WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix }
+                        }
+                    },
+                },
+            };
+            Ok(WorkflowToolDeclaration::new(
+                WorkflowToolDefinition {
+                    tool_id,
+                    revision: declaration.definition.revision,
+                    semantic_type: declaration.definition.semantic_type,
+                    tool: ToolSpec {
+                        name: tool_name,
+                        kind,
+                        parallelism,
+                        target_requirement: ToolTargetRequirement::None,
+                    },
+                },
+                target,
+                completion,
+            ))
+        })
+        .collect::<Result<Vec<_>, AgentApiError>>()?;
+    Ok(ManagedSessionWorkflowTools {
+        version: input.version,
+        lifecycle_controller,
+        tools,
+    })
+}
+
+fn workflow_endpoint_from_api(input: WorkflowEndpointInput) -> WorkflowEndpointRef {
+    WorkflowEndpointRef {
+        workflow_id: input.workflow_id,
+        workflow_kind: input.workflow_kind,
+    }
+}
+
+fn parse_required_workflow_tool_blob_ref(
+    tool_id: &WorkflowToolId,
+    field: &str,
+    value: String,
+) -> Result<BlobRef, AgentApiError> {
+    BlobRef::parse(value).map_err(|error| {
+        AgentApiError::invalid_request(format!("invalid workflow tool {tool_id} {field}: {error}"))
+    })
+}
+
+fn parse_workflow_tool_blob_ref(
+    tool_id: &WorkflowToolId,
+    field: &str,
+    value: Option<String>,
+) -> Result<Option<BlobRef>, AgentApiError> {
+    value
+        .map(|value| parse_required_workflow_tool_blob_ref(tool_id, field, value))
+        .transpose()
+}
+
+fn run_terminal_notify_intents(
+    lifecycle_controller: Option<&WorkflowEndpointRef>,
+    notification: Option<RunTerminalNotificationInput>,
+    internal: Vec<engine::RunTerminalNotifyIntent>,
+) -> Result<Vec<engine::RunTerminalNotifyIntent>, AgentApiError> {
+    let Some(notification) = notification else {
+        return Ok(internal);
+    };
+    if !internal.is_empty() {
+        return Err(AgentApiError::invalid_request(
+            "run terminal notification cannot be combined with internal notify intents",
+        ));
+    }
+    let controller = lifecycle_controller.ok_or_else(|| {
+        AgentApiError::invalid_request(
+            "notifyOnTerminal requires a managed session lifecycle controller",
+        )
+    })?;
+    if notification.token.is_empty() {
+        return Err(AgentApiError::invalid_request(
+            "notifyOnTerminal token must not be empty",
+        ));
+    }
+    if notification.token.len() > MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES {
+        return Err(AgentApiError::invalid_request(format!(
+            "notifyOnTerminal token is too long: {} bytes, max {}",
+            notification.token.len(),
+            MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES
+        )));
+    }
+    Ok(vec![engine::RunTerminalNotifyIntent {
+        holder_workflow_id: controller.workflow_id.clone(),
+        token: notification.token,
+    }])
+}
+
+fn validate_managed_session_retry(
+    state: &engine::CoreAgentState,
+    session_universe_id: uuid::Uuid,
+    workflow_tools: &ManagedSessionWorkflowTools,
+) -> Result<(), AgentApiError> {
+    let expected = workflow_tools
+        .creation_fingerprint(session_universe_id)
+        .map_err(|error| {
+            AgentApiError::invalid_request(format!(
+                "invalid managed-session workflow-tool declaration: {error}"
+            ))
+        })?;
+    match (
+        state.workflow_tools.session_universe_id,
+        state.workflow_tools.managed_creation_fingerprint.as_deref(),
+    ) {
+        (Some(actual_universe), Some(actual))
+            if actual_universe == session_universe_id && actual == expected =>
+        {
+            Ok(())
+        }
+        (Some(_), Some(_)) => Err(AgentApiError::conflict(
+            "managed-session controller, receiver, or tool declaration conflicts with durable creation state",
+        )),
+        _ => Err(AgentApiError::conflict(
+            "existing standalone session cannot be reopened as a managed session",
+        )),
+    }
+}
+
+fn managed_workflow_tools_from_state(
+    state: &engine::CoreAgentState,
+) -> Result<Option<ManagedSessionWorkflowTools>, AgentApiError> {
+    let Some(version) = state.workflow_tools.managed_declaration_version else {
+        let has_non_system_bindings = state
+            .workflow_tools
+            .bindings
+            .keys()
+            .any(|tool_id| !state.workflow_tools.system_binding_ids.contains(tool_id));
+        if state.workflow_tools.session_universe_id.is_none()
+            && state.workflow_tools.managed_creation_fingerprint.is_none()
+            && state.workflow_tools.lifecycle_controller.is_none()
+            && !has_non_system_bindings
+        {
+            return Ok(None);
+        }
+        return Err(AgentApiError::internal(
+            "session has incomplete managed workflow-tool creation state",
+        ));
+    };
+    if state.workflow_tools.session_universe_id.is_none()
+        || state.workflow_tools.managed_creation_fingerprint.is_none()
+    {
+        return Err(AgentApiError::internal(
+            "session has incomplete managed workflow-tool creation state",
+        ));
+    }
+    Ok(Some(ManagedSessionWorkflowTools {
+        version,
+        lifecycle_controller: state.workflow_tools.lifecycle_controller.clone(),
+        tools: state
+            .workflow_tools
+            .bindings
+            .iter()
+            .filter(|(tool_id, _)| !state.workflow_tools.system_binding_ids.contains(*tool_id))
+            .map(|(_, binding)| binding)
+            .map(|binding| WorkflowToolDeclaration {
+                definition: binding.definition.clone(),
+                target: binding.target.clone(),
+                completion: binding.completion.clone(),
+            })
+            .collect(),
+    }))
+}
+
+fn is_core_environment_job_start_binding(binding: &engine::WorkflowToolBinding) -> bool {
+    binding.definition.tool_id.as_str() == JOB_START_WORKFLOW_TOOL_ID
+}
+
 #[async_trait]
 impl AgentApiService for GatewayAgentApi {
     async fn list_models(
@@ -1361,7 +1978,32 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: SessionStartParams,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
-        self.start_session_internal(params, false).await
+        self.start_session_internal(params, false, None).await
+    }
+
+    async fn start_managed_session(
+        &self,
+        params: ManagedSessionStartParams,
+    ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
+        let ManagedSessionStartParams {
+            session_id,
+            display_name,
+            config,
+            profile,
+            workflow_tools,
+        } = params;
+        let workflow_tools = managed_workflow_tools_from_api(workflow_tools)?;
+        self.start_session_internal(
+            SessionStartParams {
+                session_id,
+                display_name,
+                config,
+                profile,
+            },
+            false,
+            Some(workflow_tools),
+        )
+        .await
     }
 
     async fn create_profile(
@@ -2029,66 +2671,6 @@ impl AgentApiService for GatewayAgentApi {
         }))
     }
 
-    async fn read_outbox(
-        &self,
-        params: OutboxReadParams,
-    ) -> Result<AgentApiOutcome<OutboxReadResponse>, AgentApiError> {
-        let after = params.after.unwrap_or(0);
-        let limit = params.limit.unwrap_or(64).clamp(1, 256) as usize;
-        let wait =
-            Duration::from_millis(u64::from(params.wait_ms.unwrap_or(0))).min(self.events_wait_cap);
-        let deadline = Instant::now() + wait;
-        loop {
-            let entries = OutboxStore::read_pending(
-                self.store.as_ref(),
-                ReadPendingOutbound {
-                    after_seq: after,
-                    limit,
-                },
-            )
-            .await
-            .map_err(map_messaging_error)?;
-            if !entries.is_empty() || Instant::now() >= deadline {
-                let next_after = entries.last().map(|entry| entry.seq).unwrap_or(after);
-                let entries = entries
-                    .into_iter()
-                    .map(outbound_message_view)
-                    .collect::<Vec<_>>();
-                return Ok(AgentApiOutcome::new(OutboxReadResponse {
-                    entries,
-                    next_after,
-                }));
-            }
-            tokio::time::sleep(self.poll_interval.min(Duration::from_millis(250))).await;
-        }
-    }
-
-    async fn ack_outbox(
-        &self,
-        params: OutboxAckParams,
-    ) -> Result<AgentApiOutcome<OutboxAckResponse>, AgentApiError> {
-        let ack = match params.result {
-            OutboundAckInput::Delivered { channel_message_id } => {
-                messaging::OutboundAck::Delivered { channel_message_id }
-            }
-            OutboundAckInput::Failed { error, retryable } => {
-                messaging::OutboundAck::Failed { error, retryable }
-            }
-        };
-        let updated = OutboxStore::ack(self.store.as_ref(), &params.outbox_id, ack)
-            .await
-            .map_err(map_messaging_error)?;
-        Ok(AgentApiOutcome::new(OutboxAckResponse {
-            outbox_id: updated.outbox_id,
-            status: match updated.status {
-                messaging::OutboundStatus::Pending => OutboundStatusView::Pending,
-                messaging::OutboundStatus::Delivered => OutboundStatusView::Delivered,
-                messaging::OutboundStatus::Failed => OutboundStatusView::Failed,
-            },
-            attempts: updated.attempts,
-        }))
-    }
-
     async fn start_run(
         &self,
         params: RunStartParams,
@@ -2537,15 +3119,6 @@ impl AgentApiService for GatewayAgentApi {
         params: EnvironmentJobReadParams,
     ) -> Result<AgentApiOutcome<EnvironmentJobReadResponse>, AgentApiError> {
         self.read_environment_job_records(params)
-            .await
-            .map(AgentApiOutcome::new)
-    }
-
-    async fn list_environment_jobs(
-        &self,
-        params: EnvironmentJobListParams,
-    ) -> Result<AgentApiOutcome<EnvironmentJobListResponse>, AgentApiError> {
-        self.list_environment_job_records(params)
             .await
             .map(AgentApiOutcome::new)
     }
@@ -3263,43 +3836,4 @@ mod tests;
 /// the multi-universe HTTP edge serves it without resolving a universe.
 pub(crate) fn cimd_document_for(public_base_url: &str) -> serde_json::Value {
     oauth_api::cimd_document(public_base_url)
-}
-
-pub(crate) fn outbound_message_view(message: messaging::OutboundMessage) -> OutboundMessageView {
-    OutboundMessageView {
-        seq: message.seq,
-        outbox_id: message.outbox_id,
-        session_id: message.session_id.as_str().to_owned(),
-        run_id: message.run_id.map(api_run_id),
-        origin: match message.origin {
-            messaging::OutboundOrigin::ToolCall => OutboundOriginView::ToolCall,
-            messaging::OutboundOrigin::FinalText => OutboundOriginView::FinalText,
-            messaging::OutboundOrigin::Trigger => OutboundOriginView::Trigger,
-        },
-        payload: match message.payload {
-            OutboundPayload::Send { text, reply_to } => {
-                OutboundPayloadView::Send { text, reply_to }
-            }
-            OutboundPayload::React { message_id, emoji } => {
-                OutboundPayloadView::React { message_id, emoji }
-            }
-            OutboundPayload::Edit { message_id, text } => {
-                OutboundPayloadView::Edit { message_id, text }
-            }
-        },
-        attempts: message.attempts,
-        created_at_ms: message.created_at_ms,
-    }
-}
-
-pub(crate) fn map_messaging_error(error: MessagingError) -> AgentApiError {
-    match error {
-        MessagingError::NotFound { outbox_id } => {
-            AgentApiError::not_found(format!("outbox message not found: {outbox_id}"))
-        }
-        MessagingError::InvalidInput { message } | MessagingError::RateLimited { message } => {
-            AgentApiError::invalid_request(message)
-        }
-        MessagingError::Store { message } => AgentApiError::internal(message),
-    }
 }

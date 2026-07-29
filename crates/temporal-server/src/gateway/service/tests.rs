@@ -45,6 +45,292 @@ fn admission_failure_mapping_uses_gateway_error_kinds() {
 }
 
 #[test]
+fn managed_session_retry_requires_the_durable_creation_fingerprint() {
+    let universe_id = uuid::Uuid::from_u128(1);
+    let declaration = engine::ManagedSessionWorkflowTools::v1(
+        Some(engine::WorkflowEndpointRef {
+            workflow_id: "global controller/work-1".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        }),
+        Vec::new(),
+    );
+    let mut state = engine::CoreAgentState::new();
+    state.workflow_tools.session_universe_id = Some(universe_id);
+    state.workflow_tools.managed_creation_fingerprint = Some(
+        declaration
+            .creation_fingerprint(universe_id)
+            .expect("creation fingerprint"),
+    );
+    validate_managed_session_retry(&state, universe_id, &declaration).expect("matching retry");
+
+    let conflicting = engine::ManagedSessionWorkflowTools::v1(
+        Some(engine::WorkflowEndpointRef {
+            workflow_id: "another controller".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        }),
+        Vec::new(),
+    );
+    assert_eq!(
+        validate_managed_session_retry(&state, universe_id, &conflicting)
+            .expect_err("conflicting retry")
+            .kind,
+        AgentApiErrorKind::Conflict
+    );
+    assert_eq!(
+        validate_managed_session_retry(&engine::CoreAgentState::new(), universe_id, &declaration,)
+            .expect_err("standalone session cannot become managed")
+            .kind,
+        AgentApiErrorKind::Conflict
+    );
+}
+
+#[test]
+fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
+    let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let reply_schema_ref = BlobRef::from_bytes(br#"{"type":"string"}"#);
+    let declaration = managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+        version: 1,
+        lifecycle_controller: Some(WorkflowEndpointInput {
+            workflow_id: "controller-1".to_owned(),
+            workflow_kind: "order.workflow".to_owned(),
+        }),
+        tools: vec![WorkflowToolDeclarationInput {
+            definition: WorkflowToolDefinitionInput {
+                tool_id: "accept-order".to_owned(),
+                revision: 2,
+                semantic_type: "orders.accepted.v1".to_owned(),
+                tool: WorkflowToolSpecInput {
+                    name: "accept_order".to_owned(),
+                    kind: WorkflowToolKindInput::Function {
+                        description_ref: None,
+                        input_schema_ref: input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    },
+                    parallelism: ToolParallelismView::ParallelSafe,
+                },
+            },
+            target: WorkflowToolTargetInput::Bound {
+                receiver: WorkflowEndpointInput {
+                    workflow_id: "receiver-1".to_owned(),
+                    workflow_kind: "order.receiver".to_owned(),
+                },
+            },
+            completion: WorkflowToolCompletionInput::Promises {
+                reply_schema_ref: Some(reply_schema_ref.as_str().to_owned()),
+                deadline_after_ms: Some(30_000),
+                max_promises: 4,
+                key_source: WorkflowToolCompletionKeySourceInput::ArrayIndices {
+                    pointer: "/orders".to_owned(),
+                    prefix: "order-".to_owned(),
+                },
+            },
+        }],
+    })
+    .expect("map managed workflow tools");
+
+    assert_eq!(
+        declaration.lifecycle_controller,
+        Some(WorkflowEndpointRef {
+            workflow_id: "controller-1".to_owned(),
+            workflow_kind: "order.workflow".to_owned(),
+        })
+    );
+    let tool = &declaration.tools[0];
+    assert_eq!(
+        tool.completion,
+        WorkflowToolCompletion::Promises {
+            reply_schema_ref: Some(reply_schema_ref),
+            deadline_after_ms: Some(30_000),
+            max_promises: 4,
+            key_source: WorkflowToolCompletionKeySource::ArrayIndices {
+                pointer: "/orders".to_owned(),
+                prefix: "order-".to_owned(),
+            },
+        }
+    );
+    assert_eq!(
+        tool.target,
+        WorkflowToolTarget::Bound {
+            receiver: WorkflowEndpointRef {
+                workflow_id: "receiver-1".to_owned(),
+                workflow_kind: "order.receiver".to_owned(),
+            }
+        }
+    );
+    assert_eq!(
+        tool.definition.tool.target_requirement,
+        ToolTargetRequirement::None
+    );
+    assert_eq!(tool.definition.tool.name.as_str(), "accept_order");
+    let ToolKind::Function(function) = &tool.definition.tool.kind else {
+        panic!("API workflow tool must map to a function tool");
+    };
+    assert_eq!(function.input_schema_ref, input_schema_ref);
+    assert_eq!(function.strict, Some(true));
+}
+
+#[test]
+fn managed_workflow_tools_api_maps_bound_accepted_function_tools() {
+    let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let declaration = managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+        version: 1,
+        lifecycle_controller: None,
+        tools: vec![WorkflowToolDeclarationInput {
+            definition: WorkflowToolDefinitionInput {
+                tool_id: "channel-noop".to_owned(),
+                revision: 1,
+                semantic_type: "channels.noop.v1".to_owned(),
+                tool: WorkflowToolSpecInput {
+                    name: "channel_noop".to_owned(),
+                    kind: WorkflowToolKindInput::Function {
+                        description_ref: None,
+                        input_schema_ref: input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    },
+                    parallelism: ToolParallelismView::ParallelSafe,
+                },
+            },
+            target: WorkflowToolTargetInput::Bound {
+                receiver: WorkflowEndpointInput {
+                    workflow_id: "channels/session-1".to_owned(),
+                    workflow_kind: "channels.session".to_owned(),
+                },
+            },
+            completion: WorkflowToolCompletionInput::Accepted,
+        }],
+    })
+    .expect("map Accepted workflow tool");
+
+    assert_eq!(
+        declaration.tools[0].completion,
+        WorkflowToolCompletion::Accepted
+    );
+    assert!(matches!(
+        declaration.tools[0].target,
+        WorkflowToolTarget::Bound { .. }
+    ));
+}
+
+#[test]
+fn managed_workflow_tools_api_maps_start_targets_and_reply_completion() {
+    let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let recipe_bytes = br#"{"workflowType":"ChannelsSendWorkflow","taskQueue":"channels"}"#;
+    let recipe_ref = BlobRef::from_bytes(recipe_bytes);
+    let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(recipe_bytes);
+    let declaration = managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+        version: 1,
+        lifecycle_controller: None,
+        tools: vec![WorkflowToolDeclarationInput {
+            definition: WorkflowToolDefinitionInput {
+                tool_id: "channel-send".to_owned(),
+                revision: 1,
+                semantic_type: "channels.send.v1".to_owned(),
+                tool: WorkflowToolSpecInput {
+                    name: "channel_send".to_owned(),
+                    kind: WorkflowToolKindInput::Function {
+                        description_ref: None,
+                        input_schema_ref: input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    },
+                    parallelism: ToolParallelismView::Exclusive,
+                },
+            },
+            target: WorkflowToolTargetInput::Start {
+                start: WorkflowStartRefInput {
+                    recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                    revision: 3,
+                    recipe_ref: recipe_ref.as_str().to_owned(),
+                    recipe_fingerprint: recipe_fingerprint.clone(),
+                },
+            },
+            completion: WorkflowToolCompletionInput::Promises {
+                reply_schema_ref: None,
+                deadline_after_ms: Some(60_000),
+                max_promises: 1,
+                key_source: WorkflowToolCompletionKeySourceInput::Reply,
+            },
+        }],
+    })
+    .expect("map start workflow tool");
+
+    let tool = &declaration.tools[0];
+    assert_eq!(
+        tool.target,
+        WorkflowToolTarget::Start {
+            start: WorkflowStartRef {
+                recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                revision: 3,
+                recipe_ref,
+                recipe_fingerprint,
+            }
+        }
+    );
+    assert!(matches!(
+        tool.completion,
+        WorkflowToolCompletion::Promises {
+            max_promises: 1,
+            key_source: WorkflowToolCompletionKeySource::Reply,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn managed_workflow_tools_api_rejects_an_empty_management_document() {
+    assert_eq!(
+        managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+            version: 1,
+            lifecycle_controller: None,
+            tools: Vec::new(),
+        })
+        .expect_err("empty managed creation must fail")
+        .kind,
+        AgentApiErrorKind::InvalidRequest
+    );
+}
+
+#[test]
+fn run_terminal_notification_derives_destination_from_controller() {
+    let controller = WorkflowEndpointRef {
+        workflow_id: "controller-workflow-1".to_owned(),
+        workflow_kind: "order.workflow".to_owned(),
+    };
+    assert_eq!(
+        run_terminal_notify_intents(
+            Some(&controller),
+            Some(RunTerminalNotificationInput {
+                token: "terminal-token-1".to_owned(),
+            }),
+            Vec::new(),
+        )
+        .expect("derive controller notification"),
+        vec![engine::RunTerminalNotifyIntent {
+            holder_workflow_id: "controller-workflow-1".to_owned(),
+            token: "terminal-token-1".to_owned(),
+        }]
+    );
+
+    assert_eq!(
+        run_terminal_notify_intents(
+            None,
+            Some(RunTerminalNotificationInput {
+                token: "terminal-token-1".to_owned(),
+            }),
+            Vec::new(),
+        )
+        .expect_err("notification without controller must fail")
+        .kind,
+        AgentApiErrorKind::InvalidRequest
+    );
+}
+
+#[test]
 fn skill_list_response_marks_active_catalog_entries() {
     let catalog_ref = BlobRef::from_bytes(b"catalog");
     let catalog = test_skill_catalog(
@@ -783,34 +1069,79 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
         submission_digest: Some(engine::request_run_submission_digest(
             &original_source,
             &run_config,
+            &[],
         )),
         output_ref: None,
         failure: None,
     });
 
     assert!(matches!(
-        existing_run_submission(&state, &submission_id, &changed_source, &run_config,),
+        existing_run_submission(&state, &submission_id, &changed_source, &run_config, &[]),
         Some(ExistingRunSubmission::Reject)
     ));
     let Some(ExistingRunSubmission::ReturnRun { run_id, status }) =
-        existing_run_submission(&state, &submission_id, &original_source, &run_config)
+        existing_run_submission(&state, &submission_id, &original_source, &run_config, &[])
     else {
         panic!("identical duplicate should return existing completed run");
     };
     assert_eq!(run_id, RunId::new(7));
     assert_eq!(status, RunStatus::Completed);
+    assert!(matches!(
+        existing_run_submission(
+            &state,
+            &submission_id,
+            &original_source,
+            &run_config,
+            &[engine::RunTerminalNotifyIntent {
+                holder_workflow_id: "controller-1".to_owned(),
+                token: "changed-token".to_owned(),
+            }],
+        ),
+        Some(ExistingRunSubmission::Reject)
+    ));
 }
 
 #[test]
 fn features_default_off_for_sessions() {
     // Secure by default: an empty config document grants nothing — no web
-    // tools, no filesystem tools, no messaging/fleet/timers.
+    // tools, no filesystem tools, no Fleet/timers.
     let config = engine_session_config_from_api(api::SessionConfig::default(), openai_model())
         .expect("map config");
 
     assert_eq!(config.features, engine::FeaturesConfig::default());
     assert!(config.features.web.is_none());
     assert!(config.features.vfs.is_none());
+}
+
+#[test]
+fn environment_jobs_are_default_off_and_map_explicit_opt_in() {
+    let default_feature: api::EnvironmentsFeature =
+        serde_json::from_value(serde_json::json!({})).expect("empty environment feature");
+    assert!(!default_feature.jobs);
+
+    let config = engine_session_config_from_api(
+        api::SessionConfig {
+            features: Some(api::FeaturesConfig {
+                environments: Some(api::EnvironmentsFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    providers: None,
+                    jobs: true,
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        openai_model(),
+    )
+    .expect("map environment jobs grant");
+
+    assert!(
+        config
+            .features
+            .environments
+            .expect("environment feature")
+            .jobs
+    );
 }
 
 #[test]
@@ -1596,7 +1927,6 @@ fn test_function_tool(tool_name: ToolName) -> engine::ToolSpec {
     engine::ToolSpec {
         name: tool_name,
         kind: engine::ToolKind::Function(engine::FunctionToolSpec {
-            model_name: None,
             description_ref: None,
             input_schema_ref: BlobRef::from_bytes(b"schema"),
             output_schema_ref: None,

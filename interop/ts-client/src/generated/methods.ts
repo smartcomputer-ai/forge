@@ -7,6 +7,7 @@ import type * as Api from "./types.js";
 export const METHODS = [
   "initialize",
   "session/start",
+  "session/managed/start",
   "session/read",
   "session/list",
   "session/config/put",
@@ -42,7 +43,6 @@ export const METHODS = [
   "environments/close",
   "environments/jobs/create",
   "environments/jobs/read",
-  "environments/jobs/list",
   "environments/jobs/cancel",
   "models/list",
   "profiles/create",
@@ -84,8 +84,6 @@ export const METHODS = [
   "auth/providers/delete",
   "auth/github/installations/list",
   "auth/github/installations/grant",
-  "outbox/read",
-  "outbox/ack",
   "operator/universes/create",
   "operator/universes/list",
   "operator/universes/read",
@@ -93,7 +91,6 @@ export const METHODS = [
   "operator/api-keys/create",
   "operator/api-keys/list",
   "operator/api-keys/revoke",
-  "operator/outbox/read",
 ] as const;
 
 export const METHOD_INFO = {
@@ -106,6 +103,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Create or reopen a session",
     description: "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
+  },
+  "session/managed/start": {
+    scope: "universe",
+    summary: "Create or reopen a managed session",
+    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
   },
   "session/read": {
     scope: "universe",
@@ -270,7 +272,7 @@ export const METHOD_INFO = {
   "environments/close": {
     scope: "universe",
     summary: "Close an environment instance",
-    description: "Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.",
+    description: "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.",
   },
   "environments/jobs/create": {
     scope: "universe",
@@ -281,11 +283,6 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Read environment jobs",
     description: "Reads selected job handles with bounded output, optional sequence continuation, and optional artifacts; use returned status/sequence data for polling.",
-  },
-  "environments/jobs/list": {
-    scope: "universe",
-    summary: "List environment jobs",
-    description: "Lists durable job records across the universe, optionally narrowed to an instance or job group.",
   },
   "environments/jobs/cancel": {
     scope: "universe",
@@ -492,16 +489,6 @@ export const METHOD_INFO = {
     summary: "Grant access to a GitHub App installation",
     description: "Creates or refreshes a universe auth grant for one accessible installation. The installation token is brokered internally and never returned.",
   },
-  "outbox/read": {
-    scope: "universe",
-    summary: "Read pending outbound messages",
-    description: "Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.",
-  },
-  "outbox/ack": {
-    scope: "universe",
-    summary: "Acknowledge outbound delivery",
-    description: "Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.",
-  },
   "operator/universes/create": {
     scope: "operator",
     summary: "Create a universe",
@@ -537,11 +524,6 @@ export const METHOD_INFO = {
     summary: "Revoke a universe API key",
     description: "Immediately and idempotently revokes the matching key only when it belongs to the requested universe. Unknown and foreign-universe prefixes return not found.",
   },
-  "operator/outbox/read": {
-    scope: "operator",
-    summary: "Read the deployment outbox",
-    description: "Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.",
-  },
 } as const;
 
 export const NOTIFICATIONS = [
@@ -573,6 +555,15 @@ export interface MethodMap {
    */
   "session/start": {
     params: Api.SessionStartParams;
+    result: Api.AgentApiOutcomeOfSessionStartResponse;
+  };
+  /**
+   * Create or reopen a managed session
+   *
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   */
+  "session/managed/start": {
+    params: Api.ManagedSessionStartParams;
     result: Api.AgentApiOutcomeOfSessionStartResponse;
   };
   /**
@@ -866,7 +857,7 @@ export interface MethodMap {
   /**
    * Close an environment instance
    *
-   * Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.
+   * Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
    */
   "environments/close": {
     params: Api.EnvironmentCloseParams;
@@ -889,15 +880,6 @@ export interface MethodMap {
   "environments/jobs/read": {
     params: Api.EnvironmentJobReadParams;
     result: Api.AgentApiOutcomeOfEnvironmentJobReadResponse;
-  };
-  /**
-   * List environment jobs
-   *
-   * Lists durable job records across the universe, optionally narrowed to an instance or job group.
-   */
-  "environments/jobs/list": {
-    params: Api.EnvironmentJobListParams;
-    result: Api.AgentApiOutcomeOfEnvironmentJobListResponse;
   };
   /**
    * Cancel environment jobs
@@ -1269,24 +1251,6 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfAuthGitHubInstallationGrantResponse;
   };
   /**
-   * Read pending outbound messages
-   *
-   * Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.
-   */
-  "outbox/read": {
-    params: Api.OutboxReadParams;
-    result: Api.AgentApiOutcomeOfOutboxReadResponse;
-  };
-  /**
-   * Acknowledge outbound delivery
-   *
-   * Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.
-   */
-  "outbox/ack": {
-    params: Api.OutboxAckParams;
-    result: Api.AgentApiOutcomeOfOutboxAckResponse;
-  };
-  /**
    * Create a universe
    *
    * Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.
@@ -1349,15 +1313,6 @@ export interface MethodMap {
     params: Api.OperatorApiKeyRevokeParams;
     result: Api.AgentApiOutcomeOfOperatorApiKeyRevokeResponse;
   };
-  /**
-   * Read the deployment outbox
-   *
-   * Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.
-   */
-  "operator/outbox/read": {
-    params: Api.OperatorOutboxReadParams;
-    result: Api.AgentApiOutcomeOfOperatorOutboxReadResponse;
-  };
 }
 
 export type MethodParams<M extends Method> = MethodMap[M]["params"];
@@ -1383,6 +1338,14 @@ export const rpc = {
    */
   sessionStart(client: RpcCaller, params: Api.SessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
     return client.call("session/start", params);
+  },
+  /**
+   * Create or reopen a managed session
+   *
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   */
+  sessionManagedStart(client: RpcCaller, params: Api.ManagedSessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
+    return client.call("session/managed/start", params);
   },
   /**
    * Read a session
@@ -1643,7 +1606,7 @@ export const rpc = {
   /**
    * Close an environment instance
    *
-   * Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.
+   * Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
    */
   environmentsClose(client: RpcCaller, params: Api.EnvironmentCloseParams): Promise<Api.AgentApiOutcomeOfEnvironmentCloseResponse> {
     return client.call("environments/close", params);
@@ -1663,14 +1626,6 @@ export const rpc = {
    */
   environmentsJobsRead(client: RpcCaller, params: Api.EnvironmentJobReadParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobReadResponse> {
     return client.call("environments/jobs/read", params);
-  },
-  /**
-   * List environment jobs
-   *
-   * Lists durable job records across the universe, optionally narrowed to an instance or job group.
-   */
-  environmentsJobsList(client: RpcCaller, params: Api.EnvironmentJobListParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobListResponse> {
-    return client.call("environments/jobs/list", params);
   },
   /**
    * Cancel environment jobs
@@ -2001,22 +1956,6 @@ export const rpc = {
     return client.call("auth/github/installations/grant", params);
   },
   /**
-   * Read pending outbound messages
-   *
-   * Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.
-   */
-  outboxRead(client: RpcCaller, params: Api.OutboxReadParams): Promise<Api.AgentApiOutcomeOfOutboxReadResponse> {
-    return client.call("outbox/read", params);
-  },
-  /**
-   * Acknowledge outbound delivery
-   *
-   * Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.
-   */
-  outboxAck(client: RpcCaller, params: Api.OutboxAckParams): Promise<Api.AgentApiOutcomeOfOutboxAckResponse> {
-    return client.call("outbox/ack", params);
-  },
-  /**
    * Create a universe
    *
    * Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.
@@ -2071,13 +2010,5 @@ export const rpc = {
    */
   operatorApiKeysRevoke(client: RpcCaller, params: Api.OperatorApiKeyRevokeParams): Promise<Api.AgentApiOutcomeOfOperatorApiKeyRevokeResponse> {
     return client.call("operator/api-keys/revoke", params);
-  },
-  /**
-   * Read the deployment outbox
-   *
-   * Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.
-   */
-  operatorOutboxRead(client: RpcCaller, params: Api.OperatorOutboxReadParams): Promise<Api.AgentApiOutcomeOfOperatorOutboxReadResponse> {
-    return client.call("operator/outbox/read", params);
   },
 } as const;

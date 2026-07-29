@@ -506,7 +506,7 @@ async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterR
     match &tool.kind {
         ToolKind::Function(function) => {
             let mut materialized = oai::FunctionTool::new(
-                function.model_name.as_ref().unwrap_or(&tool.name).as_str(),
+                tool.name.as_str(),
                 read_json(blobs, &function.input_schema_ref).await?,
             );
             materialized.description = match &function.description_ref {
@@ -1408,7 +1408,6 @@ mod tests {
         request.tools = vec![ToolSpec {
             name: ToolName::new("read_file"),
             kind: ToolKind::Function(FunctionToolSpec {
-                model_name: None,
                 description_ref: Some(description_ref),
                 input_schema_ref: schema_ref,
                 output_schema_ref: None,

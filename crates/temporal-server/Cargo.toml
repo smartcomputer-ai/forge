@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 temporal-workflow = { path = "../temporal-workflow" }
+jsonschema = { version = "0.33", default-features = false }
 api = { path = "../api" }
 api-projection = { path = "../api-projection" }
 engine = { path = "../engine" }
@@ -19,11 +20,11 @@ axum = "0.7"
 base64 = "0.22"
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
+futures-util = "0.3"
 futures = "0.3"
 llm-clients = { path = "../llm-clients" }
 llm-runtime = { path = "../llm-runtime" }
 mcp = { path = "../mcp" }
-messaging = { path = "../messaging" }
 object_store = "0.13.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid"] }
 profiles = { path = "../profiles" }
@@ -46,6 +47,7 @@ uuid = { version = "1", features = ["v4"] }
 [dev-dependencies]
 test-support = { path = "../test-support" }
 dotenvy = "0.15"
+futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 

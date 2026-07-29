@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use engine::{
-    BlobRef, CommandRejection, ContextEntryInput, CoreAgentCommand, CoreAgentState, RunStatus,
-    SessionConfig, SessionId, SessionPosition, SubmissionId, ToolBatchId,
+    BlobRef, CommandRejection, ContextEntryInput, CoreAgentCommand, CoreAgentState,
+    EmissionEnvelope, ManagedSessionWorkflowTools, RunStatus, SessionConfig, SessionId,
+    SessionPosition, SubmissionId, ToolBatchId,
     storage::{SessionRecord, UncommittedStoredEvent},
 };
 use serde::{Deserialize, Serialize};
@@ -19,6 +20,11 @@ pub struct AgentSessionArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub session_config: SessionConfig,
+    /// Present only for the trusted managed-session creation path. The
+    /// declaration is validated against `universe_id` and recorded as an
+    /// immutable creation fact on the first append.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_tools: Option<ManagedSessionWorkflowTools>,
     pub max_steps_per_input: Option<u32>,
     pub continue_as_new_history_threshold: Option<u32>,
     #[serde(default)]
@@ -72,7 +78,7 @@ pub struct AgentSessionStatus {
     #[serde(default)]
     pub active_waits: usize,
     #[serde(default)]
-    pub pending_promise_notifications: usize,
+    pub pending_emissions: usize,
     pub active_run: Option<AgentActiveRunSummary>,
     pub queued_runs: Vec<AgentQueuedRunSummary>,
     pub completed_runs: Vec<AgentCompletedRunSummary>,
@@ -152,31 +158,148 @@ pub struct AgentCompletedRunSummary {
     pub failure_message_ref: Option<BlobRef>,
 }
 
-/// Push-transport payload: the observed session signals the holder workflow
-/// when a run carrying a notify-intent reaches a terminal state. The token is
-/// the holder-side promise id — the edge event is the subscription (P92 §1).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromiseResolutionSignal {
-    pub token: String,
-    pub status: RunStatus,
-    pub output_ref: Option<BlobRef>,
-    pub failure_message_ref: Option<BlobRef>,
-}
-
-/// Queued outbound notification on the observed side. Transient transport
+/// Queued outbound emission on the producing side. Transient transport
 /// state: the flush queue gates continue-as-new instead of being carried
 /// through it, so delivery is at-least-once with idempotent receive keyed by
-/// the promise id.
+/// the emission id or the receiver's semantic token.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingPromiseNotification {
-    pub holder_workflow_id: String,
-    pub signal: PromiseResolutionSignal,
+pub struct PendingEmission {
+    pub receiver_workflow_id: String,
+    pub envelope: EmissionEnvelope,
+    /// Delivery attempts so far. Only promise-bearing tool-invocation
+    /// envelopes retry; other bodies keep the legacy single-attempt,
+    /// drop-on-missing semantics.
+    #[serde(default)]
+    pub attempts: u32,
+    /// Earliest workflow time this entry may be (re)sent; `0` is immediate.
+    #[serde(default)]
+    pub next_attempt_at_ms: u64,
+}
+
+impl PendingEmission {
+    pub fn immediate(receiver_workflow_id: String, envelope: EmissionEnvelope) -> Self {
+        Self {
+            receiver_workflow_id,
+            envelope,
+            attempts: 0,
+            next_attempt_at_ms: 0,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingPromiseCancellation {
     pub promise_id: String,
     pub source: engine::PromiseSource,
+    /// Log sequence of the cancellation event, used as the emission
+    /// producer sequence for per-key workflow-tool cancellation facts.
+    #[serde(default)]
+    pub log_seq: u64,
+}
+
+/// One received source-resolution awaiting producer authorization and
+/// optional reply-schema validation before it becomes a `ResolvePromise`
+/// admission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingSourceResolution {
+    pub promise_id: engine::PromiseId,
+    pub resolution: engine::PromiseResolution,
+    pub producer: engine::EmissionProducer,
+}
+
+/// Fixed, versioned recovery query every start-on-call plugin workflow must
+/// expose: the bounded per-key terminal resolutions it has produced so far.
+/// The holder-side monitor uses it to distinguish a valid result whose
+/// terminal signal was not observed, workflow failure/cancellation, and the
+/// contract violation of completing while keyed promises remain pending.
+pub const WORKFLOW_TOOL_RECOVERY_QUERY: &str = "workflow_tool_recovery";
+
+/// Result shape of [`WORKFLOW_TOOL_RECOVERY_QUERY`].
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolRecoveryResult {
+    #[serde(default)]
+    pub resolutions: BTreeMap<String, engine::PromiseResolution>,
+}
+
+/// Start arguments every start-on-call plugin workflow receives. The plugin
+/// resolves each keyed completion promise by emitting `SourceResolution`
+/// bodies to the holder workflow through the fixed `deliver_emission`
+/// signal, using its own execution id as the producer workflow id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolStartArgs {
+    pub universe_id: uuid::Uuid,
+    pub holder_workflow_id: String,
+    pub execution_id: String,
+    pub invocation: engine::WorkflowToolInvocation,
+}
+
+/// Canonical fingerprint over the raw recipe bytes; trusted managed-session
+/// creators compute it when declaring a start binding and the start
+/// activity re-verifies it before resolving the recipe.
+pub fn workflow_tool_recipe_fingerprint(recipe_bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(recipe_bytes);
+    format!("wtr:sha256:{}", hex::encode(hasher.finalize()))
+}
+
+/// Recipe format 1: a JSON object naming the plugin workflow type and task
+/// queue. `recipe_format` identifies this codec, never a feature or plugin.
+pub const WORKFLOW_TOOL_RECIPE_FORMAT_V1: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowToolRecipeV1 {
+    pub workflow_type: String,
+    pub task_queue: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolStartActivityRequest {
+    pub execution_id: String,
+    pub recipe_format: u32,
+    pub recipe_revision: u32,
+    pub recipe_ref: engine::BlobRef,
+    pub recipe_fingerprint: String,
+    pub holder_workflow_id: String,
+    pub invocation: engine::WorkflowToolInvocation,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WorkflowToolStartActivityResult {
+    /// The deterministic execution is running or already existed
+    /// (`AlreadyStarted` is success for the exact identity).
+    Started,
+    /// The start cannot succeed without operator intervention (bad recipe,
+    /// fingerprint mismatch, unknown format).
+    FailedTerminal { message: String },
+    /// Transient failure; the workflow retries with bounded backoff.
+    FailedRetryable { message: String },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolExecutionCheckRequest {
+    pub execution_id: String,
+    pub completion_key: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolExecutionCancelRequest {
+    pub execution_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolReplyValidationRequest {
+    pub reply_schema_ref: engine::BlobRef,
+    pub payload_ref: Option<engine::BlobRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum WorkflowToolReplyValidationResult {
+    Valid,
+    Invalid { error_ref: engine::BlobRef },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,24 +357,6 @@ pub struct CancellingWatchdog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromiseSourceResolutionSignal {
-    pub promise_id: String,
-    pub result: engine::PromiseSourceCheckResult,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentJobProvenance {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<SessionId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<engine::RunId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<engine::TurnId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_call_id: Option<engine::ToolCallId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobCredentialScope {
     pub session_id: SessionId,
     pub env_id: String,
@@ -259,6 +364,7 @@ pub struct EnvironmentJobCredentialScope {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartActivityRequest {
+    pub universe_id: Uuid,
     pub instance_id: String,
     pub job_group_id: String,
     pub request_ref: BlobRef,
@@ -267,9 +373,6 @@ pub struct EnvironmentJobStartActivityRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartPayload {
     pub request: host_protocol::data::jobs::StartJobsParams,
-    pub start_request_hash: String,
-    #[serde(default)]
-    pub provenance: EnvironmentJobProvenance,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_scope: Option<EnvironmentJobCredentialScope>,
 }
@@ -283,23 +386,15 @@ pub struct EnvironmentJobStartActivityResult {
 pub struct EnvironmentJobSubscription {
     pub holder_workflow_id: String,
     pub promise_id: String,
+    pub completion_key: String,
     pub job_id: host_protocol::shared::JobId,
-    pub confirmation_deadline_ms: u64,
-    #[serde(default)]
-    pub confirmed: bool,
     #[serde(default)]
     pub notified: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentJobConfirmSubscriptionSignal {
-    pub holder_workflow_id: String,
-    pub promise_id: String,
-    pub job_id: host_protocol::shared::JobId,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobWorkflowArgs {
+    pub universe_id: Uuid,
     pub start: EnvironmentJobStartActivityRequest,
     pub job_ids: Vec<host_protocol::shared::JobId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -314,6 +409,35 @@ pub struct EnvironmentJobWorkflowArgs {
     pub poll_ms: u64,
     #[serde(default)]
     pub poll_attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_tool: Option<EnvironmentJobWorkflowToolContext>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentJobWorkflowToolContext {
+    pub execution_id: String,
+    pub invocation_id: engine::WorkflowToolInvocationId,
+}
+
+/// Accepted inputs for the core job workflow. Bare public starts arrive as
+/// fully prepared job arguments; internally supervised starts use the fixed
+/// P100b input and are normalized by an activity before provider work begins.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum EnvironmentJobWorkflowInput {
+    WorkflowTool(WorkflowToolStartArgs),
+    Job(EnvironmentJobWorkflowArgs),
+}
+
+impl From<EnvironmentJobWorkflowArgs> for EnvironmentJobWorkflowInput {
+    fn from(value: EnvironmentJobWorkflowArgs) -> Self {
+        Self::Job(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentJobPrepareWorkflowToolRequest {
+    pub start: WorkflowToolStartArgs,
 }
 
 fn default_environment_job_poll_ms() -> u64 {
@@ -337,6 +461,7 @@ pub struct EnvironmentJobWorkflowSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobPollActivityRequest {
+    pub universe_id: Uuid,
     pub instance_id: String,
     pub job_group_id: String,
     pub job_ids: Vec<host_protocol::shared::JobId>,
@@ -359,6 +484,7 @@ pub struct EnvironmentJobCancelSignal {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobCancelActivityRequest {
+    pub universe_id: Uuid,
     pub instance_id: String,
     pub jobs: Vec<host_protocol::shared::JobId>,
     pub scope: host_protocol::data::jobs::JobCancelScope,

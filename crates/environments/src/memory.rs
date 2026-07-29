@@ -5,18 +5,13 @@ use std::{
 
 use async_trait::async_trait;
 use engine::SessionId;
-use host_protocol::{
-    control::targets::HostTargetStatus,
-    shared::{HostTargetId, JobId},
-};
+use host_protocol::{control::targets::HostTargetStatus, shared::HostTargetId};
 
 use super::*;
 
 type BindingKey = (SessionId, EnvironmentId);
 type CredentialKey = (SessionId, EnvironmentId, String);
 type ProviderTargetKey = (EnvironmentProviderId, HostTargetId);
-type JobGroupKey = (EnvironmentInstanceId, EnvironmentJobGroupId);
-type JobKey = (EnvironmentInstanceId, JobId);
 
 #[derive(Default)]
 struct RegistryState {
@@ -25,8 +20,6 @@ struct RegistryState {
     provider_targets: BTreeMap<ProviderTargetKey, EnvironmentInstanceId>,
     bindings: BTreeMap<BindingKey, SessionEnvironmentBindingRecord>,
     credentials: BTreeMap<CredentialKey, SessionEnvironmentCredentialRecord>,
-    job_groups: BTreeMap<JobGroupKey, EnvironmentJobGroupRecord>,
-    jobs: BTreeMap<JobKey, JobHandleRecord>,
 }
 
 #[derive(Default)]
@@ -319,17 +312,10 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
             })
             .map(|binding| format!("{}/{}", binding.session_id, binding.env_id))
             .collect::<Vec<_>>();
-        let job_groups = state
-            .job_groups
-            .values()
-            .filter(|group| group.instance_id == request.instance_id && !group.status.is_terminal())
-            .map(|group| group.job_group_id.clone())
-            .collect::<Vec<_>>();
-        if !bindings.is_empty() || !job_groups.is_empty() {
+        if !bindings.is_empty() {
             return Err(EnvironmentRegistryError::Occupied {
                 instance_id: request.instance_id,
                 bindings,
-                job_groups,
             });
         }
         let record = state
@@ -516,175 +502,6 @@ impl SessionEnvironmentCredentialStore for InMemoryEnvironmentRegistryStore {
     }
 }
 
-#[async_trait]
-impl JobHandleStore for InMemoryEnvironmentRegistryStore {
-    async fn reserve_job_group(
-        &self,
-        record: ReserveEnvironmentJobGroup,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError> {
-        let record = record.into_record();
-        record.validate()?;
-        let mut state = self.write_state()?;
-        let instance = state
-            .instances
-            .get(&record.instance_id)
-            .ok_or_else(|| not_found("environment_instance", &record.instance_id))?;
-        if matches!(
-            instance.status,
-            HostTargetStatus::Closing | HostTargetStatus::Closed
-        ) {
-            return invalid("cannot start jobs on a closing environment instance");
-        }
-        let key = (record.instance_id.clone(), record.job_group_id.clone());
-        if let Some(existing) = state.job_groups.get(&key) {
-            if existing.start_request_hash == record.start_request_hash {
-                return Ok(existing.clone());
-            }
-            return Err(EnvironmentRegistryError::AlreadyExists {
-                kind: "environment_job_group",
-                id: format!("{}/{}", record.instance_id, record.job_group_id),
-            });
-        }
-        state.job_groups.insert(key, record.clone());
-        Ok(record)
-    }
-
-    async fn read_job_group(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_group_id: &EnvironmentJobGroupId,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError> {
-        self.read_state()?
-            .job_groups
-            .get(&(instance_id.clone(), job_group_id.clone()))
-            .cloned()
-            .ok_or_else(|| job_group_not_found(instance_id, job_group_id))
-    }
-
-    async fn update_job_group_status(
-        &self,
-        request: UpdateEnvironmentJobGroupStatus,
-    ) -> Result<EnvironmentJobGroupRecord, EnvironmentRegistryError> {
-        let mut state = self.write_state()?;
-        let record = state
-            .job_groups
-            .get_mut(&(request.instance_id.clone(), request.job_group_id.clone()))
-            .ok_or_else(|| job_group_not_found(&request.instance_id, &request.job_group_id))?;
-        record.status = request.status;
-        record.updated_at_ms = request.updated_at_ms;
-        record.terminal_at_ms = request
-            .status
-            .is_terminal()
-            .then_some(request.updated_at_ms);
-        record.validate()?;
-        Ok(record.clone())
-    }
-
-    async fn create_job_handles(
-        &self,
-        records: Vec<CreateJobHandle>,
-    ) -> Result<Vec<JobHandleRecord>, EnvironmentRegistryError> {
-        let records = records
-            .into_iter()
-            .map(CreateJobHandle::into_record)
-            .collect::<Vec<_>>();
-        for record in &records {
-            record.validate()?;
-        }
-        let mut state = self.write_state()?;
-        let mut created = Vec::with_capacity(records.len());
-        for record in records {
-            let group_key = (record.instance_id.clone(), record.job_group_id.clone());
-            if !state.job_groups.contains_key(&group_key) {
-                return Err(job_group_not_found(
-                    &record.instance_id,
-                    &record.job_group_id,
-                ));
-            }
-            let key = (record.instance_id.clone(), record.job_id.clone());
-            if let Some(existing) = state.jobs.get(&key) {
-                if existing.start_request_hash == record.start_request_hash {
-                    created.push(existing.clone());
-                    continue;
-                }
-                return Err(EnvironmentRegistryError::AlreadyExists {
-                    kind: "job_handle",
-                    id: format!("{}/{}", record.instance_id, record.job_id),
-                });
-            }
-            state.jobs.insert(key, record.clone());
-            created.push(record);
-        }
-        Ok(created)
-    }
-
-    async fn read_job_handle(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_id: &JobId,
-    ) -> Result<JobHandleRecord, EnvironmentRegistryError> {
-        self.read_state()?
-            .jobs
-            .get(&(instance_id.clone(), job_id.clone()))
-            .cloned()
-            .ok_or_else(|| job_not_found(instance_id, job_id))
-    }
-
-    async fn list_job_handles(
-        &self,
-        request: ListJobHandles,
-    ) -> Result<Vec<JobHandleRecord>, EnvironmentRegistryError> {
-        if matches!(request.limit, Some(0)) {
-            return invalid("job handle list limit must be greater than zero");
-        }
-        let mut records = self
-            .read_state()?
-            .jobs
-            .values()
-            .filter(|record| {
-                request
-                    .instance_id
-                    .as_ref()
-                    .is_none_or(|id| id == &record.instance_id)
-            })
-            .filter(|record| {
-                request
-                    .job_group_id
-                    .as_ref()
-                    .is_none_or(|id| id == &record.job_group_id)
-            })
-            .filter(|record| {
-                request
-                    .created_by_session_id
-                    .as_ref()
-                    .is_none_or(|id| record.created_by_session_id.as_ref() == Some(id))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        records.sort_by(|left, right| {
-            right
-                .created_at_ms
-                .cmp(&left.created_at_ms)
-                .then_with(|| left.job_id.cmp(&right.job_id))
-        });
-        if let Some(limit) = request.limit {
-            records.truncate(limit);
-        }
-        Ok(records)
-    }
-
-    async fn delete_job_handle(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-        job_id: &JobId,
-    ) -> Result<JobHandleRecord, EnvironmentRegistryError> {
-        self.write_state()?
-            .jobs
-            .remove(&(instance_id.clone(), job_id.clone()))
-            .ok_or_else(|| job_not_found(instance_id, job_id))
-    }
-}
-
 fn not_found(kind: &'static str, id: &impl ToString) -> EnvironmentRegistryError {
     EnvironmentRegistryError::NotFound {
         kind,
@@ -696,22 +513,5 @@ fn binding_not_found(session_id: &SessionId, env_id: &EnvironmentId) -> Environm
     EnvironmentRegistryError::NotFound {
         kind: "session_environment_binding",
         id: format!("{session_id}/{env_id}"),
-    }
-}
-
-fn job_group_not_found(
-    instance_id: &EnvironmentInstanceId,
-    job_group_id: &EnvironmentJobGroupId,
-) -> EnvironmentRegistryError {
-    EnvironmentRegistryError::NotFound {
-        kind: "environment_job_group",
-        id: format!("{instance_id}/{job_group_id}"),
-    }
-}
-
-fn job_not_found(instance_id: &EnvironmentInstanceId, job_id: &JobId) -> EnvironmentRegistryError {
-    EnvironmentRegistryError::NotFound {
-        kind: "job_handle",
-        id: format!("{instance_id}/{job_id}"),
     }
 }

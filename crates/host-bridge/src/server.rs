@@ -242,6 +242,8 @@ async fn handle_control(
                     params.target_id
                 )));
             }
+            runtime.jobs().interrupt_all().await?;
+            runtime.mark_closed();
             encode_result(CloseTargetResponse {
                 target_id: params.target_id,
                 status: HostTargetStatus::Closed,

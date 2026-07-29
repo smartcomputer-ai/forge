@@ -146,6 +146,11 @@ impl FleetService {
         } else {
             let source_session_id = self.resolve_base_source(&context, &args.base)?;
             let source_record = self.load_session_required(&source_session_id).await?;
+            if source_record.managed {
+                return Err(AgentApiError::rejected(format!(
+                    "lifecycle-managed session cannot be cloned or forked: {source_session_id}"
+                )));
+            }
             let source_seq = if let Some(fork) = args.base.fork() {
                 Some(match fork {
                     AgentSpawnFork::Safe => self
@@ -2225,6 +2230,9 @@ fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
             AgentApiError::invalid_request(error.to_string())
         }
         SessionStoreError::SessionNotClosed { .. } => AgentApiError::rejected(error.to_string()),
+        SessionStoreError::ManagedSessionCannotBranch { .. } => {
+            AgentApiError::rejected(error.to_string())
+        }
         SessionStoreError::SessionHasForkChildren { .. } => {
             AgentApiError::conflict(error.to_string())
         }
@@ -2843,6 +2851,79 @@ mod tests {
         );
         assert_eq!(output.child_run_id.as_deref(), Some("run_1"));
         assert_eq!(output.status, "created");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn spawn_rejects_clone_of_lifecycle_managed_session() {
+        let sessions = Arc::new(InMemorySessionStore::new());
+        let source = SessionId::new("managed-parent");
+        sessions
+            .create_session(CreateSession {
+                session_id: source.clone(),
+                display_name: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create source");
+        let universe_id = uuid::Uuid::from_u128(1);
+        let admitted = engine::ManagedSessionWorkflowTools::v1(
+            Some(engine::WorkflowEndpointRef {
+                workflow_id: "controller/managed-parent".to_owned(),
+                workflow_kind: "controller.workflow.v1".to_owned(),
+            }),
+            Vec::new(),
+        )
+        .admit(universe_id)
+        .expect("managed declaration");
+        let config = open_state()
+            .lifecycle
+            .config
+            .expect("test state has config");
+        let codec = engine::CoreAgentCodec;
+        sessions
+            .append(engine::storage::AppendSessionEvents {
+                session_id: source.clone(),
+                expected_head: None,
+                events: vec![
+                    codec
+                        .encode_uncommitted(&engine::UncommittedCoreAgentEvent {
+                            observed_at_ms: 2,
+                            joins: engine::CoreAgentJoins::default(),
+                            event: engine::CoreAgentEvent::Lifecycle(
+                                engine::CoreAgentLifecycleEvent::Opened { config },
+                            ),
+                        })
+                        .expect("encode opened event"),
+                    codec
+                        .encode_uncommitted(&engine::UncommittedCoreAgentEvent {
+                            observed_at_ms: 2,
+                            joins: engine::CoreAgentJoins::default(),
+                            event: engine::CoreAgentEvent::WorkflowToolConfig(
+                                engine::WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                                    session_universe_id: admitted.session_universe_id,
+                                    declaration_version: admitted.version,
+                                    lifecycle_controller: admitted.lifecycle_controller,
+                                    creation_fingerprint: admitted.creation_fingerprint,
+                                    bindings: admitted.bindings,
+                                },
+                            ),
+                        })
+                        .expect("encode management event"),
+                ],
+            })
+            .await
+            .expect("append managed open");
+
+        let runtime = Arc::new(FakeRuntime::default());
+        let service = FleetService::new(sessions.clone(), runtime.clone());
+        let error = service
+            .spawn(context(source), spawn_args("summarize"))
+            .await
+            .expect_err("managed source cannot be cloned");
+
+        assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
+        assert!(error.message.contains("cannot be cloned or forked"));
+        assert!(runtime.started_sessions.lock().expect("lock").is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4425,6 +4506,7 @@ mod tests {
             id: session_id.as_str().to_owned(),
             status,
             display_name: None,
+            managed: false,
             config_revision: 1,
             config: Some(api::SessionConfig {
                 model: Some(api::ModelConfig {
@@ -4455,6 +4537,7 @@ mod tests {
             runs,
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
+            management: None,
             vfs_mounts: Vec::new(),
         }
     }

@@ -1,6 +1,9 @@
 # P96: Environment API Review — Machines vs Bindings, Real Presence
 
 **Status**
+- P104 completed 2026-07-29: provider-owned jobs no longer have a Lightspeed
+  registry. Both job tables, `JobHandleStore`, and listing surfaces are
+  deleted; this document's registry/occupancy design below is historical.
 - Implemented 2026-07-09 as a greenfield breaking change. The shipped cut
   separates provider presence, universe environment instances, session
   bindings, and environment-owned jobs across the domain, store, API, gateway,
@@ -10,8 +13,13 @@
   ownership and protects the transport-neutral filesystem/process/job
   boundaries without introducing a general plugin system or separately
   deployed environment service.
+- Follow-on 2026-07-28: the environment/job ownership boundary above remains,
+  but P100b now supervises model-visible `job_start`. The `EnvJob` Promise
+  source and the subscription/check/cancel transport described later in this
+  historical implementation plan were deleted; keyed `Workflow` Promises now
+  address the same core `EnvironmentJobWorkflow`.
 - **Greenfield: breaking changes are fine.** Store schemas
-  (`006_environments.sql`) and wire shapes change in place; local stacks are
+  (`005_environments.sql`) and wire shapes change in place; local stacks are
   reset; contract artifacts + TS client regenerated.
 - Follows P95's boundary model (config = grants, resources = bindings) and
   applies the same whole-surface pass to the environment domain that config
@@ -168,14 +176,13 @@ New universe methods:
 - `environments/read`, `environments/list` (filter by provider) — replaces
   `environments/providers/targets/list`.
 - `environments/close` — the only machine-teardown path. It is
-  **transactionally occupancy-checked** and rejects while sessions hold
-  attached bindings or nonterminal environment job groups remain, listing
-  both. `begin_close(instance_id)` locks the instance row, performs the check,
-  and transitions it to `Closing`; attach and job creation reject `Closing`
-  instances. The gateway then calls controller `close_target` and finalizes
-  the observed status. A definite provider rejection restores the prior
-  state; an indeterminate transport failure leaves the instance `Unknown`
-  for reconciliation.
+  **transactionally binding-checked** and rejects while sessions hold attached
+  bindings. `begin_close(instance_id)` locks the instance row and transitions
+  it to `Closing`; attach and job start reject `Closing` instances. The
+  provider then decides whether active jobs reject close or are
+  cancelled/interrupted. A definite provider rejection restores the prior
+  state; an indeterminate transport failure leaves the instance `Unknown` for
+  reconciliation.
 
 There is no `force` option in the first cut. Force-close requires coordinated
 detachment and engine deactivation across every occupying session; it should
@@ -243,13 +250,11 @@ job itself.
 
 #### Bare environment job contract
 
-`EnvironmentJobRecord` is keyed `(instance_id, job_id)` with host `namespace =
-instance_id`. It contains provider routing, an opaque `job_group_id`, name and
-queue metadata, creation timestamp, request hash, and optional creating
-session/run/turn provenance. Provenance is audit data, not ownership, and no
-session or binding foreign key is required. The Temporal runtime derives its
-workflow id from the group identity; Temporal vocabulary does not enter the
-bare domain record or public handle.
+A job handle is `(instance_id, job_id)`. Lightspeed stores no job record or
+group record. Bare workflows use a canonical group-derived Temporal identity;
+session-supervised `job_start` uses its generic P100b execution identity. The
+logical group exists only inside workflow/API identity, not as a database
+resource.
 
 Provider-facing job ids are instance-unique. Auto-generated ids include the
 create request identity; caller-supplied ids are canonicalized into the same
@@ -262,15 +267,14 @@ The universe API exposes the complete bare contract:
   or DAG) on `instanceId`; no session or promise is required. It returns after
   the workflow has registered the group and the provider has accepted the
   idempotent start, not after jobs finish.
-- `environments/jobs/read|list|cancel` — address jobs through `instanceId` and
+- `environments/jobs/read|cancel` — address jobs through `instanceId` and
   remain usable independently of session bindings.
 
 A bare job continues until it reaches a provider terminal state or is
 explicitly cancelled. It is not implicitly cancelled because some unrelated
-session or run ends. First-cut instance close is refused while its job group
-is nonterminal. The provider remains authoritative for live execution state
-and retained output; Lightspeed stores routing, idempotency, the latest
-observation, and the monotonic fact that a job/group has become terminal.
+session or run ends. On instance close, the provider may reject while jobs are
+active or cancel/interrupt them. The provider remains authoritative for live
+execution state, retained output, and request/job idempotency.
 
 #### One peer workflow per job group
 
@@ -575,7 +579,7 @@ alignment slice.
    ref + `Attached | Detached`), explicit-time presence liveness helper,
    environment-owned job/group records, delete dead stored provider/binding
    status variants; memory store + tests.
-2. **Done: `crates/store-pg`** — `006_environments.sql` edited in place
+2. **Done: `crates/store-pg`** — `005_environments.sql` edited in place
    (`environment_targets` → `environments` owned table; bindings drop
    connection/caps/kind columns, gain instance FK, put-or-reattach with
    credential clearing on re-point; unique provider-target identity; atomic

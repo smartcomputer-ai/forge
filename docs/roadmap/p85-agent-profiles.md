@@ -1,6 +1,9 @@
 # P85: Agent Profiles
 
 **Status**
+- Updated 2026-07-29: profile APIs remain core; bridge-specific provisioning
+  described below is historical and now belongs to the external Channels
+  application.
 - Implemented 2026-06-24.
 - Updated 2026-06-25 to reflect the final implemented shape.
 - Final shape: profile wire DTOs and `ProfileSource` live in `crates/api/` so
@@ -37,7 +40,7 @@ P85 is implemented end-to-end with these concrete pieces:
   `SessionStartParams.profile`. The committed OpenRPC/schema/method artifacts
   and generated TypeScript client were regenerated.
 - **Postgres registry** in `crates/store-pg/`: migration
-  `007_agent_profiles.sql` and `PgStore`'s `ProfileStore` implementation with
+  `006_agent_profiles.sql` and `PgStore`'s `ProfileStore` implementation with
   optimistic revision checks and document JSONB storage.
 - **Hosted runtime applier** in `temporal-server`: resolves named or inline
   `ProfileSource`, merges profile config into `session/start` with explicit
@@ -145,7 +148,7 @@ boundary rather than in a separate crate:
    DTOs: validation helpers, typed errors, update records, patch application, and
    the substrate-neutral `ProfileStore` trait. It depends on `api`; `api` does not
    depend back on it.
-3. **`crates/store-pg/src/profile.rs`** + migration `007_agent_profiles.sql` — the
+3. **`crates/store-pg/src/profile.rs`** + migration `006_agent_profiles.sql` — the
    Postgres-backed `ProfileStore`. A profile catalog table, exactly like the MCP
    server catalog (`003_mcp.sql`) and environment registry (`006_*`).
 4. **profile applier** in the hosted runtime (`temporal-server`) — resolves a
@@ -441,7 +444,7 @@ bridge starts the session with `tools.messaging = true`.
 - `crates/profiles/`: typed `ProfileError`, `UpdateAgentProfile`,
   validation/patch helper traits, and the `ProfileStore` trait over `api` profile
   DTOs.
-- `crates/store-pg/src/profile.rs` + `migrations/007_agent_profiles.sql`:
+- `crates/store-pg/src/profile.rs` + `migrations/006_agent_profiles.sql`:
   Postgres `ProfileStore` impl and an `agent_profiles` catalog table (id,
   display_name, description, revision, document JSONB, timestamps). (Pattern:
   `mcp.rs` / `003_mcp.sql`.)
@@ -693,7 +696,7 @@ To let `import`/`check` validate `providerId` / `targetId` without starting a
 session, expose the **already-existing** registry list capability through a thin,
 additive read API. The internal plumbing is fully in place: `list_providers` and
 `list_targets` already exist on the `environments` store traits and are
-already implemented in `store-pg` (migration `006_environments.sql`
+already implemented in `store-pg` (migration `005_environments.sql`
 tables and indexes). Only the API exposure layer is missing.
 
 - `environmentProviders/list { status?, providerKind? } -> { providers[] }`

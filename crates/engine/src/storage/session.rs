@@ -1,7 +1,8 @@
 //! Session event-log storage contract.
 
 use crate::{
-    CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND,
+    CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND, CoreAgentCodec,
+    CoreAgentEvent, WorkflowToolConfigEvent,
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
 };
 use async_trait::async_trait;
@@ -26,6 +27,10 @@ pub struct SessionRecord {
     /// replaying inherited history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at_seq: Option<EventSeq>,
+    /// Cheap catalog/list projection of immutable lifecycle ownership. This
+    /// is true only when a managed-session declaration names a lifecycle
+    /// controller; workflow-tool-only declarations remain ordinary sessions.
+    pub managed: bool,
     pub head: Option<SessionPosition>,
     pub source_session_id: Option<SessionId>,
     pub source_seq: Option<EventSeq>,
@@ -191,6 +196,9 @@ pub enum SessionStoreError {
 
     #[error("session has fork children and still backs their inherited history: {session_id}")]
     SessionHasForkChildren { session_id: SessionId },
+
+    #[error("lifecycle-managed session cannot be cloned or forked: {session_id}")]
+    ManagedSessionCannotBranch { session_id: SessionId },
 
     #[error("session store failure: {message}")]
     Store { message: String },
@@ -358,6 +366,7 @@ impl SessionStore for InMemorySessionStore {
             display_name: request.display_name,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            managed: false,
             head: None,
             source_session_id: None,
             source_seq: None,
@@ -487,8 +496,14 @@ impl SessionStore for InMemorySessionStore {
         let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
             message: "session store write lock poisoned".into(),
         })?;
-        if !inner.records.contains_key(&request.source_session_id) {
-            return Err(SessionStoreError::SessionNotFound {
+        let source = inner
+            .records
+            .get(&request.source_session_id)
+            .ok_or_else(|| SessionStoreError::SessionNotFound {
+                session_id: request.source_session_id.clone(),
+            })?;
+        if source.managed {
+            return Err(SessionStoreError::ManagedSessionCannotBranch {
                 session_id: request.source_session_id,
             });
         }
@@ -503,6 +518,7 @@ impl SessionStore for InMemorySessionStore {
             display_name: None,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            managed: false,
             head: None,
             source_session_id: Some(request.source_session_id),
             source_seq: None,
@@ -524,8 +540,14 @@ impl SessionStore for InMemorySessionStore {
         let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
             message: "session store write lock poisoned".into(),
         })?;
-        if !inner.records.contains_key(&request.source_session_id) {
-            return Err(SessionStoreError::SessionNotFound {
+        let source = inner
+            .records
+            .get(&request.source_session_id)
+            .ok_or_else(|| SessionStoreError::SessionNotFound {
+                session_id: request.source_session_id.clone(),
+            })?;
+        if source.managed {
+            return Err(SessionStoreError::ManagedSessionCannotBranch {
                 session_id: request.source_session_id,
             });
         }
@@ -546,6 +568,7 @@ impl SessionStore for InMemorySessionStore {
             display_name: None,
             lifecycle_status,
             closed_at_seq,
+            managed: false,
             head,
             source_session_id: Some(request.source_session_id),
             source_seq: Some(request.source_seq),
@@ -875,6 +898,19 @@ pub fn apply_lifecycle_projection(record: &mut SessionRecord, entry: &StoredSess
             record.lifecycle_status = SessionLifecycleStatus::Closed;
             record.closed_at_seq = Some(entry.position.seq);
         }
+        "lightspeed.core.workflow_tool_config.managed_bindings_admitted" => {
+            if matches!(
+                CoreAgentCodec.decode_event(&entry.event),
+                Ok(CoreAgentEvent::WorkflowToolConfig(
+                    WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                        lifecycle_controller: Some(_),
+                        ..
+                    }
+                ))
+            ) {
+                record.managed = true;
+            }
+        }
         _ => {}
     }
 }
@@ -1003,6 +1039,27 @@ mod tests {
 
     fn lifecycle_opened_event(at_ms: u64) -> UncommittedStoredEvent {
         test_event(at_ms, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND)
+    }
+
+    fn managed_bindings_event(
+        at_ms: u64,
+        lifecycle_controller: Option<crate::WorkflowEndpointRef>,
+    ) -> UncommittedStoredEvent {
+        CoreAgentCodec
+            .encode_uncommitted(&crate::UncommittedCoreAgentEvent {
+                observed_at_ms: at_ms,
+                joins: crate::CoreAgentJoins::default(),
+                event: CoreAgentEvent::WorkflowToolConfig(
+                    WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                        session_universe_id: uuid::Uuid::from_u128(1),
+                        declaration_version: 1,
+                        lifecycle_controller,
+                        creation_fingerprint: "test-creation-fingerprint".to_owned(),
+                        bindings: Vec::new(),
+                    },
+                ),
+            })
+            .expect("encode managed bindings event")
     }
 
     fn lifecycle_closed_event(at_ms: u64) -> UncommittedStoredEvent {
@@ -1255,6 +1312,107 @@ mod tests {
                 .expect("load deleted parent")
                 .is_none()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn management_projection_rejects_clones_and_forks() {
+        let store = InMemorySessionStore::new();
+        let parent = SessionId::new("managed-parent");
+        store
+            .create_session(CreateSession {
+                session_id: parent.clone(),
+                display_name: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create parent");
+        store
+            .append(AppendSessionEvents {
+                session_id: parent.clone(),
+                expected_head: None,
+                events: vec![
+                    lifecycle_opened_event(10),
+                    managed_bindings_event(
+                        11,
+                        Some(crate::WorkflowEndpointRef {
+                            workflow_id: "channels/session-1".to_owned(),
+                            workflow_kind: "channelSessionWorkflowV1".to_owned(),
+                        }),
+                    ),
+                ],
+            })
+            .await
+            .expect("admit management");
+
+        let parent_record = store
+            .load_session(&parent)
+            .await
+            .expect("load parent")
+            .expect("parent exists");
+        assert!(parent_record.managed);
+
+        let clone_error = store
+            .create_cloned_session(CreateClonedSession {
+                source_session_id: parent.clone(),
+                session_id: SessionId::new("managed-clone"),
+                created_at_ms: 20,
+                opening_events: vec![lifecycle_opened_event(20)],
+            })
+            .await
+            .expect_err("managed session cannot be cloned");
+        assert!(matches!(
+            clone_error,
+            SessionStoreError::ManagedSessionCannotBranch { .. }
+        ));
+
+        let fork_error = store
+            .create_forked_session(CreateForkedSession {
+                source_session_id: parent.clone(),
+                session_id: SessionId::new("managed-fork"),
+                source_seq: EventSeq::new(2),
+                created_at_ms: 21,
+            })
+            .await
+            .expect_err("managed session cannot be forked");
+        assert!(matches!(
+            fork_error,
+            SessionStoreError::ManagedSessionCannotBranch { .. }
+        ));
+
+        let tool_only = SessionId::new("tool-only");
+        store
+            .create_session(CreateSession {
+                session_id: tool_only.clone(),
+                display_name: None,
+                created_at_ms: 30,
+            })
+            .await
+            .expect("create tool-only session");
+        store
+            .append(AppendSessionEvents {
+                session_id: tool_only.clone(),
+                expected_head: None,
+                events: vec![lifecycle_opened_event(31), managed_bindings_event(32, None)],
+            })
+            .await
+            .expect("admit tool-only bindings");
+        let tool_only = store
+            .load_session(&tool_only)
+            .await
+            .expect("load tool-only session")
+            .expect("tool-only session exists");
+        assert!(!tool_only.managed);
+
+        let tool_only_fork = store
+            .create_forked_session(CreateForkedSession {
+                source_session_id: tool_only.session_id,
+                session_id: SessionId::new("tool-only-fork"),
+                source_seq: EventSeq::new(2),
+                created_at_ms: 33,
+            })
+            .await
+            .expect("tool-only session remains forkable");
+        assert!(!tool_only_fork.managed);
     }
 
     #[tokio::test(flavor = "current_thread")]

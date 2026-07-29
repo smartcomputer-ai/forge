@@ -1,8 +1,10 @@
 use engine::{
-    CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND, StoredEvent,
+    CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND, CoreAgentCodec,
+    CoreAgentEvent, CoreAgentJoins, StoredEvent, UncommittedCoreAgentEvent, WorkflowEndpointRef,
+    WorkflowToolConfigEvent,
     session::{EventSeq, SessionId, StoredJoins, UncommittedStoredEvent},
     storage::{
-        AppendSessionEvents, CreateForkedSession, CreateSession, ListSessions,
+        AppendSessionEvents, CreateClonedSession, CreateForkedSession, CreateSession, ListSessions,
         SessionLifecycleStatus, SessionStore, SessionStoreError,
     },
 };
@@ -12,7 +14,7 @@ use uuid::Uuid;
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres env"]
-async fn pg_live_lifecycle_projection_lists_and_forks_without_lifecycle_replay() {
+async fn pg_live_lifecycle_projection_rejects_managed_branches() {
     let store = live_store().await;
     let parent = SessionId::new("lifecycle-parent");
     let created = store
@@ -47,8 +49,15 @@ async fn pg_live_lifecycle_projection_lists_and_forks_without_lifecycle_replay()
             session_id: parent.clone(),
             expected_head: opened.head,
             events: vec![
-                lifecycle_event(11, "lightspeed.test.work"),
-                lifecycle_event(12, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
+                managed_bindings_event(
+                    11,
+                    Some(WorkflowEndpointRef {
+                        workflow_id: "lifecycle/controller-1".to_owned(),
+                        workflow_kind: "lifecycle.workflow.v1".to_owned(),
+                    }),
+                ),
+                lifecycle_event(12, "lightspeed.test.work"),
+                lifecycle_event(13, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
             ],
         })
         .await
@@ -62,7 +71,8 @@ async fn pg_live_lifecycle_projection_lists_and_forks_without_lifecycle_replay()
         closed_record.lifecycle_status,
         SessionLifecycleStatus::Closed
     );
-    assert_eq!(closed_record.closed_at_seq, Some(EventSeq::new(3)));
+    assert_eq!(closed_record.closed_at_seq, Some(EventSeq::new(4)));
+    assert!(closed_record.managed);
 
     let listed = store
         .list_sessions(ListSessions {
@@ -80,35 +90,98 @@ async fn pg_live_lifecycle_projection_lists_and_forks_without_lifecycle_replay()
         listed_parent.lifecycle_status,
         SessionLifecycleStatus::Closed
     );
+    assert!(listed_parent.managed);
 
-    let before_close = store
+    let clone_error = store
+        .create_cloned_session(CreateClonedSession {
+            source_session_id: parent.clone(),
+            session_id: SessionId::new("managed-clone"),
+            created_at_ms: 19,
+            opening_events: vec![lifecycle_event(
+                19,
+                CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND,
+            )],
+        })
+        .await
+        .expect_err("managed session cannot be cloned");
+    assert!(matches!(
+        clone_error,
+        SessionStoreError::ManagedSessionCannotBranch { .. }
+    ));
+
+    let fork_error = store
         .create_forked_session(CreateForkedSession {
             source_session_id: parent.clone(),
-            session_id: SessionId::new("fork-before-close"),
-            source_seq: EventSeq::new(2),
+            session_id: SessionId::new("managed-fork"),
+            source_seq: EventSeq::new(4),
             created_at_ms: 20,
         })
         .await
-        .expect("fork before close event");
-    assert_eq!(before_close.lifecycle_status, SessionLifecycleStatus::Open);
-    assert_eq!(before_close.closed_at_seq, None);
+        .expect_err("managed session cannot be forked");
+    assert!(matches!(
+        fork_error,
+        SessionStoreError::ManagedSessionCannotBranch { .. }
+    ));
 
-    let through_close = store
-        .create_forked_session(CreateForkedSession {
-            source_session_id: parent,
-            session_id: SessionId::new("fork-through-close"),
-            source_seq: EventSeq::new(3),
-            created_at_ms: 21,
+    let tool_only = SessionId::new("workflow-tools-without-controller");
+    store
+        .create_session(CreateSession {
+            session_id: tool_only.clone(),
+            display_name: None,
+            created_at_ms: 30,
         })
         .await
-        .expect("fork through close event");
-    assert_eq!(
-        through_close.lifecycle_status,
-        SessionLifecycleStatus::Closed
-    );
-    assert_eq!(through_close.closed_at_seq, Some(EventSeq::new(3)));
+        .expect("create tool-only session");
+    store
+        .append(AppendSessionEvents {
+            session_id: tool_only.clone(),
+            expected_head: None,
+            events: vec![
+                lifecycle_event(31, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND),
+                managed_bindings_event(32, None),
+            ],
+        })
+        .await
+        .expect("append tool-only workflow declaration");
+    let tool_only_record = store
+        .load_session(&tool_only)
+        .await
+        .expect("load tool-only session")
+        .expect("tool-only session exists");
+    assert!(!tool_only_record.managed);
+    let tool_only_fork = store
+        .create_forked_session(CreateForkedSession {
+            source_session_id: tool_only,
+            session_id: SessionId::new("tool-only-fork"),
+            source_seq: EventSeq::new(2),
+            created_at_ms: 33,
+        })
+        .await
+        .expect("tool-only session remains forkable");
+    assert!(!tool_only_fork.managed);
 
     cleanup_universe(&store).await;
+}
+
+fn managed_bindings_event(
+    at_ms: u64,
+    lifecycle_controller: Option<WorkflowEndpointRef>,
+) -> UncommittedStoredEvent {
+    CoreAgentCodec
+        .encode_uncommitted(&UncommittedCoreAgentEvent {
+            observed_at_ms: at_ms,
+            joins: CoreAgentJoins::default(),
+            event: CoreAgentEvent::WorkflowToolConfig(
+                WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                    session_universe_id: Uuid::from_u128(1),
+                    declaration_version: 1,
+                    lifecycle_controller,
+                    creation_fingerprint: "test-creation-fingerprint".to_owned(),
+                    bindings: Vec::new(),
+                },
+            ),
+        })
+        .expect("encode managed bindings event")
 }
 
 #[tokio::test(flavor = "current_thread")]

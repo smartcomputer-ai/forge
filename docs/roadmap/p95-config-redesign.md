@@ -1,6 +1,9 @@
 # P95: Config Redesign — Full-Document Puts, Feature-Oriented Session Config
 
 **Status**
+- Updated 2026-07-29: the `messaging` feature grant introduced by this design
+  was removed when channel integration moved to the external Channels
+  application; the remaining full-document config model is unchanged.
 - Proposed 2026-07-09.
 - Slice 1 completed 2026-07-09: engine config core restructured
   (`SessionConfig { model, generation, limits, context, features }`, patch
@@ -236,7 +239,7 @@ The session config is a single document with two kinds of sections:
     "messaging": { "version": 1 },
     "fleet": { "version": 1, "profiles": { "allow": ["researcher"] } },
     "timers": { "version": 1 },
-    "environments": { "version": 1 },
+    "environments": { "version": 1, "jobs": false },
     "mcp": { "version": 1, "servers": [{ "serverId": "linear" }] }
   }
 }

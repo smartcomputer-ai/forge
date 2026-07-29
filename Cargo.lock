@@ -860,6 +860,7 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -2015,17 +2016,6 @@ name = "memchr"
 version = "2.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
-
-[[package]]
-name = "messaging"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "engine",
- "serde",
- "thiserror 1.0.69",
- "tokio",
-]
 
 [[package]]
 name = "mime"
@@ -3749,7 +3739,6 @@ dependencies = [
  "environments",
  "host-protocol",
  "mcp",
- "messaging",
  "moka",
  "object_store",
  "profiles",
@@ -3888,12 +3877,13 @@ dependencies = [
  "engine",
  "environments",
  "futures",
+ "futures-util",
  "host-client",
  "host-protocol",
+ "jsonschema",
  "llm-clients",
  "llm-runtime",
  "mcp",
- "messaging",
  "object_store",
  "profiles",
  "reqwest",
@@ -3927,9 +3917,11 @@ dependencies = [
  "engine",
  "futures",
  "futures-util",
+ "hex",
  "host-protocol",
  "serde",
  "serde_json",
+ "sha2",
  "temporalio-client",
  "temporalio-common",
  "temporalio-macros",
@@ -4418,7 +4410,7 @@ dependencies = [
  "glob",
  "host-client",
  "host-protocol",
- "messaging",
+ "jsonschema",
  "regex",
  "reqwest",
  "serde",
@@ -4426,6 +4418,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "uuid",
  "vfs",
 ]
 

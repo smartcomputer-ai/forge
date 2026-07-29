@@ -1,9 +1,8 @@
 use std::sync::Arc;
 
 use engine::{
-    BlobRef, ContextCompactionResult, LlmGenerationResult, PromiseSourceCancelRequest,
-    PromiseSourceCancelResult, PromiseSourceCheckRequest, PromiseSourceCheckResult,
-    PromiseSourceSubscribeRequest, ToolBatchOutcome,
+    BlobRef, ContextCompactionResult, LlmGenerationResult, PromiseSourceCheckResult,
+    ToolBatchOutcome,
 };
 use store_pg::PgStore;
 use temporalio_common::error::ApplicationFailure;
@@ -13,12 +12,14 @@ use temporalio_sdk::activities::{ActivityContext, ActivityError};
 use crate::fleet::FleetChildRuntime;
 use crate::universe::{UniverseError, UniverseRuntime};
 use crate::worker::{
-    ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_PROMISE_SOURCE, ACTIVITY_CHECK_PROMISE_SOURCE,
-    ACTIVITY_CONTEXT_COMPACT, ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
-    ACTIVITY_ENVIRONMENT_JOB_POLL, ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE,
-    ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
-    ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_SUBSCRIBE_PROMISE_SOURCE,
-    ACTIVITY_TOOL_INVOKE_BATCH, AppendEventsRequest, ContextCompactActivityRequest,
+    ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CONTEXT_COMPACT,
+    ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
+    ACTIVITY_ENVIRONMENT_JOB_POLL, ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL,
+    ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_PREPROCESS_RUN_INPUT,
+    ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB, ACTIVITY_RUNTIME_PROJECTION_REFRESH,
+    ACTIVITY_START_WORKFLOW_TOOL_EXECUTION, ACTIVITY_TOOL_INVOKE_BATCH,
+    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest, ContextCompactActivityRequest,
     CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobStartActivityRequest, EnvironmentJobStartActivityResult,
@@ -37,6 +38,7 @@ mod runtime_projection;
 mod state;
 mod storage;
 mod tools;
+mod workflow_tools;
 
 pub use preprocess::{
     AudioTranscodeError, AudioTranscodeOutput, AudioTranscodeRequest, AudioTranscoder,
@@ -51,7 +53,9 @@ pub use state::{
 /// Worker-side universe routing. Activities carry no universe field; the
 /// authoritative tenant identity is the composed workflow id
 /// (`{universe_id}/{session_id}`, asserted at workflow bootstrap), which every
-/// activity task carries in its `ActivityContext`.
+/// session activity task carries in its `ActivityContext`. System workflows
+/// with content-derived ids instead pass an explicitly validated universe in
+/// their activity input.
 enum WorkerUniverses {
     /// One pre-built state for one universe. Used by tests and single-universe
     /// tools; activities for any other universe fail.
@@ -136,6 +140,13 @@ impl WorkerActivities {
                 )),
             ));
         };
+        self.state_for_universe(universe_id).await
+    }
+
+    async fn state_for_universe(
+        &self,
+        universe_id: uuid::Uuid,
+    ) -> Result<Arc<ActivityState>, ActivityError> {
         match &self.universes {
             WorkerUniverses::Fixed {
                 universe_id: served,
@@ -144,7 +155,7 @@ impl WorkerActivities {
                 if *served != universe_id {
                     return Err(ActivityError::application(
                         ApplicationFailure::non_retryable(anyhow::anyhow!(
-                            "worker serves universe {served} but workflow {workflow_id} belongs to {universe_id}"
+                            "worker serves universe {served} but activity requested {universe_id}"
                         )),
                     ));
                 }
@@ -220,20 +231,12 @@ mod tests {
             temporal_workflow::WorkflowActivities::runtime_projection_refresh.name()
         );
         assert_eq!(
-            WorkerActivities::check_promise_source.name(),
-            temporal_workflow::WorkflowActivities::check_promise_source.name()
-        );
-        assert_eq!(
-            WorkerActivities::cancel_promise_source.name(),
-            temporal_workflow::WorkflowActivities::cancel_promise_source.name()
-        );
-        assert_eq!(
-            WorkerActivities::subscribe_promise_source.name(),
-            temporal_workflow::WorkflowActivities::subscribe_promise_source.name()
-        );
-        assert_eq!(
             WorkerActivities::environment_job_start.name(),
             temporal_workflow::WorkflowActivities::environment_job_start.name()
+        );
+        assert_eq!(
+            WorkerActivities::environment_job_prepare_workflow_tool.name(),
+            temporal_workflow::WorkflowActivities::environment_job_prepare_workflow_tool.name()
         );
         assert_eq!(
             WorkerActivities::environment_job_poll.name(),
@@ -242,6 +245,22 @@ mod tests {
         assert_eq!(
             WorkerActivities::environment_job_cancel.name(),
             temporal_workflow::WorkflowActivities::environment_job_cancel.name()
+        );
+        assert_eq!(
+            WorkerActivities::validate_workflow_tool_reply.name(),
+            temporal_workflow::WorkflowActivities::validate_workflow_tool_reply.name()
+        );
+        assert_eq!(
+            WorkerActivities::start_workflow_tool_execution.name(),
+            temporal_workflow::WorkflowActivities::start_workflow_tool_execution.name()
+        );
+        assert_eq!(
+            WorkerActivities::check_workflow_tool_execution.name(),
+            temporal_workflow::WorkflowActivities::check_workflow_tool_execution.name()
+        );
+        assert_eq!(
+            WorkerActivities::cancel_workflow_tool_execution.name(),
+            temporal_workflow::WorkflowActivities::cancel_workflow_tool_execution.name()
         );
     }
 
@@ -315,7 +334,6 @@ mod tests {
                 tools: vec![engine::ToolSpec {
                     name: engine::ToolName::new(FAKE_TOOL_NAME),
                     kind: engine::ToolKind::Function(engine::FunctionToolSpec {
-                        model_name: None,
                         description_ref: None,
                         input_schema_ref: engine::BlobRef::from_bytes(
                             br#"{"type":"object","properties":{"text":{"type":"string"}}}"#,
@@ -431,78 +449,85 @@ impl WorkerActivities {
         runtime_projection::refresh_runtime_projection(state.runtime_projection(), request).await
     }
 
-    #[activity(name = ACTIVITY_CHECK_PROMISE_SOURCE)]
-    pub async fn check_promise_source(
-        self: Arc<Self>,
-        ctx: ActivityContext,
-        request: PromiseSourceCheckRequest,
-    ) -> Result<PromiseSourceCheckResult, ActivityError> {
-        let state = self.state_for(&ctx).await?;
-        state
-            .tools()
-            .tools
-            .check_promise_source(request)
-            .await
-            .map_err(tools::activity_error_for_core)
-    }
-
-    #[activity(name = ACTIVITY_CANCEL_PROMISE_SOURCE)]
-    pub async fn cancel_promise_source(
-        self: Arc<Self>,
-        ctx: ActivityContext,
-        request: PromiseSourceCancelRequest,
-    ) -> Result<PromiseSourceCancelResult, ActivityError> {
-        let state = self.state_for(&ctx).await?;
-        state
-            .tools()
-            .tools
-            .cancel_promise_source(request)
-            .await
-            .map_err(tools::activity_error_for_core)
-    }
-
-    #[activity(name = ACTIVITY_SUBSCRIBE_PROMISE_SOURCE)]
-    pub async fn subscribe_promise_source(
-        self: Arc<Self>,
-        ctx: ActivityContext,
-        request: PromiseSourceSubscribeRequest,
-    ) -> Result<PromiseSourceCheckResult, ActivityError> {
-        let state = self.state_for(&ctx).await?;
-        state
-            .tools()
-            .tools
-            .subscribe_promise_source(request)
-            .await
-            .map_err(tools::activity_error_for_core)
-    }
-
     #[activity(name = ACTIVITY_ENVIRONMENT_JOB_START)]
     pub async fn environment_job_start(
         self: Arc<Self>,
-        ctx: ActivityContext,
+        _ctx: ActivityContext,
         request: EnvironmentJobStartActivityRequest,
     ) -> Result<EnvironmentJobStartActivityResult, ActivityError> {
-        let state = self.state_for(&ctx).await?;
+        let state = self.state_for_universe(request.universe_id).await?;
         environment_jobs::start(state.environment_jobs(), request).await
+    }
+
+    #[activity(name = ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL)]
+    pub async fn environment_job_prepare_workflow_tool(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        request: temporal_workflow::EnvironmentJobPrepareWorkflowToolRequest,
+    ) -> Result<temporal_workflow::EnvironmentJobWorkflowArgs, ActivityError> {
+        let state = self.state_for_universe(request.start.universe_id).await?;
+        environment_jobs::prepare_workflow_tool(state.environment_jobs(), request).await
     }
 
     #[activity(name = ACTIVITY_ENVIRONMENT_JOB_POLL)]
     pub async fn environment_job_poll(
         self: Arc<Self>,
-        ctx: ActivityContext,
+        _ctx: ActivityContext,
         request: EnvironmentJobPollActivityRequest,
     ) -> Result<EnvironmentJobPollActivityResult, ActivityError> {
-        let state = self.state_for(&ctx).await?;
+        let state = self.state_for_universe(request.universe_id).await?;
         environment_jobs::poll(state.environment_jobs().map(Arc::as_ref), request).await
     }
 
     #[activity(name = ACTIVITY_ENVIRONMENT_JOB_CANCEL)]
     pub async fn environment_job_cancel(
         self: Arc<Self>,
-        ctx: ActivityContext,
+        _ctx: ActivityContext,
         request: EnvironmentJobCancelActivityRequest,
     ) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
-        let state = self.state_for(&ctx).await?;
+        let state = self.state_for_universe(request.universe_id).await?;
         environment_jobs::cancel(state.environment_jobs().map(Arc::as_ref), request).await
+    }
+
+    #[activity(name = ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY)]
+    pub async fn validate_workflow_tool_reply(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: temporal_workflow::WorkflowToolReplyValidationRequest,
+    ) -> Result<temporal_workflow::WorkflowToolReplyValidationResult, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        storage::validate_workflow_tool_reply(state.storage(), request).await
+    }
+
+    #[activity(name = ACTIVITY_START_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn start_workflow_tool_execution(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: temporal_workflow::WorkflowToolStartActivityRequest,
+    ) -> Result<temporal_workflow::WorkflowToolStartActivityResult, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        workflow_tools::start_execution(state.workflow_tool_executions(), state.storage(), request)
+            .await
+    }
+
+    #[activity(name = ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn check_workflow_tool_execution(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: temporal_workflow::WorkflowToolExecutionCheckRequest,
+    ) -> Result<PromiseSourceCheckResult, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        workflow_tools::check_execution(state.workflow_tool_executions(), state.storage(), request)
+            .await
+    }
+
+    #[activity(name = ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION)]
+    pub async fn cancel_workflow_tool_execution(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: temporal_workflow::WorkflowToolExecutionCancelRequest,
+    ) -> Result<(), ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        workflow_tools::cancel_execution(state.workflow_tool_executions(), request).await
     }
 }

@@ -22,6 +22,15 @@ Creates a session with optional config/profile setup. Retrying an existing sessi
 - Params: `SessionStartParams`
 - Result: `AgentApiOutcome<SessionStartResponse>`
 
+### `session/managed/start`
+
+**Create or reopen a managed session**
+
+Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+
+- Params: `ManagedSessionStartParams`
+- Result: `AgentApiOutcome<SessionStartResponse>`
+
 ### `session/read`
 
 **Read a session**
@@ -314,7 +323,7 @@ Lists universe-owned instances, optionally filtered by provider or observed targ
 
 **Close an environment instance**
 
-Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.
+Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
 
 - Params: `EnvironmentCloseParams`
 - Result: `AgentApiOutcome<EnvironmentCloseResponse>`
@@ -336,15 +345,6 @@ Reads selected job handles with bounded output, optional sequence continuation, 
 
 - Params: `EnvironmentJobReadParams`
 - Result: `AgentApiOutcome<EnvironmentJobReadResponse>`
-
-### `environments/jobs/list`
-
-**List environment jobs**
-
-Lists durable job records across the universe, optionally narrowed to an instance or job group.
-
-- Params: `EnvironmentJobListParams`
-- Result: `AgentApiOutcome<EnvironmentJobListResponse>`
 
 ### `environments/jobs/cancel`
 
@@ -715,24 +715,6 @@ Creates or refreshes a universe auth grant for one accessible installation. The 
 - Params: `AuthGitHubInstallationGrantParams`
 - Result: `AgentApiOutcome<AuthGitHubInstallationGrantResponse>`
 
-### `outbox/read`
-
-**Read pending outbound messages**
-
-Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.
-
-- Params: `OutboxReadParams`
-- Result: `AgentApiOutcome<OutboxReadResponse>`
-
-### `outbox/ack`
-
-**Acknowledge outbound delivery**
-
-Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.
-
-- Params: `OutboxAckParams`
-- Result: `AgentApiOutcome<OutboxAckResponse>`
-
 
 ## Operator methods
 
@@ -798,13 +780,4 @@ Immediately and idempotently revokes the matching key only when it belongs to th
 
 - Params: `OperatorApiKeyRevokeParams`
 - Result: `AgentApiOutcome<OperatorApiKeyRevokeResponse>`
-
-### `operator/outbox/read`
-
-**Read the deployment outbox**
-
-Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.
-
-- Params: `OperatorOutboxReadParams`
-- Result: `AgentApiOutcome<OperatorOutboxReadResponse>`
 

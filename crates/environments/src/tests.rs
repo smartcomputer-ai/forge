@@ -171,7 +171,7 @@ async fn re_pointing_detached_binding_clears_credentials() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn close_rejects_bindings_and_active_job_groups() {
+async fn close_allows_instances_without_attached_bindings() {
     let store = InMemoryEnvironmentRegistryStore::new();
     store.register_provider(provider()).await.expect("provider");
     let instance = store
@@ -181,24 +181,14 @@ async fn close_rejects_bindings_and_active_job_groups() {
         ))
         .await
         .expect("instance");
-    store
-        .reserve_job_group(ReserveEnvironmentJobGroup {
-            instance_id: instance.instance_id.clone(),
-            job_group_id: EnvironmentJobGroupId::new("group"),
-            request_id: "request".to_owned(),
-            start_request_hash: "hash".to_owned(),
-            created_at_ms: 300,
-        })
-        .await
-        .expect("group");
-    let error = store
+    let closing = store
         .begin_close_instance(BeginCloseEnvironmentInstance {
             instance_id: instance.instance_id,
             updated_at_ms: 400,
         })
         .await
-        .expect_err("occupied");
-    assert!(matches!(error, EnvironmentRegistryError::Occupied { .. }));
+        .expect("close begins without local job occupancy state");
+    assert_eq!(closing.status, HostTargetStatus::Closing);
 }
 
 #[tokio::test(flavor = "current_thread")]

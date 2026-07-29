@@ -17,6 +17,11 @@ pub trait AgentApiService: Send + Sync {
         params: SessionStartParams,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError>;
 
+    async fn start_managed_session(
+        &self,
+        params: ManagedSessionStartParams,
+    ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError>;
+
     async fn create_profile(
         &self,
         params: ProfileCreateParams,
@@ -96,16 +101,6 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: ContextRemoveParams,
     ) -> Result<AgentApiOutcome<ContextRemoveResponse>, AgentApiError>;
-
-    async fn read_outbox(
-        &self,
-        params: OutboxReadParams,
-    ) -> Result<AgentApiOutcome<OutboxReadResponse>, AgentApiError>;
-
-    async fn ack_outbox(
-        &self,
-        params: OutboxAckParams,
-    ) -> Result<AgentApiOutcome<OutboxAckResponse>, AgentApiError>;
 
     async fn start_run(
         &self,
@@ -211,11 +206,6 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: EnvironmentJobReadParams,
     ) -> Result<AgentApiOutcome<EnvironmentJobReadResponse>, AgentApiError>;
-
-    async fn list_environment_jobs(
-        &self,
-        params: EnvironmentJobListParams,
-    ) -> Result<AgentApiOutcome<EnvironmentJobListResponse>, AgentApiError>;
 
     async fn cancel_environment_jobs(
         &self,

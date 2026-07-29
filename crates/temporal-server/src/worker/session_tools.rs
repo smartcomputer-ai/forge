@@ -7,33 +7,25 @@ use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core
 use async_trait::async_trait;
 use engine::{
     BlobRef, CoreAgentIoError, CoreAgentTools, PromiseId, PromiseScope, PromiseSource,
-    PromiseSourceCancelRequest, PromiseSourceCancelResult, PromiseSourceCheckRequest,
-    PromiseSourceCheckResult, PromiseSourceSubscribeRequest, ProviderApiKind, SessionId,
-    ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest, ToolInvocationBatchResult,
-    ToolInvocationResult, promise_cancel_effect, promise_create_effect, promise_detach_effect,
+    ProviderApiKind, SessionId, ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest,
+    ToolInvocationBatchResult, ToolInvocationResult, promise_cancel_effect, promise_create_effect,
+    promise_detach_effect,
     storage::{BlobStore, BlobStoreError, SessionStore},
 };
 use environments::{
-    EnvironmentId, EnvironmentInstanceId, EnvironmentInstanceStore, EnvironmentJobGroupId,
-    EnvironmentRegistryError, JobHandleRecord, JobHandleStore, ListJobHandles,
-    ReserveEnvironmentJobGroup, SessionEnvironmentBindingRecord, SessionEnvironmentBindingState,
+    EnvironmentInstanceId, EnvironmentInstanceStore, EnvironmentRegistryError,
+    SessionEnvironmentBindingRecord, SessionEnvironmentBindingState,
     SessionEnvironmentBindingStore,
 };
 use host_client::{HostClientError, HostDataClient, WebSocketConnectOptions};
 use host_protocol::{
     data::{
         handshake::{InitializeParams, InitializedParams},
-        jobs::{JobReadResult as HostJobReadResult, JobStatus, ReadJobsParams, StartJobsParams},
+        jobs::{JobReadResult as HostJobReadResult, ReadJobsParams},
     },
-    shared::{CURRENT_PROTOCOL_VERSION, HostConnectionSpec, HostTransport, JobId},
+    shared::{CURRENT_PROTOCOL_VERSION, HostConnectionSpec, HostTransport},
 };
-use messaging::OutboxStore;
-use serde_json::Value;
 use store_pg::PgStore;
-use temporalio_client::{
-    Client, WorkflowQueryOptions, WorkflowSignalOptions, WorkflowStartOptions,
-    errors::{WorkflowInteractionError, WorkflowQueryError},
-};
 use tools::{
     concurrency::{
         AWAIT_TOOL_NAME, AwaitArgs, CANCEL_TOOL_NAME, CancelArgs, CancelOutput,
@@ -42,20 +34,18 @@ use tools::{
         detach_promises_model_visible_text, is_concurrency_tool, sleep_model_visible_text,
     },
     environment::jobs::{
-        JOB_LIST_TOOL_NAME, JOB_READ_TOOL_NAME, JOB_START_TOOL_NAME, JobHandle, JobHandleArg,
-        JobListArgs, JobListResultEntry, JobListResultSet, JobReadArgs, JobReadResultEntry,
-        JobReadResultSet, JobStartArgs, JobStartResult, JobStarted, is_environment_job_tool_name,
-        visible_job_list_output, visible_job_read_output,
+        JOB_READ_TOOL_NAME, JobHandle, JobHandleArg, JobReadArgs, JobReadResultEntry,
+        JobReadResultSet, is_environment_job_query_tool_name, visible_job_read_output,
     },
     fleet::is_fleet_tool,
     fs::{FsPath, FsToolContext, MountedVfsFileSystem},
     host_protocol::RemoteHostConnection,
     limits::ToolLimits,
-    messaging::{MessagingToolExecutor, is_messaging_tool},
     runtime::InlineToolRuntime,
     runtime::{ToolCatalog, ToolTarget},
     toolset::{EnvironmentToolsetConfig, ToolsetConfig, ToolsetEnvironment, resolve_toolset},
     web::fetch::WebFetchToolConfig,
+    workflow_tool::invoke_workflow_tool,
 };
 use vfs::{VfsCatalogError, VfsMountRecord, VfsMountStore, VfsWorkspaceStore};
 
@@ -68,15 +58,10 @@ use crate::{
     },
 };
 
-const DEFAULT_JOB_LIST_LIMIT: usize = 20;
-const MAX_JOB_LIST_LIMIT: usize = 200;
-const PROMISE_JOB_OUTPUT_BYTES: usize = 16 * 1024;
-
-#[derive(Clone)]
-struct EnvironmentJobWorkflowRuntime {
-    client: Client,
-    task_queue: Option<String>,
-    universe_id: uuid::Uuid,
+#[derive(Default)]
+struct WorkflowToolBatchRuntime {
+    bindings: BTreeMap<engine::ToolName, engine::WorkflowToolBinding>,
+    emitted_counts: BTreeMap<engine::WorkflowToolId, u32>,
 }
 
 #[derive(Clone)]
@@ -89,10 +74,7 @@ pub struct SessionTools {
     environment_bindings: Option<Arc<dyn SessionEnvironmentBindingStore>>,
     environment_instances: Option<Arc<dyn EnvironmentInstanceStore>>,
     environment_credentials: Option<EnvironmentCredentialResolver>,
-    job_handles: Option<Arc<dyn JobHandleStore>>,
-    messaging: Option<MessagingToolExecutor>,
     fleet: Option<FleetToolExecutor>,
-    environment_job_workflow_runtime: Option<EnvironmentJobWorkflowRuntime>,
 }
 
 impl SessionTools {
@@ -111,16 +93,8 @@ impl SessionTools {
             environment_bindings: None,
             environment_instances: None,
             environment_credentials: None,
-            job_handles: None,
-            messaging: None,
             fleet: None,
-            environment_job_workflow_runtime: None,
         }
-    }
-
-    pub fn with_messaging_outbox(mut self, outbox: Arc<dyn OutboxStore>) -> Self {
-        self.messaging = Some(MessagingToolExecutor::new(outbox));
-        self
     }
 
     pub fn with_session_store(mut self, sessions: Arc<dyn SessionStore>) -> Self {
@@ -167,38 +141,6 @@ impl SessionTools {
         self
     }
 
-    pub fn with_job_handles(mut self, job_handles: Arc<dyn JobHandleStore>) -> Self {
-        self.job_handles = Some(job_handles);
-        self
-    }
-
-    pub fn with_environment_job_workflow_runtime(
-        mut self,
-        client: Client,
-        task_queue: String,
-        universe_id: uuid::Uuid,
-    ) -> Self {
-        self.environment_job_workflow_runtime = Some(EnvironmentJobWorkflowRuntime {
-            client,
-            task_queue: Some(task_queue),
-            universe_id,
-        });
-        self
-    }
-
-    pub fn with_environment_job_workflow_client(
-        mut self,
-        client: Client,
-        universe_id: uuid::Uuid,
-    ) -> Self {
-        self.environment_job_workflow_runtime = Some(EnvironmentJobWorkflowRuntime {
-            client,
-            task_queue: None,
-            universe_id,
-        });
-        self
-    }
-
     pub fn with_environment(mut self, environment: RuntimeEnvironment) -> Self {
         self.environments.insert_environment(environment);
         self
@@ -209,18 +151,14 @@ impl SessionTools {
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let mount_store: Arc<dyn VfsMountStore> = store.clone();
         let sessions: Arc<dyn SessionStore> = store.clone();
-        let outbox: Arc<dyn OutboxStore> = store.clone();
         let environment_bindings: Arc<dyn SessionEnvironmentBindingStore> = store.clone();
         let environment_instances: Arc<dyn EnvironmentInstanceStore> = store.clone();
         let credentials = EnvironmentCredentialResolver::from_pg_store(store.clone());
-        let job_handles: Arc<dyn JobHandleStore> = store;
         Self::new(blobs, workspace_store, mount_store)
             .with_session_store(sessions)
-            .with_messaging_outbox(outbox)
             .with_environment_bindings(environment_bindings)
             .with_environment_instances(environment_instances)
             .with_environment_credentials(credentials)
-            .with_job_handles(job_handles)
     }
 
     pub fn from_pg_store_with_fleet_runtime(
@@ -229,79 +167,6 @@ impl SessionTools {
     ) -> Self {
         let sessions: Arc<dyn engine::storage::SessionStore> = store.clone();
         Self::from_pg_store(store).with_fleet_runtime(sessions, runtime)
-    }
-
-    async fn invoke_messaging_call(
-        &self,
-        session_id: &SessionId,
-        run_id: engine::RunId,
-        call: &engine::ToolInvocationRequest,
-    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        let Some(executor) = &self.messaging else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                "messaging tools are not configured on this runtime",
-            )
-            .await;
-        };
-        let arguments: Value = match self.blobs.read_bytes(&call.arguments_ref).await {
-            Ok(bytes) => match serde_json::from_slice(&bytes) {
-                Ok(arguments) => arguments,
-                Err(error) => {
-                    return failed_result(
-                        self.blobs.as_ref(),
-                        call.call_id.clone(),
-                        format!("invalid JSON tool arguments: {error}"),
-                    )
-                    .await;
-                }
-            },
-            Err(error) => {
-                return failed_result(
-                    self.blobs.as_ref(),
-                    call.call_id.clone(),
-                    format!("read tool arguments: {error}"),
-                )
-                .await;
-            }
-        };
-        match executor
-            .invoke(session_id, run_id, &call.tool_name, arguments)
-            .await
-        {
-            Ok(output) => {
-                let output_bytes = serde_json::to_vec(&output.output_json)
-                    .map_err(|error| io_error(format!("encode tool output: {error}")))?;
-                let output_ref = self
-                    .blobs
-                    .put_bytes(output_bytes)
-                    .await
-                    .map_err(map_blob_error)?;
-                let visible_ref = self
-                    .blobs
-                    .put_bytes(output.model_visible_text.into_bytes())
-                    .await
-                    .map_err(map_blob_error)?;
-                Ok(ToolInvocationResult {
-                    call_id: call.call_id.clone(),
-                    status: ToolCallStatus::Succeeded,
-                    output_ref: Some(output_ref),
-                    model_visible_context_entries: vec![
-                        ToolInvocationResult::tool_result_context_entry(
-                            &call.call_id,
-                            ToolCallStatus::Succeeded,
-                            visible_ref,
-                        ),
-                    ],
-                    error_ref: None,
-                    effects: output.effects,
-                })
-            }
-            Err(error) => {
-                failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string()).await
-            }
-        }
     }
 
     async fn invoke_fleet_call(
@@ -698,39 +563,8 @@ impl SessionTools {
         request: &ToolInvocationBatchRequest,
         call: &engine::ToolInvocationRequest,
         environments: &SessionEnvironmentManager,
-        active_env_target: Option<&engine::ToolExecutionTarget>,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
         match call.tool_name.as_str() {
-            JOB_START_TOOL_NAME => {
-                let args: JobStartArgs = self.read_tool_args(call).await?;
-                self.invoke_environment_job_start(
-                    request,
-                    call,
-                    environments,
-                    active_env_target,
-                    args,
-                )
-                .await
-            }
-            JOB_LIST_TOOL_NAME => {
-                let args: JobListArgs = self.read_tool_args(call).await?;
-                let result = match self
-                    .list_environment_jobs(&request.session_id, environments, args)
-                    .await
-                {
-                    Ok(result) => result,
-                    Err(error) => {
-                        return failed_result(
-                            self.blobs.as_ref(),
-                            call.call_id.clone(),
-                            error.to_string(),
-                        )
-                        .await;
-                    }
-                };
-                self.succeeded_tool_result(call, &result, visible_job_list_output(&result.jobs))
-                    .await
-            }
             JOB_READ_TOOL_NAME => {
                 let args: JobReadArgs = self.read_tool_args(call).await?;
                 let result = self
@@ -766,622 +600,6 @@ impl SessionTools {
         }
     }
 
-    async fn invoke_environment_job_start(
-        &self,
-        request: &ToolInvocationBatchRequest,
-        call: &engine::ToolInvocationRequest,
-        environments: &SessionEnvironmentManager,
-        active_env_target: Option<&engine::ToolExecutionTarget>,
-        args: JobStartArgs,
-    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        let env_id = match self.resolve_env_id(args.env_id.as_deref(), active_env_target) {
-            Ok(env_id) => env_id,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error).await;
-            }
-        };
-        let binding = match self.read_ready_binding(&request.session_id, &env_id).await {
-            Ok(binding) => binding,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error).await;
-            }
-        };
-        let Some(environment) = environments.environment(env_id.as_str()) else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                format!("environment is not reachable: {}", env_id.as_str()),
-            )
-            .await;
-        };
-        let Some(_jobs) = environment.tool_context().jobs.as_ref() else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                format!(
-                    "environment does not support durable jobs: {}",
-                    env_id.as_str()
-                ),
-            )
-            .await;
-        };
-
-        let params = match build_start_jobs_params(request, call, &binding.instance_id, args) {
-            Ok(value) => value,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error).await;
-            }
-        };
-        let request_hash = match start_request_hash(&params) {
-            Ok(hash) => hash,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error).await;
-            }
-        };
-        let job_group_id = derived_tool_job_group_id(&binding.instance_id, &params.request_id);
-        let Some(job_store) = &self.job_handles else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                "job handle store is not configured on this runtime",
-            )
-            .await;
-        };
-        let created_at_ms = match now_unix_ms().and_then(u64_to_i64) {
-            Ok(value) => value,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
-                    .await;
-            }
-        };
-        if let Err(error) = job_store
-            .reserve_job_group(ReserveEnvironmentJobGroup {
-                instance_id: binding.instance_id.clone(),
-                job_group_id: job_group_id.clone(),
-                request_id: params.request_id.clone(),
-                start_request_hash: request_hash.clone(),
-                created_at_ms,
-            })
-            .await
-        {
-            return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
-                .await;
-        }
-        let holder_workflow_id = self
-            .environment_job_workflow_runtime
-            .as_ref()
-            .map(|runtime| {
-                temporal_workflow::compose_workflow_id(runtime.universe_id, &request.session_id)
-            });
-        let Some(holder_workflow_id) = holder_workflow_id else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                "environment job workflow runtime is not configured",
-            )
-            .await;
-        };
-        let subscriptions = params
-            .jobs
-            .iter()
-            .map(|job| temporal_workflow::EnvironmentJobSubscription {
-                holder_workflow_id: holder_workflow_id.clone(),
-                promise_id: env_job_promise_id(request, call, &binding.instance_id, &job.job_id),
-                job_id: job.job_id.clone(),
-                confirmation_deadline_ms: 0,
-                confirmed: false,
-                notified: false,
-            })
-            .collect::<Vec<_>>();
-        let job_ids = params.jobs.iter().map(|job| job.job_id.clone()).collect();
-        let start_payload = temporal_workflow::EnvironmentJobStartPayload {
-            request: params,
-            start_request_hash: request_hash.clone(),
-            provenance: temporal_workflow::EnvironmentJobProvenance {
-                session_id: Some(request.session_id.clone()),
-                run_id: Some(request.run_id),
-                turn_id: Some(request.turn_id),
-                tool_call_id: Some(call.call_id.clone()),
-            },
-            credential_scope: Some(temporal_workflow::EnvironmentJobCredentialScope {
-                session_id: request.session_id.clone(),
-                env_id: env_id.as_str().to_owned(),
-            }),
-        };
-        let request_ref = self
-            .blobs
-            .put_bytes(serde_json::to_vec(&start_payload).map_err(io_error)?)
-            .await
-            .map_err(map_blob_error)?;
-        let snapshot = match self
-            .start_environment_job_workflow(
-                temporal_workflow::EnvironmentJobStartActivityRequest {
-                    instance_id: binding.instance_id.as_str().to_owned(),
-                    job_group_id: job_group_id.as_str().to_owned(),
-                    request_ref,
-                },
-                job_ids,
-                subscriptions.clone(),
-            )
-            .await
-        {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
-                    .await;
-            }
-        };
-        let stored = job_store
-            .list_job_handles(ListJobHandles {
-                instance_id: Some(binding.instance_id.clone()),
-                job_group_id: Some(job_group_id.clone()),
-                created_by_session_id: Some(request.session_id.clone()),
-                limit: None,
-            })
-            .await
-            .map_err(map_environments_error)?;
-        let handle_by_job_id = stored
-            .into_iter()
-            .map(|record| {
-                (
-                    record.job_id.as_str().to_owned(),
-                    handle_from_record(&record),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let mut promise_effects = Vec::new();
-        let promise_by_job_id = subscriptions
-            .iter()
-            .map(|subscription| {
-                (
-                    subscription.job_id.as_str().to_owned(),
-                    subscription.promise_id.clone(),
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let result = JobStartResult {
-            jobs: snapshot
-                .jobs
-                .iter()
-                .map(|summary| {
-                    let promise_id = promise_by_job_id
-                        .get(summary.job_id.as_str())
-                        .cloned()
-                        .unwrap_or_else(|| {
-                            env_job_promise_id(request, call, &binding.instance_id, &summary.job_id)
-                        });
-                    promise_effects.push(promise_create_effect(
-                        &PromiseId::new(&promise_id),
-                        &PromiseSource::EnvJob {
-                            instance_id: binding.instance_id.as_str().to_owned(),
-                            job_id: summary.job_id.as_str().to_owned(),
-                        },
-                        None,
-                    ));
-                    (summary, promise_id)
-                })
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|(summary, promise)| JobStarted {
-                    name: summary.name.clone(),
-                    job_id: summary.job_id.clone(),
-                    handle: handle_by_job_id.get(summary.job_id.as_str()).cloned(),
-                    status: summary.status,
-                    dependencies: summary.dependencies.clone(),
-                    queue_key: summary.queue_key.clone(),
-                    promise: Some(promise),
-                })
-                .collect(),
-        };
-        let visible = result
-            .jobs
-            .iter()
-            .map(|job| {
-                let handle = job
-                    .handle
-                    .as_ref()
-                    .map(|handle| format!("{}/{}", handle.instance_id, handle.job_id))
-                    .unwrap_or_else(|| job.job_id.to_string());
-                match job.promise.as_deref() {
-                    Some(promise) => format!("{handle}: {:?} (promise {promise})", job.status),
-                    None => format!("{handle}: {:?}", job.status),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut tool_result = self.succeeded_tool_result(call, &result, visible).await?;
-        tool_result.effects.extend(promise_effects);
-        Ok(tool_result)
-    }
-
-    async fn start_environment_job_workflow(
-        &self,
-        start: temporal_workflow::EnvironmentJobStartActivityRequest,
-        job_ids: Vec<JobId>,
-        subscriptions: Vec<temporal_workflow::EnvironmentJobSubscription>,
-    ) -> Result<temporal_workflow::EnvironmentJobWorkflowSnapshot, CoreAgentIoError> {
-        let Some(runtime) = &self.environment_job_workflow_runtime else {
-            return Err(io_error(
-                "environment job workflow runtime is not configured",
-            ));
-        };
-        let task_queue = runtime
-            .task_queue
-            .as_ref()
-            .ok_or_else(|| io_error("environment job workflow task queue is not configured"))?;
-        let workflow_id = temporal_workflow::compose_environment_job_workflow_id(
-            runtime.universe_id,
-            &start.instance_id,
-            &start.job_group_id,
-        );
-        match runtime
-            .client
-            .start_workflow(
-                temporal_workflow::EnvironmentJobWorkflow::run,
-                temporal_workflow::EnvironmentJobWorkflowArgs {
-                    start,
-                    job_ids,
-                    subscriptions,
-                    started: false,
-                    jobs: Vec::new(),
-                    resolutions: BTreeMap::new(),
-                    poll_ms: 2_000,
-                    poll_attempt: 0,
-                },
-                WorkflowStartOptions::new(task_queue.clone(), workflow_id.clone()).build(),
-            )
-            .await
-        {
-            Ok(_) | Err(temporalio_client::errors::WorkflowStartError::AlreadyStarted { .. }) => {}
-            Err(error) => {
-                return Err(io_error(format!("start environment job workflow: {error}")));
-            }
-        }
-        let handle = runtime
-            .client
-            .get_workflow_handle::<temporal_workflow::EnvironmentJobWorkflow>(workflow_id);
-        let started_at = std::time::Instant::now();
-        loop {
-            if started_at.elapsed() > std::time::Duration::from_secs(60) {
-                return Err(io_error("timed out waiting for environment job start"));
-            }
-            match handle
-                .query(
-                    temporal_workflow::EnvironmentJobWorkflow::snapshot,
-                    (),
-                    WorkflowQueryOptions::default(),
-                )
-                .await
-            {
-                Ok(snapshot) if snapshot.started => return Ok(snapshot),
-                Ok(snapshot) if snapshot.last_error.is_some() => {
-                    return Err(io_error(snapshot.last_error.unwrap_or_else(|| {
-                        "environment job workflow start failed".to_owned()
-                    })));
-                }
-                Ok(_) | Err(WorkflowQueryError::NotFound(_)) => {}
-                Err(error) => {
-                    return Err(io_error(format!(
-                        "query environment job workflow start: {error}"
-                    )));
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        }
-    }
-
-    async fn list_environment_jobs(
-        &self,
-        current_session_id: &SessionId,
-        current_environments: &SessionEnvironmentManager,
-        args: JobListArgs,
-    ) -> Result<JobListResultSet, CoreAgentIoError> {
-        let session_id = resolve_job_list_session_id(current_session_id, args.session_id)?;
-        let instance_id = if let Some(env_id) = args.env_id {
-            let env_id = EnvironmentId::try_new(env_id)
-                .map_err(|error| io_error(format!("invalid env_id: {error}")))?;
-            let bindings = self.environment_bindings.as_ref().ok_or_else(|| {
-                io_error("environment binding store is not configured on this runtime")
-            })?;
-            Some(
-                bindings
-                    .read_binding(&session_id, &env_id)
-                    .await
-                    .map_err(map_environments_error)?
-                    .instance_id,
-            )
-        } else {
-            None
-        };
-        let limit = normalize_job_list_limit(args.limit)?;
-        let Some(job_store) = &self.job_handles else {
-            return Err(io_error(
-                "job handle store is not configured on this runtime",
-            ));
-        };
-        let records = job_store
-            .list_job_handles(ListJobHandles {
-                instance_id,
-                job_group_id: None,
-                created_by_session_id: Some(session_id.clone()),
-                limit: Some(limit),
-            })
-            .await
-            .map_err(map_environments_error)?;
-
-        let environments = if &session_id == current_session_id {
-            current_environments.clone()
-        } else {
-            self.environment_manager_for_session(&session_id).await?
-        };
-
-        let mut entries = vec![None; records.len()];
-        let mut grouped = BTreeMap::<EnvironmentInstanceId, Vec<(usize, JobHandleRecord)>>::new();
-        for (index, record) in records.into_iter().enumerate() {
-            grouped
-                .entry(record.instance_id.clone())
-                .or_default()
-                .push((index, record));
-        }
-
-        for (instance_id, group) in grouped {
-            let environment = environments
-                .environments()
-                .find(|environment| environment.instance_id() == Some(instance_id.as_str()));
-            let Some(environment) = environment else {
-                for (index, record) in group {
-                    entries[index] = Some(JobListResultEntry {
-                        handle: Some(handle_from_record(&record)),
-                        summary: None,
-                        error: Some(format!(
-                            "environment instance is not reachable: {instance_id}"
-                        )),
-                    });
-                }
-                continue;
-            };
-            let Some(jobs) = environment.tool_context().jobs.as_ref() else {
-                for (index, record) in group {
-                    entries[index] = Some(JobListResultEntry {
-                        handle: Some(handle_from_record(&record)),
-                        summary: None,
-                        error: Some(format!(
-                            "environment does not support durable jobs: {instance_id}"
-                        )),
-                    });
-                }
-                continue;
-            };
-            let namespace = group
-                .first()
-                .map(|(_, record)| record.instance_id.as_str().to_owned())
-                .unwrap_or_else(|| instance_id.as_str().to_owned());
-            let job_ids = group
-                .iter()
-                .map(|(_, record)| record.job_id.clone())
-                .collect::<Vec<_>>();
-            match jobs
-                .read_jobs(ReadJobsParams {
-                    namespace,
-                    jobs: job_ids,
-                    after_seq: None,
-                    max_bytes: None,
-                    include_artifacts: false,
-                    wait_ms: None,
-                })
-                .await
-            {
-                Ok(response) => {
-                    let mut summaries = response.jobs.into_iter();
-                    for (index, record) in group {
-                        entries[index] = Some(job_list_entry_from_response(
-                            handle_from_record(&record),
-                            summaries.next(),
-                        ));
-                    }
-                }
-                Err(error) => {
-                    for (index, record) in group {
-                        entries[index] = Some(JobListResultEntry {
-                            handle: Some(handle_from_record(&record)),
-                            summary: None,
-                            error: Some(error.to_string()),
-                        });
-                    }
-                }
-            }
-        }
-
-        Ok(JobListResultSet {
-            jobs: entries
-                .into_iter()
-                .map(|entry| {
-                    entry.unwrap_or(JobListResultEntry {
-                        handle: None,
-                        summary: None,
-                        error: Some("job_list internal result missing".to_owned()),
-                    })
-                })
-                .collect(),
-        })
-    }
-
-    async fn check_env_job_promise(
-        &self,
-        instance_id: String,
-        job_id: String,
-    ) -> Result<PromiseSourceCheckResult, CoreAgentIoError> {
-        let instance_id = EnvironmentInstanceId::try_new(instance_id)
-            .map_err(|error| io_error(format!("invalid env job promise instance_id: {error}")))?;
-        let job_id = JobId::new(job_id);
-        if let (Some(runtime), Some(job_store)) =
-            (&self.environment_job_workflow_runtime, &self.job_handles)
-        {
-            let record = job_store
-                .read_job_handle(&instance_id, &job_id)
-                .await
-                .map_err(map_environments_error)?;
-            let workflow_id = temporal_workflow::compose_environment_job_workflow_id(
-                runtime.universe_id,
-                instance_id.as_str(),
-                record.job_group_id.as_str(),
-            );
-            let handle = runtime
-                .client
-                .get_workflow_handle::<temporal_workflow::EnvironmentJobWorkflow>(workflow_id);
-            match handle
-                .query(
-                    temporal_workflow::EnvironmentJobWorkflow::snapshot,
-                    (),
-                    WorkflowQueryOptions::default(),
-                )
-                .await
-            {
-                Ok(snapshot) => {
-                    if let Some(result) = snapshot.resolutions.get(job_id.as_str()).cloned() {
-                        return Ok(result);
-                    }
-                    if snapshot.started {
-                        return Ok(PromiseSourceCheckResult::Pending);
-                    }
-                }
-                Err(WorkflowQueryError::NotFound(_) | WorkflowQueryError::Rejected(_)) => {}
-                Err(error) => {
-                    return Err(io_error(format!(
-                        "query environment job workflow source: {error}"
-                    )));
-                }
-            }
-        }
-        let instance = self.read_environment_instance(&instance_id).await?;
-        let mut client = initialized_job_client(&instance.connection).await?;
-        let response = client
-            .read_jobs(&ReadJobsParams {
-                namespace: instance_id.as_str().to_owned(),
-                jobs: vec![job_id],
-                after_seq: None,
-                max_bytes: Some(PROMISE_JOB_OUTPUT_BYTES),
-                include_artifacts: false,
-                wait_ms: None,
-            })
-            .await
-            .map_err(map_host_client_error)?;
-        let Some(entry) = response.jobs.into_iter().next() else {
-            return self
-                .blobbed_promise_failure("environment job promise read returned no entry")
-                .await;
-        };
-        let summary = &entry.summary;
-        if !summary.status.is_terminal() {
-            return Ok(PromiseSourceCheckResult::Pending);
-        }
-        if summary.status == JobStatus::Succeeded {
-            let payload_ref =
-                self.blobs
-                    .put_bytes(serde_json::to_vec(&entry).map_err(|error| {
-                        io_error(format!("encode job promise payload: {error}"))
-                    })?)
-                    .await
-                    .map_err(map_blob_error)?;
-            return Ok(PromiseSourceCheckResult::Resolved {
-                payload_ref: Some(payload_ref),
-            });
-        }
-        let message = summary.failure.clone().unwrap_or_else(|| {
-            format!(
-                "environment job {} ended as {:?}",
-                summary.job_id, summary.status
-            )
-        });
-        self.blobbed_promise_failure(message).await
-    }
-
-    async fn cancel_env_job_promise(
-        &self,
-        instance_id: String,
-        job_id: String,
-    ) -> Result<PromiseSourceCancelResult, CoreAgentIoError> {
-        let instance_id = EnvironmentInstanceId::try_new(instance_id)
-            .map_err(|error| io_error(format!("invalid env job promise instance_id: {error}")))?;
-        let job_id = JobId::new(job_id);
-        if let (Some(runtime), Some(job_store)) =
-            (&self.environment_job_workflow_runtime, &self.job_handles)
-        {
-            let record = job_store
-                .read_job_handle(&instance_id, &job_id)
-                .await
-                .map_err(map_environments_error)?;
-            let workflow_id = temporal_workflow::compose_environment_job_workflow_id(
-                runtime.universe_id,
-                instance_id.as_str(),
-                record.job_group_id.as_str(),
-            );
-            let handle = runtime
-                .client
-                .get_workflow_handle::<temporal_workflow::EnvironmentJobWorkflow>(workflow_id);
-            match handle
-                .signal(
-                    temporal_workflow::EnvironmentJobWorkflow::cancel_jobs,
-                    temporal_workflow::EnvironmentJobCancelSignal {
-                        jobs: vec![job_id.clone()],
-                        scope: Default::default(),
-                        force: false,
-                    },
-                    WorkflowSignalOptions::default(),
-                )
-                .await
-            {
-                Ok(()) => return Ok(PromiseSourceCancelResult { cancelled: true }),
-                Err(WorkflowInteractionError::NotFound(_)) => {}
-                Err(error) => {
-                    return Err(io_error(format!(
-                        "cancel environment job workflow source: {error}"
-                    )));
-                }
-            }
-        }
-        let instance = self.read_environment_instance(&instance_id).await?;
-        let mut client = initialized_job_client(&instance.connection).await?;
-        client
-            .cancel_jobs(&host_protocol::data::jobs::CancelJobsParams {
-                namespace: instance_id.as_str().to_owned(),
-                jobs: vec![job_id],
-                scope: Default::default(),
-                force: false,
-            })
-            .await
-            .map_err(map_host_client_error)?;
-        Ok(PromiseSourceCancelResult { cancelled: true })
-    }
-
-    async fn read_environment_instance(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<::environments::EnvironmentInstanceRecord, CoreAgentIoError> {
-        self.environment_instances
-            .as_ref()
-            .ok_or_else(|| {
-                io_error("environment instance store is not configured on this runtime")
-            })?
-            .read_instance(instance_id)
-            .await
-            .map_err(map_environments_error)
-    }
-
-    async fn blobbed_promise_failure(
-        &self,
-        message: impl Into<String>,
-    ) -> Result<PromiseSourceCheckResult, CoreAgentIoError> {
-        let error_ref = self
-            .blobs
-            .put_bytes(message.into().into_bytes())
-            .await
-            .map_err(map_blob_error)?;
-        Ok(PromiseSourceCheckResult::Failed {
-            error_ref: Some(error_ref),
-        })
-    }
-
     async fn read_environment_jobs(
         &self,
         session_id: &SessionId,
@@ -1409,8 +627,8 @@ impl SessionTools {
                     continue;
                 }
             };
-            let record = match self.read_job_handle_record(&resolved).await {
-                Ok(record) => record,
+            let instance_id = match EnvironmentInstanceId::try_new(resolved.instance_id.clone()) {
+                Ok(instance_id) => instance_id,
                 Err(error) => {
                     entries.push(JobReadResultEntry {
                         handle: Some(resolved),
@@ -1418,46 +636,44 @@ impl SessionTools {
                         output_chunks: Vec::new(),
                         output_next_seq: 0,
                         artifacts: Vec::new(),
-                        error: Some(error),
+                        error: Some(format!("invalid job handle instance_id: {error}")),
                     });
                     continue;
                 }
             };
             let environment = environments
                 .environments()
-                .find(|environment| environment.instance_id() == Some(record.instance_id.as_str()));
+                .find(|environment| environment.instance_id() == Some(instance_id.as_str()));
             let Some(environment) = environment else {
                 entries.push(JobReadResultEntry {
-                    handle: Some(handle_from_record(&record)),
+                    handle: Some(resolved),
                     summary: None,
                     output_chunks: Vec::new(),
                     output_next_seq: 0,
                     artifacts: Vec::new(),
                     error: Some(format!(
-                        "environment instance is not reachable: {}",
-                        record.instance_id
+                        "environment instance is not reachable: {instance_id}"
                     )),
                 });
                 continue;
             };
             let Some(jobs) = environment.tool_context().jobs.as_ref() else {
                 entries.push(JobReadResultEntry {
-                    handle: Some(handle_from_record(&record)),
+                    handle: Some(resolved),
                     summary: None,
                     output_chunks: Vec::new(),
                     output_next_seq: 0,
                     artifacts: Vec::new(),
                     error: Some(format!(
-                        "environment does not support durable jobs: {}",
-                        record.instance_id
+                        "environment does not support durable jobs: {instance_id}"
                     )),
                 });
                 continue;
             };
             match jobs
                 .read_jobs(ReadJobsParams {
-                    namespace: record.instance_id.as_str().to_owned(),
-                    jobs: vec![record.job_id.clone()],
+                    namespace: instance_id.as_str().to_owned(),
+                    jobs: vec![resolved.job_id.clone()],
                     after_seq,
                     max_bytes: output_bytes,
                     include_artifacts,
@@ -1467,13 +683,13 @@ impl SessionTools {
             {
                 Ok(response) => {
                     entries.push(job_read_entry_from_response(
-                        handle_from_record(&record),
+                        resolved,
                         response.jobs.into_iter().next(),
                     ));
                 }
                 Err(error) => {
                     entries.push(JobReadResultEntry {
-                        handle: Some(handle_from_record(&record)),
+                        handle: Some(resolved),
                         summary: None,
                         output_chunks: Vec::new(),
                         output_next_seq: 0,
@@ -1500,6 +716,86 @@ impl SessionTools {
             .map_err(|error| io_error(format!("read tool arguments: {error}")))?;
         serde_json::from_slice(&bytes)
             .map_err(|error| io_error(format!("invalid JSON tool arguments: {error}")))
+    }
+
+    async fn workflow_tool_batch_runtime(
+        &self,
+        session_id: &SessionId,
+        run_id: engine::RunId,
+    ) -> Result<WorkflowToolBatchRuntime, CoreAgentIoError> {
+        let Some(sessions) = self.sessions.as_ref() else {
+            return Ok(WorkflowToolBatchRuntime::default());
+        };
+        let entries =
+            read_all_session_entries(sessions.as_ref(), session_id, MAX_EVENT_PAGE_LIMIT as usize)
+                .await
+                .map_err(io_error)?;
+        let state = replay_core_agent_state(&entries).map_err(io_error)?;
+        let bindings = state
+            .workflow_tools
+            .bindings
+            .values()
+            .map(|binding| (binding.definition.tool.name.clone(), binding.clone()))
+            .collect();
+        let emitted_counts = state
+            .workflow_tools
+            .bindings
+            .keys()
+            .map(|tool_id| {
+                (
+                    tool_id.clone(),
+                    state.workflow_tools.emission_count(run_id, tool_id),
+                )
+            })
+            .collect();
+        Ok(WorkflowToolBatchRuntime {
+            bindings,
+            emitted_counts,
+        })
+    }
+
+    async fn invoke_workflow_tool_call(
+        &self,
+        request: &ToolInvocationBatchRequest,
+        call: &engine::ToolInvocationRequest,
+        binding: &engine::WorkflowToolBinding,
+        emitted_count: u32,
+    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
+        if emitted_count >= engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN {
+            return failed_result(
+                self.blobs.as_ref(),
+                call.call_id.clone(),
+                format!(
+                    "workflow tool {} reached its per-run emission cap of {}",
+                    binding.definition.tool_id,
+                    engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN
+                ),
+            )
+            .await;
+        }
+        match invoke_workflow_tool(
+            self.blobs.as_ref(),
+            binding,
+            &request.session_id,
+            request.run_id,
+            request.turn_id,
+            request.batch_id,
+            call,
+            now_unix_ms()?,
+        )
+        .await
+        {
+            Ok(output) => {
+                let mut result = self
+                    .succeeded_tool_result(call, &output.output_json, output.model_visible_text)
+                    .await?;
+                result.effects = output.effects;
+                Ok(result)
+            }
+            Err(error) => {
+                failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string()).await
+            }
+        }
     }
 
     async fn succeeded_tool_result<T: serde::Serialize>(
@@ -1532,46 +828,6 @@ impl SessionTools {
         })
     }
 
-    fn resolve_env_id(
-        &self,
-        explicit_env_id: Option<&str>,
-        active_env_target: Option<&engine::ToolExecutionTarget>,
-    ) -> Result<EnvironmentId, String> {
-        let env_id = if let Some(env_id) = explicit_env_id {
-            env_id
-        } else {
-            let Some(target) = active_env_target else {
-                return Err("job tool requires env_id or an active environment target".to_owned());
-            };
-            if target.namespace != tools::targets::ENV_TARGET_NAMESPACE {
-                return Err(format!(
-                    "active tool target is not an environment: {}:{}",
-                    target.namespace, target.id
-                ));
-            }
-            target.id.as_str()
-        };
-        EnvironmentId::try_new(env_id).map_err(|error| format!("invalid env_id: {error}"))
-    }
-
-    async fn read_ready_binding(
-        &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
-    ) -> Result<SessionEnvironmentBindingRecord, String> {
-        let Some(bindings) = &self.environment_bindings else {
-            return Err("environment binding store is not configured on this runtime".to_owned());
-        };
-        let binding = bindings
-            .read_binding(session_id, env_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        if binding.state != SessionEnvironmentBindingState::Attached {
-            return Err(format!("environment is detached: {}", env_id.as_str()));
-        }
-        Ok(binding)
-    }
-
     fn resolve_job_handle_arg(
         &self,
         _current_session_id: &SessionId,
@@ -1584,18 +840,6 @@ impl SessionTools {
             instance_id: instance_id.as_str().to_owned(),
             job_id: handle.job_id,
         })
-    }
-
-    async fn read_job_handle_record(&self, handle: &JobHandle) -> Result<JobHandleRecord, String> {
-        let Some(job_store) = &self.job_handles else {
-            return Err("job handle store is not configured on this runtime".to_owned());
-        };
-        let instance_id = EnvironmentInstanceId::try_new(handle.instance_id.clone())
-            .map_err(|error| format!("invalid job handle instance_id: {error}"))?;
-        job_store
-            .read_job_handle(&instance_id, &handle.job_id)
-            .await
-            .map_err(|error| error.to_string())
     }
 
     async fn environment_manager_for_session(
@@ -1719,100 +963,6 @@ struct EnvironmentJobRead {
     entries: Vec<JobReadResultEntry>,
 }
 
-fn build_start_jobs_params(
-    request: &ToolInvocationBatchRequest,
-    call: &engine::ToolInvocationRequest,
-    instance_id: &EnvironmentInstanceId,
-    args: JobStartArgs,
-) -> Result<StartJobsParams, String> {
-    if args.jobs.is_empty() {
-        return Err("job_start requires at least one job".to_owned());
-    }
-    let namespace = instance_id.as_str().to_owned();
-    let request_id = job_request_id(request, call);
-    let jobs = args
-        .jobs
-        .into_iter()
-        .enumerate()
-        .map(|(index, spec)| {
-            let job_id = spec
-                .job_id
-                .clone()
-                .unwrap_or_else(|| derived_job_id(request, call, instance_id, index));
-            spec.into_host_spec(job_id)
-                .map_err(|error| error.to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(StartJobsParams {
-        namespace,
-        request_id,
-        jobs,
-    })
-}
-
-fn job_request_id(
-    request: &ToolInvocationBatchRequest,
-    call: &engine::ToolInvocationRequest,
-) -> String {
-    format!(
-        "jobreq:{}:{}:{}:{}",
-        request.run_id.as_u64(),
-        request.turn_id.as_u64(),
-        request.batch_id.as_u64(),
-        call.call_id.as_str()
-    )
-}
-
-fn derived_job_id(
-    request: &ToolInvocationBatchRequest,
-    call: &engine::ToolInvocationRequest,
-    instance_id: &EnvironmentInstanceId,
-    index: usize,
-) -> JobId {
-    let seed = format!(
-        "{}:{}:{}:{}:{}:{}:{}",
-        request.session_id,
-        instance_id.as_str(),
-        request.run_id.as_u64(),
-        request.turn_id.as_u64(),
-        request.batch_id.as_u64(),
-        call.call_id.as_str(),
-        index
-    );
-    let hash = BlobRef::from_bytes(seed.as_bytes());
-    let suffix = &hash.as_str()["sha256:".len().."sha256:".len() + 24];
-    JobId::new(format!("job-{suffix}"))
-}
-
-fn env_job_promise_id(
-    request: &ToolInvocationBatchRequest,
-    call: &engine::ToolInvocationRequest,
-    instance_id: &EnvironmentInstanceId,
-    job_id: &JobId,
-) -> String {
-    let seed = format!(
-        "{}:{}:{}:{}:{}:{}:{}",
-        request.session_id,
-        instance_id.as_str(),
-        request.run_id.as_u64(),
-        request.turn_id.as_u64(),
-        request.batch_id.as_u64(),
-        call.call_id.as_str(),
-        job_id.as_str()
-    );
-    let hash = BlobRef::from_bytes(seed.as_bytes());
-    let suffix = &hash.as_str()["sha256:".len().."sha256:".len() + 32];
-    format!("promise_{suffix}")
-}
-
-fn derived_tool_job_group_id(
-    instance_id: &EnvironmentInstanceId,
-    request_id: &str,
-) -> EnvironmentJobGroupId {
-    let hash = BlobRef::from_bytes(format!("{instance_id}:{request_id}").as_bytes());
-    EnvironmentJobGroupId::new(format!("ejg_{}", &hash.as_str()[7..31]))
-}
-
 fn timer_promise_id(
     request: &ToolInvocationBatchRequest,
     call: &engine::ToolInvocationRequest,
@@ -1829,23 +979,6 @@ fn timer_promise_id(
     let hash = BlobRef::from_bytes(format!("{seed}:{ms}").as_bytes());
     let suffix = &hash.as_str()["sha256:".len().."sha256:".len() + 32];
     format!("promise_timer_{suffix}")
-}
-
-fn start_request_hash(params: &StartJobsParams) -> Result<String, String> {
-    serde_json::to_vec(params)
-        .map(|bytes| BlobRef::from_bytes(&bytes).to_string())
-        .map_err(|error| format!("encode job start request hash: {error}"))
-}
-
-fn u64_to_i64(value: u64) -> Result<i64, CoreAgentIoError> {
-    i64::try_from(value).map_err(|_| io_error("current timestamp does not fit in i64 milliseconds"))
-}
-
-fn handle_from_record(record: &JobHandleRecord) -> JobHandle {
-    JobHandle {
-        instance_id: record.instance_id.as_str().to_owned(),
-        job_id: record.job_id.clone(),
-    }
 }
 
 fn job_read_entry_from_response(
@@ -1872,43 +1005,6 @@ fn job_read_entry_from_response(
     }
 }
 
-fn job_list_entry_from_response(
-    handle: JobHandle,
-    response: Option<HostJobReadResult>,
-) -> JobListResultEntry {
-    match response {
-        Some(response) => JobListResultEntry {
-            handle: Some(handle),
-            summary: Some(response.summary),
-            error: None,
-        },
-        None => JobListResultEntry {
-            handle: Some(handle),
-            summary: None,
-            error: Some("provider returned no job result".to_owned()),
-        },
-    }
-}
-
-fn resolve_job_list_session_id(
-    current_session_id: &SessionId,
-    explicit_session_id: Option<String>,
-) -> Result<SessionId, CoreAgentIoError> {
-    explicit_session_id
-        .map(SessionId::try_new)
-        .transpose()
-        .map_err(|error| io_error(format!("invalid session_id: {error}")))?
-        .map_or_else(|| Ok(current_session_id.clone()), Ok)
-}
-
-fn normalize_job_list_limit(limit: Option<usize>) -> Result<usize, CoreAgentIoError> {
-    let limit = limit.unwrap_or(DEFAULT_JOB_LIST_LIMIT);
-    if limit == 0 {
-        return Err(io_error("job_list limit must be greater than zero"));
-    }
-    Ok(limit.min(MAX_JOB_LIST_LIMIT))
-}
-
 async fn connect_host_data_client(
     connection: &HostConnectionSpec,
 ) -> Result<HostDataClient<host_client::WebSocketTransport>, CoreAgentIoError> {
@@ -1929,32 +1025,6 @@ async fn connect_host_data_client(
             "provider:{provider_type}"
         ))),
     }
-}
-
-async fn initialized_job_client(
-    connection: &HostConnectionSpec,
-) -> Result<HostDataClient<host_client::WebSocketTransport>, CoreAgentIoError> {
-    let mut client = connect_host_data_client(connection).await?;
-    let response = client
-        .initialize(&InitializeParams {
-            protocol_version: CURRENT_PROTOCOL_VERSION,
-            client_name: "lightspeed-temporal-server".to_owned(),
-            scope: connection.scope.clone(),
-            resume_connection_id: None,
-        })
-        .await
-        .map_err(map_host_client_error)?;
-    if response.protocol_version != CURRENT_PROTOCOL_VERSION {
-        return Err(io_error(format!(
-            "unsupported host data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
-            response.protocol_version
-        )));
-    }
-    client
-        .initialized(&InitializedParams {})
-        .await
-        .map_err(map_host_client_error)?;
-    Ok(client)
 }
 
 fn unsupported_host_data_transport(transport: impl std::fmt::Display) -> CoreAgentIoError {
@@ -1992,7 +1062,7 @@ fn workspace_catalog(
             config.builtin.process = EnvironmentToolsetConfig::basic();
         }
         if include_job_tools {
-            config.builtin.process = config.builtin.process.with_jobs();
+            config.builtin.process.job_read = true;
         }
         config.web_fetch = WebFetchToolConfig::enabled();
         let toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
@@ -2006,102 +1076,6 @@ fn workspace_catalog(
 
 #[async_trait]
 impl CoreAgentTools for SessionTools {
-    async fn subscribe_promise_source(
-        &self,
-        request: PromiseSourceSubscribeRequest,
-    ) -> Result<PromiseSourceCheckResult, CoreAgentIoError> {
-        let PromiseSource::EnvJob {
-            instance_id,
-            job_id,
-        } = request.source
-        else {
-            return Ok(PromiseSourceCheckResult::Pending);
-        };
-        let Some(runtime) = &self.environment_job_workflow_runtime else {
-            return Err(io_error(
-                "environment job workflow runtime is not configured",
-            ));
-        };
-        let instance_id = EnvironmentInstanceId::try_new(instance_id)
-            .map_err(|error| io_error(format!("invalid env job instance_id: {error}")))?;
-        let job_id = JobId::new(job_id);
-        let job_store = self
-            .job_handles
-            .as_ref()
-            .ok_or_else(|| io_error("job handle store is not configured on this runtime"))?;
-        let record = job_store
-            .read_job_handle(&instance_id, &job_id)
-            .await
-            .map_err(map_environments_error)?;
-        let workflow_id = temporal_workflow::compose_environment_job_workflow_id(
-            runtime.universe_id,
-            instance_id.as_str(),
-            record.job_group_id.as_str(),
-        );
-        let handle = runtime
-            .client
-            .get_workflow_handle::<temporal_workflow::EnvironmentJobWorkflow>(workflow_id);
-        match handle
-            .signal(
-                temporal_workflow::EnvironmentJobWorkflow::confirm_subscription,
-                temporal_workflow::EnvironmentJobConfirmSubscriptionSignal {
-                    holder_workflow_id: request.holder_workflow_id,
-                    promise_id: request.promise_id,
-                    job_id: job_id.clone(),
-                },
-                WorkflowSignalOptions::default(),
-            )
-            .await
-        {
-            Ok(()) => Ok(PromiseSourceCheckResult::Pending),
-            Err(WorkflowInteractionError::NotFound(_)) => {
-                self.check_env_job_promise(
-                    instance_id.as_str().to_owned(),
-                    job_id.as_str().to_owned(),
-                )
-                .await
-            }
-            Err(error) => Err(io_error(format!(
-                "confirm environment job subscription: {error}"
-            ))),
-        }
-    }
-
-    async fn check_promise_source(
-        &self,
-        request: PromiseSourceCheckRequest,
-    ) -> Result<PromiseSourceCheckResult, CoreAgentIoError> {
-        match request.source {
-            PromiseSource::EnvJob {
-                instance_id,
-                job_id,
-                ..
-            } => self.check_env_job_promise(instance_id, job_id).await,
-            PromiseSource::Timer { fire_at_ms } if now_unix_ms()? >= fire_at_ms => {
-                Ok(PromiseSourceCheckResult::Resolved { payload_ref: None })
-            }
-            PromiseSource::Timer { .. } | PromiseSource::Run { .. } => {
-                Ok(PromiseSourceCheckResult::Pending)
-            }
-        }
-    }
-
-    async fn cancel_promise_source(
-        &self,
-        request: PromiseSourceCancelRequest,
-    ) -> Result<PromiseSourceCancelResult, CoreAgentIoError> {
-        match request.source {
-            PromiseSource::EnvJob {
-                instance_id,
-                job_id,
-                ..
-            } => self.cancel_env_job_promise(instance_id, job_id).await,
-            PromiseSource::Timer { .. } | PromiseSource::Run { .. } => {
-                Ok(PromiseSourceCancelResult { cancelled: false })
-            }
-        }
-    }
-
     async fn invoke_batch(
         &self,
         request: ToolInvocationBatchRequest,
@@ -2118,13 +1092,16 @@ impl CoreAgentTools for SessionTools {
         }
         let duplicate_fleet_message_call_ids =
             self.duplicate_fleet_message_call_ids(&request).await?;
+        let mut workflow_tools = self
+            .workflow_tool_batch_runtime(&request.session_id, request.run_id)
+            .await?;
         let has_generic_runtime_call = request.calls.iter().any(|call| {
-            !is_messaging_tool(&call.tool_name)
-                && !is_fleet_tool(&call.tool_name)
+            !is_fleet_tool(&call.tool_name)
                 && !is_concurrency_tool(&call.tool_name)
+                && !workflow_tools.bindings.contains_key(&call.tool_name)
         });
         if !has_generic_runtime_call {
-            // Messaging/Fleet/concurrency-only batches skip generic VFS/runtime setup entirely.
+            // Fleet/concurrency-only batches skip generic VFS/runtime setup entirely.
             let mut results = Vec::with_capacity(request.calls.len());
             for call in &request.calls {
                 if duplicate_fleet_message_call_ids.contains(&call.call_id) {
@@ -2136,11 +1113,22 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_messaging_tool(&call.tool_name) {
-                    results.push(
-                        self.invoke_messaging_call(&request.session_id, request.run_id, call)
-                            .await?,
-                    );
+                } else if let Some(binding) = workflow_tools.bindings.get(&call.tool_name).cloned()
+                {
+                    let count = workflow_tools
+                        .emitted_counts
+                        .get(&binding.definition.tool_id)
+                        .copied()
+                        .unwrap_or(0);
+                    let result = self
+                        .invoke_workflow_tool_call(&request, call, &binding, count)
+                        .await?;
+                    if result.status == ToolCallStatus::Succeeded {
+                        workflow_tools
+                            .emitted_counts
+                            .insert(binding.definition.tool_id.clone(), count.saturating_add(1));
+                    }
+                    results.push(result);
                 } else if is_fleet_tool(&call.tool_name) {
                     results.push(self.invoke_fleet_call(&request, call).await?);
                 } else {
@@ -2181,24 +1169,29 @@ impl CoreAgentTools for SessionTools {
                     )
                     .await?,
                 );
-            } else if is_messaging_tool(&call.tool_name) {
-                results.push(
-                    self.invoke_messaging_call(&request.session_id, request.run_id, call)
-                        .await?,
-                );
+            } else if let Some(binding) = workflow_tools.bindings.get(&call.tool_name).cloned() {
+                let count = workflow_tools
+                    .emitted_counts
+                    .get(&binding.definition.tool_id)
+                    .copied()
+                    .unwrap_or(0);
+                let result = self
+                    .invoke_workflow_tool_call(&request, call, &binding, count)
+                    .await?;
+                if result.status == ToolCallStatus::Succeeded {
+                    workflow_tools
+                        .emitted_counts
+                        .insert(binding.definition.tool_id.clone(), count.saturating_add(1));
+                }
+                results.push(result);
             } else if is_fleet_tool(&call.tool_name) {
                 results.push(self.invoke_fleet_call(&request, call).await?);
             } else if is_concurrency_tool(&call.tool_name) {
                 results.push(self.invoke_concurrency_call(&request, call).await?);
-            } else if is_environment_job_tool_name(call.tool_name.as_str()) {
+            } else if is_environment_job_query_tool_name(call.tool_name.as_str()) {
                 results.push(
-                    self.invoke_environment_job_call(
-                        &request,
-                        call,
-                        &environments,
-                        active_env_target,
-                    )
-                    .await?,
+                    self.invoke_environment_job_call(&request, call, &environments)
+                        .await?,
                 );
             } else if !has_session_fs
                 && call
@@ -2329,8 +1322,13 @@ mod tests {
 
     use crate::environment::RuntimeEnvironment;
     use engine::{
-        BlobRef, ContextEntryKind, RunId, SessionId, ToolBatchId, ToolCallId, ToolName, TurnId,
-        storage::{CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
+        BlobRef, ContextEntryKind, FunctionToolSpec, RunId, SessionId, ToolBatchId, ToolCallId,
+        ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, TurnId,
+        WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        storage::{
+            AppendSessionEvents, CreateSession, InMemoryBlobStore, InMemorySessionStore,
+            SessionStore,
+        },
     };
     use tools::environment::{
         EnvironmentToolContext,
@@ -2359,6 +1357,189 @@ mod tests {
                     .then(|| entry.content_ref.clone())
             })
             .expect("visible ref")
+    }
+
+    async fn workflow_tool_session(
+        blobs: &dyn BlobStore,
+        sessions: &InMemorySessionStore,
+    ) -> (SessionId, engine::WorkflowToolBinding) {
+        let session_id = SessionId::new("workflow-tool-session");
+        let schema_ref = blobs
+            .put_bytes(
+                br#"{"type":"object","properties":{"status":{"type":"string"}},"required":["status"],"additionalProperties":false}"#
+                    .to_vec(),
+            )
+            .await
+            .expect("put schema");
+        let definition = WorkflowToolDefinition {
+            tool_id: WorkflowToolId::new("report"),
+            revision: 1,
+            semantic_type: "lightspeed.work.report.v1".to_owned(),
+            tool: ToolSpec {
+                name: ToolName::new("work_report"),
+                kind: ToolKind::Function(FunctionToolSpec {
+                    description_ref: None,
+                    input_schema_ref: schema_ref,
+                    output_schema_ref: None,
+                    strict: Some(true),
+                    provider_options_ref: None,
+                }),
+                parallelism: ToolParallelism::ParallelSafe,
+                target_requirement: ToolTargetRequirement::None,
+            },
+        };
+        let receiver = WorkflowEndpointRef {
+            workflow_id: "opaque work workflow id".to_owned(),
+            workflow_kind: "agent_work".to_owned(),
+        };
+        let workflow_tools = engine::ManagedSessionWorkflowTools::v1(
+            Some(receiver.clone()),
+            vec![engine::WorkflowToolDeclaration::bound_notify(
+                definition.clone(),
+                receiver,
+            )],
+        );
+        let universe_id = uuid::Uuid::from_u128(1);
+        let binding = workflow_tools
+            .admit(universe_id)
+            .expect("admit managed-session tools")
+            .bindings
+            .into_iter()
+            .next()
+            .expect("binding");
+        sessions
+            .create_session(CreateSession {
+                session_id: session_id.clone(),
+                display_name: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create session");
+        let config = crate::worker::default_session_config(engine::ModelSelection {
+            api_kind: engine::ProviderApiKind::OpenAiResponses,
+            provider_id: "test".to_owned(),
+            model: "test-model".to_owned(),
+        });
+        let proposals = engine::admit_command(
+            &engine::CoreAgentState::new(),
+            engine::CoreAgentCommand::OpenManagedSession {
+                config,
+                session_universe_id: universe_id,
+                workflow_tools,
+            },
+            2,
+        )
+        .expect("open managed session");
+        let events = proposals
+            .into_iter()
+            .map(|proposal| {
+                engine::CoreAgentCodec
+                    .encode_uncommitted(&proposal.into_uncommitted(2))
+                    .expect("encode opening event")
+            })
+            .collect();
+        sessions
+            .append(AppendSessionEvents {
+                session_id: session_id.clone(),
+                expected_head: None,
+                events,
+            })
+            .await
+            .expect("append opening events");
+        (session_id, binding)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn workflow_tool_calls_validate_schema_ack_and_per_run_cap() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let catalog = Arc::new(TestCatalog::default());
+        let sessions = Arc::new(InMemorySessionStore::new());
+        let (session_id, binding) = workflow_tool_session(blobs.as_ref(), sessions.as_ref()).await;
+        let valid_arguments = blobs
+            .put_bytes(br#"{"status":"complete"}"#.to_vec())
+            .await
+            .expect("put arguments");
+        let invalid_arguments = blobs
+            .put_bytes(br#"{"status":4}"#.to_vec())
+            .await
+            .expect("put invalid arguments");
+        let session_store: Arc<dyn SessionStore> = sessions;
+        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
+            .with_session_store(session_store);
+        let mut calls = vec![engine::ToolInvocationRequest {
+            call_id: ToolCallId::new("call-invalid-schema"),
+            tool_name: binding.definition.tool.name.clone(),
+            arguments_ref: invalid_arguments,
+            execution_target: None,
+        }];
+        calls.extend(
+            (0..engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN).map(|index| {
+                engine::ToolInvocationRequest {
+                    call_id: ToolCallId::new(format!("call-{index}")),
+                    tool_name: binding.definition.tool.name.clone(),
+                    arguments_ref: valid_arguments.clone(),
+                    execution_target: None,
+                }
+            }),
+        );
+        calls.push(engine::ToolInvocationRequest {
+            call_id: ToolCallId::new("call-over-cap"),
+            tool_name: binding.definition.tool.name.clone(),
+            arguments_ref: valid_arguments,
+            execution_target: None,
+        });
+        let result = tools
+            .invoke_batch(ToolInvocationBatchRequest {
+                session_id,
+                run_id: RunId::new(9),
+                turn_id: TurnId::new(1),
+                batch_id: ToolBatchId::new(1),
+                default_targets: Default::default(),
+                calls,
+            })
+            .await
+            .expect("invoke workflow tools")
+            .completed_result()
+            .expect("completed batch");
+
+        let successful = result
+            .results
+            .iter()
+            .filter(|result| result.status == ToolCallStatus::Succeeded)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            successful.len(),
+            engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN as usize
+        );
+        assert!(successful.iter().all(|result| {
+            result.effects.len() == 1
+                && result.effects[0].kind == engine::WORKFLOW_TOOL_EMIT_EFFECT_KIND
+        }));
+        let acknowledgement = blobs
+            .read_text(
+                successful[0]
+                    .output_ref
+                    .as_ref()
+                    .expect("acknowledgement ref"),
+            )
+            .await
+            .expect("read acknowledgement");
+        assert!(acknowledgement.contains("\"accepted\":true"));
+
+        let over_cap = result
+            .results
+            .iter()
+            .find(|result| result.call_id.as_str() == "call-over-cap")
+            .expect("cap result");
+        let invalid = result
+            .results
+            .iter()
+            .find(|result| result.call_id.as_str() == "call-invalid-schema")
+            .expect("schema result");
+        assert_eq!(over_cap.status, ToolCallStatus::Failed);
+        assert_eq!(invalid.status, ToolCallStatus::Failed);
+        assert!(over_cap.effects.is_empty());
+        assert!(invalid.effects.is_empty());
     }
 
     #[derive(Default)]
@@ -2490,6 +1671,7 @@ mod tests {
             id: session_id.as_str().to_owned(),
             status,
             display_name: None,
+            managed: false,
             config_revision: 0,
             config: None,
             created_at_ms: 1,
@@ -2497,6 +1679,7 @@ mod tests {
             runs: Vec::new(),
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
+            management: None,
             vfs_mounts: Vec::new(),
         }
     }
@@ -2856,80 +2039,6 @@ mod tests {
             vec!["echo".to_owned(), "hello".to_owned()]
         );
         assert_eq!(requests[0].cwd, Some(FsPath::new("/workspace").unwrap()));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn messaging_tools_enqueue_outbox_rows_without_mounts() {
-        use messaging::{InMemoryOutboxStore, OutboundPayload, ReadPendingOutbound};
-
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let catalog = Arc::new(TestCatalog::default());
-        let outbox = Arc::new(InMemoryOutboxStore::new());
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
-            .with_messaging_outbox(outbox.clone());
-        let send_args = blobs
-            .put_bytes(br#"{"text":"hello from the agent","reply_to":"4123"}"#.to_vec())
-            .await
-            .expect("arguments");
-        let noop_args = blobs
-            .put_bytes(br#"{"reason":"nothing to add"}"#.to_vec())
-            .await
-            .expect("arguments");
-
-        let result = tools
-            .invoke_batch(ToolInvocationBatchRequest {
-                session_id: SessionId::new("session_1"),
-                run_id: RunId::new(9),
-                turn_id: TurnId::new(1),
-                batch_id: ToolBatchId::new(1),
-                default_targets: Default::default(),
-                calls: vec![
-                    engine::ToolInvocationRequest {
-                        call_id: ToolCallId::new("call_send"),
-                        tool_name: ToolName::new("message_send"),
-                        arguments_ref: send_args,
-                        execution_target: None,
-                    },
-                    engine::ToolInvocationRequest {
-                        call_id: ToolCallId::new("call_noop"),
-                        tool_name: ToolName::new("message_noop"),
-                        arguments_ref: noop_args,
-                        execution_target: None,
-                    },
-                ],
-            })
-            .await
-            .expect("invoke")
-            .completed_result()
-            .expect("completed batch");
-
-        assert_eq!(result.results.len(), 2);
-        assert!(
-            result
-                .results
-                .iter()
-                .all(|call| call.status == ToolCallStatus::Succeeded)
-        );
-        let visible_ref = visible_tool_result_ref(&result.results[0]);
-        let visible = blobs.read_text(&visible_ref).await.expect("visible text");
-        assert!(visible.contains("Enqueued"));
-
-        let pending = outbox
-            .read_pending(ReadPendingOutbound {
-                after_seq: 0,
-                limit: 10,
-            })
-            .await
-            .expect("read pending");
-        assert_eq!(pending.len(), 1, "noop must not enqueue");
-        assert_eq!(pending[0].run_id, Some(RunId::new(9)));
-        assert_eq!(
-            pending[0].payload,
-            OutboundPayload::Send {
-                text: "hello from the agent".to_owned(),
-                reply_to: Some("4123".to_owned()),
-            }
-        );
     }
 
     #[tokio::test(flavor = "current_thread")]

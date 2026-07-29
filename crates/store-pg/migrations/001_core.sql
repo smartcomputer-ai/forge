@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- event log remains authoritative and this is updated transactionally.
     lifecycle_status text NOT NULL DEFAULT 'new',
     closed_at_seq bigint,
+    -- Cheap catalog projection of external lifecycle ownership. Workflow-tool
+    -- declarations without a lifecycle controller do not make a session
+    -- managed; controller/tool details remain in the log.
+    managed boolean NOT NULL DEFAULT false,
     head_seq bigint,
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
@@ -103,6 +107,9 @@ ALTER TABLE sessions
 
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS closed_at_seq bigint;
+
+ALTER TABLE sessions
+    ADD COLUMN IF NOT EXISTS managed boolean NOT NULL DEFAULT false;
 
 ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS source_session_id text;

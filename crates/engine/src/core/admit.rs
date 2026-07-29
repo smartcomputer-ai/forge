@@ -5,7 +5,7 @@ use crate::{
     CoreAgentCommand, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
     CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError, MessageStatus,
     PromiseEvent, PromiseResolution, RunConfig, RunEvent, RunRequestSource, RunSource, RunStatus,
-    ToolConfigEvent,
+    ToolConfigEvent, WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
         tooling::{
@@ -31,6 +31,86 @@ pub fn admit_command(
             Ok(vec![CoreAgentEventProposal::new(
                 CoreAgentJoins::default(),
                 CoreAgentEvent::Lifecycle(CoreAgentLifecycleEvent::Opened { config }),
+            )])
+        }
+        CoreAgentCommand::OpenManagedSession {
+            config,
+            session_universe_id,
+            workflow_tools,
+        } => {
+            if state.lifecycle.status != CoreAgentStatus::New {
+                return reject(
+                    CommandRejectionKind::CoreAgentState,
+                    "session can only be opened from new state",
+                );
+            }
+            config.validate().map_err(command_rejection_from_domain)?;
+            let admitted = workflow_tools
+                .admit(session_universe_id)
+                .map_err(command_rejection_from_domain)?;
+            Ok(vec![
+                CoreAgentEventProposal::new(
+                    CoreAgentJoins::default(),
+                    CoreAgentEvent::Lifecycle(CoreAgentLifecycleEvent::Opened { config }),
+                ),
+                CoreAgentEventProposal::new(
+                    CoreAgentJoins::default(),
+                    CoreAgentEvent::WorkflowToolConfig(
+                        WorkflowToolConfigEvent::ManagedBindingsAdmitted {
+                            session_universe_id: admitted.session_universe_id,
+                            declaration_version: admitted.version,
+                            lifecycle_controller: admitted.lifecycle_controller,
+                            creation_fingerprint: admitted.creation_fingerprint,
+                            bindings: admitted.bindings,
+                        },
+                    ),
+                ),
+            ])
+        }
+        CoreAgentCommand::AdmitSystemWorkflowTool {
+            session_universe_id,
+            declaration,
+        } => {
+            require_open(state)?;
+            let binding = crate::WorkflowToolBinding::admit(
+                session_universe_id,
+                declaration.definition,
+                declaration.target,
+                declaration.completion,
+            )
+            .map_err(command_rejection_from_domain)?;
+            let tool_id = &binding.definition.tool_id;
+            if let Some(existing) = state.workflow_tools.bindings.get(tool_id) {
+                if existing == &binding && state.workflow_tools.system_binding_ids.contains(tool_id)
+                {
+                    return Ok(Vec::new());
+                }
+                return reject(
+                    CommandRejectionKind::InvalidConfiguration,
+                    format!(
+                        "system workflow tool {tool_id} conflicts with an existing immutable binding"
+                    ),
+                );
+            }
+            if let Some(existing) = state
+                .workflow_tools
+                .bindings
+                .values()
+                .find(|existing| existing.definition.tool.name == binding.definition.tool.name)
+            {
+                return reject(
+                    CommandRejectionKind::InvalidConfiguration,
+                    format!(
+                        "system workflow tool {tool_id} name {} collides with workflow tool {}",
+                        binding.definition.tool.name, existing.definition.tool_id
+                    ),
+                );
+            }
+            Ok(vec![CoreAgentEventProposal::new(
+                CoreAgentJoins::default(),
+                CoreAgentEvent::WorkflowToolConfig(
+                    WorkflowToolConfigEvent::SystemBindingAdmitted { binding },
+                ),
             )])
         }
         CoreAgentCommand::ReplaceSessionConfig {
@@ -97,6 +177,7 @@ pub fn admit_command(
                     submission_id,
                     &request.source,
                     &request.run_config,
+                    &request.notify_on_terminal,
                 ) {
                     Some(SubmissionMatch::Identical) => return Ok(Vec::new()),
                     Some(SubmissionMatch::Different) => {
@@ -104,7 +185,7 @@ pub fn admit_command(
                             CommandRejectionKind::DuplicateSubmission,
                             format!(
                                 "submission id {submission_id} was already used by a run \
-                                     with different input or run config"
+                                     with different input, run config, or terminal notification"
                             ),
                         );
                     }
@@ -544,6 +625,109 @@ pub fn admit_command(
                 CoreAgentJoins::default(),
                 CoreAgentEvent::Promise(event),
             )])
+        }
+        CoreAgentCommand::FailWorkflowToolDelivery {
+            invocation_id,
+            error_ref,
+        } => {
+            let Some(invocation) = state.workflow_tools.emissions.get(&invocation_id) else {
+                return reject(
+                    CommandRejectionKind::UnknownReference,
+                    format!("unknown workflow tool invocation {invocation_id}"),
+                );
+            };
+            match state.workflow_tools.delivery_failures.get(&invocation_id) {
+                // First terminal failure won; retried admission is a no-op.
+                Some(existing) if existing == &error_ref => return Ok(Vec::new()),
+                Some(_) => {
+                    return reject(
+                        CommandRejectionKind::CoreAgentState,
+                        format!(
+                            "workflow tool invocation {invocation_id} already has a different delivery failure"
+                        ),
+                    );
+                }
+                None => {}
+            }
+            let mut proposals = vec![CoreAgentEventProposal::new(
+                CoreAgentJoins::default(),
+                CoreAgentEvent::WorkflowTool(crate::WorkflowToolEvent::DeliveryFailed {
+                    invocation_id: invocation_id.clone(),
+                    error_ref: error_ref.clone(),
+                }),
+            )];
+            // A dead receiver must never leave an unresolvable pending
+            // promise: fail every still-pending keyed completion promise of
+            // this invocation in the same append.
+            if let Some(promises) = &invocation.completion_promises {
+                for promise_id in promises.values() {
+                    let Some(promise) = state.promises.promises.get(promise_id) else {
+                        continue;
+                    };
+                    if promise.status.is_terminal() {
+                        continue;
+                    }
+                    proposals.push(CoreAgentEventProposal::new(
+                        CoreAgentJoins::default(),
+                        CoreAgentEvent::Promise(PromiseEvent::Failed {
+                            promise_id: promise_id.clone(),
+                            error_ref: Some(error_ref.clone()),
+                        }),
+                    ));
+                }
+            }
+            Ok(proposals)
+        }
+        CoreAgentCommand::FailWorkflowToolStart {
+            invocation_id,
+            error_ref,
+        } => {
+            let Some(invocation) = state.workflow_tools.start_requests.get(&invocation_id) else {
+                return reject(
+                    CommandRejectionKind::UnknownReference,
+                    format!("unknown workflow tool start intent {invocation_id}"),
+                );
+            };
+            match state.workflow_tools.start_failures.get(&invocation_id) {
+                // First terminal failure won; retried admission is a no-op.
+                Some(existing) if existing == &error_ref => return Ok(Vec::new()),
+                Some(_) => {
+                    return reject(
+                        CommandRejectionKind::CoreAgentState,
+                        format!(
+                            "workflow tool start intent {invocation_id} already has a different terminal failure"
+                        ),
+                    );
+                }
+                None => {}
+            }
+            let mut proposals = vec![CoreAgentEventProposal::new(
+                CoreAgentJoins::default(),
+                CoreAgentEvent::WorkflowTool(crate::WorkflowToolEvent::StartFailed {
+                    invocation_id: invocation_id.clone(),
+                    error_ref: error_ref.clone(),
+                }),
+            )];
+            // An unstartable execution must never leave an unresolvable
+            // pending promise.
+            if let Some(promises) = &invocation.completion_promises {
+                for promise_id in promises.values() {
+                    let Some(promise) = state.promises.promises.get(promise_id) else {
+                        continue;
+                    };
+                    if promise.status.is_terminal() {
+                        continue;
+                    }
+                    proposals.push(CoreAgentEventProposal::new(
+                        CoreAgentJoins::default(),
+                        CoreAgentEvent::Promise(PromiseEvent::Failed {
+                            promise_id: promise_id.clone(),
+                            error_ref: Some(error_ref.clone()),
+                        }),
+                    ));
+                }
+            }
+            Ok(proposals)
         }
         CoreAgentCommand::ForceCancelRun { run_id } => {
             require_open(state)?;

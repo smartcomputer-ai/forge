@@ -403,27 +403,6 @@ pub struct SessionJobStartedView {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct SessionJobHandleRecordView {
-    pub handle: SessionJobHandleView,
-    pub job_group_id: EnvironmentJobGroupId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub queue_key: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_session_id: Option<SessionId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_run_id: Option<RunId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_turn_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub created_by_tool_call_id: Option<String>,
-    pub created_at_ms: i64,
-    pub start_request_hash: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionJobReadEntryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handle: Option<SessionJobHandleView>,
@@ -538,24 +517,6 @@ pub struct EnvironmentJobCreateResponse {
     pub job_group_id: EnvironmentJobGroupId,
     #[serde(default)]
     pub jobs: Vec<SessionJobStartedView>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentJobListParams {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub instance_id: Option<EnvironmentInstanceId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job_group_id: Option<EnvironmentJobGroupId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<usize>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentJobListResponse {
-    #[serde(default)]
-    pub jobs: Vec<SessionJobHandleRecordView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

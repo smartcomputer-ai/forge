@@ -453,6 +453,7 @@ impl ChatSessionDriver {
         let config = run_start_config(&self.settings);
         self.pending_run = Some(tokio::spawn(async move {
             api.start_run(RunStartParams {
+                notify_on_terminal: None,
                 session_id,
                 source: RunStartSource::Input {
                     items: vec![InputItem::Text { text }],
@@ -786,6 +787,12 @@ impl ChatSessionDriver {
             }
             SessionEventKindView::SessionOpened { .. }
             | SessionEventKindView::SessionConfigChanged { .. }
+            | SessionEventKindView::WorkflowToolsConfigured { .. }
+            | SessionEventKindView::SystemWorkflowToolConfigured { .. }
+            | SessionEventKindView::WorkflowToolEmitted { .. }
+            | SessionEventKindView::WorkflowToolDeliveryFailed { .. }
+            | SessionEventKindView::WorkflowToolStartRequested { .. }
+            | SessionEventKindView::WorkflowToolStartFailed { .. }
             | SessionEventKindView::SessionClosed
             | SessionEventKindView::RunSteeringAccepted { .. }
             | SessionEventKindView::RunCancellationRequested { .. }
@@ -1891,6 +1898,7 @@ mod tests {
             id: "session_1".into(),
             status: api::SessionStatus::Active,
             display_name: None,
+            managed: false,
             config_revision: 0,
             config: None,
             created_at_ms: 0,
@@ -1917,6 +1925,7 @@ mod tests {
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
+            management: None,
             vfs_mounts: Vec::new(),
         };
 
@@ -1994,6 +2003,7 @@ mod tests {
             id: "session_1".into(),
             status: api::SessionStatus::Idle,
             display_name: None,
+            managed: false,
             config_revision: 0,
             config: None,
             created_at_ms: 0,
@@ -2010,6 +2020,7 @@ mod tests {
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
+            management: None,
             vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {
@@ -2041,6 +2052,7 @@ mod tests {
             id: "session_1".into(),
             status: api::SessionStatus::Idle,
             display_name: None,
+            managed: false,
             config_revision: 0,
             config: None,
             created_at_ms: 0,
@@ -2054,6 +2066,7 @@ mod tests {
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
+            management: None,
             vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {

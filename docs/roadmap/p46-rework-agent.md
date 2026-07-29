@@ -942,7 +942,6 @@ pub enum ToolKind {
 }
 
 pub struct FunctionToolSpec {
-    pub model_name: Option<ToolName>,
     pub description_ref: Option<BlobRef>,
     pub input_schema_ref: BlobRef,
     pub output_schema_ref: Option<BlobRef>,

@@ -8,7 +8,7 @@ use auth::{
     SecretStore, SecretValue, TokenEndpointAuthMethod, state_hash,
 };
 use engine::{
-    BlobRef, RunId, ToolCallId, TurnId,
+    BlobRef,
     session::{
         EventSeq, SessionId, SessionPosition, StoredEvent, StoredJoins, UncommittedStoredEvent,
     },
@@ -19,29 +19,25 @@ use engine::{
     },
 };
 use environments::{
-    CreateJobHandle, EnvironmentId, EnvironmentInstanceId, EnvironmentInstanceOrigin,
-    EnvironmentInstanceStore, EnvironmentJobGroupId, EnvironmentProviderCapabilities,
-    EnvironmentProviderHeartbeat, EnvironmentProviderId, EnvironmentProviderKind,
-    EnvironmentProviderStatus, EnvironmentProviderStore, HostControllerConnectionSpec,
-    JobHandleStore, ListEnvironmentInstances, ListEnvironmentProviders, ListJobHandles,
+    EnvironmentId, EnvironmentInstanceId, EnvironmentInstanceOrigin, EnvironmentInstanceStore,
+    EnvironmentProviderCapabilities, EnvironmentProviderHeartbeat, EnvironmentProviderId,
+    EnvironmentProviderKind, EnvironmentProviderStatus, EnvironmentProviderStore,
+    HostControllerConnectionSpec, ListEnvironmentInstances, ListEnvironmentProviders,
     ObserveEnvironmentInstance, PutSessionEnvironmentBinding, RegisterEnvironmentProvider,
-    ReserveEnvironmentJobGroup, SessionEnvironmentBindingState, SessionEnvironmentBindingStore,
-    SessionEnvironmentFsRoute, SessionEnvironmentFsRouteAccess, UpdateEnvironmentInstanceStatus,
+    SessionEnvironmentBindingState, SessionEnvironmentBindingStore, SessionEnvironmentFsRoute,
+    SessionEnvironmentFsRouteAccess, UpdateEnvironmentInstanceStatus,
     UpdateEnvironmentProviderStatus, UpdateSessionEnvironmentBindingState,
 };
 use host_protocol::{
     control::targets::HostTargetStatus,
     shared::{
         HostCapabilities, HostConnectionSpec, HostPath, HostScope, HostTargetId, HostTransport,
-        ImplementationInfo, JobId,
+        ImplementationInfo,
     },
 };
 use mcp::{
     ListMcpServers, McpApprovalPolicy, McpRegistryError, McpRegistryStore, McpServerAuthPolicy,
     McpServerId, McpServerStatus, PutMcpServerRecord, RemoteMcpTransport,
-};
-use messaging::{
-    EnqueueOutboundMessage, OutboundAck, OutboundOrigin, OutboundPayload, OutboxStore,
 };
 use object_store::{ObjectStore, aws::AmazonS3Builder};
 use profiles::{ProfileError, ProfileStore};
@@ -599,107 +595,6 @@ async fn pg_live_operator_universe_lifecycle_stats_and_purge() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
-async fn pg_live_operator_outbox_tails_all_universes_on_one_cursor() {
-    let left = live_store("operator-outbox-left", 1024).await;
-    let right = live_store("operator-outbox-right", 1024).await;
-    let pool = left.pool().clone();
-    let ours = [left.config().universe_id, right.config().universe_id];
-
-    for (store, session, text) in [
-        (&left, "outbox-session-left", "left one"),
-        (&right, "outbox-session-right", "right one"),
-        (&left, "outbox-session-left", "left two"),
-    ] {
-        store
-            .create_session(CreateSession {
-                session_id: SessionId::new(session),
-                display_name: None,
-                created_at_ms: 1,
-            })
-            .await
-            .ok(); // second enqueue reuses the session
-        store
-            .enqueue(EnqueueOutboundMessage {
-                session_id: SessionId::new(session),
-                run_id: None,
-                origin: OutboundOrigin::FinalText,
-                payload: OutboundPayload::Send {
-                    text: text.to_owned(),
-                    reply_to: None,
-                },
-                created_at_ms: 2,
-            })
-            .await
-            .expect("enqueue outbound");
-    }
-
-    // The deployment-wide tail sees every universe (including other tests'
-    // leftovers on a shared dev database); assertions filter to ours.
-    let read_ours = |after: u64| {
-        let pool = pool.clone();
-        async move {
-            let mut collected = Vec::new();
-            let mut cursor = after;
-            loop {
-                let page = store_pg::read_pending_outbound_all_universes(&pool, cursor, 256)
-                    .await
-                    .expect("read all universes");
-                let Some(last) = page.last() else {
-                    return collected;
-                };
-                cursor = last.message.seq;
-                collected.extend(
-                    page.into_iter()
-                        .filter(|entry| ours.contains(&entry.universe_id)),
-                );
-            }
-        }
-    };
-
-    let entries = read_ours(0).await;
-    assert_eq!(entries.len(), 3);
-    assert!(
-        entries
-            .windows(2)
-            .all(|pair| pair[0].message.seq < pair[1].message.seq),
-        "one global cursor orders entries across universes"
-    );
-    assert_eq!(entries[0].universe_id, ours[0]);
-    assert_eq!(entries[1].universe_id, ours[1]);
-    assert_eq!(entries[2].universe_id, ours[0]);
-
-    // Resuming from a mid-stream cursor skips everything at or before it.
-    let resumed = read_ours(entries[1].message.seq).await;
-    assert_eq!(resumed.len(), 1);
-    assert_eq!(resumed[0].message.outbox_id, entries[2].message.outbox_id);
-
-    // Acking through the per-universe store removes the entry from the tail.
-    right
-        .ack(
-            &entries[1].message.outbox_id,
-            OutboundAck::Delivered {
-                channel_message_id: Some("chan_1".to_owned()),
-            },
-        )
-        .await
-        .expect("ack right entry");
-    let after_ack = read_ours(0).await;
-    assert_eq!(after_ack.len(), 2);
-    assert!(
-        after_ack.iter().all(|entry| entry.universe_id == ours[0]),
-        "the acked right-universe entry no longer appears"
-    );
-
-    // Clean up so reruns of this suite do not accumulate pending entries.
-    for universe_id in ours {
-        store_pg::delete_universe(&pool, universe_id)
-            .await
-            .expect("clean up outbox universe");
-    }
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
 async fn pg_live_blobs_use_inline_and_object_storage() {
     let store = live_store("blobs", 8).await;
 
@@ -1184,8 +1079,16 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
-async fn pg_live_environment_instances_bindings_and_jobs() {
+async fn pg_live_environment_instances_and_bindings() {
     let store = live_store("environments", 1024).await;
+    for table in ["environment_jobs", "environment_job_groups"] {
+        let relation: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
+            .bind(format!("public.{table}"))
+            .fetch_one(store.pool())
+            .await
+            .expect("inspect removed environment job table");
+        assert!(relation.is_none(), "P104 must remove table {table}");
+    }
     let provider_id = EnvironmentProviderId::new("bridge-local");
     let target_id = HostTargetId::new("local-host");
     let instance_id = EnvironmentInstanceId::new("instance-local");
@@ -1308,64 +1211,6 @@ async fn pg_live_environment_instances_bindings_and_jobs() {
             .expect("list bindings"),
         vec![binding.clone()]
     );
-
-    let job_group_id = EnvironmentJobGroupId::new("group-1");
-    let job_group = store
-        .reserve_job_group(ReserveEnvironmentJobGroup {
-            instance_id: instance_id.clone(),
-            job_group_id: job_group_id.clone(),
-            request_id: "request-1".to_owned(),
-            start_request_hash: "hash-1".to_owned(),
-            created_at_ms: 44,
-        })
-        .await
-        .expect("reserve job group");
-    assert_eq!(job_group.instance_id, instance_id);
-
-    let job_handle = CreateJobHandle {
-        instance_id: instance_id.clone(),
-        job_group_id: job_group_id.clone(),
-        job_id: JobId::new("job-1"),
-        name: Some("checkout".to_owned()),
-        queue_key: Some("repo".to_owned()),
-        created_by_session_id: Some(session_id.clone()),
-        created_by_run_id: Some(RunId::new(1)),
-        created_by_turn_id: Some(TurnId::new(2)),
-        created_by_tool_call_id: Some(ToolCallId::new("call_1")),
-        created_at_ms: 45,
-        start_request_hash: "hash-1".to_owned(),
-    };
-    let created_jobs = store
-        .create_job_handles(vec![job_handle.clone()])
-        .await
-        .expect("create job handle");
-    assert_eq!(created_jobs.len(), 1);
-    assert_eq!(created_jobs[0].job_id.as_str(), "job-1");
-
-    let retried_jobs = store
-        .create_job_handles(vec![job_handle])
-        .await
-        .expect("idempotent create job handle");
-    assert_eq!(retried_jobs, created_jobs);
-
-    let listed_jobs = store
-        .list_job_handles(ListJobHandles {
-            instance_id: Some(instance_id.clone()),
-            job_group_id: Some(job_group_id),
-            created_by_session_id: Some(session_id.clone()),
-            limit: Some(10),
-        })
-        .await
-        .expect("list job handles");
-    assert_eq!(listed_jobs, created_jobs);
-
-    let read_job = store
-        .read_job_handle(&instance_id, &JobId::new("job-1"))
-        .await
-        .expect("read job handle");
-    assert_eq!(read_job.created_by_session_id.as_ref(), Some(&session_id));
-    assert_eq!(read_job.queue_key.as_deref(), Some("repo"));
-    assert_eq!(read_job.start_request_hash, "hash-1");
 
     let detached = store
         .update_binding_state(UpdateSessionEnvironmentBindingState {

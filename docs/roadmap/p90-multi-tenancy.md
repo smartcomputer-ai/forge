@@ -1,6 +1,9 @@
 # P90: Multi-Tenancy — Multiple Universes Per Deployment
 
 **Status**
+- Updated 2026-07-29: Lightspeed's universe and API-key boundaries remain;
+  channel-binding credential handling described below moved to the external
+  Channels application.
 - Proposed 2026-07-03.
 - Update 2026-07-12: operator-scoped API-key management shipped as
   `operator/api-keys/create|list|revoke`. Every operation requires an explicit
@@ -49,7 +52,7 @@
   non-retryably. `args.universe_id` remains the workflow-side value the
   bootstrap assertion checks against.
 - Phases 2 and 3 implemented 2026-07-03: deployment-scoped `api_keys` table
-  (`008_api_keys.sql`; hash-only storage, unique display prefix), inbound
+  (`007_api_keys.sql`; hash-only storage, unique display prefix), inbound
   `auth::api_keys` module (`mint_api_key`, `ApiKeyStore`) with the Postgres
   impl on the shared pool (`PgApiKeyStore`), gateway `api-key` mode
   (`Authorization: Bearer lsk_…`, tenant headers rejected, unknown/revoked

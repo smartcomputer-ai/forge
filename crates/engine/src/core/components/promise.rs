@@ -40,10 +40,20 @@ pub enum PromiseSource {
         target_session_id: String,
         target_run_id: u64,
     },
-    /// A durable environment job; resolved by poll + nudge (P86 transport).
-    EnvJob { instance_id: String, job_id: String },
     /// A durable timer owned by the session workflow.
     Timer { fire_at_ms: u64 },
+    /// One keyed completion promise of a workflow-tool invocation (P100b).
+    /// `producer` is the only workflow authorized to resolve it: the
+    /// admitted bound receiver, or the system-derived started execution.
+    /// Whether cancellation targets a shared receiver or an owned execution
+    /// is derived from the durable binding's target lifecycle, not from a
+    /// second source variant.
+    Workflow {
+        producer_workflow_id: String,
+        producer_workflow_kind: String,
+        invocation_id: String,
+        completion_key: String,
+    },
 }
 
 /// Ownership scope (structured concurrency): run-scoped promises auto-cancel
@@ -231,13 +241,15 @@ pub const PROMISE_EFFECT_ID: &str = "promise_id";
 pub const PROMISE_EFFECT_SOURCE: &str = "source";
 pub const PROMISE_EFFECT_TARGET_SESSION_ID: &str = "target_session_id";
 pub const PROMISE_EFFECT_TARGET_RUN_ID: &str = "target_run_id";
-pub const PROMISE_EFFECT_INSTANCE_ID: &str = "instance_id";
-pub const PROMISE_EFFECT_JOB_ID: &str = "job_id";
 pub const PROMISE_EFFECT_FIRE_AT_MS: &str = "fire_at_ms";
 pub const PROMISE_EFFECT_DEADLINE_MS: &str = "deadline_ms";
 pub const PROMISE_EFFECT_SOURCE_RUN: &str = "run";
-pub const PROMISE_EFFECT_SOURCE_ENV_JOB: &str = "env_job";
 pub const PROMISE_EFFECT_SOURCE_TIMER: &str = "timer";
+pub const PROMISE_EFFECT_SOURCE_WORKFLOW: &str = "workflow";
+pub const PROMISE_EFFECT_PRODUCER_WORKFLOW_ID: &str = "producer_workflow_id";
+pub const PROMISE_EFFECT_PRODUCER_WORKFLOW_KIND: &str = "producer_workflow_kind";
+pub const PROMISE_EFFECT_INVOCATION_ID: &str = "invocation_id";
+pub const PROMISE_EFFECT_COMPLETION_KEY: &str = "completion_key";
 
 /// Build the creation effect a tool executor attaches to its call result.
 pub fn promise_create_effect(
@@ -265,23 +277,39 @@ pub fn promise_create_effect(
                 target_run_id.to_string(),
             );
         }
-        PromiseSource::EnvJob {
-            instance_id,
-            job_id,
-        } => {
-            data.insert(
-                PROMISE_EFFECT_SOURCE.to_owned(),
-                PROMISE_EFFECT_SOURCE_ENV_JOB.to_owned(),
-            );
-            data.insert(PROMISE_EFFECT_INSTANCE_ID.to_owned(), instance_id.clone());
-            data.insert(PROMISE_EFFECT_JOB_ID.to_owned(), job_id.clone());
-        }
         PromiseSource::Timer { fire_at_ms } => {
             data.insert(
                 PROMISE_EFFECT_SOURCE.to_owned(),
                 PROMISE_EFFECT_SOURCE_TIMER.to_owned(),
             );
             data.insert(PROMISE_EFFECT_FIRE_AT_MS.to_owned(), fire_at_ms.to_string());
+        }
+        PromiseSource::Workflow {
+            producer_workflow_id,
+            producer_workflow_kind,
+            invocation_id,
+            completion_key,
+        } => {
+            data.insert(
+                PROMISE_EFFECT_SOURCE.to_owned(),
+                PROMISE_EFFECT_SOURCE_WORKFLOW.to_owned(),
+            );
+            data.insert(
+                PROMISE_EFFECT_PRODUCER_WORKFLOW_ID.to_owned(),
+                producer_workflow_id.clone(),
+            );
+            data.insert(
+                PROMISE_EFFECT_PRODUCER_WORKFLOW_KIND.to_owned(),
+                producer_workflow_kind.clone(),
+            );
+            data.insert(
+                PROMISE_EFFECT_INVOCATION_ID.to_owned(),
+                invocation_id.clone(),
+            );
+            data.insert(
+                PROMISE_EFFECT_COMPLETION_KEY.to_owned(),
+                completion_key.clone(),
+            );
         }
     }
     if let Some(deadline_ms) = deadline_ms {
@@ -350,13 +378,19 @@ pub(crate) fn promise_from_create_effect(
                 field(PROMISE_EFFECT_TARGET_RUN_ID)?,
             )?,
         },
-        PROMISE_EFFECT_SOURCE_ENV_JOB => PromiseSource::EnvJob {
-            instance_id: field(PROMISE_EFFECT_INSTANCE_ID)?,
-            job_id: field(PROMISE_EFFECT_JOB_ID)?,
-        },
         PROMISE_EFFECT_SOURCE_TIMER => PromiseSource::Timer {
             fire_at_ms: parse_u64(PROMISE_EFFECT_FIRE_AT_MS, field(PROMISE_EFFECT_FIRE_AT_MS)?)?,
         },
+        PROMISE_EFFECT_SOURCE_WORKFLOW => {
+            // Workflow-source promises are created only through the trusted
+            // workflow-tool invocation effect, which validates them against
+            // the durable binding; a generic promise-create effect must not
+            // mint one.
+            return Err(DomainError::InvariantViolation(
+                "workflow-source promises are created by workflow-tool invocation effects, not generic promise-create effects"
+                    .to_owned(),
+            ));
+        }
         other => {
             return Err(DomainError::InvariantViolation(format!(
                 "unknown promise source kind `{other}`"

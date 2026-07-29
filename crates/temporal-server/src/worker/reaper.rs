@@ -16,8 +16,8 @@ use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core
 use async_trait::async_trait;
 use engine::{
     CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus, Promise,
-    PromiseId, PromiseResolution, PromiseScope, PromiseSource, PromiseSourceCancelRequest,
-    PromiseSourceCheckRequest, PromiseSourceCheckResult, RunId, RunRecord, RunStatus, SessionId,
+    PromiseId, PromiseResolution, PromiseScope, PromiseSource, RunId, RunRecord, RunStatus,
+    SessionId,
     storage::{
         AppendSessionEvents, ListSessions, SessionListCursor, SessionRecord, SessionStore,
         SessionStoreError,
@@ -31,7 +31,7 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{config::DeploymentStores, worker::SessionTools};
+use crate::config::DeploymentStores;
 
 const DEFAULT_REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const SESSION_PAGE_LIMIT: usize = 256;
@@ -52,7 +52,6 @@ pub struct ReaperStats {
     pub holder_repairs_appended: usize,
     pub child_cancels_signalled: usize,
     pub child_cancels_appended: usize,
-    pub source_cancels: usize,
     pub conflicts: usize,
     pub errors: usize,
 }
@@ -66,7 +65,6 @@ impl ReaperStats {
         self.holder_repairs_appended += other.holder_repairs_appended;
         self.child_cancels_signalled += other.child_cancels_signalled;
         self.child_cancels_appended += other.child_cancels_appended;
-        self.source_cancels += other.source_cancels;
         self.conflicts += other.conflicts;
         self.errors += other.errors;
     }
@@ -76,7 +74,6 @@ impl ReaperStats {
             || self.holder_repairs_appended > 0
             || self.child_cancels_signalled > 0
             || self.child_cancels_appended > 0
-            || self.source_cancels > 0
     }
 }
 
@@ -104,7 +101,6 @@ impl PromiseReaper {
                         holder_repairs_appended = stats.holder_repairs_appended,
                         child_cancels_signalled = stats.child_cancels_signalled,
                         child_cancels_appended = stats.child_cancels_appended,
-                        source_cancels = stats.source_cancels,
                         conflicts = stats.conflicts,
                         errors = stats.errors,
                         "promise reaper pass complete"
@@ -131,17 +127,12 @@ impl PromiseReaper {
         let mut stats = ReaperStats::default();
         for (universe_id, _) in universes {
             let store = self.stores.store_for(universe_id);
-            let source_tools: Arc<dyn engine::CoreAgentTools> = Arc::new(
-                SessionTools::from_pg_store(store.clone())
-                    .with_environment_job_workflow_client(self.client.clone(), universe_id),
-            );
             let sessions: Arc<dyn SessionStore> = store.clone();
             let append_store: Arc<dyn SessionStore> = store;
             let universe_stats = reap_universe_once(
                 universe_id,
                 sessions,
                 append_store,
-                source_tools,
                 workflows.clone(),
                 now_ms(),
             )
@@ -162,14 +153,12 @@ struct LoadedSessionSnapshot {
 struct ReaperPlan {
     holder_commands: BTreeMap<SessionId, Vec<CoreAgentCommand>>,
     child_cancels: BTreeSet<(SessionId, RunId)>,
-    source_cancels: Vec<PromiseSource>,
 }
 
 pub(super) async fn reap_universe_once(
     universe_id: Uuid,
     sessions: Arc<dyn SessionStore>,
     append_store: Arc<dyn SessionStore>,
-    source_tools: Arc<dyn engine::CoreAgentTools>,
     workflows: Arc<dyn WorkflowRepairClient>,
     now_ms: u64,
 ) -> anyhow::Result<ReaperStats> {
@@ -183,7 +172,6 @@ pub(super) async fn reap_universe_once(
     let plan = plan_repair(
         universe_id,
         &snapshots,
-        source_tools.as_ref(),
         workflows.as_ref(),
         &mut running_cache,
         now_ms,
@@ -212,35 +200,12 @@ pub(super) async fn reap_universe_once(
         &mut stats,
     )
     .await;
-    for source in plan.source_cancels {
-        match source {
-            PromiseSource::EnvJob { .. } => {
-                match source_tools
-                    .cancel_promise_source(PromiseSourceCancelRequest { source })
-                    .await
-                {
-                    Ok(_) => stats.source_cancels += 1,
-                    Err(error) => {
-                        stats.errors += 1;
-                        tracing::warn!(
-                            target: "temporal_server",
-                            %universe_id,
-                            %error,
-                            "promise reaper failed to cancel promise source"
-                        );
-                    }
-                }
-            }
-            PromiseSource::Timer { .. } | PromiseSource::Run { .. } => {}
-        }
-    }
     Ok(stats)
 }
 
 async fn plan_repair(
     universe_id: Uuid,
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    source_tools: &dyn engine::CoreAgentTools,
     workflows: &dyn WorkflowRepairClient,
     running_cache: &mut BTreeMap<SessionId, bool>,
     now_ms: u64,
@@ -264,13 +229,11 @@ async fn plan_repair(
             match promise_source_resolution(
                 universe_id,
                 snapshots,
-                source_tools,
                 workflows,
                 running_cache,
                 &mut plan,
                 &promise.source,
                 now_ms,
-                stats,
             )
             .await
             {
@@ -315,21 +278,18 @@ fn plan_source_cancel(plan: &mut ReaperPlan, source: &PromiseSource) {
                     .insert((session_id, RunId::new(*target_run_id)));
             }
         }
-        PromiseSource::EnvJob { .. } => plan.source_cancels.push(source.clone()),
-        PromiseSource::Timer { .. } => {}
+        PromiseSource::Timer { .. } | PromiseSource::Workflow { .. } => {}
     }
 }
 
 async fn promise_source_resolution(
     universe_id: Uuid,
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    source_tools: &dyn engine::CoreAgentTools,
     workflows: &dyn WorkflowRepairClient,
     running_cache: &mut BTreeMap<SessionId, bool>,
     plan: &mut ReaperPlan,
     source: &PromiseSource,
     now_ms: u64,
-    stats: &mut ReaperStats,
 ) -> Option<PromiseResolution> {
     match source {
         PromiseSource::Run {
@@ -361,33 +321,14 @@ async fn promise_source_resolution(
             }
             None
         }
-        PromiseSource::EnvJob { .. } => match source_tools
-            .check_promise_source(PromiseSourceCheckRequest {
-                source: source.clone(),
-            })
-            .await
-        {
-            Ok(PromiseSourceCheckResult::Pending) => None,
-            Ok(PromiseSourceCheckResult::Resolved { payload_ref }) => {
-                Some(PromiseResolution::Resolved { payload_ref })
-            }
-            Ok(PromiseSourceCheckResult::Failed { error_ref }) => {
-                Some(PromiseResolution::Failed { error_ref })
-            }
-            Err(error) => {
-                stats.errors += 1;
-                tracing::warn!(
-                    target: "temporal_server",
-                    %universe_id,
-                    %error,
-                    "promise reaper failed to check promise source"
-                );
-                None
-            }
-        },
         PromiseSource::Timer { fire_at_ms } => {
             (*fire_at_ms <= now_ms).then_some(PromiseResolution::Resolved { payload_ref: None })
         }
+        // Only the exact stored producer may resolve a workflow-tool
+        // promise; the reaper cannot poll or repair it. Terminal delivery
+        // failure and session close remain the unresolvable-promise
+        // backstops.
+        PromiseSource::Workflow { .. } => None,
     }
 }
 
@@ -758,9 +699,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use engine::{
-        ActiveRun, BlobRef, CoreAgentCodec, CoreAgentEvent, CoreAgentIoError, CoreAgentTools,
-        ModelSelection, PromiseStatus, ProviderApiKind, RunFailure, RunFailureKind, RunOrigin,
-        RunSource, ToolBatchOutcome, ToolInvocationBatchRequest,
+        ActiveRun, BlobRef, CoreAgentCodec, CoreAgentEvent, ModelSelection, PromiseStatus,
+        ProviderApiKind, RunFailure, RunFailureKind, RunOrigin, RunSource,
         storage::{CreateSession, InMemorySessionStore, ReadSessionEvents},
     };
     use temporal_workflow::{DEFAULT_MODEL, default_run_config, default_session_config};
@@ -793,20 +733,6 @@ mod tests {
 
         async fn workflow_is_running(&self, _universe_id: Uuid, session_id: &SessionId) -> bool {
             self.running.contains(session_id)
-        }
-    }
-
-    struct FakeSourceTools;
-
-    #[async_trait]
-    impl CoreAgentTools for FakeSourceTools {
-        async fn invoke_batch(
-            &self,
-            _request: ToolInvocationBatchRequest,
-        ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
-            Err(CoreAgentIoError::Failed {
-                message: "fake source tools do not invoke batches".to_owned(),
-            })
         }
     }
 
@@ -849,13 +775,11 @@ mod tests {
             (child_id.clone(), child_state),
         ]);
         let workflows = FakeWorkflows::default();
-        let tools = FakeSourceTools;
         let mut running_cache = BTreeMap::new();
         let mut stats = ReaperStats::default();
         let plan = plan_repair(
             universe_id,
             &snapshots,
-            &tools,
             &workflows,
             &mut running_cache,
             1_000,
@@ -952,13 +876,11 @@ mod tests {
             (child_id.clone(), child_state),
         ]);
         let workflows = FakeWorkflows::default();
-        let tools = FakeSourceTools;
         let mut running_cache = BTreeMap::new();
         let mut stats = ReaperStats::default();
         let plan = plan_repair(
             universe_id,
             &snapshots,
-            &tools,
             &workflows,
             &mut running_cache,
             1_000,
@@ -1049,6 +971,7 @@ mod tests {
                             display_name: None,
                             lifecycle_status: engine::storage::SessionLifecycleStatus::New,
                             closed_at_seq: None,
+                            managed: false,
                             head: None,
                             source_session_id: None,
                             source_seq: None,

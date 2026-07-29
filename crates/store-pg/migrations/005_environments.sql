@@ -152,78 +152,10 @@ CREATE TABLE IF NOT EXISTS session_environment_credentials (
         CHECK (created_at_ms >= 0 AND updated_at_ms >= created_at_ms)
 );
 
-CREATE TABLE IF NOT EXISTS environment_job_groups (
-    universe_id uuid NOT NULL,
-    instance_id text NOT NULL,
-    job_group_id text NOT NULL,
-    request_id text NOT NULL,
-    start_request_hash text NOT NULL,
-    status text NOT NULL,
-    created_at_ms bigint NOT NULL,
-    updated_at_ms bigint NOT NULL,
-    terminal_at_ms bigint,
-
-    PRIMARY KEY (universe_id, instance_id, job_group_id),
-    UNIQUE (universe_id, instance_id, request_id),
-    FOREIGN KEY (universe_id, instance_id)
-        REFERENCES environments (universe_id, instance_id) ON DELETE RESTRICT,
-    CONSTRAINT environment_job_groups_ids_format CHECK (
-        job_group_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-        AND request_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
-    ),
-    CONSTRAINT environment_job_groups_hash_not_empty CHECK (start_request_hash <> ''),
-    CONSTRAINT environment_job_groups_status_known
-        CHECK (status IN ('starting', 'running', 'terminal', 'failed')),
-    CONSTRAINT environment_job_groups_terminal_consistent CHECK (
-        (status IN ('terminal', 'failed')) = (terminal_at_ms IS NOT NULL)
-    ),
-    CONSTRAINT environment_job_groups_times_valid CHECK (
-        created_at_ms >= 0
-        AND updated_at_ms >= created_at_ms
-        AND (terminal_at_ms IS NULL OR terminal_at_ms >= created_at_ms)
-    )
-);
-
-CREATE INDEX IF NOT EXISTS environment_job_groups_active_idx
-    ON environment_job_groups (universe_id, instance_id, status, job_group_id);
-
-CREATE TABLE IF NOT EXISTS environment_jobs (
-    universe_id uuid NOT NULL,
-    instance_id text NOT NULL,
-    job_group_id text NOT NULL,
-    job_id text NOT NULL,
-    name text,
-    queue_key text,
-    created_by_session_id text,
-    created_by_run_id bigint,
-    created_by_turn_id bigint,
-    created_by_tool_call_id text,
-    created_at_ms bigint NOT NULL,
-    start_request_hash text NOT NULL,
-
-    PRIMARY KEY (universe_id, instance_id, job_id),
-    FOREIGN KEY (universe_id, instance_id, job_group_id)
-        REFERENCES environment_job_groups (universe_id, instance_id, job_group_id)
-        ON DELETE CASCADE,
-    CONSTRAINT environment_jobs_job_id_format
-        CHECK (job_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
-    CONSTRAINT environment_jobs_queue_key_format
-        CHECK (queue_key IS NULL OR queue_key ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
-    CONSTRAINT environment_jobs_created_by_session_format
-        CHECK (created_by_session_id IS NULL OR created_by_session_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
-    CONSTRAINT environment_jobs_provenance_valid CHECK (
-        (created_by_run_id IS NULL OR created_by_run_id >= 0)
-        AND (created_by_turn_id IS NULL OR created_by_turn_id >= 0)
-    ),
-    CONSTRAINT environment_jobs_times_valid CHECK (created_at_ms >= 0),
-    CONSTRAINT environment_jobs_hash_not_empty CHECK (start_request_hash <> '')
-);
-
-CREATE INDEX IF NOT EXISTS environment_jobs_group_idx
-    ON environment_jobs (universe_id, instance_id, job_group_id, job_id);
-
-CREATE INDEX IF NOT EXISTS environment_jobs_creator_idx
-    ON environment_jobs (universe_id, created_by_session_id, created_at_ms DESC, instance_id, job_id);
+-- P104: provider-owned jobs no longer have a Lightspeed registry. These
+-- drops also clean up deployments that applied the pre-P104 schema.
+DROP TABLE IF EXISTS environment_jobs;
+DROP TABLE IF EXISTS environment_job_groups;
 
 COMMENT ON TABLE environment_providers IS
     'Universe-scoped liveness leases for environment provider controllers.';
@@ -231,7 +163,3 @@ COMMENT ON TABLE environments IS
     'Universe-owned environment instances; the current connection source of truth.';
 COMMENT ON TABLE session_environment_bindings IS
     'Session-local env:<id> aliases referencing environment instances.';
-COMMENT ON TABLE environment_job_groups IS
-    'Environment-owned job workflow discovery, idempotency, and terminal coordination.';
-COMMENT ON TABLE environment_jobs IS
-    'Environment-owned provider job handles; session/run fields are optional provenance.';

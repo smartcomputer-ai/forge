@@ -13,6 +13,16 @@ const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const bundle = JSON.parse(await readFile(schemaPath, "utf8"));
 const filter = JSON.parse(await readFile(filterPath, "utf8"));
 const definitions = bundle.definitions ?? {};
+const literalValueKeywords = new Set([
+  "const",
+  "default",
+  "deprecated",
+  "enum",
+  "examples",
+  "readOnly",
+  "uniqueItems",
+  "writeOnly",
+]);
 const universeMethods = (manifest.methods ?? []).filter((entry) => entry.scope === "universe");
 for (const entry of universeMethods) {
   if (typeof entry.summary !== "string" || entry.summary.trim().length === 0) {
@@ -186,6 +196,16 @@ function normalizeBooleanSchemas(value) {
     return value;
   }
   return Object.fromEntries(
-    Object.entries(value).map(([key, entry]) => [key, normalizeBooleanSchemas(entry)]),
+    Object.entries(value).map(([key, entry]) => [
+      key,
+      literalValueKeyword(key) ? entry : normalizeBooleanSchemas(entry),
+    ]),
   );
+}
+
+// These keywords contain instance values rather than nested schemas. In
+// particular, a boolean `default` must remain a boolean while an
+// `additionalProperties: false` schema is normalized for MCP clients.
+function literalValueKeyword(key) {
+  return literalValueKeywords.has(key);
 }

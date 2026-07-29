@@ -14,6 +14,9 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "resultType": "AgentApiOutcome<SessionStartResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": {
+        "not": {}
+      },
       "properties": {
         "config": {
           "anyOf": [
@@ -166,8 +169,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
           "properties": {
+            "jobs": {
+              "default": false,
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "type": "boolean"
+            },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
               "items": {
@@ -217,16 +225,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "anyOf": [
                 {
                   "$ref": "#/definitions/McpFeature"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "messaging": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/MessagingFeature"
                 },
                 {
                   "type": "null"
@@ -595,21 +593,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "MessagingFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-          "properties": {
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
         "ModelConfig": {
           "properties": {
             "apiKind": {
@@ -632,9 +615,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "ProfileEnvironment": {
           "properties": {
             "activate": {
-              "default": {
-                "not": {}
-              },
+              "default": false,
               "type": "boolean"
             },
             "envId": {
@@ -1329,8 +1310,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
           "properties": {
+            "jobs": {
+              "default": false,
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "type": "boolean"
+            },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
               "items": {
@@ -1380,16 +1366,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "anyOf": [
                 {
                   "$ref": "#/definitions/McpFeature"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "messaging": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/MessagingFeature"
                 },
                 {
                   "type": "null"
@@ -1653,21 +1629,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "required": [
             "serverId"
           ],
-          "type": "object"
-        },
-        "MessagingFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-          "properties": {
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
           "type": "object"
         },
         "ModelConfig": {
@@ -2028,9 +1989,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "force": {
-          "default": {
-            "not": {}
-          },
+          "default": false,
           "description": "Cancel the active run and drop queued runs instead of rejecting on\nactive work. Recovers sessions whose workflow no longer exists (e.g.\nafter an operator terminate) by reconciling the session log directly.",
           "type": "boolean"
         },
@@ -2313,6 +2272,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
+        "notifyOnTerminal": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunTerminalNotificationInput"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Request an at-least-once terminal emission to the managed session's\nimmutable lifecycle controller. The destination is derived by the\ngateway; callers supply only the controller's opaque dedup token."
+        },
         "sessionId": {
           "type": "string"
         },
@@ -2320,7 +2290,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "$ref": "#/definitions/RunStartSource"
         },
         "submissionId": {
-          "description": "Client-supplied idempotency key, unique per session. Retrying\n`session/runs/start` with the same submission id and the same\nsource/config returns the original run instead of starting a second\none; reusing a submission id with different source or config is\nrejected.",
+          "description": "Client-supplied idempotency key, unique per session. Retrying\n`session/runs/start` with the same submission id and the same\nsource/config/terminal notification returns the original run instead\nof starting a second one; reusing a submission id with any of those\ninputs changed is rejected.",
           "type": [
             "string",
             "null"
@@ -2564,6 +2534,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "RunTerminalNotificationInput": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "token"
+          ],
+          "type": "object"
         },
         "ToolChoice": {
           "oneOf": [
@@ -2908,8 +2892,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
           "properties": {
+            "jobs": {
+              "default": false,
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "type": "boolean"
+            },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
               "items": {
@@ -2959,16 +2948,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "anyOf": [
                 {
                   "$ref": "#/definitions/McpFeature"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "messaging": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/MessagingFeature"
                 },
                 {
                   "type": "null"
@@ -3337,21 +3316,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "MessagingFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-          "properties": {
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
         "ModelConfig": {
           "properties": {
             "apiKind": {
@@ -3374,9 +3338,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "ProfileEnvironment": {
           "properties": {
             "activate": {
-              "default": {
-                "not": {}
-              },
+              "default": false,
               "type": "boolean"
             },
             "envId": {
@@ -4079,9 +4041,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "activate": {
-          "default": {
-            "not": {}
-          },
+          "default": false,
           "type": "boolean"
         },
         "cwd": {
@@ -4131,9 +4091,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "string"
             },
             "sameStateAsActiveEnv": {
-              "default": {
-                "not": {}
-              },
+              "default": false,
               "type": "boolean"
             },
             "sourcePath": {
@@ -4573,7 +4531,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_environments_close",
     "method": "environments/close",
     "summary": "Close an environment instance",
-    "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.",
+    "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.",
     "paramsType": "EnvironmentCloseParams",
     "resultType": "AgentApiOutcome<EnvironmentCloseResponse>",
     "inputSchema": {
@@ -4798,8 +4756,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
           "properties": {
+            "jobs": {
+              "default": false,
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "type": "boolean"
+            },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
               "items": {
@@ -4849,16 +4812,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "anyOf": [
                 {
                   "$ref": "#/definitions/McpFeature"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "messaging": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/MessagingFeature"
                 },
                 {
                   "type": "null"
@@ -5178,21 +5131,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "MessagingFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-          "properties": {
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
         "ModelConfig": {
           "properties": {
             "apiKind": {
@@ -5215,9 +5153,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "ProfileEnvironment": {
           "properties": {
             "activate": {
-              "default": {
-                "not": {}
-              },
+              "default": false,
               "type": "boolean"
             },
             "envId": {
@@ -5944,8 +5880,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
           "properties": {
+            "jobs": {
+              "default": false,
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "type": "boolean"
+            },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
               "items": {
@@ -5995,16 +5936,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "anyOf": [
                 {
                   "$ref": "#/definitions/McpFeature"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "messaging": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/MessagingFeature"
                 },
                 {
                   "type": "null"
@@ -6324,21 +6255,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "MessagingFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-          "properties": {
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
         "ModelConfig": {
           "properties": {
             "apiKind": {
@@ -6361,9 +6277,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "ProfileEnvironment": {
           "properties": {
             "activate": {
-              "default": {
-                "not": {}
-              },
+              "default": false,
               "type": "boolean"
             },
             "envId": {

@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::{
-    ContextEntryInput, ContextEntryKey, PromiseId, PromiseResolution, ResumeAwaitCommand, RunId,
-    RunRequestCommand, SessionConfig, SubmitMessageCommand, ToolExecutionTarget, ToolName,
-    ToolPatch, ToolSpec,
+    BlobRef, ContextEntryInput, ContextEntryKey, ManagedSessionWorkflowTools, PromiseId,
+    PromiseResolution, ResumeAwaitCommand, RunId, RunRequestCommand, SessionConfig,
+    SubmitMessageCommand, ToolExecutionTarget, ToolName, ToolPatch, ToolSpec,
+    WorkflowToolDeclaration, WorkflowToolInvocationId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -13,6 +15,22 @@ use crate::{
 pub enum CoreAgentCommand {
     OpenSession {
         config: SessionConfig,
+    },
+    /// Trusted managed-session creation path. The lifecycle controller and
+    /// independently addressed workflow tools are admitted once, atomically
+    /// with the lifecycle open event.
+    OpenManagedSession {
+        config: SessionConfig,
+        session_universe_id: Uuid,
+        workflow_tools: ManagedSessionWorkflowTools,
+    },
+    /// Trusted runtime admission for one system-owned workflow-backed tool.
+    /// Unlike managed-session declarations, system bindings may be added to
+    /// an already-open session and do not imply lifecycle ownership. They are
+    /// immutable once admitted; an identical command is an idempotent no-op.
+    AdmitSystemWorkflowTool {
+        session_universe_id: Uuid,
+        declaration: WorkflowToolDeclaration,
     },
     /// Replace the session config with a complete document. The previous
     /// config is not consulted beyond validation (api-kind pinning) and the
@@ -81,6 +99,23 @@ pub enum CoreAgentCommand {
     ResolvePromise {
         promise_id: PromiseId,
         resolution: PromiseResolution,
+    },
+    /// Terminal push-delivery failure for one promise-bearing workflow-tool
+    /// invocation: atomically records `WorkflowTool::DeliveryFailed` and
+    /// fails every still-pending completion promise of that invocation, so a
+    /// dead receiver can never leave an unresolvable promise. Re-admission
+    /// with the same error is an idempotent no-op.
+    FailWorkflowToolDelivery {
+        invocation_id: WorkflowToolInvocationId,
+        error_ref: BlobRef,
+    },
+    /// Terminal start failure for one start-on-call invocation: atomically
+    /// records `WorkflowTool::StartFailed` and fails every still-pending
+    /// keyed completion promise of that invocation. Re-admission with the
+    /// same error is an idempotent no-op.
+    FailWorkflowToolStart {
+        invocation_id: WorkflowToolInvocationId,
+        error_ref: BlobRef,
     },
     CloseSession {
         /// Force-cancel the active run and drop queued runs before closing

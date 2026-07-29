@@ -233,8 +233,6 @@ impl UniverseRuntime {
             Some(fleet_runtime),
             &self.clients,
             self.client.clone(),
-            self.task_queue.clone(),
-            universe_id,
         )?);
         Ok(UniverseState {
             universe_id,

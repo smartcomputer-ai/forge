@@ -327,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn env_attach_parse_accepts_host_bridge_target() {
+    fn env_attach_parse_accepts_environment_instance() {
         let cli = Cli::try_parse_from([
             "lightspeed",
             "env",
@@ -336,12 +336,10 @@ mod tests {
             "http://127.0.0.1:18080/rpc",
             "--session",
             "session_1",
-            "--provider-id",
-            "my-host",
+            "--instance-id",
+            "instance_1",
             "--env-id",
             "local-host",
-            "--target-id",
-            "local",
             "--activate",
         ])
         .expect("parse env attach");
@@ -349,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn env_close_parse_accepts_detach_only() {
+    fn env_close_parse_accepts_environment() {
         let cli = Cli::try_parse_from([
             "lightspeed",
             "env",
@@ -358,7 +356,6 @@ mod tests {
             "http://127.0.0.1:18080/rpc",
             "--session",
             "session_1",
-            "--detach-only",
             "local-host",
         ])
         .expect("parse env close");

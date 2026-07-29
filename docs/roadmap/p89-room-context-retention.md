@@ -1,6 +1,9 @@
 # P89: Room Context Retention And Compaction
 
 **Status**
+- Updated 2026-07-29: the generic context APIs remain in Lightspeed; room
+  retention policy and channel bookkeeping described below moved to the
+  external Channels application.
 - Proposed 2026-07-02.
 - Phase 1 implemented 2026-07-02: `context/remove` API method (batch, per-key
   `removed`/`absent`/`failed` results, reserved `run.` prefix rejected at both

@@ -293,6 +293,8 @@ api_methods! {
         ["Inspect the Lightspeed protocol", "Returns protocol version, server identity, and supported capabilities without changing universe state."],
     METHOD_SESSION_START => start_session(SessionStartParams) -> SessionStartResponse =>
         ["Create or reopen a session", "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created."],
+    METHOD_SESSION_MANAGED_START => start_managed_session(ManagedSessionStartParams) -> SessionStartResponse =>
+        ["Create or reopen a managed session", "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed."],
     METHOD_SESSION_READ => read_session(SessionReadParams) -> SessionReadResponse =>
         ["Read a session", "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools."],
     METHOD_SESSION_LIST => list_sessions(SessionListParams) -> SessionListResponse =>
@@ -358,13 +360,11 @@ api_methods! {
     METHOD_ENVIRONMENTS_LIST => list_environments(EnvironmentListParams) -> EnvironmentListResponse =>
         ["List environment instances", "Lists universe-owned instances, optionally filtered by provider or observed target status."],
     METHOD_ENVIRONMENTS_CLOSE => close_environment(EnvironmentCloseParams) -> EnvironmentCloseResponse =>
-        ["Close an environment instance", "Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance."],
+        ["Close an environment instance", "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted."],
     METHOD_ENVIRONMENTS_JOBS_CREATE => create_environment_jobs(EnvironmentJobCreateParams) -> EnvironmentJobCreateResponse =>
         ["Create environment jobs", "Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session."],
     METHOD_ENVIRONMENTS_JOBS_READ => read_environment_jobs(EnvironmentJobReadParams) -> EnvironmentJobReadResponse =>
         ["Read environment jobs", "Reads selected job handles with bounded output, optional sequence continuation, and optional artifacts; use returned status/sequence data for polling."],
-    METHOD_ENVIRONMENTS_JOBS_LIST => list_environment_jobs(EnvironmentJobListParams) -> EnvironmentJobListResponse =>
-        ["List environment jobs", "Lists durable job records across the universe, optionally narrowed to an instance or job group."],
     METHOD_ENVIRONMENTS_JOBS_CANCEL => cancel_environment_jobs(EnvironmentJobCancelParams) -> EnvironmentJobCancelResponse =>
         ["Cancel environment jobs", "Requests cancellation for selected jobs, optionally including dependents. Force is provider-specific escalation; inspect each per-job result."],
     METHOD_MODELS_LIST => list_models(ModelListParams) -> ModelListResponse =>
@@ -447,10 +447,6 @@ api_methods! {
         ["List GitHub App installations", "Uses the registered GitHub App provider credential to query accessible installations and returns account/permission metadata without tokens."],
     METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT => grant_github_installation(AuthGitHubInstallationGrantParams) -> AuthGitHubInstallationGrantResponse =>
         ["Grant access to a GitHub App installation", "Creates or refreshes a universe auth grant for one accessible installation. The installation token is brokered internally and never returned."],
-    METHOD_OUTBOX_READ => read_outbox(OutboxReadParams) -> OutboxReadResponse =>
-        ["Read pending outbound messages", "Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed."],
-    METHOD_OUTBOX_ACK => ack_outbox(OutboxAckParams) -> OutboxAckResponse =>
-        ["Acknowledge outbound delivery", "Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers."],
 }
 
 /// JSON-RPC notification methods the server can emit, with payloads described

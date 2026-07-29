@@ -153,6 +153,7 @@ impl SessionStore for FsSessionStore {
             display_name: request.display_name,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            managed: false,
             head: None,
             source_session_id: None,
             source_seq: None,
@@ -301,6 +302,7 @@ impl SessionStore for FsSessionStore {
 fn reconcile_record(mut record: SessionRecord, entries: &[StoredSessionEntry]) -> SessionRecord {
     record.lifecycle_status = SessionLifecycleStatus::New;
     record.closed_at_seq = None;
+    record.managed = false;
     for entry in entries {
         apply_lifecycle_projection(&mut record, entry);
     }

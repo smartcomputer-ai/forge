@@ -503,23 +503,6 @@
         ],
         "type": "object"
       },
-      "AgentApiOutcomeOfEnvironmentJobListResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/EnvironmentJobListResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
       "AgentApiOutcomeOfEnvironmentJobReadResponse": {
         "properties": {
           "notifications": {
@@ -792,23 +775,6 @@
         ],
         "type": "object"
       },
-      "AgentApiOutcomeOfOperatorOutboxReadResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/OperatorOutboxReadResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
       "AgentApiOutcomeOfOperatorUniverseCreateResponse": {
         "properties": {
           "notifications": {
@@ -870,40 +836,6 @@
           },
           "result": {
             "$ref": "#/components/schemas/OperatorUniverseReadResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfOutboxAckResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/OutboxAckResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfOutboxReadResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/OutboxReadResponse"
           }
         },
         "required": [
@@ -3718,43 +3650,6 @@
         ],
         "type": "object"
       },
-      "EnvironmentJobListParams": {
-        "properties": {
-          "instanceId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "jobGroupId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "limit": {
-            "format": "uint",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "EnvironmentJobListResponse": {
-        "properties": {
-          "jobs": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/SessionJobHandleRecordView"
-            },
-            "type": "array"
-          }
-        },
-        "type": "object"
-      },
       "EnvironmentJobReadParams": {
         "properties": {
           "afterSeq": {
@@ -4191,8 +4086,13 @@
       },
       "EnvironmentsFeature": {
         "additionalProperties": false,
-        "description": "Grants attaching/activating session environments and their process/job\ntool surface.",
+        "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
         "properties": {
+          "jobs": {
+            "default": false,
+            "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+            "type": "boolean"
+          },
           "providers": {
             "description": "Absent means every registered provider is allowed.",
             "items": {
@@ -4329,16 +4229,6 @@
             "anyOf": [
               {
                 "$ref": "#/components/schemas/McpFeature"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "messaging": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/MessagingFeature"
               },
               {
                 "type": "null"
@@ -5038,6 +4928,128 @@
         },
         "type": "object"
       },
+      "ManagedSessionStartParams": {
+        "additionalProperties": false,
+        "description": "Creation request for a session with immutable workflow ownership and\nworkflow-backed tools.",
+        "properties": {
+          "config": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionConfig"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "displayName": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileSource"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workflowTools": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ManagedSessionWorkflowToolsInput"
+              }
+            ],
+            "description": "Immutable workflow tools admitted only when the session is first\ncreated. This document is not part of `SessionConfig` and cannot be\nchanged through `session/config/put`."
+          }
+        },
+        "required": [
+          "workflowTools"
+        ],
+        "type": "object"
+      },
+      "ManagedSessionWorkflowToolsInput": {
+        "additionalProperties": false,
+        "properties": {
+          "lifecycleController": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowEndpointInput"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/components/schemas/WorkflowToolDeclarationInput"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version",
+          "tools"
+        ],
+        "type": "object"
+      },
+      "ManagedWorkflowToolCompletionView": {
+        "enum": [
+          "accepted",
+          "promises"
+        ],
+        "type": "string"
+      },
+      "ManagedWorkflowToolTargetView": {
+        "enum": [
+          "bound",
+          "start"
+        ],
+        "type": "string"
+      },
+      "ManagedWorkflowToolView": {
+        "properties": {
+          "completion": {
+            "$ref": "#/components/schemas/ManagedWorkflowToolCompletionView"
+          },
+          "name": {
+            "type": "string"
+          },
+          "semanticType": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/ManagedWorkflowToolTargetView"
+          },
+          "toolId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "toolId",
+          "name",
+          "semanticType",
+          "target",
+          "completion"
+        ],
+        "type": "object"
+      },
       "McpFeature": {
         "additionalProperties": false,
         "description": "Grants remote MCP tools by declaring linked servers from the universe MCP\ncatalog; must link at least one server, with unique server ids.",
@@ -5490,19 +5502,6 @@
         ],
         "type": "string"
       },
-      "MessagingFeature": {
-        "additionalProperties": false,
-        "description": "Grants the messaging toolset (message_send/react/edit/noop) for sessions\nbound to a chat channel.",
-        "properties": {
-          "version": {
-            "default": 1,
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
       "ModelCapabilitiesView": {
         "properties": {
           "maxInputTokens": {
@@ -5868,110 +5867,6 @@
         ],
         "type": "object"
       },
-      "OperatorOutboundMessageView": {
-        "description": "One pending outbox entry with its owning universe. Acknowledge through\nthe per-universe `outbox/ack` (with the entry's universe header); the\nglobal cursor only drives reading.",
-        "properties": {
-          "attempts": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "createdAtMs": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "origin": {
-            "$ref": "#/components/schemas/OutboundOriginView"
-          },
-          "outboxId": {
-            "type": "string"
-          },
-          "payload": {
-            "$ref": "#/components/schemas/OutboundPayloadView"
-          },
-          "runId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "seq": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "sessionId": {
-            "type": "string"
-          },
-          "universeId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "universeId",
-          "seq",
-          "outboxId",
-          "sessionId",
-          "origin",
-          "payload",
-          "attempts",
-          "createdAtMs"
-        ],
-        "type": "object"
-      },
-      "OperatorOutboxReadParams": {
-        "description": "Multiplexed outbox read: one long-poll serves every universe of the\ndeployment, replacing one `outbox/read` tailer per universe. `seq` is a\ndeployment-global cursor (the outbox sequence is one identity column\nacross universes), so a single `after` resumes the whole stream.",
-        "properties": {
-          "after": {
-            "description": "Return pending entries with `seq` greater than this cursor. Restart\nfrom 0 to re-read undelivered entries after a consumer restart.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "limit": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "waitMs": {
-            "description": "Long-poll wait in milliseconds when no entries are pending.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "OperatorOutboxReadResponse": {
-        "properties": {
-          "entries": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/OperatorOutboundMessageView"
-            },
-            "type": "array"
-          },
-          "nextAfter": {
-            "description": "Cursor to pass as `after` on the next read.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "nextAfter"
-        ],
-        "type": "object"
-      },
       "OperatorUniverseCreateParams": {
         "properties": {
           "universeId": {
@@ -6127,264 +6022,6 @@
           "workspaces",
           "profiles",
           "blobBytes"
-        ],
-        "type": "object"
-      },
-      "OutboundAckInput": {
-        "oneOf": [
-          {
-            "properties": {
-              "channelMessageId": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "type": {
-                "const": "delivered",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "error": {
-                "type": "string"
-              },
-              "retryable": {
-                "type": "boolean"
-              },
-              "type": {
-                "const": "failed",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "error",
-              "retryable"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "OutboundMessageView": {
-        "properties": {
-          "attempts": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "createdAtMs": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "origin": {
-            "$ref": "#/components/schemas/OutboundOriginView"
-          },
-          "outboxId": {
-            "type": "string"
-          },
-          "payload": {
-            "$ref": "#/components/schemas/OutboundPayloadView"
-          },
-          "runId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "seq": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "seq",
-          "outboxId",
-          "sessionId",
-          "origin",
-          "payload",
-          "attempts",
-          "createdAtMs"
-        ],
-        "type": "object"
-      },
-      "OutboundOriginView": {
-        "enum": [
-          "toolCall",
-          "finalText",
-          "trigger"
-        ],
-        "type": "string"
-      },
-      "OutboundPayloadView": {
-        "oneOf": [
-          {
-            "properties": {
-              "replyTo": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "text": {
-                "type": "string"
-              },
-              "type": {
-                "const": "send",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "text"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "emoji": {
-                "type": "string"
-              },
-              "messageId": {
-                "type": "string"
-              },
-              "type": {
-                "const": "react",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "messageId",
-              "emoji"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "messageId": {
-                "type": "string"
-              },
-              "text": {
-                "type": "string"
-              },
-              "type": {
-                "const": "edit",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "messageId",
-              "text"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "OutboundStatusView": {
-        "enum": [
-          "pending",
-          "delivered",
-          "failed"
-        ],
-        "type": "string"
-      },
-      "OutboxAckParams": {
-        "properties": {
-          "outboxId": {
-            "type": "string"
-          },
-          "result": {
-            "$ref": "#/components/schemas/OutboundAckInput"
-          }
-        },
-        "required": [
-          "outboxId",
-          "result"
-        ],
-        "type": "object"
-      },
-      "OutboxAckResponse": {
-        "properties": {
-          "attempts": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          },
-          "outboxId": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/OutboundStatusView"
-          }
-        },
-        "required": [
-          "outboxId",
-          "status",
-          "attempts"
-        ],
-        "type": "object"
-      },
-      "OutboxReadParams": {
-        "properties": {
-          "after": {
-            "description": "Return pending entries with `seq` greater than this cursor. Restart\nfrom 0 to re-read undelivered entries after a consumer restart.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "limit": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "waitMs": {
-            "description": "Long-poll wait in milliseconds when no entries are pending.",
-            "format": "uint32",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "OutboxReadResponse": {
-        "properties": {
-          "entries": {
-            "items": {
-              "$ref": "#/components/schemas/OutboundMessageView"
-            },
-            "type": "array"
-          },
-          "nextAfter": {
-            "description": "Cursor to pass as `after` on the next read.",
-            "format": "uint64",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "entries",
-          "nextAfter"
         ],
         "type": "object"
       },
@@ -6962,6 +6599,17 @@
               }
             ]
           },
+          "notifyOnTerminal": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunTerminalNotificationInput"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Request an at-least-once terminal emission to the managed session's\nimmutable lifecycle controller. The destination is derived by the\ngateway; callers supply only the controller's opaque dedup token."
+          },
           "sessionId": {
             "type": "string"
           },
@@ -6969,7 +6617,7 @@
             "$ref": "#/components/schemas/RunStartSource"
           },
           "submissionId": {
-            "description": "Client-supplied idempotency key, unique per session. Retrying\n`session/runs/start` with the same submission id and the same\nsource/config returns the original run instead of starting a second\none; reusing a submission id with different source or config is\nrejected.",
+            "description": "Client-supplied idempotency key, unique per session. Retrying\n`session/runs/start` with the same submission id and the same\nsource/config/terminal notification returns the original run instead\nof starting a second one; reusing a submission id with any of those\ninputs changed is rejected.",
             "type": [
               "string",
               "null"
@@ -7045,6 +6693,18 @@
           "cancelled"
         ],
         "type": "string"
+      },
+      "RunTerminalNotificationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "type": "object"
       },
       "RunView": {
         "properties": {
@@ -7943,6 +7603,228 @@
             "required": [
               "type",
               "revision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "creationFingerprint": {
+                "type": "string"
+              },
+              "lifecycleControllerWorkflowKind": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "toolIds": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": {
+                "const": "workflowToolsConfigured",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "creationFingerprint",
+              "toolIds"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "One system-owned workflow-backed tool was durably admitted without\nassigning lifecycle ownership to the session.",
+            "properties": {
+              "bindingFingerprint": {
+                "type": "string"
+              },
+              "toolId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "systemWorkflowToolConfigured",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "toolId",
+              "bindingFingerprint"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "argumentsRef": {
+                "type": "string"
+              },
+              "batchId": {
+                "type": "string"
+              },
+              "bindingFingerprint": {
+                "type": "string"
+              },
+              "callId": {
+                "type": "string"
+              },
+              "completionPromises": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Keyed completion promises created atomically with the\ninvocation; absent for notify-only (accepted) invocations.",
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
+              "invocationId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "schemaRevision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "semanticType": {
+                "type": "string"
+              },
+              "toolId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "workflowToolEmitted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "invocationId",
+              "toolId",
+              "semanticType",
+              "schemaRevision",
+              "bindingFingerprint",
+              "runId",
+              "turnId",
+              "batchId",
+              "callId",
+              "argumentsRef"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "errorRef": {
+                "type": "string"
+              },
+              "invocationId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "workflowToolDeliveryFailed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "invocationId",
+              "errorRef"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "Durable start intent for a start-on-call workflow tool. There is no\nsuccessful started event; the deterministic execution id makes the\nstart replay-safe.",
+            "properties": {
+              "argumentsRef": {
+                "type": "string"
+              },
+              "batchId": {
+                "type": "string"
+              },
+              "bindingFingerprint": {
+                "type": "string"
+              },
+              "callId": {
+                "type": "string"
+              },
+              "completionPromises": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Keyed completion promises created atomically with the start\nintent.",
+                "type": "object"
+              },
+              "executionId": {
+                "description": "System-derived deterministic execution id of the started plugin\nworkflow.",
+                "type": "string"
+              },
+              "invocationId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "schemaRevision": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "semanticType": {
+                "type": "string"
+              },
+              "toolId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "workflowToolStartRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "invocationId",
+              "toolId",
+              "semanticType",
+              "schemaRevision",
+              "bindingFingerprint",
+              "runId",
+              "turnId",
+              "batchId",
+              "callId",
+              "argumentsRef",
+              "executionId",
+              "completionPromises"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "errorRef": {
+                "type": "string"
+              },
+              "invocationId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "workflowToolStartFailed",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "invocationId",
+              "errorRef"
             ],
             "type": "object"
           },
@@ -9115,68 +8997,6 @@
         ],
         "type": "object"
       },
-      "SessionJobHandleRecordView": {
-        "properties": {
-          "createdAtMs": {
-            "format": "int64",
-            "type": "integer"
-          },
-          "createdByRunId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "createdBySessionId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "createdByToolCallId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "createdByTurnId": {
-            "format": "uint64",
-            "minimum": 0,
-            "type": [
-              "integer",
-              "null"
-            ]
-          },
-          "handle": {
-            "$ref": "#/components/schemas/SessionJobHandleView"
-          },
-          "jobGroupId": {
-            "type": "string"
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "queueKey": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "startRequestHash": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "handle",
-          "jobGroupId",
-          "createdAtMs",
-          "startRequestHash"
-        ],
-        "type": "object"
-      },
       "SessionJobHandleView": {
         "properties": {
           "instanceId": {
@@ -9529,6 +9349,36 @@
         },
         "type": "object"
       },
+      "SessionManagementView": {
+        "properties": {
+          "lifecycleController": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorkflowEndpointView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "tools": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ManagedWorkflowToolView"
+            },
+            "type": "array"
+          },
+          "version": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "version"
+        ],
+        "type": "object"
+      },
       "SessionReadParams": {
         "properties": {
           "sessionId": {
@@ -9581,6 +9431,7 @@
         "type": "object"
       },
       "SessionStartParams": {
+        "additionalProperties": false,
         "properties": {
           "config": {
             "anyOf": [
@@ -9657,6 +9508,10 @@
           "lifecycleStatus": {
             "$ref": "#/components/schemas/SessionLifecycleStatus"
           },
+          "managed": {
+            "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
+            "type": "boolean"
+          },
           "updatedAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -9666,6 +9521,7 @@
         "required": [
           "id",
           "lifecycleStatus",
+          "managed",
           "createdAtMs",
           "updatedAtMs"
         ],
@@ -9717,6 +9573,21 @@
           "id": {
             "type": "string"
           },
+          "managed": {
+            "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
+            "type": "boolean"
+          },
+          "management": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionManagementView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Immutable workflow-backed tool declaration. A lifecycle controller\nindicates external session ownership; tool-only declarations do not."
+          },
           "runs": {
             "default": [],
             "items": {
@@ -9742,6 +9613,7 @@
         "required": [
           "id",
           "status",
+          "managed",
           "configRevision",
           "createdAtMs",
           "updatedAtMs",
@@ -10306,12 +10178,6 @@
               },
               "inputSchemaRef": {
                 "type": "string"
-              },
-              "modelName": {
-                "type": [
-                  "string",
-                  "null"
-                ]
               },
               "outputSchemaRef": {
                 "type": [
@@ -11120,6 +10986,332 @@
           }
         },
         "type": "object"
+      },
+      "WorkflowEndpointInput": {
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "workflowKind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflowId",
+          "workflowKind"
+        ],
+        "type": "object"
+      },
+      "WorkflowEndpointView": {
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "workflowKind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "workflowId",
+          "workflowKind"
+        ],
+        "type": "object"
+      },
+      "WorkflowStartRefInput": {
+        "additionalProperties": false,
+        "description": "Opaque reference to a workflow-substrate recipe already stored through\nthe blob API. The fingerprint authenticates the exact recipe bytes used\nby the workflow-start adapter.",
+        "properties": {
+          "recipeFingerprint": {
+            "type": "string"
+          },
+          "recipeFormat": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "recipeRef": {
+            "type": "string"
+          },
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recipeFormat",
+          "revision",
+          "recipeRef",
+          "recipeFingerprint"
+        ],
+        "type": "object"
+      },
+      "WorkflowToolCompletionInput": {
+        "description": "Completion contract for one workflow-tool invocation. Accepted tools\nproduce no promises. Promise-bearing tools derive one or more promise keys\nfrom validated arguments and are pushed to their target workflow.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "accepted",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "deadlineAfterMs": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "keySource": {
+                "$ref": "#/components/schemas/WorkflowToolCompletionKeySourceInput"
+              },
+              "maxPromises": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "replySchemaRef": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "promises",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "maxPromises",
+              "keySource"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WorkflowToolCompletionKeySourceInput": {
+        "description": "Declarative promise-key derivation over schema-validated tool arguments.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "reply",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "pointer": {
+                "type": "string"
+              },
+              "type": {
+                "const": "stringArray",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pointer"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "pointer": {
+                "type": "string"
+              },
+              "prefix": {
+                "type": "string"
+              },
+              "type": {
+                "const": "arrayIndices",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pointer",
+              "prefix"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WorkflowToolDeclarationInput": {
+        "additionalProperties": false,
+        "properties": {
+          "completion": {
+            "$ref": "#/components/schemas/WorkflowToolCompletionInput"
+          },
+          "definition": {
+            "$ref": "#/components/schemas/WorkflowToolDefinitionInput"
+          },
+          "target": {
+            "$ref": "#/components/schemas/WorkflowToolTargetInput"
+          }
+        },
+        "required": [
+          "definition",
+          "target",
+          "completion"
+        ],
+        "type": "object"
+      },
+      "WorkflowToolDefinitionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "revision": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "semanticType": {
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/components/schemas/WorkflowToolSpecInput"
+          },
+          "toolId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "toolId",
+          "revision",
+          "semanticType",
+          "tool"
+        ],
+        "type": "object"
+      },
+      "WorkflowToolKindInput": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "descriptionRef": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "inputSchemaRef": {
+                "type": "string"
+              },
+              "outputSchemaRef": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "providerOptionsRef": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "strict": {
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "type": {
+                "const": "function",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "inputSchemaRef"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "WorkflowToolSpecInput": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/WorkflowToolKindInput"
+          },
+          "name": {
+            "description": "Canonical effective-toolset name, also sent to the model and used for\nruntime dispatch.",
+            "type": "string"
+          },
+          "parallelism": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ToolParallelismView"
+              }
+            ],
+            "default": "parallelSafe"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "WorkflowToolTargetInput": {
+        "description": "Lifecycle target of a workflow-backed tool. Bound tools deliver to an\nexisting execution; start tools create an execution from an immutable,\nCAS-backed recipe for every invocation.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "receiver": {
+                "$ref": "#/components/schemas/WorkflowEndpointInput"
+              },
+              "type": {
+                "const": "bound",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "receiver"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "start": {
+                "$ref": "#/components/schemas/WorkflowStartRefInput"
+              },
+              "type": {
+                "const": "start",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "start"
+            ],
+            "type": "object"
+          }
+        ]
       }
     }
   },
@@ -11170,6 +11362,27 @@
         }
       },
       "summary": "Create or reopen a session"
+    },
+    {
+      "description": "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+      "name": "session/managed/start",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/ManagedSessionStartParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfSessionStartResponse"
+        }
+      },
+      "summary": "Create or reopen a managed session"
     },
     {
       "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
@@ -11844,7 +12057,7 @@
       "summary": "List environment instances"
     },
     {
-      "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings or nonterminal jobs still occupy the instance.",
+      "description": "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.",
       "name": "environments/close",
       "paramStructure": "by-name",
       "params": [
@@ -11905,27 +12118,6 @@
         }
       },
       "summary": "Read environment jobs"
-    },
-    {
-      "description": "Lists durable job records across the universe, optionally narrowed to an instance or job group.",
-      "name": "environments/jobs/list",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/EnvironmentJobListParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfEnvironmentJobListResponse"
-        }
-      },
-      "summary": "List environment jobs"
     },
     {
       "description": "Requests cancellation for selected jobs, optionally including dependents. Force is provider-specific escalation; inspect each per-job result.",
@@ -12789,48 +12981,6 @@
       "summary": "Grant access to a GitHub App installation"
     },
     {
-      "description": "Cursor-reads or long-polls the universe delivery outbox. Advance with nextAfter, but only outbox/ack marks individual entries delivered or failed.",
-      "name": "outbox/read",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/OutboxReadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfOutboxReadResponse"
-        }
-      },
-      "summary": "Read pending outbound messages"
-    },
-    {
-      "description": "Records delivered or failed delivery for one outbox entry and updates attempt/status state. Intended for messaging delivery workers.",
-      "name": "outbox/ack",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/OutboxAckParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfOutboxAckResponse"
-        }
-      },
-      "summary": "Acknowledge outbound delivery"
-    },
-    {
       "description": "Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.",
       "name": "operator/universes/create",
       "paramStructure": "by-name",
@@ -12976,27 +13126,6 @@
         }
       },
       "summary": "Revoke a universe API key"
-    },
-    {
-      "description": "Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack.",
-      "name": "operator/outbox/read",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/OperatorOutboxReadParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfOperatorOutboxReadResponse"
-        }
-      },
-      "summary": "Read the deployment outbox"
     }
   ],
   "openrpc": "1.3.2"

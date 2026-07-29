@@ -21,7 +21,6 @@ pub const METHOD_OPERATOR_UNIVERSES_DELETE: &str = "operator/universes/delete";
 pub const METHOD_OPERATOR_API_KEYS_CREATE: &str = "operator/api-keys/create";
 pub const METHOD_OPERATOR_API_KEYS_LIST: &str = "operator/api-keys/list";
 pub const METHOD_OPERATOR_API_KEYS_REVOKE: &str = "operator/api-keys/revoke";
-pub const METHOD_OPERATOR_OUTBOX_READ: &str = "operator/outbox/read";
 
 pub fn is_operator_method(method: &str) -> bool {
     method.starts_with(OPERATOR_METHOD_PREFIX)
@@ -176,44 +175,6 @@ pub struct OperatorApiKeyRevokeResponse {
     pub api_key: OperatorApiKeyView,
 }
 
-/// Multiplexed outbox read: one long-poll serves every universe of the
-/// deployment, replacing one `outbox/read` tailer per universe. `seq` is a
-/// deployment-global cursor (the outbox sequence is one identity column
-/// across universes), so a single `after` resumes the whole stream.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OperatorOutboxReadParams {
-    /// Return pending entries with `seq` greater than this cursor. Restart
-    /// from 0 to re-read undelivered entries after a consumer restart.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub after: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub limit: Option<u32>,
-    /// Long-poll wait in milliseconds when no entries are pending.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wait_ms: Option<u32>,
-}
-
-/// One pending outbox entry with its owning universe. Acknowledge through
-/// the per-universe `outbox/ack` (with the entry's universe header); the
-/// global cursor only drives reading.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OperatorOutboundMessageView {
-    pub universe_id: String,
-    #[serde(flatten)]
-    pub message: OutboundMessageView,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct OperatorOutboxReadResponse {
-    #[serde(default)]
-    pub entries: Vec<OperatorOutboundMessageView>,
-    /// Cursor to pass as `after` on the next read.
-    pub next_after: u64,
-}
-
 #[async_trait]
 pub trait OperatorApiService: Send + Sync {
     async fn create_universe(
@@ -250,11 +211,6 @@ pub trait OperatorApiService: Send + Sync {
         &self,
         params: OperatorApiKeyRevokeParams,
     ) -> Result<AgentApiOutcome<OperatorApiKeyRevokeResponse>, AgentApiError>;
-
-    async fn read_outbox(
-        &self,
-        params: OperatorOutboxReadParams,
-    ) -> Result<AgentApiOutcome<OperatorOutboxReadResponse>, AgentApiError>;
 }
 
 macro_rules! operator_api_methods {
@@ -315,6 +271,4 @@ operator_api_methods! {
         ["List universe API keys", "Returns only non-secret key metadata for the requested universe, including revocation and last-use timestamps. Plaintext secrets are never stored or returned."],
     METHOD_OPERATOR_API_KEYS_REVOKE => revoke_api_key(OperatorApiKeyRevokeParams) -> OperatorApiKeyRevokeResponse =>
         ["Revoke a universe API key", "Immediately and idempotently revokes the matching key only when it belongs to the requested universe. Unknown and foreign-universe prefixes return not found."],
-    METHOD_OPERATOR_OUTBOX_READ => read_outbox(OperatorOutboxReadParams) -> OperatorOutboxReadResponse =>
-        ["Read the deployment outbox", "Cursor-reads or long-polls pending messages across all universes. Entries identify their universe; acknowledge each through universe-scoped outbox/ack."],
 }

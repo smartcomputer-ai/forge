@@ -44,11 +44,12 @@ fn workflow_has_immediate_work(ctx: &WorkflowContext<AgentSessionWorkflow>, now:
 pub(super) fn workflow_state_has_immediate_work(state: &AgentSessionWorkflow) -> bool {
     !state.pending_admissions.is_empty()
         || !state.pending_tool_batch_resumes.is_empty()
-        || !state.pending_promise_notifications.is_empty()
+        || session_state::has_due_emissions(state)
+        || !state.pending_source_resolutions.is_empty()
         || !state.pending_promise_cancellations.is_empty()
-        || promise_sources::has_unconfirmed_subscriptions(state)
         || awaits::has_satisfied_await(state)
         || promise_sources::has_immediate_work(state)
+        || workflow_starts::has_immediate_work(state)
 }
 
 fn nearest_workflow_wake_ms(ctx: &WorkflowContext<AgentSessionWorkflow>) -> Option<u64> {
@@ -59,10 +60,20 @@ fn nearest_workflow_wake_ms_for_state(state: &AgentSessionWorkflow) -> Option<u6
     let await_deadline = awaits::nearest_await_wake_ms(state);
     let promise_source_deadline = promise_sources::nearest_wake_ms(state);
     let watchdog_deadline = watchdog::cancelling_watchdog_wake_ms(state);
-    [await_deadline, promise_source_deadline, watchdog_deadline]
-        .into_iter()
-        .flatten()
-        .min()
+    let emission_retry_deadline = session_state::nearest_emission_retry_ms(state);
+    let workflow_start_deadline = workflow_starts::nearest_wake_ms(state);
+    let promise_hard_deadline = promise_sources::nearest_promise_deadline_ms(state);
+    [
+        await_deadline,
+        promise_source_deadline,
+        watchdog_deadline,
+        emission_retry_deadline,
+        workflow_start_deadline,
+        promise_hard_deadline,
+    ]
+    .into_iter()
+    .flatten()
+    .min()
 }
 
 pub(super) fn can_continue_as_new_at_idle(
@@ -85,7 +96,8 @@ pub(super) fn can_continue_as_new_at_idle(
 pub(super) fn workflow_state_allows_continue_as_new(state: &AgentSessionWorkflow) -> bool {
     state.pending_admissions.is_empty()
         && state.pending_tool_batch_resumes.is_empty()
-        && state.pending_promise_notifications.is_empty()
+        && state.pending_emissions.is_empty()
+        && state.pending_source_resolutions.is_empty()
         && state.pending_promise_cancellations.is_empty()
 }
 
@@ -98,7 +110,8 @@ pub(super) fn workflow_state_is_closed_and_quiescent(state: &AgentSessionWorkflo
         && state.core_state.lifecycle.status == CoreAgentStatus::Closed
         && state.pending_admissions.is_empty()
         && state.pending_tool_batch_resumes.is_empty()
-        && state.pending_promise_notifications.is_empty()
+        && state.pending_emissions.is_empty()
+        && state.pending_source_resolutions.is_empty()
         && state.pending_promise_cancellations.is_empty()
         && state.core_state.runs.active.is_none()
         && state.core_state.runs.queued.is_empty()

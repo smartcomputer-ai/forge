@@ -116,11 +116,6 @@ fn features_from_api(
                 blocked_domains: search.blocked_domains,
             }),
         }),
-        messaging: features
-            .messaging
-            .map(|messaging| engine::MessagingFeature {
-                version: messaging.version,
-            }),
         fleet: features.fleet.map(|fleet| engine::FleetFeature {
             version: fleet.version,
             profiles: fleet
@@ -140,6 +135,7 @@ fn features_from_api(
             .map(|environments| engine::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers,
+                jobs: environments.jobs,
             }),
         mcp: features.mcp.map(|mcp| engine::McpFeature {
             version: mcp.version,
