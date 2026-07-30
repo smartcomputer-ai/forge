@@ -109,7 +109,7 @@ pub struct ActiveRun {
     pub active_turn_id: Option<TurnId>,
     pub active_tool_batch_id: Option<ToolBatchId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parked_await: Option<ParkedAwait>,
+    pub parked_tool_batch: Option<ParkedToolBatch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation_grace_turn_id: Option<TurnId>,
     pub tool_batches: BTreeMap<ToolBatchId, ActiveToolBatch>,
@@ -194,10 +194,37 @@ pub enum AwaitMode {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParkedAwait {
+pub struct ParkedToolBatch {
     pub batch_id: ToolBatchId,
+    pub suspension: ToolBatchSuspension,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolBatchSuspension {
+    AwaitTool {
+        call_id: ToolCallId,
+        spec: AwaitSpec,
+    },
+    JoinedWorkflowCalls {
+        calls: Vec<JoinedWorkflowCall>,
+        spec: AwaitSpec,
+    },
+}
+
+impl ToolBatchSuspension {
+    pub fn spec(&self) -> &AwaitSpec {
+        match self {
+            Self::AwaitTool { spec, .. } | Self::JoinedWorkflowCalls { spec, .. } => spec,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinedWorkflowCall {
     pub call_id: ToolCallId,
-    pub spec: AwaitSpec,
+    pub invocation_id: crate::WorkflowToolInvocationId,
+    pub promise_id: PromiseId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -216,12 +243,19 @@ pub struct AwaitOutputRefs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResumeAwaitCommand {
+pub struct ResumeToolBatchCommand {
     pub run_id: RunId,
     pub batch_id: ToolBatchId,
     pub claim: WakeReason,
     pub claim_observed_at_ms: u64,
-    pub output: AwaitOutputRefs,
+    pub output: ToolBatchResumeOutput,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum ToolBatchResumeOutput {
+    AwaitTool { output: AwaitOutputRefs },
+    JoinedWorkflowCalls,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -623,7 +657,7 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 turns: BTreeMap::new(),
                 active_turn_id: None,
                 active_tool_batch_id: None,
-                parked_await: None,
+                parked_tool_batch: None,
                 cancellation_grace_turn_id: None,
                 tool_batches: BTreeMap::new(),
                 completed_tool_batches: BTreeMap::new(),

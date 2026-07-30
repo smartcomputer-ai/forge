@@ -45,15 +45,17 @@ pub use llm::*;
 pub use log::*;
 pub use promise::{
     PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND, Promise,
-    PromiseComponentState, PromiseEvent, PromiseId, PromiseResolution, PromiseScope, PromiseSource,
-    PromiseStatus, promise_cancel_effect, promise_create_effect, promise_detach_effect,
+    PromiseComponentState, PromiseEvent, PromiseId, PromiseOwnership, PromiseResolution,
+    PromiseScope, PromiseSource, PromiseStatus, promise_cancel_effect, promise_create_effect,
+    promise_detach_effect,
 };
 pub use run::{
     AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitOutputRefs, AwaitSpec,
-    BufferedMessage, MessageStatus, ParkedAwait, ResumeAwaitCommand, RunEvent, RunFailure,
-    RunFailureKind, RunOrigin, RunQueueState, RunRecord, RunRequestCommand, RunRequestSource,
-    RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent, SteeringBatch,
-    SubmitMessageCommand, WakeReason, message_submission_digest, request_run_submission_digest,
+    BufferedMessage, JoinedWorkflowCall, MessageStatus, ParkedToolBatch, ResumeToolBatchCommand,
+    RunEvent, RunFailure, RunFailureKind, RunOrigin, RunQueueState, RunRecord, RunRequestCommand,
+    RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent,
+    SteeringBatch, SubmitMessageCommand, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
+    message_submission_digest, request_run_submission_digest,
 };
 pub use state::*;
 pub use tooling::{
@@ -69,15 +71,13 @@ pub use turn::{
     TurnOutcome, TurnState, TurnStatus,
 };
 pub use workflow_tool::{
-    AdmittedManagedSessionWorkflowTools, MAX_COMPLETION_PROMISES,
+    AdmittedManagedSessionWorkflowTools, BoundWorkflowToolDispatch, MAX_COMPLETION_PROMISES,
     MAX_WORKFLOW_TOOL_EMISSIONS_PER_READ, MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN,
     ManagedSessionWorkflowTools, REPLY_COMPLETION_KEY, ReadToolEmissionsError,
-    WORKFLOW_TOOL_EMIT_EFFECT_KIND, WorkflowEndpointRef, WorkflowStartRef,
-    WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
-    WorkflowToolConfigEvent,
-    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent, WorkflowToolInvocation,
-    WorkflowToolState, WorkflowToolTarget, WORKFLOW_TOOL_EXECUTION_KIND,
-    completion_promise_source, read_tool_emissions,
-    validate_completion_key, with_completion_deadline, workflow_tool_emit_effect,
-    workflow_tool_execution_id, workflow_tool_promise_id,
+    WORKFLOW_TOOL_EMIT_EFFECT_KIND, WORKFLOW_TOOL_EXECUTION_KIND, WorkflowEndpointRef,
+    WorkflowStartRef, WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    WorkflowToolConfigEvent, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent,
+    WorkflowToolInvocation, WorkflowToolState, WorkflowToolTarget, completion_promise_source,
+    read_tool_emissions, validate_completion_key, with_completion_deadline,
+    workflow_tool_emit_effect, workflow_tool_execution_id, workflow_tool_promise_id,
 };

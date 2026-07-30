@@ -318,17 +318,16 @@ pub struct ResolvedToolset {
     pub provider_params_patch: ProviderParamsPatch,
 }
 
-/// Promise-bearing workflow tools create keyed P92 promises the agent must
-/// be able to `await`/`cancel`/`detach`; their admission therefore pulls the
-/// concurrency toolset into the derivation, exactly like fleet and process
-/// jobs do.
+/// Explicit-Promise workflow tools create model-owned P92 promises, so their
+/// admission pulls concurrency tools into the model toolset. Joined tools use
+/// runtime-owned Promises and must not grant await/cancel/detach.
 pub fn enable_concurrency_for_workflow_tools<'a>(
     config: &mut ToolsetConfig,
     bindings: impl IntoIterator<Item = &'a WorkflowToolBinding>,
 ) {
     if bindings
         .into_iter()
-        .any(|binding| binding.completion.is_promise_bearing())
+        .any(|binding| binding.completion.exposes_model_owned_promises())
     {
         config.concurrency.enabled = true;
     }

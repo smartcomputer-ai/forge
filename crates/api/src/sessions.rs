@@ -65,8 +65,23 @@ pub struct WorkflowToolDeclarationInput {
     deny_unknown_fields
 )]
 pub enum WorkflowToolTargetInput {
-    Bound { receiver: WorkflowEndpointInput },
-    Start { start: WorkflowStartRefInput },
+    Bound {
+        receiver: WorkflowEndpointInput,
+        dispatch: BoundWorkflowToolDispatchInput,
+    },
+    Start {
+        start: WorkflowStartRefInput,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+/// How an invocation of a bound workflow tool reaches its receiver.
+pub enum BoundWorkflowToolDispatchInput {
+    /// The receiver consumes the invocation from the authorized session log.
+    Pull,
+    /// The runtime durably emits the invocation to the receiver workflow.
+    Push,
 }
 
 /// Opaque reference to a workflow-substrate recipe already stored through
@@ -81,9 +96,9 @@ pub struct WorkflowStartRefInput {
     pub recipe_fingerprint: String,
 }
 
-/// Completion contract for one workflow-tool invocation. Accepted tools
-/// produce no promises. Promise-bearing tools derive one or more promise keys
-/// from validated arguments and are pushed to their target workflow.
+/// Completion contract for one workflow-tool invocation. Joined tools park
+/// the original call on one runtime-owned reply; Promises exposes handles for
+/// model-controlled concurrency.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "type",
@@ -93,6 +108,11 @@ pub struct WorkflowStartRefInput {
 )]
 pub enum WorkflowToolCompletionInput {
     Accepted,
+    Joined {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_schema_ref: Option<String>,
+        deadline_after_ms: u64,
+    },
     Promises {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_schema_ref: Option<String>,

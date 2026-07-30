@@ -294,7 +294,7 @@ api_methods! {
     METHOD_SESSION_START => start_session(SessionStartParams) -> SessionStartResponse =>
         ["Create or reopen a session", "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created."],
     METHOD_SESSION_MANAGED_START => start_managed_session(ManagedSessionStartParams) -> SessionStartResponse =>
-        ["Create or reopen a managed session", "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed."],
+        ["Create or reopen a managed session", "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed."],
     METHOD_SESSION_READ => read_session(SessionReadParams) -> SessionReadResponse =>
         ["Read a session", "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools."],
     METHOD_SESSION_LIST => list_sessions(SessionListParams) -> SessionListResponse =>

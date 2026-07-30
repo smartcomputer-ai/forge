@@ -509,6 +509,11 @@ impl FleetService {
                     "unknown promise {promise_id}"
                 )));
             };
+            if promise.ownership != engine::PromiseOwnership::Model {
+                return Err(AgentApiError::rejected(format!(
+                    "promise {promise_id} is runtime-owned and cannot be cancelled"
+                )));
+            }
             if promise.status.is_terminal() {
                 promises.push(CancelPromiseOutput {
                     promise_id,
@@ -554,6 +559,11 @@ impl FleetService {
                     "unknown promise {promise_id}"
                 )));
             };
+            if promise.ownership != engine::PromiseOwnership::Model {
+                return Err(AgentApiError::rejected(format!(
+                    "promise {promise_id} is runtime-owned and cannot be detached"
+                )));
+            }
             if promise.status.is_terminal() {
                 return Err(AgentApiError::rejected(format!(
                     "promise {promise_id} is already {}",
@@ -1996,10 +2006,12 @@ fn target_has_mailbox_await(state: &engine::CoreAgentState) -> bool {
     if active_run.status != engine::RunStatus::Parked {
         return false;
     }
-    active_run
-        .parked_await
-        .as_ref()
-        .is_some_and(|parked| parked.spec.mailbox)
+    active_run.parked_tool_batch.as_ref().is_some_and(|parked| {
+        matches!(
+            &parked.suspension,
+            engine::ToolBatchSuspension::AwaitTool { spec, .. } if spec.mailbox
+        )
+    })
 }
 
 /// Parse an api run id (`run_<n>`) into its numeric id. A malformed id would
@@ -4400,6 +4412,7 @@ mod tests {
                             target_run_id: 2,
                         },
                         scope: engine::PromiseScope::Run { run_id },
+                        ownership: engine::PromiseOwnership::Model,
                         status: engine::PromiseStatus::Pending,
                         payload_ref: None,
                         error_ref: None,

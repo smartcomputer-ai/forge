@@ -242,15 +242,85 @@ export type ToolChoice =
       type: "specific";
     };
 /**
+ * Completion contract for one workflow-tool invocation. Joined tools park
+ * the original call on one runtime-owned reply; Promises exposes handles for
+ * model-controlled concurrency.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolCompletionView".
+ * via the `definition` "WorkflowToolCompletionInput".
  */
-export type ManagedWorkflowToolCompletionView = "accepted" | "promises";
+export type WorkflowToolCompletionInput =
+  | {
+      type: "accepted";
+    }
+  | {
+      deadlineAfterMs: number;
+      replySchemaRef?: string | null;
+      type: "joined";
+    }
+  | {
+      deadlineAfterMs?: number | null;
+      keySource: WorkflowToolCompletionKeySourceInput;
+      maxPromises: number;
+      replySchemaRef?: string | null;
+      type: "promises";
+    };
+/**
+ * Declarative promise-key derivation over schema-validated tool arguments.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolCompletionKeySourceInput".
+ */
+export type WorkflowToolCompletionKeySourceInput =
+  | {
+      type: "reply";
+    }
+  | {
+      pointer: string;
+      type: "stringArray";
+    }
+  | {
+      pointer: string;
+      prefix: string;
+      type: "arrayIndices";
+    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolTargetView".
+ * via the `definition` "WorkflowToolKindInput".
  */
-export type ManagedWorkflowToolTargetView = "bound" | "start";
+export type WorkflowToolKindInput = {
+  descriptionRef?: string | null;
+  inputSchemaRef: string;
+  outputSchemaRef?: string | null;
+  providerOptionsRef?: string | null;
+  strict?: boolean | null;
+  type: "function";
+};
+/**
+ * Lifecycle target of a workflow-backed tool. Bound tools deliver to an
+ * existing execution; start tools create an execution from an immutable,
+ * CAS-backed recipe for every invocation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolTargetInput".
+ */
+export type WorkflowToolTargetInput =
+  | {
+      dispatch: BoundWorkflowToolDispatchInput;
+      receiver: WorkflowEndpointInput;
+      type: "bound";
+    }
+  | {
+      start: WorkflowStartRefInput;
+      type: "start";
+    };
+/**
+ * How an invocation of a bound workflow tool reaches its receiver.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BoundWorkflowToolDispatchInput".
+ */
+export type BoundWorkflowToolDispatchInput = "pull" | "push";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
@@ -986,73 +1056,6 @@ export type ProfileSource =
       profile: InlineAgentProfile;
     };
 /**
- * Completion contract for one workflow-tool invocation. Accepted tools
- * produce no promises. Promise-bearing tools derive one or more promise keys
- * from validated arguments and are pushed to their target workflow.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolCompletionInput".
- */
-export type WorkflowToolCompletionInput =
-  | {
-      type: "accepted";
-    }
-  | {
-      deadlineAfterMs?: number | null;
-      keySource: WorkflowToolCompletionKeySourceInput;
-      maxPromises: number;
-      replySchemaRef?: string | null;
-      type: "promises";
-    };
-/**
- * Declarative promise-key derivation over schema-validated tool arguments.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolCompletionKeySourceInput".
- */
-export type WorkflowToolCompletionKeySourceInput =
-  | {
-      type: "reply";
-    }
-  | {
-      pointer: string;
-      type: "stringArray";
-    }
-  | {
-      pointer: string;
-      prefix: string;
-      type: "arrayIndices";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolKindInput".
- */
-export type WorkflowToolKindInput = {
-  descriptionRef?: string | null;
-  inputSchemaRef: string;
-  outputSchemaRef?: string | null;
-  providerOptionsRef?: string | null;
-  strict?: boolean | null;
-  type: "function";
-};
-/**
- * Lifecycle target of a workflow-backed tool. Bound tools deliver to an
- * existing execution; start tools create an execution from an immutable,
- * CAS-backed recipe for every invocation.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolTargetInput".
- */
-export type WorkflowToolTargetInput =
-  | {
-      receiver: WorkflowEndpointInput;
-      type: "bound";
-    }
-  | {
-      start: WorkflowStartRefInput;
-      type: "start";
-    };
-/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStartSource".
  */
@@ -1140,7 +1143,7 @@ export interface SessionView {
    * Immutable workflow-backed tool declaration. A lifecycle controller
    * indicates external session ownership; tool-only declarations do not.
    */
-  management?: SessionManagementView | null;
+  management?: ManagedSessionWorkflowToolsInput | null;
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
@@ -1466,31 +1469,66 @@ export interface ModelConfig {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionManagementView".
+ * via the `definition` "ManagedSessionWorkflowToolsInput".
  */
-export interface SessionManagementView {
-  lifecycleController?: WorkflowEndpointView | null;
-  tools?: ManagedWorkflowToolView[];
+export interface ManagedSessionWorkflowToolsInput {
+  lifecycleController?: WorkflowEndpointInput | null;
+  tools: WorkflowToolDeclarationInput[];
   version: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowEndpointView".
+ * via the `definition` "WorkflowEndpointInput".
  */
-export interface WorkflowEndpointView {
+export interface WorkflowEndpointInput {
   workflowId: string;
   workflowKind: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolView".
+ * via the `definition` "WorkflowToolDeclarationInput".
  */
-export interface ManagedWorkflowToolView {
-  completion: ManagedWorkflowToolCompletionView;
-  name: string;
+export interface WorkflowToolDeclarationInput {
+  completion: WorkflowToolCompletionInput;
+  definition: WorkflowToolDefinitionInput;
+  target: WorkflowToolTargetInput;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolDefinitionInput".
+ */
+export interface WorkflowToolDefinitionInput {
+  revision: number;
   semanticType: string;
-  target: ManagedWorkflowToolTargetView;
+  tool: WorkflowToolSpecInput;
   toolId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolSpecInput".
+ */
+export interface WorkflowToolSpecInput {
+  kind: WorkflowToolKindInput;
+  /**
+   * Canonical effective-toolset name, also sent to the model and used for
+   * runtime dispatch.
+   */
+  name: string;
+  parallelism?: ToolParallelismView & string;
+}
+/**
+ * Opaque reference to a workflow-substrate recipe already stored through
+ * the blob API. The fingerprint authenticates the exact recipe bytes used
+ * by the workflow-start adapter.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowStartRefInput".
+ */
+export interface WorkflowStartRefInput {
+  recipeFingerprint: string;
+  recipeFormat: number;
+  recipeRef: string;
+  revision: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4056,69 +4094,6 @@ export interface ManagedSessionStartParams {
    * changed through `session/config/put`.
    */
   workflowTools: ManagedSessionWorkflowToolsInput;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedSessionWorkflowToolsInput".
- */
-export interface ManagedSessionWorkflowToolsInput {
-  lifecycleController?: WorkflowEndpointInput | null;
-  tools: WorkflowToolDeclarationInput[];
-  version: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowEndpointInput".
- */
-export interface WorkflowEndpointInput {
-  workflowId: string;
-  workflowKind: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolDeclarationInput".
- */
-export interface WorkflowToolDeclarationInput {
-  completion: WorkflowToolCompletionInput;
-  definition: WorkflowToolDefinitionInput;
-  target: WorkflowToolTargetInput;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolDefinitionInput".
- */
-export interface WorkflowToolDefinitionInput {
-  revision: number;
-  semanticType: string;
-  tool: WorkflowToolSpecInput;
-  toolId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolSpecInput".
- */
-export interface WorkflowToolSpecInput {
-  kind: WorkflowToolKindInput;
-  /**
-   * Canonical effective-toolset name, also sent to the model and used for
-   * runtime dispatch.
-   */
-  name: string;
-  parallelism?: ToolParallelismView & string;
-}
-/**
- * Opaque reference to a workflow-substrate recipe already stored through
- * the blob API. The fingerprint authenticates the exact recipe bytes used
- * by the workflow-start adapter.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowStartRefInput".
- */
-export interface WorkflowStartRefInput {
-  recipeFingerprint: string;
-  recipeFormat: number;
-  recipeRef: string;
-  revision: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

@@ -50,6 +50,15 @@
   keep provider-direct
   read/cancel, let providers reject close or interrupt active jobs, and rely
   on Temporal plus provider idempotency instead of stored job/group rows
+- [x] [P106](p106-joined-workflow-tools.md) — completed 2026-07-30: add Joined as the ordinary
+  single-result workflow-tool form: durably park and resume the original tool
+  call without exposing a Promise or requiring model-authored `await`; make
+  bound pull/push dispatch independent of Accepted/Joined/Promises completion,
+  motivated by the first production Channels sessions where every provider
+  receipt currently costs an otherwise unnecessary await tool round. Advanced
+  2026-07-30 through the greenfield v4 dispatch foundation, pushed Accepted,
+  engine-native Joined, shared declaration readback, durable event diagnostics,
+  generated contracts, and passing serial live proofs
 
 ## Core
 - [x] [P91](p91-core-agent-structure-cleanup.md) — cleanup of CoreAgent structures: delete the SDK-era open-kernel layer, commit to a closed event vocabulary and core FSM

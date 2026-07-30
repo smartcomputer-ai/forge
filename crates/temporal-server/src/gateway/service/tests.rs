@@ -116,6 +116,7 @@ fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
                     workflow_id: "receiver-1".to_owned(),
                     workflow_kind: "order.receiver".to_owned(),
                 },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
             },
             completion: WorkflowToolCompletionInput::Promises {
                 reply_schema_ref: Some(reply_schema_ref.as_str().to_owned()),
@@ -156,7 +157,8 @@ fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
             receiver: WorkflowEndpointRef {
                 workflow_id: "receiver-1".to_owned(),
                 workflow_kind: "order.receiver".to_owned(),
-            }
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
         }
     );
     assert_eq!(
@@ -199,6 +201,7 @@ fn managed_workflow_tools_api_maps_bound_accepted_function_tools() {
                     workflow_id: "channels/session-1".to_owned(),
                     workflow_kind: "channels.session".to_owned(),
                 },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
             },
             completion: WorkflowToolCompletionInput::Accepted,
         }],
@@ -209,10 +212,64 @@ fn managed_workflow_tools_api_maps_bound_accepted_function_tools() {
         declaration.tools[0].completion,
         WorkflowToolCompletion::Accepted
     );
-    assert!(matches!(
+    assert_eq!(
         declaration.tools[0].target,
-        WorkflowToolTarget::Bound { .. }
-    ));
+        WorkflowToolTarget::Bound {
+            receiver: WorkflowEndpointRef {
+                workflow_id: "channels/session-1".to_owned(),
+                workflow_kind: "channels.session".to_owned(),
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
+        }
+    );
+}
+
+#[test]
+fn managed_workflow_tools_api_maps_joined_completion() {
+    let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let reply_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let declaration = managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+        version: 1,
+        lifecycle_controller: None,
+        tools: vec![WorkflowToolDeclarationInput {
+            definition: WorkflowToolDefinitionInput {
+                tool_id: "message-send".to_owned(),
+                revision: 1,
+                semantic_type: "channels.receipt.v1".to_owned(),
+                tool: WorkflowToolSpecInput {
+                    name: "message_send".to_owned(),
+                    kind: WorkflowToolKindInput::Function {
+                        description_ref: None,
+                        input_schema_ref: input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    },
+                    parallelism: ToolParallelismView::ParallelSafe,
+                },
+            },
+            target: WorkflowToolTargetInput::Bound {
+                receiver: WorkflowEndpointInput {
+                    workflow_id: "channels/session-1".to_owned(),
+                    workflow_kind: "channels.session".to_owned(),
+                },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
+            },
+            completion: WorkflowToolCompletionInput::Joined {
+                reply_schema_ref: Some(reply_schema_ref.as_str().to_owned()),
+                deadline_after_ms: 30_000,
+            },
+        }],
+    })
+    .expect("map Joined workflow tool");
+
+    assert_eq!(
+        declaration.tools[0].completion,
+        WorkflowToolCompletion::Joined {
+            reply_schema_ref: Some(reply_schema_ref),
+            deadline_after_ms: 30_000,
+        }
+    );
 }
 
 #[test]

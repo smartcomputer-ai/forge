@@ -193,8 +193,8 @@ pub struct AgentCompletedRunSummary {
 pub struct PendingEmission {
     pub receiver_workflow_id: String,
     pub envelope: EmissionEnvelope,
-    /// Delivery attempts so far. Only promise-bearing tool-invocation
-    /// envelopes retry; other bodies keep the legacy single-attempt,
+    /// Delivery attempts so far. Pushed workflow-tool invocation envelopes
+    /// retry independently; other bodies keep the legacy single-attempt,
     /// drop-on-missing semantics.
     #[serde(default)]
     pub attempts: u32,
@@ -372,7 +372,7 @@ pub struct AwaitPromiseResult {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingToolBatchResume {
     pub batch_id: ToolBatchId,
-    pub command: engine::ResumeAwaitCommand,
+    pub command: engine::ResumeToolBatchCommand,
 }
 
 /// Armed while the active run sits in `cancelling`; the workflow forces the

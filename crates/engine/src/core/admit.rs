@@ -289,10 +289,13 @@ pub fn admit_command(
                 .map_err(command_rejection_from_domain)?;
             if state.runs.active.as_ref().is_some_and(|run| {
                 run.status == RunStatus::Parked
-                    && run
-                        .parked_await
-                        .as_ref()
-                        .is_some_and(|parked| parked.spec.mailbox)
+                    && run.parked_tool_batch.as_ref().is_some_and(|parked| {
+                        matches!(
+                            &parked.suspension,
+                            crate::ToolBatchSuspension::AwaitTool { spec, .. }
+                                if spec.mailbox
+                        )
+                    })
             }) {
                 let next_message_id =
                     state
@@ -747,9 +750,9 @@ pub fn admit_command(
                 CoreAgentEvent::Run(RunEvent::ForceCancelled { run_id }),
             )])
         }
-        CoreAgentCommand::ResumeAwait(command) => {
+        CoreAgentCommand::ResumeToolBatch(command) => {
             require_open(state)?;
-            crate::core::drive::resume_await_proposals(state, command, observed_at_ms)
+            crate::core::drive::resume_tool_batch_proposals(state, command, observed_at_ms)
                 .map_err(command_rejection_from_domain)
         }
         CoreAgentCommand::ReplaceTools {

@@ -107,7 +107,7 @@ export const METHOD_INFO = {
   "session/managed/start": {
     scope: "universe",
     summary: "Create or reopen a managed session",
-    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
   },
   "session/read": {
     scope: "universe",
@@ -560,7 +560,7 @@ export interface MethodMap {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   "session/managed/start": {
     params: Api.ManagedSessionStartParams;
@@ -1342,7 +1342,7 @@ export const rpc = {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   sessionManagedStart(client: RpcCaller, params: Api.ManagedSessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
     return client.call("session/managed/start", params);

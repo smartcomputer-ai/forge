@@ -2828,6 +2828,21 @@
       ],
       "type": "object"
     },
+    "BoundWorkflowToolDispatchInput": {
+      "description": "How an invocation of a bound workflow tool reaches its receiver.",
+      "oneOf": [
+        {
+          "const": "pull",
+          "description": "The receiver consumes the invocation from the authorized session log.",
+          "type": "string"
+        },
+        {
+          "const": "push",
+          "description": "The runtime durably emits the invocation to the receiver workflow.",
+          "type": "string"
+        }
+      ]
+    },
     "ClientCapabilities": {
       "properties": {
         "experimentalApi": {
@@ -5006,47 +5021,6 @@
       "required": [
         "version",
         "tools"
-      ],
-      "type": "object"
-    },
-    "ManagedWorkflowToolCompletionView": {
-      "enum": [
-        "accepted",
-        "promises"
-      ],
-      "type": "string"
-    },
-    "ManagedWorkflowToolTargetView": {
-      "enum": [
-        "bound",
-        "start"
-      ],
-      "type": "string"
-    },
-    "ManagedWorkflowToolView": {
-      "properties": {
-        "completion": {
-          "$ref": "#/definitions/ManagedWorkflowToolCompletionView"
-        },
-        "name": {
-          "type": "string"
-        },
-        "semanticType": {
-          "type": "string"
-        },
-        "target": {
-          "$ref": "#/definitions/ManagedWorkflowToolTargetView"
-        },
-        "toolId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "toolId",
-        "name",
-        "semanticType",
-        "target",
-        "completion"
       ],
       "type": "object"
     },
@@ -9349,36 +9323,6 @@
       },
       "type": "object"
     },
-    "SessionManagementView": {
-      "properties": {
-        "lifecycleController": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/WorkflowEndpointView"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "tools": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/ManagedWorkflowToolView"
-          },
-          "type": "array"
-        },
-        "version": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "required": [
-        "version"
-      ],
-      "type": "object"
-    },
     "SessionReadParams": {
       "properties": {
         "sessionId": {
@@ -9580,7 +9524,7 @@
         "management": {
           "anyOf": [
             {
-              "$ref": "#/definitions/SessionManagementView"
+              "$ref": "#/definitions/ManagedSessionWorkflowToolsInput"
             },
             {
               "type": "null"
@@ -11003,21 +10947,6 @@
       ],
       "type": "object"
     },
-    "WorkflowEndpointView": {
-      "properties": {
-        "workflowId": {
-          "type": "string"
-        },
-        "workflowKind": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "workflowId",
-        "workflowKind"
-      ],
-      "type": "object"
-    },
     "WorkflowStartRefInput": {
       "additionalProperties": false,
       "description": "Opaque reference to a workflow-substrate recipe already stored through\nthe blob API. The fingerprint authenticates the exact recipe bytes used\nby the workflow-start adapter.",
@@ -11048,7 +10977,7 @@
       "type": "object"
     },
     "WorkflowToolCompletionInput": {
-      "description": "Completion contract for one workflow-tool invocation. Accepted tools\nproduce no promises. Promise-bearing tools derive one or more promise keys\nfrom validated arguments and are pushed to their target workflow.",
+      "description": "Completion contract for one workflow-tool invocation. Joined tools park\nthe original call on one runtime-owned reply; Promises exposes handles for\nmodel-controlled concurrency.",
       "oneOf": [
         {
           "additionalProperties": false,
@@ -11060,6 +10989,31 @@
           },
           "required": [
             "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "deadlineAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "replySchemaRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "const": "joined",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "deadlineAfterMs"
           ],
           "type": "object"
         },
@@ -11280,6 +11234,9 @@
         {
           "additionalProperties": false,
           "properties": {
+            "dispatch": {
+              "$ref": "#/definitions/BoundWorkflowToolDispatchInput"
+            },
             "receiver": {
               "$ref": "#/definitions/WorkflowEndpointInput"
             },
@@ -11290,7 +11247,8 @@
           },
           "required": [
             "type",
-            "receiver"
+            "receiver",
+            "dispatch"
           ],
           "type": "object"
         },

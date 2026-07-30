@@ -31,46 +31,9 @@ pub struct SessionView {
     pub vfs_mounts: Vec<VfsMountView>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SessionManagementView {
-    pub version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub lifecycle_controller: Option<WorkflowEndpointView>,
-    #[serde(default)]
-    pub tools: Vec<ManagedWorkflowToolView>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkflowEndpointView {
-    pub workflow_id: String,
-    pub workflow_kind: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ManagedWorkflowToolView {
-    pub tool_id: String,
-    pub name: String,
-    pub semantic_type: String,
-    pub target: ManagedWorkflowToolTargetView,
-    pub completion: ManagedWorkflowToolCompletionView,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ManagedWorkflowToolTargetView {
-    Bound,
-    Start,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum ManagedWorkflowToolCompletionView {
-    Accepted,
-    Promises,
-}
+/// Managed-session reads use the same immutable declaration document accepted
+/// at creation. Per-invocation diagnostics remain in `session/events/read`.
+pub type SessionManagementView = ManagedSessionWorkflowToolsInput;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

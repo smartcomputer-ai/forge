@@ -327,7 +327,7 @@ fn active_drive_rollover_outcome_is_typed_and_waits_for_transport_drain() {
 
 #[test]
 fn rehydrated_active_run_wakes_core_drive_without_a_new_signal() {
-    let mut workflow = workflow_with_parked_await(AwaitSpec {
+    let mut workflow = workflow_with_parked_tool_batch(AwaitSpec {
         promise_ids: vec![engine::PromiseId::new("p1")],
         mode: engine::AwaitMode::All,
         mailbox: false,
@@ -342,7 +342,7 @@ fn rehydrated_active_run_wakes_core_drive_without_a_new_signal() {
         .active
         .as_mut()
         .expect("active run")
-        .parked_await = None;
+        .parked_tool_batch = None;
     assert!(wait_loop::workflow_state_needs_core_drive_for_state(
         &workflow
     ));
@@ -527,14 +527,16 @@ fn pending_run_emission() -> PendingEmission {
 fn pending_resume(batch_id: u64) -> PendingToolBatchResume {
     PendingToolBatchResume {
         batch_id: ToolBatchId::new(batch_id),
-        command: engine::ResumeAwaitCommand {
+        command: engine::ResumeToolBatchCommand {
             run_id: RunId::new(1),
             batch_id: ToolBatchId::new(batch_id),
             claim: engine::WakeReason::Timeout,
             claim_observed_at_ms: 1_000,
-            output: engine::AwaitOutputRefs {
-                output_ref: engine::BlobRef::from_bytes(b"await output"),
-                summary_ref: engine::BlobRef::from_bytes(b"await summary"),
+            output: engine::ToolBatchResumeOutput::AwaitTool {
+                output: engine::AwaitOutputRefs {
+                    output_ref: engine::BlobRef::from_bytes(b"await output"),
+                    summary_ref: engine::BlobRef::from_bytes(b"await summary"),
+                },
             },
         },
     }
@@ -549,7 +551,7 @@ fn pending_promise_cancellation(promise_id: &str) -> PendingPromiseCancellation 
 }
 
 fn workflow_with_parked_mailbox_await() -> AgentSessionWorkflow {
-    workflow_with_parked_await(engine::AwaitSpec {
+    workflow_with_parked_tool_batch(engine::AwaitSpec {
         promise_ids: Vec::new(),
         mode: engine::AwaitMode::All,
         mailbox: true,
@@ -557,7 +559,7 @@ fn workflow_with_parked_mailbox_await() -> AgentSessionWorkflow {
     })
 }
 
-fn workflow_with_parked_await(spec: engine::AwaitSpec) -> AgentSessionWorkflow {
+fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkflow {
     let mut workflow = AgentSessionWorkflow::default();
     let run_id = RunId::new(1);
     let turn_id = TurnId::new(1);
@@ -601,10 +603,9 @@ fn workflow_with_parked_await(spec: engine::AwaitSpec) -> AgentSessionWorkflow {
         turns: std::collections::BTreeMap::new(),
         active_turn_id: None,
         active_tool_batch_id: Some(batch_id),
-        parked_await: Some(engine::ParkedAwait {
+        parked_tool_batch: Some(engine::ParkedToolBatch {
             batch_id,
-            call_id,
-            spec,
+            suspension: engine::ToolBatchSuspension::AwaitTool { call_id, spec },
         }),
         cancellation_grace_turn_id: None,
         tool_batches,
@@ -721,7 +722,7 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
 }
 
 #[test]
-fn promise_bearing_emitted_invocation_queues_push_delivery() {
+fn bound_dispatch_controls_push_delivery_independently_of_completion() {
     let mut workflow = AgentSessionWorkflow::default();
     workflow.universe_id = Some(test_universe());
     workflow.session_id = Some(SessionId::new("child_session"));
@@ -750,6 +751,7 @@ fn promise_bearing_emitted_invocation_queues_push_delivery() {
                 workflow_id: "approval plugin id".to_owned(),
                 workflow_kind: "approvals".to_owned(),
             },
+            dispatch: engine::BoundWorkflowToolDispatch::Push,
         },
         engine::WorkflowToolCompletion::Promises {
             reply_schema_ref: None,
@@ -790,7 +792,7 @@ fn promise_bearing_emitted_invocation_queues_push_delivery() {
         .core_state
         .workflow_tools
         .bindings
-        .insert(binding.definition.tool_id.clone(), binding);
+        .insert(binding.definition.tool_id.clone(), binding.clone());
 
     let entry = engine::CoreAgentEntry {
         position: SessionPosition {
@@ -821,23 +823,153 @@ fn promise_bearing_emitted_invocation_queues_push_delivery() {
             if delivered == &invocation
     ));
 
-    // Notify (Accepted) invocations never enter push state.
-    let mut notify_invocation = invocation;
-    notify_invocation.completion_promises = None;
-    let notify_entry = engine::CoreAgentEntry {
+    // Accepted completion uses the same push path when dispatch says Push.
+    let accepted_binding = engine::WorkflowToolBinding::admit(
+        test_universe(),
+        binding.definition.clone(),
+        engine::WorkflowToolTarget::Bound {
+            receiver: engine::WorkflowEndpointRef {
+                workflow_id: "approval plugin id".to_owned(),
+                workflow_kind: "approvals".to_owned(),
+            },
+            dispatch: engine::BoundWorkflowToolDispatch::Push,
+        },
+        engine::WorkflowToolCompletion::Accepted,
+    )
+    .expect("pushed Accepted binding");
+    let accepted_invocation_id = engine::WorkflowToolInvocationId::for_call(
+        test_universe(),
+        &SessionId::new("child_session"),
+        RunId::new(1),
+        engine::TurnId::new(1),
+        ToolBatchId::new(1),
+        &engine::ToolCallId::new("call-2"),
+        &accepted_binding.binding_fingerprint,
+    );
+    let accepted_invocation = engine::WorkflowToolInvocation {
+        invocation_id: accepted_invocation_id.clone(),
+        tool_id: accepted_binding.definition.tool_id.clone(),
+        semantic_type: accepted_binding.definition.semantic_type.clone(),
+        schema_revision: accepted_binding.definition.revision,
+        binding_fingerprint: accepted_binding.binding_fingerprint.clone(),
+        session_universe_id: test_universe(),
+        session_id: SessionId::new("child_session"),
+        run_id: RunId::new(1),
+        turn_id: engine::TurnId::new(1),
+        tool_batch_id: ToolBatchId::new(1),
+        tool_call_id: engine::ToolCallId::new("call-2"),
+        arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        completion_promises: None,
+    };
+    workflow.core_state.workflow_tools.bindings.insert(
+        accepted_binding.definition.tool_id.clone(),
+        accepted_binding.clone(),
+    );
+    let accepted_entry = engine::CoreAgentEntry {
         position: SessionPosition {
             seq: EventSeq::new(10),
         },
         observed_at_ms: 101,
         joins: CoreAgentJoins::default(),
         event: CoreAgentEvent::WorkflowTool(engine::WorkflowToolEvent::Emitted {
-            invocation: notify_invocation,
+            invocation: accepted_invocation.clone(),
         }),
     };
     workflow
-        .queue_emissions_for_entries(std::slice::from_ref(&notify_entry))
-        .expect("notify entry is pull-only");
-    assert_eq!(workflow.pending_emissions.len(), 1);
+        .queue_emissions_for_entries(std::slice::from_ref(&accepted_entry))
+        .expect("queue pushed Accepted entry");
+    assert_eq!(workflow.pending_emissions.len(), 2);
+    assert_eq!(
+        workflow.pending_emissions[1].envelope.emission_id.as_str(),
+        accepted_invocation_id.as_str()
+    );
+
+    // Caller run completion does not abandon an independently queued pushed
+    // Accepted delivery.
+    workflow.core_state.runs.completed.push(RunRecord {
+        run_id: RunId::new(1),
+        status: RunStatus::Completed,
+        submission_id: None,
+        origin: engine::RunOrigin::Requested,
+        submission_digest: None,
+        output_ref: None,
+        failure: None,
+        notify_on_terminal: Vec::new(),
+    });
+    let terminal_entry = engine::CoreAgentEntry {
+        position: SessionPosition {
+            seq: EventSeq::new(11),
+        },
+        observed_at_ms: 102,
+        joins: CoreAgentJoins::default(),
+        event: CoreAgentEvent::Run(RunEvent::Completed {
+            run_id: RunId::new(1),
+            output_ref: None,
+        }),
+    };
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&terminal_entry))
+        .expect("retain pushed Accepted delivery after run terminal");
+    assert_eq!(workflow.pending_emissions.len(), 2);
+
+    // Pull dispatch remains out of the push queue even with the same
+    // Accepted completion contract.
+    let pull_binding = engine::WorkflowToolBinding::admit(
+        test_universe(),
+        binding.definition,
+        engine::WorkflowToolTarget::Bound {
+            receiver: engine::WorkflowEndpointRef {
+                workflow_id: "approval plugin id".to_owned(),
+                workflow_kind: "approvals".to_owned(),
+            },
+            dispatch: engine::BoundWorkflowToolDispatch::Pull,
+        },
+        engine::WorkflowToolCompletion::Accepted,
+    )
+    .expect("pull Accepted binding");
+    let pull_invocation_id = engine::WorkflowToolInvocationId::for_call(
+        test_universe(),
+        &SessionId::new("child_session"),
+        RunId::new(1),
+        engine::TurnId::new(1),
+        ToolBatchId::new(1),
+        &engine::ToolCallId::new("call-3"),
+        &pull_binding.binding_fingerprint,
+    );
+    let pull_invocation = engine::WorkflowToolInvocation {
+        invocation_id: pull_invocation_id,
+        tool_id: pull_binding.definition.tool_id.clone(),
+        semantic_type: pull_binding.definition.semantic_type.clone(),
+        schema_revision: pull_binding.definition.revision,
+        binding_fingerprint: pull_binding.binding_fingerprint.clone(),
+        session_universe_id: test_universe(),
+        session_id: SessionId::new("child_session"),
+        run_id: RunId::new(1),
+        turn_id: engine::TurnId::new(1),
+        tool_batch_id: ToolBatchId::new(1),
+        tool_call_id: engine::ToolCallId::new("call-3"),
+        arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        completion_promises: None,
+    };
+    workflow
+        .core_state
+        .workflow_tools
+        .bindings
+        .insert(pull_binding.definition.tool_id.clone(), pull_binding);
+    let pull_entry = engine::CoreAgentEntry {
+        position: SessionPosition {
+            seq: EventSeq::new(12),
+        },
+        observed_at_ms: 103,
+        joins: CoreAgentJoins::default(),
+        event: CoreAgentEvent::WorkflowTool(engine::WorkflowToolEvent::Emitted {
+            invocation: pull_invocation,
+        }),
+    };
+    workflow
+        .queue_emissions_for_entries(std::slice::from_ref(&pull_entry))
+        .expect("leave pull entry out of push queue");
+    assert_eq!(workflow.pending_emissions.len(), 2);
 }
 
 #[test]
@@ -933,6 +1065,7 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
                 completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
             },
             scope: engine::PromiseScope::Session,
+            ownership: engine::PromiseOwnership::Model,
             status: PromiseStatus::Pending,
             payload_ref: None,
             error_ref: None,
@@ -1084,6 +1217,7 @@ fn promise_with_source(
         promise_id: engine::PromiseId::new(id),
         source,
         scope,
+        ownership: engine::PromiseOwnership::Model,
         status,
         payload_ref: None,
         error_ref: None,
@@ -1117,7 +1251,7 @@ fn await_spec(
 #[test]
 fn workflow_await_waits_for_every_promise_in_all_mode() {
     let mut workflow =
-        workflow_with_parked_await(await_spec(&["p1", "p2"], engine::AwaitMode::All, None));
+        workflow_with_parked_tool_batch(await_spec(&["p1", "p2"], engine::AwaitMode::All, None));
     add_promises(
         &mut workflow,
         vec![
@@ -1138,9 +1272,75 @@ fn workflow_await_waits_for_every_promise_in_all_mode() {
 }
 
 #[test]
+fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
+    let promise_id = engine::PromiseId::new("joined_reply");
+    let mut workflow = workflow_with_parked_tool_batch(engine::AwaitSpec {
+        promise_ids: vec![promise_id.clone()],
+        mode: engine::AwaitMode::All,
+        deadline_at_ms: None,
+        mailbox: false,
+    });
+    let invocation_id = engine::WorkflowToolInvocationId::for_call(
+        test_universe(),
+        &SessionId::new("child_session"),
+        RunId::new(1),
+        TurnId::new(1),
+        ToolBatchId::new(1),
+        &ToolCallId::new("call_await"),
+        "wtb:sha256:test",
+    );
+    workflow
+        .core_state
+        .runs
+        .active
+        .as_mut()
+        .expect("active run")
+        .parked_tool_batch
+        .as_mut()
+        .expect("parked batch")
+        .suspension = engine::ToolBatchSuspension::JoinedWorkflowCalls {
+        calls: vec![engine::JoinedWorkflowCall {
+            call_id: ToolCallId::new("call_await"),
+            invocation_id,
+            promise_id: promise_id.clone(),
+        }],
+        spec: engine::AwaitSpec {
+            promise_ids: vec![promise_id.clone()],
+            mode: engine::AwaitMode::All,
+            deadline_at_ms: None,
+            mailbox: false,
+        },
+    };
+    workflow.core_state.promises.promises.insert(
+        promise_id.clone(),
+        engine::Promise {
+            promise_id,
+            source: PromiseSource::Workflow {
+                producer_workflow_id: "channels".to_owned(),
+                producer_workflow_kind: "channels.session".to_owned(),
+                invocation_id: "joined".to_owned(),
+                completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
+            },
+            scope: PromiseScope::Run {
+                run_id: RunId::new(1),
+            },
+            ownership: engine::PromiseOwnership::Runtime,
+            status: PromiseStatus::Resolved,
+            payload_ref: Some(engine::BlobRef::from_bytes(b"receipt")),
+            error_ref: None,
+            deadline_ms: Some(50_000),
+        },
+    );
+
+    assert!(awaits::has_satisfied_await(&workflow));
+    assert!(wait_loop::workflow_state_has_immediate_work(&workflow));
+    assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
+}
+
+#[test]
 fn workflow_await_resolves_any_mode_on_first_terminal_promise() {
     let mut workflow =
-        workflow_with_parked_await(await_spec(&["p1", "p2"], engine::AwaitMode::Any, None));
+        workflow_with_parked_tool_batch(await_spec(&["p1", "p2"], engine::AwaitMode::Any, None));
     add_promises(
         &mut workflow,
         vec![
@@ -1154,7 +1354,7 @@ fn workflow_await_resolves_any_mode_on_first_terminal_promise() {
 #[test]
 fn workflow_await_deadline_uses_timer_not_state_condition() {
     let mut workflow =
-        workflow_with_parked_await(await_spec(&["p1"], engine::AwaitMode::All, Some(1_000)));
+        workflow_with_parked_tool_batch(await_spec(&["p1"], engine::AwaitMode::All, Some(1_000)));
     add_promises(&mut workflow, vec![promise("p1", PromiseStatus::Pending)]);
     assert!(!awaits::has_satisfied_await(&workflow));
     assert_eq!(awaits::nearest_await_wake_ms(&workflow), Some(1_000));
@@ -1163,7 +1363,7 @@ fn workflow_await_deadline_uses_timer_not_state_condition() {
 #[test]
 fn promise_snapshot_reports_pending_promise() {
     let spec = await_spec(&["p1"], engine::AwaitMode::All, Some(1_000));
-    let mut workflow = workflow_with_parked_await(spec.clone());
+    let mut workflow = workflow_with_parked_tool_batch(spec.clone());
     add_promises(&mut workflow, vec![promise("p1", PromiseStatus::Pending)]);
     let snapshot = awaits::promise_snapshot(&spec, &workflow.core_state);
     assert_eq!(snapshot[0].status, "pending");
@@ -1202,8 +1402,8 @@ fn mailbox_await_wakes_on_engine_buffered_message() {
 }
 
 #[test]
-fn continue_as_new_allows_pending_sources_and_parked_awaits() {
-    let mut workflow = workflow_with_parked_await(engine::AwaitSpec {
+fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
+    let mut workflow = workflow_with_parked_tool_batch(engine::AwaitSpec {
         promise_ids: vec![
             engine::PromiseId::new("p_child"),
             engine::PromiseId::new("p_request"),
@@ -1263,8 +1463,8 @@ fn continue_as_new_allows_pending_sources_and_parked_awaits() {
             .insert(promise.promise_id.clone(), promise);
     }
 
-    let parked = awaits::parked_await(&workflow.core_state).expect("parked await");
-    assert_eq!(parked.spec.promise_ids.len(), 4);
+    let parked = awaits::parked_tool_batch(&workflow.core_state).expect("parked await");
+    assert_eq!(parked.spec().promise_ids.len(), 4);
     assert_eq!(awaits::nearest_await_wake_ms(&workflow), Some(50_000));
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 }

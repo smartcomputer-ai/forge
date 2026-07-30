@@ -89,10 +89,10 @@ use auth::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
-    BlobRef, CompactionPolicy, ContextEntry, ContextEntryInput, ContextEntryKey, ContextEntryKind,
-    ContextMessageRole, CoreAgentCommand, CoreAgentStatus, FunctionToolSpec,
-    ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig, RunId, RunStatus,
-    SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
+    BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry, ContextEntryInput,
+    ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentStatus,
+    FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig,
+    RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
     SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
     ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, WorkflowEndpointRef,
     WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
@@ -1479,7 +1479,11 @@ impl GatewayAgentApi {
                         binding.definition.tool_id
                     ))
                 })?;
-            if let WorkflowToolCompletion::Promises {
+            if let WorkflowToolCompletion::Joined {
+                reply_schema_ref: Some(reply_schema_ref),
+                ..
+            }
+            | WorkflowToolCompletion::Promises {
                 reply_schema_ref: Some(reply_schema_ref),
                 ..
             } = &binding.completion
@@ -1718,9 +1722,15 @@ fn managed_workflow_tools_from_api(
                 }),
             };
             let target = match declaration.target {
-                WorkflowToolTargetInput::Bound { receiver } => WorkflowToolTarget::Bound {
-                    receiver: workflow_endpoint_from_api(receiver),
-                },
+                WorkflowToolTargetInput::Bound { receiver, dispatch } => {
+                    WorkflowToolTarget::Bound {
+                        receiver: workflow_endpoint_from_api(receiver),
+                        dispatch: match dispatch {
+                            BoundWorkflowToolDispatchInput::Pull => BoundWorkflowToolDispatch::Pull,
+                            BoundWorkflowToolDispatchInput::Push => BoundWorkflowToolDispatch::Push,
+                        },
+                    }
+                }
                 WorkflowToolTargetInput::Start { start } => WorkflowToolTarget::Start {
                     start: WorkflowStartRef {
                         recipe_format: start.recipe_format,
@@ -1736,6 +1746,17 @@ fn managed_workflow_tools_from_api(
             };
             let completion = match declaration.completion {
                 WorkflowToolCompletionInput::Accepted => WorkflowToolCompletion::Accepted,
+                WorkflowToolCompletionInput::Joined {
+                    reply_schema_ref,
+                    deadline_after_ms,
+                } => WorkflowToolCompletion::Joined {
+                    reply_schema_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "completion.replySchemaRef",
+                        reply_schema_ref,
+                    )?,
+                    deadline_after_ms,
+                },
                 WorkflowToolCompletionInput::Promises {
                     reply_schema_ref,
                     deadline_after_ms,

@@ -270,6 +270,11 @@ impl SessionTools {
             let Some(promise) = state.promises.promises.get(&key) else {
                 return Err(io_error(format!("unknown promise {promise_id}")));
             };
+            if promise.ownership != engine::PromiseOwnership::Model {
+                return Err(io_error(format!(
+                    "promise {promise_id} is runtime-owned and cannot be cancelled"
+                )));
+            }
             if promise.status.is_terminal() {
                 promises.push(CancelPromiseOutput {
                     promise_id,
@@ -333,6 +338,11 @@ impl SessionTools {
             let Some(promise) = state.promises.promises.get(&key) else {
                 return Err(io_error(format!("unknown promise {promise_id}")));
             };
+            if promise.ownership != engine::PromiseOwnership::Model {
+                return Err(io_error(format!(
+                    "promise {promise_id} is runtime-owned and cannot be detached"
+                )));
+            }
             if promise.status.is_terminal() {
                 return Err(io_error(format!(
                     "promise {promise_id} is already {}",
@@ -2236,6 +2246,7 @@ mod tests {
                             promise_id: engine::PromiseId::new("promise_child"),
                             source: engine::PromiseSource::Timer { fire_at_ms: 60_000 },
                             scope: engine::PromiseScope::Session,
+                            ownership: engine::PromiseOwnership::Model,
                             status: engine::PromiseStatus::Pending,
                             payload_ref: None,
                             error_ref: None,
@@ -2336,6 +2347,7 @@ mod tests {
                                     promise_id: engine::PromiseId::new("promise_job"),
                                     source: engine::PromiseSource::Timer { fire_at_ms: 60_000 },
                                     scope: engine::PromiseScope::Session,
+                                    ownership: engine::PromiseOwnership::Model,
                                     status: engine::PromiseStatus::Pending,
                                     payload_ref: None,
                                     error_ref: None,
@@ -2415,6 +2427,7 @@ mod tests {
                                     promise_id: engine::PromiseId::new("promise_job"),
                                     source: engine::PromiseSource::Timer { fire_at_ms: 60_000 },
                                     scope: engine::PromiseScope::Session,
+                                    ownership: engine::PromiseOwnership::Model,
                                     status: engine::PromiseStatus::Pending,
                                     payload_ref: None,
                                     error_ref: None,
@@ -2528,6 +2541,7 @@ mod tests {
                             scope: engine::PromiseScope::Run {
                                 run_id: RunId::new(1),
                             },
+                            ownership: engine::PromiseOwnership::Model,
                             status: engine::PromiseStatus::Pending,
                             payload_ref: None,
                             error_ref: None,

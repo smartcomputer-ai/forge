@@ -1,6 +1,9 @@
 # P103: Managed Session API
 
 **Status**
+- Follow-on [P106](p106-joined-workflow-tools.md) proposes the next managed
+  declaration version: explicit bound pull/push dispatch plus Joined
+  single-result completion. P103 remains the implemented P100b wire baseline.
 - Implemented 2026-07-28.
 - Expanded 2026-07-28 from the initial bound + Accepted slice to the complete
   P100/P100b managed-session surface: bound and start-on-call targets,

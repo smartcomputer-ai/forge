@@ -66,6 +66,16 @@ pub enum PromiseScope {
     Session,
 }
 
+/// Who may control a Promise through model-facing concurrency tools.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromiseOwnership {
+    /// The Promise ID may be exposed to and controlled by the model.
+    Model,
+    /// The runtime owns completion; the model may not await, cancel, or detach it.
+    Runtime,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromiseStatus {
@@ -86,6 +96,7 @@ pub struct Promise {
     pub promise_id: PromiseId,
     pub source: PromiseSource,
     pub scope: PromiseScope,
+    pub ownership: PromiseOwnership,
     pub status: PromiseStatus,
     /// Resolution payload (CAS ref); set only when `status == Resolved`.
     pub payload_ref: Option<BlobRef>,
@@ -162,6 +173,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     promise.promise_id
                 )));
             }
+            if promise.ownership == PromiseOwnership::Runtime
+                && (!matches!(promise.source, PromiseSource::Workflow { .. })
+                    || !matches!(promise.scope, PromiseScope::Run { .. }))
+            {
+                return Err(DomainError::InvariantViolation(format!(
+                    "runtime-owned promise {} must be a run-scoped workflow completion",
+                    promise.promise_id
+                )));
+            }
             if let PromiseScope::Run { run_id } = promise.scope {
                 let owned_by_active = state
                     .runs
@@ -206,6 +226,12 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
         }
         Event::Detached { promise_id } => {
             let promise = pending_promise_mut(state, promise_id)?;
+            if promise.ownership != PromiseOwnership::Model {
+                return Err(DomainError::InvariantViolation(format!(
+                    "runtime-owned promise {} cannot be detached",
+                    promise_id
+                )));
+            }
             promise.scope = PromiseScope::Session;
             Ok(())
         }
@@ -406,6 +432,7 @@ pub(crate) fn promise_from_create_effect(
         promise_id,
         source,
         scope: PromiseScope::Run { run_id },
+        ownership: PromiseOwnership::Model,
         status: PromiseStatus::Pending,
         payload_ref: None,
         error_ref: None,

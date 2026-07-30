@@ -63,7 +63,7 @@ pub(super) fn workflow_state_needs_core_drive_for_state(state: &AgentSessionWork
     !state.core_state.runs.queued.is_empty()
         || state.core_state.context.pending_compaction
         || (state.core_state.runs.active.is_some()
-            && awaits::parked_await(&state.core_state).is_none())
+            && awaits::parked_tool_batch(&state.core_state).is_none())
 }
 
 fn nearest_workflow_wake_ms(ctx: &WorkflowContext<AgentSessionWorkflow>) -> Option<u64> {

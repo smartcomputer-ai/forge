@@ -45,11 +45,12 @@ impl AgentSessionWorkflow {
                 // Producer authorization and optional reply-schema
                 // validation need core state and activities; defer to the
                 // main loop instead of admitting directly from the signal.
-                self.pending_source_resolutions.push(PendingSourceResolution {
-                    promise_id,
-                    resolution,
-                    producer: envelope.producer,
-                });
+                self.pending_source_resolutions
+                    .push(PendingSourceResolution {
+                        promise_id,
+                        resolution,
+                        producer: envelope.producer,
+                    });
                 return;
             }
             engine::EmissionBody::ToolInvocation { invocation } => {
@@ -91,13 +92,12 @@ impl AgentSessionWorkflow {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("initialized session is missing session id"))?;
         for entry in entries {
-            // Promise-bearing tool invocations push mid-run: the agent may
-            // park on a keyed completion promise the bound receiver can
-            // only resolve if it sees the invocation before run terminal.
-            // Accepted (notify) invocations stay pull-only.
+            // Bound dispatch is independent of caller completion. Every
+            // pushed invocation enters the same durable Temporal delivery
+            // spine after its admitting append commits; pull invocations are
+            // consumed later through the receiver-authorized log read.
             if let CoreAgentEvent::WorkflowTool(engine::WorkflowToolEvent::Emitted { invocation }) =
                 &entry.event
-                && invocation.completion_promises.is_some()
             {
                 let Some(binding) = self
                     .core_state
@@ -110,22 +110,33 @@ impl AgentSessionWorkflow {
                         invocation.invocation_id
                     );
                 };
-                let Some(receiver) = binding.bound_receiver() else {
-                    anyhow::bail!(
-                        "emitted workflow tool invocation {} has a start-target binding",
-                        invocation.invocation_id
-                    );
+                match &binding.target {
+                    engine::WorkflowToolTarget::Bound {
+                        receiver,
+                        dispatch: engine::BoundWorkflowToolDispatch::Push,
+                    } => {
+                        self.pending_emissions.push(PendingEmission::immediate(
+                            receiver.workflow_id.clone(),
+                            EmissionEnvelope::tool_invocation(
+                                universe_id,
+                                session_id.clone(),
+                                entry.position.seq,
+                                invocation.clone(),
+                            ),
+                        ));
+                        continue;
+                    }
+                    engine::WorkflowToolTarget::Bound {
+                        dispatch: engine::BoundWorkflowToolDispatch::Pull,
+                        ..
+                    } => {}
+                    engine::WorkflowToolTarget::Start { .. } => {
+                        anyhow::bail!(
+                            "emitted workflow tool invocation {} has a start-target binding",
+                            invocation.invocation_id
+                        );
+                    }
                 };
-                self.pending_emissions.push(PendingEmission::immediate(
-                    receiver.workflow_id.clone(),
-                    EmissionEnvelope::tool_invocation(
-                        universe_id,
-                        session_id.clone(),
-                        entry.position.seq,
-                        invocation.clone(),
-                    ),
-                ));
-                continue;
             }
             let Some(run_id) = terminal_run_id_for_event(&entry.event) else {
                 continue;
@@ -190,7 +201,7 @@ impl AgentSessionWorkflow {
             initialized: self.initialized,
             pending_admissions: self.pending_admissions.len(),
             pending_tool_batch_resumes: self.pending_tool_batch_resumes.len(),
-            active_waits: usize::from(awaits::parked_await(&self.core_state).is_some())
+            active_waits: usize::from(awaits::parked_tool_batch(&self.core_state).is_some())
                 + self.promise_source_polls.len(),
             pending_emissions: self.pending_emissions.len(),
             active_run: self
@@ -272,7 +283,7 @@ fn terminal_run_id_for_event(event: &CoreAgentEvent) -> Option<engine::RunId> {
     }
 }
 
-/// Bounded independent retry for promise-bearing tool-invocation delivery.
+/// Bounded independent retry for pushed tool-invocation delivery.
 /// Other emission bodies keep the legacy single-attempt, drop-on-missing
 /// semantics.
 const MAX_TOOL_INVOCATION_DELIVERY_ATTEMPTS: u32 = 5;
@@ -282,12 +293,12 @@ const TOOL_INVOCATION_RETRY_BACKOFF_MS: u64 = 2_000;
 /// `deliver_emission` handler. Signals to an existing workflow id are durable;
 /// for run-terminal and source-resolution bodies a missing target drops the
 /// entry (its holder is gone — the reaper's upward sweep covers that
-/// direction). Promise-bearing tool invocations instead retry each envelope
-/// independently with deterministic bounded backoff; exhausted delivery
-/// appends terminal `DeliveryFailed` and fails the invocation's still-pending
-/// completion promises in the same append, so a dead receiver can never
-/// leave an unresolvable promise. The queue gates continue-as-new, so
-/// in-flight deliveries never need reconstruction.
+/// direction). Pushed tool invocations instead retry each envelope
+/// independently with deterministic bounded backoff. Exhausted delivery
+/// appends terminal `DeliveryFailed`; promise-bearing invocations also fail
+/// their still-pending completion promises in the same append, while
+/// Accepted calls remain successfully completed. The queue gates
+/// continue-as-new, so in-flight deliveries never need reconstruction.
 pub(super) async fn flush_pending_emissions(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
 ) -> anyhow::Result<()> {

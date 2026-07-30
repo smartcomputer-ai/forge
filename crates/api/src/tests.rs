@@ -161,6 +161,7 @@ fn managed_session_creation_exposes_targets_and_completion_contracts() {
                 },
                 "target": {
                     "type": "bound",
+                    "dispatch": "push",
                     "receiver": {
                         "workflowId": "receiver-1",
                         "workflowKind": "order.receiver"
@@ -195,7 +196,10 @@ fn managed_session_creation_exposes_targets_and_completion_contracts() {
     );
     assert!(matches!(
         workflow_tools.tools[0].target,
-        WorkflowToolTargetInput::Bound { .. }
+        WorkflowToolTargetInput::Bound {
+            dispatch: BoundWorkflowToolDispatchInput::Push,
+            ..
+        }
     ));
     assert!(matches!(
         workflow_tools.tools[0].completion,
@@ -224,6 +228,7 @@ fn managed_session_creation_rejects_legacy_receiver_shortcut_and_tool_targets() 
             },
             "target": {
                 "type": "bound",
+                "dispatch": "pull",
                 "receiver": {
                     "workflowId": "receiver-1",
                     "workflowKind": "order.receiver"
@@ -237,6 +242,86 @@ fn managed_session_creation_rejects_legacy_receiver_shortcut_and_tool_targets() 
         }));
         assert!(result.is_err(), "{forbidden} must not be accepted");
     }
+}
+
+#[test]
+fn managed_session_creation_rejects_bound_target_without_dispatch() {
+    let result = serde_json::from_value::<ManagedSessionStartParams>(json!({
+        "workflowTools": {
+            "version": 1,
+            "tools": [{
+                "definition": {
+                    "toolId": "accept-order",
+                    "revision": 1,
+                    "semanticType": "orders.accepted.v1",
+                    "tool": {
+                        "name": "accept_order",
+                        "kind": {
+                            "type": "function",
+                            "inputSchemaRef": "sha256:input"
+                        }
+                    }
+                },
+                "target": {
+                    "type": "bound",
+                    "receiver": {
+                        "workflowId": "receiver-1",
+                        "workflowKind": "order.receiver"
+                    }
+                },
+                "completion": {"type": "accepted"}
+            }]
+        }
+    }));
+
+    assert!(result.is_err(), "bound dispatch must be explicit");
+}
+
+#[test]
+fn managed_session_creation_decodes_joined_completion_with_required_deadline() {
+    let params = serde_json::from_value::<ManagedSessionStartParams>(json!({
+        "workflowTools": {
+            "version": 1,
+            "tools": [{
+                "definition": {
+                    "toolId": "send-message",
+                    "revision": 1,
+                    "semanticType": "channels.receipt.v1",
+                    "tool": {
+                        "name": "message_send",
+                        "kind": {"type": "function", "inputSchemaRef": "sha256:input"}
+                    }
+                },
+                "target": {
+                    "type": "bound",
+                    "dispatch": "push",
+                    "receiver": {
+                        "workflowId": "channels-1",
+                        "workflowKind": "channels.session"
+                    }
+                },
+                "completion": {
+                    "type": "joined",
+                    "deadlineAfterMs": 30000
+                }
+            }]
+        }
+    }))
+    .expect("Joined managed session declaration");
+    assert!(matches!(
+        params.workflow_tools.tools[0].completion,
+        WorkflowToolCompletionInput::Joined {
+            deadline_after_ms: 30_000,
+            ..
+        }
+    ));
+
+    assert!(
+        serde_json::from_value::<WorkflowToolCompletionInput>(json!({
+            "type": "joined"
+        }))
+        .is_err()
+    );
 }
 
 #[test]

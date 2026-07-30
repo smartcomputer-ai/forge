@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveRun, AwaitSpec, BlobRef, ContextEntry, ContextEntryInput, ContextEntryKind,
-    ContextEntrySource, ContextEvent, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentState, CoreAgentStatus, DomainError, ParkedAwait, PlanningError, ProviderApiKind,
-    RunId, RunStatus, ToolBatchId, ToolCallId, ToolEffect, ToolName, TurnId, TurnOutcome,
-    TurnStatus, core::components::context::context_entries_from_inputs,
+    ActiveRun, BlobRef, ContextEntry, ContextEntryInput, ContextEntryKind, ContextEntrySource,
+    ContextEvent, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
+    CoreAgentStatus, DomainError, ParkedToolBatch, PlanningError, PromiseOwnership,
+    ProviderApiKind, RunId, RunStatus, ToolBatchId, ToolBatchSuspension, ToolCallId, ToolEffect,
+    ToolName, TurnId, TurnOutcome, TurnStatus,
+    core::components::context::context_entries_from_inputs,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,8 +59,7 @@ pub enum Event {
         run_id: RunId,
         turn_id: TurnId,
         batch_id: ToolBatchId,
-        call_id: ToolCallId,
-        spec: AwaitSpec,
+        suspension: ToolBatchSuspension,
     },
     BatchResumed {
         run_id: RunId,
@@ -962,7 +962,7 @@ fn decide_active_tool_batch_invocations(
         DomainError::InvariantViolation(format!("active tool batch {} is missing", batch_id))
     })?;
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1031,7 +1031,7 @@ fn decide_active_tool_batch_completion(
         DomainError::InvariantViolation(format!("active tool batch {} is missing", batch_id))
     })?;
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1290,16 +1290,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             run_id,
             turn_id,
             batch_id,
-            call_id,
-            spec,
-        } => defer_tool_batch(
-            state,
-            *run_id,
-            *turn_id,
-            *batch_id,
-            call_id.clone(),
-            spec.clone(),
-        ),
+            suspension,
+        } => defer_tool_batch(state, *run_id, *turn_id, *batch_id, suspension.clone()),
         Event::BatchResumed {
             run_id,
             turn_id,
@@ -1543,7 +1535,7 @@ fn complete_tool_batch(
             ));
         }
         if active_run
-            .parked_await
+            .parked_tool_batch
             .as_ref()
             .is_some_and(|parked| parked.batch_id == batch_id)
         {
@@ -1607,10 +1599,9 @@ fn defer_tool_batch(
     run_id: RunId,
     turn_id: TurnId,
     batch_id: ToolBatchId,
-    call_id: ToolCallId,
-    spec: AwaitSpec,
+    suspension: ToolBatchSuspension,
 ) -> Result<(), DomainError> {
-    let active_run = crate::core::components::run::active_run_mut(state, run_id)?;
+    let active_run = crate::core::components::run::active_run_ref(state, run_id)?;
     if active_run.status != RunStatus::Active {
         return Err(DomainError::InvariantViolation(
             "tool batches can only defer for active runs".into(),
@@ -1626,13 +1617,13 @@ fn defer_tool_batch(
             "deferred tool batch does not match active tool batch".into(),
         ));
     }
-    if active_run.parked_await.is_some() {
+    if active_run.parked_tool_batch.is_some() {
         return Err(DomainError::InvariantViolation(format!(
             "tool batch {} is already deferred",
             batch_id
         )));
     }
-    let batch = active_run.tool_batches.get_mut(&batch_id).ok_or_else(|| {
+    let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
         DomainError::InvariantViolation(format!("tool batch {} is missing", batch_id))
     })?;
     if batch.run_id != run_id || batch.turn_id != turn_id {
@@ -1640,24 +1631,88 @@ fn defer_tool_batch(
             "deferred tool batch does not match run/turn".into(),
         ));
     }
-    if !batch
-        .calls
-        .iter()
-        .any(|call_state| call_state.call.call_id == call_id)
-    {
-        return Err(DomainError::InvariantViolation(format!(
-            "await call {} is not in tool batch {}",
-            call_id, batch_id
-        )));
-    }
-    if !batch
-        .calls
-        .iter()
-        .any(|call_state| call_state.status == ToolCallStatus::Pending)
-    {
-        return Err(DomainError::InvariantViolation(
-            "tool batch deferral requires at least one pending call".into(),
-        ));
+    match &suspension {
+        ToolBatchSuspension::AwaitTool { call_id, .. } => {
+            if !batch.calls.iter().any(|call_state| {
+                call_state.call.call_id == *call_id && call_state.status == ToolCallStatus::Pending
+            }) {
+                return Err(DomainError::InvariantViolation(format!(
+                    "await call {} is not pending in tool batch {}",
+                    call_id, batch_id
+                )));
+            }
+        }
+        ToolBatchSuspension::JoinedWorkflowCalls { calls, spec } => {
+            if calls.is_empty() || spec.mode != crate::AwaitMode::All || spec.mailbox {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow suspension requires non-empty all-of Promise wait without mailbox"
+                        .into(),
+                ));
+            }
+            let mut call_ids = BTreeSet::new();
+            let mut promise_ids = BTreeSet::new();
+            for joined in calls {
+                if !call_ids.insert(joined.call_id.clone())
+                    || !promise_ids.insert(joined.promise_id.clone())
+                {
+                    return Err(DomainError::InvariantViolation(
+                        "joined workflow suspension contains duplicate call or Promise identity"
+                            .into(),
+                    ));
+                }
+                if !batch.calls.iter().any(|call_state| {
+                    call_state.call.call_id == joined.call_id
+                        && call_state.status == ToolCallStatus::Pending
+                }) {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "joined workflow call {} is not pending in tool batch {}",
+                        joined.call_id, batch_id
+                    )));
+                }
+                let promise = state
+                    .promises
+                    .promises
+                    .get(&joined.promise_id)
+                    .ok_or_else(|| {
+                        DomainError::InvariantViolation(format!(
+                            "joined workflow call {} references missing Promise {}",
+                            joined.call_id, joined.promise_id
+                        ))
+                    })?;
+                if promise.ownership != PromiseOwnership::Runtime
+                    || promise.scope != (crate::PromiseScope::Run { run_id })
+                {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "joined workflow Promise {} is not runtime-owned by run {}",
+                        joined.promise_id, run_id
+                    )));
+                }
+                match &promise.source {
+                    crate::PromiseSource::Workflow {
+                        invocation_id,
+                        completion_key,
+                        ..
+                    } if invocation_id == joined.invocation_id.as_str()
+                        && completion_key == crate::REPLY_COMPLETION_KEY => {}
+                    _ => {
+                        return Err(DomainError::InvariantViolation(format!(
+                            "joined workflow Promise {} does not match invocation {} reply source",
+                            joined.promise_id, joined.invocation_id
+                        )));
+                    }
+                }
+            }
+            if spec.promise_ids
+                != calls
+                    .iter()
+                    .map(|call| call.promise_id.clone())
+                    .collect::<Vec<_>>()
+            {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow suspension wait set does not match its call mappings".into(),
+                ));
+            }
+        }
     }
     if batch.calls.iter().any(|call_state| {
         matches!(
@@ -1669,10 +1724,10 @@ fn defer_tool_batch(
             "tool batch deferral requires all invocable calls to be pending".into(),
         ));
     }
-    active_run.parked_await = Some(ParkedAwait {
+    let active_run = crate::core::components::run::active_run_mut(state, run_id)?;
+    active_run.parked_tool_batch = Some(ParkedToolBatch {
         batch_id,
-        call_id,
-        spec,
+        suspension,
     });
     active_run.status = RunStatus::Parked;
     Ok(())
@@ -1699,7 +1754,7 @@ fn resume_deferred_tool_batch(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_none_or(|parked| parked.batch_id != batch_id)
     {
@@ -1708,7 +1763,7 @@ fn resume_deferred_tool_batch(
             batch_id
         )));
     }
-    active_run.parked_await = None;
+    active_run.parked_tool_batch = None;
     if active_run.status == RunStatus::Parked {
         active_run.status = RunStatus::Active;
     }
@@ -1760,7 +1815,7 @@ fn start_tool_call(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1882,7 +1937,7 @@ fn complete_tool_call(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {

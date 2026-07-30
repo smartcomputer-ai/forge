@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 use crate::{
     BlobRef, ContextEntryInput, ContextEntryKey, ManagedSessionWorkflowTools, PromiseId,
-    PromiseResolution, ResumeAwaitCommand, RunId, RunRequestCommand, SessionConfig,
+    PromiseResolution, ResumeToolBatchCommand, RunId, RunRequestCommand, SessionConfig,
     SubmitMessageCommand, ToolExecutionTarget, ToolName, ToolPatch, ToolSpec,
     WorkflowToolDeclaration, WorkflowToolInvocationId,
 };
@@ -92,7 +92,7 @@ pub enum CoreAgentCommand {
     ForceCancelRun {
         run_id: RunId,
     },
-    ResumeAwait(ResumeAwaitCommand),
+    ResumeToolBatch(ResumeToolBatchCommand),
     /// Deliver a promise resolution. All transports converge here; a promise
     /// that is already terminal makes this an idempotent no-op
     /// (first-writer-wins).

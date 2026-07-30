@@ -1,13 +1,13 @@
-//! Runtime adapter for notify-only workflow function tools.
+//! Runtime adapter for workflow-backed function tools.
 
 use std::collections::BTreeMap;
 
 use engine::{
-    BlobRef, PromiseId, REPLY_COMPLETION_KEY, RunId, SessionId, ToolBatchId,
-    ToolInvocationRequest, ToolKind, TurnId, WorkflowToolBinding, WorkflowToolCompletion,
-    WorkflowToolDefinition, WorkflowToolInvocation, WorkflowToolInvocationId, WorkflowToolTarget,
-    storage::BlobStore, validate_completion_key, with_completion_deadline,
-    workflow_tool_emit_effect, workflow_tool_execution_id, workflow_tool_promise_id,
+    BlobRef, PromiseId, REPLY_COMPLETION_KEY, RunId, SessionId, ToolBatchId, ToolInvocationRequest,
+    ToolKind, TurnId, WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolDefinition,
+    WorkflowToolInvocation, WorkflowToolInvocationId, WorkflowToolTarget, storage::BlobStore,
+    validate_completion_key, with_completion_deadline, workflow_tool_emit_effect,
+    workflow_tool_execution_id, workflow_tool_promise_id,
 };
 use serde_json::{Value, json};
 
@@ -155,6 +155,18 @@ pub async fn invoke_workflow_tool(
     );
     let (completion_promises, completion_deadline_ms) = match &binding.completion {
         WorkflowToolCompletion::Accepted => (None, None),
+        WorkflowToolCompletion::Joined {
+            deadline_after_ms, ..
+        } => {
+            let promises = BTreeMap::from([(
+                engine::REPLY_COMPLETION_KEY.to_owned(),
+                workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY),
+            )]);
+            (
+                Some(promises),
+                Some(now_ms.saturating_add(*deadline_after_ms)),
+            )
+        }
         WorkflowToolCompletion::Promises {
             deadline_after_ms, ..
         } => {
@@ -197,7 +209,9 @@ pub async fn invoke_workflow_tool(
             &start.recipe_fingerprint,
         ));
     }
-    if let Some(promises) = &invocation.completion_promises {
+    if matches!(binding.completion, WorkflowToolCompletion::Promises { .. })
+        && let Some(promises) = &invocation.completion_promises
+    {
         let map: serde_json::Map<String, Value> = promises
             .iter()
             .map(|(key, promise_id)| (key.clone(), Value::String(promise_id.to_string())))
@@ -225,17 +239,20 @@ fn derive_completion_keys(
     binding: &WorkflowToolBinding,
     arguments: &Value,
 ) -> ToolResult<Vec<String>> {
-    let WorkflowToolCompletion::Promises {
-        max_promises,
-        key_source,
-        ..
-    } = &binding.completion
-    else {
-        return Ok(Vec::new());
+    let (max_promises, key_source) = match &binding.completion {
+        WorkflowToolCompletion::Promises {
+            max_promises,
+            key_source,
+            ..
+        } => (*max_promises, key_source),
+        WorkflowToolCompletion::Joined { .. } => {
+            return Ok(vec![engine::REPLY_COMPLETION_KEY.to_owned()]);
+        }
+        WorkflowToolCompletion::Accepted => return Ok(Vec::new()),
     };
     derive_completion_keys_from_source(
         &binding.definition.tool_id,
-        *max_promises,
+        max_promises,
         key_source,
         arguments,
     )
@@ -248,9 +265,7 @@ fn derive_completion_keys_from_source(
     arguments: &Value,
 ) -> ToolResult<Vec<String>> {
     match source {
-        engine::WorkflowToolCompletionKeySource::Reply => {
-            Ok(vec![REPLY_COMPLETION_KEY.to_owned()])
-        }
+        engine::WorkflowToolCompletionKeySource::Reply => Ok(vec![REPLY_COMPLETION_KEY.to_owned()]),
         engine::WorkflowToolCompletionKeySource::StringArray { pointer } => {
             let Some(Value::Array(entries)) = arguments.pointer(pointer) else {
                 return Err(ToolError::InvalidRequest {
@@ -277,9 +292,7 @@ fn derive_completion_keys_from_source(
                     });
                 };
                 validate_completion_key(key).map_err(|error| ToolError::InvalidRequest {
-                    message: format!(
-                        "workflow tool {tool_id} completion key is invalid: {error}"
-                    ),
+                    message: format!("workflow tool {tool_id} completion key is invalid: {error}"),
                 })?;
                 if keys.contains(key) {
                     return Err(ToolError::InvalidRequest {
@@ -440,9 +453,7 @@ mod tests {
         key_source: engine::WorkflowToolCompletionKeySource,
     ) -> WorkflowToolBinding {
         let schema_ref = blobs
-            .put_bytes(
-                serde_json::to_vec(&json!({ "type": "object" })).expect("schema"),
-            )
+            .put_bytes(serde_json::to_vec(&json!({ "type": "object" })).expect("schema"))
             .await
             .expect("put schema");
         WorkflowToolBinding::admit(
@@ -469,6 +480,7 @@ mod tests {
                     workflow_id: "approval plugin id".to_owned(),
                     workflow_kind: "approvals".to_owned(),
                 },
+                dispatch: engine::BoundWorkflowToolDispatch::Push,
             },
             WorkflowToolCompletion::Promises {
                 reply_schema_ref: None,
@@ -531,6 +543,66 @@ mod tests {
             output.effects[0].data.get("completion_deadline_ms"),
             Some(&"31000".to_owned())
         );
+    }
+
+    #[tokio::test]
+    async fn joined_call_keeps_internal_reply_out_of_model_acknowledgement() {
+        let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+        let explicit = promise_bearing_binding(
+            blobs.as_ref(),
+            1,
+            engine::WorkflowToolCompletionKeySource::Reply,
+        )
+        .await;
+        let binding = WorkflowToolBinding::admit(
+            explicit.session_universe_id,
+            explicit.definition,
+            explicit.target,
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect("Joined binding");
+        let mut toolset_config = crate::toolset::ToolsetConfig::empty();
+        crate::toolset::enable_concurrency_for_workflow_tools(&mut toolset_config, [&binding]);
+        assert!(!toolset_config.concurrency.enabled);
+        let arguments_ref = blobs
+            .put_bytes(br#"{"question":"deploy?"}"#.to_vec())
+            .await
+            .expect("arguments");
+        let call = ToolInvocationRequest {
+            call_id: ToolCallId::new("call-1"),
+            tool_name: ToolName::new("request_approval"),
+            arguments_ref,
+            execution_target: None,
+        };
+
+        let output = invoke_workflow_tool(
+            blobs.as_ref(),
+            &binding,
+            &SessionId::new("session-1"),
+            RunId::new(1),
+            TurnId::new(2),
+            ToolBatchId::new(3),
+            &call,
+            1_000,
+        )
+        .await
+        .expect("invoke Joined call");
+
+        assert!(output.output_json.get("promises").is_none());
+        assert!(!output.model_visible_text.contains("wtp:sha256:"));
+        assert_eq!(
+            output.effects[0].data.get("completion_deadline_ms"),
+            Some(&"31000".to_owned())
+        );
+        let encoded_promises = output.effects[0]
+            .data
+            .get("completion_promises")
+            .expect("internal reply map");
+        assert!(encoded_promises.contains(engine::REPLY_COMPLETION_KEY));
+        assert!(encoded_promises.contains("wtp:sha256:"));
     }
 
     #[tokio::test]
@@ -625,9 +697,7 @@ mod tests {
         )
         .await;
         let arguments_ref = blobs
-            .put_bytes(
-                br#"{"jobs":[{"argv":["build"]},{"argv":["test"]}]}"#.to_vec(),
-            )
+            .put_bytes(br#"{"jobs":[{"argv":["build"]},{"argv":["test"]}]}"#.to_vec())
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
@@ -742,6 +812,37 @@ mod tests {
         assert!(
             output.output_json["promises"][REPLY_COMPLETION_KEY].is_string(),
             "start-on-call acknowledgement carries the keyed promise map"
+        );
+
+        let joined_binding = WorkflowToolBinding::admit(
+            binding.session_universe_id,
+            binding.definition.clone(),
+            binding.target.clone(),
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect("start Joined binding");
+        let joined_output = invoke_workflow_tool(
+            blobs.as_ref(),
+            &joined_binding,
+            &SessionId::new("session-1"),
+            RunId::new(1),
+            TurnId::new(2),
+            ToolBatchId::new(3),
+            &call,
+            1_000,
+        )
+        .await
+        .expect("invoke start Joined call");
+        assert!(joined_output.output_json["executionId"].is_string());
+        assert!(joined_output.output_json.get("promises").is_none());
+        assert!(
+            joined_output.effects[0]
+                .data
+                .get("completion_promises")
+                .is_some_and(|promises| promises.contains(REPLY_COMPLETION_KEY))
         );
     }
 

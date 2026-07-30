@@ -26,7 +26,7 @@ Creates a session with optional config/profile setup. Retrying an existing sessi
 
 **Create or reopen a managed session**
 
-Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
 
 - Params: `ManagedSessionStartParams`
 - Result: `AgentApiOutcome<SessionStartResponse>`
