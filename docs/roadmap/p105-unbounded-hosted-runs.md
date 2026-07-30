@@ -4,8 +4,12 @@
 - Proposed 2026-07-29 after the `ls-dev` PR-creation incident described below.
 - Supersedes P59's idle-only continue-as-new boundary and closes P59 G4's
   deferred step-limit failure case.
-- Production correctness cut implemented 2026-07-30. Operational metrics and
-  broader fault-injection coverage remain follow-up work.
+- Completed 2026-07-30 for the production correctness cut.
+- Hosted unbounded drive, safe active-run rollover, legacy cutover, structured
+  process logging, and stale-projection detection are implemented.
+- Admission-failure continuation sizing, an operational runbook, custom metric
+  exporters/alert rules, long soak validation, and broader live fault injection
+  are explicitly deferred and are not implemented by P105.
 
 ## Decision
 
@@ -304,17 +308,33 @@ rolled over. New sessions must never receive the field.
 
 ## Observability
 
-Add structured events or metrics for:
+P105 emits structured process log records through `tracing`; it does **not**
+append diagnostic events to the durable session log. Workflow-side records are
+suppressed during Temporal replay and include the Temporal run id so downstream
+log processing can deduplicate the remaining at-least-once edge cases.
 
-- continue-as-new count and reason (`server_suggested` or
-  `history_threshold`);
-- history length at rollover;
-- session id and active run id at rollover;
-- transient continuation payload counts and encoded size;
-- rollover delayed because an activity is in flight or state cannot yet be
-  safely carried;
-- session workflow failures by error class;
-- stale projections whose workflow execution is already terminal.
+Implemented records:
+
+- `session_continue_as_new` at successful rollover, including reason
+  (`server_suggested` or `history_threshold`), history length and threshold,
+  universe/session/workflow ids, Temporal run id, active Lightspeed run id,
+  session head, and admission-failure count;
+- `session_rollover_delayed` once per workflow execution when history rollover
+  is due but the first safe checkpoint or transient workflow state still gates
+  continuation, including blocker counts;
+- `session_workflow_failed`, including a stable error class and the same
+  workflow/session/run context;
+- `stale_active_projection` from the deployment reaper when PostgreSQL still
+  projects a nonterminal run but the Temporal workflow is terminal or missing;
+- `session_workflow_status_unavailable` when Temporal could not be queried, so
+  transport failures are not misreported as stale projections.
+
+The continuation payload currently contains only accumulated admission
+failures. Encoded-size measurement and a cap are deferred: rejected admissions
+are not expected to be the source of unbounded growth, and any caller retry
+loop should be fixed at its admission boundary. Custom counters, histograms,
+exporters, dashboards, and deployment alert rules are also deferred; the
+stable structured records are available for log-derived metrics when needed.
 
 Normal long runs should show periodic history-driven rollovers, not workflow
 failures and not fixed-step churn.
@@ -350,45 +370,53 @@ failures and not fixed-step churn.
 
 - [x] Decode but ignore legacy input and omit it from every new/continued payload.
 - [x] Guard the new active-run command branch with a Temporal replay patch marker.
-- Document failed-session reconciliation.
-- Add metrics and alerts for rollovers, failures, and stale active projections.
+- [x] Add structured process logs for rollover, delayed rollover, and workflow
+  failure.
+- [x] Detect and log stale active projections from the deployment reaper.
+- [ ] **Deferred, not implemented:** failed-session reconciliation runbook. The
+  deployment is still greenfield, so migration/recovery ceremony is not part
+  of this cut.
+- [ ] **Deferred, not implemented:** custom metrics and deployment alert rules.
+  They may be derived from the structured records once the monitoring stack is
+  selected.
 
 ## Required Tests
 
 ### Deterministic/unit coverage
 
-- Hosted workflow construction has no step limit.
-- Passing 128, 1,000, and several thousand drive transitions is ordinary
+- [x] Hosted workflow construction has no step limit.
+- [x] Passing 128, 1,000, and several thousand drive transitions is ordinary
   progress.
-- Step count alone never requests continue-as-new.
-- Temporal suggestion requests rollover at a safe boundary.
-- History threshold requests rollover at a safe boundary.
-- Below-threshold history does not request rollover.
-- No rollover is requested with an activity result not yet durably appended.
-- Continuation-state encode/decode preserves every non-log-derived field.
+- [x] Step count alone never requests continue-as-new.
+- [x] Temporal suggestion requests rollover at a safe boundary.
+- [x] History threshold requests rollover at a safe boundary.
+- [x] Below-threshold history does not request rollover.
+- [x] No rollover is requested with an activity result not yet durably appended.
+- [x] Continuation-state encode/decode preserves every non-log-derived field.
 
 ### Live Temporal coverage
 
-- One fake run exceeds 128 drive transitions and completes in one Temporal
+- [x] Passed against the local Temporal/PostgreSQL stack on 2026-07-30: one
+  fake run exceeds 128 drive transitions and completes in one Temporal
   execution when history remains below the test threshold.
-- One fake run crosses a low history threshold while still active, continues as
-  new, and completes with the same Lightspeed session id and run id.
-- The Temporal execution chain contains multiple run ids while the Lightspeed
-  run remains singular.
-- A signal arriving during an LLM activity survives rollover exactly once.
-- A signal arriving near the continue-as-new command is neither lost nor
-  duplicated.
-- A tool batch completes, its result is appended, rollover occurs, and the tool
-  is not invoked twice.
-- Parked awaits and Promise-source polls resume after rollover.
-- Cancellation remains effective before and after rollover.
-- Worker restart plus replay during a long run still converges.
-- Projected session state never remains falsely active after a terminal
-  workflow failure.
+- [x] Passed against the local Temporal/PostgreSQL stack on 2026-07-30: one
+  fake active run crosses a low history threshold, continues as new, retains
+  its Lightspeed session/run ids, and exposes multiple Temporal run ids.
+- [ ] **Deferred, not implemented:** signal delivery during an LLM activity and
+  at the continue-as-new command boundary.
+- [ ] **Deferred, not implemented:** fault injection proving a tool result is
+  appended before rollover without reinvocation.
+- [ ] **Deferred, not implemented:** combined parked-await, Promise-source poll,
+  cancellation, and rollover cases beyond existing deterministic coverage.
+- [ ] **Deferred, not implemented:** worker restart/replay during a long run.
+- [ ] **Deferred, not implemented:** live stale-projection reconciliation after
+  terminal workflow failure. P105 detects and reports the condition; it does
+  not mutate the session log to repair it.
 
-### Incident regression
+### Incident regression — deferred, not implemented
 
-Reproduce the shape of `run_5`:
+An exact end-to-end reproduction of the external `run_5` sequence is not part
+of the completed cut. If implemented later, it should:
 
 1. perform more than 128 internal drive transitions;
 2. complete a simulated external PR-creation side effect;
@@ -412,11 +440,17 @@ Reproduce the shape of `run_5`:
 ## Done When
 
 - [x] Hosted runs have no default or hidden drive-step ceiling.
-- [ ] A single run can execute for hours and thousands of transitions.
+- [ ] **Deferred validation:** a single live run executes for hours and
+  thousands of transitions. Deterministic coverage exercises thousands of
+  transitions, and the hosted live regression exceeds the former 128-step
+  ceiling.
 - [x] Continue-as-new is driven only by Temporal history need.
 - [x] Active runs safely cross continue-as-new boundaries.
 - [x] No in-flight activity result, signal, emission, or cancellation is lost by rollover.
 - [x] Continue-as-new is never surfaced as a workflow failure.
 - [x] Existing `max_steps_per_input = 128` sessions have a defined cutover.
-- [ ] The `ls-dev` PR-creation incident has a passing live regression test.
-- [ ] Operators can distinguish healthy rollover from actual workflow failure.
+- [ ] **Deferred, not implemented:** an exact live reproduction of the `ls-dev`
+  PR-creation incident. The implemented synthetic live regression covers its
+  long model/tool-round shape without repeating the external PR side effect.
+- [x] Operators can distinguish healthy rollover from actual workflow failure
+  using structured process logs, without adding diagnostic session events.

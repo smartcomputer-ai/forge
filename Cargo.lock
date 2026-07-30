@@ -3927,6 +3927,7 @@ dependencies = [
  "temporalio-macros",
  "temporalio-sdk",
  "temporalio-sdk-core",
+ "tracing",
  "uuid",
 ]
 

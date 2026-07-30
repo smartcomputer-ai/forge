@@ -52,6 +52,8 @@ pub struct ReaperStats {
     pub holder_repairs_appended: usize,
     pub child_cancels_signalled: usize,
     pub child_cancels_appended: usize,
+    pub stale_active_projections: usize,
+    pub workflow_status_errors: usize,
     pub conflicts: usize,
     pub errors: usize,
 }
@@ -65,6 +67,8 @@ impl ReaperStats {
         self.holder_repairs_appended += other.holder_repairs_appended;
         self.child_cancels_signalled += other.child_cancels_signalled;
         self.child_cancels_appended += other.child_cancels_appended;
+        self.stale_active_projections += other.stale_active_projections;
+        self.workflow_status_errors += other.workflow_status_errors;
         self.conflicts += other.conflicts;
         self.errors += other.errors;
     }
@@ -90,7 +94,11 @@ impl PromiseReaper {
         loop {
             match self.run_once().await {
                 Ok(stats)
-                    if stats.repaired_anything() || stats.errors > 0 || stats.conflicts > 0 =>
+                    if stats.repaired_anything()
+                        || stats.stale_active_projections > 0
+                        || stats.workflow_status_errors > 0
+                        || stats.errors > 0
+                        || stats.conflicts > 0 =>
                 {
                     tracing::info!(
                         target: "temporal_server",
@@ -101,6 +109,8 @@ impl PromiseReaper {
                         holder_repairs_appended = stats.holder_repairs_appended,
                         child_cancels_signalled = stats.child_cancels_signalled,
                         child_cancels_appended = stats.child_cancels_appended,
+                        stale_active_projections = stats.stale_active_projections,
+                        workflow_status_errors = stats.workflow_status_errors,
                         conflicts = stats.conflicts,
                         errors = stats.errors,
                         "promise reaper pass complete"
@@ -163,17 +173,25 @@ pub(super) async fn reap_universe_once(
     now_ms: u64,
 ) -> anyhow::Result<ReaperStats> {
     let snapshots = load_session_snapshots(sessions.as_ref()).await?;
-    let mut running_cache = BTreeMap::<SessionId, bool>::new();
+    let mut workflow_status_cache = BTreeMap::<SessionId, SessionWorkflowStatus>::new();
     let mut stats = ReaperStats {
         universes_scanned: 1,
         sessions_scanned: snapshots.len(),
         ..ReaperStats::default()
     };
+    observe_active_projection_statuses(
+        universe_id,
+        &snapshots,
+        workflows.as_ref(),
+        &mut workflow_status_cache,
+        &mut stats,
+    )
+    .await;
     let plan = plan_repair(
         universe_id,
         &snapshots,
         workflows.as_ref(),
-        &mut running_cache,
+        &mut workflow_status_cache,
         now_ms,
         &mut stats,
     )
@@ -194,7 +212,7 @@ pub(super) async fn reap_universe_once(
         append_store,
         workflows.as_ref(),
         &snapshots,
-        &mut running_cache,
+        &mut workflow_status_cache,
         plan.child_cancels,
         now_ms,
         &mut stats,
@@ -207,7 +225,7 @@ async fn plan_repair(
     universe_id: Uuid,
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
     workflows: &dyn WorkflowRepairClient,
-    running_cache: &mut BTreeMap<SessionId, bool>,
+    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
     now_ms: u64,
     stats: &mut ReaperStats,
 ) -> ReaperPlan {
@@ -230,7 +248,7 @@ async fn plan_repair(
                 universe_id,
                 snapshots,
                 workflows,
-                running_cache,
+                workflow_status_cache,
                 &mut plan,
                 &promise.source,
                 now_ms,
@@ -286,7 +304,7 @@ async fn promise_source_resolution(
     universe_id: Uuid,
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
     workflows: &dyn WorkflowRepairClient,
-    running_cache: &mut BTreeMap<SessionId, bool>,
+    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
     plan: &mut ReaperPlan,
     source: &PromiseSource,
     now_ms: u64,
@@ -309,7 +327,7 @@ async fn promise_source_resolution(
             if target_run_is_nonterminal(&target.state, target_run_id)
                 && !workflow_is_running_cached(
                     workflows,
-                    running_cache,
+                    workflow_status_cache,
                     universe_id,
                     &target_session_id,
                 )
@@ -378,18 +396,112 @@ fn target_run_is_nonterminal(state: &CoreAgentState, run_id: RunId) -> bool {
         || state.runs.queued.iter().any(|run| run.run_id == run_id)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SessionWorkflowStatus {
+    Running,
+    Terminal(WorkflowExecutionStatus),
+    NotFound,
+    Unavailable(String),
+}
+
+async fn workflow_status_cached(
+    workflows: &dyn WorkflowRepairClient,
+    cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
+    universe_id: Uuid,
+    session_id: &SessionId,
+) -> SessionWorkflowStatus {
+    if let Some(status) = cache.get(session_id) {
+        return status.clone();
+    }
+    let status = workflows.workflow_status(universe_id, session_id).await;
+    cache.insert(session_id.clone(), status.clone());
+    status
+}
+
+async fn observe_active_projection_statuses(
+    universe_id: Uuid,
+    snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
+    workflows: &dyn WorkflowRepairClient,
+    cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
+    stats: &mut ReaperStats,
+) {
+    for (session_id, snapshot) in snapshots {
+        let active_run_id = snapshot
+            .state
+            .runs
+            .active
+            .as_ref()
+            .map(|run| run.run_id)
+            .or_else(|| snapshot.state.runs.queued.first().map(|run| run.run_id));
+        let Some(active_run_id) = active_run_id else {
+            continue;
+        };
+
+        let workflow_id = compose_workflow_id(universe_id, session_id);
+        let session_head_seq = snapshot
+            .record
+            .head
+            .as_ref()
+            .map(|head| head.seq.to_string())
+            .unwrap_or_default();
+        match workflow_status_cached(workflows, cache, universe_id, session_id).await {
+            SessionWorkflowStatus::Running => {}
+            SessionWorkflowStatus::Terminal(status) => {
+                stats.stale_active_projections += 1;
+                tracing::error!(
+                    target: "temporal_server",
+                    event = "stale_active_projection",
+                    %universe_id,
+                    %session_id,
+                    %workflow_id,
+                    lightspeed_run_id = active_run_id.as_u64(),
+                    session_head_seq,
+                    temporal_status = status.as_str_name(),
+                    "session projection is active but its workflow is terminal"
+                );
+            }
+            SessionWorkflowStatus::NotFound => {
+                stats.stale_active_projections += 1;
+                tracing::error!(
+                    target: "temporal_server",
+                    event = "stale_active_projection",
+                    %universe_id,
+                    %session_id,
+                    %workflow_id,
+                    lightspeed_run_id = active_run_id.as_u64(),
+                    session_head_seq,
+                    temporal_status = "not_found",
+                    "session projection is active but its workflow was not found"
+                );
+            }
+            SessionWorkflowStatus::Unavailable(error) => {
+                stats.workflow_status_errors += 1;
+                tracing::warn!(
+                    target: "temporal_server",
+                    event = "session_workflow_status_unavailable",
+                    %universe_id,
+                    %session_id,
+                    %workflow_id,
+                    lightspeed_run_id = active_run_id.as_u64(),
+                    session_head_seq,
+                    %error,
+                    "could not verify active session projection against Temporal"
+                );
+            }
+        }
+    }
+}
+
 async fn workflow_is_running_cached(
     workflows: &dyn WorkflowRepairClient,
-    cache: &mut BTreeMap<SessionId, bool>,
+    cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
     universe_id: Uuid,
     session_id: &SessionId,
 ) -> bool {
-    if let Some(running) = cache.get(session_id) {
-        return *running;
-    }
-    let running = workflows.workflow_is_running(universe_id, session_id).await;
-    cache.insert(session_id.clone(), running);
-    running
+    matches!(
+        workflow_status_cached(workflows, cache, universe_id, session_id).await,
+        SessionWorkflowStatus::Running
+    )
 }
 
 async fn apply_holder_repairs(
@@ -449,13 +561,15 @@ async fn apply_child_cancels(
     store: Arc<dyn SessionStore>,
     workflows: &dyn WorkflowRepairClient,
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    running_cache: &mut BTreeMap<SessionId, bool>,
+    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
     child_cancels: BTreeSet<(SessionId, RunId)>,
     now_ms: u64,
     stats: &mut ReaperStats,
 ) {
     for (session_id, run_id) in child_cancels {
-        if workflow_is_running_cached(workflows, running_cache, universe_id, &session_id).await {
+        if workflow_is_running_cached(workflows, workflow_status_cache, universe_id, &session_id)
+            .await
+        {
             let command = CoreAgentCommand::CancelRun { run_id };
             match workflows
                 .signal_admissions(universe_id, &session_id, admissions(vec![command]))
@@ -639,7 +753,11 @@ pub(super) trait WorkflowRepairClient: Send + Sync {
         admissions: Vec<AgentAdmission>,
     ) -> Result<(), WorkflowSignalFailure>;
 
-    async fn workflow_is_running(&self, universe_id: Uuid, session_id: &SessionId) -> bool;
+    async fn workflow_status(
+        &self,
+        universe_id: Uuid,
+        session_id: &SessionId,
+    ) -> SessionWorkflowStatus;
 }
 
 struct TemporalWorkflowRepairClient {
@@ -671,7 +789,11 @@ impl WorkflowRepairClient for TemporalWorkflowRepairClient {
         }
     }
 
-    async fn workflow_is_running(&self, universe_id: Uuid, session_id: &SessionId) -> bool {
+    async fn workflow_status(
+        &self,
+        universe_id: Uuid,
+        session_id: &SessionId,
+    ) -> SessionWorkflowStatus {
         let workflow_id = compose_workflow_id(universe_id, session_id);
         match self
             .client
@@ -679,10 +801,12 @@ impl WorkflowRepairClient for TemporalWorkflowRepairClient {
             .describe(WorkflowDescribeOptions::default())
             .await
         {
-            Ok(description) => {
-                matches!(description.status(), WorkflowExecutionStatus::Running)
+            Ok(description) if description.status() == WorkflowExecutionStatus::Running => {
+                SessionWorkflowStatus::Running
             }
-            Err(_) => false,
+            Ok(description) => SessionWorkflowStatus::Terminal(description.status()),
+            Err(WorkflowInteractionError::NotFound(_)) => SessionWorkflowStatus::NotFound,
+            Err(error) => SessionWorkflowStatus::Unavailable(error.to_string()),
         }
     }
 }
@@ -710,6 +834,7 @@ mod tests {
     #[derive(Default)]
     struct FakeWorkflows {
         running: BTreeSet<SessionId>,
+        statuses: BTreeMap<SessionId, SessionWorkflowStatus>,
         signals: Mutex<Vec<(SessionId, Vec<AgentAdmission>)>>,
     }
 
@@ -731,9 +856,49 @@ mod tests {
             Ok(())
         }
 
-        async fn workflow_is_running(&self, _universe_id: Uuid, session_id: &SessionId) -> bool {
-            self.running.contains(session_id)
+        async fn workflow_status(
+            &self,
+            _universe_id: Uuid,
+            session_id: &SessionId,
+        ) -> SessionWorkflowStatus {
+            if let Some(status) = self.statuses.get(session_id) {
+                status.clone()
+            } else if self.running.contains(session_id) {
+                SessionWorkflowStatus::Running
+            } else {
+                SessionWorkflowStatus::NotFound
+            }
         }
+    }
+
+    #[tokio::test]
+    async fn terminal_workflow_with_active_run_is_observed_as_stale() {
+        let universe_id = Uuid::new_v4();
+        let session_id = SessionId::new("stale");
+        let mut state = open_state();
+        state.runs.active = Some(active_run(RunId::new(7)));
+        let snapshots = snapshots([(session_id.clone(), state)]);
+        let workflows = FakeWorkflows {
+            statuses: BTreeMap::from([(
+                session_id,
+                SessionWorkflowStatus::Terminal(WorkflowExecutionStatus::Failed),
+            )]),
+            ..FakeWorkflows::default()
+        };
+        let mut cache = BTreeMap::new();
+        let mut stats = ReaperStats::default();
+
+        observe_active_projection_statuses(
+            universe_id,
+            &snapshots,
+            &workflows,
+            &mut cache,
+            &mut stats,
+        )
+        .await;
+
+        assert_eq!(stats.stale_active_projections, 1);
+        assert_eq!(stats.workflow_status_errors, 0);
     }
 
     #[tokio::test]

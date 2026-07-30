@@ -5,6 +5,7 @@ mod bootstrap;
 mod clock;
 mod drive;
 mod errors;
+mod observability;
 mod promise_sources;
 mod session_state;
 #[cfg(test)]
@@ -79,6 +80,7 @@ pub struct AgentSessionWorkflow {
     cancelling_watchdog: Option<CancellingWatchdog>,
     admission_failures: Vec<AgentAdmissionFailure>,
     execution_has_rollover_checkpoint: bool,
+    rollover_delay_logged: bool,
     last_error: Option<String>,
     bootstrap_failed: bool,
 }
@@ -104,6 +106,7 @@ impl Default for AgentSessionWorkflow {
             cancelling_watchdog: None,
             admission_failures: Vec::new(),
             execution_has_rollover_checkpoint: false,
+            rollover_delay_logged: false,
             last_error: None,
             bootstrap_failed: false,
         }
@@ -130,53 +133,51 @@ impl AgentSessionWorkflow {
             promise_sources::reconcile_polls(ctx);
             wait_for_workflow_work(ctx).await;
             if let Err(error) = flush_pending_emissions(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "pending_emission");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             if let Err(error) = promise_sources::process_pending_source_resolutions(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "promise_source_resolution");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             if let Err(error) = workflow_starts::process_pending_starts(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "workflow_start");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             if let Err(error) = promise_sources::flush_pending_promise_cancellations(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "promise_cancellation");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             if let Err(error) = workflow_starts::process_execution_cancels(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "workflow_execution_cancel");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             match process_cancelling_watchdog(ctx, &args).await {
                 Ok(DriveOutcome::ContinueAsNew) => {
-                    let next_args = continuation_args(ctx, &args);
-                    ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                    return observability::request_continue_as_new(ctx, &args);
                 }
                 Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
                 Err(error) => {
-                    record_error(ctx, &error);
+                    record_error(ctx, &error, "cancellation_watchdog");
                     return Err(anyhow::anyhow!("{error}").into());
                 }
             }
             if let Err(error) = awaits::process_satisfied_await(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "await_resolution");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             promise_sources::process_due_promise_deadlines(ctx);
             if let Err(error) = promise_sources::process_due(ctx).await {
-                record_error(ctx, &error);
+                record_error(ctx, &error, "promise_source_poll");
                 return Err(anyhow::anyhow!("{error}").into());
             }
             match process_pending_tool_batch_resumes(ctx, &args).await {
                 Ok(DriveOutcome::ContinueAsNew) => {
-                    let next_args = continuation_args(ctx, &args);
-                    ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                    return observability::request_continue_as_new(ctx, &args);
                 }
                 Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
                 Err(error) => {
-                    record_error(ctx, &error);
+                    record_error(ctx, &error, "tool_batch_resume");
                     return Err(anyhow::anyhow!("{error}").into());
                 }
             }
@@ -184,12 +185,11 @@ impl AgentSessionWorkflow {
             if !admissions.is_empty() {
                 match process_admissions(ctx, &args, admissions).await {
                     Ok(DriveOutcome::ContinueAsNew) => {
-                        let next_args = continuation_args(ctx, &args);
-                        ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                        return observability::request_continue_as_new(ctx, &args);
                     }
                     Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
                     Err(error) => {
-                        record_error(ctx, &error);
+                        record_error(ctx, &error, "admission");
                         return Err(anyhow::anyhow!("{error}").into());
                     }
                 }
@@ -198,18 +198,17 @@ impl AgentSessionWorkflow {
                 let mut drive = match drive_from_state(ctx) {
                     Ok(drive) => drive,
                     Err(error) => {
-                        record_error(ctx, &error);
+                        record_error(ctx, &error, "drive_rehydrate");
                         return Err(anyhow::anyhow!("{error}").into());
                     }
                 };
                 match drive_until_idle(ctx, &args, &mut drive).await {
                     Ok(DriveOutcome::ContinueAsNew) => {
-                        let next_args = continuation_args(ctx, &args);
-                        ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                        return observability::request_continue_as_new(ctx, &args);
                     }
                     Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
                     Err(error) => {
-                        record_error(ctx, &error);
+                        record_error(ctx, &error, "core_drive");
                         return Err(anyhow::anyhow!("{error}").into());
                     }
                 }
@@ -218,9 +217,9 @@ impl AgentSessionWorkflow {
                 return Ok(());
             }
             if can_continue_as_new(ctx, &args) {
-                let next_args = continuation_args(ctx, &args);
-                ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                return observability::request_continue_as_new(ctx, &args);
             }
+            observability::observe_rollover_delay(ctx, &args);
         }
     }
 
