@@ -402,12 +402,15 @@ failures and not fixed-step churn.
 - [x] Passed against the local Temporal/PostgreSQL stack on 2026-07-30: one
   fake active run crosses a low history threshold, continues as new, retains
   its Lightspeed session/run ids, and exposes multiple Temporal run ids.
+- [x] Passed against the local Temporal/PostgreSQL stack on 2026-07-30: a
+  workflow-tool start and its parked holder await survive continue-as-new,
+  reconstruct pending start work, and resolve the original run.
 - [ ] **Deferred, not implemented:** signal delivery during an LLM activity and
   at the continue-as-new command boundary.
 - [ ] **Deferred, not implemented:** fault injection proving a tool result is
   appended before rollover without reinvocation.
-- [ ] **Deferred, not implemented:** combined parked-await, Promise-source poll,
-  cancellation, and rollover cases beyond existing deterministic coverage.
+- [ ] **Deferred, not implemented:** Promise-source poll and cancellation
+  rollover cases beyond existing deterministic coverage.
 - [ ] **Deferred, not implemented:** worker restart/replay during a long run.
 - [ ] **Deferred, not implemented:** live stale-projection reconciliation after
   terminal workflow failure. P105 detects and reports the condition; it does
