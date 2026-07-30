@@ -10,7 +10,7 @@ use engine::{
     storage::{AppendSessionEvents, BlobStore, ReadSessionEvents},
 };
 use tools::{
-    environment::projection::{EnvironmentProjectionInput, prepare_environment_projection_refresh},
+    environment::projection::{prepare_vfs_catalog_publication, vfs_catalog_from_workspace_links},
     prompts::{
         PromptAssemblyLimits, configured_vfs_prompt_root_specs,
         prepare_prompt_instructions_publication,
@@ -296,24 +296,36 @@ impl SessionRunner {
             .as_ref()
             .map(|config| &config.features);
         let vfs_catalog_enabled = features.is_some_and(|features| features.vfs.is_some());
-        let environment_catalog_enabled =
-            features.is_some_and(|features| features.environments.is_some());
         let links = if vfs_catalog_enabled {
             self.resolve_workspace_links(state).await?
         } else {
             Vec::new()
         };
-        let refresh = prepare_environment_projection_refresh(
-            self.stores.blobs.as_ref(),
-            state,
-            EnvironmentProjectionInput::from_workspace_links(links)
-                .with_catalog_grants(vfs_catalog_enabled, environment_catalog_enabled),
-        )
-        .await
-        .map_err(|error| RunnerError::InvalidRequest {
-            message: format!("prepare environment projection refresh: {error}"),
+        if !vfs_catalog_enabled {
+            return Ok(state
+                .context
+                .entries
+                .iter()
+                .any(|entry| entry.kind == engine::ContextEntryKind::VfsCatalog)
+                .then(|| CoreAgentCommand::RemoveContext {
+                    expected_revision: None,
+                    key: engine::ContextEntryKey::new(engine::VFS_CATALOG_CONTEXT_KEY),
+                })
+                .into_iter()
+                .collect());
+        }
+        let catalog = vfs_catalog_from_workspace_links(&links).map_err(|error| {
+            RunnerError::InvalidRequest {
+                message: format!("prepare VFS catalog: {error}"),
+            }
         })?;
-        Ok(refresh.commands)
+        let publication =
+            prepare_vfs_catalog_publication(self.stores.blobs.as_ref(), state, catalog)
+                .await
+                .map_err(|error| RunnerError::InvalidRequest {
+                    message: format!("prepare VFS catalog publication: {error}"),
+                })?;
+        Ok(publication.command.into_iter().collect())
     }
 
     async fn refresh_skill_catalog_before_run(
@@ -1399,26 +1411,12 @@ mod tests {
         assert_eq!(vfs_catalog.routes.len(), 1);
         assert_eq!(vfs_catalog.routes[0].path.as_str(), "/workspace");
 
-        assert!(
-            !outcome
-                .state
-                .context
-                .entries
-                .iter()
-                .any(|entry| matches!(entry.kind, ContextEntryKind::EnvironmentCatalog))
-        );
-
         let requests = llm.requests.lock().expect("requests lock");
         let planned = &requests[0].request.context.entries;
         assert!(
             planned
                 .iter()
                 .any(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
-        );
-        assert!(
-            !planned
-                .iter()
-                .any(|entry| matches!(entry.kind, ContextEntryKind::EnvironmentCatalog))
         );
     }
 
@@ -1481,10 +1479,14 @@ mod tests {
         assert_eq!(outcome.state.lifecycle.config, Some(session_config));
         assert!(outcome.state.runs.active.is_none());
         assert_eq!(outcome.state.runs.completed.len(), 1);
-        assert!(!outcome.state.context.entries.iter().any(|entry| matches!(
-            entry.kind,
-            ContextEntryKind::VfsCatalog | ContextEntryKind::EnvironmentCatalog
-        )));
+        assert!(
+            !outcome
+                .state
+                .context
+                .entries
+                .iter()
+                .any(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
+        );
         assert_eq!(
             outcome
                 .emitted_entries
@@ -1929,17 +1931,6 @@ mod tests {
             })
             .await
             .expect("replace tools");
-        runner
-            .drive_command(DriveCommand {
-                session_id: session_id.clone(),
-                observed_at_ms: 13,
-                command: CoreAgentCommand::SetDefaultToolTarget {
-                    target: tools::targets::session_fs_target(),
-                },
-                max_steps: None,
-            })
-            .await
-            .expect("set default target");
 
         let outcome = runner
             .drive_command(DriveCommand {
@@ -2069,17 +2060,6 @@ mod tests {
             })
             .await
             .expect("replace tools");
-        runner
-            .drive_command(DriveCommand {
-                session_id: session_id.clone(),
-                observed_at_ms: 13,
-                command: CoreAgentCommand::SetDefaultToolTarget {
-                    target: tools::targets::session_fs_target(),
-                },
-                max_steps: None,
-            })
-            .await
-            .expect("set default target");
 
         let outcome = runner
             .drive_command(DriveCommand {

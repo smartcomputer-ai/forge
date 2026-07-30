@@ -116,6 +116,7 @@ pub async fn invoke_workflow_tool(
     turn_id: TurnId,
     tool_batch_id: ToolBatchId,
     call: &ToolInvocationRequest,
+    execution_context_ref: Option<BlobRef>,
     now_ms: u64,
 ) -> ToolResult<ToolInvocationOutput> {
     binding
@@ -197,6 +198,7 @@ pub async fn invoke_workflow_tool(
         tool_batch_id,
         tool_call_id: call.call_id.clone(),
         arguments_ref: call.arguments_ref.clone(),
+        execution_context_ref,
         completion_promises,
     };
     let mut acknowledgement = json!({
@@ -413,6 +415,8 @@ mod tests {
             tool_name: ToolName::new("work_report"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
         let first = invoke_workflow_tool(
             blobs.as_ref(),
@@ -422,6 +426,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -434,6 +439,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -510,6 +516,8 @@ mod tests {
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
         let output = invoke_workflow_tool(
             blobs.as_ref(),
@@ -519,6 +527,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -576,6 +585,8 @@ mod tests {
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
 
         let output = invoke_workflow_tool(
@@ -586,6 +597,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -621,6 +633,8 @@ mod tests {
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
 
         let arguments_ref = blobs
@@ -635,6 +649,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call(arguments_ref),
+            None,
             1_000,
         )
         .await
@@ -658,6 +673,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call(duplicate_ref),
+            None,
             1_000,
         )
         .await
@@ -677,6 +693,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call(over_cap_ref),
+            None,
             1_000,
         )
         .await
@@ -705,6 +722,8 @@ mod tests {
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
 
         let output = invoke_workflow_tool(
@@ -715,6 +734,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -779,6 +799,8 @@ mod tests {
             tool_name: ToolName::new("launch_job"),
             arguments_ref,
             execution_target: None,
+            workflow_tool: None,
+            promise_control: None,
         };
         let output = invoke_workflow_tool(
             blobs.as_ref(),
@@ -788,6 +810,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await
@@ -832,6 +855,7 @@ mod tests {
             TurnId::new(2),
             ToolBatchId::new(3),
             &call,
+            None,
             1_000,
         )
         .await

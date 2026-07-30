@@ -5,44 +5,38 @@ use std::sync::Arc;
 use api::{
     AgentApiError, AgentApiService, AgentProfile, AgentProfileSummary, EventCursor, InputItem,
     MediaKind, ProfileId, ProfileListParams, ProfileReadParams, ProfileSource,
-    RunStatus as ApiRunStatus, SessionEnvironmentListParams, SessionEnvironmentListResponse,
-    SessionEventsReadParams, SessionEventsReadResponse, SessionReadParams, SessionView,
+    RunStatus as ApiRunStatus, SessionEventsReadParams, SessionEventsReadResponse,
+    SessionReadParams, SessionView,
 };
-use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core_agent_state};
 use async_trait::async_trait;
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentAction,
-    CoreAgentCommand, CoreAgentDrive, CoreAgentIoError, EventSeq, PromiseId, PromiseScope,
-    PromiseSource, PromiseStatus, RunId, RunTerminalNotifyIntent, SessionId, SubmissionId,
-    ToolBatchId, ToolBatchOutcome, ToolCallId, ToolCallStatus, ToolInvocationBatchResult,
-    ToolInvocationRequest, ToolInvocationResult, TurnId, core_agent_clone_opening_events,
-    promise_cancel_effect, promise_create_effect, promise_detach_effect,
+    CoreAgentCommand, CoreAgentDrive, CoreAgentIoError, EventSeq, PromiseId, PromiseSource, RunId,
+    RunTerminalNotifyIntent, SessionId, SubmissionId, ToolBatchId, ToolBatchOutcome, ToolCallId,
+    ToolCallStatus, ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnId,
+    core_agent_clone_opening_events, promise_create_effect,
     storage::{
         AppendSessionEvents, BlobStore, BlobStoreError, CreateClonedSession, CreateForkedSession,
         ListSessionLinks, SessionLinkDirection, SessionRecord, SessionStore, SessionStoreError,
         UpsertSessionLink,
     },
 };
-use environments::{
-    PutSessionEnvironmentBinding, SessionEnvironmentBindingState, SessionEnvironmentBindingStore,
-};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tools::{
     concurrency::{
-        AWAIT_TOOL_NAME, AwaitArgs, AwaitModeArg, CANCEL_TOOL_NAME, CancelArgs, CancelOutput,
-        CancelPromiseOutput, DETACH_TOOL_NAME, DetachArgs, DetachOutput, DetachPromiseOutput,
-        cancel_promises_model_visible_text, detach_promises_model_visible_text,
+        AWAIT_TOOL_NAME, AwaitArgs, AwaitModeArg, CANCEL_TOOL_NAME, CancelArgs, DETACH_TOOL_NAME,
+        DetachArgs, cancel_promises_from_runtime, cancel_promises_model_visible_text,
+        detach_promises_from_runtime, detach_promises_model_visible_text,
     },
     fleet::{
         AGENT_LIST_TOOL_NAME, AGENT_READ_TOOL_NAME, AGENT_REQUEST_TOOL_NAME, AGENT_SEND_TOOL_NAME,
         AGENT_SPAWN_TOOL_NAME, AgentLineageView, AgentLinkView, AgentListArgs, AgentListDirection,
         AgentListItem, AgentListOutput, AgentReadArgs, AgentReadOutput, AgentRequestArgs,
-        AgentRequestOutput, AgentRequestStatus, AgentSendArgs, AgentSendInputItem,
-        AgentSendMediaKind, AgentSendOutput, AgentSendStatus, AgentSendTarget, AgentSpawnArgs,
-        AgentSpawnBase, AgentSpawnFork, AgentSpawnOutput, EnvironmentPolicy,
-        PROFILE_LIST_TOOL_NAME, PROFILE_READ_TOOL_NAME, ProfileListArgs, ProfileListOutput,
-        ProfileReadArgs, ProfileReadOutput, VfsPolicy,
+        AgentRequestOutput, AgentSendArgs, AgentSendInputItem, AgentSendMediaKind, AgentSendOutput,
+        AgentSendTarget, AgentSpawnArgs, AgentSpawnBase, AgentSpawnFork, AgentSpawnOutput,
+        EnvironmentPolicy, PROFILE_LIST_TOOL_NAME, PROFILE_READ_TOOL_NAME, ProfileListArgs,
+        ProfileListOutput, ProfileReadArgs, ProfileReadOutput, VfsPolicy,
     },
 };
 use vfs::{CreateVfsWorkspaceRecord, VfsCatalogError, VfsPath, VfsWorkspaceId, VfsWorkspaceStore};
@@ -58,14 +52,12 @@ const MAX_RECENT_EVENT_LIMIT: u32 = 100;
 const MAX_DIRECT_LINKS: usize = 100;
 const MAX_AGENT_READ_VISIBLE_CHARS: usize = 20_000;
 const MAX_AGENT_READ_VISIBLE_RUNS: usize = 2;
-const MAX_FLEET_MAILBOX_QUEUE: usize = 64;
 
 #[derive(Clone)]
 pub struct FleetService {
     sessions: Arc<dyn SessionStore>,
     runtime: Arc<dyn FleetChildRuntime>,
     workspace_store: Option<Arc<dyn VfsWorkspaceStore>>,
-    environment_bindings: Option<Arc<dyn SessionEnvironmentBindingStore>>,
 }
 
 impl FleetService {
@@ -74,20 +66,11 @@ impl FleetService {
             sessions,
             runtime,
             workspace_store: None,
-            environment_bindings: None,
         }
     }
 
     pub fn with_vfs_stores(mut self, workspace_store: Arc<dyn VfsWorkspaceStore>) -> Self {
         self.workspace_store = Some(workspace_store);
-        self
-    }
-
-    pub fn with_environment_bindings(
-        mut self,
-        bindings: Arc<dyn SessionEnvironmentBindingStore>,
-    ) -> Self {
-        self.environment_bindings = Some(bindings);
         self
     }
 
@@ -97,9 +80,7 @@ impl FleetService {
         args: AgentSpawnArgs,
     ) -> Result<SpawnResult, AgentApiError> {
         validate_spawn_args(&args)?;
-        let fleet_config = self
-            .fleet_config_for_session(&context.parent_session_id)
-            .await?;
+        let fleet_config = fleet_policy(&context)?;
         validate_spawn_policy(&fleet_config, &args)?;
         let child_id_was_derived = args.child_session_id.is_none();
         let child_session_id = match args.child_session_id.as_deref() {
@@ -259,9 +240,7 @@ impl FleetService {
         context: &FleetInvocationContext,
         _args: ProfileListArgs,
     ) -> Result<ProfileListOutput, AgentApiError> {
-        let fleet_config = self
-            .fleet_config_for_session(&context.parent_session_id)
-            .await?;
+        let fleet_config = fleet_policy(context)?;
         Ok(ProfileListOutput {
             profiles: self
                 .runtime
@@ -282,9 +261,7 @@ impl FleetService {
         context: &FleetInvocationContext,
         args: ProfileReadArgs,
     ) -> Result<ProfileReadOutput, AgentApiError> {
-        let fleet_config = self
-            .fleet_config_for_session(&context.parent_session_id)
-            .await?;
+        let fleet_config = fleet_policy(context)?;
         let profile_id = ProfileId::try_new(args.profile_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid profile_id: {error}"))
         })?;
@@ -300,56 +277,19 @@ impl FleetService {
         args: AgentSendArgs,
     ) -> Result<SendResult, AgentApiError> {
         validate_send_args(&args)?;
-        let Some(target_session_id) = self.resolve_send_target(&context, &args.to).await? else {
-            return Ok(SendResult {
-                output: AgentSendOutput {
-                    target_session_id: None,
-                    run_id: None,
-                    submission_id: None,
-                    status: AgentSendStatus::NotReachable,
-                },
-            });
-        };
+        let target_session_id = self
+            .resolve_send_target(&context, &args.to)
+            .await?
+            .ok_or_else(|| AgentApiError::rejected("calling session has no Fleet parent"))?;
         if !self
             .has_session_link_edge(&context.parent_session_id, &target_session_id)
             .await?
         {
-            return Ok(SendResult {
-                output: AgentSendOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    status: AgentSendStatus::NotReachable,
-                },
-            });
+            return Err(AgentApiError::rejected(format!(
+                "session {target_session_id} is not directly linked to {}",
+                context.parent_session_id
+            )));
         }
-        self.load_session_required(&target_session_id).await?;
-        let target_state = self.load_core_state(&target_session_id).await?;
-        if target_state.lifecycle.status != engine::CoreAgentStatus::Open {
-            return Ok(SendResult {
-                output: AgentSendOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    status: AgentSendStatus::NotReachable,
-                },
-            });
-        }
-        if !target_has_mailbox_await(&target_state)
-            && target_state.runs.queued.len() >= MAX_FLEET_MAILBOX_QUEUE
-        {
-            return Ok(SendResult {
-                output: AgentSendOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    status: AgentSendStatus::QueueFull,
-                },
-            });
-        }
-        self.runtime
-            .start_session(&target_session_id, false, None)
-            .await?;
         let submission_id = send_submission_id(&context, &target_session_id);
         let input = send_run_input(&context, &args)?;
         self.runtime
@@ -357,10 +297,8 @@ impl FleetService {
             .await?;
         Ok(SendResult {
             output: AgentSendOutput {
-                target_session_id: Some(target_session_id.as_str().to_owned()),
-                run_id: None,
-                submission_id: Some(submission_id.as_str().to_owned()),
-                status: AgentSendStatus::Delivered,
+                target_session_id: target_session_id.as_str().to_owned(),
+                submission_id: submission_id.as_str().to_owned(),
             },
         })
     }
@@ -371,62 +309,19 @@ impl FleetService {
         args: AgentRequestArgs,
     ) -> Result<RequestResult, AgentApiError> {
         validate_request_args(&args)?;
-        let Some(target_session_id) = self.resolve_send_target(&context, &args.to).await? else {
-            return Ok(RequestResult {
-                output: AgentRequestOutput {
-                    target_session_id: None,
-                    run_id: None,
-                    submission_id: None,
-                    promise: None,
-                    status: AgentRequestStatus::NotReachable,
-                },
-                promise_effect: None,
-            });
-        };
+        let target_session_id = self
+            .resolve_send_target(&context, &args.to)
+            .await?
+            .ok_or_else(|| AgentApiError::rejected("calling session has no Fleet parent"))?;
         if !self
             .has_session_link_edge(&context.parent_session_id, &target_session_id)
             .await?
         {
-            return Ok(RequestResult {
-                output: AgentRequestOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    promise: None,
-                    status: AgentRequestStatus::NotReachable,
-                },
-                promise_effect: None,
-            });
+            return Err(AgentApiError::rejected(format!(
+                "session {target_session_id} is not directly linked to {}",
+                context.parent_session_id
+            )));
         }
-        self.load_session_required(&target_session_id).await?;
-        let target_state = self.load_core_state(&target_session_id).await?;
-        if target_state.lifecycle.status != engine::CoreAgentStatus::Open {
-            return Ok(RequestResult {
-                output: AgentRequestOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    promise: None,
-                    status: AgentRequestStatus::NotReachable,
-                },
-                promise_effect: None,
-            });
-        }
-        if target_state.runs.queued.len() >= MAX_FLEET_MAILBOX_QUEUE {
-            return Ok(RequestResult {
-                output: AgentRequestOutput {
-                    target_session_id: Some(target_session_id.as_str().to_owned()),
-                    run_id: None,
-                    submission_id: None,
-                    promise: None,
-                    status: AgentRequestStatus::QueueFull,
-                },
-                promise_effect: None,
-            });
-        }
-        self.runtime
-            .start_session(&target_session_id, false, None)
-            .await?;
         let submission_id = request_submission_id(&context, &target_session_id);
         let promise_id = request_promise_id(&context, &target_session_id);
         let notify_intents = vec![RunTerminalNotifyIntent {
@@ -456,11 +351,10 @@ impl FleetService {
         );
         Ok(RequestResult {
             output: AgentRequestOutput {
-                target_session_id: Some(target_session_id.as_str().to_owned()),
-                run_id: Some(run_id),
-                submission_id: Some(submission_id.as_str().to_owned()),
-                promise: Some(promise_id.as_str().to_owned()),
-                status: AgentRequestStatus::Delivered,
+                target_session_id: target_session_id.as_str().to_owned(),
+                run_id,
+                submission_id: submission_id.as_str().to_owned(),
+                promise: promise_id.as_str().to_owned(),
             },
             promise_effect: Some(promise_effect),
         })
@@ -473,121 +367,6 @@ impl FleetService {
         args: AwaitArgs,
     ) -> Result<engine::AwaitSpec, AgentApiError> {
         await_spec_from_args(args, context.observed_at_ms)
-    }
-
-    pub async fn cancel_promises(
-        &self,
-        context: &FleetInvocationContext,
-        args: CancelArgs,
-    ) -> Result<CancelResult, AgentApiError> {
-        let promise_ids = args
-            .validated_promise_ids()
-            .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
-        let entries = read_all_session_entries(
-            self.sessions.as_ref(),
-            &context.parent_session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await?;
-        let state = replay_core_agent_state(&entries)?;
-
-        let mut promises = Vec::with_capacity(promise_ids.len());
-        let mut effects = Vec::new();
-        for promise_id in promise_ids {
-            let key = PromiseId::new(promise_id.clone());
-            let Some(promise) = state.promises.promises.get(&key) else {
-                return Err(AgentApiError::rejected(format!(
-                    "unknown promise {promise_id}"
-                )));
-            };
-            if promise.ownership != engine::PromiseOwnership::Model {
-                return Err(AgentApiError::rejected(format!(
-                    "promise {promise_id} is runtime-owned and cannot be cancelled"
-                )));
-            }
-            if promise.status.is_terminal() {
-                promises.push(CancelPromiseOutput {
-                    promise_id,
-                    status: promise_status_name(promise.status).to_owned(),
-                });
-                continue;
-            }
-            effects.push(promise_cancel_effect(&key));
-            promises.push(CancelPromiseOutput {
-                promise_id,
-                status: "cancelled".to_owned(),
-            });
-        }
-
-        Ok(CancelResult {
-            output: CancelOutput { promises },
-            effects,
-        })
-    }
-
-    pub async fn detach_promises(
-        &self,
-        context: &FleetInvocationContext,
-        args: DetachArgs,
-    ) -> Result<DetachResult, AgentApiError> {
-        let promise_ids = args
-            .validated_promise_ids()
-            .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
-        let entries = read_all_session_entries(
-            self.sessions.as_ref(),
-            &context.parent_session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await?;
-        let state = replay_core_agent_state(&entries)?;
-
-        let mut promises = Vec::with_capacity(promise_ids.len());
-        let mut effects = Vec::new();
-        for promise_id in promise_ids {
-            let key = PromiseId::new(promise_id.clone());
-            let Some(promise) = state.promises.promises.get(&key) else {
-                return Err(AgentApiError::rejected(format!(
-                    "unknown promise {promise_id}"
-                )));
-            };
-            if promise.ownership != engine::PromiseOwnership::Model {
-                return Err(AgentApiError::rejected(format!(
-                    "promise {promise_id} is runtime-owned and cannot be detached"
-                )));
-            }
-            if promise.status.is_terminal() {
-                return Err(AgentApiError::rejected(format!(
-                    "promise {promise_id} is already {}",
-                    promise_status_name(promise.status)
-                )));
-            }
-            match promise.scope {
-                PromiseScope::Session => {
-                    promises.push(DetachPromiseOutput {
-                        promise_id,
-                        status: "already_detached".to_owned(),
-                    });
-                }
-                PromiseScope::Run { run_id } if run_id == context.parent_run_id => {
-                    effects.push(promise_detach_effect(&key));
-                    promises.push(DetachPromiseOutput {
-                        promise_id,
-                        status: "detached".to_owned(),
-                    });
-                }
-                PromiseScope::Run { run_id } => {
-                    return Err(AgentApiError::rejected(format!(
-                        "promise {promise_id} is scoped to run {run_id}, not current run {}",
-                        context.parent_run_id
-                    )));
-                }
-            }
-        }
-
-        Ok(DetachResult {
-            output: DetachOutput { promises },
-            effects,
-        })
     }
 
     pub async fn list(
@@ -646,10 +425,9 @@ impl FleetService {
         let target_session_id = parse_session_id(&args.target_session_id, "target_session_id")?;
         let record = self.load_session_required(&target_session_id).await?;
         let session = self.runtime.read_session(&target_session_id).await?;
-        let environments = self
-            .runtime
-            .list_session_environments(&target_session_id)
-            .await?;
+        let environments = serde_json::json!({
+            "activeEnvironmentId": session.active_environment_id.clone(),
+        });
         let links = self.direct_links(&target_session_id).await?;
         let recent_event_limit = recent_event_limit(args.recent_events.as_ref())?;
         let recent_transcript_limit = recent_transcript_limit(args.recent_transcript.as_ref())?;
@@ -673,7 +451,7 @@ impl FleetService {
             session: to_json_value(session)?,
             lineage: lineage_view(&record),
             links,
-            environments: to_json_value(environments)?,
+            environments,
             recent_events: to_json_values(recent_events.events)?,
             recent_transcript: to_json_values(transcript_events(
                 recent_transcript.events,
@@ -809,34 +587,6 @@ impl FleetService {
             .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))
     }
 
-    async fn load_core_state(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<engine::CoreAgentState, AgentApiError> {
-        let entries = read_all_session_entries(
-            self.sessions.as_ref(),
-            session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await?;
-        replay_core_agent_state(&entries).map_err(AgentApiError::from)
-    }
-
-    async fn fleet_config_for_session(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<engine::FleetFeature, AgentApiError> {
-        let state = self.load_core_state(session_id).await?;
-        let config = state.lifecycle.config.ok_or_else(|| {
-            AgentApiError::invalid_request(format!("session is not open: {session_id}"))
-        })?;
-        config.features.fleet.ok_or_else(|| {
-            AgentApiError::invalid_request(format!(
-                "fleet feature is not granted for session: {session_id}"
-            ))
-        })
-    }
-
     async fn create_or_reuse_child(
         &self,
         context: &FleetInvocationContext,
@@ -856,13 +606,15 @@ impl FleetService {
                 })
                 .await
         } else {
-            let entries = read_all_session_entries(
+            // Cloning is an intentional cold-path replay boundary. The
+            // resulting opening events contain only the cloneable seed.
+            let entries = api_projection::read_all_session_entries(
                 self.sessions.as_ref(),
                 &source_record.session_id,
-                MAX_EVENT_PAGE_LIMIT as usize,
+                api_projection::MAX_EVENT_PAGE_LIMIT as usize,
             )
             .await?;
-            let state = replay_core_agent_state(&entries)?;
+            let state = api_projection::replay_core_agent_state(&entries)?;
             let opening_events = core_agent_clone_opening_events(&state, context.observed_at_ms)
                 .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
             self.sessions
@@ -979,7 +731,7 @@ impl FleetService {
 
     async fn apply_resource_policies(
         &self,
-        source_session_id: &SessionId,
+        _source_session_id: &SessionId,
         child_session_id: &SessionId,
         observed_at_ms: u64,
         args: &AgentSpawnArgs,
@@ -989,8 +741,6 @@ impl FleetService {
                 "agent_spawn environment policy must be share",
             ));
         }
-        self.share_environment_bindings(source_session_id, child_session_id, observed_at_ms)
-            .await?;
         match args.vfs {
             VfsPolicy::Share => Ok(()),
             VfsPolicy::Isolate => {
@@ -998,39 +748,6 @@ impl FleetService {
                     .await
             }
         }
-    }
-
-    async fn share_environment_bindings(
-        &self,
-        source_session_id: &SessionId,
-        child_session_id: &SessionId,
-        observed_at_ms: u64,
-    ) -> Result<(), AgentApiError> {
-        let Some(store) = self.environment_bindings.as_ref() else {
-            return Ok(());
-        };
-        let updated_at_ms = nonnegative_i64(observed_at_ms, "observed_at_ms")?;
-        let bindings = store
-            .list_bindings_for_session(source_session_id)
-            .await
-            .map_err(|error| AgentApiError::internal(error.to_string()))?;
-        for binding in bindings {
-            if binding.state != SessionEnvironmentBindingState::Attached {
-                continue;
-            }
-            store
-                .put_binding(PutSessionEnvironmentBinding {
-                    session_id: child_session_id.clone(),
-                    env_id: binding.env_id,
-                    instance_id: binding.instance_id,
-                    cwd: binding.cwd,
-                    fs_routes: binding.fs_routes,
-                    updated_at_ms,
-                })
-                .await
-                .map_err(|error| AgentApiError::internal(error.to_string()))?;
-        }
-        Ok(())
     }
 
     async fn isolate_workspace_links(
@@ -1050,13 +767,15 @@ impl FleetService {
             .ok_or_else(|| {
                 AgentApiError::not_found(format!("session not found: {child_session_id}"))
             })?;
-        let entries = read_all_session_entries(
+        // VFS isolation is part of child creation and may reconstruct the
+        // just-created child. It is not reachable from ordinary tool calls.
+        let entries = api_projection::read_all_session_entries(
             self.sessions.as_ref(),
             child_session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
+            api_projection::MAX_EVENT_PAGE_LIMIT as usize,
         )
         .await?;
-        let state = replay_core_agent_state(&entries)?;
+        let state = api_projection::replay_core_agent_state(&entries)?;
         let mut config =
             state.lifecycle.config.clone().ok_or_else(|| {
                 AgentApiError::internal("isolated child session is missing config")
@@ -1181,18 +900,6 @@ pub struct RequestResult {
     pub promise_effect: Option<engine::ToolEffect>,
 }
 
-#[derive(Clone, Debug)]
-pub struct CancelResult {
-    pub output: CancelOutput,
-    pub effects: Vec<engine::ToolEffect>,
-}
-
-#[derive(Clone, Debug)]
-pub struct DetachResult {
-    pub output: DetachOutput,
-    pub effects: Vec<engine::ToolEffect>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FleetInvocationContext {
     pub parent_session_id: SessionId,
@@ -1201,6 +908,7 @@ pub struct FleetInvocationContext {
     pub batch_id: ToolBatchId,
     pub call_id: ToolCallId,
     pub observed_at_ms: u64,
+    pub fleet_policy: Option<engine::FleetFeature>,
 }
 
 #[async_trait]
@@ -1252,11 +960,6 @@ pub trait FleetChildRuntime: Send + Sync {
         after: Option<u64>,
         limit: u32,
     ) -> Result<SessionEventsReadResponse, AgentApiError>;
-
-    async fn list_session_environments(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<SessionEnvironmentListResponse, AgentApiError>;
 }
 
 #[derive(Clone)]
@@ -1359,19 +1062,6 @@ impl FleetChildRuntime for AgentApiFleetRuntime {
                 after: after.map(|seq| EventCursor { seq }),
                 limit: Some(limit),
                 wait_ms: Some(0),
-            })
-            .await?;
-        Ok(response.result)
-    }
-
-    async fn list_session_environments(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<SessionEnvironmentListResponse, AgentApiError> {
-        let response = self
-            .api
-            .list_session_environments(SessionEnvironmentListParams {
-                session_id: session_id.as_str().to_owned(),
             })
             .await?;
         Ok(response.result)
@@ -1529,17 +1219,17 @@ impl FleetToolExecutor {
 
     async fn invoke_cancel_promises(
         &self,
-        context: FleetInvocationContext,
+        _context: FleetInvocationContext,
         call: &ToolInvocationRequest,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
         let args: CancelArgs = self.decode_args(call).await?;
-        match self.service.cancel_promises(&context, args).await {
-            Ok(result) => {
-                let visible = cancel_promises_model_visible_text(&result.output);
+        match cancel_promises_from_runtime(&args, call.promise_control.as_ref()) {
+            Ok((output, effects)) => {
+                let visible = cancel_promises_model_visible_text(&output);
                 let mut tool_result = self
-                    .succeeded(call.call_id.clone(), &result.output, visible)
+                    .succeeded(call.call_id.clone(), &output, visible)
                     .await?;
-                tool_result.effects.extend(result.effects);
+                tool_result.effects.extend(effects);
                 Ok(tool_result)
             }
             Err(error) => {
@@ -1555,13 +1245,17 @@ impl FleetToolExecutor {
         call: &ToolInvocationRequest,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
         let args: DetachArgs = self.decode_args(call).await?;
-        match self.service.detach_promises(&context, args).await {
-            Ok(result) => {
-                let visible = detach_promises_model_visible_text(&result.output);
+        match detach_promises_from_runtime(
+            &args,
+            context.parent_run_id,
+            call.promise_control.as_ref(),
+        ) {
+            Ok((output, effects)) => {
+                let visible = detach_promises_model_visible_text(&output);
                 let mut tool_result = self
-                    .succeeded(call.call_id.clone(), &result.output, visible)
+                    .succeeded(call.call_id.clone(), &output, visible)
                     .await?;
-                tool_result.effects.extend(result.effects);
+                tool_result.effects.extend(effects);
                 Ok(tool_result)
             }
             Err(error) => {
@@ -1741,6 +1435,14 @@ fn validate_spawn_args(args: &AgentSpawnArgs) -> Result<(), AgentApiError> {
     Ok(())
 }
 
+fn fleet_policy(context: &FleetInvocationContext) -> Result<&engine::FleetFeature, AgentApiError> {
+    context.fleet_policy.as_ref().ok_or_else(|| {
+        AgentApiError::invalid_request(
+            "Fleet tool invocation is missing its admitted parent policy",
+        )
+    })
+}
+
 fn validate_spawn_policy(
     fleet_config: &engine::FleetFeature,
     args: &AgentSpawnArgs,
@@ -1816,11 +1518,6 @@ fn validate_request_args(args: &AgentRequestArgs) -> Result<(), AgentApiError> {
             "agent_request text must not be empty",
         ));
     }
-    if matches!(args.to, AgentSendTarget::Parent) {
-        return Err(AgentApiError::invalid_request(
-            "agent_request cannot target parent; use agent_send for child-to-parent messages",
-        ));
-    }
     Ok(())
 }
 
@@ -1849,15 +1546,6 @@ fn validate_await_args(args: &AwaitArgs) -> Result<Vec<PromiseId>, AgentApiError
         .iter()
         .map(|promise_id| PromiseId::new(promise_id.clone()))
         .collect())
-}
-
-pub(crate) fn promise_status_name(status: PromiseStatus) -> &'static str {
-    match status {
-        PromiseStatus::Pending => "pending",
-        PromiseStatus::Resolved => "resolved",
-        PromiseStatus::Failed => "failed",
-        PromiseStatus::Cancelled => "cancelled",
-    }
 }
 
 fn bounded_list_limit(limit: Option<u32>) -> Result<usize, AgentApiError> {
@@ -2038,21 +1726,6 @@ fn parse_run_number(run_id: &str) -> Result<u64, AgentApiError> {
     };
     number.parse::<u64>().map_err(|_| {
         AgentApiError::internal(format!("fleet runtime returned malformed run id: {run_id}"))
-    })
-}
-
-fn target_has_mailbox_await(state: &engine::CoreAgentState) -> bool {
-    let Some(active_run) = state.runs.active.as_ref() else {
-        return false;
-    };
-    if active_run.status != engine::RunStatus::Parked {
-        return false;
-    }
-    active_run.parked_tool_batch.as_ref().is_some_and(|parked| {
-        matches!(
-            &parked.suspension,
-            engine::ToolBatchSuspension::AwaitTool { spec, .. } if spec.mailbox
-        )
     })
 }
 
@@ -2328,70 +2001,17 @@ fn spawn_model_visible_text(output: &AgentSpawnOutput) -> String {
 }
 
 fn send_model_visible_text(output: &AgentSendOutput) -> String {
-    match (
-        output.status,
-        output.target_session_id.as_deref(),
-        output.run_id.as_deref(),
-    ) {
-        (AgentSendStatus::Delivered, Some(target_session_id), Some(run_id)) => {
-            match output.submission_id.as_deref() {
-                Some(submission_id) => format!(
-                    "Delivered message to session {target_session_id} as queued run {run_id} (submission {submission_id})."
-                ),
-                None => format!(
-                    "Delivered message to session {target_session_id} as queued run {run_id}."
-                ),
-            }
-        }
-        (AgentSendStatus::Delivered, Some(target_session_id), None) => {
-            match output.submission_id.as_deref() {
-                Some(submission_id) => {
-                    format!(
-                        "Delivered message to session {target_session_id} (submission {submission_id})."
-                    )
-                }
-                None => format!("Delivered message to session {target_session_id}."),
-            }
-        }
-        (AgentSendStatus::NotReachable, Some(target_session_id), _) => {
-            format!("Session {target_session_id} is not reachable.")
-        }
-        (AgentSendStatus::NotReachable, None, _) => "No reachable target session found.".to_owned(),
-        (AgentSendStatus::QueueFull, Some(target_session_id), _) => {
-            format!("Session {target_session_id} mailbox queue is full; try again later.")
-        }
-        _ => "Fleet send did not produce a run.".to_owned(),
-    }
+    format!(
+        "Delivered message to session {} (submission {}).",
+        output.target_session_id, output.submission_id
+    )
 }
 
 fn request_model_visible_text(output: &AgentRequestOutput) -> String {
-    match (
-        output.status,
-        output.target_session_id.as_deref(),
-        output.run_id.as_deref(),
-        output.promise.as_deref(),
-    ) {
-        (AgentRequestStatus::Delivered, Some(target_session_id), Some(run_id), Some(promise)) => {
-            let submission = output
-                .submission_id
-                .as_deref()
-                .map(|submission_id| format!(" submission {submission_id},"))
-                .unwrap_or_default();
-            format!(
-                "Requested work from session {target_session_id} as run {run_id} ({submission} promise {promise}). Await it with the await tool."
-            )
-        }
-        (AgentRequestStatus::NotReachable, Some(target_session_id), _, _) => {
-            format!("Session {target_session_id} is not reachable.")
-        }
-        (AgentRequestStatus::NotReachable, None, _, _) => {
-            "No reachable target session found.".to_owned()
-        }
-        (AgentRequestStatus::QueueFull, Some(target_session_id), _, _) => {
-            format!("Session {target_session_id} mailbox queue is full; try again later.")
-        }
-        _ => "Fleet request did not produce a run.".to_owned(),
-    }
+    format!(
+        "Requested work from session {} as run {} (submission {}, promise {}). Await it with the await tool.",
+        output.target_session_id, output.run_id, output.submission_id, output.promise
+    )
 }
 
 fn fleet_user_message(content_ref: BlobRef, preview: Option<&str>) -> ContextEntryInput {
@@ -2590,12 +2210,16 @@ fn profile_list_model_visible_text(output: &ProfileListOutput) -> String {
 fn profile_read_model_visible_text(output: &ProfileReadOutput) -> String {
     let profile = &output.profile;
     format!(
-        "Read profile {} revision {}: config {}, instructions {}, {} environment(s).",
+        "Read profile {} revision {}: config {}, instructions {}, active environment {}.",
         profile.profile_id,
         profile.revision,
         yes_no(profile.document.config.is_some()),
         yes_no(profile.document.instructions.is_some()),
-        profile.document.environments.len()
+        profile
+            .document
+            .active_environment_id
+            .as_deref()
+            .unwrap_or("none")
     )
 }
 
@@ -2639,7 +2263,13 @@ fn io_error(error: impl std::fmt::Display) -> CoreAgentIoError {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Mutex};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use async_trait::async_trait;
     use engine::{
@@ -2647,7 +2277,7 @@ mod tests {
         FleetSpawnConfig, GenerationConfig, LimitsConfig, ModelSelection, ProviderApiKind,
         RunConfig, SessionConfig, ToolBatchOutcome, ToolCallId, ToolInvocationRequest, ToolName,
         WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
-        storage::{CreateSession, InMemorySessionStore, SessionStore},
+        storage::{CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
     };
     use vfs::{CompareAndSetVfsWorkspaceHead, VfsWorkspaceRecord};
 
@@ -2679,8 +2309,74 @@ mod tests {
         started_runs: Mutex<Vec<StartedRun>>,
         sessions: Mutex<BTreeMap<SessionId, SessionView>>,
         events: Mutex<BTreeMap<SessionId, Vec<api::SessionEventView>>>,
-        environments: Mutex<BTreeMap<SessionId, SessionEnvironmentListResponse>>,
         profiles: Mutex<BTreeMap<ProfileId, AgentProfile>>,
+    }
+
+    struct CountingSessionStore {
+        inner: Arc<InMemorySessionStore>,
+        event_reads: AtomicUsize,
+    }
+
+    impl CountingSessionStore {
+        fn new(inner: Arc<InMemorySessionStore>) -> Self {
+            Self {
+                inner,
+                event_reads: AtomicUsize::new(0),
+            }
+        }
+
+        fn event_reads(&self) -> usize {
+            self.event_reads.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl SessionStore for CountingSessionStore {
+        async fn create_session(
+            &self,
+            request: engine::storage::CreateSession,
+        ) -> Result<engine::storage::SessionRecord, engine::storage::SessionStoreError> {
+            self.inner.create_session(request).await
+        }
+
+        async fn load_session(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<engine::storage::SessionRecord>, engine::storage::SessionStoreError>
+        {
+            self.inner.load_session(session_id).await
+        }
+
+        async fn list_links(
+            &self,
+            request: engine::storage::ListSessionLinks,
+        ) -> Result<Vec<engine::storage::SessionLinkRecord>, engine::storage::SessionStoreError>
+        {
+            self.inner.list_links(request).await
+        }
+
+        async fn append(
+            &self,
+            request: engine::storage::AppendSessionEvents,
+        ) -> Result<engine::storage::AppendSessionEventsResult, engine::storage::SessionStoreError>
+        {
+            self.inner.append(request).await
+        }
+
+        async fn read_after(
+            &self,
+            request: engine::storage::ReadSessionEvents,
+        ) -> Result<engine::storage::SessionPage, engine::storage::SessionStoreError> {
+            self.event_reads.fetch_add(1, Ordering::Relaxed);
+            self.inner.read_after(request).await
+        }
+
+        async fn head(
+            &self,
+            session_id: &SessionId,
+        ) -> Result<Option<engine::SessionPosition>, engine::storage::SessionStoreError> {
+            self.inner.head(session_id).await
+        }
     }
 
     #[async_trait]
@@ -2828,22 +2524,6 @@ mod tests {
                 complete: true,
                 gap: None,
             })
-        }
-
-        async fn list_session_environments(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<SessionEnvironmentListResponse, AgentApiError> {
-            Ok(self
-                .environments
-                .lock()
-                .expect("lock")
-                .get(session_id)
-                .cloned()
-                .unwrap_or_else(|| SessionEnvironmentListResponse {
-                    active_env_id: None,
-                    environments: Vec::new(),
-                }))
         }
     }
 
@@ -3317,10 +2997,7 @@ mod tests {
             .expect("open child");
 
         let service = FleetService::new(sessions.clone(), Arc::new(FakeRuntime::default()))
-            .with_vfs_stores(vfs.clone())
-            .with_environment_bindings(Arc::new(
-                environments::InMemoryEnvironmentRegistryStore::new(),
-            ));
+            .with_vfs_stores(vfs.clone());
         service
             .apply_resource_policies(
                 &child,
@@ -3335,10 +3012,10 @@ mod tests {
             .await
             .expect("isolate");
 
-        let entries = read_all_session_entries(sessions.as_ref(), &child, 100)
+        let entries = api_projection::read_all_session_entries(sessions.as_ref(), &child, 100)
             .await
             .expect("child entries");
-        let state = replay_core_agent_state(&entries).expect("child state");
+        let state = api_projection::replay_core_agent_state(&entries).expect("child state");
         let links = &state
             .lifecycle
             .config
@@ -3386,6 +3063,8 @@ mod tests {
                     tool_name: ToolName::new(AGENT_SPAWN_TOOL_NAME),
                     arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -3408,7 +3087,8 @@ mod tests {
         let parent = open_source_session(sessions.as_ref()).await;
         let child = create_linked_child(sessions.as_ref(), &parent).await;
         let runtime = Arc::new(FakeRuntime::default());
-        let service = FleetService::new(sessions, runtime.clone());
+        let counting_sessions = Arc::new(CountingSessionStore::new(sessions));
+        let service = FleetService::new(counting_sessions.clone(), runtime.clone());
 
         let output = service
             .send(
@@ -3427,19 +3107,10 @@ mod tests {
             .expect("send")
             .output;
 
-        assert_eq!(output.target_session_id.as_deref(), Some(child.as_str()));
-        assert_eq!(output.run_id, None);
-        assert!(
-            output
-                .submission_id
-                .as_deref()
-                .is_some_and(|submission_id| submission_id.starts_with("fleet_send_"))
-        );
-        assert_eq!(output.status, AgentSendStatus::Delivered);
-        assert_eq!(
-            runtime.started_sessions.lock().expect("lock").as_slice(),
-            &[(child.clone(), false, None)]
-        );
+        assert_eq!(output.target_session_id, child.as_str());
+        assert!(output.submission_id.starts_with("fleet_send_"));
+        assert!(runtime.started_sessions.lock().expect("lock").is_empty());
+        assert_eq!(counting_sessions.event_reads(), 0);
         let started_runs = runtime.started_runs.lock().expect("lock");
         assert_eq!(started_runs.len(), 1);
         assert_eq!(started_runs[0].session_id, child);
@@ -3471,7 +3142,8 @@ mod tests {
         let parent = open_source_session(sessions.as_ref()).await;
         let child = create_linked_child(sessions.as_ref(), &parent).await;
         let runtime = Arc::new(FakeRuntime::default());
-        let service = FleetService::new(sessions, runtime.clone());
+        let counting_sessions = Arc::new(CountingSessionStore::new(sessions));
+        let service = FleetService::new(counting_sessions.clone(), runtime.clone());
 
         let result = service
             .request(
@@ -3485,7 +3157,7 @@ mod tests {
             .await
             .expect("request");
 
-        let promise = result.output.promise.clone().expect("promise");
+        let promise = result.output.promise.clone();
         let effect = result.promise_effect.expect("promise effect");
         assert_eq!(effect.kind, engine::PROMISE_CREATE_EFFECT_KIND);
         assert_eq!(effect.data.get("source"), Some(&"run".to_owned()));
@@ -3505,16 +3177,18 @@ mod tests {
         let envelope = text_item_json(&started_runs[0].input[0]);
         assert_eq!(envelope["fleet_request"]["from_session_id"], "parent");
         assert_eq!(envelope["text"], "do more work");
+        assert_eq!(counting_sessions.event_reads(), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn request_to_parent_is_rejected_and_points_to_send() {
+    async fn request_to_parent_uses_the_same_linked_target_admission() {
         let sessions = Arc::new(InMemorySessionStore::new());
-        let child = open_source_session(sessions.as_ref()).await;
+        let parent = open_source_session(sessions.as_ref()).await;
+        let child = create_linked_child(sessions.as_ref(), &parent).await;
         let runtime = Arc::new(FakeRuntime::default());
-        let service = FleetService::new(sessions, runtime);
+        let service = FleetService::new(sessions, runtime.clone());
 
-        let error = service
+        let result = service
             .request(
                 context(child),
                 serde_json::from_value(json!({
@@ -3524,11 +3198,12 @@ mod tests {
                 .expect("request args"),
             )
             .await
-            .expect_err("parent request should be rejected");
+            .expect("request parent");
 
-        let message = error.to_string();
-        assert!(message.contains("agent_request cannot target parent"));
-        assert!(message.contains("use agent_send"));
+        assert_eq!(result.output.target_session_id, parent.as_str());
+        let started_runs = runtime.started_runs.lock().expect("lock");
+        assert_eq!(started_runs.len(), 1);
+        assert_eq!(started_runs[0].session_id, parent);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3552,14 +3227,8 @@ mod tests {
             .expect("send")
             .output;
 
-        assert_eq!(output.target_session_id.as_deref(), Some(parent.as_str()));
-        assert_eq!(output.run_id, None);
-        assert!(
-            output
-                .submission_id
-                .as_deref()
-                .is_some_and(|submission_id| submission_id.starts_with("fleet_send_"))
-        );
+        assert_eq!(output.target_session_id, parent.as_str());
+        assert!(output.submission_id.starts_with("fleet_send_"));
         let started_runs = runtime.started_runs.lock().expect("lock");
         assert_eq!(started_runs[0].session_id, parent);
         let envelope = text_item_json(&started_runs[0].input[0]);
@@ -3571,29 +3240,41 @@ mod tests {
     async fn detach_promises_returns_detach_effects() {
         let sessions = Arc::new(InMemorySessionStore::new());
         let parent = open_source_session(sessions.as_ref()).await;
-        append_parent_with_promise(
-            sessions.as_ref(),
-            &parent,
-            "promise_request_1",
-            engine::PromiseStatus::Pending,
-        )
-        .await;
         let runtime = Arc::new(FakeRuntime::default());
         let service = FleetService::new(sessions, runtime);
-
-        let result = service
-            .detach_promises(
-                &context(parent),
-                serde_json::from_value(json!({
-                    "promises": ["promise_request_1"]
-                }))
-                .expect("detach args"),
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let arguments_ref = blobs
+            .put_bytes(br#"{"promises":["promise_request_1"]}"#.to_vec())
+            .await
+            .expect("detach args");
+        let executor = FleetToolExecutor::new(blobs, service);
+        let result = executor
+            .invoke(
+                context(parent),
+                &ToolInvocationRequest {
+                    call_id: ToolCallId::new("call_detach"),
+                    tool_name: ToolName::new(DETACH_TOOL_NAME),
+                    arguments_ref,
+                    execution_target: None,
+                    workflow_tool: None,
+                    promise_control: Some(engine::PromiseControlCallRuntime::v1(vec![
+                        engine::PromiseControlRuntime {
+                            promise_id: PromiseId::new("promise_request_1"),
+                            state: engine::PromiseControlStateRuntime::Known {
+                                ownership: engine::PromiseOwnership::Model,
+                                scope: engine::PromiseScope::Run {
+                                    run_id: RunId::new(1),
+                                },
+                                promise_status: engine::PromiseStatus::Pending,
+                            },
+                        },
+                    ])),
+                },
             )
             .await
             .expect("detach");
 
-        assert_eq!(result.output.promises.len(), 1);
-        assert_eq!(result.output.promises[0].status, "detached");
+        assert_eq!(result.status, ToolCallStatus::Succeeded);
         assert_eq!(result.effects.len(), 1);
         assert_eq!(result.effects[0].kind, engine::PROMISE_DETACH_EFFECT_KIND);
         assert_eq!(
@@ -3603,13 +3284,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn send_without_link_returns_not_reachable() {
+    async fn send_without_link_is_rejected() {
         let sessions = Arc::new(InMemorySessionStore::new());
         let parent = open_source_session(sessions.as_ref()).await;
         let runtime = Arc::new(FakeRuntime::default());
         let service = FleetService::new(sessions, runtime.clone());
 
-        let output = service
+        let error = service
             .send(
                 context(parent),
                 serde_json::from_value(json!({
@@ -3619,23 +3300,20 @@ mod tests {
                 .expect("send args"),
             )
             .await
-            .expect("send")
-            .output;
+            .expect_err("unlinked send must fail");
 
-        assert_eq!(output.target_session_id.as_deref(), Some("other"));
-        assert_eq!(output.run_id, None);
-        assert_eq!(output.status, AgentSendStatus::NotReachable);
+        assert!(error.to_string().contains("not directly linked"));
         assert!(runtime.started_runs.lock().expect("lock").is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn send_to_parent_from_root_returns_not_reachable() {
+    async fn send_to_parent_from_root_is_rejected() {
         let sessions = Arc::new(InMemorySessionStore::new());
         let parent = open_source_session(sessions.as_ref()).await;
         let runtime = Arc::new(FakeRuntime::default());
         let service = FleetService::new(sessions, runtime.clone());
 
-        let output = service
+        let error = service
             .send(
                 context(parent),
                 serde_json::from_value(json!({
@@ -3645,11 +3323,9 @@ mod tests {
                 .expect("send args"),
             )
             .await
-            .expect("send")
-            .output;
+            .expect_err("root has no parent");
 
-        assert_eq!(output.target_session_id, None);
-        assert_eq!(output.status, AgentSendStatus::NotReachable);
+        assert!(error.to_string().contains("no Fleet parent"));
         assert!(runtime.started_runs.lock().expect("lock").is_empty());
     }
 
@@ -3795,13 +3471,13 @@ mod tests {
                 api_event(&child, 3),
             ],
         );
-        runtime.environments.lock().expect("lock").insert(
-            child.clone(),
-            SessionEnvironmentListResponse {
-                active_env_id: Some("env_1".to_owned()),
-                environments: Vec::new(),
-            },
-        );
+        runtime
+            .sessions
+            .lock()
+            .expect("lock")
+            .get_mut(&child)
+            .expect("child session")
+            .active_environment_id = Some("env_1".to_owned());
         let service = FleetService::new(sessions, runtime);
 
         let output = service
@@ -3824,7 +3500,7 @@ mod tests {
         );
         assert_eq!(output.lineage.source_session_id.as_deref(), Some("parent"));
         assert_eq!(output.links.len(), 1);
-        assert_eq!(output.environments["activeEnvId"], "env_1");
+        assert_eq!(output.environments["activeEnvironmentId"], "env_1");
         assert_eq!(output.recent_events.len(), 2);
         assert_eq!(output.recent_events[0]["cursor"]["seq"], 2);
         assert_eq!(output.recent_transcript.len(), 3);
@@ -3982,6 +3658,8 @@ mod tests {
                     tool_name: ToolName::new(AWAIT_TOOL_NAME),
                     arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4058,6 +3736,8 @@ mod tests {
                     tool_name: ToolName::new(AGENT_READ_TOOL_NAME),
                     arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4114,6 +3794,8 @@ mod tests {
                     tool_name: ToolName::new(PROFILE_LIST_TOOL_NAME),
                     arguments_ref: list_arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4148,6 +3830,8 @@ mod tests {
                     tool_name: ToolName::new(PROFILE_READ_TOOL_NAME),
                     arguments_ref: read_arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4174,19 +3858,17 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn profile_tools_apply_fleet_profile_policy() {
         let sessions = Arc::new(InMemorySessionStore::new());
-        let parent = open_source_session_with_fleet_config(
-            sessions.as_ref(),
-            FleetFeature {
-                profiles: FleetProfilesConfig {
-                    allow: Some(vec!["support".to_owned(), "admin".to_owned()]),
-                    deny: vec!["admin".to_owned()],
-                    inline: true,
-                },
-                spawn: FleetSpawnConfig::default(),
-                ..FleetFeature::default()
+        let fleet_policy = FleetFeature {
+            profiles: FleetProfilesConfig {
+                allow: Some(vec!["support".to_owned(), "admin".to_owned()]),
+                deny: vec!["admin".to_owned()],
+                inline: true,
             },
-        )
-        .await;
+            spawn: FleetSpawnConfig::default(),
+            ..FleetFeature::default()
+        };
+        let parent =
+            open_source_session_with_fleet_config(sessions.as_ref(), fleet_policy.clone()).await;
         let blobs = Arc::new(engine::storage::InMemoryBlobStore::new());
         let support = test_profile("support");
         let admin = test_profile("admin");
@@ -4198,17 +3880,22 @@ mod tests {
             profiles.insert(admin.profile_id.clone(), admin);
             profiles.insert(hidden.profile_id.clone(), hidden);
         }
-        let service = FleetService::new(sessions, runtime);
+        let counting_sessions = Arc::new(CountingSessionStore::new(sessions));
+        let service = FleetService::new(counting_sessions.clone(), runtime);
         let executor = FleetToolExecutor::new(blobs.clone(), service);
+        let mut invocation_context = context(parent.clone());
+        invocation_context.fleet_policy = Some(fleet_policy);
 
         let list_result = executor
             .invoke(
-                context(parent.clone()),
+                invocation_context.clone(),
                 &ToolInvocationRequest {
                     call_id: ToolCallId::new("call_profile_list"),
                     tool_name: ToolName::new(PROFILE_LIST_TOOL_NAME),
                     arguments_ref: blobs.put_bytes(br#"{}"#.to_vec()).await.expect("args"),
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4225,7 +3912,7 @@ mod tests {
 
         let denied_read = executor
             .invoke(
-                context(parent),
+                invocation_context,
                 &ToolInvocationRequest {
                     call_id: ToolCallId::new("call_profile_read"),
                     tool_name: ToolName::new(PROFILE_READ_TOOL_NAME),
@@ -4234,6 +3921,8 @@ mod tests {
                         .await
                         .expect("args"),
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4244,33 +3933,37 @@ mod tests {
             .await
             .expect("read error");
         assert!(error.contains("profile admin is not allowed"));
+        assert_eq!(counting_sessions.event_reads(), 0);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_rejects_disallowed_profile_sources_and_bases() {
         let sessions = Arc::new(InMemorySessionStore::new());
-        let parent = open_source_session_with_fleet_config(
-            sessions.as_ref(),
-            FleetFeature {
-                profiles: FleetProfilesConfig {
-                    allow: Some(vec!["worker".to_owned()]),
-                    deny: Vec::new(),
-                    inline: false,
-                },
-                spawn: FleetSpawnConfig {
-                    bases: Some(vec![FleetSpawnBase::Profile]),
-                },
-                ..FleetFeature::default()
+        let fleet_policy = FleetFeature {
+            profiles: FleetProfilesConfig {
+                allow: Some(vec!["worker".to_owned()]),
+                deny: Vec::new(),
+                inline: false,
             },
-        )
-        .await;
+            spawn: FleetSpawnConfig {
+                bases: Some(vec![FleetSpawnBase::Profile]),
+            },
+            ..FleetFeature::default()
+        };
+        let parent =
+            open_source_session_with_fleet_config(sessions.as_ref(), fleet_policy.clone()).await;
         let runtime = Arc::new(FakeRuntime::default());
         let service = FleetService::new(sessions, runtime.clone());
+        let spawn_context = |parent: SessionId| {
+            let mut context = context(parent);
+            context.fleet_policy = Some(fleet_policy.clone());
+            context
+        };
 
         let mut self_args = spawn_args("clone yourself");
         self_args.base = AgentSpawnBase::Self_ { fork: None };
         let self_error = service
-            .spawn(context(parent.clone()), self_args)
+            .spawn(spawn_context(parent.clone()), self_args)
             .await
             .expect_err("self base should be rejected");
         assert!(self_error.message.contains("base self is not allowed"));
@@ -4282,7 +3975,7 @@ mod tests {
             },
         };
         let named_error = service
-            .spawn(context(parent.clone()), denied_named)
+            .spawn(spawn_context(parent.clone()), denied_named)
             .await
             .expect_err("named profile should be rejected");
         assert!(named_error.message.contains("profile admin is not allowed"));
@@ -4298,7 +3991,7 @@ mod tests {
             },
         };
         let inline_error = service
-            .spawn(context(parent), inline)
+            .spawn(spawn_context(parent), inline)
             .await
             .expect_err("inline profile should be rejected");
         assert!(
@@ -4337,6 +4030,8 @@ mod tests {
                     tool_name: ToolName::new(AGENT_SEND_TOOL_NAME),
                     arguments_ref,
                     execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
                 },
             )
             .await
@@ -4347,8 +4042,7 @@ mod tests {
         let output: AgentSendOutput =
             serde_json::from_slice(&blobs.read_bytes(output_ref).await.expect("read output"))
                 .expect("decode output");
-        assert_eq!(output.target_session_id.as_deref(), Some(child.as_str()));
-        assert_eq!(output.run_id, None);
+        assert_eq!(output.target_session_id, child.as_str());
         let visible_ref = visible_tool_result_ref(&result);
         let visible = blobs.read_text(&visible_ref).await.expect("read visible");
         assert!(visible.contains("Delivered message"));
@@ -4548,6 +4242,7 @@ mod tests {
             batch_id: ToolBatchId::new(1),
             call_id: ToolCallId::new("call_1"),
             observed_at_ms: 10,
+            fleet_policy: Some(FleetFeature::default()),
         }
     }
 
@@ -4610,6 +4305,7 @@ mod tests {
                     ..api::FeaturesConfig::default()
                 }),
             }),
+            active_environment_id: None,
             created_at_ms: 1,
             updated_at_ms: 2,
             runs,

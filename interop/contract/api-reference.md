@@ -184,38 +184,11 @@ Applies a named or inline profile's config, instructions, and environment setup 
 - Params: `ProfileApplyParams`
 - Result: `AgentApiOutcome<ProfileApplyResponse>`
 
-### `session/environments/read`
-
-**Read a session environment binding**
-
-Returns one session-local environment alias joined with current instance/provider availability and activation state.
-
-- Params: `SessionEnvironmentReadParams`
-- Result: `AgentApiOutcome<SessionEnvironmentReadResponse>`
-
-### `session/environments/list`
-
-**List session environment bindings**
-
-Returns all environment aliases attached to the session and identifies the active tool target, if any.
-
-- Params: `SessionEnvironmentListParams`
-- Result: `AgentApiOutcome<SessionEnvironmentListResponse>`
-
-### `session/environments/attach`
-
-**Attach an environment to a session**
-
-Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.
-
-- Params: `SessionEnvironmentAttachParams`
-- Result: `AgentApiOutcome<SessionEnvironmentAttachResponse>`
-
 ### `session/environments/activate`
 
 **Activate a session environment**
 
-Selects an attached, available environment as the process/filesystem tool target while the session is idle.
+Selects an allowed, live universe environment for environment-targeted tools while the session is idle.
 
 - Params: `SessionEnvironmentActivateParams`
 - Result: `AgentApiOutcome<SessionEnvironmentActivateResponse>`
@@ -224,46 +197,37 @@ Selects an attached, available environment as the process/filesystem tool target
 
 **Deactivate the session environment**
 
-Clears the active environment tool target without detaching any binding or closing the underlying instance.
+Clears active environment selection without changing or closing the universe environment.
 
 - Params: `SessionEnvironmentDeactivateParams`
 - Result: `AgentApiOutcome<SessionEnvironmentDeactivateResponse>`
 
-### `session/environments/detach`
-
-**Detach a session environment**
-
-Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.
-
-- Params: `SessionEnvironmentDetachParams`
-- Result: `AgentApiOutcome<SessionEnvironmentDetachResponse>`
-
-### `session/environments/credentials/bind`
+### `environments/credentials/bind`
 
 **Bind a credential into an environment**
 
-Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.
+Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.
 
-- Params: `SessionEnvironmentCredentialBindParams`
-- Result: `AgentApiOutcome<SessionEnvironmentCredentialBindResponse>`
+- Params: `EnvironmentCredentialBindParams`
+- Result: `AgentApiOutcome<EnvironmentCredentialBindResponse>`
 
-### `session/environments/credentials/list`
+### `environments/credentials/list`
 
 **List environment credential bindings**
 
-Returns variable names and credential source handles for a session environment; resolved secret values are never returned.
+Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.
 
-- Params: `SessionEnvironmentCredentialListParams`
-- Result: `AgentApiOutcome<SessionEnvironmentCredentialListResponse>`
+- Params: `EnvironmentCredentialListParams`
+- Result: `AgentApiOutcome<EnvironmentCredentialListResponse>`
 
-### `session/environments/credentials/unbind`
+### `environments/credentials/unbind`
 
 **Unbind an environment credential**
 
 Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.
 
-- Params: `SessionEnvironmentCredentialUnbindParams`
-- Result: `AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>`
+- Params: `EnvironmentCredentialUnbindParams`
+- Result: `AgentApiOutcome<EnvironmentCredentialUnbindResponse>`
 
 ### `environments/create`
 

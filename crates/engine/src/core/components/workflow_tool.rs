@@ -52,6 +52,7 @@ const EFFECT_TURN_ID: &str = "turn_id";
 const EFFECT_TOOL_BATCH_ID: &str = "tool_batch_id";
 const EFFECT_TOOL_CALL_ID: &str = "tool_call_id";
 const EFFECT_ARGUMENTS_REF: &str = "arguments_ref";
+const EFFECT_EXECUTION_CONTEXT_REF: &str = "execution_context_ref";
 const EFFECT_COMPLETION_PROMISES: &str = "completion_promises";
 const EFFECT_COMPLETION_DEADLINE_MS: &str = "completion_deadline_ms";
 
@@ -359,7 +360,7 @@ impl WorkflowToolDefinition {
                 self.tool_id
             )));
         }
-        if self.tool.target_requirement.namespace().is_some() {
+        if self.tool.target_requirement != crate::ToolTargetRequirement::None {
             return Err(DomainError::InvariantViolation(format!(
                 "workflow tool {} must not declare an execution target",
                 self.tool_id
@@ -398,6 +399,10 @@ pub struct WorkflowToolInvocation {
     pub tool_batch_id: ToolBatchId,
     pub tool_call_id: ToolCallId,
     pub arguments_ref: BlobRef,
+    /// Opaque, runtime-supplied context for the receiving workflow. This is
+    /// separate from model-authored arguments so runtime state can be pinned
+    /// without changing the tool's declared argument schema.
+    pub execution_context_ref: Option<BlobRef>,
     /// Keyed promise set created atomically with this invocation; `None`
     /// for notify (`Accepted`) completion. Request/reply is the single
     /// reserved key `reply`.
@@ -1401,6 +1406,12 @@ pub fn workflow_tool_emit_effect(invocation: &WorkflowToolInvocation) -> ToolEff
         EFFECT_ARGUMENTS_REF.to_owned(),
         invocation.arguments_ref.as_str().to_owned(),
     );
+    if let Some(context_ref) = &invocation.execution_context_ref {
+        data.insert(
+            EFFECT_EXECUTION_CONTEXT_REF.to_owned(),
+            context_ref.as_str().to_owned(),
+        );
+    }
     if let Some(promises) = &invocation.completion_promises {
         let encoded: BTreeMap<&str, &str> = promises
             .iter()
@@ -1497,6 +1508,17 @@ pub(crate) fn invocation_from_emit_effect(
             "workflow tool emit effect has invalid arguments ref: {error}"
         ))
     })?;
+    let execution_context_ref = effect
+        .data
+        .get(EFFECT_EXECUTION_CONTEXT_REF)
+        .map(|value| {
+            BlobRef::parse(value.clone()).map_err(|error| {
+                DomainError::InvariantViolation(format!(
+                    "workflow tool emit effect has invalid execution context ref: {error}"
+                ))
+            })
+        })
+        .transpose()?;
     let completion_promises = effect
         .data
         .get(EFFECT_COMPLETION_PROMISES)
@@ -1537,6 +1559,7 @@ pub(crate) fn invocation_from_emit_effect(
         )?),
         tool_call_id,
         arguments_ref,
+        execution_context_ref,
         completion_promises,
     }))
 }
@@ -2632,8 +2655,16 @@ mod tests {
             tool_batch_id: ToolBatchId::new(1),
             tool_call_id: ToolCallId::new("call-1"),
             arguments_ref: BlobRef::from_bytes(b"{}"),
+            execution_context_ref: None,
             completion_promises: None,
         };
+
+        invocation.execution_context_ref = Some(BlobRef::from_bytes(b"runtime context"));
+        let effect = workflow_tool_emit_effect(&invocation);
+        assert_eq!(
+            invocation_from_emit_effect(&effect).expect("decode emit effect"),
+            Some(invocation.clone())
+        );
 
         // Missing map on a promise-bearing binding.
         assert!(validate_completion_promises(&binding, &invocation).is_err());
@@ -2870,6 +2901,13 @@ mod tests {
             .get(&definition.tool_id)
             .cloned()
             .expect("durable workflow-tool binding");
+        assert!(request.calls.iter().all(|call| {
+            call.workflow_tool.as_ref().is_some_and(|runtime| {
+                runtime.version == crate::WorkflowToolCallRuntime::VERSION
+                    && runtime.binding == binding
+                    && runtime.prior_emission_count == 0
+            })
+        }));
         let invocations = request
             .calls
             .iter()
@@ -2894,6 +2932,7 @@ mod tests {
                 tool_batch_id: request.batch_id,
                 tool_call_id: call.call_id.clone(),
                 arguments_ref: call.arguments_ref.clone(),
+                execution_context_ref: None,
                 completion_promises: None,
             })
             .collect::<Vec<_>>();

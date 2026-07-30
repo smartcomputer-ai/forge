@@ -329,23 +329,15 @@ api_methods! {
         ["Deactivate a session skill", "Removes an active skill's injected context from an open idle session; the skill must currently be active."],
     METHOD_SESSION_PROFILES_APPLY => apply_profile(ProfileApplyParams) -> ProfileApplyResponse =>
         ["Apply a profile to a session", "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes."],
-    METHOD_SESSION_ENVIRONMENTS_READ => read_session_environment(SessionEnvironmentReadParams) -> SessionEnvironmentReadResponse =>
-        ["Read a session environment binding", "Returns one session-local environment alias joined with current instance/provider availability and activation state."],
-    METHOD_SESSION_ENVIRONMENTS_LIST => list_session_environments(SessionEnvironmentListParams) -> SessionEnvironmentListResponse =>
-        ["List session environment bindings", "Returns all environment aliases attached to the session and identifies the active tool target, if any."],
-    METHOD_SESSION_ENVIRONMENTS_ATTACH => attach_session_environment(SessionEnvironmentAttachParams) -> SessionEnvironmentAttachResponse =>
-        ["Attach an environment to a session", "Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider."],
     METHOD_SESSION_ENVIRONMENTS_ACTIVATE => activate_session_environment(SessionEnvironmentActivateParams) -> SessionEnvironmentActivateResponse =>
-        ["Activate a session environment", "Selects an attached, available environment as the process/filesystem tool target while the session is idle."],
+        ["Activate a session environment", "Selects an allowed, live universe environment for environment-targeted tools while the session is idle."],
     METHOD_SESSION_ENVIRONMENTS_DEACTIVATE => deactivate_session_environment(SessionEnvironmentDeactivateParams) -> SessionEnvironmentDeactivateResponse =>
-        ["Deactivate the session environment", "Clears the active environment tool target without detaching any binding or closing the underlying instance."],
-    METHOD_SESSION_ENVIRONMENTS_DETACH => detach_session_environment(SessionEnvironmentDetachParams) -> SessionEnvironmentDetachResponse =>
-        ["Detach a session environment", "Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned."],
-    METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_BIND => bind_session_environment_credential(SessionEnvironmentCredentialBindParams) -> SessionEnvironmentCredentialBindResponse =>
-        ["Bind a credential into an environment", "Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material."],
-    METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_LIST => list_session_environment_credentials(SessionEnvironmentCredentialListParams) -> SessionEnvironmentCredentialListResponse =>
-        ["List environment credential bindings", "Returns variable names and credential source handles for a session environment; resolved secret values are never returned."],
-    METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_UNBIND => unbind_session_environment_credential(SessionEnvironmentCredentialUnbindParams) -> SessionEnvironmentCredentialUnbindResponse =>
+        ["Deactivate the session environment", "Clears active environment selection without changing or closing the universe environment."],
+    METHOD_ENVIRONMENTS_CREDENTIALS_BIND => bind_environment_credential(EnvironmentCredentialBindParams) -> EnvironmentCredentialBindResponse =>
+        ["Bind a credential into an environment", "Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material."],
+    METHOD_ENVIRONMENTS_CREDENTIALS_LIST => list_environment_credentials(EnvironmentCredentialListParams) -> EnvironmentCredentialListResponse =>
+        ["List environment credential bindings", "Returns variable names and credential source handles for a universe environment; resolved secret values are never returned."],
+    METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND => unbind_environment_credential(EnvironmentCredentialUnbindParams) -> EnvironmentCredentialUnbindResponse =>
         ["Unbind an environment credential", "Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret."],
     METHOD_ENVIRONMENTS_CREATE => create_environment(EnvironmentCreateParams) -> EnvironmentCreateResponse =>
         ["Provision an environment instance", "Asks a live provider with create capability to create a universe-owned environment instance. This does not attach the instance to any session."],

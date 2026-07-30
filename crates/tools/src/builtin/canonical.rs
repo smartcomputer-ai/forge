@@ -308,7 +308,6 @@ fn job_start_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "env_id": { "type": ["string", "null"], "description": "Environment id. Defaults to the active environment." },
             "jobs": {
                 "type": "array",
                 "items": {
@@ -350,10 +349,10 @@ fn job_handle_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "instance_id": { "type": "string" },
+            "environment_id": { "type": "string" },
             "job_id": { "type": "string" }
         },
-        "required": ["instance_id", "job_id"],
+        "required": ["environment_id", "job_id"],
         "additionalProperties": false
     })
 }

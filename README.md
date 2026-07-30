@@ -57,11 +57,13 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 
 **Borrowed compute**
 - [x] **Dedicated VMs**, connected as universe environment instances that
-  sessions attach to through explicit bindings
+  sessions use through event-sourced active environment state; model discovery
+  and selection is a separate, default-off `selectionTools` grant
 - [x] **Provider-owned jobs** for long-running work: downloads, experiments,
   and delegated coding-agent runs with optional session/run supervision. Jobs
   are an advanced, default-off environment grant and appear as model tools
-  only when an attached ready environment advertises the required capability
+  when the environment feature grants them; live availability is checked when
+  invoked
 - [ ] **Ad-hoc sandboxes**
 
 **Security & auth**

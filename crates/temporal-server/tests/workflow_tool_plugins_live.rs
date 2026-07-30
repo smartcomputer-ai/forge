@@ -1628,6 +1628,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
             tool_batch_id: engine::ToolBatchId::new(1),
             tool_call_id: engine::ToolCallId::new("synthetic-call"),
             arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+            execution_context_ref: None,
             completion_promises: None,
         };
         let duplicate_push = EmissionEnvelope::tool_invocation(

@@ -68,7 +68,6 @@
   `features.vfs.workspaceLinks`, derive filesystem/runtime projection from
   config plus the VFS catalog, remove the `vfs_mounts` table and mount APIs,
   and preserve dangling links when referenced workspaces are deleted
-- [ ] optimize: we're rading all session events to get latest state, this will get expensve in the future
 
 ## Hosted Runtime
 - [ ] [P105](p105-unbounded-hosted-runs.md) — remove the hosted
@@ -76,6 +75,11 @@
   across history-driven Temporal continue-as-new boundaries, preserving
   durable progress and transient transport state without fixed-step rollover
   or workflow failure
+- [ ] [P109](p109-runtime-state-handoff.md) — remove owning-session log replay
+  from ordinary tool, Promise, environment, environment-job, and Fleet runtime
+  paths by carrying bounded facts from the Temporal workflow's current
+  `CoreAgentState`; retain replay for bootstrap, continue-as-new, recovery, and
+  explicit API/history reads
 
 ## Fleet (sub-agents)
 - [x] [P82](p82-session-graph-fork-clone.md) — session graph foundation: clone, fork (by-reference), and links in the store
@@ -96,6 +100,10 @@
 - [ ] incremental tool discovery support (at least OAI)
 
 ## Environmnets & Sandboxes
+- [ ] [P108](p108-universe-environments.md) — make environments and their
+  credentials universe resources, replace session attachment/catalog state
+  with one event-sourced active environment, add focused model discovery and
+  selection tools, and remove generic default-target routing
 - [ ] [P96](p96-environment-api.md) — environment API review: machines as universe resources vs session bindings, real presence leases, machine-keyed durable jobs, occupancy-checked teardown
 - [ ] Fix host-bridge fs routing doubled path: absolute guest paths get
       re-prefixed with the bridge root, so file-tool reads of shell-written

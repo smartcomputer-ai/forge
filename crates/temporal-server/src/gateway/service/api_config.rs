@@ -16,26 +16,18 @@ impl GatewayAgentApi {
             .await?;
         Ok(config)
     }
+}
 
-    pub(super) async fn run_config_for_start(
-        &self,
-        session_id: &SessionId,
-        api_config: Option<RunStartConfig>,
-    ) -> Result<RunConfig, AgentApiError> {
-        let loaded = self.load_session_state(session_id).await?;
-        let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
-            AgentApiError::invalid_request(format!("session is not open: {session_id}"))
-        })?;
-        // Seed run budgets from the session's limits; generation defaults are
-        // overlaid at planning time inside the engine.
-        let mut run_config = RunConfig {
-            max_turns: session_config.limits.max_turns,
-            max_tool_rounds: session_config.limits.max_tool_rounds,
-            ..RunConfig::default()
-        };
-        apply_run_start_config(&mut run_config, session_config, api_config)?;
-        Ok(run_config)
-    }
+/// Build only the per-run overrides supplied by `session/runs/start`.
+/// Session defaults remain in `SessionConfig` and are resolved by the engine
+/// from its live state; they must not be copied into the override document.
+pub(super) fn run_config_for_start(
+    session_config: &SessionConfig,
+    api_config: Option<RunStartConfig>,
+) -> Result<RunConfig, AgentApiError> {
+    let mut run_config = RunConfig::default();
+    apply_run_start_config(&mut run_config, session_config, api_config)?;
+    Ok(run_config)
 }
 
 /// Translate the wire config document into the engine document. An absent
@@ -158,6 +150,7 @@ fn features_from_api(
             .map(|environments| engine::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers,
+                selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
             }),
         mcp: features.mcp.map(|mcp| engine::McpFeature {

@@ -448,8 +448,9 @@ pub struct TimersFeature {
     pub version: u32,
 }
 
-/// Grants attaching/activating session environments and their process tool
-/// surface. Durable jobs are an independent, default-off sub-grant.
+/// Grants active session environments and their process tool surface.
+/// Model-driven selection and durable jobs are independent, default-off
+/// sub-grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentsFeature {
@@ -458,9 +459,15 @@ pub struct EnvironmentsFeature {
     /// Absent means every registered provider is allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<EnvironmentProviderId>>,
+    /// Exposes `environment_list`, `environment_activate`, and
+    /// `environment_deactivate` to the model. `environment_read` is available
+    /// whenever environments are enabled, and external API/profile activation
+    /// remains available when this is false.
+    #[serde(default)]
+    pub selection_tools: bool,
     /// Grants the advanced durable-job tool surface. The workflow binding is
-    /// installed for the session when granted; model-visible tools still
-    /// require a ready attached environment with matching job capabilities.
+    /// installed for the session when granted; invocations still require an
+    /// active, ready environment with matching job capabilities.
     #[serde(default)]
     pub jobs: bool,
 }
@@ -604,11 +611,10 @@ pub enum ToolParallelismView {
 pub enum ToolTargetRequirementView {
     #[default]
     None,
-    Optional {
-        namespace: String,
-    },
-    Required {
-        namespace: String,
+    SessionFilesystem,
+    ActiveEnvironment,
+    Fixed {
+        target: ToolExecutionTargetView,
     },
 }
 
@@ -1104,9 +1110,8 @@ pub enum SessionEventKindView {
         upserted: Vec<String>,
         removed: Vec<String>,
     },
-    ToolDefaultTargetChanged {
-        namespace: String,
-        target: Option<ToolExecutionTargetView>,
+    ActiveEnvironmentChanged {
+        environment_id: Option<EnvironmentId>,
     },
     ToolBatchStarted {
         run_id: RunId,

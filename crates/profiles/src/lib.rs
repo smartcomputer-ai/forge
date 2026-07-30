@@ -5,7 +5,7 @@
 
 use api::{
     AgentProfile, AgentProfileInput, AgentProfileSummary, InlineAgentProfile, ProfileDocument,
-    ProfileEnvironment, ProfileEnvironmentSource, ProfileId, ProfileInstructions, ProfileSource,
+    ProfileId, ProfileInstructions, ProfileSource,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -164,23 +164,8 @@ pub fn validate_profile_document(document: &ProfileDocument) -> Result<(), Profi
     if let Some(instructions) = &document.instructions {
         validate_profile_instructions(instructions)?;
     }
-    let mut env_ids = std::collections::BTreeSet::new();
-    let mut active_count = 0usize;
-    for environment in &document.environments {
-        validate_profile_environment(environment)?;
-        if !env_ids.insert(environment.env_id.clone()) {
-            return Err(ProfileError::InvalidInput {
-                message: format!("duplicate environment envId {}", environment.env_id),
-            });
-        }
-        if environment.activate {
-            active_count += 1;
-        }
-    }
-    if active_count > 1 {
-        return Err(ProfileError::InvalidInput {
-            message: "at most one environment may activate".to_owned(),
-        });
+    if let Some(environment_id) = &document.active_environment_id {
+        validate_nonempty_string("activeEnvironmentId", environment_id)?;
     }
     Ok(())
 }
@@ -196,18 +181,6 @@ fn validate_profile_instructions(instructions: &ProfileInstructions) -> Result<(
         ProfileInstructions::Text { text } => validate_nonempty_string("instructions.text", text),
         ProfileInstructions::TextRef { blob_ref } => {
             validate_nonempty_string("instructions.blobRef", blob_ref)
-        }
-    }
-}
-
-fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), ProfileError> {
-    validate_nonempty_string("environment.envId", &environment.env_id)?;
-    match &environment.environment {
-        ProfileEnvironmentSource::Existing { instance_id } => {
-            validate_nonempty_string("environment.instanceId", instance_id)
-        }
-        ProfileEnvironmentSource::Provision { provider_id, .. } => {
-            validate_nonempty_string("environment.providerId", provider_id)
         }
     }
 }
@@ -258,29 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn document_validation_rejects_multiple_active_environments() {
-        let multiple_active = ProfileDocument {
-            environments: vec![
-                ProfileEnvironment {
-                    env_id: "dev_a".to_owned(),
-                    environment: ProfileEnvironmentSource::Existing {
-                        instance_id: "evi_local".to_owned(),
-                    },
-                    activate: true,
-                },
-                ProfileEnvironment {
-                    env_id: "dev_b".to_owned(),
-                    environment: ProfileEnvironmentSource::Existing {
-                        instance_id: "evi_local".to_owned(),
-                    },
-                    activate: true,
-                },
-            ],
+    fn document_validation_rejects_empty_active_environment_id() {
+        let empty_environment = ProfileDocument {
+            active_environment_id: Some(String::new()),
             ..ProfileDocument::default()
         };
         assert!(matches!(
-            validate_profile_document(&multiple_active),
-            Err(ProfileError::InvalidInput { message }) if message.contains("at most one")
+            validate_profile_document(&empty_environment),
+            Err(ProfileError::InvalidInput { message }) if message.contains("activeEnvironmentId")
         ));
     }
 

@@ -15,7 +15,8 @@ pub use activities::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_PREPROCESS_RUN_INPUT,
     ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB, ACTIVITY_RUNTIME_PROJECTION_REFRESH,
     ACTIVITY_START_WORKFLOW_TOOL_EXECUTION, ACTIVITY_TOOL_INVOKE_BATCH,
-    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, WorkflowActivities,
+    ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS, ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY,
+    WorkflowActivities,
 };
 pub use config::{
     DEFAULT_BOOTSTRAP_PAYLOAD_BUDGET_BYTES, DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD,
@@ -42,7 +43,8 @@ pub use types::{
     PreprocessRunInputFailureKind, PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, SessionBootstrapPayloadTooLarge,
-    ToolInvokeBatchActivityRequest, WORKFLOW_TOOL_RECIPE_FORMAT_V1, WORKFLOW_TOOL_RECOVERY_QUERY,
+    ToolInvokeBatchActivityRequest, ToolPreparePromiseControlsActivityRequest,
+    WORKFLOW_TOOL_RECIPE_FORMAT_V1, WORKFLOW_TOOL_RECOVERY_QUERY,
     WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest, WorkflowToolRecipeV1,
     WorkflowToolRecoveryResult, WorkflowToolReplyValidationRequest,
     WorkflowToolReplyValidationResult, WorkflowToolStartActivityRequest,

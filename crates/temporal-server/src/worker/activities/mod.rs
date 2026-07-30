@@ -19,14 +19,15 @@ use crate::worker::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_PREPROCESS_RUN_INPUT,
     ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB, ACTIVITY_RUNTIME_PROJECTION_REFRESH,
     ACTIVITY_START_WORKFLOW_TOOL_EXECUTION, ACTIVITY_TOOL_INVOKE_BATCH,
-    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest, ContextCompactActivityRequest,
-    CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
+    ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS, ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY,
+    AppendEventsRequest, ContextCompactActivityRequest, CreateOrLoadSessionRequest,
+    CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobStartActivityRequest, EnvironmentJobStartActivityResult,
     LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
     PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
-    ToolInvokeBatchActivityRequest,
+    ToolInvokeBatchActivityRequest, ToolPreparePromiseControlsActivityRequest,
 };
 
 mod common;
@@ -227,6 +228,10 @@ mod tests {
             temporal_workflow::WorkflowActivities::tool_invoke_batch.name()
         );
         assert_eq!(
+            WorkerActivities::tool_prepare_promise_controls.name(),
+            temporal_workflow::WorkflowActivities::tool_prepare_promise_controls.name()
+        );
+        assert_eq!(
             WorkerActivities::runtime_projection_refresh.name(),
             temporal_workflow::WorkflowActivities::runtime_projection_refresh.name()
         );
@@ -292,13 +297,17 @@ mod tests {
                     run_id: RunId::new(1),
                     turn_id: TurnId::new(1),
                     batch_id: ToolBatchId::new(1),
-                    default_targets: Default::default(),
+                    active_environment_id: None,
+                    environment_policy: None,
+                    fleet_policy: None,
                     workspace_links: Vec::new(),
                     calls: vec![ToolInvocationRequest {
                         call_id: tool_call.call_id.clone(),
                         tool_name: tool_call.tool_name.clone(),
                         arguments_ref: tool_call.arguments_ref.clone(),
                         execution_target: None,
+                        workflow_tool: None,
+                        promise_control: None,
                     }],
                 },
             },
@@ -440,6 +449,16 @@ impl WorkerActivities {
         tools::invoke_batch(state.tools(), request).await
     }
 
+    #[activity(name = ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS)]
+    pub async fn tool_prepare_promise_controls(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: ToolPreparePromiseControlsActivityRequest,
+    ) -> Result<engine::PromiseControlArgumentFacts, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        tools::prepare_promise_controls(state.tools().blobs.as_ref(), request.request).await
+    }
+
     #[activity(name = ACTIVITY_RUNTIME_PROJECTION_REFRESH)]
     pub async fn runtime_projection_refresh(
         self: Arc<Self>,
@@ -477,7 +496,7 @@ impl WorkerActivities {
         request: EnvironmentJobPollActivityRequest,
     ) -> Result<EnvironmentJobPollActivityResult, ActivityError> {
         let state = self.state_for_universe(request.universe_id).await?;
-        environment_jobs::poll(state.environment_jobs().map(Arc::as_ref), request).await
+        environment_jobs::poll(state.environment_jobs(), request).await
     }
 
     #[activity(name = ACTIVITY_ENVIRONMENT_JOB_CANCEL)]
@@ -487,7 +506,7 @@ impl WorkerActivities {
         request: EnvironmentJobCancelActivityRequest,
     ) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
         let state = self.state_for_universe(request.universe_id).await?;
-        environment_jobs::cancel(state.environment_jobs().map(Arc::as_ref), request).await
+        environment_jobs::cancel(state.environment_jobs(), request).await
     }
 
     #[activity(name = ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY)]

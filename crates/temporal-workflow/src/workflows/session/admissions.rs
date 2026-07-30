@@ -231,12 +231,6 @@ async fn refresh_runtime_projection_before_run(
         .as_ref()
         .and_then(|config| config.features.vfs.as_ref());
     let vfs_catalog_enabled = vfs.is_some();
-    let environment_catalog_enabled = drive
-        .state()
-        .lifecycle
-        .config
-        .as_ref()
-        .is_some_and(|config| config.features.environments.is_some());
     let vfs_skills_enabled = vfs.is_some_and(|vfs| vfs.skills.is_some());
     let vfs_prompts_enabled = vfs.is_some_and(|vfs| vfs.prompts.is_some());
     let vfs_prompt_roots = vfs
@@ -254,7 +248,6 @@ async fn refresh_runtime_projection_before_run(
                     .map(|vfs| vfs.workspace_links.clone())
                     .unwrap_or_default(),
                 vfs_catalog_enabled,
-                environment_catalog_enabled,
                 vfs_prompts_enabled,
                 vfs_prompt_roots,
                 active_instruction_inputs: active_instruction_inputs(drive.state()),
@@ -266,23 +259,6 @@ async fn refresh_runtime_projection_before_run(
                     VFS_CATALOG_CONTEXT_KEY,
                     ContextEntryKind::VfsCatalog,
                 ),
-                active_environment_catalog_ref: active_context_ref(
-                    drive.state(),
-                    ENVIRONMENT_CATALOG_CONTEXT_KEY,
-                    ContextEntryKind::EnvironmentCatalog,
-                ),
-                active_environment_active_ref: active_context_ref(
-                    drive.state(),
-                    ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-                    ContextEntryKind::EnvironmentActive,
-                ),
-                active_environment_target: drive
-                    .state()
-                    .tooling
-                    .routing
-                    .default_targets
-                    .get("env")
-                    .cloned(),
             },
             activity_options(),
         )

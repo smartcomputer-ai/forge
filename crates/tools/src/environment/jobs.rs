@@ -46,21 +46,43 @@ pub enum JobError {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobHandleArg {
-    pub instance_id: String,
+    pub environment_id: String,
     pub job_id: JobId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobHandle {
-    pub instance_id: String,
+    pub environment_id: String,
     pub job_id: JobId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JobStartArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub env_id: Option<String>,
     pub jobs: Vec<JobStartSpecArgs>,
+}
+
+/// Runtime-owned facts pinned when a durable `job_start` call is accepted.
+/// The receiving workflow reads this through the generic invocation's opaque
+/// execution-context reference; it is not part of the model-facing schema.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobStartExecutionContextV1 {
+    pub version: u32,
+    pub environment_id: String,
+    pub allowed_provider_ids: Option<Vec<String>>,
+}
+
+impl JobStartExecutionContextV1 {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(environment_id: String, allowed_provider_ids: Option<Vec<String>>) -> Self {
+        Self {
+            version: Self::VERSION,
+            environment_id,
+            allowed_provider_ids,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,4 +246,37 @@ fn host_path(path: &FsPath) -> JobExecResult<HostPath> {
     HostPath::new(path.as_str()).map_err(|error| JobError::InvalidRequest {
         message: error.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn job_start_arguments_do_not_accept_an_environment_override() {
+        let error = serde_json::from_value::<JobStartArgs>(json!({
+            "environment_id": "environment-other",
+            "jobs": []
+        }))
+        .expect_err("environment override must not be model-facing");
+
+        assert!(error.to_string().contains("unknown field `environment_id`"));
+    }
+
+    #[test]
+    fn job_start_execution_context_is_versioned_and_runtime_owned() {
+        let context = JobStartExecutionContextV1::new(
+            "environment-active".to_owned(),
+            Some(vec!["provider-a".to_owned()]),
+        );
+
+        assert_eq!(context.version, JobStartExecutionContextV1::VERSION);
+        assert_eq!(context.environment_id, "environment-active");
+        assert_eq!(
+            context.allowed_provider_ids,
+            Some(vec!["provider-a".to_owned()])
+        );
+    }
 }

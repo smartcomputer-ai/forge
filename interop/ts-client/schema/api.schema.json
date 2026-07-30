@@ -469,6 +469,57 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfEnvironmentCredentialBindResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/EnvironmentCredentialBindResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfEnvironmentCredentialListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/EnvironmentCredentialListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfEnvironmentCredentialUnbindResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/EnvironmentCredentialUnbindResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfEnvironmentJobCancelResponse": {
       "properties": {
         "notifications": {
@@ -1047,74 +1098,6 @@
       ],
       "type": "object"
     },
-    "AgentApiOutcomeOfSessionEnvironmentAttachResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentAttachResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialBindResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentCredentialListResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialListResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialUnbindResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
     "AgentApiOutcomeOfSessionEnvironmentDeactivateResponse": {
       "properties": {
         "notifications": {
@@ -1125,57 +1108,6 @@
         },
         "result": {
           "$ref": "#/definitions/SessionEnvironmentDeactivateResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentDetachResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentDetachResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentListResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentListResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSessionEnvironmentReadResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SessionEnvironmentReadResponse"
         }
       },
       "required": [
@@ -1623,6 +1555,13 @@
     },
     "AgentProfile": {
       "properties": {
+        "activeEnvironmentId": {
+          "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config": {
           "anyOf": [
             {
@@ -1648,12 +1587,6 @@
             "string",
             "null"
           ]
-        },
-        "environments": {
-          "items": {
-            "$ref": "#/definitions/ProfileEnvironment"
-          },
-          "type": "array"
         },
         "instructions": {
           "anyOf": [
@@ -1688,6 +1621,13 @@
     },
     "AgentProfileInput": {
       "properties": {
+        "activeEnvironmentId": {
+          "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config": {
           "anyOf": [
             {
@@ -1709,12 +1649,6 @@
             "string",
             "null"
           ]
-        },
-        "environments": {
-          "items": {
-            "$ref": "#/definitions/ProfileEnvironment"
-          },
-          "type": "array"
         },
         "instructions": {
           "anyOf": [
@@ -3109,30 +3043,6 @@
         {
           "properties": {
             "type": {
-              "const": "environmentCatalog",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "environmentActive",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
               "const": "skillCatalog",
               "type": "string"
             }
@@ -3401,12 +3311,12 @@
     },
     "EnvironmentCloseParams": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "instanceId"
+        "environmentId"
       ],
       "type": "object"
     },
@@ -3447,12 +3357,165 @@
       ],
       "type": "object"
     },
-    "EnvironmentInstanceOriginView": {
-      "enum": [
-        "provided",
-        "provisioned"
+    "EnvironmentCredentialBindParams": {
+      "properties": {
+        "envName": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/EnvironmentCredentialSourceView"
+        }
+      },
+      "required": [
+        "environmentId",
+        "envName",
+        "source"
       ],
-      "type": "string"
+      "type": "object"
+    },
+    "EnvironmentCredentialBindResponse": {
+      "properties": {
+        "credential": {
+          "$ref": "#/definitions/EnvironmentCredentialView"
+        }
+      },
+      "required": [
+        "credential"
+      ],
+      "type": "object"
+    },
+    "EnvironmentCredentialListParams": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "EnvironmentCredentialListResponse": {
+      "properties": {
+        "credentials": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/EnvironmentCredentialView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "EnvironmentCredentialSourceView": {
+      "oneOf": [
+        {
+          "properties": {
+            "grantId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "authGrant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "grantId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "providerId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "authProviderCredential",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "providerId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "secretId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "directSecret",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "secretId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EnvironmentCredentialUnbindParams": {
+      "properties": {
+        "envName": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "environmentId",
+        "envName"
+      ],
+      "type": "object"
+    },
+    "EnvironmentCredentialUnbindResponse": {
+      "properties": {
+        "credential": {
+          "$ref": "#/definitions/EnvironmentCredentialView"
+        }
+      },
+      "required": [
+        "credential"
+      ],
+      "type": "object"
+    },
+    "EnvironmentCredentialView": {
+      "properties": {
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "envName": {
+          "type": "string"
+        },
+        "environmentId": {
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/EnvironmentCredentialSourceView"
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "environmentId",
+        "envName",
+        "source",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "type": "object"
     },
     "EnvironmentInstanceView": {
       "properties": {
@@ -3472,7 +3535,7 @@
             "null"
           ]
         },
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         },
         "metadata": {
@@ -3486,7 +3549,7 @@
           "type": "integer"
         },
         "origin": {
-          "$ref": "#/definitions/EnvironmentInstanceOriginView"
+          "$ref": "#/definitions/EnvironmentOriginView"
         },
         "providerId": {
           "type": "string"
@@ -3506,7 +3569,7 @@
         }
       },
       "required": [
-        "instanceId",
+        "environmentId",
         "providerId",
         "providerTargetId",
         "origin",
@@ -3560,7 +3623,7 @@
     },
     "EnvironmentJobCreateParams": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         },
         "jobs": {
@@ -3574,7 +3637,7 @@
         }
       },
       "required": [
-        "instanceId",
+        "environmentId",
         "requestId",
         "jobs"
       ],
@@ -3582,7 +3645,7 @@
     },
     "EnvironmentJobCreateResponse": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         },
         "jobGroupId": {
@@ -3597,7 +3660,7 @@
         }
       },
       "required": [
-        "instanceId",
+        "environmentId",
         "jobGroupId"
       ],
       "type": "object"
@@ -3680,6 +3743,13 @@
         }
       },
       "type": "object"
+    },
+    "EnvironmentOriginView": {
+      "enum": [
+        "provided",
+        "provisioned"
+      ],
+      "type": "string"
     },
     "EnvironmentProviderCapabilitiesView": {
       "properties": {
@@ -3947,12 +4017,12 @@
     },
     "EnvironmentReadParams": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "instanceId"
+        "environmentId"
       ],
       "type": "object"
     },
@@ -4038,11 +4108,11 @@
     },
     "EnvironmentsFeature": {
       "additionalProperties": false,
-      "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+      "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
       "properties": {
         "jobs": {
           "default": false,
-          "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+          "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
           "type": "boolean"
         },
         "providers": {
@@ -4054,6 +4124,11 @@
             "array",
             "null"
           ]
+        },
+        "selectionTools": {
+          "default": false,
+          "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+          "type": "boolean"
         },
         "version": {
           "default": 1,
@@ -4689,6 +4764,13 @@
     },
     "InlineAgentProfile": {
       "properties": {
+        "activeEnvironmentId": {
+          "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "config": {
           "anyOf": [
             {
@@ -4710,12 +4792,6 @@
             "string",
             "null"
           ]
-        },
-        "environments": {
-          "items": {
-            "$ref": "#/definitions/ProfileEnvironment"
-          },
-          "type": "array"
         },
         "instructions": {
           "anyOf": [
@@ -5997,8 +6073,8 @@
             }
           ],
           "default": {
+            "activeEnvironmentChanged": false,
             "configChanged": false,
-            "environmentsChanged": 0,
             "instructionsChanged": false
           }
         },
@@ -6013,13 +6089,11 @@
     },
     "ProfileApplySummary": {
       "properties": {
-        "configChanged": {
+        "activeEnvironmentChanged": {
           "type": "boolean"
         },
-        "environmentsChanged": {
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
+        "configChanged": {
+          "type": "boolean"
         },
         "instructionsChanged": {
           "type": "boolean"
@@ -6028,7 +6102,7 @@
       "required": [
         "configChanged",
         "instructionsChanged",
-        "environmentsChanged"
+        "activeEnvironmentChanged"
       ],
       "type": "object"
     },
@@ -6075,65 +6149,6 @@
         "profile"
       ],
       "type": "object"
-    },
-    "ProfileEnvironment": {
-      "properties": {
-        "activate": {
-          "default": false,
-          "type": "boolean"
-        },
-        "envId": {
-          "type": "string"
-        },
-        "environment": {
-          "$ref": "#/definitions/ProfileEnvironmentSource"
-        }
-      },
-      "required": [
-        "envId",
-        "environment"
-      ],
-      "type": "object"
-    },
-    "ProfileEnvironmentSource": {
-      "oneOf": [
-        {
-          "properties": {
-            "instanceId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "existing",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "instanceId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "providerId": {
-              "type": "string"
-            },
-            "request": {
-              "$ref": "#/definitions/HostTargetCreateRequestView"
-            },
-            "type": {
-              "const": "provision",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "providerId",
-            "request"
-          ],
-          "type": "object"
-        }
-      ]
     },
     "ProfileId": {
       "type": "string"
@@ -6893,7 +6908,7 @@
     },
     "SessionEnvironmentActivateParams": {
       "properties": {
-        "envId": {
+        "environmentId": {
           "type": "string"
         },
         "sessionId": {
@@ -6902,323 +6917,18 @@
       },
       "required": [
         "sessionId",
-        "envId"
+        "environmentId"
       ],
       "type": "object"
     },
     "SessionEnvironmentActivateResponse": {
       "properties": {
-        "activeEnvId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environment": {
-          "$ref": "#/definitions/SessionEnvironmentView"
-        },
-        "environments": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentView"
-          },
-          "type": "array"
+        "session": {
+          "$ref": "#/definitions/SessionView"
         }
       },
       "required": [
-        "environment"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentAttachParams": {
-      "properties": {
-        "activate": {
-          "default": false,
-          "type": "boolean"
-        },
-        "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "envId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fsRoutes": {
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentFsRouteView"
-          },
-          "type": "array"
-        },
-        "instanceId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "instanceId"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentAttachResponse": {
-      "properties": {
-        "activeEnvId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environment": {
-          "$ref": "#/definitions/SessionEnvironmentView"
-        },
-        "environments": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentView"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "environment"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCapabilitiesView": {
-      "properties": {
-        "fsRead": {
-          "type": "boolean"
-        },
-        "fsWrite": {
-          "type": "boolean"
-        },
-        "jobCancel": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobDependencies": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobList": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobQueueKeys": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobRead": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobStart": {
-          "default": false,
-          "type": "boolean"
-        },
-        "jobWaitHint": {
-          "default": false,
-          "type": "boolean"
-        },
-        "network": {
-          "type": "boolean"
-        },
-        "processExec": {
-          "type": "boolean"
-        },
-        "processStdin": {
-          "type": "boolean"
-        }
-      },
-      "required": [
-        "fsRead",
-        "fsWrite",
-        "processExec",
-        "processStdin",
-        "network"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialBindParams": {
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "envName": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialSourceView"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId",
-        "envName",
-        "source"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialBindResponse": {
-      "properties": {
-        "credential": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialView"
-        }
-      },
-      "required": [
-        "credential"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialListParams": {
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialListResponse": {
-      "properties": {
-        "credentials": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentCredentialView"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialSourceView": {
-      "oneOf": [
-        {
-          "properties": {
-            "grantId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "authGrant",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "grantId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "providerId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "authProviderCredential",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "providerId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "secretId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "directSecret",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "secretId"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SessionEnvironmentCredentialUnbindParams": {
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "envName": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId",
-        "envName"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialUnbindResponse": {
-      "properties": {
-        "credential": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialView"
-        }
-      },
-      "required": [
-        "credential"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentCredentialView": {
-      "properties": {
-        "createdAtMs": {
-          "format": "int64",
-          "type": "integer"
-        },
-        "envId": {
-          "type": "string"
-        },
-        "envName": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialSourceView"
-        },
-        "updatedAtMs": {
-          "format": "int64",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId",
-        "envName",
-        "source",
-        "createdAtMs",
-        "updatedAtMs"
+        "session"
       ],
       "type": "object"
     },
@@ -7235,201 +6945,12 @@
     },
     "SessionEnvironmentDeactivateResponse": {
       "properties": {
-        "activeEnvId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environments": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentView"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "SessionEnvironmentDetachParams": {
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
+        "session": {
+          "$ref": "#/definitions/SessionView"
         }
       },
       "required": [
-        "sessionId",
-        "envId"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentDetachResponse": {
-      "properties": {
-        "activeEnvId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environment": {
-          "$ref": "#/definitions/SessionEnvironmentView"
-        },
-        "environments": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentView"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "environment"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentFsAccessView": {
-      "enum": [
-        "readOnly",
-        "readWrite"
-      ],
-      "type": "string"
-    },
-    "SessionEnvironmentFsRouteView": {
-      "properties": {
-        "access": {
-          "$ref": "#/definitions/SessionEnvironmentFsAccessView"
-        },
-        "path": {
-          "type": "string"
-        },
-        "sameStateAsActiveEnv": {
-          "default": false,
-          "type": "boolean"
-        },
-        "sourcePath": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "required": [
-        "path",
-        "access"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentListParams": {
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentListResponse": {
-      "properties": {
-        "activeEnvId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "environments": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentView"
-          },
-          "type": "array"
-        }
-      },
-      "type": "object"
-    },
-    "SessionEnvironmentReadParams": {
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentReadResponse": {
-      "properties": {
-        "environment": {
-          "$ref": "#/definitions/SessionEnvironmentView"
-        }
-      },
-      "required": [
-        "environment"
-      ],
-      "type": "object"
-    },
-    "SessionEnvironmentStateView": {
-      "enum": [
-        "attached",
-        "detached"
-      ],
-      "type": "string"
-    },
-    "SessionEnvironmentView": {
-      "properties": {
-        "active": {
-          "type": "boolean"
-        },
-        "capabilities": {
-          "$ref": "#/definitions/SessionEnvironmentCapabilitiesView"
-        },
-        "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "envId": {
-          "type": "string"
-        },
-        "execTarget": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/ToolExecutionTargetView"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "fsRoutes": {
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentFsRouteView"
-          },
-          "type": "array"
-        },
-        "instanceId": {
-          "type": "string"
-        },
-        "state": {
-          "$ref": "#/definitions/SessionEnvironmentStateView"
-        }
-      },
-      "required": [
-        "envId",
-        "instanceId",
-        "state",
-        "capabilities",
-        "active"
+        "session"
       ],
       "type": "object"
     },
@@ -8466,27 +7987,19 @@
         },
         {
           "properties": {
-            "namespace": {
-              "type": "string"
-            },
-            "target": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/ToolExecutionTargetView"
-                },
-                {
-                  "type": "null"
-                }
+            "environmentId": {
+              "type": [
+                "string",
+                "null"
               ]
             },
             "type": {
-              "const": "toolDefaultTargetChanged",
+              "const": "activeEnvironmentChanged",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "namespace"
+            "type"
           ],
           "type": "object"
         },
@@ -8863,7 +8376,7 @@
     },
     "SessionJobHandleInput": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         },
         "jobId": {
@@ -8871,14 +8384,14 @@
         }
       },
       "required": [
-        "instanceId",
+        "environmentId",
         "jobId"
       ],
       "type": "object"
     },
     "SessionJobHandleView": {
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         },
         "jobId": {
@@ -8886,7 +8399,7 @@
         }
       },
       "required": [
-        "instanceId",
+        "environmentId",
         "jobId"
       ],
       "type": "object"
@@ -9380,6 +8893,13 @@
       "properties": {
         "activeContext": {
           "$ref": "#/definitions/ContextView"
+        },
+        "activeEnvironmentId": {
+          "description": "The universe environment selected by the session event log.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "activeTools": {
           "allOf": [
@@ -10159,33 +9679,41 @@
         },
         {
           "properties": {
-            "namespace": {
-              "type": "string"
-            },
             "type": {
-              "const": "optional",
+              "const": "sessionFilesystem",
               "type": "string"
             }
           },
           "required": [
-            "type",
-            "namespace"
+            "type"
           ],
           "type": "object"
         },
         {
           "properties": {
-            "namespace": {
+            "type": {
+              "const": "activeEnvironment",
               "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "target": {
+              "$ref": "#/definitions/ToolExecutionTargetView"
             },
             "type": {
-              "const": "required",
+              "const": "fixed",
               "type": "string"
             }
           },
           "required": [
             "type",
-            "namespace"
+            "target"
           ],
           "type": "object"
         }

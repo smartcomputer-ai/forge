@@ -300,16 +300,21 @@ impl Default for TimersFeature {
     }
 }
 
-/// Grants attaching/activating session environments and their process tool
-/// surface. Durable jobs are an independent, default-off sub-grant.
+/// Grants active session environments and their process tool surface.
+/// Model-driven selection and durable jobs are independent, default-off
+/// sub-grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<String>>,
+    /// Installs model-facing list/activate/deactivate tools. Environment read
+    /// is present whenever the environments feature is granted.
+    #[serde(default)]
+    pub selection_tools: bool,
     /// Installs the session's durable-job workflow binding. Actual tool
-    /// exposure remains gated by attached environment capabilities.
+    /// execution remains gated by active environment capabilities.
     #[serde(default)]
     pub jobs: bool,
 }
@@ -319,6 +324,7 @@ impl Default for EnvironmentsFeature {
         Self {
             version: CURRENT_FEATURE_VERSION,
             providers: None,
+            selection_tools: false,
             jobs: false,
         }
     }
@@ -1196,15 +1202,17 @@ mod tests {
     }
 
     #[test]
-    fn environment_jobs_are_default_off() {
+    fn environment_tool_subgrants_are_default_off() {
         let feature: EnvironmentsFeature = serde_json::from_value(serde_json::json!({}))
             .expect("empty environment grant decodes with defaults");
 
+        assert!(!feature.selection_tools);
         assert!(!feature.jobs);
         assert_eq!(
             serde_json::to_value(feature).expect("serialize"),
             serde_json::json!({
                 "version": CURRENT_FEATURE_VERSION,
+                "selection_tools": false,
                 "jobs": false,
             })
         );

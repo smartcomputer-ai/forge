@@ -1456,13 +1456,17 @@ mod tests {
                 run_id: RunId::new(1),
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
-                default_targets: Default::default(),
+                active_environment_id: None,
+                environment_policy: None,
+                fleet_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("write_file"),
                     arguments_ref: args_ref,
                     execution_target: Some(ToolTargets::session_fs_execution_target()),
+                    workflow_tool: None,
+                    promise_control: None,
                 }],
             },
         )

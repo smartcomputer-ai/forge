@@ -679,11 +679,26 @@ pub fn next_tool_batch_request(
         .calls
         .iter()
         .filter(|call_state| call_state.status == ToolCallStatus::Pending)
-        .map(|call_state| ToolInvocationRequest {
-            call_id: call_state.call.call_id.clone(),
-            tool_name: call_state.call.tool_name.clone(),
-            arguments_ref: call_state.call.arguments_ref.clone(),
-            execution_target: call_state.execution_target.clone(),
+        .map(|call_state| {
+            let workflow_tool = state
+                .workflow_tools
+                .binding_for_tool_name(&call_state.call.tool_name)
+                .map(|binding| {
+                    crate::WorkflowToolCallRuntime::v1(
+                        binding.clone(),
+                        state
+                            .workflow_tools
+                            .emission_count(batch.run_id, &binding.definition.tool_id),
+                    )
+                });
+            ToolInvocationRequest {
+                call_id: call_state.call.call_id.clone(),
+                tool_name: call_state.call.tool_name.clone(),
+                arguments_ref: call_state.call.arguments_ref.clone(),
+                execution_target: call_state.execution_target.clone(),
+                workflow_tool,
+                promise_control: None,
+            }
         })
         .collect::<Vec<_>>();
     if calls.is_empty() {
@@ -694,7 +709,6 @@ pub fn next_tool_batch_request(
         run_id: batch.run_id,
         turn_id: batch.turn_id,
         batch_id: batch.batch_id,
-        default_targets: state.tooling.routing.default_targets.clone(),
         workspace_links: state
             .lifecycle
             .config
@@ -702,8 +716,100 @@ pub fn next_tool_batch_request(
             .and_then(|config| config.features.vfs.as_ref())
             .map(|vfs| vfs.workspace_links.clone())
             .unwrap_or_default(),
+        active_environment_id: state.environment.active_environment_id.clone(),
+        environment_policy: state
+            .lifecycle
+            .config
+            .as_ref()
+            .and_then(|config| config.features.environments.as_ref())
+            .map(|feature| crate::EnvironmentPolicyRuntime::v1(feature.providers.clone())),
+        fleet_policy: state
+            .lifecycle
+            .config
+            .as_ref()
+            .and_then(|config| config.features.fleet.clone()),
         calls,
     }))
+}
+
+pub fn attach_promise_control_runtime(
+    state: &CoreAgentState,
+    mut request: ToolInvocationBatchRequest,
+    facts: crate::PromiseControlArgumentFacts,
+) -> Result<ToolInvocationBatchRequest, DomainError> {
+    let expected = request.promise_control_argument_request().ok_or_else(|| {
+        DomainError::InvariantViolation(
+            "promise-control argument facts supplied for a batch without control calls".to_owned(),
+        )
+    })?;
+    if facts.version != crate::PromiseControlArgumentFacts::VERSION {
+        return Err(DomainError::InvariantViolation(format!(
+            "unsupported promise-control argument facts version {}",
+            facts.version
+        )));
+    }
+    if facts.calls.len() != expected.calls.len() {
+        return Err(DomainError::InvariantViolation(format!(
+            "promise-control argument facts contain {} calls, expected {}",
+            facts.calls.len(),
+            expected.calls.len()
+        )));
+    }
+
+    for (expected_call, call_facts) in expected.calls.iter().zip(&facts.calls) {
+        if call_facts.call_id() != &expected_call.call_id {
+            return Err(DomainError::InvariantViolation(format!(
+                "promise-control argument facts call {} does not match expected call {}",
+                call_facts.call_id(),
+                expected_call.call_id
+            )));
+        }
+        let call = request
+            .calls
+            .iter_mut()
+            .find(|call| call.call_id == expected_call.call_id)
+            .expect("expected promise-control call came from this request");
+        if call.promise_control.is_some() {
+            return Err(DomainError::InvariantViolation(format!(
+                "promise-control runtime facts already attached to call {}",
+                call.call_id
+            )));
+        }
+        let crate::PromiseControlArgumentCallFacts::Parsed { promise_ids, .. } = call_facts else {
+            continue;
+        };
+        if promise_ids.is_empty() || promise_ids.len() > 32 {
+            return Err(DomainError::InvariantViolation(format!(
+                "promise-control call {} has an invalid bounded id count {}",
+                call.call_id,
+                promise_ids.len()
+            )));
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut controls = Vec::with_capacity(promise_ids.len());
+        for promise_id in promise_ids {
+            if !seen.insert(promise_id) {
+                return Err(DomainError::InvariantViolation(format!(
+                    "promise-control call {} contains duplicate promise {}",
+                    call.call_id, promise_id
+                )));
+            }
+            let projected = match state.promises.promises.get(promise_id) {
+                Some(promise) => crate::PromiseControlStateRuntime::Known {
+                    ownership: promise.ownership,
+                    scope: promise.scope.clone(),
+                    promise_status: promise.status,
+                },
+                None => crate::PromiseControlStateRuntime::Unknown,
+            };
+            controls.push(crate::PromiseControlRuntime {
+                promise_id: promise_id.clone(),
+                state: projected,
+            });
+        }
+        call.promise_control = Some(crate::PromiseControlCallRuntime::v1(controls));
+    }
+    Ok(request)
 }
 
 pub fn tool_batch_deferred_proposals(
@@ -1310,6 +1416,7 @@ fn tool_call_completed_proposals(
     let mut joined_calls = Vec::new();
     let mut joined_promise_proposals = Vec::new();
     let mut joined_tool_proposals = Vec::new();
+    let mut saw_environment_selection_effect = false;
     for result_item in result.results {
         let call_id = result_item.call_id.clone();
         let joins = CoreAgentJoins {
@@ -1324,8 +1431,40 @@ fn tool_call_completed_proposals(
         // state is rebuilt from the log like everything else.
         let mut promise_proposals = Vec::new();
         let mut tool_proposals = Vec::new();
+        let mut environment_proposals = Vec::new();
         let mut saw_port_effect = false;
         for effect in &result_item.effects {
+            if let Some(event) =
+                crate::core::components::environment::environment_event_from_effect(effect)?
+            {
+                if saw_environment_selection_effect {
+                    return Err(DomainError::InvariantViolation(
+                        "tool batch produced more than one environment selection effect".to_owned(),
+                    ));
+                }
+                if result_item.status != ToolCallStatus::Succeeded {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "failed tool call {} produced an environment selection effect",
+                        call_id
+                    )));
+                }
+                if state
+                    .lifecycle
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.features.environments.as_ref())
+                    .is_none()
+                {
+                    return Err(DomainError::InvariantViolation(
+                        "environment selection effect requires the environments feature".to_owned(),
+                    ));
+                }
+                saw_environment_selection_effect = true;
+                environment_proposals.push(CoreAgentEventProposal::new(
+                    joins.clone(),
+                    CoreAgentEvent::Environment(event),
+                ));
+            }
             if let Some(promise) =
                 crate::core::components::promise::promise_from_create_effect(effect, result.run_id)?
             {
@@ -1543,7 +1682,11 @@ fn tool_call_completed_proposals(
             ));
             proposals.extend(promise_proposals);
             proposals.extend(tool_proposals);
-        } else if !promise_proposals.is_empty() || !tool_proposals.is_empty() {
+            proposals.extend(environment_proposals);
+        } else if !promise_proposals.is_empty()
+            || !tool_proposals.is_empty()
+            || !environment_proposals.is_empty()
+        {
             return Err(DomainError::InvariantViolation(
                 "joined workflow tool result mixed joined and unrelated effects".to_owned(),
             ));
@@ -1690,11 +1833,11 @@ mod tests {
         ContextEntryId, ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextRemovalReason,
         ContextRewriteReason, CoreAgentCommand, FunctionToolSpec, LlmGenerationFacts,
         ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, ObservedToolCall,
-        ProviderApiKind, RunConfig, RunFailureKind, RunRequestCommand, RunRequestSource, RunStatus,
-        SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SkillId,
-        SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome, ToolChoice,
-        ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism, ToolSpec,
-        ToolTargetRequirement, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition,
+        ProviderApiKind, RunConfig, RunFailureKind, RunId, RunRequestCommand, RunRequestSource,
+        RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
+        SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
+        ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
+        ToolSpec, ToolTargetRequirement, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition,
         WorkflowToolId, WorkflowToolInvocation, skill_activation_context_key,
     };
 
@@ -2011,6 +2154,46 @@ mod tests {
         request_run(drive, BlobRef::from_bytes(b"input"));
         let request = drive_until_generate(drive);
         drive_until_tool_batch_request(drive, request, "await")
+    }
+
+    #[test]
+    fn tool_batch_carries_admitted_runtime_policies_and_active_environment() {
+        let session_id = SessionId::new("session-environment-runtime");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let mut session_config = config();
+        session_config.features.environments = Some(crate::EnvironmentsFeature {
+            providers: Some(vec!["provider-a".to_owned(), "provider-b".to_owned()]),
+            selection_tools: true,
+            ..crate::EnvironmentsFeature::default()
+        });
+        session_config.features.fleet = Some(crate::FleetFeature::default());
+        open_session_with_config(&mut drive, session_config);
+        let set_active = drive
+            .admit_command(
+                CoreAgentCommand::SetActiveEnvironment {
+                    environment_id: crate::EnvironmentId::new("environment-a"),
+                },
+                11,
+            )
+            .expect("set active environment");
+        commit_action(&mut drive, set_active);
+        install_test_tool(&mut drive, "environment_read");
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(&mut drive);
+        let request = drive_until_tool_batch_request(&mut drive, generation, "environment_read");
+
+        assert_eq!(
+            request.active_environment_id,
+            Some(crate::EnvironmentId::new("environment-a"))
+        );
+        assert_eq!(
+            request.environment_policy,
+            Some(crate::EnvironmentPolicyRuntime::v1(Some(vec![
+                "provider-a".to_owned(),
+                "provider-b".to_owned(),
+            ])))
+        );
+        assert_eq!(request.fleet_policy, Some(crate::FleetFeature::default()));
     }
 
     fn completed_tool_result(request: &ToolInvocationBatchRequest) -> ToolInvocationBatchResult {
@@ -4888,6 +5071,7 @@ mod tests {
             tool_batch_id: request.batch_id,
             tool_call_id: call.call_id.clone(),
             arguments_ref: call.arguments_ref.clone(),
+            execution_context_ref: None,
             completion_promises: None,
         };
         let mut result = completed_tool_result(&request);
@@ -5020,6 +5204,7 @@ mod tests {
             tool_batch_id: request.batch_id,
             tool_call_id: call.call_id.clone(),
             arguments_ref: call.arguments_ref.clone(),
+            execution_context_ref: None,
             completion_promises: Some(BTreeMap::from([(
                 crate::REPLY_COMPLETION_KEY.to_owned(),
                 promise_id.clone(),
@@ -5336,6 +5521,7 @@ mod tests {
                 tool_batch_id: request.batch_id,
                 tool_call_id: call.call_id.clone(),
                 arguments_ref: call.arguments_ref.clone(),
+                execution_context_ref: None,
                 completion_promises: Some(BTreeMap::from([(
                     crate::REPLY_COMPLETION_KEY.to_owned(),
                     promise_id.clone(),
@@ -5546,6 +5732,7 @@ mod tests {
             tool_batch_id: request.batch_id,
             tool_call_id: workflow_call.call_id.clone(),
             arguments_ref: workflow_call.arguments_ref.clone(),
+            execution_context_ref: None,
             completion_promises: Some(BTreeMap::from([(
                 crate::REPLY_COMPLETION_KEY.to_owned(),
                 promise_id,
@@ -5678,6 +5865,7 @@ mod tests {
             tool_batch_id: request.batch_id,
             tool_call_id: call.call_id.clone(),
             arguments_ref: call.arguments_ref.clone(),
+            execution_context_ref: None,
             completion_promises: Some(std::collections::BTreeMap::from([(
                 crate::REPLY_COMPLETION_KEY.to_owned(),
                 promise_id.clone(),
@@ -5859,6 +6047,7 @@ mod tests {
             tool_batch_id: request.batch_id,
             tool_call_id: call.call_id.clone(),
             arguments_ref: call.arguments_ref.clone(),
+            execution_context_ref: None,
             completion_promises: Some(std::collections::BTreeMap::from([(
                 crate::REPLY_COMPLETION_KEY.to_owned(),
                 promise_id.clone(),
@@ -6062,6 +6251,94 @@ mod tests {
         );
 
         assert_eq!(proposals.len(), 1);
+    }
+
+    #[test]
+    fn promise_control_argument_facts_join_only_requested_state() {
+        let mut state = CoreAgentState::new();
+        state.promises.promises.insert(
+            crate::PromiseId::new("known"),
+            crate::Promise {
+                promise_id: crate::PromiseId::new("known"),
+                source: crate::PromiseSource::Timer { fire_at_ms: 10 },
+                scope: crate::PromiseScope::Run {
+                    run_id: RunId::new(4),
+                },
+                ownership: crate::PromiseOwnership::Model,
+                status: crate::PromiseStatus::Pending,
+                payload_ref: None,
+                error_ref: None,
+                deadline_ms: None,
+            },
+        );
+        let request = ToolInvocationBatchRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(4),
+            turn_id: TurnId::new(1),
+            batch_id: ToolBatchId::new(1),
+            workspace_links: Vec::new(),
+            active_environment_id: None,
+            environment_policy: None,
+            fleet_policy: None,
+            calls: vec![
+                ToolInvocationRequest {
+                    call_id: crate::ToolCallId::new("cancel"),
+                    tool_name: ToolName::new("cancel"),
+                    arguments_ref: BlobRef::from_bytes(b"cancel"),
+                    execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
+                },
+                ToolInvocationRequest {
+                    call_id: crate::ToolCallId::new("detach-invalid"),
+                    tool_name: ToolName::new("detach"),
+                    arguments_ref: BlobRef::from_bytes(b"detach"),
+                    execution_target: None,
+                    workflow_tool: None,
+                    promise_control: None,
+                },
+            ],
+        };
+        let joined = attach_promise_control_runtime(
+            &state,
+            request,
+            crate::PromiseControlArgumentFacts {
+                version: crate::PromiseControlArgumentFacts::VERSION,
+                calls: vec![
+                    crate::PromiseControlArgumentCallFacts::Parsed {
+                        call_id: crate::ToolCallId::new("cancel"),
+                        promise_ids: vec![
+                            crate::PromiseId::new("known"),
+                            crate::PromiseId::new("unknown"),
+                        ],
+                    },
+                    crate::PromiseControlArgumentCallFacts::Invalid {
+                        call_id: crate::ToolCallId::new("detach-invalid"),
+                    },
+                ],
+            },
+        )
+        .expect("join promise controls");
+
+        let controls = &joined.calls[0]
+            .promise_control
+            .as_ref()
+            .expect("cancel runtime")
+            .controls;
+        assert_eq!(controls.len(), 2);
+        assert!(matches!(
+            controls[0].state,
+            crate::PromiseControlStateRuntime::Known {
+                ownership: crate::PromiseOwnership::Model,
+                scope: crate::PromiseScope::Run { run_id },
+                promise_status: crate::PromiseStatus::Pending,
+            } if run_id == RunId::new(4)
+        ));
+        assert_eq!(
+            controls[1].state,
+            crate::PromiseControlStateRuntime::Unknown
+        );
+        assert!(joined.calls[1].promise_control.is_none());
     }
 
     #[test]

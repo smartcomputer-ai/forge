@@ -8,9 +8,7 @@ use crate::{
     ToolConfigEvent, WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
-        tooling::{
-            validate_default_tool_target_clear, validate_default_tool_target_set, validate_tool_map,
-        },
+        tooling::validate_tool_map,
     },
 };
 
@@ -792,23 +790,40 @@ pub fn admit_command(
                 }),
             )])
         }
-        CoreAgentCommand::SetDefaultToolTarget { target } => {
+        CoreAgentCommand::SetActiveEnvironment { environment_id } => {
             require_open(state)?;
-            validate_default_tool_target_set(&target).map_err(command_rejection_from_domain)?;
+            if state
+                .lifecycle
+                .config
+                .as_ref()
+                .and_then(|config| config.features.environments.as_ref())
+                .is_none()
+            {
+                return reject(
+                    CommandRejectionKind::InvalidConfiguration,
+                    "active environment requires the environments feature",
+                );
+            }
+            if state.environment.active_environment_id.as_ref() == Some(&environment_id) {
+                return Ok(Vec::new());
+            }
 
             Ok(vec![CoreAgentEventProposal::new(
                 CoreAgentJoins::default(),
-                CoreAgentEvent::ToolConfig(ToolConfigEvent::DefaultTargetSet { target }),
+                CoreAgentEvent::Environment(crate::EnvironmentEvent::ActiveEnvironmentSet {
+                    environment_id,
+                }),
             )])
         }
-        CoreAgentCommand::ClearDefaultToolTarget { namespace } => {
+        CoreAgentCommand::ClearActiveEnvironment => {
             require_open(state)?;
-            validate_default_tool_target_clear(&namespace)
-                .map_err(command_rejection_from_domain)?;
+            if state.environment.active_environment_id.is_none() {
+                return Ok(Vec::new());
+            }
 
             Ok(vec![CoreAgentEventProposal::new(
                 CoreAgentJoins::default(),
-                CoreAgentEvent::ToolConfig(ToolConfigEvent::DefaultTargetCleared { namespace }),
+                CoreAgentEvent::Environment(crate::EnvironmentEvent::ActiveEnvironmentCleared),
             )])
         }
     }

@@ -23,8 +23,7 @@ use std::{
 use engine::{
     BlobRef, CommandError, ContextEntryInput, ContextEntryKey, ContextEntryKind,
     ContextMessageRole, CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentDriveError,
-    CoreAgentEntry, CoreAgentEvent, CoreAgentState, CoreAgentStatus,
-    ENVIRONMENT_ACTIVE_CONTEXT_KEY, ENVIRONMENT_CATALOG_CONTEXT_KEY, EmissionEnvelope,
+    CoreAgentEntry, CoreAgentEvent, CoreAgentState, CoreAgentStatus, EmissionEnvelope,
     LlmGenerationRequest, RunConfig, RunEvent, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionId,
     SessionPosition, SubmissionId, ToolInvocationBatchRequest, VFS_CATALOG_CONTEXT_KEY,
 };
@@ -43,11 +42,15 @@ use crate::{
     PendingPromiseCancellation, PendingSourceResolution, PendingToolBatchResume,
     PreprocessRunInputActivityRequest, PreprocessRunInputFailure, PreprocessRunInputFailureKind,
     PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
-    RuntimeProjectionRefreshActivityRequest, ToolInvokeBatchActivityRequest, WorkflowActivities,
-    activity_options, compose_workflow_id, default_instructions, split_workflow_id,
+    RuntimeProjectionRefreshActivityRequest, ToolInvokeBatchActivityRequest,
+    ToolPreparePromiseControlsActivityRequest, WorkflowActivities, activity_options,
+    compose_workflow_id, default_instructions, split_workflow_id,
 };
 
-use activity_calls::{call_context_compact, call_llm_generate, call_tool_invoke_batch};
+use activity_calls::{
+    call_context_compact, call_llm_generate, call_tool_invoke_batch,
+    call_tool_prepare_promise_controls,
+};
 use admissions::process_admissions;
 use bootstrap::initialize;
 use clock::workflow_time_ms;

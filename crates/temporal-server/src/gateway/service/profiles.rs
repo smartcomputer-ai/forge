@@ -143,13 +143,10 @@ impl GatewayAgentApi {
                 .await?;
         }
 
-        for environment in &document.environments {
-            if self
-                .apply_profile_environment(session_id, environment.clone())
-                .await?
-            {
-                applied.environments_changed = applied.environments_changed.saturating_add(1);
-            }
+        if let Some(environment_id) = document.active_environment_id.clone() {
+            applied.active_environment_changed = self
+                .apply_profile_active_environment(session_id, environment_id)
+                .await?;
         }
 
         self.load_session_state_with_current_run_context(session_id)
@@ -306,83 +303,24 @@ impl GatewayAgentApi {
         .await
     }
 
-    async fn apply_profile_environment(
+    async fn apply_profile_active_environment(
         &self,
         session_id: &SessionId,
-        environment: api::ProfileEnvironment,
+        environment_id: api::EnvironmentId,
     ) -> Result<bool, AgentApiError> {
-        let env_id = parse_environment_id(environment.env_id.clone())?;
-        let loaded = self
-            .load_session_state_with_current_environment_projection(session_id)
-            .await?;
-        let existing = self
-            .project_session_environments(session_id, &loaded.state)
-            .await?
-            .environments
-            .into_iter()
-            .find(|candidate| candidate.env_id == env_id.as_str());
-        if existing.is_some() {
-            if environment.activate {
-                let active_target = self
-                    .activation_target_for_environment(session_id, &env_id)
-                    .await?;
-                if loaded
-                    .state
-                    .tooling
-                    .routing
-                    .default_targets
-                    .get(tools::targets::ENV_TARGET_NAMESPACE)
-                    != Some(&active_target)
-                {
-                    self.activate_session_environment(SessionEnvironmentActivateParams {
-                        session_id: session_id.as_str().to_owned(),
-                        env_id: env_id.as_str().to_owned(),
-                    })
-                    .await?;
-                    return Ok(true);
-                }
-            }
+        let loaded = self.load_session_state(session_id).await?;
+        if loaded
+            .state
+            .environment
+            .active_environment_id
+            .as_ref()
+            .is_some_and(|active| active.as_str() == environment_id)
+        {
             return Ok(false);
         }
-        let instance_id = match environment.environment {
-            api::ProfileEnvironmentSource::Existing { instance_id } => instance_id,
-            api::ProfileEnvironmentSource::Provision {
-                provider_id,
-                request,
-            } => {
-                let allowed = loaded
-                    .state
-                    .lifecycle
-                    .config
-                    .as_ref()
-                    .and_then(|config| config.features.environments.as_ref())
-                    .is_some_and(|feature| {
-                        feature.providers.as_ref().is_none_or(|providers| {
-                            providers.iter().any(|candidate| candidate == &provider_id)
-                        })
-                    });
-                if !allowed {
-                    return Err(AgentApiError::rejected(format!(
-                        "environment provider is not allowed by session config: {provider_id}"
-                    )));
-                }
-                self.create_environment(EnvironmentCreateParams {
-                    provider_id,
-                    request,
-                })
-                .await?
-                .result
-                .environment
-                .instance_id
-            }
-        };
-        self.attach_session_environment(SessionEnvironmentAttachParams {
+        self.activate_session_environment(SessionEnvironmentActivateParams {
             session_id: session_id.as_str().to_owned(),
-            env_id: Some(environment.env_id),
-            instance_id,
-            cwd: None,
-            fs_routes: Vec::new(),
-            activate: environment.activate,
+            environment_id,
         })
         .await?;
         Ok(true)

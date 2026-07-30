@@ -810,7 +810,7 @@ impl ChatSessionDriver {
             | SessionEventKindView::ToolsPatched { .. }
             | SessionEventKindView::ToolBatchDeferred { .. }
             | SessionEventKindView::ToolBatchResumed { .. }
-            | SessionEventKindView::ToolDefaultTargetChanged { .. } => {}
+            | SessionEventKindView::ActiveEnvironmentChanged { .. } => {}
         }
         events
     }
@@ -1717,8 +1717,6 @@ fn system_note_text(entry: &ContextEntryView) -> Option<String> {
     let fallback = match &entry.kind {
         ContextEntryKindView::Instructions => "instructions",
         ContextEntryKindView::VfsCatalog => "VFS catalog",
-        ContextEntryKindView::EnvironmentCatalog => "environment catalog",
-        ContextEntryKindView::EnvironmentActive => "active environment",
         ContextEntryKindView::SkillCatalog => "skills catalog",
         ContextEntryKindView::SkillActivation { .. } => "skill activated",
         ContextEntryKindView::ReasoningState => "context item",
@@ -1902,6 +1900,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {
@@ -2006,6 +2005,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {
@@ -2054,6 +2054,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {

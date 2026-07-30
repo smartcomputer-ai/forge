@@ -317,17 +317,6 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
         })
         .await
         .expect("replace tools");
-    runner
-        .drive_command(DriveCommand {
-            session_id: session_id.clone(),
-            observed_at_ms: 13,
-            command: CoreAgentCommand::SetDefaultToolTarget {
-                target: tools::targets::session_fs_target(),
-            },
-            max_steps: None,
-        })
-        .await
-        .expect("set default target");
 
     let input_ref = blobs
         .put_bytes(

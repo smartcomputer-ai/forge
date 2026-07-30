@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 use engine::{
     ContextConfig, ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole,
     CoreAgentCommand, GenerationConfig, LimitsConfig, ModelSelection, ProviderApiKind, RunConfig,
-    SessionConfig, SessionId, ToolExecutionTarget, ToolName, ToolSpec,
+    SessionConfig, SessionId, ToolName, ToolSpec,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
 use llm_clients::ApiResponse;
@@ -32,7 +32,6 @@ use tools::{
     fs::{FsPath, FsToolContext, ScopedLocalFileSystem},
     runtime::InlineToolRuntime,
     runtime::ToolDocument,
-    targets::ToolTargets,
     toolset::{
         BuiltinToolsetConfig, ResolvedToolset, ToolsetConfig, ToolsetEnvironment, resolve_toolset,
     },
@@ -444,7 +443,6 @@ struct EvalRuntime {
     config: SessionConfig,
     instructions_ref: engine::BlobRef,
     tool_set: BTreeMap<ToolName, ToolSpec>,
-    default_tool_target: ToolExecutionTarget,
     tool_id_by_name: BTreeMap<String, String>,
     diagnostics: Arc<LlmDiagnostics>,
 }
@@ -484,14 +482,6 @@ impl EvalRuntime {
                 tools: self.tool_set.clone(),
             },
             12,
-        )
-        .await?;
-        self.drive(
-            session_id.clone(),
-            CoreAgentCommand::SetDefaultToolTarget {
-                target: self.default_tool_target.clone(),
-            },
-            13,
         )
         .await?;
         Ok(())
@@ -698,7 +688,6 @@ async fn build_runtime(
         config: default_config,
         instructions_ref,
         tool_set: host_profile.tools,
-        default_tool_target: ToolTargets::session_fs_execution_target(),
         tool_id_by_name,
         diagnostics,
     })

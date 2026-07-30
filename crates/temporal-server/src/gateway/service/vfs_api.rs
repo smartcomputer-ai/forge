@@ -204,9 +204,7 @@ impl GatewayAgentApi {
             .environments
             .as_ref()
             .is_some_and(|environments| environments.jobs);
-        let has_process_environment = self.session_has_process_environment(session_id).await?;
-        let has_job_read_environment = self.session_has_job_read_environment(session_id).await?;
-        let has_job_start_environment = self.session_has_job_start_environment(session_id).await?;
+        let environments_granted = session_config.features.environments.is_some();
         let mut refreshed = None;
         if jobs_granted
             && !loaded
@@ -224,13 +222,10 @@ impl GatewayAgentApi {
         let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
             AgentApiError::invalid_request(format!("session is missing config: {session_id}"))
         })?;
-        let expose_job_start = jobs_granted && has_job_start_environment;
+        let expose_job_start = jobs_granted;
         let target = ToolTarget::from(&session_config.model);
-        let mut config = self.session_toolset_config(
-            session_config,
-            has_process_environment,
-            jobs_granted && has_job_read_environment,
-        );
+        let mut config =
+            self.session_toolset_config(session_config, environments_granted, jobs_granted);
         let materialized_workflow_tools = loaded
             .state
             .workflow_tools
@@ -244,7 +239,6 @@ impl GatewayAgentApi {
             &mut config,
             materialized_workflow_tools.iter().copied(),
         );
-        let fs_tools_enabled = config.builtin.fs.enabled();
         let mut toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
             .map_err(|error| AgentApiError::internal(format!("build session tools: {error}")))?;
         materialize_workflow_tools(&mut toolset, materialized_workflow_tools.iter().copied())
@@ -286,37 +280,14 @@ impl GatewayAgentApi {
             )
             .await?;
         }
-        if fs_tools_enabled {
-            self.submit_core_command(
-                session_id,
-                CoreAgentCommand::SetDefaultToolTarget {
-                    target: ToolTargets::session_fs_execution_target(),
-                },
-            )
-            .await?;
-        } else {
-            self.submit_core_command(
-                session_id,
-                CoreAgentCommand::ClearDefaultToolTarget {
-                    namespace: tools::targets::FS_TARGET_NAMESPACE.to_owned(),
-                },
-            )
-            .await?;
-        }
-        self.wait_for_session_toolset(
-            session_id,
-            expected_tools,
-            fs_tools_enabled,
-            baseline_failures,
-        )
-        .await
+        self.wait_for_session_toolset(session_id, expected_tools, baseline_failures)
+            .await
     }
 
     pub(super) async fn wait_for_session_toolset(
         &self,
         session_id: &SessionId,
         expected_tools: BTreeSet<ToolName>,
-        expect_fs_target: bool,
         baseline_failures: usize,
     ) -> Result<SessionView, AgentApiError> {
         let started = Instant::now();
@@ -346,18 +317,7 @@ impl GatewayAgentApi {
                 .keys()
                 .cloned()
                 .collect::<BTreeSet<_>>();
-            let target = loaded
-                .state
-                .tooling
-                .routing
-                .default_targets
-                .get(tools::targets::FS_TARGET_NAMESPACE);
-            let target_ready = if expect_fs_target {
-                target == Some(&ToolTargets::session_fs_execution_target())
-            } else {
-                target.is_none()
-            };
-            if actual_tools == expected_tools && target_ready {
+            if actual_tools == expected_tools {
                 return self.project_session_by_id(session_id).await;
             }
             tokio::time::sleep(self.poll_interval).await;

@@ -181,8 +181,10 @@ pub struct ProfileDocument {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<ProfileInstructions>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub environments: Vec<ProfileEnvironment>,
+    /// Universe environment to activate when this profile is applied. Absence
+    /// leaves the session's current active environment unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<EnvironmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -194,31 +196,6 @@ pub struct ProfileDocument {
 pub enum ProfileInstructions {
     Text { text: String },
     TextRef { blob_ref: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfileEnvironment {
-    pub env_id: EnvironmentId,
-    pub environment: ProfileEnvironmentSource,
-    #[serde(default)]
-    pub activate: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ProfileEnvironmentSource {
-    Existing {
-        instance_id: EnvironmentInstanceId,
-    },
-    Provision {
-        provider_id: EnvironmentProviderId,
-        request: HostTargetCreateRequestView,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -324,5 +301,5 @@ pub struct ProfileApplyResponse {
 pub struct ProfileApplySummary {
     pub config_changed: bool,
     pub instructions_changed: bool,
-    pub environments_changed: u32,
+    pub active_environment_changed: bool,
 }

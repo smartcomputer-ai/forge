@@ -125,6 +125,14 @@ pub(super) async fn drive_until_idle(
                 action = drive.resume_context_compaction(result, workflow_time_ms(ctx))?;
             }
             CoreAgentAction::InvokeTools { request } => {
+                let request = match request.promise_control_argument_request() {
+                    Some(argument_request) => {
+                        let facts =
+                            call_tool_prepare_promise_controls(ctx, argument_request).await?;
+                        engine::attach_promise_control_runtime(drive.state(), request, facts)?
+                    }
+                    None => request,
+                };
                 let outcome = call_tool_invoke_batch(ctx, request).await?;
                 action = drive.resume_tool_batch_outcome(outcome, workflow_time_ms(ctx))?;
             }

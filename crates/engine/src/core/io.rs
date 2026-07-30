@@ -19,8 +19,10 @@ use thiserror::Error;
 
 use crate::{
     AwaitSpec, BlobRef, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
-    ContextEntryKind, LlmGenerationFacts, LlmGenerationStatus, LlmRequest, RunId, SessionId,
-    ToolBatchId, ToolCallId, ToolCallStatus, ToolExecutionTarget, ToolName, TurnId, WorkspaceLink,
+    ContextEntryKind, EnvironmentId, LlmGenerationFacts, LlmGenerationStatus, LlmRequest,
+    PromiseId, PromiseOwnership, PromiseScope, PromiseStatus, RunId, SessionId, ToolBatchId,
+    ToolCallId, ToolCallStatus, ToolExecutionTarget, ToolName, TurnId, WorkflowToolBinding,
+    WorkspaceLink,
 };
 
 #[async_trait]
@@ -82,11 +84,38 @@ pub struct ToolInvocationBatchRequest {
     pub run_id: RunId,
     pub turn_id: TurnId,
     pub batch_id: ToolBatchId,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub default_targets: BTreeMap<String, ToolExecutionTarget>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_links: Vec<WorkspaceLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<EnvironmentId>,
+    pub environment_policy: Option<EnvironmentPolicyRuntime>,
+    /// Admitted Fleet policy for this tool batch. Runtime executors consume
+    /// this projection directly instead of reconstructing the owning session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_policy: Option<crate::FleetFeature>,
     pub calls: Vec<ToolInvocationRequest>,
+}
+
+/// Admitted session policy needed while resolving live environment resources.
+///
+/// This is transient runtime input recorded on the activity request, not a
+/// durable session document. Environment records and provider observations
+/// remain live resolver reads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentPolicyRuntime {
+    pub version: u32,
+    pub allowed_provider_ids: Option<Vec<String>>,
+}
+
+impl EnvironmentPolicyRuntime {
+    pub const VERSION: u32 = 1;
+
+    pub fn v1(allowed_provider_ids: Option<Vec<String>>) -> Self {
+        Self {
+            version: Self::VERSION,
+            allowed_provider_ids,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -95,6 +124,154 @@ pub struct ToolInvocationRequest {
     pub tool_name: ToolName,
     pub arguments_ref: BlobRef,
     pub execution_target: Option<ToolExecutionTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow_tool: Option<WorkflowToolCallRuntime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promise_control: Option<PromiseControlCallRuntime>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromiseControlKind {
+    Cancel,
+    Detach,
+}
+
+impl PromiseControlKind {
+    fn for_tool_name(tool_name: &ToolName) -> Option<Self> {
+        match tool_name.as_str() {
+            "cancel" => Some(Self::Cancel),
+            "detach" => Some(Self::Detach),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromiseControlArgumentCall {
+    pub call_id: ToolCallId,
+    pub kind: PromiseControlKind,
+    pub arguments_ref: BlobRef,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromiseControlArgumentRequest {
+    pub version: u32,
+    pub calls: Vec<PromiseControlArgumentCall>,
+}
+
+impl PromiseControlArgumentRequest {
+    pub const VERSION: u32 = 1;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum PromiseControlArgumentCallFacts {
+    Parsed {
+        call_id: ToolCallId,
+        promise_ids: Vec<PromiseId>,
+    },
+    Invalid {
+        call_id: ToolCallId,
+    },
+}
+
+impl PromiseControlArgumentCallFacts {
+    pub fn call_id(&self) -> &ToolCallId {
+        match self {
+            Self::Parsed { call_id, .. } | Self::Invalid { call_id } => call_id,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromiseControlArgumentFacts {
+    pub version: u32,
+    pub calls: Vec<PromiseControlArgumentCallFacts>,
+}
+
+impl PromiseControlArgumentFacts {
+    pub const VERSION: u32 = 1;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromiseControlCallRuntime {
+    pub version: u32,
+    pub controls: Vec<PromiseControlRuntime>,
+}
+
+impl PromiseControlCallRuntime {
+    pub const VERSION: u32 = 1;
+
+    pub fn v1(controls: Vec<PromiseControlRuntime>) -> Self {
+        Self {
+            version: Self::VERSION,
+            controls,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromiseControlRuntime {
+    pub promise_id: PromiseId,
+    pub state: PromiseControlStateRuntime,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "status")]
+pub enum PromiseControlStateRuntime {
+    Unknown,
+    Known {
+        ownership: PromiseOwnership,
+        scope: PromiseScope,
+        promise_status: PromiseStatus,
+    },
+}
+
+impl ToolInvocationBatchRequest {
+    pub fn promise_control_argument_request(&self) -> Option<PromiseControlArgumentRequest> {
+        let calls = self
+            .calls
+            .iter()
+            .filter_map(|call| {
+                PromiseControlKind::for_tool_name(&call.tool_name).map(|kind| {
+                    PromiseControlArgumentCall {
+                        call_id: call.call_id.clone(),
+                        kind,
+                        arguments_ref: call.arguments_ref.clone(),
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        (!calls.is_empty()).then_some(PromiseControlArgumentRequest {
+            version: PromiseControlArgumentRequest::VERSION,
+            calls,
+        })
+    }
+}
+
+/// Bounded session-owned facts needed to execute one admitted workflow-tool call.
+///
+/// This is transient runtime input, not durable session vocabulary. Carrying it
+/// on the activity request makes retries use the exact binding and emission
+/// count observed when the deterministic owner scheduled the batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowToolCallRuntime {
+    pub version: u32,
+    pub binding: WorkflowToolBinding,
+    pub prior_emission_count: u32,
+}
+
+impl WorkflowToolCallRuntime {
+    pub const VERSION: u32 = 1;
+
+    pub fn v1(binding: WorkflowToolBinding, prior_emission_count: u32) -> Self {
+        Self {
+            version: Self::VERSION,
+            binding,
+            prior_emission_count,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

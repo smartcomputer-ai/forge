@@ -9,7 +9,7 @@ use engine::{
     CoreAgentLlm, CoreAgentTools, ProviderApiKind,
     storage::{BlobStore, SessionStore},
 };
-use environments::SessionEnvironmentBindingStore;
+use environments::EnvironmentStore;
 use llm_clients::{anthropic::messages as am, openai::responses as oai};
 use llm_runtime::{
     AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, OpenAiResponsesLlmAdapter,
@@ -20,6 +20,7 @@ use vfs::VfsWorkspaceStore;
 
 use crate::{
     config::pg_store_from_env,
+    credential_injection::EnvironmentCredentialResolver,
     fleet::FleetChildRuntime,
     worker::{BrokerSecretResolver, SessionTools, StoredProviderKeyResolver},
 };
@@ -52,8 +53,6 @@ pub struct ToolActivityDeps {
 pub struct RuntimeProjectionActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     pub(super) workspace_store: Arc<dyn VfsWorkspaceStore>,
-    pub(super) environment_bindings: Arc<dyn SessionEnvironmentBindingStore>,
-    pub(super) environment_instances: Arc<dyn environments::EnvironmentInstanceStore>,
 }
 
 #[derive(Clone)]
@@ -61,6 +60,17 @@ pub struct PreprocessActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     pub(super) transcriber: Arc<dyn AudioTranscriber>,
     pub(super) transcoder: Option<Arc<dyn AudioTranscoder>>,
+}
+
+/// Narrow live-resource dependencies used by environment-job activities.
+/// Session history is intentionally absent: job preparation consumes its
+/// pinned execution context and may read only CAS, environment catalog, and
+/// credential resources.
+#[derive(Clone)]
+pub struct EnvironmentJobActivityDeps {
+    pub(super) blobs: Arc<dyn BlobStore>,
+    pub(super) environments: Arc<dyn EnvironmentStore>,
+    pub(super) credentials: EnvironmentCredentialResolver,
 }
 
 /// Temporal-client deps for the generic start-on-call adapter: starting an
@@ -78,7 +88,7 @@ pub struct ActivityState {
     tools: ToolActivityDeps,
     runtime_projection: Option<RuntimeProjectionActivityDeps>,
     preprocess: PreprocessActivityDeps,
-    environment_jobs: Option<Arc<PgStore>>,
+    environment_jobs: Option<EnvironmentJobActivityDeps>,
     workflow_tool_executions: Option<WorkflowToolExecutionDeps>,
 }
 
@@ -116,14 +126,10 @@ impl ActivityState {
     pub fn with_runtime_projection_deps(
         mut self,
         workspace_store: Arc<dyn VfsWorkspaceStore>,
-        environment_bindings: Arc<dyn SessionEnvironmentBindingStore>,
-        environment_instances: Arc<dyn environments::EnvironmentInstanceStore>,
     ) -> Self {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
             blobs: self.storage.blobs.clone(),
             workspace_store,
-            environment_bindings,
-            environment_instances,
         });
         self
     }
@@ -150,15 +156,18 @@ impl ActivityState {
     ) -> Self {
         let sessions: Arc<dyn SessionStore> = store.clone();
         let blobs: Arc<dyn BlobStore> = store.clone();
+        let environment_job_blobs = blobs.clone();
+        let environment_job_environments: Arc<dyn EnvironmentStore> = store.clone();
+        let environment_job_credentials =
+            EnvironmentCredentialResolver::from_pg_store(store.clone());
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
-        let environment_bindings: Arc<dyn SessionEnvironmentBindingStore> = store.clone();
-        let environment_instances: Arc<dyn environments::EnvironmentInstanceStore> = store.clone();
-        let mut state = Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(
-            workspace_store,
-            environment_bindings,
-            environment_instances,
-        );
-        state.environment_jobs = Some(store);
+        let mut state =
+            Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(workspace_store);
+        state.environment_jobs = Some(EnvironmentJobActivityDeps {
+            blobs: environment_job_blobs,
+            environments: environment_job_environments,
+            credentials: environment_job_credentials,
+        });
         state
     }
 
@@ -267,7 +276,7 @@ impl ActivityState {
         &self.preprocess
     }
 
-    pub(super) fn environment_jobs(&self) -> Option<&Arc<PgStore>> {
+    pub(super) fn environment_jobs(&self) -> Option<&EnvironmentJobActivityDeps> {
         self.environment_jobs.as_ref()
     }
 

@@ -1,10 +1,13 @@
 //! Generic promise/concurrency tool contracts.
 
 use engine::{
-    FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
+    FunctionToolSpec, PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseOwnership,
+    PromiseScope, PromiseStatus, RunId, ToolEffect, ToolKind, ToolName, ToolParallelism, ToolSpec,
+    ToolTargetRequirement, promise_cancel_effect, promise_detach_effect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use thiserror::Error;
 
 use crate::{
     error::{ToolError, ToolResult},
@@ -172,6 +175,158 @@ pub struct DetachOutput {
 pub struct DetachPromiseOutput {
     pub promise_id: String,
     pub status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("{message}")]
+pub struct PromiseControlError {
+    message: String,
+}
+
+impl PromiseControlError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+}
+
+fn supplied_promise_controls<'a>(
+    requested_ids: &[String],
+    runtime: Option<&'a PromiseControlCallRuntime>,
+) -> Result<&'a [engine::PromiseControlRuntime], PromiseControlError> {
+    let runtime = runtime
+        .ok_or_else(|| PromiseControlError::new("promise control runtime facts are missing"))?;
+    if runtime.version != PromiseControlCallRuntime::VERSION {
+        return Err(PromiseControlError::new(format!(
+            "unsupported promise control runtime facts version {}",
+            runtime.version
+        )));
+    }
+    if runtime.controls.len() != requested_ids.len()
+        || runtime
+            .controls
+            .iter()
+            .zip(requested_ids)
+            .any(|(control, requested)| control.promise_id.as_str() != requested)
+    {
+        return Err(PromiseControlError::new(
+            "promise control runtime facts do not match the requested promise ids",
+        ));
+    }
+    Ok(&runtime.controls)
+}
+
+pub fn cancel_promises_from_runtime(
+    args: &CancelArgs,
+    runtime: Option<&PromiseControlCallRuntime>,
+) -> Result<(CancelOutput, Vec<ToolEffect>), PromiseControlError> {
+    let requested_ids = args
+        .validated_promise_ids()
+        .map_err(|error| PromiseControlError::new(error.to_string()))?;
+    let controls = supplied_promise_controls(&requested_ids, runtime)?;
+    let mut promises = Vec::with_capacity(controls.len());
+    let mut effects = Vec::new();
+    for control in controls {
+        let promise_id = control.promise_id.as_str().to_owned();
+        let PromiseControlStateRuntime::Known {
+            ownership,
+            promise_status,
+            ..
+        } = &control.state
+        else {
+            return Err(PromiseControlError::new(format!(
+                "unknown promise {promise_id}"
+            )));
+        };
+        if *ownership != PromiseOwnership::Model {
+            return Err(PromiseControlError::new(format!(
+                "promise {promise_id} is runtime-owned and cannot be cancelled"
+            )));
+        }
+        if promise_status.is_terminal() {
+            promises.push(CancelPromiseOutput {
+                promise_id,
+                status: promise_status_name(*promise_status).to_owned(),
+            });
+            continue;
+        }
+        effects.push(promise_cancel_effect(&control.promise_id));
+        promises.push(CancelPromiseOutput {
+            promise_id,
+            status: "cancelled".to_owned(),
+        });
+    }
+    Ok((CancelOutput { promises }, effects))
+}
+
+pub fn detach_promises_from_runtime(
+    args: &DetachArgs,
+    run_id: RunId,
+    runtime: Option<&PromiseControlCallRuntime>,
+) -> Result<(DetachOutput, Vec<ToolEffect>), PromiseControlError> {
+    let requested_ids = args
+        .validated_promise_ids()
+        .map_err(|error| PromiseControlError::new(error.to_string()))?;
+    let controls = supplied_promise_controls(&requested_ids, runtime)?;
+    let mut promises = Vec::with_capacity(controls.len());
+    let mut effects = Vec::new();
+    for control in controls {
+        let promise_id = control.promise_id.as_str().to_owned();
+        let PromiseControlStateRuntime::Known {
+            ownership,
+            scope,
+            promise_status,
+        } = &control.state
+        else {
+            return Err(PromiseControlError::new(format!(
+                "unknown promise {promise_id}"
+            )));
+        };
+        if *ownership != PromiseOwnership::Model {
+            return Err(PromiseControlError::new(format!(
+                "promise {promise_id} is runtime-owned and cannot be detached"
+            )));
+        }
+        if promise_status.is_terminal() {
+            return Err(PromiseControlError::new(format!(
+                "promise {promise_id} is already {}",
+                promise_status_name(*promise_status)
+            )));
+        }
+        match scope {
+            PromiseScope::Session => promises.push(DetachPromiseOutput {
+                promise_id,
+                status: "already_detached".to_owned(),
+            }),
+            PromiseScope::Run {
+                run_id: promise_run_id,
+            } if *promise_run_id == run_id => {
+                effects.push(promise_detach_effect(&control.promise_id));
+                promises.push(DetachPromiseOutput {
+                    promise_id,
+                    status: "detached".to_owned(),
+                });
+            }
+            PromiseScope::Run {
+                run_id: promise_run_id,
+            } => {
+                return Err(PromiseControlError::new(format!(
+                    "promise {promise_id} is scoped to run {promise_run_id}, not current run {run_id}",
+                )));
+            }
+        }
+    }
+    Ok((DetachOutput { promises }, effects))
+}
+
+pub fn promise_status_name(status: PromiseStatus) -> &'static str {
+    match status {
+        PromiseStatus::Pending => "pending",
+        PromiseStatus::Resolved => "resolved",
+        PromiseStatus::Failed => "failed",
+        PromiseStatus::Cancelled => "cancelled",
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,6 +585,199 @@ fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn known_control(
+        id: &str,
+        ownership: PromiseOwnership,
+        scope: PromiseScope,
+        promise_status: PromiseStatus,
+    ) -> engine::PromiseControlRuntime {
+        engine::PromiseControlRuntime {
+            promise_id: engine::PromiseId::new(id),
+            state: PromiseControlStateRuntime::Known {
+                ownership,
+                scope,
+                promise_status,
+            },
+        }
+    }
+
+    fn runtime(controls: Vec<engine::PromiseControlRuntime>) -> PromiseControlCallRuntime {
+        PromiseControlCallRuntime::v1(controls)
+    }
+
+    #[test]
+    fn cancel_uses_supplied_status_and_ownership_facts() {
+        let args = CancelArgs {
+            promises: vec!["pending".to_owned(), "resolved".to_owned()],
+        };
+        let facts = runtime(vec![
+            known_control(
+                "pending",
+                PromiseOwnership::Model,
+                PromiseScope::Run {
+                    run_id: RunId::new(1),
+                },
+                PromiseStatus::Pending,
+            ),
+            known_control(
+                "resolved",
+                PromiseOwnership::Model,
+                PromiseScope::Session,
+                PromiseStatus::Resolved,
+            ),
+        ]);
+        let (output, effects) =
+            cancel_promises_from_runtime(&args, Some(&facts)).expect("cancel evaluation");
+        assert_eq!(
+            output.promises,
+            vec![
+                CancelPromiseOutput {
+                    promise_id: "pending".to_owned(),
+                    status: "cancelled".to_owned(),
+                },
+                CancelPromiseOutput {
+                    promise_id: "resolved".to_owned(),
+                    status: "resolved".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].kind, engine::PROMISE_CANCEL_EFFECT_KIND);
+
+        let runtime_owned = runtime(vec![known_control(
+            "pending",
+            PromiseOwnership::Runtime,
+            PromiseScope::Session,
+            PromiseStatus::Pending,
+        )]);
+        assert_eq!(
+            cancel_promises_from_runtime(
+                &CancelArgs {
+                    promises: vec!["pending".to_owned()],
+                },
+                Some(&runtime_owned),
+            )
+            .expect_err("runtime-owned rejection")
+            .to_string(),
+            "promise pending is runtime-owned and cannot be cancelled"
+        );
+    }
+
+    #[test]
+    fn promise_control_rejects_unknown_missing_and_mismatched_facts() {
+        let args = CancelArgs {
+            promises: vec!["missing".to_owned()],
+        };
+        let unknown = runtime(vec![engine::PromiseControlRuntime {
+            promise_id: engine::PromiseId::new("missing"),
+            state: PromiseControlStateRuntime::Unknown,
+        }]);
+        assert_eq!(
+            cancel_promises_from_runtime(&args, Some(&unknown))
+                .expect_err("unknown rejection")
+                .to_string(),
+            "unknown promise missing"
+        );
+        assert_eq!(
+            cancel_promises_from_runtime(&args, None)
+                .expect_err("missing runtime rejection")
+                .to_string(),
+            "promise control runtime facts are missing"
+        );
+        let mismatched = runtime(vec![engine::PromiseControlRuntime {
+            promise_id: engine::PromiseId::new("other"),
+            state: PromiseControlStateRuntime::Unknown,
+        }]);
+        assert_eq!(
+            cancel_promises_from_runtime(&args, Some(&mismatched))
+                .expect_err("mismatch rejection")
+                .to_string(),
+            "promise control runtime facts do not match the requested promise ids"
+        );
+    }
+
+    #[test]
+    fn detach_uses_supplied_scope_status_and_ownership_facts() {
+        let args = DetachArgs {
+            promises: vec!["session".to_owned(), "current".to_owned()],
+        };
+        let facts = runtime(vec![
+            known_control(
+                "session",
+                PromiseOwnership::Model,
+                PromiseScope::Session,
+                PromiseStatus::Pending,
+            ),
+            known_control(
+                "current",
+                PromiseOwnership::Model,
+                PromiseScope::Run {
+                    run_id: RunId::new(7),
+                },
+                PromiseStatus::Pending,
+            ),
+        ]);
+        let (output, effects) = detach_promises_from_runtime(&args, RunId::new(7), Some(&facts))
+            .expect("detach evaluation");
+        assert_eq!(
+            output.promises,
+            vec![
+                DetachPromiseOutput {
+                    promise_id: "session".to_owned(),
+                    status: "already_detached".to_owned(),
+                },
+                DetachPromiseOutput {
+                    promise_id: "current".to_owned(),
+                    status: "detached".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(effects.len(), 1);
+        assert_eq!(effects[0].kind, engine::PROMISE_DETACH_EFFECT_KIND);
+
+        for (facts, expected) in [
+            (
+                known_control(
+                    "p",
+                    PromiseOwnership::Runtime,
+                    PromiseScope::Session,
+                    PromiseStatus::Pending,
+                ),
+                "promise p is runtime-owned and cannot be detached".to_owned(),
+            ),
+            (
+                known_control(
+                    "p",
+                    PromiseOwnership::Model,
+                    PromiseScope::Session,
+                    PromiseStatus::Failed,
+                ),
+                "promise p is already failed".to_owned(),
+            ),
+            (
+                known_control(
+                    "p",
+                    PromiseOwnership::Model,
+                    PromiseScope::Run {
+                        run_id: RunId::new(8),
+                    },
+                    PromiseStatus::Pending,
+                ),
+                "promise p is scoped to run 8, not current run 7".to_owned(),
+            ),
+        ] {
+            let error = detach_promises_from_runtime(
+                &DetachArgs {
+                    promises: vec!["p".to_owned()],
+                },
+                RunId::new(7),
+                Some(&runtime(vec![facts])),
+            )
+            .expect_err("detach rejection");
+            assert_eq!(error.to_string(), expected);
+        }
+    }
 
     #[test]
     fn await_accepts_promises_mode_and_timeout() {

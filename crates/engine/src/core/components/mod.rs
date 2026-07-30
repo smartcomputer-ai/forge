@@ -6,6 +6,7 @@
 pub mod command;
 pub mod config;
 pub mod context;
+pub mod environment;
 pub mod error;
 pub mod event;
 pub mod ids;
@@ -28,14 +29,18 @@ pub use context::{
     ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ContextCompactionStatus,
     ContextCompactionTrigger, ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind,
     ContextEntrySource, ContextEvent, ContextMessageRole, ContextRemovalReason,
-    ContextRewriteReason, ContextSnapshot, ContextState, ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-    ENVIRONMENT_CATALOG_CONTEXT_KEY, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
+    ContextRewriteReason, ContextSnapshot, ContextState, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     SKILL_ACTIVATION_CONTEXT_KEY_PREFIX, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
     SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, TokenEstimate,
     TokenEstimateQuality, VFS_CATALOG_CONTEXT_KEY, is_run_scoped_skill_activation_entry,
     skill_activation_context_key, validate_external_context_key,
+};
+pub use environment::{
+    ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND,
+    ENVIRONMENT_TARGET_NAMESPACE, EnvironmentEvent, EnvironmentState, environment_activate_effect,
+    environment_deactivate_effect,
 };
 pub use error::*;
 pub use event::*;
@@ -63,7 +68,7 @@ pub use tooling::{
     ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
     RemoteMcpToolSpec, SecretRef, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
     ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionTarget, ToolKind,
-    ToolParallelism, ToolPatch, ToolRoutingState, ToolSpec, ToolTargetRequirement, ToolingState,
+    ToolParallelism, ToolPatch, ToolSpec, ToolTargetRequirement, ToolingState,
     UNAVAILABLE_TOOL_RESULT_CONTENT, unavailable_tool_result_ref, validate_tool_map,
 };
 pub use turn::{

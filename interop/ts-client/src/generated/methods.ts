@@ -25,15 +25,11 @@ export const METHODS = [
   "session/skills/activate",
   "session/skills/deactivate",
   "session/profiles/apply",
-  "session/environments/read",
-  "session/environments/list",
-  "session/environments/attach",
   "session/environments/activate",
   "session/environments/deactivate",
-  "session/environments/detach",
-  "session/environments/credentials/bind",
-  "session/environments/credentials/list",
-  "session/environments/credentials/unbind",
+  "environments/credentials/bind",
+  "environments/credentials/list",
+  "environments/credentials/unbind",
   "environments/create",
   "environments/read",
   "environments/list",
@@ -191,47 +187,27 @@ export const METHOD_INFO = {
     summary: "Apply a profile to a session",
     description: "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
   },
-  "session/environments/read": {
-    scope: "universe",
-    summary: "Read a session environment binding",
-    description: "Returns one session-local environment alias joined with current instance/provider availability and activation state.",
-  },
-  "session/environments/list": {
-    scope: "universe",
-    summary: "List session environment bindings",
-    description: "Returns all environment aliases attached to the session and identifies the active tool target, if any.",
-  },
-  "session/environments/attach": {
-    scope: "universe",
-    summary: "Attach an environment to a session",
-    description: "Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.",
-  },
   "session/environments/activate": {
     scope: "universe",
     summary: "Activate a session environment",
-    description: "Selects an attached, available environment as the process/filesystem tool target while the session is idle.",
+    description: "Selects an allowed, live universe environment for environment-targeted tools while the session is idle.",
   },
   "session/environments/deactivate": {
     scope: "universe",
     summary: "Deactivate the session environment",
-    description: "Clears the active environment tool target without detaching any binding or closing the underlying instance.",
+    description: "Clears active environment selection without changing or closing the universe environment.",
   },
-  "session/environments/detach": {
-    scope: "universe",
-    summary: "Detach a session environment",
-    description: "Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.",
-  },
-  "session/environments/credentials/bind": {
+  "environments/credentials/bind": {
     scope: "universe",
     summary: "Bind a credential into an environment",
-    description: "Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.",
+    description: "Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.",
   },
-  "session/environments/credentials/list": {
+  "environments/credentials/list": {
     scope: "universe",
     summary: "List environment credential bindings",
-    description: "Returns variable names and credential source handles for a session environment; resolved secret values are never returned.",
+    description: "Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.",
   },
-  "session/environments/credentials/unbind": {
+  "environments/credentials/unbind": {
     scope: "universe",
     summary: "Unbind an environment credential",
     description: "Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.",
@@ -702,36 +678,9 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfProfileApplyResponse;
   };
   /**
-   * Read a session environment binding
-   *
-   * Returns one session-local environment alias joined with current instance/provider availability and activation state.
-   */
-  "session/environments/read": {
-    params: Api.SessionEnvironmentReadParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentReadResponse;
-  };
-  /**
-   * List session environment bindings
-   *
-   * Returns all environment aliases attached to the session and identifies the active tool target, if any.
-   */
-  "session/environments/list": {
-    params: Api.SessionEnvironmentListParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentListResponse;
-  };
-  /**
-   * Attach an environment to a session
-   *
-   * Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.
-   */
-  "session/environments/attach": {
-    params: Api.SessionEnvironmentAttachParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentAttachResponse;
-  };
-  /**
    * Activate a session environment
    *
-   * Selects an attached, available environment as the process/filesystem tool target while the session is idle.
+   * Selects an allowed, live universe environment for environment-targeted tools while the session is idle.
    */
   "session/environments/activate": {
     params: Api.SessionEnvironmentActivateParams;
@@ -740,47 +689,38 @@ export interface MethodMap {
   /**
    * Deactivate the session environment
    *
-   * Clears the active environment tool target without detaching any binding or closing the underlying instance.
+   * Clears active environment selection without changing or closing the universe environment.
    */
   "session/environments/deactivate": {
     params: Api.SessionEnvironmentDeactivateParams;
     result: Api.AgentApiOutcomeOfSessionEnvironmentDeactivateResponse;
   };
   /**
-   * Detach a session environment
-   *
-   * Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.
-   */
-  "session/environments/detach": {
-    params: Api.SessionEnvironmentDetachParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentDetachResponse;
-  };
-  /**
    * Bind a credential into an environment
    *
-   * Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.
+   * Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.
    */
-  "session/environments/credentials/bind": {
-    params: Api.SessionEnvironmentCredentialBindParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse;
+  "environments/credentials/bind": {
+    params: Api.EnvironmentCredentialBindParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialBindResponse;
   };
   /**
    * List environment credential bindings
    *
-   * Returns variable names and credential source handles for a session environment; resolved secret values are never returned.
+   * Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.
    */
-  "session/environments/credentials/list": {
-    params: Api.SessionEnvironmentCredentialListParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialListResponse;
+  "environments/credentials/list": {
+    params: Api.EnvironmentCredentialListParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialListResponse;
   };
   /**
    * Unbind an environment credential
    *
    * Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.
    */
-  "session/environments/credentials/unbind": {
-    params: Api.SessionEnvironmentCredentialUnbindParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse;
+  "environments/credentials/unbind": {
+    params: Api.EnvironmentCredentialUnbindParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialUnbindResponse;
   };
   /**
    * Provision an environment instance
@@ -1439,33 +1379,9 @@ export const rpc = {
     return client.call("session/profiles/apply", params);
   },
   /**
-   * Read a session environment binding
-   *
-   * Returns one session-local environment alias joined with current instance/provider availability and activation state.
-   */
-  sessionEnvironmentsRead(client: RpcCaller, params: Api.SessionEnvironmentReadParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentReadResponse> {
-    return client.call("session/environments/read", params);
-  },
-  /**
-   * List session environment bindings
-   *
-   * Returns all environment aliases attached to the session and identifies the active tool target, if any.
-   */
-  sessionEnvironmentsList(client: RpcCaller, params: Api.SessionEnvironmentListParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentListResponse> {
-    return client.call("session/environments/list", params);
-  },
-  /**
-   * Attach an environment to a session
-   *
-   * Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.
-   */
-  sessionEnvironmentsAttach(client: RpcCaller, params: Api.SessionEnvironmentAttachParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentAttachResponse> {
-    return client.call("session/environments/attach", params);
-  },
-  /**
    * Activate a session environment
    *
-   * Selects an attached, available environment as the process/filesystem tool target while the session is idle.
+   * Selects an allowed, live universe environment for environment-targeted tools while the session is idle.
    */
   sessionEnvironmentsActivate(client: RpcCaller, params: Api.SessionEnvironmentActivateParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentActivateResponse> {
     return client.call("session/environments/activate", params);
@@ -1473,42 +1389,34 @@ export const rpc = {
   /**
    * Deactivate the session environment
    *
-   * Clears the active environment tool target without detaching any binding or closing the underlying instance.
+   * Clears active environment selection without changing or closing the universe environment.
    */
   sessionEnvironmentsDeactivate(client: RpcCaller, params: Api.SessionEnvironmentDeactivateParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentDeactivateResponse> {
     return client.call("session/environments/deactivate", params);
   },
   /**
-   * Detach a session environment
-   *
-   * Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.
-   */
-  sessionEnvironmentsDetach(client: RpcCaller, params: Api.SessionEnvironmentDetachParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentDetachResponse> {
-    return client.call("session/environments/detach", params);
-  },
-  /**
    * Bind a credential into an environment
    *
-   * Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.
+   * Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.
    */
-  sessionEnvironmentsCredentialsBind(client: RpcCaller, params: Api.SessionEnvironmentCredentialBindParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse> {
-    return client.call("session/environments/credentials/bind", params);
+  environmentsCredentialsBind(client: RpcCaller, params: Api.EnvironmentCredentialBindParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialBindResponse> {
+    return client.call("environments/credentials/bind", params);
   },
   /**
    * List environment credential bindings
    *
-   * Returns variable names and credential source handles for a session environment; resolved secret values are never returned.
+   * Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.
    */
-  sessionEnvironmentsCredentialsList(client: RpcCaller, params: Api.SessionEnvironmentCredentialListParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialListResponse> {
-    return client.call("session/environments/credentials/list", params);
+  environmentsCredentialsList(client: RpcCaller, params: Api.EnvironmentCredentialListParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialListResponse> {
+    return client.call("environments/credentials/list", params);
   },
   /**
    * Unbind an environment credential
    *
    * Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.
    */
-  sessionEnvironmentsCredentialsUnbind(client: RpcCaller, params: Api.SessionEnvironmentCredentialUnbindParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse> {
-    return client.call("session/environments/credentials/unbind", params);
+  environmentsCredentialsUnbind(client: RpcCaller, params: Api.EnvironmentCredentialUnbindParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialUnbindResponse> {
+    return client.call("environments/credentials/unbind", params);
   },
   /**
    * Provision an environment instance

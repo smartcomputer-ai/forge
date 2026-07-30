@@ -19,14 +19,11 @@ use engine::{
     },
 };
 use environments::{
-    EnvironmentId, EnvironmentInstanceId, EnvironmentInstanceOrigin, EnvironmentInstanceStore,
-    EnvironmentProviderCapabilities, EnvironmentProviderHeartbeat, EnvironmentProviderId,
-    EnvironmentProviderKind, EnvironmentProviderStatus, EnvironmentProviderStore,
-    HostControllerConnectionSpec, ListEnvironmentInstances, ListEnvironmentProviders,
-    ObserveEnvironmentInstance, PutSessionEnvironmentBinding, RegisterEnvironmentProvider,
-    SessionEnvironmentBindingState, SessionEnvironmentBindingStore, SessionEnvironmentFsRoute,
-    SessionEnvironmentFsRouteAccess, UpdateEnvironmentInstanceStatus,
-    UpdateEnvironmentProviderStatus, UpdateSessionEnvironmentBindingState,
+    BeginCloseEnvironment, EnvironmentId, EnvironmentOrigin, EnvironmentProviderCapabilities,
+    EnvironmentProviderHeartbeat, EnvironmentProviderId, EnvironmentProviderKind,
+    EnvironmentProviderStatus, EnvironmentProviderStore, EnvironmentStore,
+    HostControllerConnectionSpec, ListEnvironmentProviders, ListEnvironments, ObserveEnvironment,
+    RegisterEnvironmentProvider, UpdateEnvironmentProviderStatus,
 };
 use host_protocol::{
     control::targets::HostTargetStatus,
@@ -995,7 +992,7 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
-async fn pg_live_environment_instances_and_bindings() {
+async fn pg_live_universe_environments_are_independent_of_sessions() {
     let store = live_store("environments", 1024).await;
     for table in ["environment_jobs", "environment_job_groups"] {
         let relation: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
@@ -1007,9 +1004,8 @@ async fn pg_live_environment_instances_and_bindings() {
     }
     let provider_id = EnvironmentProviderId::new("bridge-local");
     let target_id = HostTargetId::new("local-host");
-    let instance_id = EnvironmentInstanceId::new("instance-local");
+    let environment_id = EnvironmentId::new("instance-local");
     let session_id = SessionId::new("session-env");
-    let env_id = EnvironmentId::new("local");
 
     let provider = store
         .register_provider(RegisterEnvironmentProvider {
@@ -1060,11 +1056,11 @@ async fn pg_live_environment_instances_and_bindings() {
     );
 
     let instance = store
-        .observe_instance(ObserveEnvironmentInstance {
-            instance_id: instance_id.clone(),
+        .observe_environment(ObserveEnvironment {
+            environment_id: environment_id.clone(),
             provider_id: provider_id.clone(),
             provider_target_id: target_id.clone(),
-            origin: EnvironmentInstanceOrigin::Provided,
+            origin: EnvironmentOrigin::Provided,
             display_name: Some("Local host".to_owned()),
             status: HostTargetStatus::Ready,
             scope: HostScope::Default,
@@ -1085,10 +1081,10 @@ async fn pg_live_environment_instances_and_bindings() {
         .expect("upsert target");
     assert_eq!(
         store
-            .list_instances(ListEnvironmentInstances {
+            .list_environments(ListEnvironments {
                 provider_id: Some(provider_id.clone()),
                 status: Some(HostTargetStatus::Ready),
-                origin: Some(EnvironmentInstanceOrigin::Provided),
+                origin: Some(EnvironmentOrigin::Provided),
             })
             .await
             .expect("list instances"),
@@ -1104,50 +1100,14 @@ async fn pg_live_environment_instances_and_bindings() {
         .await
         .expect("create session");
 
-    let binding = store
-        .put_binding(PutSessionEnvironmentBinding {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            instance_id: instance_id.clone(),
-            cwd: Some(HostPath::new("/workspace").expect("cwd")),
-            fs_routes: vec![SessionEnvironmentFsRoute {
-                path: HostPath::new("/workspace").expect("route"),
-                source_path: None,
-                access: SessionEnvironmentFsRouteAccess::ReadWrite,
-                same_state_as_active_env: Some(env_id.clone()),
-            }],
-            updated_at_ms: 40,
-        })
-        .await
-        .expect("put binding");
-    assert_eq!(
-        store
-            .list_bindings_for_session(&session_id)
-            .await
-            .expect("list bindings"),
-        vec![binding.clone()]
-    );
-
-    let detached = store
-        .update_binding_state(UpdateSessionEnvironmentBindingState {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            state: SessionEnvironmentBindingState::Detached,
+    let closing = store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: environment_id.clone(),
             updated_at_ms: 50,
         })
         .await
-        .expect("detach binding");
-    assert_eq!(detached.state, SessionEnvironmentBindingState::Detached);
-
-    let stopped = store
-        .update_instance_status(UpdateEnvironmentInstanceStatus {
-            instance_id: instance_id.clone(),
-            status: HostTargetStatus::Stopped,
-            observed_at_ms: 60,
-        })
-        .await
-        .expect("stop instance");
-    assert_eq!(stopped.status, HostTargetStatus::Stopped);
+        .expect("close environment while a session exists");
+    assert_eq!(closing.status, HostTargetStatus::Closing);
 
     let offline = store
         .update_provider_status(UpdateEnvironmentProviderStatus {
@@ -1159,11 +1119,6 @@ async fn pg_live_environment_instances_and_bindings() {
         .expect("mark provider offline");
     assert_eq!(offline.status, EnvironmentProviderStatus::Offline);
 
-    let deleted = store
-        .delete_binding(&session_id, &env_id)
-        .await
-        .expect("delete binding");
-    assert_eq!(deleted, detached);
     assert_eq!(
         store
             .read_provider(&provider_id)

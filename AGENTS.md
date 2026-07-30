@@ -144,10 +144,11 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   and GitHub App drivers, store traits, typed broker errors, the runtime
   token broker with single-flight refresh and on-demand minting (P69), and
   deployment-scoped inbound API keys for gateway authentication (P90).
-- `crates/environments/` — environment provider presence, universe
-  environment instances, session binding, credential binding, validation,
-  errors, and store traits. Provider job DTOs live in `host-protocol`; no
-  Lightspeed job registry is persisted.
+- `crates/environments/` — environment provider presence, universe environment
+  resources, universe-scoped credential bindings, validation, errors, and store
+  traits. Sessions retain only an active environment id in event-sourced core
+  state. Provider job DTOs live in `host-protocol`; no Lightspeed job registry
+  is persisted.
 - `crates/eval/` — eval harness for agent/tool workflows.
 - `crates/llm-runtime/` — CoreAgent LLM runtime from planned requests to
   provider-native client calls.
@@ -198,6 +199,11 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   `features.vfs.workspaceLinks`. Snapshots and mutable workspace heads remain
   catalog resources; resolved links are transient, and no session-link or
   mount table is authoritative. See `docs/roadmap/p107-session-workspace-links.md`.
+- Enabling `features.environments` permits externally selected active
+  environments and their process/filesystem capabilities. Only
+  `features.environments.selectionTools` exposes model discovery/selection;
+  jobs remain an independent sub-grant. See
+  `docs/roadmap/p108-universe-environments.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

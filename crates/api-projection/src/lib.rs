@@ -98,6 +98,12 @@ impl<'a> CoreAgentProjector<'a> {
                 params.state.tooling.revision,
                 &params.state.tooling.tools,
             ),
+            active_environment_id: params
+                .state
+                .environment
+                .active_environment_id
+                .as_ref()
+                .map(|id| id.as_str().to_owned()),
             management: session_management_to_api(params.state),
         })
     }
@@ -587,6 +593,18 @@ impl<'a> CoreAgentProjector<'a> {
                         .map(|blob_ref| blob_ref.as_str().to_owned()),
                 }),
             },
+            CoreAgentEvent::Environment(event) => match event {
+                engine::EnvironmentEvent::ActiveEnvironmentSet { environment_id } => {
+                    Ok(SessionEventKindView::ActiveEnvironmentChanged {
+                        environment_id: Some(environment_id.as_str().to_owned()),
+                    })
+                }
+                engine::EnvironmentEvent::ActiveEnvironmentCleared => {
+                    Ok(SessionEventKindView::ActiveEnvironmentChanged {
+                        environment_id: None,
+                    })
+                }
+            },
             CoreAgentEvent::ToolConfig(event) => match event {
                 ToolConfigEvent::ToolsReplaced { base_revision, .. } => {
                     Ok(SessionEventKindView::ToolsReplaced {
@@ -611,18 +629,6 @@ impl<'a> CoreAgentProjector<'a> {
                         .map(|tool_name| tool_name.as_str().to_owned())
                         .collect(),
                 }),
-                ToolConfigEvent::DefaultTargetSet { target } => {
-                    Ok(SessionEventKindView::ToolDefaultTargetChanged {
-                        namespace: target.namespace.clone(),
-                        target: Some(tool_execution_target_to_api(target)),
-                    })
-                }
-                ToolConfigEvent::DefaultTargetCleared { namespace } => {
-                    Ok(SessionEventKindView::ToolDefaultTargetChanged {
-                        namespace: namespace.clone(),
-                        target: None,
-                    })
-                }
             },
             CoreAgentEvent::Tool(event) => match event {
                 ToolEvent::BatchStarted {
@@ -1362,6 +1368,7 @@ fn features_config_to_api(
             .map(|environments| api::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers.clone(),
+                selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
             }),
         mcp: features.mcp.as_ref().map(mcp_feature_to_api),
@@ -1576,11 +1583,10 @@ fn tool_target_requirement_to_api(
 ) -> ToolTargetRequirementView {
     match requirement {
         ToolTargetRequirement::None => ToolTargetRequirementView::None,
-        ToolTargetRequirement::Optional { namespace } => ToolTargetRequirementView::Optional {
-            namespace: namespace.clone(),
-        },
-        ToolTargetRequirement::Required { namespace } => ToolTargetRequirementView::Required {
-            namespace: namespace.clone(),
+        ToolTargetRequirement::SessionFilesystem => ToolTargetRequirementView::SessionFilesystem,
+        ToolTargetRequirement::ActiveEnvironment => ToolTargetRequirementView::ActiveEnvironment,
+        ToolTargetRequirement::Fixed { target } => ToolTargetRequirementView::Fixed {
+            target: tool_execution_target_to_api(target),
         },
     }
 }
@@ -1651,8 +1657,6 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         },
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
-        ContextEntryKind::EnvironmentCatalog => ContextEntryKindView::EnvironmentCatalog,
-        ContextEntryKind::EnvironmentActive => ContextEntryKindView::EnvironmentActive,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
         ContextEntryKind::SkillActivation { skill_id } => ContextEntryKindView::SkillActivation {
             skill_id: skill_id.as_str().to_owned(),
@@ -2722,6 +2726,7 @@ mod tests {
                     environments: Some(api::EnvironmentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
                         providers: None,
+                        selection_tools: false,
                         jobs: false,
                     }),
                     mcp: Some(api::McpFeature {

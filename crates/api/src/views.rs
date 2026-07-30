@@ -23,6 +23,9 @@ pub struct SessionView {
     pub active_context: ContextView,
     #[serde(default)]
     pub active_tools: ActiveToolsView,
+    /// The universe environment selected by the session event log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<EnvironmentId>,
     /// Immutable workflow-backed tool declaration. A lifecycle controller
     /// indicates external session ownership; tool-only declarations do not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,8 +218,6 @@ pub enum ContextEntryKindView {
     Message { role: ContextMessageRoleView },
     Instructions,
     VfsCatalog,
-    EnvironmentCatalog,
-    EnvironmentActive,
     SkillCatalog,
     SkillActivation { skill_id: SkillId },
     ToolCall { call_id: String, name: String },

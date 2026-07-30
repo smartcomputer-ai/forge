@@ -12,23 +12,25 @@ use api::{
     AuthProviderCreateParams, AuthProviderCreateResponse, AuthProviderDeleteParams,
     AuthProviderDeleteResponse, AuthProviderListParams, AuthProviderListResponse,
     AuthProviderReadParams, AuthProviderReadResponse, BlobHasParams, BlobHasResponse,
-    BlobPutParams, BlobPutResponse, BlobReadParams, BlobReadResponse, EnvironmentListParams,
+    BlobPutParams, BlobPutResponse, BlobReadParams, BlobReadResponse, EnvironmentCloseParams,
+    EnvironmentCloseResponse, EnvironmentCredentialBindParams, EnvironmentCredentialBindResponse,
+    EnvironmentCredentialListParams, EnvironmentCredentialListResponse,
+    EnvironmentCredentialUnbindParams, EnvironmentCredentialUnbindResponse, EnvironmentListParams,
     EnvironmentListResponse, EnvironmentProviderListParams, EnvironmentProviderListResponse,
-    JsonRpcRequest, JsonRpcResponse, METHOD_AUTH_CLIENTS_CREATE, METHOD_AUTH_CLIENTS_DELETE,
-    METHOD_AUTH_CLIENTS_LIST, METHOD_AUTH_CLIENTS_READ, METHOD_AUTH_FLOWS_READ,
-    METHOD_AUTH_FLOWS_START, METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT,
-    METHOD_AUTH_GITHUB_INSTALLATIONS_LIST, METHOD_AUTH_GRANTS_IMPORT, METHOD_AUTH_GRANTS_LIST,
-    METHOD_AUTH_GRANTS_READ, METHOD_AUTH_GRANTS_REVOKE, METHOD_AUTH_PROVIDERS_CREATE,
-    METHOD_AUTH_PROVIDERS_DELETE, METHOD_AUTH_PROVIDERS_LIST, METHOD_AUTH_PROVIDERS_READ,
-    METHOD_BLOBS_HAS, METHOD_BLOBS_PUT, METHOD_BLOBS_READ, METHOD_ENVIRONMENTS_LIST,
-    METHOD_ENVIRONMENTS_PROVIDERS_LIST, METHOD_MCP_SERVERS_DELETE, METHOD_MCP_SERVERS_LIST,
-    METHOD_MCP_SERVERS_PUT, METHOD_MCP_SERVERS_READ, METHOD_PROFILES_DELETE, METHOD_PROFILES_LIST,
-    METHOD_PROFILES_PUT, METHOD_PROFILES_READ, METHOD_SESSION_CONFIG_PUT,
-    METHOD_SESSION_ENVIRONMENTS_ACTIVATE, METHOD_SESSION_ENVIRONMENTS_ATTACH,
-    METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_BIND, METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_LIST,
-    METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_UNBIND, METHOD_SESSION_ENVIRONMENTS_DEACTIVATE,
-    METHOD_SESSION_ENVIRONMENTS_DETACH, METHOD_SESSION_ENVIRONMENTS_LIST,
-    METHOD_SESSION_ENVIRONMENTS_READ, METHOD_SESSION_EVENTS_READ, METHOD_SESSION_LIST,
+    EnvironmentReadParams, EnvironmentReadResponse, JsonRpcRequest, JsonRpcResponse,
+    METHOD_AUTH_CLIENTS_CREATE, METHOD_AUTH_CLIENTS_DELETE, METHOD_AUTH_CLIENTS_LIST,
+    METHOD_AUTH_CLIENTS_READ, METHOD_AUTH_FLOWS_READ, METHOD_AUTH_FLOWS_START,
+    METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT, METHOD_AUTH_GITHUB_INSTALLATIONS_LIST,
+    METHOD_AUTH_GRANTS_IMPORT, METHOD_AUTH_GRANTS_LIST, METHOD_AUTH_GRANTS_READ,
+    METHOD_AUTH_GRANTS_REVOKE, METHOD_AUTH_PROVIDERS_CREATE, METHOD_AUTH_PROVIDERS_DELETE,
+    METHOD_AUTH_PROVIDERS_LIST, METHOD_AUTH_PROVIDERS_READ, METHOD_BLOBS_HAS, METHOD_BLOBS_PUT,
+    METHOD_BLOBS_READ, METHOD_ENVIRONMENTS_CLOSE, METHOD_ENVIRONMENTS_CREDENTIALS_BIND,
+    METHOD_ENVIRONMENTS_CREDENTIALS_LIST, METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND,
+    METHOD_ENVIRONMENTS_LIST, METHOD_ENVIRONMENTS_PROVIDERS_LIST, METHOD_ENVIRONMENTS_READ,
+    METHOD_MCP_SERVERS_DELETE, METHOD_MCP_SERVERS_LIST, METHOD_MCP_SERVERS_PUT,
+    METHOD_MCP_SERVERS_READ, METHOD_PROFILES_DELETE, METHOD_PROFILES_LIST, METHOD_PROFILES_PUT,
+    METHOD_PROFILES_READ, METHOD_SESSION_CONFIG_PUT, METHOD_SESSION_ENVIRONMENTS_ACTIVATE,
+    METHOD_SESSION_ENVIRONMENTS_DEACTIVATE, METHOD_SESSION_EVENTS_READ, METHOD_SESSION_LIST,
     METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_START,
     METHOD_SESSION_SKILLS_ACTIVATE, METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE,
     METHOD_SESSION_SKILLS_LIST, METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT,
@@ -40,23 +42,16 @@ use api::{
     ProfileListParams, ProfileListResponse, ProfilePutParams, ProfilePutResponse,
     ProfileReadParams, ProfileReadResponse, RequestId, RunStartParams, RunStartResponse,
     SessionConfigPutParams, SessionConfigPutResponse, SessionEnvironmentActivateParams,
-    SessionEnvironmentActivateResponse, SessionEnvironmentAttachParams,
-    SessionEnvironmentAttachResponse, SessionEnvironmentCredentialBindParams,
-    SessionEnvironmentCredentialBindResponse, SessionEnvironmentCredentialListParams,
-    SessionEnvironmentCredentialListResponse, SessionEnvironmentCredentialUnbindParams,
-    SessionEnvironmentCredentialUnbindResponse, SessionEnvironmentDeactivateParams,
-    SessionEnvironmentDeactivateResponse, SessionEnvironmentDetachParams,
-    SessionEnvironmentDetachResponse, SessionEnvironmentListParams, SessionEnvironmentListResponse,
-    SessionEnvironmentReadParams, SessionEnvironmentReadResponse, SessionEventsReadParams,
-    SessionEventsReadResponse, SessionListParams, SessionListResponse, SessionReadParams,
-    SessionReadResponse, SessionStartParams, SessionStartResponse, SkillActivateParams,
-    SkillActivateResponse, SkillActiveParams, SkillActiveResponse, SkillDeactivateParams,
-    SkillDeactivateResponse, SkillListParams, SkillListResponse, VfsSnapshotCommitParams,
-    VfsSnapshotCommitResponse, VfsSnapshotReadParams, VfsSnapshotReadResponse,
-    VfsWorkspaceCreateParams, VfsWorkspaceCreateResponse, VfsWorkspaceDeleteParams,
-    VfsWorkspaceDeleteResponse, VfsWorkspaceListParams, VfsWorkspaceListResponse,
-    VfsWorkspaceReadParams, VfsWorkspaceReadResponse, VfsWorkspaceUpdateParams,
-    VfsWorkspaceUpdateResponse,
+    SessionEnvironmentActivateResponse, SessionEnvironmentDeactivateParams,
+    SessionEnvironmentDeactivateResponse, SessionEventsReadParams, SessionEventsReadResponse,
+    SessionListParams, SessionListResponse, SessionReadParams, SessionReadResponse,
+    SessionStartParams, SessionStartResponse, SkillActivateParams, SkillActivateResponse,
+    SkillActiveParams, SkillActiveResponse, SkillDeactivateParams, SkillDeactivateResponse,
+    SkillListParams, SkillListResponse, VfsSnapshotCommitParams, VfsSnapshotCommitResponse,
+    VfsSnapshotReadParams, VfsSnapshotReadResponse, VfsWorkspaceCreateParams,
+    VfsWorkspaceCreateResponse, VfsWorkspaceDeleteParams, VfsWorkspaceDeleteResponse,
+    VfsWorkspaceListParams, VfsWorkspaceListResponse, VfsWorkspaceReadParams,
+    VfsWorkspaceReadResponse, VfsWorkspaceUpdateParams, VfsWorkspaceUpdateResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -451,28 +446,6 @@ impl HttpAgentApi {
         self.request(METHOD_SESSION_CONFIG_PUT, params).await
     }
 
-    pub(crate) async fn list_session_environments(
-        &self,
-        params: SessionEnvironmentListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentListResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_LIST, params).await
-    }
-
-    pub(crate) async fn read_session_environment(
-        &self,
-        params: SessionEnvironmentReadParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentReadResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_READ, params).await
-    }
-
-    pub(crate) async fn attach_session_environment(
-        &self,
-        params: SessionEnvironmentAttachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentAttachResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_ATTACH, params)
-            .await
-    }
-
     pub(crate) async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
@@ -489,35 +462,27 @@ impl HttpAgentApi {
             .await
     }
 
-    pub(crate) async fn detach_session_environment(
+    pub(crate) async fn bind_environment_credential(
         &self,
-        params: SessionEnvironmentDetachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentDetachResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_DETACH, params)
+        params: EnvironmentCredentialBindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialBindResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_CREDENTIALS_BIND, params)
             .await
     }
 
-    pub(crate) async fn bind_session_environment_credential(
+    pub(crate) async fn list_environment_credentials(
         &self,
-        params: SessionEnvironmentCredentialBindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialBindResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_BIND, params)
+        params: EnvironmentCredentialListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialListResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_CREDENTIALS_LIST, params)
             .await
     }
 
-    pub(crate) async fn list_session_environment_credentials(
+    pub(crate) async fn unbind_environment_credential(
         &self,
-        params: SessionEnvironmentCredentialListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialListResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_LIST, params)
-            .await
-    }
-
-    pub(crate) async fn unbind_session_environment_credential(
-        &self,
-        params: SessionEnvironmentCredentialUnbindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_UNBIND, params)
+        params: EnvironmentCredentialUnbindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialUnbindResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND, params)
             .await
     }
 
@@ -534,6 +499,20 @@ impl HttpAgentApi {
         params: EnvironmentListParams,
     ) -> Result<AgentApiOutcome<EnvironmentListResponse>, AgentApiError> {
         self.request(METHOD_ENVIRONMENTS_LIST, params).await
+    }
+
+    pub(crate) async fn read_environment(
+        &self,
+        params: EnvironmentReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentReadResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_READ, params).await
+    }
+
+    pub(crate) async fn close_environment(
+        &self,
+        params: EnvironmentCloseParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCloseResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_CLOSE, params).await
     }
 
     async fn request<P, R>(

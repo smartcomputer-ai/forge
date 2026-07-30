@@ -457,6 +457,7 @@ mod tests {
                         tool_batch_id: request.batch_id,
                         tool_call_id: call.call_id.clone(),
                         arguments_ref: call.arguments_ref.clone(),
+                        execution_context_ref: None,
                         completion_promises: None,
                     };
                     ToolInvocationResult {

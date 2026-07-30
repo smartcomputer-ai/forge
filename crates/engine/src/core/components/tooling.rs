@@ -22,12 +22,6 @@ pub enum ConfigEvent {
         base_revision: u64,
         patch: ToolPatch,
     },
-    DefaultTargetSet {
-        target: ToolExecutionTarget,
-    },
-    DefaultTargetCleared {
-        namespace: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -191,7 +185,6 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
 pub struct ToolingState {
     pub revision: u64,
     pub tools: BTreeMap<ToolName, ToolSpec>,
-    pub routing: ToolRoutingState,
 }
 
 pub fn validate_tool_map(tools: &BTreeMap<ToolName, ToolSpec>) -> Result<(), DomainError> {
@@ -336,27 +329,6 @@ impl ToolSpec {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolRoutingState {
-    pub default_targets: BTreeMap<String, ToolExecutionTarget>,
-}
-
-impl ToolRoutingState {
-    pub fn validate(&self) -> Result<(), DomainError> {
-        for (namespace, target) in &self.default_targets {
-            validate_target_namespace(namespace)?;
-            target.validate()?;
-            if target.namespace != *namespace {
-                return Err(DomainError::InvariantViolation(format!(
-                    "default target namespace {} does not match target namespace {}",
-                    namespace, target.namespace
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolExecutionTarget {
     pub namespace: String,
@@ -382,51 +354,20 @@ impl ToolExecutionTarget {
 pub enum ToolTargetRequirement {
     #[default]
     None,
-    Optional {
-        namespace: String,
-    },
-    Required {
-        namespace: String,
+    SessionFilesystem,
+    ActiveEnvironment,
+    Fixed {
+        target: ToolExecutionTarget,
     },
 }
 
 impl ToolTargetRequirement {
-    pub fn optional(namespace: impl Into<String>) -> Self {
-        Self::Optional {
-            namespace: namespace.into(),
-        }
-    }
-
-    pub fn required(namespace: impl Into<String>) -> Self {
-        Self::Required {
-            namespace: namespace.into(),
-        }
-    }
-
-    pub fn namespace(&self) -> Option<&str> {
-        match self {
-            Self::None => None,
-            Self::Optional { namespace } | Self::Required { namespace } => Some(namespace),
-        }
-    }
-
     pub fn validate(&self) -> Result<(), DomainError> {
-        if let Some(namespace) = self.namespace() {
-            validate_target_namespace(namespace)?;
+        if let Self::Fixed { target } = self {
+            target.validate()?;
         }
         Ok(())
     }
-}
-
-pub(crate) fn validate_default_tool_target_set(
-    target: &ToolExecutionTarget,
-) -> Result<(), DomainError> {
-    target.validate()
-}
-
-pub(crate) fn validate_default_tool_target_clear(namespace: &str) -> Result<(), DomainError> {
-    let requirement = ToolTargetRequirement::required(namespace.to_owned());
-    requirement.validate()
 }
 
 pub(crate) fn validate_tool_execution_target_for_requirement(
@@ -442,26 +383,43 @@ pub(crate) fn validate_tool_execution_target_for_requirement(
         (ToolTargetRequirement::None, Some(_)) => Err(DomainError::InvariantViolation(
             "tool invocation target is not allowed for this tool".into(),
         )),
-        (ToolTargetRequirement::Optional { namespace }, None) => {
-            ToolTargetRequirement::required(namespace.clone()).validate()
-        }
-        (ToolTargetRequirement::Optional { namespace }, Some(target))
-        | (ToolTargetRequirement::Required { namespace }, Some(target)) => {
-            if target.namespace == *namespace {
+        (ToolTargetRequirement::SessionFilesystem, Some(target)) => {
+            if target == &ToolExecutionTarget::new("fs", "session") {
                 Ok(())
             } else {
                 Err(DomainError::InvariantViolation(format!(
-                    "tool invocation target namespace {} does not match required namespace {}",
-                    target.namespace, namespace
+                    "tool invocation target {}:{} is not the session filesystem",
+                    target.namespace, target.id
                 )))
             }
         }
-        (ToolTargetRequirement::Required { namespace }, None) => {
-            Err(DomainError::InvariantViolation(format!(
-                "tool invocation requires execution target namespace {}",
-                namespace
-            )))
+        (ToolTargetRequirement::ActiveEnvironment, Some(target)) => {
+            if target.namespace == crate::ENVIRONMENT_TARGET_NAMESPACE {
+                Ok(())
+            } else {
+                Err(DomainError::InvariantViolation(format!(
+                    "tool invocation target namespace {} is not the environment namespace",
+                    target.namespace
+                )))
+            }
         }
+        (ToolTargetRequirement::Fixed { target: required }, Some(target)) => {
+            if required == target {
+                Ok(())
+            } else {
+                Err(DomainError::InvariantViolation(
+                    "tool invocation target does not match its fixed target".to_owned(),
+                ))
+            }
+        }
+        (
+            ToolTargetRequirement::SessionFilesystem
+            | ToolTargetRequirement::ActiveEnvironment
+            | ToolTargetRequirement::Fixed { .. },
+            None,
+        ) => Err(DomainError::InvariantViolation(
+            "tool invocation requires an execution target".to_owned(),
+        )),
     }
 }
 
@@ -1118,23 +1076,18 @@ fn resolve_tool_execution_target(
     policy.target_requirement.validate()?;
     match &policy.target_requirement {
         ToolTargetRequirement::None => Ok(None),
-        ToolTargetRequirement::Optional { namespace } => Ok(state
-            .tooling
-            .routing
-            .default_targets
-            .get(namespace)
-            .cloned()),
-        ToolTargetRequirement::Required { namespace } => state
-            .tooling
-            .routing
-            .default_targets
-            .get(namespace)
-            .cloned()
+        ToolTargetRequirement::SessionFilesystem => {
+            Ok(Some(ToolExecutionTarget::new("fs", "session")))
+        }
+        ToolTargetRequirement::Fixed { target } => Ok(Some(target.clone())),
+        ToolTargetRequirement::ActiveEnvironment => state
+            .environment
+            .active_execution_target()
             .map(Some)
             .ok_or_else(|| {
                 DomainError::InvariantViolation(format!(
-                    "tool {} requires default execution target namespace {}",
-                    tool_name, namespace
+                    "tool {} requires an active environment",
+                    tool_name
                 ))
                 .into()
             }),
@@ -1335,20 +1288,6 @@ pub(crate) fn apply_config_event(
             bump_tooling_revision(state)?;
             Ok(())
         }
-        ConfigEvent::DefaultTargetSet { target } => {
-            validate_default_tool_target_set(target)?;
-            state
-                .tooling
-                .routing
-                .default_targets
-                .insert(target.namespace.clone(), target.clone());
-            state.tooling.routing.validate()
-        }
-        ConfigEvent::DefaultTargetCleared { namespace } => {
-            validate_default_tool_target_clear(namespace)?;
-            state.tooling.routing.default_targets.remove(namespace);
-            state.tooling.routing.validate()
-        }
     }
 }
 
@@ -1414,27 +1353,15 @@ fn initial_tool_call_execution_policy(
     if tool.target_requirement.validate().is_err() {
         return None;
     }
-    if let Some(namespace) = required_target_namespace(&tool.target_requirement) {
-        if !state
-            .tooling
-            .routing
-            .default_targets
-            .contains_key(namespace)
-        {
-            return None;
-        }
+    if tool.target_requirement == ToolTargetRequirement::ActiveEnvironment
+        && state.environment.active_environment_id.is_none()
+    {
+        return None;
     }
     Some(ToolCallExecutionPolicy {
         invokes_client_effect: true,
         target_requirement: tool.target_requirement,
     })
-}
-
-fn required_target_namespace(requirement: &ToolTargetRequirement) -> Option<&str> {
-    match requirement {
-        ToolTargetRequirement::Required { namespace } => Some(namespace.as_str()),
-        ToolTargetRequirement::None | ToolTargetRequirement::Optional { .. } => None,
-    }
 }
 
 fn planned_tool_for_turn(
@@ -2020,7 +1947,9 @@ mod tests {
     #[test]
     fn remote_mcp_tool_rejects_execution_target_requirement() {
         let mut tool = remote_mcp_tool("mcp_echo", "echo");
-        tool.target_requirement = ToolTargetRequirement::required("host");
+        tool.target_requirement = ToolTargetRequirement::Fixed {
+            target: ToolExecutionTarget::new("host", "test"),
+        };
 
         let error = tool
             .validate()

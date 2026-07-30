@@ -119,12 +119,12 @@ pub fn core_agent_clone_opening_events(
         })?);
     }
 
-    for target in state.tooling.routing.default_targets.values() {
+    if let Some(environment_id) = &state.environment.active_environment_id {
         events.push(codec.encode_uncommitted(&UncommittedCoreAgentEvent {
             observed_at_ms,
             joins: CoreAgentJoins::default(),
-            event: CoreAgentEvent::ToolConfig(ToolConfigEvent::DefaultTargetSet {
-                target: target.clone(),
+            event: CoreAgentEvent::Environment(crate::EnvironmentEvent::ActiveEnvironmentSet {
+                environment_id: environment_id.clone(),
             }),
         })?);
     }

@@ -783,6 +783,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         tool_batch_id: ToolBatchId::new(1),
         tool_call_id: engine::ToolCallId::new("call-1"),
         arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        execution_context_ref: None,
         completion_promises: Some(std::collections::BTreeMap::from([(
             engine::REPLY_COMPLETION_KEY.to_owned(),
             engine::workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY),
@@ -859,6 +860,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         tool_batch_id: ToolBatchId::new(1),
         tool_call_id: engine::ToolCallId::new("call-2"),
         arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        execution_context_ref: None,
         completion_promises: None,
     };
     workflow.core_state.workflow_tools.bindings.insert(
@@ -949,6 +951,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         tool_batch_id: ToolBatchId::new(1),
         tool_call_id: engine::ToolCallId::new("call-3"),
         arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        execution_context_ref: None,
         completion_promises: None,
     };
     workflow
@@ -1039,6 +1042,7 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
         tool_batch_id: ToolBatchId::new(1),
         tool_call_id: engine::ToolCallId::new("call-1"),
         arguments_ref: engine::BlobRef::from_bytes(b"{}"),
+        execution_context_ref: None,
         completion_promises: Some(std::collections::BTreeMap::from([(
             engine::REPLY_COMPLETION_KEY.to_owned(),
             promise_id.clone(),

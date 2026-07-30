@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use api::{
-    AgentApiErrorKind, AgentProfile, AgentProfileInput, EnvironmentListParams,
-    EnvironmentProviderListParams, EnvironmentProviderStatusView, EnvironmentTargetStatusView,
-    InlineAgentProfile, ProfileApplyParams, ProfileDeleteParams, ProfileEnvironmentSource,
-    ProfileId, ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource,
-    WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
+    AgentApiErrorKind, AgentProfile, AgentProfileInput, EnvironmentProviderListParams,
+    EnvironmentProviderStatusView, EnvironmentTargetStatusView, InlineAgentProfile,
+    ProfileApplyParams, ProfileDeleteParams, ProfileId, ProfileListParams, ProfilePutParams,
+    ProfileReadParams, ProfileSource, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
 };
 use clap::{Args, Subcommand};
 use serde::Deserialize;
@@ -582,9 +581,25 @@ async fn validate_environments(
     profile: &AgentProfileInput,
     report: &mut ValidationReport,
 ) {
-    if profile.document.environments.is_empty() {
+    let Some(environment_id) = profile.document.active_environment_id.as_ref() else {
         return;
-    }
+    };
+    let environment = match api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: environment_id.clone(),
+        })
+        .await
+    {
+        Ok(response) => response.result.environment,
+        Err(error) => {
+            report.error(format!(
+                "profile references missing environment {}: {}",
+                environment_id,
+                api_error(error)
+            ));
+            return;
+        }
+    };
     let providers = match api
         .list_environment_providers(EnvironmentProviderListParams::default())
         .await
@@ -602,64 +617,19 @@ async fn validate_environments(
         .into_iter()
         .map(|provider| (provider.provider_id.clone(), provider))
         .collect::<BTreeMap<_, _>>();
-    let instances = match api
-        .list_environments(EnvironmentListParams::default())
-        .await
+    if environment.status != EnvironmentTargetStatusView::Ready {
+        report.warning(format!(
+            "profile environment is {:?}, not ready",
+            environment.status
+        ));
+    }
+    if let Some(provider) = providers.get(&environment.provider_id)
+        && provider.status != EnvironmentProviderStatusView::Online
     {
-        Ok(response) => response
-            .result
-            .environments
-            .into_iter()
-            .map(|instance| (instance.instance_id.clone(), instance))
-            .collect::<BTreeMap<_, _>>(),
-        Err(error) => {
-            report.error(format!("failed to list environments: {}", api_error(error)));
-            BTreeMap::new()
-        }
-    };
-    for environment in &profile.document.environments {
-        let (provider_id, status) = match &environment.environment {
-            ProfileEnvironmentSource::Existing { instance_id } => {
-                let Some(instance) = instances.get(instance_id) else {
-                    report.error(format!(
-                        "environment {} references missing instance {}",
-                        environment.env_id, instance_id
-                    ));
-                    continue;
-                };
-                (instance.provider_id.as_str(), Some(instance.status))
-            }
-            ProfileEnvironmentSource::Provision { provider_id, .. } => {
-                let Some(provider) = providers.get(provider_id) else {
-                    report.error(format!(
-                        "environment {} references missing provider {}",
-                        environment.env_id, provider_id
-                    ));
-                    continue;
-                };
-                if !provider.capabilities.create_target {
-                    report.error(format!(
-                        "environment {} provider {} cannot provision targets",
-                        environment.env_id, provider_id
-                    ));
-                }
-                (provider_id.as_str(), None)
-            }
-        };
-        if status.is_some_and(|status| status != EnvironmentTargetStatusView::Ready) {
-            report.warning(format!(
-                "environment {} instance is {:?}, not ready",
-                environment.env_id, status
-            ));
-        }
-        if let Some(provider) = providers.get(provider_id)
-            && provider.status != EnvironmentProviderStatusView::Online
-        {
-            report.warning(format!(
-                "environment {} provider {} is {:?}, not online",
-                environment.env_id, provider_id, provider.status
-            ));
-        }
+        report.warning(format!(
+            "profile environment provider {} is {:?}, not online",
+            environment.provider_id, provider.status
+        ));
     }
 }
 

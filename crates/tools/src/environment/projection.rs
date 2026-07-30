@@ -2,8 +2,8 @@
 
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    CoreAgentState, ENVIRONMENT_ACTIVE_CONTEXT_KEY, ENVIRONMENT_CATALOG_CONTEXT_KEY,
-    ToolExecutionTarget, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess, WorkspaceLinkTarget,
+    CoreAgentState, ToolExecutionTarget, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess,
+    WorkspaceLinkTarget,
     storage::{BlobStore, BlobStoreError},
 };
 use serde::{Deserialize, Serialize};
@@ -13,8 +13,6 @@ use vfs::{ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget};
 use crate::fs::FsPath;
 
 pub const VFS_CATALOG_SCHEMA_VERSION: &str = "lightspeed.environment.vfs_catalog.v1";
-pub const ENVIRONMENT_CATALOG_SCHEMA_VERSION: &str = "lightspeed.environment.catalog.v1";
-pub const ENVIRONMENT_ACTIVE_SCHEMA_VERSION: &str = "lightspeed.environment.active.v1";
 pub const ENVIRONMENT_PROJECTION_MEDIA_TYPE: &str = "application/json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,35 +33,8 @@ impl VfsCatalog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentCatalogSnapshot {
-    pub schema_version: String,
-    pub revision: u64,
-    pub active_env_id: Option<String>,
-    pub environments: Vec<EnvironmentRecord>,
-}
-
-impl EnvironmentCatalogSnapshot {
-    pub fn new(
-        revision: u64,
-        active_env_id: Option<String>,
-        environments: Vec<EnvironmentRecord>,
-    ) -> Self {
-        Self {
-            schema_version: ENVIRONMENT_CATALOG_SCHEMA_VERSION.to_owned(),
-            revision,
-            active_env_id,
-            environments,
-        }
-    }
-
-    pub fn empty(revision: u64) -> Self {
-        Self::new(revision, None, Vec::new())
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentRecord {
-    pub env_id: String,
+    pub environment_id: String,
     pub kind: EnvironmentKind,
     pub capabilities: EnvironmentCapabilities,
     pub exec_target: Option<ToolExecutionTarget>,
@@ -118,25 +89,6 @@ pub enum EnvironmentStatus {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentActive {
-    pub schema_version: String,
-    pub revision: u64,
-    pub env_id: String,
-    pub fs_routes: Vec<FsRoute>,
-}
-
-impl EnvironmentActive {
-    pub fn new(revision: u64, env_id: impl Into<String>, fs_routes: Vec<FsRoute>) -> Self {
-        Self {
-            schema_version: ENVIRONMENT_ACTIVE_SCHEMA_VERSION.to_owned(),
-            revision,
-            env_id: env_id.into(),
-            fs_routes,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsRoute {
     pub path: FsPath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,7 +128,7 @@ pub enum FsRouteSource {
     VfsSnapshot { snapshot_ref: BlobRef },
     VfsWorkspace { workspace_id: String },
     HostFilesystem { target: ToolExecutionTarget },
-    FusedWorkspace { env_id: String },
+    FusedWorkspace { environment_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -185,62 +137,6 @@ pub struct EnvironmentProjectionPublication<T> {
     pub snapshot: T,
     pub snapshot_bytes: Vec<u8>,
     pub command: Option<CoreAgentCommand>,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct EnvironmentProjectionInput {
-    pub workspace_links: Vec<ResolvedWorkspaceLink>,
-    pub environments: Vec<EnvironmentRecord>,
-    pub active_env_id: Option<String>,
-    pub active_fs_routes: Vec<FsRoute>,
-    pub vfs_catalog_enabled: bool,
-    pub environment_catalog_enabled: bool,
-}
-
-impl EnvironmentProjectionInput {
-    pub fn from_workspace_links(workspace_links: Vec<ResolvedWorkspaceLink>) -> Self {
-        Self {
-            workspace_links,
-            environments: Vec::new(),
-            active_env_id: None,
-            active_fs_routes: Vec::new(),
-            vfs_catalog_enabled: false,
-            environment_catalog_enabled: false,
-        }
-    }
-
-    pub fn with_catalog_grants(
-        mut self,
-        vfs_catalog_enabled: bool,
-        environment_catalog_enabled: bool,
-    ) -> Self {
-        self.vfs_catalog_enabled = vfs_catalog_enabled;
-        self.environment_catalog_enabled = environment_catalog_enabled;
-        self
-    }
-
-    pub fn with_environments(mut self, environments: Vec<EnvironmentRecord>) -> Self {
-        self.environments = environments;
-        self
-    }
-
-    pub fn with_active_environment(
-        mut self,
-        env_id: impl Into<String>,
-        fs_routes: Vec<FsRoute>,
-    ) -> Self {
-        self.active_env_id = Some(env_id.into());
-        self.active_fs_routes = fs_routes;
-        self
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct EnvironmentProjectionRefresh {
-    pub vfs_catalog: VfsCatalog,
-    pub environment_catalog: EnvironmentCatalogSnapshot,
-    pub environment_active: Option<EnvironmentActive>,
-    pub commands: Vec<CoreAgentCommand>,
 }
 
 #[derive(Debug, Error)]
@@ -270,37 +166,6 @@ pub async fn prepare_vfs_catalog_publication(
     .await
 }
 
-pub async fn prepare_environment_catalog_publication(
-    blobs: &dyn BlobStore,
-    state: &CoreAgentState,
-    catalog: EnvironmentCatalogSnapshot,
-) -> Result<EnvironmentProjectionPublication<EnvironmentCatalogSnapshot>, EnvironmentProjectionError>
-{
-    prepare_projection_publication(
-        blobs,
-        state,
-        catalog,
-        ENVIRONMENT_CATALOG_CONTEXT_KEY,
-        environment_catalog_context_input,
-    )
-    .await
-}
-
-pub async fn prepare_environment_active_publication(
-    blobs: &dyn BlobStore,
-    state: &CoreAgentState,
-    active: EnvironmentActive,
-) -> Result<EnvironmentProjectionPublication<EnvironmentActive>, EnvironmentProjectionError> {
-    prepare_projection_publication(
-        blobs,
-        state,
-        active,
-        ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-        environment_active_context_input,
-    )
-    .await
-}
-
 pub fn vfs_catalog_from_workspace_links(
     links: &[ResolvedWorkspaceLink],
 ) -> Result<VfsCatalog, EnvironmentProjectionError> {
@@ -313,161 +178,12 @@ pub fn vfs_catalog_from_workspace_links(
     Ok(VfsCatalog::new(revision, routes))
 }
 
-pub async fn prepare_environment_projection_refresh(
-    blobs: &dyn BlobStore,
-    state: &CoreAgentState,
-    input: EnvironmentProjectionInput,
-) -> Result<EnvironmentProjectionRefresh, EnvironmentProjectionError> {
-    let vfs_catalog = vfs_catalog_from_workspace_links(&input.workspace_links)?;
-    let environment_catalog =
-        environment_catalog_from_records(input.active_env_id.clone(), input.environments)?;
-    let environment_active = if input.environment_catalog_enabled {
-        input
-            .active_env_id
-            .map(|env_id| environment_active_snapshot(env_id, input.active_fs_routes))
-            .transpose()?
-    } else {
-        None
-    };
-
-    let mut commands = Vec::new();
-    if input.vfs_catalog_enabled {
-        let publication =
-            prepare_vfs_catalog_publication(blobs, state, vfs_catalog.clone()).await?;
-        if let Some(command) = publication.command {
-            commands.push(command);
-        }
-    } else if let Some(command) = clear_projection_command(
-        current_vfs_catalog_ref(state).as_ref(),
-        VFS_CATALOG_CONTEXT_KEY,
-    ) {
-        commands.push(command);
-    }
-    if input.environment_catalog_enabled {
-        let publication =
-            prepare_environment_catalog_publication(blobs, state, environment_catalog.clone())
-                .await?;
-        if let Some(command) = publication.command {
-            commands.push(command);
-        }
-    } else if let Some(command) = clear_projection_command(
-        current_environment_catalog_ref(state).as_ref(),
-        ENVIRONMENT_CATALOG_CONTEXT_KEY,
-    ) {
-        commands.push(command);
-    }
-    match &environment_active {
-        Some(active) => {
-            let active_publication =
-                prepare_environment_active_publication(blobs, state, active.clone()).await?;
-            if let Some(command) = active_publication.command {
-                commands.push(command);
-            }
-        }
-        None => {
-            if let Some(command) =
-                clear_environment_active_command(current_environment_active_ref(state).as_ref())
-            {
-                commands.push(command);
-            }
-        }
-    }
-
-    Ok(EnvironmentProjectionRefresh {
-        vfs_catalog,
-        environment_catalog,
-        environment_active,
-        commands,
-    })
-}
-
-pub fn environment_catalog_from_records(
-    active_env_id: Option<String>,
-    environments: Vec<EnvironmentRecord>,
-) -> Result<EnvironmentCatalogSnapshot, EnvironmentProjectionError> {
-    if active_env_id.is_none() && environments.is_empty() {
-        return Ok(empty_environment_catalog(0));
-    }
-
-    let mut environments = environments;
-    environments.sort_by(|left, right| left.env_id.cmp(&right.env_id));
-    let revision = stable_revision(&encode_json(&(
-        active_env_id.as_deref(),
-        environments.as_slice(),
-    ))?);
-    Ok(EnvironmentCatalogSnapshot::new(
-        revision,
-        active_env_id,
-        environments,
-    ))
-}
-
-pub fn environment_active_snapshot(
-    env_id: impl Into<String>,
-    fs_routes: Vec<FsRoute>,
-) -> Result<EnvironmentActive, EnvironmentProjectionError> {
-    let env_id = env_id.into();
-    let fs_routes = sorted_fs_routes(fs_routes)?;
-    let revision = stable_revision(&encode_json(&(env_id.as_str(), fs_routes.as_slice()))?);
-    Ok(EnvironmentActive::new(revision, env_id, fs_routes))
-}
-
-pub fn empty_environment_catalog(revision: u64) -> EnvironmentCatalogSnapshot {
-    EnvironmentCatalogSnapshot::empty(revision)
-}
-
 pub fn vfs_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
     projection_context_input(ContextEntryKind::VfsCatalog, catalog_ref, "VFS catalog")
 }
 
-pub fn environment_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
-    projection_context_input(
-        ContextEntryKind::EnvironmentCatalog,
-        catalog_ref,
-        "environment catalog",
-    )
-}
-
-pub fn environment_active_context_input(active_ref: BlobRef) -> ContextEntryInput {
-    projection_context_input(
-        ContextEntryKind::EnvironmentActive,
-        active_ref,
-        "active environment",
-    )
-}
-
 pub fn current_vfs_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
     current_context_ref(state, VFS_CATALOG_CONTEXT_KEY, ContextEntryKind::VfsCatalog)
-}
-
-pub fn current_environment_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    current_context_ref(
-        state,
-        ENVIRONMENT_CATALOG_CONTEXT_KEY,
-        ContextEntryKind::EnvironmentCatalog,
-    )
-}
-
-pub fn current_environment_active_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    current_context_ref(
-        state,
-        ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-        ContextEntryKind::EnvironmentActive,
-    )
-}
-
-pub fn clear_environment_active_command(active_ref: Option<&BlobRef>) -> Option<CoreAgentCommand> {
-    clear_projection_command(active_ref, ENVIRONMENT_ACTIVE_CONTEXT_KEY)
-}
-
-fn clear_projection_command(
-    active_ref: Option<&BlobRef>,
-    key: &'static str,
-) -> Option<CoreAgentCommand> {
-    active_ref.map(|_| CoreAgentCommand::RemoveContext {
-        expected_revision: None,
-        key: ContextEntryKey::new(key),
-    })
 }
 
 async fn prepare_projection_publication<T>(
@@ -554,15 +270,6 @@ fn fs_route_from_workspace_link(
         availability,
         same_state_as_active_env: None,
     })
-}
-
-fn sorted_fs_routes(routes: Vec<FsRoute>) -> Result<Vec<FsRoute>, EnvironmentProjectionError> {
-    let mut keyed_routes = routes
-        .into_iter()
-        .map(|route| encode_json(&route).map(|bytes| (bytes, route)))
-        .collect::<Result<Vec<_>, _>>()?;
-    keyed_routes.sort_by(|left, right| left.0.cmp(&right.0));
-    Ok(keyed_routes.into_iter().map(|(_, route)| route).collect())
 }
 
 fn projection_context_input(
@@ -687,170 +394,6 @@ mod tests {
             catalog.routes[0].source,
             FsRouteSource::VfsWorkspace { .. }
         ));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn projection_refresh_publishes_vfs_catalog_environment_catalog_and_active_environment() {
-        let blobs = InMemoryBlobStore::new();
-        let link = workspace_link();
-        let environment = EnvironmentRecord {
-            env_id: "local".to_owned(),
-            kind: EnvironmentKind::AttachedHost,
-            capabilities: EnvironmentCapabilities {
-                fs_read: true,
-                fs_write: true,
-                process_exec: true,
-                process_stdin: true,
-                network: true,
-                persistent: true,
-                ..EnvironmentCapabilities::default()
-            },
-            exec_target: Some(ToolExecutionTarget::new("env", "local")),
-            cwd: Some(FsPath::new("/workspace").expect("cwd")),
-            status: EnvironmentStatus::Ready,
-        };
-        let active_route = FsRoute {
-            path: FsPath::new("/workspace").expect("active route"),
-            source_path: None,
-            access: FsRouteAccess::ReadWrite,
-            source: FsRouteSource::FusedWorkspace {
-                env_id: "local".to_owned(),
-            },
-            availability: FsRouteAvailability::Available,
-            same_state_as_active_env: Some("local".to_owned()),
-        };
-
-        let refresh = prepare_environment_projection_refresh(
-            &blobs,
-            &CoreAgentState::new(),
-            EnvironmentProjectionInput::from_workspace_links(vec![link])
-                .with_environments(vec![environment])
-                .with_active_environment("local", vec![active_route])
-                .with_catalog_grants(true, true),
-        )
-        .await
-        .expect("projection refresh");
-
-        assert_eq!(refresh.vfs_catalog.routes.len(), 1);
-        assert_eq!(refresh.environment_catalog.environments.len(), 1);
-        assert_eq!(
-            refresh.environment_catalog.active_env_id.as_deref(),
-            Some("local")
-        );
-        assert_eq!(
-            refresh
-                .environment_active
-                .as_ref()
-                .map(|active| active.env_id.as_str()),
-            Some("local")
-        );
-        assert_eq!(refresh.commands.len(), 3);
-        assert!(refresh.commands.iter().any(|command| matches!(
-            command,
-            CoreAgentCommand::UpsertContext { key, .. }
-                if key.as_str() == VFS_CATALOG_CONTEXT_KEY
-        )));
-        assert!(refresh.commands.iter().any(|command| matches!(
-            command,
-            CoreAgentCommand::UpsertContext { key, .. }
-                if key.as_str() == ENVIRONMENT_CATALOG_CONTEXT_KEY
-        )));
-        assert!(refresh.commands.iter().any(|command| matches!(
-            command,
-            CoreAgentCommand::UpsertContext { key, .. }
-                if key.as_str() == ENVIRONMENT_ACTIVE_CONTEXT_KEY
-        )));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn projection_refresh_clears_catalogs_without_grants() {
-        let blobs = InMemoryBlobStore::new();
-        let vfs_publication = prepare_vfs_catalog_publication(
-            &blobs,
-            &CoreAgentState::new(),
-            VfsCatalog::new(0, Vec::new()),
-        )
-        .await
-        .expect("VFS publication");
-        let environment_publication = prepare_environment_catalog_publication(
-            &blobs,
-            &CoreAgentState::new(),
-            empty_environment_catalog(0),
-        )
-        .await
-        .expect("environment publication");
-        let stale_active =
-            environment_active_snapshot("local", Vec::new()).expect("active environment snapshot");
-        let active_publication =
-            prepare_environment_active_publication(&blobs, &CoreAgentState::new(), stale_active)
-                .await
-                .expect("active publication");
-        let mut state = CoreAgentState::new();
-        state.context.entries = vec![
-            engine::ContextEntry {
-                entry_id: engine::ContextEntryId::new(1),
-                key: Some(ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)),
-                kind: ContextEntryKind::VfsCatalog,
-                source: engine::ContextEntrySource::Runtime {
-                    label: "environment.vfs_catalog".to_owned(),
-                },
-                content_ref: vfs_publication.snapshot_ref,
-                media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
-                preview: Some("VFS catalog".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
-                token_estimate: None,
-            },
-            engine::ContextEntry {
-                entry_id: engine::ContextEntryId::new(2),
-                key: Some(ContextEntryKey::new(ENVIRONMENT_CATALOG_CONTEXT_KEY)),
-                kind: ContextEntryKind::EnvironmentCatalog,
-                source: engine::ContextEntrySource::Runtime {
-                    label: "environment.catalog".to_owned(),
-                },
-                content_ref: environment_publication.snapshot_ref,
-                media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
-                preview: Some("environment catalog".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
-                token_estimate: None,
-            },
-            engine::ContextEntry {
-                entry_id: engine::ContextEntryId::new(3),
-                key: Some(ContextEntryKey::new(ENVIRONMENT_ACTIVE_CONTEXT_KEY)),
-                kind: ContextEntryKind::EnvironmentActive,
-                source: engine::ContextEntrySource::Runtime {
-                    label: "environment.active".to_owned(),
-                },
-                content_ref: active_publication.snapshot_ref,
-                media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
-                preview: Some("active environment".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
-                token_estimate: None,
-            },
-        ];
-
-        let refresh = prepare_environment_projection_refresh(
-            &blobs,
-            &state,
-            EnvironmentProjectionInput::default(),
-        )
-        .await
-        .expect("projection refresh");
-
-        assert!(refresh.environment_active.is_none());
-        for expected_key in [
-            VFS_CATALOG_CONTEXT_KEY,
-            ENVIRONMENT_CATALOG_CONTEXT_KEY,
-            ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-        ] {
-            assert!(refresh.commands.iter().any(|command| matches!(
-                command,
-                CoreAgentCommand::RemoveContext { key, .. }
-                    if key.as_str() == expected_key
-            )));
-        }
     }
 
     fn workspace_link() -> ResolvedWorkspaceLink {
