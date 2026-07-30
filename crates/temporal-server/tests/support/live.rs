@@ -110,6 +110,20 @@ pub async fn fake_worker_activities() -> anyhow::Result<WorkerActivities> {
     ))
 }
 
+pub async fn fake_worker_activities_with_tool_rounds(
+    tool_rounds_before_final: usize,
+) -> anyhow::Result<WorkerActivities> {
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let llm = Arc::new(FakeLlm::new(blobs.clone()).with_tool_rounds(tool_rounds_before_final))
+        as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    Ok(WorkerActivities::for_universe(
+        live_universe_id()?,
+        ActivityState::from_pg_store(store, llm, tools),
+    ))
+}
+
 pub async fn fake_worker_activities_with_audio_transcriber(
     transcriber: Arc<dyn AudioTranscriber>,
 ) -> anyhow::Result<WorkerActivities> {

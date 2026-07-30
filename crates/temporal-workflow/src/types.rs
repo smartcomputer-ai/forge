@@ -25,10 +25,37 @@ pub struct AgentSessionArgs {
     /// immutable creation fact on the first append.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_tools: Option<ManagedSessionWorkflowTools>,
-    pub max_steps_per_input: Option<u32>,
+    /// Legacy cutover field accepted from workflows started before P105.
+    /// Hosted drive ignores it, and continuation/new-session payloads never
+    /// serialize it.
+    #[serde(default, rename = "max_steps_per_input", skip_serializing)]
+    pub legacy_max_steps_per_input: Option<u32>,
     pub continue_as_new_history_threshold: Option<u32>,
     #[serde(default)]
     pub close_on_terminal: bool,
+    /// Workflow-local query state that is not reconstructible from the
+    /// PostgreSQL session log. Transport queues are deliberately drained
+    /// instead of being copied into this payload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_state: Option<AgentSessionContinuationState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSessionContinuationState {
+    pub version: u32,
+    #[serde(default)]
+    pub admission_failures: Vec<AgentAdmissionFailure>,
+}
+
+impl AgentSessionContinuationState {
+    pub const VERSION: u32 = 1;
+
+    pub fn v1(admission_failures: Vec<AgentAdmissionFailure>) -> Self {
+        Self {
+            version: Self::VERSION,
+            admission_failures,
+        }
+    }
 }
 
 /// Compose the Temporal workflow id for a session:

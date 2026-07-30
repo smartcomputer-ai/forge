@@ -802,8 +802,7 @@ where
 
     let mut api_builder = GatewayAgentApi::builder(client.clone(), store.clone())
         .with_task_queue(session_queue.clone())
-        .with_default_model(temporal_server::default_model_from_env())
-        .with_max_steps_per_input(128);
+        .with_default_model(temporal_server::default_model_from_env());
     if let Some(threshold) = continue_as_new_history_threshold {
         api_builder = api_builder.with_continue_as_new_history_threshold(threshold);
     }

@@ -634,7 +634,6 @@ pub struct GatewayAgentApiBuilder {
     store: Arc<PgStore>,
     task_queue: String,
     default_model: ModelSelection,
-    max_steps_per_input: Option<u32>,
     continue_as_new_history_threshold: Option<u32>,
     poll_interval: Duration,
     operation_timeout: Duration,
@@ -714,11 +713,6 @@ impl GatewayAgentApiBuilder {
         self
     }
 
-    pub fn with_max_steps_per_input(mut self, max_steps: u32) -> Self {
-        self.max_steps_per_input = Some(max_steps);
-        self
-    }
-
     pub fn with_continue_as_new_history_threshold(mut self, threshold: u32) -> Self {
         self.continue_as_new_history_threshold = Some(threshold);
         self
@@ -794,7 +788,6 @@ impl GatewayAgentApiBuilder {
             store: self.store,
             task_queue: self.task_queue,
             default_model: self.default_model,
-            max_steps_per_input: self.max_steps_per_input,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             poll_interval: self.poll_interval,
             operation_timeout: self.operation_timeout,
@@ -815,7 +808,6 @@ pub struct GatewayAgentApi {
     store: Arc<PgStore>,
     task_queue: String,
     default_model: ModelSelection,
-    max_steps_per_input: Option<u32>,
     continue_as_new_history_threshold: Option<u32>,
     poll_interval: Duration,
     operation_timeout: Duration,
@@ -836,7 +828,6 @@ impl GatewayAgentApi {
             store,
             task_queue: DEFAULT_TASK_QUEUE.to_owned(),
             default_model: default_model_from_env(),
-            max_steps_per_input: Some(128),
             continue_as_new_history_threshold: None,
             poll_interval: DEFAULT_POLL_INTERVAL,
             operation_timeout: DEFAULT_OPERATION_TIMEOUT,
@@ -947,9 +938,10 @@ impl GatewayAgentApi {
             display_name,
             session_config,
             workflow_tools,
-            max_steps_per_input: self.max_steps_per_input,
+            legacy_max_steps_per_input: None,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             close_on_terminal,
+            continuation_state: None,
         }
     }
 

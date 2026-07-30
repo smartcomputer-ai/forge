@@ -263,7 +263,6 @@ async fn run_host_bridge_client(
         GatewayAgentApi::builder(client.clone(), store)
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(32)
             .build(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -457,7 +456,6 @@ async fn run_host_bridge_jobs_client(
         GatewayAgentApi::builder(client.clone(), store)
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(64)
             .build(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -816,7 +814,6 @@ async fn run_host_bridge_credential_client(
         GatewayAgentApi::builder(client.clone(), store)
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(32)
             .build(),
     );
     let listener = TcpListener::bind("127.0.0.1:0").await?;
@@ -1257,7 +1254,6 @@ async fn run_fake_provider_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(32)
         .build();
     let provider_id = format!("fake-provider-{}", uuid::Uuid::new_v4().simple());
 
@@ -1496,7 +1492,6 @@ async fn run_profile_environment_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(32)
         .build();
     let provider_id = format!("profile-provider-{}", uuid::Uuid::new_v4().simple());
     let profile_id = ProfileId::new(format!("profile_env_{}", uuid::Uuid::new_v4().simple()));

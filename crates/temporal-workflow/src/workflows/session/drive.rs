@@ -1,5 +1,14 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum DriveOutcome {
+    Idle,
+    /// History rollover is due, but a transport queue must be drained by the
+    /// outer workflow loop before continuation can safely occur.
+    YieldForWorkflowWork,
+    ContinueAsNew,
+}
+
 pub(super) enum CommandAdmissionResult {
     Accepted,
     Rejected(AgentAdmissionFailure),
@@ -63,10 +72,10 @@ pub(super) fn command_submission_id(command: &CoreAgentCommand) -> Option<Submis
 pub(super) async fn process_pending_tool_batch_resumes(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DriveOutcome> {
     let resumes = ctx.state_mut(|state| std::mem::take(&mut state.pending_tool_batch_resumes));
     if resumes.is_empty() {
-        return Ok(());
+        return Ok(DriveOutcome::Idle);
     }
     let mut drive = drive_from_state(ctx)?;
     for resume in resumes {
@@ -90,13 +99,11 @@ pub(super) async fn drive_until_idle(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
     drive: &mut CoreAgentDrive,
-) -> anyhow::Result<()> {
-    let max_steps = args
-        .max_steps_per_input
-        .map(|value| value as usize)
-        .unwrap_or(DEFAULT_MAX_STEPS_PER_INPUT);
-    drive.reset_steps();
-    let mut action = drive.next_action(workflow_time_ms(ctx), max_steps)?;
+) -> anyhow::Result<DriveOutcome> {
+    if let Some(outcome) = history_boundary_outcome(ctx, args) {
+        return Ok(outcome);
+    }
+    let mut action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
     loop {
         match action {
             CoreAgentAction::AppendEvents {
@@ -104,7 +111,10 @@ pub(super) async fn drive_until_idle(
                 events,
             } => {
                 append_events(ctx, drive, expected_head, events).await?;
-                action = drive.next_action(workflow_time_ms(ctx), max_steps)?;
+                if let Some(outcome) = history_boundary_outcome(ctx, args) {
+                    return Ok(outcome);
+                }
+                action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
             }
             CoreAgentAction::GenerateLlm { request } => {
                 let result = call_llm_generate(ctx, request).await?;
@@ -120,15 +130,40 @@ pub(super) async fn drive_until_idle(
             }
             CoreAgentAction::Idle | CoreAgentAction::Closed => {
                 maybe_close_on_terminal(ctx, args, drive).await?;
-                return Ok(());
+                return Ok(DriveOutcome::Idle);
             }
             CoreAgentAction::StepLimitReached => {
-                // Deferred for G4: step limits can happen after partial run progress.
-                // Keep treating them as workflow failures until resume semantics are explicit.
-                anyhow::bail!("Agent drive step limit reached: max_steps={max_steps}");
+                anyhow::bail!("unbounded hosted drive unexpectedly reached a step limit");
             }
         }
     }
+}
+
+fn history_boundary_outcome(
+    ctx: &WorkflowContext<AgentSessionWorkflow>,
+    args: &AgentSessionArgs,
+) -> Option<DriveOutcome> {
+    if !ctx.patched(wait_loop::P105_ACTIVE_RUN_ROLLOVER_PATCH) {
+        // Old executions did not branch here. The patch marker keeps replay
+        // deterministic; once execution reaches new history, the SDK records
+        // the marker and active-run rollover becomes eligible.
+        return None;
+    }
+    history_boundary_outcome_for(
+        wait_loop::history_rollover_due(ctx, args),
+        ctx.state(wait_loop::workflow_state_allows_continue_as_new),
+    )
+}
+
+pub(super) fn history_boundary_outcome_for(
+    rollover_due: bool,
+    continuation_safe: bool,
+) -> Option<DriveOutcome> {
+    rollover_due.then_some(if continuation_safe {
+        DriveOutcome::ContinueAsNew
+    } else {
+        DriveOutcome::YieldForWorkflowWork
+    })
 }
 
 async fn maybe_close_on_terminal(
@@ -195,6 +230,7 @@ async fn append_events(
         state.queue_emissions_for_entries(&entries)?;
         state.queue_promise_cancellations_for_entries(&entries);
         state.head = appended.head;
+        state.execution_has_rollover_checkpoint = true;
         state.last_error = None;
         Ok(())
     })?;

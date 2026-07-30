@@ -1,8 +1,8 @@
 use super::*;
 use engine::{
-    ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentEntry, CoreAgentJoins,
-    EventSeq, PromiseScope, PromiseSource, PromiseStatus, RunId, RunRecord, RunStatus,
-    RunTerminalNotifyIntent, SessionPosition, ToolBatchId, ToolCallId, TurnId,
+    AwaitSpec, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentEntry,
+    CoreAgentJoins, EventSeq, PromiseScope, PromiseSource, PromiseStatus, RunId, RunRecord,
+    RunStatus, RunTerminalNotifyIntent, SessionPosition, ToolBatchId, ToolCallId, TurnId,
 };
 
 #[test]
@@ -312,6 +312,79 @@ fn continue_as_new_policy_uses_default_threshold() {
     ));
 }
 
+#[test]
+fn active_drive_rollover_outcome_is_typed_and_waits_for_transport_drain() {
+    assert_eq!(drive::history_boundary_outcome_for(false, true), None);
+    assert_eq!(
+        drive::history_boundary_outcome_for(true, true),
+        Some(DriveOutcome::ContinueAsNew)
+    );
+    assert_eq!(
+        drive::history_boundary_outcome_for(true, false),
+        Some(DriveOutcome::YieldForWorkflowWork)
+    );
+}
+
+#[test]
+fn rehydrated_active_run_wakes_core_drive_without_a_new_signal() {
+    let mut workflow = workflow_with_parked_await(AwaitSpec {
+        promise_ids: vec![engine::PromiseId::new("p1")],
+        mode: engine::AwaitMode::All,
+        mailbox: false,
+        deadline_at_ms: Some(50_000),
+    });
+    assert!(!wait_loop::workflow_state_needs_core_drive_for_state(
+        &workflow
+    ));
+    workflow
+        .core_state
+        .runs
+        .active
+        .as_mut()
+        .expect("active run")
+        .parked_await = None;
+    assert!(wait_loop::workflow_state_needs_core_drive_for_state(
+        &workflow
+    ));
+}
+
+#[test]
+fn legacy_step_limit_decodes_but_is_never_serialized() {
+    let args = agent_session_args_with_close_on_terminal(false);
+    let mut encoded = serde_json::to_value(&args).expect("serialize workflow args");
+    assert!(encoded.get("max_steps_per_input").is_none());
+
+    encoded
+        .as_object_mut()
+        .expect("workflow args object")
+        .insert("max_steps_per_input".to_owned(), serde_json::json!(128));
+    let decoded: AgentSessionArgs =
+        serde_json::from_value(encoded).expect("decode legacy workflow args");
+    assert_eq!(decoded.legacy_max_steps_per_input, Some(128));
+    assert!(
+        serde_json::to_value(decoded)
+            .expect("re-serialize legacy workflow args")
+            .get("max_steps_per_input")
+            .is_none()
+    );
+}
+
+#[test]
+fn continuation_state_round_trips_admission_failure_correlation() {
+    let rejection = engine::CommandRejection::context_revision_conflict(3, 4);
+    let continuation = AgentSessionContinuationState::v1(vec![AgentAdmissionFailure {
+        submission_id: Some(SubmissionId::new("submit_rejected")),
+        correlation_token: Some("admit_test".to_owned()),
+        kind: AgentAdmissionFailureKind::RejectedCommand,
+        message: rejection.to_string(),
+        rejection: Some(rejection),
+    }]);
+    let encoded = serde_json::to_vec(&continuation).expect("encode continuation state");
+    let decoded: AgentSessionContinuationState =
+        serde_json::from_slice(&encoded).expect("decode continuation state");
+    assert_eq!(decoded, continuation);
+}
+
 fn deliver_message(submission_id: &str) -> CoreAgentCommand {
     CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
         submission_id: Some(SubmissionId::new(submission_id)),
@@ -365,9 +438,10 @@ fn agent_session_args_with_close_on_terminal(close_on_terminal: bool) -> AgentSe
             model: "gpt-test".to_owned(),
         }),
         workflow_tools: None,
-        max_steps_per_input: None,
+        legacy_max_steps_per_input: None,
         continue_as_new_history_threshold: None,
         close_on_terminal,
+        continuation_state: None,
     }
 }
 
@@ -1259,7 +1333,7 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
 }
 
 #[test]
-fn continue_as_new_is_blocked_by_transport_only() {
+fn continue_as_new_is_blocked_by_non_reconstructible_workflow_state() {
     let mut workflow = AgentSessionWorkflow::default();
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 
@@ -1280,6 +1354,19 @@ fn continue_as_new_is_blocked_by_transport_only() {
         .push(pending_promise_cancellation("p1"));
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
     workflow.pending_promise_cancellations.clear();
+
+    workflow
+        .workflow_start_backoffs
+        .insert("inv_1".to_owned(), (1, 100));
+    assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
+    workflow.workflow_start_backoffs.clear();
+
+    workflow.cancelling_watchdog = Some(CancellingWatchdog {
+        run_id: 1,
+        since_ms: 100,
+    });
+    assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
+    workflow.cancelling_watchdog = None;
 
     // Log-derived state (pending promises) never blocks continue-as-new.
     workflow.core_state.promises.promises.insert(

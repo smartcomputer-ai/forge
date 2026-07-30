@@ -4,7 +4,8 @@
 - Proposed 2026-07-29 after the `ls-dev` PR-creation incident described below.
 - Supersedes P59's idle-only continue-as-new boundary and closes P59 G4's
   deferred step-limit failure case.
-- No implementation has been started.
+- Production correctness cut implemented 2026-07-30. Operational metrics and
+  broader fault-injection coverage remain follow-up work.
 
 ## Decision
 
@@ -34,6 +35,52 @@ In particular:
 
 The Lightspeed session log in PostgreSQL remains the authoritative recovery
 source. Temporal history is execution history and may be rolled over.
+
+## Implemented Cut And Continuation-State Audit
+
+This cut uses a drain-before-rollover design instead of copying transport
+queues into continuation input:
+
+- `CoreAgentState`, the session head, and run-submission identities reload from
+  the PostgreSQL session log/bootstrap activity.
+- pending admissions, tool-batch resumes, emissions, source resolutions, and
+  Promise cancellations make the active drive yield to the outer workflow
+  loop; rollover waits until those queues have been admitted or flushed;
+- parked awaits and Promise-source polls reconstruct from durable run/promise
+  state and current workflow time;
+- a rehydrated active or queued run is itself workflow work, so the new
+  execution resumes the CoreAgent drive without waiting for another signal;
+- confirmed workflow starts and issued execution cancellations may be
+  rechecked after rollover because their execution identities are stable and
+  the activities treat already-started/already-terminal targets idempotently;
+- workflow-start retry backoff and cancellation-watchdog clocks temporarily
+  gate rollover so their attempt/deadline semantics are not reset;
+- admission failures are query/correlation facts not present in the session
+  log, so they are carried in a dedicated version-1 continuation object.
+
+No transport queue is carried, so a new queue-payload size policy is not part
+of this cut. A workflow execution must reach at least one post-bootstrap safe
+checkpoint (a durable append or a completed Promise-source poll whose next
+schedule is installed) before it can roll over. This prevents a deliberately
+low test threshold, or a server suggestion immediately after bootstrap, from
+creating a zero-progress continue-as-new loop while still bounding the history
+of a long-lived pending Promise poll.
+
+The safe active-run check occurs before starting a new activity and after an
+append activity has returned, its entries have reduced into both the drive and
+workflow state, and its head has been installed. It is never evaluated between
+an LLM/tool/compaction result and the append that commits that result.
+
+The new active-run branch is guarded by Temporal patch marker
+`p105_active_run_rollover_v1`. Replaying an execution whose recorded history
+predates P105 therefore retains the old idle-only branch, while newly started
+executions record the marker and use active rollover. The unbounded drive is
+safe for old executions immediately: it is behaviorally identical through the
+old recorded steps and only differs when new progress would previously have
+hit the ceiling. An old active execution will adopt active rollover after it
+first reaches the existing idle continue-as-new boundary. Operators should
+restart/reconcile any pre-P105 execution already unusually close to Temporal's
+hard history limit rather than wait for that boundary.
 
 ## Incident: `ls-dev` PR Creation
 
@@ -276,32 +323,33 @@ failures and not fixed-step churn.
 
 ### Slice 1: Remove the hosted step ceiling
 
-- Add an unbounded CoreAgent drive entry point or make the limit optional.
-- Remove the gateway's default `Some(128)`.
-- Remove the field from new `AgentSessionArgs`.
+- [x] Add an unbounded CoreAgent drive entry point or make the limit optional.
+- [x] Remove the gateway's default `Some(128)`.
+- [x] Remove the field from new `AgentSessionArgs` payloads.
 - Keep explicit limits only in bounded test/eval/in-process substrates.
-- Add a regression test that exceeds 128 drive transitions without failing or
+- [x] Add a regression test that exceeds 128 drive transitions without failing or
   continuing as new when the history policy is not due.
 
 ### Slice 2: Active-run history rollover
 
-- Evaluate the existing history policy after durable append boundaries inside
+- [x] Evaluate the existing history policy after durable append boundaries inside
   the drive loop.
-- Return a typed `ContinueAsNew` outcome to the workflow entry point.
-- Reload from PostgreSQL and continue the same active run.
-- Prove run id, turn/tool state, and session head continuity across rollover.
+- [x] Return a typed `ContinueAsNew` outcome to the workflow entry point.
+- [x] Reload from PostgreSQL and continue the same active run.
+- [x] Prove run id, turn/tool state, and session head continuity across rollover.
 
 ### Slice 3: Continuation-state audit and transport preservation
 
-- Classify every workflow-state field.
-- Add a versioned continuation payload for state that cannot be reconstructed.
-- Restore it after bootstrap without duplicating already-durable commands or
+- [x] Classify every workflow-state field.
+- [x] Add a versioned continuation payload for state that cannot be reconstructed.
+- [x] Restore it after bootstrap without duplicating already-durable commands or
   emissions.
-- Define and test the payload-size policy.
+- [x] Avoid carrying transport queues, so no queue payload-size policy is needed.
 
 ### Slice 4: Recovery and operations
 
-- Add the legacy-input cutover behavior or an operator migration procedure.
+- [x] Decode but ignore legacy input and omit it from every new/continued payload.
+- [x] Guard the new active-run command branch with a Temporal replay patch marker.
 - Document failed-session reconciliation.
 - Add metrics and alerts for rollovers, failures, and stale active projections.
 
@@ -363,13 +411,12 @@ Reproduce the shape of `run_5`:
 
 ## Done When
 
-- [ ] Hosted runs have no default or hidden drive-step ceiling.
+- [x] Hosted runs have no default or hidden drive-step ceiling.
 - [ ] A single run can execute for hours and thousands of transitions.
-- [ ] Continue-as-new is driven only by Temporal history need.
-- [ ] Active runs safely cross continue-as-new boundaries.
-- [ ] No in-flight activity result, signal, emission, or cancellation is lost.
-- [ ] Continue-as-new is never surfaced as a workflow failure.
-- [ ] Existing `max_steps_per_input = 128` sessions have a defined cutover.
+- [x] Continue-as-new is driven only by Temporal history need.
+- [x] Active runs safely cross continue-as-new boundaries.
+- [x] No in-flight activity result, signal, emission, or cancellation is lost by rollover.
+- [x] Continue-as-new is never surfaced as a workflow failure.
+- [x] Existing `max_steps_per_input = 128` sessions have a defined cutover.
 - [ ] The `ls-dev` PR-creation incident has a passing live regression test.
 - [ ] Operators can distinguish healthy rollover from actual workflow failure.
-

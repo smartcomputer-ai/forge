@@ -36,8 +36,8 @@ use temporalio_sdk::{
 use crate::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,
     AgentCompletedRunSummary, AgentMessageSubmissionConsumptionSummary, AgentQueuedRunSummary,
-    AgentSessionArgs, AgentSessionStatus, AppendEventsRequest, AwaitOutcome, AwaitOutput,
-    AwaitPromiseResult, CancellingWatchdog, CreateOrLoadSessionRequest,
+    AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
+    AwaitOutcome, AwaitOutput, AwaitPromiseResult, CancellingWatchdog, CreateOrLoadSessionRequest,
     DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD, LlmGenerateActivityRequest, PendingEmission,
     PendingPromiseCancellation, PendingSourceResolution, PendingToolBatchResume,
     PreprocessRunInputActivityRequest, PreprocessRunInputFailure, PreprocessRunInputFailureKind,
@@ -51,17 +51,13 @@ use admissions::process_admissions;
 use bootstrap::initialize;
 use clock::workflow_time_ms;
 use drive::{
-    CommandAdmissionResult, admit_and_append_command, append_command, drive_from_state,
-    drive_until_idle, process_pending_tool_batch_resumes,
+    CommandAdmissionResult, DriveOutcome, admit_and_append_command, append_command,
+    drive_from_state, drive_until_idle, process_pending_tool_batch_resumes,
 };
 use errors::{record_admission_failure, record_bootstrap_error, record_error};
 use session_state::flush_pending_emissions;
-use wait_loop::{
-    can_continue_as_new_at_idle, wait_for_workflow_work, workflow_state_should_complete,
-};
+use wait_loop::{can_continue_as_new, wait_for_workflow_work, workflow_state_should_complete};
 use watchdog::{process_cancelling_watchdog, reconcile_cancelling_watchdog};
-
-const DEFAULT_MAX_STEPS_PER_INPUT: usize = 256;
 
 #[workflow(name = "AgentSessionWorkflow")]
 pub struct AgentSessionWorkflow {
@@ -82,6 +78,7 @@ pub struct AgentSessionWorkflow {
     run_submissions: BTreeMap<u64, Option<SubmissionId>>,
     cancelling_watchdog: Option<CancellingWatchdog>,
     admission_failures: Vec<AgentAdmissionFailure>,
+    execution_has_rollover_checkpoint: bool,
     last_error: Option<String>,
     bootstrap_failed: bool,
 }
@@ -106,6 +103,7 @@ impl Default for AgentSessionWorkflow {
             run_submissions: BTreeMap::new(),
             cancelling_watchdog: None,
             admission_failures: Vec::new(),
+            execution_has_rollover_checkpoint: false,
             last_error: None,
             bootstrap_failed: false,
         }
@@ -151,9 +149,16 @@ impl AgentSessionWorkflow {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
-            if let Err(error) = process_cancelling_watchdog(ctx, &args).await {
-                record_error(ctx, &error);
-                return Err(anyhow::anyhow!("{error}").into());
+            match process_cancelling_watchdog(ctx, &args).await {
+                Ok(DriveOutcome::ContinueAsNew) => {
+                    let next_args = continuation_args(ctx, &args);
+                    ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                }
+                Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
+                Err(error) => {
+                    record_error(ctx, &error);
+                    return Err(anyhow::anyhow!("{error}").into());
+                }
             }
             if let Err(error) = awaits::process_satisfied_await(ctx).await {
                 record_error(ctx, &error);
@@ -164,22 +169,57 @@ impl AgentSessionWorkflow {
                 record_error(ctx, &error);
                 return Err(anyhow::anyhow!("{error}").into());
             }
-            if let Err(error) = process_pending_tool_batch_resumes(ctx, &args).await {
-                record_error(ctx, &error);
-                return Err(anyhow::anyhow!("{error}").into());
+            match process_pending_tool_batch_resumes(ctx, &args).await {
+                Ok(DriveOutcome::ContinueAsNew) => {
+                    let next_args = continuation_args(ctx, &args);
+                    ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                }
+                Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
+                Err(error) => {
+                    record_error(ctx, &error);
+                    return Err(anyhow::anyhow!("{error}").into());
+                }
             }
             let admissions = ctx.state_mut(|state| std::mem::take(&mut state.pending_admissions));
-            if !admissions.is_empty()
-                && let Err(error) = process_admissions(ctx, &args, admissions).await
-            {
-                record_error(ctx, &error);
-                return Err(anyhow::anyhow!("{error}").into());
+            if !admissions.is_empty() {
+                match process_admissions(ctx, &args, admissions).await {
+                    Ok(DriveOutcome::ContinueAsNew) => {
+                        let next_args = continuation_args(ctx, &args);
+                        ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                    }
+                    Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
+                    Err(error) => {
+                        record_error(ctx, &error);
+                        return Err(anyhow::anyhow!("{error}").into());
+                    }
+                }
+            }
+            if wait_loop::workflow_state_needs_core_drive(ctx) {
+                let mut drive = match drive_from_state(ctx) {
+                    Ok(drive) => drive,
+                    Err(error) => {
+                        record_error(ctx, &error);
+                        return Err(anyhow::anyhow!("{error}").into());
+                    }
+                };
+                match drive_until_idle(ctx, &args, &mut drive).await {
+                    Ok(DriveOutcome::ContinueAsNew) => {
+                        let next_args = continuation_args(ctx, &args);
+                        ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
+                    }
+                    Ok(DriveOutcome::Idle | DriveOutcome::YieldForWorkflowWork) => {}
+                    Err(error) => {
+                        record_error(ctx, &error);
+                        return Err(anyhow::anyhow!("{error}").into());
+                    }
+                }
             }
             if workflow_state_should_complete(ctx) {
                 return Ok(());
             }
-            if can_continue_as_new_at_idle(ctx, &args) {
-                ctx.continue_as_new(&args, ContinueAsNewOptions::default())?;
+            if can_continue_as_new(ctx, &args) {
+                let next_args = continuation_args(ctx, &args);
+                ctx.continue_as_new(&next_args, ContinueAsNewOptions::default())?;
             }
         }
     }
@@ -221,4 +261,16 @@ impl AgentSessionWorkflow {
     pub fn status(&self, _ctx: &WorkflowContextView) -> AgentSessionStatus {
         self.status_snapshot()
     }
+}
+
+fn continuation_args(
+    ctx: &WorkflowContext<AgentSessionWorkflow>,
+    args: &AgentSessionArgs,
+) -> AgentSessionArgs {
+    let mut next = args.clone();
+    next.legacy_max_steps_per_input = None;
+    next.continuation_state = Some(
+        ctx.state(|state| AgentSessionContinuationState::v1(state.admission_failures.clone())),
+    );
+    next
 }

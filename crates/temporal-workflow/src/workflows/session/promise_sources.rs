@@ -78,6 +78,7 @@ pub(super) async fn process_due(
             .filter_map(|promise_id| state.promise_source_polls.remove(&promise_id))
             .collect::<Vec<_>>()
     });
+    let had_due = !due.is_empty();
 
     for mut poll in due {
         let check = match &poll.source {
@@ -149,6 +150,13 @@ pub(super) async fn process_due(
                 );
             }
         }
+    }
+    if had_due {
+        // A completed poll with its next schedule installed is a safe
+        // rollover checkpoint even when it produced no session-log append.
+        // Without this marker, a long pending Promise source could grow
+        // Temporal history forever after a continuation.
+        ctx.state_mut(|state| state.execution_has_rollover_checkpoint = true);
     }
     Ok(())
 }
