@@ -1,6 +1,6 @@
 use super::*;
 
-use ::environments::{EnvironmentInstanceId, EnvironmentInstanceRecord, EnvironmentJobGroupId};
+use ::environments::{EnvironmentId, EnvironmentJobGroupId, EnvironmentRecord};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use engine::validate_general_string_id;
 use host_client::{HostClientError, HostDataClient, WebSocketConnectOptions};
@@ -31,14 +31,14 @@ impl GatewayAgentApi {
         &self,
         params: EnvironmentJobCreateParams,
     ) -> Result<EnvironmentJobCreateResponse, AgentApiError> {
-        let instance_id = parse_environment_job_instance_id(params.instance_id)?;
-        self.start_environment_jobs(instance_id, params.request_id, params.jobs, None)
+        let environment_id = parse_environment_job_environment_id(params.environment_id)?;
+        self.start_environment_jobs(environment_id, params.request_id, params.jobs, None)
             .await
     }
 
     async fn start_environment_jobs(
         &self,
-        instance_id: EnvironmentInstanceId,
+        environment_id: EnvironmentId,
         request_id: String,
         jobs: Vec<SessionJobStartSpecInput>,
         default_cwd: Option<HostPath>,
@@ -51,7 +51,7 @@ impl GatewayAgentApi {
                 .map(parse_host_job_id)
                 .transpose()
                 .map_err(AgentApiError::invalid_request)?
-                .unwrap_or_else(|| derived_job_id(&instance_id, &request_id, index));
+                .unwrap_or_else(|| derived_job_id(&environment_id, &request_id, index));
             let mut spec =
                 api_start_spec_to_host(spec, job_id).map_err(AgentApiError::invalid_request)?;
             if spec.cwd.is_none() {
@@ -59,14 +59,14 @@ impl GatewayAgentApi {
             }
             host_specs.push(spec);
         }
-        let instance = self.read_job_instance(&instance_id).await?;
+        let instance = self.read_job_instance(&environment_id).await?;
         self.start_environment_jobs_host_specs(instance, request_id, host_specs)
             .await
     }
 
     async fn start_environment_jobs_host_specs(
         &self,
-        instance: EnvironmentInstanceRecord,
+        instance: EnvironmentRecord,
         request_id: String,
         jobs: Vec<HostJobStartSpec>,
     ) -> Result<EnvironmentJobCreateResponse, AgentApiError> {
@@ -81,11 +81,11 @@ impl GatewayAgentApi {
         if !instance.capabilities.job_start {
             return Err(AgentApiError::rejected(format!(
                 "environment does not support durable job start: {}",
-                instance.instance_id
+                instance.environment_id
             )));
         }
         let request = HostStartJobsParams {
-            namespace: instance.instance_id.as_str().to_owned(),
+            namespace: instance.environment_id.as_str().to_owned(),
             request_id: request_id.clone(),
             jobs,
         };
@@ -94,7 +94,7 @@ impl GatewayAgentApi {
                 AgentApiError::internal(format!("encode environment job request: {error}"))
             })?);
         let job_group_id = derived_job_group_id(
-            &instance.instance_id,
+            &instance.environment_id,
             &request_id,
             request_fingerprint.as_str(),
         );
@@ -114,7 +114,7 @@ impl GatewayAgentApi {
             .start_environment_job_workflow(
                 temporal_workflow::EnvironmentJobStartActivityRequest {
                     universe_id: self.universe_id(),
-                    instance_id: instance.instance_id.as_str().to_owned(),
+                    environment_id: instance.environment_id.as_str().to_owned(),
                     job_group_id: job_group_id.as_str().to_owned(),
                     request_ref,
                 },
@@ -123,7 +123,7 @@ impl GatewayAgentApi {
             )
             .await?;
         Ok(EnvironmentJobCreateResponse {
-            instance_id: instance.instance_id.as_str().to_owned(),
+            environment_id: instance.environment_id.as_str().to_owned(),
             job_group_id: job_group_id.as_str().to_owned(),
             jobs: snapshot
                 .jobs
@@ -132,7 +132,7 @@ impl GatewayAgentApi {
                     name: summary.name,
                     job_id: summary.job_id.as_str().to_owned(),
                     handle: SessionJobHandleView {
-                        instance_id: instance.instance_id.as_str().to_owned(),
+                        environment_id: instance.environment_id.as_str().to_owned(),
                         job_id: summary.job_id.as_str().to_owned(),
                     },
                     promise_id: None,
@@ -156,7 +156,7 @@ impl GatewayAgentApi {
     ) -> Result<temporal_workflow::EnvironmentJobWorkflowSnapshot, AgentApiError> {
         let workflow_id = temporal_workflow::compose_environment_job_workflow_id(
             self.universe_id(),
-            &start.instance_id,
+            &start.environment_id,
             &start.job_group_id,
         );
         match self
@@ -256,8 +256,8 @@ impl GatewayAgentApi {
                     continue;
                 }
             };
-            let instance_id = match EnvironmentInstanceId::try_new(resolved.instance_id.clone()) {
-                Ok(instance_id) => instance_id,
+            let environment_id = match EnvironmentId::try_new(resolved.environment_id.clone()) {
+                Ok(environment_id) => environment_id,
                 Err(error) => {
                     entries.push(session_job_read_error(Some(resolved), error.to_string()));
                     continue;
@@ -271,7 +271,7 @@ impl GatewayAgentApi {
                 }
             };
             let mut client = match self
-                .connect_client_for_job_handle(&instance_id, "read")
+                .connect_client_for_job_handle(&environment_id, "read")
                 .await
             {
                 Ok(client) => client,
@@ -282,7 +282,7 @@ impl GatewayAgentApi {
             };
             match client
                 .read_jobs(&HostReadJobsParams {
-                    namespace: instance_id.as_str().to_owned(),
+                    namespace: environment_id.as_str().to_owned(),
                     jobs: vec![job_id],
                     after_seq,
                     max_bytes: output_bytes,
@@ -333,8 +333,8 @@ impl GatewayAgentApi {
                     continue;
                 }
             };
-            let instance_id = match EnvironmentInstanceId::try_new(resolved.instance_id.clone()) {
-                Ok(instance_id) => instance_id,
+            let environment_id = match EnvironmentId::try_new(resolved.environment_id.clone()) {
+                Ok(environment_id) => environment_id,
                 Err(error) => {
                     entries.push(session_job_cancel_error(Some(resolved), error.to_string()));
                     continue;
@@ -348,7 +348,7 @@ impl GatewayAgentApi {
                 }
             };
             match self
-                .cancel_job_on_provider(&instance_id, job_id, scope, force)
+                .cancel_job_on_provider(&environment_id, job_id, scope, force)
                 .await
             {
                 Ok(summary) => entries.push(SessionJobCancelEntryView {
@@ -364,17 +364,17 @@ impl GatewayAgentApi {
 
     async fn cancel_job_on_provider(
         &self,
-        instance_id: &EnvironmentInstanceId,
+        environment_id: &EnvironmentId,
         job_id: JobId,
         scope: SessionJobCancelScopeView,
         force: bool,
     ) -> Result<HostJobSummary, String> {
         let mut client = self
-            .connect_client_for_job_handle(instance_id, "cancel")
+            .connect_client_for_job_handle(environment_id, "cancel")
             .await?;
         let response = client
             .cancel_jobs(&HostCancelJobsParams {
-                namespace: instance_id.as_str().to_owned(),
+                namespace: environment_id.as_str().to_owned(),
                 jobs: vec![job_id],
                 scope: host_cancel_scope(scope),
                 force,
@@ -390,20 +390,20 @@ impl GatewayAgentApi {
 
     async fn read_job_instance(
         &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<EnvironmentInstanceRecord, AgentApiError> {
-        ::environments::EnvironmentInstanceStore::read_instance(self.store.as_ref(), instance_id)
+        environment_id: &EnvironmentId,
+    ) -> Result<EnvironmentRecord, AgentApiError> {
+        ::environments::EnvironmentStore::read_environment(self.store.as_ref(), environment_id)
             .await
             .map_err(map_environments_error)
     }
 
     async fn connect_client_for_job_handle(
         &self,
-        instance_id: &EnvironmentInstanceId,
+        environment_id: &EnvironmentId,
         operation: &str,
     ) -> Result<HostDataClient<host_client::WebSocketTransport>, String> {
         let instance = self
-            .read_job_instance(instance_id)
+            .read_job_instance(environment_id)
             .await
             .map_err(|error| error.to_string())?;
         self.read_live_environment_provider(&instance.provider_id)
@@ -420,17 +420,15 @@ impl GatewayAgentApi {
         if !supported {
             return Err(format!(
                 "environment does not support durable job {operation}: {}",
-                instance_id
+                environment_id
             ));
         }
         Ok(client)
     }
 }
 
-fn parse_environment_job_instance_id(
-    value: String,
-) -> Result<EnvironmentInstanceId, AgentApiError> {
-    EnvironmentInstanceId::try_new(value).map_err(|error| {
+fn parse_environment_job_environment_id(value: String) -> Result<EnvironmentId, AgentApiError> {
+    EnvironmentId::try_new(value).map_err(|error| {
         AgentApiError::invalid_request(format!("invalid environment instance id: {error}"))
     })
 }
@@ -447,11 +445,11 @@ fn parse_host_job_id(value: &str) -> Result<JobId, String> {
 }
 
 fn parse_job_handle(handle: SessionJobHandleInput) -> Result<SessionJobHandleView, String> {
-    let instance_id = EnvironmentInstanceId::try_new(handle.instance_id)
-        .map_err(|error| format!("invalid job handle instance_id: {error}"))?;
+    let environment_id = EnvironmentId::try_new(handle.environment_id)
+        .map_err(|error| format!("invalid job handle environment_id: {error}"))?;
     let job_id = parse_host_job_id(&handle.job_id)?;
     Ok(SessionJobHandleView {
-        instance_id: instance_id.as_str().to_owned(),
+        environment_id: environment_id.as_str().to_owned(),
         job_id: job_id.as_str().to_owned(),
     })
 }
@@ -516,18 +514,19 @@ fn host_cancel_scope(scope: SessionJobCancelScopeView) -> HostJobCancelScope {
     }
 }
 
-fn derived_job_id(instance_id: &EnvironmentInstanceId, request_id: &str, index: usize) -> JobId {
-    let hash = BlobRef::from_bytes(format!("{instance_id}:{request_id}:{index}").as_bytes());
+fn derived_job_id(environment_id: &EnvironmentId, request_id: &str, index: usize) -> JobId {
+    let hash = BlobRef::from_bytes(format!("{environment_id}:{request_id}:{index}").as_bytes());
     JobId::new(format!("job-{}", &hash.as_str()[7..31]))
 }
 
 fn derived_job_group_id(
-    instance_id: &EnvironmentInstanceId,
+    environment_id: &EnvironmentId,
     request_id: &str,
     request_fingerprint: &str,
 ) -> EnvironmentJobGroupId {
-    let hash =
-        BlobRef::from_bytes(format!("{instance_id}:{request_id}:{request_fingerprint}").as_bytes());
+    let hash = BlobRef::from_bytes(
+        format!("{environment_id}:{request_id}:{request_fingerprint}").as_bytes(),
+    );
     EnvironmentJobGroupId::new(format!("ejg_{}", &hash.as_str()[7..31]))
 }
 

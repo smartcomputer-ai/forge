@@ -5,7 +5,6 @@ pub type RunId = String;
 pub type ItemId = String;
 pub type SkillId = String;
 pub type EnvironmentId = String;
-pub type EnvironmentInstanceId = String;
 pub type EnvironmentProviderId = String;
 pub type EnvironmentTargetId = String;
 pub type EnvironmentJobGroupId = String;

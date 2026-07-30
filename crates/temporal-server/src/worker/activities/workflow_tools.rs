@@ -15,8 +15,8 @@ use temporalio_client::{
     UntypedWorkflow, WorkflowCancelOptions, WorkflowDescribeOptions, WorkflowQueryOptions,
     WorkflowStartOptions,
 };
-use temporalio_common::data_converters::RawValue;
 use temporalio_common::data_converters::PayloadConverter;
+use temporalio_common::data_converters::RawValue;
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus;
 use temporalio_sdk::activities::ActivityError;
 
@@ -96,8 +96,7 @@ pub(super) async fn start_execution(
         )
         .await
     {
-        Ok(_)
-        | Err(temporalio_client::errors::WorkflowStartError::AlreadyStarted { .. }) => {
+        Ok(_) | Err(temporalio_client::errors::WorkflowStartError::AlreadyStarted { .. }) => {
             Ok(WorkflowToolStartActivityResult::Started)
         }
         Err(error) => Ok(WorkflowToolStartActivityResult::FailedRetryable {

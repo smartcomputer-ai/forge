@@ -3,12 +3,9 @@
 //! Profile wire DTOs live in `api` so clients and gateways share one contract.
 //! This crate owns the runtime registry/store boundary around those DTOs.
 
-use std::collections::BTreeSet;
-
 use api::{
     AgentProfile, AgentProfileInput, AgentProfileSummary, InlineAgentProfile, ProfileDocument,
-    ProfileEnvironment, ProfileEnvironmentSource, ProfileId, ProfileInstructions, ProfileMount,
-    ProfileSource,
+    ProfileId, ProfileInstructions, ProfileSource,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -167,32 +164,8 @@ pub fn validate_profile_document(document: &ProfileDocument) -> Result<(), Profi
     if let Some(instructions) = &document.instructions {
         validate_profile_instructions(instructions)?;
     }
-    let mut mount_paths = BTreeSet::new();
-    for mount in &document.mounts {
-        validate_profile_mount(mount)?;
-        if !mount_paths.insert(mount.mount_path.clone()) {
-            return Err(ProfileError::InvalidInput {
-                message: format!("duplicate mountPath {}", mount.mount_path),
-            });
-        }
-    }
-    let mut env_ids = BTreeSet::new();
-    let mut active_count = 0usize;
-    for environment in &document.environments {
-        validate_profile_environment(environment)?;
-        if !env_ids.insert(environment.env_id.clone()) {
-            return Err(ProfileError::InvalidInput {
-                message: format!("duplicate environment envId {}", environment.env_id),
-            });
-        }
-        if environment.activate {
-            active_count += 1;
-        }
-    }
-    if active_count > 1 {
-        return Err(ProfileError::InvalidInput {
-            message: "at most one environment may activate".to_owned(),
-        });
+    if let Some(environment_id) = &document.active_environment_id {
+        validate_nonempty_string("activeEnvironmentId", environment_id)?;
     }
     Ok(())
 }
@@ -208,22 +181,6 @@ fn validate_profile_instructions(instructions: &ProfileInstructions) -> Result<(
         ProfileInstructions::Text { text } => validate_nonempty_string("instructions.text", text),
         ProfileInstructions::TextRef { blob_ref } => {
             validate_nonempty_string("instructions.blobRef", blob_ref)
-        }
-    }
-}
-
-fn validate_profile_mount(mount: &ProfileMount) -> Result<(), ProfileError> {
-    validate_absolute_path("mountPath", &mount.mount_path)
-}
-
-fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), ProfileError> {
-    validate_nonempty_string("environment.envId", &environment.env_id)?;
-    match &environment.environment {
-        ProfileEnvironmentSource::Existing { instance_id } => {
-            validate_nonempty_string("environment.instanceId", instance_id)
-        }
-        ProfileEnvironmentSource::Provision { provider_id, .. } => {
-            validate_nonempty_string("environment.providerId", provider_id)
         }
     }
 }
@@ -253,20 +210,9 @@ fn validate_nonnegative_i64(name: &str, value: i64) -> Result<(), ProfileError> 
     Ok(())
 }
 
-fn validate_absolute_path(name: &str, value: &str) -> Result<(), ProfileError> {
-    validate_nonempty_string(name, value)?;
-    if !value.starts_with('/') {
-        return Err(ProfileError::InvalidInput {
-            message: format!("{name} must be an absolute VFS path"),
-        });
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::{VfsMountAccess, VfsMountSourceInput};
 
     #[test]
     fn input_into_record_stamps_registry_metadata() {
@@ -285,53 +231,14 @@ mod tests {
     }
 
     #[test]
-    fn document_validation_rejects_duplicate_keys_and_multiple_active_environments() {
-        let duplicate_mounts = ProfileDocument {
-            mounts: vec![
-                ProfileMount {
-                    mount_path: "/repo".to_owned(),
-                    source: VfsMountSourceInput::Workspace {
-                        workspace_id: "ws_1".to_owned(),
-                    },
-                    access: VfsMountAccess::ReadOnly,
-                },
-                ProfileMount {
-                    mount_path: "/repo".to_owned(),
-                    source: VfsMountSourceInput::Workspace {
-                        workspace_id: "ws_2".to_owned(),
-                    },
-                    access: VfsMountAccess::ReadOnly,
-                },
-            ],
+    fn document_validation_rejects_empty_active_environment_id() {
+        let empty_environment = ProfileDocument {
+            active_environment_id: Some(String::new()),
             ..ProfileDocument::default()
         };
         assert!(matches!(
-            validate_profile_document(&duplicate_mounts),
-            Err(ProfileError::InvalidInput { message }) if message.contains("duplicate mountPath")
-        ));
-
-        let multiple_active = ProfileDocument {
-            environments: vec![
-                ProfileEnvironment {
-                    env_id: "dev_a".to_owned(),
-                    environment: ProfileEnvironmentSource::Existing {
-                        instance_id: "evi_local".to_owned(),
-                    },
-                    activate: true,
-                },
-                ProfileEnvironment {
-                    env_id: "dev_b".to_owned(),
-                    environment: ProfileEnvironmentSource::Existing {
-                        instance_id: "evi_local".to_owned(),
-                    },
-                    activate: true,
-                },
-            ],
-            ..ProfileDocument::default()
-        };
-        assert!(matches!(
-            validate_profile_document(&multiple_active),
-            Err(ProfileError::InvalidInput { message }) if message.contains("at most one")
+            validate_profile_document(&empty_environment),
+            Err(ProfileError::InvalidInput { message }) if message.contains("activeEnvironmentId")
         ));
     }
 

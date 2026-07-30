@@ -404,7 +404,11 @@ impl BuiltinTool {
                     provider_options_ref: None,
                 }),
                 parallelism: self.parallelism(),
-                target_requirement: ToolTargetRequirement::required(self.target_namespace()),
+                target_requirement: match self.target_namespace() {
+                    "fs" => ToolTargetRequirement::SessionFilesystem,
+                    "env" => ToolTargetRequirement::ActiveEnvironment,
+                    _ => unreachable!("built-in tool target namespaces are fixed"),
+                },
             },
             documents: vec![description, input_schema],
         })
@@ -471,7 +475,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::{fs::FsPath, runtime::decode_args, targets};
+    use crate::{fs::FsPath, runtime::decode_args};
 
     fn target() -> ToolTarget {
         ToolTarget::api_kind(ProviderApiKind::OpenAiResponses)
@@ -505,7 +509,7 @@ mod tests {
         };
         assert_eq!(
             bundle.spec.target_requirement,
-            ToolTargetRequirement::required(targets::FS_TARGET_NAMESPACE)
+            ToolTargetRequirement::SessionFilesystem
         );
         assert_eq!(bundle.documents.len(), 2);
         assert_eq!(
@@ -529,7 +533,7 @@ mod tests {
 
         assert_eq!(
             bundle.spec.target_requirement,
-            ToolTargetRequirement::required(targets::ENV_TARGET_NAMESPACE)
+            ToolTargetRequirement::ActiveEnvironment
         );
     }
 

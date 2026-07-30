@@ -1,6 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use engine::SessionId;
 use host_protocol::{
     control::targets::{HostTargetStatus, HostTargetSummary},
     shared::{
@@ -36,10 +35,10 @@ fn provider() -> RegisterEnvironmentProvider {
     }
 }
 
-fn observation(instance_id: &str, origin: EnvironmentInstanceOrigin) -> ObserveEnvironmentInstance {
+fn observation(environment_id: &str, origin: EnvironmentOrigin) -> ObserveEnvironment {
     let target_id = HostTargetId::new("local");
-    ObserveEnvironmentInstance::from_observation(
-        EnvironmentInstanceId::new(instance_id),
+    ObserveEnvironment::from_observation(
+        EnvironmentId::new(environment_id),
         EnvironmentProviderId::new("bridge"),
         origin,
         ObservedEnvironmentTarget {
@@ -84,90 +83,43 @@ async fn provider_target_identity_is_stable_across_observations() {
     let store = InMemoryEnvironmentRegistryStore::new();
     store.register_provider(provider()).await.expect("provider");
     let first = store
-        .observe_instance(observation(
-            "instance-a",
-            EnvironmentInstanceOrigin::Provided,
-        ))
+        .observe_environment(observation("instance-a", EnvironmentOrigin::Provided))
         .await
         .expect("first");
     let second = store
-        .observe_instance(observation(
-            "instance-b",
-            EnvironmentInstanceOrigin::Provided,
-        ))
+        .observe_environment(observation("instance-b", EnvironmentOrigin::Provided))
         .await
         .expect("second");
-    assert_eq!(first.instance_id, second.instance_id);
+    assert_eq!(first.environment_id, second.environment_id);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn re_pointing_detached_binding_clears_credentials() {
+async fn credentials_are_bound_directly_to_universe_environments() {
     let store = InMemoryEnvironmentRegistryStore::new();
     store.register_provider(provider()).await.expect("provider");
     let first = store
-        .observe_instance(observation(
-            "instance-a",
-            EnvironmentInstanceOrigin::Provided,
-        ))
+        .observe_environment(observation("instance-a", EnvironmentOrigin::Provided))
         .await
         .expect("first");
-    let mut second_observation = observation("instance-b", EnvironmentInstanceOrigin::Provided);
-    second_observation.provider_target_id = HostTargetId::new("other");
-    second_observation.connection.target_id = HostTargetId::new("other");
-    let second = store
-        .observe_instance(second_observation)
-        .await
-        .expect("second");
-    let session_id = SessionId::new("session");
-    let env_id = EnvironmentId::new("dev");
     store
-        .put_binding(PutSessionEnvironmentBinding {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            instance_id: first.instance_id,
-            cwd: None,
-            fs_routes: Vec::new(),
-            updated_at_ms: 300,
-        })
-        .await
-        .expect("binding");
-    store
-        .bind_credential(CreateSessionEnvironmentCredential {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
+        .bind_credential(PutEnvironmentCredential {
+            environment_id: first.environment_id.clone(),
             env_name: "TOKEN".to_owned(),
-            source: SessionEnvironmentCredentialSource::DirectSecret {
+            source: EnvironmentCredentialSource::DirectSecret {
                 secret_id: SecretId::new("secret"),
             },
             created_at_ms: 301,
         })
         .await
         .expect("credential");
-    store
-        .update_binding_state(UpdateSessionEnvironmentBindingState {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            state: SessionEnvironmentBindingState::Detached,
-            updated_at_ms: 302,
-        })
-        .await
-        .expect("detach");
-    store
-        .put_binding(PutSessionEnvironmentBinding {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            instance_id: second.instance_id,
-            cwd: None,
-            fs_routes: Vec::new(),
-            updated_at_ms: 303,
-        })
-        .await
-        .expect("reattach");
     let credentials = store
-        .list_credentials(ListSessionEnvironmentCredentials { session_id, env_id })
+        .list_credentials(ListEnvironmentCredentials {
+            environment_id: first.environment_id,
+        })
         .await
         .expect("credentials");
-    assert!(credentials.is_empty());
+    assert_eq!(credentials.len(), 1);
+    assert_eq!(credentials[0].env_name, "TOKEN");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -175,15 +127,12 @@ async fn close_allows_instances_without_attached_bindings() {
     let store = InMemoryEnvironmentRegistryStore::new();
     store.register_provider(provider()).await.expect("provider");
     let instance = store
-        .observe_instance(observation(
-            "instance",
-            EnvironmentInstanceOrigin::Provisioned,
-        ))
+        .observe_environment(observation("instance", EnvironmentOrigin::Provisioned))
         .await
         .expect("instance");
     let closing = store
-        .begin_close_instance(BeginCloseEnvironmentInstance {
-            instance_id: instance.instance_id,
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: instance.environment_id,
             updated_at_ms: 400,
         })
         .await
@@ -196,11 +145,11 @@ async fn missing_provided_targets_become_unknown() {
     let store = InMemoryEnvironmentRegistryStore::new();
     store.register_provider(provider()).await.expect("provider");
     let instance = store
-        .observe_instance(observation("instance", EnvironmentInstanceOrigin::Provided))
+        .observe_environment(observation("instance", EnvironmentOrigin::Provided))
         .await
         .expect("instance");
     let changed = store
-        .mark_missing_provided_instances_unknown(
+        .mark_missing_provided_environments_unknown(
             &EnvironmentProviderId::new("bridge"),
             &BTreeSet::new(),
             500,
@@ -210,7 +159,7 @@ async fn missing_provided_targets_become_unknown() {
     assert_eq!(changed.len(), 1);
     assert_eq!(
         store
-            .read_instance(&instance.instance_id)
+            .read_environment(&instance.environment_id)
             .await
             .expect("instance")
             .status,

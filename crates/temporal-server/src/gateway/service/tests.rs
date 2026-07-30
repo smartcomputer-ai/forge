@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-
 use api::BlobPutItem;
 
 use super::*;
 use crate::gateway::service::prompts::{active_prompt_context_entries, prompt_report_ref};
+use tools::skills::SkillLocation;
+use vfs::VfsPath;
 
 #[test]
 fn admission_failure_mapping_uses_gateway_error_kinds() {
@@ -116,6 +116,7 @@ fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
                     workflow_id: "receiver-1".to_owned(),
                     workflow_kind: "order.receiver".to_owned(),
                 },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
             },
             completion: WorkflowToolCompletionInput::Promises {
                 reply_schema_ref: Some(reply_schema_ref.as_str().to_owned()),
@@ -156,7 +157,8 @@ fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
             receiver: WorkflowEndpointRef {
                 workflow_id: "receiver-1".to_owned(),
                 workflow_kind: "order.receiver".to_owned(),
-            }
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
         }
     );
     assert_eq!(
@@ -199,6 +201,7 @@ fn managed_workflow_tools_api_maps_bound_accepted_function_tools() {
                     workflow_id: "channels/session-1".to_owned(),
                     workflow_kind: "channels.session".to_owned(),
                 },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
             },
             completion: WorkflowToolCompletionInput::Accepted,
         }],
@@ -209,10 +212,64 @@ fn managed_workflow_tools_api_maps_bound_accepted_function_tools() {
         declaration.tools[0].completion,
         WorkflowToolCompletion::Accepted
     );
-    assert!(matches!(
+    assert_eq!(
         declaration.tools[0].target,
-        WorkflowToolTarget::Bound { .. }
-    ));
+        WorkflowToolTarget::Bound {
+            receiver: WorkflowEndpointRef {
+                workflow_id: "channels/session-1".to_owned(),
+                workflow_kind: "channels.session".to_owned(),
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
+        }
+    );
+}
+
+#[test]
+fn managed_workflow_tools_api_maps_joined_completion() {
+    let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let reply_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+    let declaration = managed_workflow_tools_from_api(ManagedSessionWorkflowToolsInput {
+        version: 1,
+        lifecycle_controller: None,
+        tools: vec![WorkflowToolDeclarationInput {
+            definition: WorkflowToolDefinitionInput {
+                tool_id: "message-send".to_owned(),
+                revision: 1,
+                semantic_type: "channels.receipt.v1".to_owned(),
+                tool: WorkflowToolSpecInput {
+                    name: "message_send".to_owned(),
+                    kind: WorkflowToolKindInput::Function {
+                        description_ref: None,
+                        input_schema_ref: input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    },
+                    parallelism: ToolParallelismView::ParallelSafe,
+                },
+            },
+            target: WorkflowToolTargetInput::Bound {
+                receiver: WorkflowEndpointInput {
+                    workflow_id: "channels/session-1".to_owned(),
+                    workflow_kind: "channels.session".to_owned(),
+                },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
+            },
+            completion: WorkflowToolCompletionInput::Joined {
+                reply_schema_ref: Some(reply_schema_ref.as_str().to_owned()),
+                deadline_after_ms: 30_000,
+            },
+        }],
+    })
+    .expect("map Joined workflow tool");
+
+    assert_eq!(
+        declaration.tools[0].completion,
+        WorkflowToolCompletion::Joined {
+            reply_schema_ref: Some(reply_schema_ref),
+            deadline_after_ms: 30_000,
+        }
+    );
 }
 
 #[test]
@@ -455,76 +512,22 @@ fn active_skill_ids_after_remove_drops_selected_skill() {
 }
 
 #[test]
-fn environment_view_maps_record_and_active_status() {
-    let record = test_environment_record(
-        "local",
-        tools::environment::projection::EnvironmentStatus::Ready,
-    );
-    let runtime = RuntimeEnvironment::new(
-        record,
-        tools::environment::EnvironmentToolContext::new(
-            None,
-            Arc::new(engine::storage::InMemoryBlobStore::new()),
-        ),
-    );
-
-    let view = super::environments::session_environment_view(&runtime, Some("local"));
-
-    assert_eq!(view.env_id, "local");
-    assert_eq!(view.instance_id, "local");
-    assert_eq!(view.state, SessionEnvironmentStateView::Attached);
-    assert!(view.capabilities.process_exec);
-    assert_eq!(view.exec_target.expect("exec target").namespace, "env");
-    assert_eq!(view.cwd.as_deref(), Some("/workspace"));
-    assert!(view.active);
-}
-
-#[test]
-fn environment_activation_lowers_to_default_env_target_command() {
-    let record = test_environment_record(
-        "local",
-        tools::environment::projection::EnvironmentStatus::Ready,
-    );
-    let target = super::environments::activation_target_for_environment_record(&record)
-        .expect("activation target");
-
-    let command = super::environments::activate_environment_command(target.clone());
+fn environment_activation_lowers_to_active_environment_command() {
+    let environment_id = engine::EnvironmentId::new("local");
+    let command = super::environments::activate_environment_command(environment_id.clone());
 
     assert!(matches!(
         command,
-        CoreAgentCommand::SetDefaultToolTarget { target: actual } if actual == target
+        CoreAgentCommand::SetActiveEnvironment { environment_id: actual }
+            if actual == environment_id
     ));
 }
 
 #[test]
-fn environment_deactivation_lowers_to_clear_env_target_command() {
+fn environment_deactivation_lowers_to_clear_active_environment_command() {
     let command = super::environments::deactivate_environment_command();
 
-    assert!(matches!(
-        command,
-        CoreAgentCommand::ClearDefaultToolTarget { namespace } if namespace == "env"
-    ));
-}
-
-#[test]
-fn invalid_environment_id_maps_to_invalid_request() {
-    let error = super::environments::parse_environment_id("bad id".to_owned())
-        .expect_err("invalid environment id");
-
-    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
-}
-
-#[test]
-fn inactive_environment_cannot_be_activation_target() {
-    let record = test_environment_record(
-        "local",
-        tools::environment::projection::EnvironmentStatus::Detached,
-    );
-
-    let error = super::environments::activation_target_for_environment_record(&record)
-        .expect_err("detached environment");
-
-    assert_eq!(error.kind, AgentApiErrorKind::Rejected);
+    assert!(matches!(command, CoreAgentCommand::ClearActiveEnvironment));
 }
 
 #[test]
@@ -811,60 +814,6 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn read_skill_doc_for_activation_reads_cataloged_vfs_bytes() {
-    let blobs = Arc::new(engine::storage::InMemoryBlobStore::new());
-    let skill_body = "---\nname: review\ndescription: Use when testing review.\n---\nsecret body\n";
-    let snapshot = vfs::create_inline_snapshot(
-        blobs.as_ref(),
-        vfs::CreateInlineSnapshotRequest::new(vec![
-            vfs::InlineFile::new("review/SKILL.md", skill_body.as_bytes().to_vec()).unwrap(),
-        ]),
-    )
-    .await
-    .expect("create skill snapshot");
-    let workspace_store = Arc::new(EmptyWorkspaceStore);
-    let mount = VfsMountRecord {
-        session_id: SessionId::new("session_1"),
-        mount_path: VfsPath::parse("/skills/system").unwrap(),
-        source: VfsMountSource::Snapshot {
-            snapshot_ref: snapshot.snapshot_ref.clone(),
-        },
-        access: VfsMountAccess::ReadOnly,
-    };
-    let skill = test_skill_metadata_with_snapshot(
-        "skill:review",
-        "review",
-        true,
-        snapshot.snapshot_ref.clone(),
-    );
-
-    let body = read_skill_doc_for_activation_from_vfs(blobs, workspace_store, vec![mount], &skill)
-        .await
-        .expect("read skill doc");
-
-    assert_eq!(body, skill_body);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn read_skill_doc_for_activation_rejects_host_locations() {
-    let blobs = Arc::new(engine::storage::InMemoryBlobStore::new());
-    let workspace_store = Arc::new(EmptyWorkspaceStore);
-    let mut skill = test_skill_metadata("skill:host", "host", true);
-    skill.location = SkillLocation::HostFilesystem {
-        target: engine::ToolExecutionTarget::new("host", "vm-1"),
-        root_path: "/skills".to_owned(),
-        skill_dir_path: "/skills/host".to_owned(),
-        skill_doc_path: "/skills/host/SKILL.md".to_owned(),
-    };
-
-    let error = read_skill_doc_for_activation_from_vfs(blobs, workspace_store, Vec::new(), &skill)
-        .await
-        .expect_err("host location should not read through VFS");
-
-    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
-}
-
 #[test]
 fn session_start_config_maps_reasoning_and_max_output_tokens() {
     let config = engine_session_config_from_api(
@@ -1048,6 +997,46 @@ fn run_start_config_maps_tool_choice() {
 }
 
 #[test]
+fn run_start_without_overrides_keeps_session_defaults_out_of_run_config() {
+    let mut session_config =
+        engine_session_config_from_api(api::SessionConfig::default(), openai_model())
+            .expect("session config");
+    session_config.generation.max_output_tokens = Some(4096);
+    session_config.generation.reasoning_effort = Some("high".to_owned());
+    session_config.limits.max_turns = Some(12);
+    session_config.limits.max_tool_rounds = Some(3);
+
+    let run_config = run_config_for_start(&session_config, None).expect("run config");
+
+    assert_eq!(run_config, RunConfig::default());
+}
+
+#[test]
+fn run_start_records_only_explicit_limit_overrides() {
+    let mut session_config =
+        engine_session_config_from_api(api::SessionConfig::default(), openai_model())
+            .expect("session config");
+    session_config.limits.max_turns = Some(12);
+    session_config.limits.max_tool_rounds = Some(3);
+
+    let run_config = run_config_for_start(
+        &session_config,
+        Some(RunStartConfig {
+            model: None,
+            generation: None,
+            limits: Some(api::RunLimitsConfig {
+                max_turns: Some(4),
+                max_tool_rounds: None,
+            }),
+        }),
+    )
+    .expect("run config");
+
+    assert_eq!(run_config.max_turns, Some(4));
+    assert_eq!(run_config.max_tool_rounds, None);
+}
+
+#[test]
 fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
     let submission_id = SubmissionId::new("submit_retry");
     let run_config = RunConfig::default();
@@ -1114,9 +1103,10 @@ fn features_default_off_for_sessions() {
 }
 
 #[test]
-fn environment_jobs_are_default_off_and_map_explicit_opt_in() {
+fn environment_tool_subgrants_are_default_off_and_map_explicit_opt_in() {
     let default_feature: api::EnvironmentsFeature =
         serde_json::from_value(serde_json::json!({})).expect("empty environment feature");
+    assert!(!default_feature.selection_tools);
     assert!(!default_feature.jobs);
 
     let config = engine_session_config_from_api(
@@ -1125,6 +1115,7 @@ fn environment_jobs_are_default_off_and_map_explicit_opt_in() {
                 environments: Some(api::EnvironmentsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
                     providers: None,
+                    selection_tools: true,
                     jobs: true,
                 }),
                 ..api::FeaturesConfig::default()
@@ -1135,13 +1126,9 @@ fn environment_jobs_are_default_off_and_map_explicit_opt_in() {
     )
     .expect("map environment jobs grant");
 
-    assert!(
-        config
-            .features
-            .environments
-            .expect("environment feature")
-            .jobs
-    );
+    let environments = config.features.environments.expect("environment feature");
+    assert!(environments.selection_tools);
+    assert!(environments.jobs);
 }
 
 #[test]
@@ -1220,6 +1207,7 @@ fn vfs_feature_grant_maps_tool_surfaces() {
                 features: Some(api::FeaturesConfig {
                     vfs: Some(api::VfsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links: Vec::new(),
                         tools: Some(api_surface),
                         prompts: None,
                         skills: None,
@@ -1244,6 +1232,7 @@ fn vfs_feature_grant_maps_tool_surfaces() {
             features: Some(api::FeaturesConfig {
                 vfs: Some(api::VfsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: None,
                     prompts: None,
                     skills: None,
@@ -1819,9 +1808,9 @@ fn test_skill_metadata_with_snapshot(
         trust: tools::skills::SkillTrustLevel::System,
         interface: None,
         dependencies: tools::skills::SkillDependencies::default(),
-        location: SkillLocation::MountedSnapshot {
+        location: SkillLocation::LinkedSnapshot {
             source_snapshot_ref: snapshot_ref,
-            source_mount_path: VfsPath::parse("/skills/system").unwrap(),
+            source_link_path: VfsPath::parse("/skills/system").unwrap(),
             skill_dir_path: VfsPath::parse(format!("/skills/system/{name}")).unwrap(),
             skill_doc_path: VfsPath::parse(format!("/skills/system/{name}/SKILL.md")).unwrap(),
         },
@@ -1854,28 +1843,6 @@ fn direct_activation(
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
-    }
-}
-
-fn test_environment_record(
-    env_id: &str,
-    status: tools::environment::projection::EnvironmentStatus,
-) -> tools::environment::projection::EnvironmentRecord {
-    tools::environment::projection::EnvironmentRecord {
-        env_id: env_id.to_owned(),
-        kind: tools::environment::projection::EnvironmentKind::AttachedHost,
-        capabilities: tools::environment::projection::EnvironmentCapabilities {
-            fs_read: true,
-            fs_write: true,
-            process_exec: true,
-            process_stdin: true,
-            network: false,
-            persistent: true,
-            ..tools::environment::projection::EnvironmentCapabilities::default()
-        },
-        exec_target: Some(tools::targets::environment_target(env_id)),
-        cwd: Some(FsPath::new("/workspace").expect("cwd")),
-        status,
     }
 }
 
@@ -1935,50 +1902,6 @@ fn test_function_tool(tool_name: ToolName) -> engine::ToolSpec {
         }),
         parallelism: engine::ToolParallelism::Exclusive,
         target_requirement: engine::ToolTargetRequirement::None,
-    }
-}
-
-struct EmptyWorkspaceStore;
-
-#[async_trait]
-impl VfsWorkspaceStore for EmptyWorkspaceStore {
-    async fn create_workspace(
-        &self,
-        _record: vfs::CreateVfsWorkspaceRecord,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found("create"))
-    }
-
-    async fn read_workspace(
-        &self,
-        workspace_id: &VfsWorkspaceId,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found(workspace_id.as_str()))
-    }
-
-    async fn list_workspaces(&self) -> Result<Vec<vfs::VfsWorkspaceRecord>, vfs::VfsCatalogError> {
-        Ok(Vec::new())
-    }
-
-    async fn compare_and_set_head(
-        &self,
-        _request: vfs::CompareAndSetVfsWorkspaceHead,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found("compare_and_set"))
-    }
-
-    async fn delete_workspace(
-        &self,
-        workspace_id: &VfsWorkspaceId,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found(workspace_id.as_str()))
-    }
-}
-
-fn workspace_not_found(id: &str) -> vfs::VfsCatalogError {
-    vfs::VfsCatalogError::NotFound {
-        kind: "workspace",
-        id: id.to_owned(),
     }
 }
 

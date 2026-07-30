@@ -56,12 +56,14 @@ export type ToolTargetRequirementView =
       type: "none";
     }
   | {
-      namespace: string;
-      type: "optional";
+      type: "sessionFilesystem";
     }
   | {
-      namespace: string;
-      type: "required";
+      type: "activeEnvironment";
+    }
+  | {
+      target: ToolExecutionTargetView;
+      type: "fixed";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -153,12 +155,6 @@ export type ContextEntryKindView =
       type: "vfsCatalog";
     }
   | {
-      type: "environmentCatalog";
-    }
-  | {
-      type: "environmentActive";
-    }
-  | {
       type: "skillCatalog";
     }
   | {
@@ -225,6 +221,24 @@ export type FleetSpawnBase = "self" | "session" | "profile";
 export type VfsToolSurface = "readOnly" | "edit";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLinkAccess".
+ */
+export type WorkspaceLinkAccess = "readOnly" | "readWrite";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLinkTarget".
+ */
+export type WorkspaceLinkTarget =
+  | {
+      type: "workspace";
+      workspaceId: string;
+    }
+  | {
+      snapshotRef: string;
+      type: "snapshot";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolChoice".
  */
 export type ToolChoice =
@@ -242,15 +256,85 @@ export type ToolChoice =
       type: "specific";
     };
 /**
+ * Completion contract for one workflow-tool invocation. Joined tools park
+ * the original call on one runtime-owned reply; Promises exposes handles for
+ * model-controlled concurrency.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolCompletionView".
+ * via the `definition` "WorkflowToolCompletionInput".
  */
-export type ManagedWorkflowToolCompletionView = "accepted" | "promises";
+export type WorkflowToolCompletionInput =
+  | {
+      type: "accepted";
+    }
+  | {
+      deadlineAfterMs: number;
+      replySchemaRef?: string | null;
+      type: "joined";
+    }
+  | {
+      deadlineAfterMs?: number | null;
+      keySource: WorkflowToolCompletionKeySourceInput;
+      maxPromises: number;
+      replySchemaRef?: string | null;
+      type: "promises";
+    };
+/**
+ * Declarative promise-key derivation over schema-validated tool arguments.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolCompletionKeySourceInput".
+ */
+export type WorkflowToolCompletionKeySourceInput =
+  | {
+      type: "reply";
+    }
+  | {
+      pointer: string;
+      type: "stringArray";
+    }
+  | {
+      pointer: string;
+      prefix: string;
+      type: "arrayIndices";
+    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolTargetView".
+ * via the `definition` "WorkflowToolKindInput".
  */
-export type ManagedWorkflowToolTargetView = "bound" | "start";
+export type WorkflowToolKindInput = {
+  descriptionRef?: string | null;
+  inputSchemaRef: string;
+  outputSchemaRef?: string | null;
+  providerOptionsRef?: string | null;
+  strict?: boolean | null;
+  type: "function";
+};
+/**
+ * Lifecycle target of a workflow-backed tool. Bound tools deliver to an
+ * existing execution; start tools create an execution from an immutable,
+ * CAS-backed recipe for every invocation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolTargetInput".
+ */
+export type WorkflowToolTargetInput =
+  | {
+      dispatch: BoundWorkflowToolDispatchInput;
+      receiver: WorkflowEndpointInput;
+      type: "bound";
+    }
+  | {
+      start: WorkflowStartRefInput;
+      type: "start";
+    };
+/**
+ * How an invocation of a bound workflow tool reaches its receiver.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BoundWorkflowToolDispatchInput".
+ */
+export type BoundWorkflowToolDispatchInput = "pull" | "push";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
@@ -299,26 +383,6 @@ export type RunStatus = "queued" | "running" | "cancelling" | "completed" | "fai
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "notLoaded" | "idle" | "active" | "closed" | "error";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountAccess".
- */
-export type VfsMountAccess = "readOnly" | "readWrite";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountSourceView".
- */
-export type VfsMountSourceView =
-  | {
-      snapshotRef: string;
-      type: "snapshot";
-    }
-  | {
-      headSnapshotRef?: string | null;
-      revision?: number | null;
-      type: "workspace";
-      workspaceId: string;
-    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionEventKindView".
@@ -570,9 +634,8 @@ export type SessionEventKindView =
       upserted: string[];
     }
   | {
-      namespace: string;
-      target?: ToolExecutionTargetView | null;
-      type: "toolDefaultTargetChanged";
+      environmentId?: string | null;
+      type: "activeEnvironmentChanged";
     }
   | {
       batchId: string;
@@ -746,9 +809,9 @@ export type HostTransportView =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentInstanceOriginView".
+ * via the `definition` "EnvironmentOriginView".
  */
-export type EnvironmentInstanceOriginView = "provided" | "provisioned";
+export type EnvironmentOriginView = "provided" | "provisioned";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentTargetStatusView".
@@ -762,6 +825,23 @@ export type EnvironmentTargetStatusView =
   | "closed"
   | "failed"
   | "unknown";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialSourceView".
+ */
+export type EnvironmentCredentialSourceView =
+  | {
+      grantId: string;
+      type: "authGrant";
+    }
+  | {
+      providerId: string;
+      type: "authProviderCredential";
+    }
+  | {
+      secretId: string;
+      type: "directSecret";
+    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionJobStatusView".
@@ -838,38 +918,6 @@ export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
 export type ModelSource = "provider";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ProfileEnvironmentSource".
- */
-export type ProfileEnvironmentSource =
-  | {
-      instanceId: string;
-      type: "existing";
-    }
-  | {
-      providerId: string;
-      request: HostTargetCreateRequestView;
-      type: "provision";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostTargetCreateRequestView".
- */
-export type HostTargetCreateRequestView =
-  | {
-      spec: SandboxTargetSpecView;
-      type: "sandbox";
-    }
-  | {
-      spec: AttachedHostSpecView;
-      type: "attachedHost";
-    }
-  | {
-      providerType: string;
-      spec: unknown;
-      type: "provider";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileInstructions".
  */
 export type ProfileInstructions =
@@ -883,49 +931,9 @@ export type ProfileInstructions =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountSourceInput".
- */
-export type VfsMountSourceInput =
-  | {
-      snapshotRef: string;
-      type: "snapshot";
-    }
-  | {
-      type: "workspace";
-      workspaceId: string;
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionLifecycleStatus".
  */
 export type SessionLifecycleStatus = "new" | "open" | "closed";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentFsAccessView".
- */
-export type SessionEnvironmentFsAccessView = "readOnly" | "readWrite";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentStateView".
- */
-export type SessionEnvironmentStateView = "attached" | "detached";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialSourceView".
- */
-export type SessionEnvironmentCredentialSourceView =
-  | {
-      grantId: string;
-      type: "authGrant";
-    }
-  | {
-      providerId: string;
-      type: "authProviderCredential";
-    }
-  | {
-      secretId: string;
-      type: "directSecret";
-    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillActivationScope".
@@ -964,6 +972,24 @@ export type AuthProviderConfigInput =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "HostTargetCreateRequestView".
+ */
+export type HostTargetCreateRequestView =
+  | {
+      spec: SandboxTargetSpecView;
+      type: "sandbox";
+    }
+  | {
+      spec: AttachedHostSpecView;
+      type: "attachedHost";
+    }
+  | {
+      providerType: string;
+      spec: unknown;
+      type: "provider";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionJobCancelScopeView".
  */
 export type SessionJobCancelScopeView = "job" | "dependents";
@@ -984,73 +1010,6 @@ export type ProfileSource =
   | {
       kind: "inline";
       profile: InlineAgentProfile;
-    };
-/**
- * Completion contract for one workflow-tool invocation. Accepted tools
- * produce no promises. Promise-bearing tools derive one or more promise keys
- * from validated arguments and are pushed to their target workflow.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolCompletionInput".
- */
-export type WorkflowToolCompletionInput =
-  | {
-      type: "accepted";
-    }
-  | {
-      deadlineAfterMs?: number | null;
-      keySource: WorkflowToolCompletionKeySourceInput;
-      maxPromises: number;
-      replySchemaRef?: string | null;
-      type: "promises";
-    };
-/**
- * Declarative promise-key derivation over schema-validated tool arguments.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolCompletionKeySourceInput".
- */
-export type WorkflowToolCompletionKeySourceInput =
-  | {
-      type: "reply";
-    }
-  | {
-      pointer: string;
-      type: "stringArray";
-    }
-  | {
-      pointer: string;
-      prefix: string;
-      type: "arrayIndices";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolKindInput".
- */
-export type WorkflowToolKindInput = {
-  descriptionRef?: string | null;
-  inputSchemaRef: string;
-  outputSchemaRef?: string | null;
-  providerOptionsRef?: string | null;
-  strict?: boolean | null;
-  type: "function";
-};
-/**
- * Lifecycle target of a workflow-backed tool. Bound tools deliver to an
- * existing execution; start tools create an execution from an immutable,
- * CAS-backed recipe for every invocation.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolTargetInput".
- */
-export type WorkflowToolTargetInput =
-  | {
-      receiver: WorkflowEndpointInput;
-      type: "bound";
-    }
-  | {
-      start: WorkflowStartRefInput;
-      type: "start";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1100,6 +1059,14 @@ export interface SecretRefView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolExecutionTargetView".
+ */
+export interface ToolExecutionTargetView {
+  id: string;
+  namespace: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiError".
  */
 export interface AgentApiError {
@@ -1120,6 +1087,10 @@ export interface AgentApiOutcomeOfAuthClientCreateResponse {
  */
 export interface SessionView {
   activeContext: ContextView;
+  /**
+   * The universe environment selected by the session event log.
+   */
+  activeEnvironmentId?: string | null;
   activeTools?: ActiveToolsView;
   /**
    * The stored sparse config document, exactly as last put (model and
@@ -1140,11 +1111,10 @@ export interface SessionView {
    * Immutable workflow-backed tool declaration. A lifecycle controller
    * indicates external session ownership; tool-only declarations do not.
    */
-  management?: SessionManagementView | null;
+  management?: ManagedSessionWorkflowToolsInput | null;
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
-  vfsMounts?: VfsMountView[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1255,8 +1225,9 @@ export interface FeaturesConfig {
   web?: WebFeature | null;
 }
 /**
- * Grants attaching/activating session environments and their process tool
- * surface. Durable jobs are an independent, default-off sub-grant.
+ * Grants active session environments and their process tool surface.
+ * Model-driven selection and durable jobs are independent, default-off
+ * sub-grants.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentsFeature".
@@ -1264,14 +1235,21 @@ export interface FeaturesConfig {
 export interface EnvironmentsFeature {
   /**
    * Grants the advanced durable-job tool surface. The workflow binding is
-   * installed for the session when granted; model-visible tools still
-   * require a ready attached environment with matching job capabilities.
+   * installed for the session when granted; invocations still require an
+   * active, ready environment with matching job capabilities.
    */
   jobs?: boolean;
   /**
    * Absent means every registered provider is allowed.
    */
   providers?: string[] | null;
+  /**
+   * Exposes `environment_list`, `environment_activate`, and
+   * `environment_deactivate` to the model. `environment_read` is available
+   * whenever environments are enabled, and external API/profile activation
+   * remains available when this is false.
+   */
+  selectionTools?: boolean;
   version?: number;
 }
 /**
@@ -1351,8 +1329,8 @@ export interface TimersFeature {
   version?: number;
 }
 /**
- * Grants the session virtual filesystem: mounts may be attached and the VFS
- * catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
+ * Grants the session virtual filesystem. Workspace links declare the
+ * session-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
  * no tools and no sourcing.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1369,10 +1347,14 @@ export interface VfsFeature {
   skills?: VfsSkillsConfig | null;
   /**
    * Agent-facing filesystem tool surface; absent = no fs tools. Per-path
-   * writability is defined by each mount's own access.
+   * writability is defined by each workspace link's own access.
    */
   tools?: VfsToolSurface | null;
   version?: number;
+  /**
+   * Catalog resources exposed in the session's workspace namespace.
+   */
+  workspaceLinks?: WorkspaceLink[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1395,6 +1377,15 @@ export interface VfsSkillsConfig {
    * non-empty.
    */
   roots?: string[] | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLink".
+ */
+export interface WorkspaceLink {
+  access: WorkspaceLinkAccess;
+  path: string;
+  target: WorkspaceLinkTarget;
 }
 /**
  * Grants network access through the web toolset; `fetch` and `search` are
@@ -1466,31 +1457,66 @@ export interface ModelConfig {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionManagementView".
+ * via the `definition` "ManagedSessionWorkflowToolsInput".
  */
-export interface SessionManagementView {
-  lifecycleController?: WorkflowEndpointView | null;
-  tools?: ManagedWorkflowToolView[];
+export interface ManagedSessionWorkflowToolsInput {
+  lifecycleController?: WorkflowEndpointInput | null;
+  tools: WorkflowToolDeclarationInput[];
   version: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowEndpointView".
+ * via the `definition` "WorkflowEndpointInput".
  */
-export interface WorkflowEndpointView {
+export interface WorkflowEndpointInput {
   workflowId: string;
   workflowKind: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedWorkflowToolView".
+ * via the `definition` "WorkflowToolDeclarationInput".
  */
-export interface ManagedWorkflowToolView {
-  completion: ManagedWorkflowToolCompletionView;
-  name: string;
+export interface WorkflowToolDeclarationInput {
+  completion: WorkflowToolCompletionInput;
+  definition: WorkflowToolDefinitionInput;
+  target: WorkflowToolTargetInput;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolDefinitionInput".
+ */
+export interface WorkflowToolDefinitionInput {
+  revision: number;
   semanticType: string;
-  target: ManagedWorkflowToolTargetView;
+  tool: WorkflowToolSpecInput;
   toolId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowToolSpecInput".
+ */
+export interface WorkflowToolSpecInput {
+  kind: WorkflowToolKindInput;
+  /**
+   * Canonical effective-toolset name, also sent to the model and used for
+   * runtime dispatch.
+   */
+  name: string;
+  parallelism?: ToolParallelismView & string;
+}
+/**
+ * Opaque reference to a workflow-substrate recipe already stored through
+ * the blob API. The fingerprint authenticates the exact recipe bytes used
+ * by the workflow-start adapter.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkflowStartRefInput".
+ */
+export interface WorkflowStartRefInput {
+  recipeFingerprint: string;
+  recipeFormat: number;
+  recipeRef: string;
+  revision: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1540,15 +1566,6 @@ export interface ToolEffectView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountView".
- */
-export interface VfsMountView {
-  access: VfsMountAccess;
-  mountPath: string;
-  source: VfsMountSourceView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionEventView".
  */
 export interface SessionEventView {
@@ -1589,14 +1606,6 @@ export interface ContextEntryInputView {
   providerItemId?: string | null;
   providerKind?: string | null;
   tokenEstimate?: TokenEstimateView | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolExecutionTargetView".
- */
-export interface ToolExecutionTargetView {
-  id: string;
-  namespace: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2112,12 +2121,12 @@ export interface EnvironmentInstanceView {
   connection: HostConnectionView;
   createdAtMs: number;
   defaultCwd?: string | null;
-  instanceId: string;
+  environmentId: string;
   metadata?: {
     [k: string]: string;
   };
   observedAtMs: number;
-  origin: EnvironmentInstanceOriginView;
+  origin: EnvironmentOriginView;
   providerId: string;
   providerTargetId: string;
   scope: HostScopeView;
@@ -2175,6 +2184,62 @@ export interface EnvironmentCreateResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentCredentialBindResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentCredentialBindResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentCredentialBindResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialBindResponse".
+ */
+export interface EnvironmentCredentialBindResponse {
+  credential: EnvironmentCredentialView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialView".
+ */
+export interface EnvironmentCredentialView {
+  createdAtMs: number;
+  envName: string;
+  environmentId: string;
+  source: EnvironmentCredentialSourceView;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentCredentialListResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentCredentialListResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentCredentialListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialListResponse".
+ */
+export interface EnvironmentCredentialListResponse {
+  credentials?: EnvironmentCredentialView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentCredentialUnbindResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentCredentialUnbindResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentCredentialUnbindResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialUnbindResponse".
+ */
+export interface EnvironmentCredentialUnbindResponse {
+  credential: EnvironmentCredentialView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfEnvironmentJobCancelResponse".
  */
 export interface AgentApiOutcomeOfEnvironmentJobCancelResponse {
@@ -2202,7 +2267,7 @@ export interface SessionJobCancelEntryView {
  * via the `definition` "SessionJobHandleView".
  */
 export interface SessionJobHandleView {
-  instanceId: string;
+  environmentId: string;
   jobId: string;
 }
 /**
@@ -2236,7 +2301,7 @@ export interface AgentApiOutcomeOfEnvironmentJobCreateResponse {
  * via the `definition` "EnvironmentJobCreateResponse".
  */
 export interface EnvironmentJobCreateResponse {
-  instanceId: string;
+  environmentId: string;
   jobGroupId: string;
   jobs?: SessionJobStartedView[];
 }
@@ -2805,10 +2870,9 @@ export interface ProfileApplyResponse {
  * via the `definition` "ProfileApplySummary".
  */
 export interface ProfileApplySummary {
+  activeEnvironmentChanged: boolean;
   configChanged: boolean;
-  environmentsChanged: number;
   instructionsChanged: boolean;
-  mountsChanged: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2830,63 +2894,19 @@ export interface ProfileCreateResponse {
  * via the `definition` "AgentProfile".
  */
 export interface AgentProfile {
+  /**
+   * Universe environment to activate when this profile is applied. Absence
+   * leaves the session's current active environment unchanged.
+   */
+  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   createdAtMs: number;
   description?: string | null;
   displayName?: string | null;
-  environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
   profileId: ProfileId;
   revision: number;
   updatedAtMs: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ProfileEnvironment".
- */
-export interface ProfileEnvironment {
-  activate?: boolean;
-  envId: string;
-  environment: ProfileEnvironmentSource;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SandboxTargetSpecView".
- */
-export interface SandboxTargetSpecView {
-  cwd?: string | null;
-  env?: {
-    [k: string]: string;
-  };
-  image?: string | null;
-  labels?: {
-    [k: string]: string;
-  };
-  providerOptions?: unknown;
-  template?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AttachedHostSpecView".
- */
-export interface AttachedHostSpecView {
-  cwd?: string | null;
-  endpoint?: string | null;
-  labels?: {
-    [k: string]: string;
-  };
-  name?: string | null;
-  providerOptions?: unknown;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ProfileMount".
- */
-export interface ProfileMount {
-  access: VfsMountAccess;
-  mountPath: string;
-  source: VfsMountSourceInput;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3063,125 +3083,7 @@ export interface AgentApiOutcomeOfSessionEnvironmentActivateResponse {
  * via the `definition` "SessionEnvironmentActivateResponse".
  */
 export interface SessionEnvironmentActivateResponse {
-  activeEnvId?: string | null;
-  environment: SessionEnvironmentView;
-  environments?: SessionEnvironmentView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentView".
- */
-export interface SessionEnvironmentView {
-  active: boolean;
-  capabilities: SessionEnvironmentCapabilitiesView;
-  cwd?: string | null;
-  envId: string;
-  execTarget?: ToolExecutionTargetView | null;
-  fsRoutes?: SessionEnvironmentFsRouteView[];
-  instanceId: string;
-  state: SessionEnvironmentStateView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCapabilitiesView".
- */
-export interface SessionEnvironmentCapabilitiesView {
-  fsRead: boolean;
-  fsWrite: boolean;
-  jobCancel?: boolean;
-  jobDependencies?: boolean;
-  jobList?: boolean;
-  jobQueueKeys?: boolean;
-  jobRead?: boolean;
-  jobStart?: boolean;
-  jobWaitHint?: boolean;
-  network: boolean;
-  processExec: boolean;
-  processStdin: boolean;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentFsRouteView".
- */
-export interface SessionEnvironmentFsRouteView {
-  access: SessionEnvironmentFsAccessView;
-  path: string;
-  sameStateAsActiveEnv?: boolean;
-  sourcePath?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentAttachResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentAttachResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentAttachResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentAttachResponse".
- */
-export interface SessionEnvironmentAttachResponse {
-  activeEnvId?: string | null;
-  environment: SessionEnvironmentView;
-  environments?: SessionEnvironmentView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentCredentialBindResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialBindResponse".
- */
-export interface SessionEnvironmentCredentialBindResponse {
-  credential: SessionEnvironmentCredentialView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialView".
- */
-export interface SessionEnvironmentCredentialView {
-  createdAtMs: number;
-  envId: string;
-  envName: string;
-  sessionId: string;
-  source: SessionEnvironmentCredentialSourceView;
-  updatedAtMs: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentCredentialListResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentCredentialListResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentCredentialListResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialListResponse".
- */
-export interface SessionEnvironmentCredentialListResponse {
-  credentials?: SessionEnvironmentCredentialView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentCredentialUnbindResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialUnbindResponse".
- */
-export interface SessionEnvironmentCredentialUnbindResponse {
-  credential: SessionEnvironmentCredentialView;
+  session: SessionView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3196,56 +3098,7 @@ export interface AgentApiOutcomeOfSessionEnvironmentDeactivateResponse {
  * via the `definition` "SessionEnvironmentDeactivateResponse".
  */
 export interface SessionEnvironmentDeactivateResponse {
-  activeEnvId?: string | null;
-  environments?: SessionEnvironmentView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentDetachResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentDetachResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentDetachResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentDetachResponse".
- */
-export interface SessionEnvironmentDetachResponse {
-  activeEnvId?: string | null;
-  environment: SessionEnvironmentView;
-  environments?: SessionEnvironmentView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentListResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentListResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentListResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentListResponse".
- */
-export interface SessionEnvironmentListResponse {
-  activeEnvId?: string | null;
-  environments?: SessionEnvironmentView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSessionEnvironmentReadResponse".
- */
-export interface AgentApiOutcomeOfSessionEnvironmentReadResponse {
-  notifications?: AgentNotification[];
-  result: SessionEnvironmentReadResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentReadResponse".
- */
-export interface SessionEnvironmentReadResponse {
-  environment: SessionEnvironmentView;
+  session: SessionView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3431,53 +3284,6 @@ export interface SkillListItem {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountDeleteResponse".
- */
-export interface AgentApiOutcomeOfVfsMountDeleteResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountDeleteResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountDeleteResponse".
- */
-export interface VfsMountDeleteResponse {
-  mountPath: string;
-  session: SessionView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountListResponse".
- */
-export interface AgentApiOutcomeOfVfsMountListResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountListResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountListResponse".
- */
-export interface VfsMountListResponse {
-  mounts?: VfsMountView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountPutResponse".
- */
-export interface AgentApiOutcomeOfVfsMountPutResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountPutResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountPutResponse".
- */
-export interface VfsMountPutResponse {
-  mount: VfsMountView;
-  session: SessionView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfVfsSnapshotCommitResponse".
  */
 export interface AgentApiOutcomeOfVfsSnapshotCommitResponse {
@@ -3612,13 +3418,29 @@ export interface VfsWorkspaceUpdateResponse {
  * via the `definition` "AgentProfileInput".
  */
 export interface AgentProfileInput {
+  /**
+   * Universe environment to activate when this profile is applied. Absence
+   * leaves the session's current active environment unchanged.
+   */
+  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
-  environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
   profileId: ProfileId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AttachedHostSpecView".
+ */
+export interface AttachedHostSpecView {
+  cwd?: string | null;
+  endpoint?: string | null;
+  labels?: {
+    [k: string]: string;
+  };
+  name?: string | null;
+  providerOptions?: unknown;
 }
 /**
  * Register an OAuth client configuration. `client_secret` is the second
@@ -3859,7 +3681,7 @@ export interface ContextRemoveParams {
  * via the `definition` "EnvironmentCloseParams".
  */
 export interface EnvironmentCloseParams {
-  instanceId: string;
+  environmentId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3868,6 +3690,46 @@ export interface EnvironmentCloseParams {
 export interface EnvironmentCreateParams {
   providerId: string;
   request: HostTargetCreateRequestView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SandboxTargetSpecView".
+ */
+export interface SandboxTargetSpecView {
+  cwd?: string | null;
+  env?: {
+    [k: string]: string;
+  };
+  image?: string | null;
+  labels?: {
+    [k: string]: string;
+  };
+  providerOptions?: unknown;
+  template?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialBindParams".
+ */
+export interface EnvironmentCredentialBindParams {
+  envName: string;
+  environmentId: string;
+  source: EnvironmentCredentialSourceView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialListParams".
+ */
+export interface EnvironmentCredentialListParams {
+  environmentId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentCredentialUnbindParams".
+ */
+export interface EnvironmentCredentialUnbindParams {
+  envName: string;
+  environmentId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3883,7 +3745,7 @@ export interface EnvironmentJobCancelParams {
  * via the `definition` "SessionJobHandleInput".
  */
 export interface SessionJobHandleInput {
-  instanceId: string;
+  environmentId: string;
   jobId: string;
 }
 /**
@@ -3891,7 +3753,7 @@ export interface SessionJobHandleInput {
  * via the `definition` "EnvironmentJobCreateParams".
  */
 export interface EnvironmentJobCreateParams {
-  instanceId: string;
+  environmentId: string;
   jobs: SessionJobStartSpecInput[];
   requestId: string;
 }
@@ -4007,7 +3869,7 @@ export interface EnvironmentProviderUnregisterParams {
  * via the `definition` "EnvironmentReadParams".
  */
 export interface EnvironmentReadParams {
-  instanceId: string;
+  environmentId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4022,12 +3884,15 @@ export interface InitializeParams {
  * via the `definition` "InlineAgentProfile".
  */
 export interface InlineAgentProfile {
+  /**
+   * Universe environment to activate when this profile is applied. Absence
+   * leaves the session's current active environment unchanged.
+   */
+  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
-  environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4056,69 +3921,6 @@ export interface ManagedSessionStartParams {
    * changed through `session/config/put`.
    */
   workflowTools: ManagedSessionWorkflowToolsInput;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ManagedSessionWorkflowToolsInput".
- */
-export interface ManagedSessionWorkflowToolsInput {
-  lifecycleController?: WorkflowEndpointInput | null;
-  tools: WorkflowToolDeclarationInput[];
-  version: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowEndpointInput".
- */
-export interface WorkflowEndpointInput {
-  workflowId: string;
-  workflowKind: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolDeclarationInput".
- */
-export interface WorkflowToolDeclarationInput {
-  completion: WorkflowToolCompletionInput;
-  definition: WorkflowToolDefinitionInput;
-  target: WorkflowToolTargetInput;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolDefinitionInput".
- */
-export interface WorkflowToolDefinitionInput {
-  revision: number;
-  semanticType: string;
-  tool: WorkflowToolSpecInput;
-  toolId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowToolSpecInput".
- */
-export interface WorkflowToolSpecInput {
-  kind: WorkflowToolKindInput;
-  /**
-   * Canonical effective-toolset name, also sent to the model and used for
-   * runtime dispatch.
-   */
-  name: string;
-  parallelism?: ToolParallelismView & string;
-}
-/**
- * Opaque reference to a workflow-substrate recipe already stored through
- * the blob API. The fingerprint authenticates the exact recipe bytes used
- * by the workflow-start adapter.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "WorkflowStartRefInput".
- */
-export interface WorkflowStartRefInput {
-  recipeFingerprint: string;
-  recipeFormat: number;
-  recipeRef: string;
-  revision: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4391,46 +4193,7 @@ export interface SessionDeleteParams {
  * via the `definition` "SessionEnvironmentActivateParams".
  */
 export interface SessionEnvironmentActivateParams {
-  envId: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentAttachParams".
- */
-export interface SessionEnvironmentAttachParams {
-  activate?: boolean;
-  cwd?: string | null;
-  envId?: string | null;
-  fsRoutes?: SessionEnvironmentFsRouteView[];
-  instanceId: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialBindParams".
- */
-export interface SessionEnvironmentCredentialBindParams {
-  envId: string;
-  envName: string;
-  sessionId: string;
-  source: SessionEnvironmentCredentialSourceView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialListParams".
- */
-export interface SessionEnvironmentCredentialListParams {
-  envId: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentCredentialUnbindParams".
- */
-export interface SessionEnvironmentCredentialUnbindParams {
-  envId: string;
-  envName: string;
+  environmentId: string;
   sessionId: string;
 }
 /**
@@ -4438,29 +4201,6 @@ export interface SessionEnvironmentCredentialUnbindParams {
  * via the `definition` "SessionEnvironmentDeactivateParams".
  */
 export interface SessionEnvironmentDeactivateParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentDetachParams".
- */
-export interface SessionEnvironmentDetachParams {
-  envId: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentListParams".
- */
-export interface SessionEnvironmentListParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionEnvironmentReadParams".
- */
-export interface SessionEnvironmentReadParams {
-  envId: string;
   sessionId: string;
 }
 /**
@@ -4548,31 +4288,6 @@ export interface SkillDeactivateParams {
  */
 export interface SkillListParams {
   sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountDeleteParams".
- */
-export interface VfsMountDeleteParams {
-  mountPath: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountListParams".
- */
-export interface VfsMountListParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountPutParams".
- */
-export interface VfsMountPutParams {
-  access: VfsMountAccess;
-  mountPath: string;
-  sessionId: string;
-  source: VfsMountSourceInput;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

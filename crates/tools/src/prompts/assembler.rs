@@ -97,11 +97,19 @@ pub async fn build_prompt_instructions(
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
 ) -> Result<PromptInstructionsBuild, PromptInstructionsError> {
+    build_prompt_instructions_with_warnings(blobs, roots, limits, Vec::new()).await
+}
+
+pub async fn build_prompt_instructions_with_warnings(
+    blobs: &dyn BlobStore,
+    roots: &[PromptRootInput<'_>],
+    limits: PromptAssemblyLimits,
+    mut warnings: Vec<PromptWarning>,
+) -> Result<PromptInstructionsBuild, PromptInstructionsError> {
     let mut sorted_roots = roots.iter().collect::<Vec<_>>();
     sorted_roots.sort_by(compare_roots);
 
     let mut sources = Vec::new();
-    let mut warnings = Vec::new();
     let mut fingerprint_inputs = Vec::new();
 
     for input in sorted_roots {
@@ -158,7 +166,16 @@ pub async fn prepare_prompt_instructions_publication(
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
 ) -> Result<PromptInstructionsPublication, PromptInstructionsError> {
-    let build = build_prompt_instructions(blobs, roots, limits).await?;
+    prepare_prompt_instructions_publication_with_warnings(blobs, roots, limits, Vec::new()).await
+}
+
+pub async fn prepare_prompt_instructions_publication_with_warnings(
+    blobs: &dyn BlobStore,
+    roots: &[PromptRootInput<'_>],
+    limits: PromptAssemblyLimits,
+    warnings: Vec<PromptWarning>,
+) -> Result<PromptInstructionsPublication, PromptInstructionsError> {
+    let build = build_prompt_instructions_with_warnings(blobs, roots, limits, warnings).await?;
     let desired = prompt_instruction_inputs_for_entries(&build.entries);
 
     Ok(PromptInstructionsPublication { build, desired })
@@ -343,7 +360,7 @@ async fn read_prompt_source(
         content_ref,
         text,
         bytes.len() as u64,
-        input.root.access.is_writable(),
+        input.root.access == engine::WorkspaceLinkAccess::ReadWrite,
     ))
 }
 
@@ -464,24 +481,24 @@ fn source_location(
 ) -> Result<PromptSourceLocation, PromptInstructionsError> {
     let prompt_file_path = vfs_path(path)?;
     match &root.source {
-        PromptRootSource::MountedSnapshot {
+        PromptRootSource::LinkedSnapshot {
             snapshot_ref,
-            mount_path,
-        } => Ok(PromptSourceLocation::MountedSnapshot {
+            link_path,
+        } => Ok(PromptSourceLocation::LinkedSnapshot {
             source_snapshot_ref: snapshot_ref.clone(),
-            source_mount_path: mount_path.clone(),
+            source_link_path: link_path.clone(),
             prompt_file_path,
         }),
-        PromptRootSource::MountedWorkspace {
+        PromptRootSource::LinkedWorkspace {
             workspace_id,
             workspace_head_ref,
             workspace_revision,
-            mount_path,
-        } => Ok(PromptSourceLocation::MountedWorkspace {
+            link_path,
+        } => Ok(PromptSourceLocation::LinkedWorkspace {
             workspace_id: workspace_id.clone(),
             workspace_revision: *workspace_revision,
             workspace_head_ref: workspace_head_ref.clone(),
-            source_mount_path: mount_path.clone(),
+            source_link_path: link_path.clone(),
             prompt_file_path,
         }),
     }
@@ -492,14 +509,14 @@ fn source_input_for_root(
 ) -> Result<PromptSourceFingerprintInput, PromptInstructionsError> {
     let root_path = vfs_path(&root.root_path)?;
     match &root.source {
-        PromptRootSource::MountedSnapshot { snapshot_ref, .. } => {
+        PromptRootSource::LinkedSnapshot { snapshot_ref, .. } => {
             Ok(PromptSourceFingerprintInput::SnapshotRoot {
                 root_id: root.root_id.clone(),
                 snapshot_ref: snapshot_ref.clone(),
                 root_path,
             })
         }
-        PromptRootSource::MountedWorkspace {
+        PromptRootSource::LinkedWorkspace {
             workspace_id,
             workspace_head_ref,
             workspace_revision,
@@ -832,8 +849,8 @@ fn source_order(path: &str) -> u8 {
 mod tests {
     use std::sync::Arc;
 
+    use engine::WorkspaceLinkAccess;
     use engine::storage::{BlobStore, InMemoryBlobStore};
-    use vfs::VfsMountAccess;
 
     use super::*;
     use crate::fs::{CreateDirectoryOptions, InMemoryFileSystem};
@@ -1010,11 +1027,11 @@ mod tests {
             root: PromptRoot {
                 root_id: root_id.to_owned(),
                 root_path: FsPath::new(root_path).unwrap(),
-                source: PromptRootSource::MountedSnapshot {
+                source: PromptRootSource::LinkedSnapshot {
                     snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
-                    mount_path: VfsPath::parse("/workspace").unwrap(),
+                    link_path: VfsPath::parse("/workspace").unwrap(),
                 },
-                access: VfsMountAccess::ReadOnly,
+                access: WorkspaceLinkAccess::ReadOnly,
             },
             fs,
         }

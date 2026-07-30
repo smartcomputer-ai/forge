@@ -45,9 +45,7 @@ fn start_candidates(state: &AgentSessionWorkflow) -> Vec<StartCandidate> {
                         .promises
                         .promises
                         .get(promise_id)
-                        .is_some_and(|promise| {
-                            promise.status == engine::PromiseStatus::Pending
-                        })
+                        .is_some_and(|promise| promise.status == engine::PromiseStatus::Pending)
                 });
             if !has_pending_promise {
                 return None;
@@ -157,8 +155,7 @@ pub(super) async fn process_pending_starts(
                         state.workflow_start_backoffs.remove(&invocation_key);
                     });
                 } else {
-                    let next_at_ms =
-                        now + WORKFLOW_START_RETRY_BACKOFF_MS * u64::from(attempts);
+                    let next_at_ms = now + WORKFLOW_START_RETRY_BACKOFF_MS * u64::from(attempts);
                     ctx.state_mut(|state| {
                         state
                             .workflow_start_backoffs
@@ -274,8 +271,9 @@ pub(super) async fn process_execution_cancels(
         {
             // Best-effort: record and move on rather than wedging the loop.
             ctx.state_mut(|state| {
-                state.last_error =
-                    Some(format!("cancel workflow tool execution {execution_id}: {error}"));
+                state.last_error = Some(format!(
+                    "cancel workflow tool execution {execution_id}: {error}"
+                ));
             });
         }
         ctx.state_mut(|state| {

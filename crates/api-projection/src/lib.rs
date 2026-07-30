@@ -7,16 +7,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use api::{
-    ActiveToolsView, AgentApiError, ContextEntryInputView, ContextEntryKindView, ContextEntryView,
-    ContextMessageRoleView, ContextView, EventCursor, EventJoinsView, InputItem,
-    ManagedWorkflowToolCompletionView, ManagedWorkflowToolTargetView, ManagedWorkflowToolView,
-    MediaKind, ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
-    RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
+    ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
+    ContextEntryKindView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
+    EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput, MediaKind, ModelConfig, ProfileId,
+    ProviderContextDisplayView, ProviderNativeToolExecutionView, RunAcceptedSourceView,
+    RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView, SessionEventView,
+    SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
     TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
     ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolExecutionTargetView,
     ToolItemStatus, ToolKindView, ToolParallelismView, ToolTargetRequirementView, ToolView,
-    WorkflowEndpointView,
+    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
+    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
+    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
+    WorkflowToolTargetInput,
 };
 use engine::ToolExecutionTarget;
 use engine::{
@@ -95,8 +98,13 @@ impl<'a> CoreAgentProjector<'a> {
                 params.state.tooling.revision,
                 &params.state.tooling.tools,
             ),
+            active_environment_id: params
+                .state
+                .environment
+                .active_environment_id
+                .as_ref()
+                .map(|id| id.as_str().to_owned()),
             management: session_management_to_api(params.state),
-            vfs_mounts: Vec::new(),
         })
     }
 
@@ -585,6 +593,18 @@ impl<'a> CoreAgentProjector<'a> {
                         .map(|blob_ref| blob_ref.as_str().to_owned()),
                 }),
             },
+            CoreAgentEvent::Environment(event) => match event {
+                engine::EnvironmentEvent::ActiveEnvironmentSet { environment_id } => {
+                    Ok(SessionEventKindView::ActiveEnvironmentChanged {
+                        environment_id: Some(environment_id.as_str().to_owned()),
+                    })
+                }
+                engine::EnvironmentEvent::ActiveEnvironmentCleared => {
+                    Ok(SessionEventKindView::ActiveEnvironmentChanged {
+                        environment_id: None,
+                    })
+                }
+            },
             CoreAgentEvent::ToolConfig(event) => match event {
                 ToolConfigEvent::ToolsReplaced { base_revision, .. } => {
                     Ok(SessionEventKindView::ToolsReplaced {
@@ -609,18 +629,6 @@ impl<'a> CoreAgentProjector<'a> {
                         .map(|tool_name| tool_name.as_str().to_owned())
                         .collect(),
                 }),
-                ToolConfigEvent::DefaultTargetSet { target } => {
-                    Ok(SessionEventKindView::ToolDefaultTargetChanged {
-                        namespace: target.namespace.clone(),
-                        target: Some(tool_execution_target_to_api(target)),
-                    })
-                }
-                ToolConfigEvent::DefaultTargetCleared { namespace } => {
-                    Ok(SessionEventKindView::ToolDefaultTargetChanged {
-                        namespace: namespace.clone(),
-                        target: None,
-                    })
-                }
             },
             CoreAgentEvent::Tool(event) => match event {
                 ToolEvent::BatchStarted {
@@ -845,10 +853,10 @@ impl<'a> CoreAgentProjector<'a> {
 
 fn session_management_to_api(state: &CoreAgentState) -> Option<SessionManagementView> {
     let version = state.workflow_tools.managed_declaration_version?;
-    Some(SessionManagementView {
+    Some(ManagedSessionWorkflowToolsInput {
         version,
         lifecycle_controller: state.workflow_tools.lifecycle_controller.as_ref().map(
-            |controller| WorkflowEndpointView {
+            |controller| WorkflowEndpointInput {
                 workflow_id: controller.workflow_id.clone(),
                 workflow_kind: controller.workflow_kind.clone(),
             },
@@ -858,29 +866,109 @@ fn session_management_to_api(state: &CoreAgentState) -> Option<SessionManagement
             .bindings
             .iter()
             .filter(|(tool_id, _)| !state.workflow_tools.system_binding_ids.contains(*tool_id))
-            .map(|(_, binding)| binding)
-            .map(|binding| ManagedWorkflowToolView {
-                tool_id: binding.definition.tool_id.as_str().to_owned(),
-                name: binding.definition.tool.name.as_str().to_owned(),
-                semantic_type: binding.definition.semantic_type.clone(),
-                target: match binding.target {
-                    engine::WorkflowToolTarget::Bound { .. } => {
-                        ManagedWorkflowToolTargetView::Bound
-                    }
-                    engine::WorkflowToolTarget::Start { .. } => {
-                        ManagedWorkflowToolTargetView::Start
-                    }
-                },
-                completion: match binding.completion {
-                    engine::WorkflowToolCompletion::Accepted => {
-                        ManagedWorkflowToolCompletionView::Accepted
-                    }
-                    engine::WorkflowToolCompletion::Promises { .. } => {
-                        ManagedWorkflowToolCompletionView::Promises
-                    }
-                },
-            })
+            .filter_map(|(_, binding)| workflow_tool_declaration_to_api(binding))
             .collect(),
+    })
+}
+
+fn workflow_tool_declaration_to_api(
+    binding: &engine::WorkflowToolBinding,
+) -> Option<WorkflowToolDeclarationInput> {
+    let engine::ToolKind::Function(function) = &binding.definition.tool.kind else {
+        return None;
+    };
+    Some(WorkflowToolDeclarationInput {
+        definition: WorkflowToolDefinitionInput {
+            tool_id: binding.definition.tool_id.as_str().to_owned(),
+            revision: binding.definition.revision,
+            semantic_type: binding.definition.semantic_type.clone(),
+            tool: WorkflowToolSpecInput {
+                name: binding.definition.tool.name.as_str().to_owned(),
+                kind: WorkflowToolKindInput::Function {
+                    description_ref: function
+                        .description_ref
+                        .as_ref()
+                        .map(|value| value.as_str().to_owned()),
+                    input_schema_ref: function.input_schema_ref.as_str().to_owned(),
+                    output_schema_ref: function
+                        .output_schema_ref
+                        .as_ref()
+                        .map(|value| value.as_str().to_owned()),
+                    strict: function.strict,
+                    provider_options_ref: function
+                        .provider_options_ref
+                        .as_ref()
+                        .map(|value| value.as_str().to_owned()),
+                },
+                parallelism: tool_parallelism_to_api(binding.definition.tool.parallelism),
+            },
+        },
+        target: match &binding.target {
+            engine::WorkflowToolTarget::Bound { receiver, dispatch } => {
+                WorkflowToolTargetInput::Bound {
+                    receiver: WorkflowEndpointInput {
+                        workflow_id: receiver.workflow_id.clone(),
+                        workflow_kind: receiver.workflow_kind.clone(),
+                    },
+                    dispatch: match dispatch {
+                        engine::BoundWorkflowToolDispatch::Pull => {
+                            BoundWorkflowToolDispatchInput::Pull
+                        }
+                        engine::BoundWorkflowToolDispatch::Push => {
+                            BoundWorkflowToolDispatchInput::Push
+                        }
+                    },
+                }
+            }
+            engine::WorkflowToolTarget::Start { start } => WorkflowToolTargetInput::Start {
+                start: WorkflowStartRefInput {
+                    recipe_format: start.recipe_format,
+                    revision: start.revision,
+                    recipe_ref: start.recipe_ref.as_str().to_owned(),
+                    recipe_fingerprint: start.recipe_fingerprint.clone(),
+                },
+            },
+        },
+        completion: match &binding.completion {
+            engine::WorkflowToolCompletion::Accepted => WorkflowToolCompletionInput::Accepted,
+            engine::WorkflowToolCompletion::Joined {
+                reply_schema_ref,
+                deadline_after_ms,
+            } => WorkflowToolCompletionInput::Joined {
+                reply_schema_ref: reply_schema_ref
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                deadline_after_ms: *deadline_after_ms,
+            },
+            engine::WorkflowToolCompletion::Promises {
+                reply_schema_ref,
+                deadline_after_ms,
+                max_promises,
+                key_source,
+            } => WorkflowToolCompletionInput::Promises {
+                reply_schema_ref: reply_schema_ref
+                    .as_ref()
+                    .map(|value| value.as_str().to_owned()),
+                deadline_after_ms: *deadline_after_ms,
+                max_promises: *max_promises,
+                key_source: match key_source {
+                    engine::WorkflowToolCompletionKeySource::Reply => {
+                        WorkflowToolCompletionKeySourceInput::Reply
+                    }
+                    engine::WorkflowToolCompletionKeySource::StringArray { pointer } => {
+                        WorkflowToolCompletionKeySourceInput::StringArray {
+                            pointer: pointer.clone(),
+                        }
+                    }
+                    engine::WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix } => {
+                        WorkflowToolCompletionKeySourceInput::ArrayIndices {
+                            pointer: pointer.clone(),
+                            prefix: prefix.clone(),
+                        }
+                    }
+                },
+            },
+        },
     })
 }
 
@@ -1280,6 +1368,7 @@ fn features_config_to_api(
             .map(|environments| api::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers.clone(),
+                selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
             }),
         mcp: features.mcp.as_ref().map(mcp_feature_to_api),
@@ -1289,6 +1378,29 @@ fn features_config_to_api(
 fn vfs_feature_to_api(vfs: &engine::VfsFeature) -> api::VfsFeature {
     api::VfsFeature {
         version: vfs.version,
+        workspace_links: vfs
+            .workspace_links
+            .iter()
+            .map(|link| api::WorkspaceLink {
+                path: link.path.clone(),
+                target: match &link.target {
+                    engine::WorkspaceLinkTarget::Workspace { workspace_id } => {
+                        api::WorkspaceLinkTarget::Workspace {
+                            workspace_id: workspace_id.clone(),
+                        }
+                    }
+                    engine::WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
+                        api::WorkspaceLinkTarget::Snapshot {
+                            snapshot_ref: snapshot_ref.clone(),
+                        }
+                    }
+                },
+                access: match link.access {
+                    engine::WorkspaceLinkAccess::ReadOnly => api::WorkspaceLinkAccess::ReadOnly,
+                    engine::WorkspaceLinkAccess::ReadWrite => api::WorkspaceLinkAccess::ReadWrite,
+                },
+            })
+            .collect(),
         tools: vfs.tools.map(|tools| match tools {
             engine::VfsToolSurface::ReadOnly => api::VfsToolSurface::ReadOnly,
             engine::VfsToolSurface::Edit => api::VfsToolSurface::Edit,
@@ -1471,11 +1583,10 @@ fn tool_target_requirement_to_api(
 ) -> ToolTargetRequirementView {
     match requirement {
         ToolTargetRequirement::None => ToolTargetRequirementView::None,
-        ToolTargetRequirement::Optional { namespace } => ToolTargetRequirementView::Optional {
-            namespace: namespace.clone(),
-        },
-        ToolTargetRequirement::Required { namespace } => ToolTargetRequirementView::Required {
-            namespace: namespace.clone(),
+        ToolTargetRequirement::SessionFilesystem => ToolTargetRequirementView::SessionFilesystem,
+        ToolTargetRequirement::ActiveEnvironment => ToolTargetRequirementView::ActiveEnvironment,
+        ToolTargetRequirement::Fixed { target } => ToolTargetRequirementView::Fixed {
+            target: tool_execution_target_to_api(target),
         },
     }
 }
@@ -1546,8 +1657,6 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         },
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
-        ContextEntryKind::EnvironmentCatalog => ContextEntryKindView::EnvironmentCatalog,
-        ContextEntryKind::EnvironmentActive => ContextEntryKindView::EnvironmentActive,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
         ContextEntryKind::SkillActivation { skill_id } => ContextEntryKindView::SkillActivation {
             skill_id: skill_id.as_str().to_owned(),
@@ -1944,9 +2053,9 @@ mod tests {
 
         assert_eq!(
             session_management_to_api(&state),
-            Some(SessionManagementView {
+            Some(ManagedSessionWorkflowToolsInput {
                 version: 1,
-                lifecycle_controller: Some(WorkflowEndpointView {
+                lifecycle_controller: Some(WorkflowEndpointInput {
                     workflow_id: "channels/session-1".to_owned(),
                     workflow_kind: "channelSessionWorkflowV1".to_owned(),
                 }),
@@ -1954,6 +2063,73 @@ mod tests {
             })
         );
         assert_eq!(session_management_to_api(&CoreAgentState::new()), None);
+    }
+
+    #[test]
+    fn managed_session_projection_reuses_the_joined_declaration_contract() {
+        let mut state = CoreAgentState::new();
+        state.workflow_tools.managed_declaration_version = Some(1);
+        let universe_id = "00000000-0000-0000-0000-000000000001"
+            .parse()
+            .expect("universe id");
+        let receiver = engine::WorkflowEndpointRef {
+            workflow_id: "channels/session-1".to_owned(),
+            workflow_kind: "channels.session".to_owned(),
+        };
+        let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
+        let binding = engine::WorkflowToolBinding::admit(
+            universe_id,
+            engine::WorkflowToolDefinition {
+                tool_id: engine::WorkflowToolId::new("message-send"),
+                revision: 1,
+                semantic_type: "channels.message.send.v1".to_owned(),
+                tool: ToolSpec {
+                    name: engine::ToolName::new("message_send"),
+                    kind: ToolKind::Function(engine::FunctionToolSpec {
+                        description_ref: None,
+                        input_schema_ref,
+                        output_schema_ref: None,
+                        strict: Some(true),
+                        provider_options_ref: None,
+                    }),
+                    parallelism: ToolParallelism::ParallelSafe,
+                    target_requirement: ToolTargetRequirement::None,
+                },
+            },
+            engine::WorkflowToolTarget::Bound {
+                receiver: receiver.clone(),
+                dispatch: engine::BoundWorkflowToolDispatch::Push,
+            },
+            engine::WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect("joined binding");
+        state
+            .workflow_tools
+            .bindings
+            .insert(binding.definition.tool_id.clone(), binding);
+
+        let projected = session_management_to_api(&state).expect("managed projection");
+        assert_eq!(projected.tools.len(), 1);
+        assert_eq!(
+            projected.tools[0].target,
+            WorkflowToolTargetInput::Bound {
+                receiver: WorkflowEndpointInput {
+                    workflow_id: receiver.workflow_id,
+                    workflow_kind: receiver.workflow_kind,
+                },
+                dispatch: BoundWorkflowToolDispatchInput::Push,
+            }
+        );
+        assert_eq!(
+            projected.tools[0].completion,
+            WorkflowToolCompletionInput::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            }
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2435,6 +2611,7 @@ mod tests {
             features: engine::FeaturesConfig {
                 vfs: Some(engine::VfsFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: Some(engine::VfsToolSurface::ReadOnly),
                     prompts: Some(engine::VfsPromptsConfig {
                         roots: Some(vec!["/prompts".to_owned()]),
@@ -2509,6 +2686,7 @@ mod tests {
                 features: Some(api::FeaturesConfig {
                     vfs: Some(api::VfsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links: Vec::new(),
                         tools: Some(api::VfsToolSurface::ReadOnly),
                         prompts: Some(api::VfsPromptsConfig {
                             roots: Some(vec!["/prompts".to_owned()]),
@@ -2548,6 +2726,7 @@ mod tests {
                     environments: Some(api::EnvironmentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
                         providers: None,
+                        selection_tools: false,
                         jobs: false,
                     }),
                     mcp: Some(api::McpFeature {

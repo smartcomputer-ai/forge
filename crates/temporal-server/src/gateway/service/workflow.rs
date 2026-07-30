@@ -460,6 +460,44 @@ impl GatewayAgentApi {
         }
     }
 
+    pub(super) async fn wait_for_message_admitted(
+        &self,
+        session_id: &SessionId,
+        submission_id: &SubmissionId,
+        baseline_failures: usize,
+    ) -> Result<(), AgentApiError> {
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for agent message admission: {submission_id}"
+                )));
+            }
+            let Some(status) = self.query_status_optional(session_id).await? else {
+                tokio::time::sleep(self.poll_interval).await;
+                continue;
+            };
+            if let Some(failure) = status
+                .admission_failures
+                .iter()
+                .skip(baseline_failures)
+                .rev()
+                .find(|failure| failure.submission_id.as_ref() == Some(submission_id))
+            {
+                return Err(map_admission_failure_to_api_error(failure));
+            }
+            if status_has_submission(Some(&status), submission_id) {
+                return Ok(());
+            }
+            if let Some(error) = status.last_error {
+                return Err(AgentApiError::internal(format!(
+                    "agent workflow reported error: {error}"
+                )));
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
     pub(super) async fn wait_for_closed_session(
         &self,
         session_id: &SessionId,

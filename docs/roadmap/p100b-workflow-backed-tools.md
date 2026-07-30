@@ -1,6 +1,13 @@
 # P100b: Workflow-Backed Tools — Bound Receivers, Keyed Promise Sets, And Start-On-Call Workflows
 
 **Status**
+- Follow-on [P106](p106-joined-workflow-tools.md) proposed 2026-07-30 after
+  production Channels usage exposed the missing single-result completion
+  form. P106 preserves P100b's Promise transport and source protocol but
+  supersedes two scope decisions for new bindings: bound dispatch becomes
+  explicit rather than derived from completion, and `Joined` may durably park
+  the original workflow-tool call without a model-authored `await`. This
+  document remains the historical P100b baseline.
 - Controller self-receiver addendum implemented 2026-07-28 for the first
   concrete re-entrant consumer, Channels:
   - replaced the blanket rejection of `Bound + Promises` targeting the
@@ -1150,9 +1157,10 @@ P100b is complete when:
 
 Later work may add:
 
-- push-notify and ordered pushed notify streams (per-receiver log-order
-  FIFO, head-of-line retry, per-producer high-water dedup) when a mid-run
-  notify consumer exists;
+- [P106](p106-joined-workflow-tools.md) pushed Accepted delivery and Joined
+  single-result completion; ordered pushed notify streams (per-receiver
+  log-order FIFO, head-of-line retry, per-producer high-water dedup) remain
+  separate;
 - fire-and-forget start-on-call workflows;
 - early semantic replies from still-running started workflows;
 - an authenticated external workflow SDK for trusted binding admission;

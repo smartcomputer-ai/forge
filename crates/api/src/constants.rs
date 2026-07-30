@@ -43,24 +43,14 @@ pub const METHOD_SESSION_SKILLS_DEACTIVATE: &str = "session/skills/deactivate";
 // ── Sessions: bindings to universe resources ───────────────────────────────
 
 pub const METHOD_SESSION_PROFILES_APPLY: &str = "session/profiles/apply";
-pub const METHOD_SESSION_MOUNTS_PUT: &str = "session/mounts/put";
-pub const METHOD_SESSION_MOUNTS_LIST: &str = "session/mounts/list";
-pub const METHOD_SESSION_MOUNTS_DELETE: &str = "session/mounts/delete";
 
 // ── Sessions: environments ──────────────────────────────────────────────────
 
-pub const METHOD_SESSION_ENVIRONMENTS_READ: &str = "session/environments/read";
-pub const METHOD_SESSION_ENVIRONMENTS_LIST: &str = "session/environments/list";
-pub const METHOD_SESSION_ENVIRONMENTS_ATTACH: &str = "session/environments/attach";
 pub const METHOD_SESSION_ENVIRONMENTS_ACTIVATE: &str = "session/environments/activate";
 pub const METHOD_SESSION_ENVIRONMENTS_DEACTIVATE: &str = "session/environments/deactivate";
-pub const METHOD_SESSION_ENVIRONMENTS_DETACH: &str = "session/environments/detach";
-pub const METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_BIND: &str =
-    "session/environments/credentials/bind";
-pub const METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_LIST: &str =
-    "session/environments/credentials/list";
-pub const METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_UNBIND: &str =
-    "session/environments/credentials/unbind";
+pub const METHOD_ENVIRONMENTS_CREDENTIALS_BIND: &str = "environments/credentials/bind";
+pub const METHOD_ENVIRONMENTS_CREDENTIALS_LIST: &str = "environments/credentials/list";
+pub const METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND: &str = "environments/credentials/unbind";
 
 // ── Universe: agent profile catalog ─────────────────────────────────────────
 

@@ -396,45 +396,66 @@ async fn mount(args: MountArgs) -> Result<()> {
 
 async fn mount_put(args: MountPutArgs) -> Result<()> {
     let source = match (args.workspace, args.snapshot) {
-        (Some(workspace_id), None) => api::VfsMountSourceInput::Workspace { workspace_id },
-        (None, Some(snapshot_ref)) => api::VfsMountSourceInput::Snapshot { snapshot_ref },
+        (Some(workspace_id), None) => api::WorkspaceLinkTarget::Workspace { workspace_id },
+        (None, Some(snapshot_ref)) => api::WorkspaceLinkTarget::Snapshot { snapshot_ref },
         _ => anyhow::bail!("exactly one of --workspace or --snapshot is required"),
     };
     let access = match (&source, args.read_only, args.read_write) {
-        (api::VfsMountSourceInput::Snapshot { .. }, false, true) => {
-            anyhow::bail!("snapshot mounts cannot be read-write")
+        (api::WorkspaceLinkTarget::Snapshot { .. }, false, true) => {
+            anyhow::bail!("snapshot workspace links cannot be read-write")
         }
-        (api::VfsMountSourceInput::Snapshot { .. }, _, _) => api::VfsMountAccess::ReadOnly,
-        (api::VfsMountSourceInput::Workspace { .. }, true, false) => api::VfsMountAccess::ReadOnly,
-        (api::VfsMountSourceInput::Workspace { .. }, _, _) => api::VfsMountAccess::ReadWrite,
+        (api::WorkspaceLinkTarget::Snapshot { .. }, _, _) => api::WorkspaceLinkAccess::ReadOnly,
+        (api::WorkspaceLinkTarget::Workspace { .. }, true, false) => {
+            api::WorkspaceLinkAccess::ReadOnly
+        }
+        (api::WorkspaceLinkTarget::Workspace { .. }, _, _) => api::WorkspaceLinkAccess::ReadWrite,
     };
     let api = HttpAgentApi::new(args.api_url);
-    let response = api
-        .put_vfs_mount(api::VfsMountPutParams {
-            session_id: args.session,
-            mount_path: args.mount_path,
-            source,
-            access,
-        })
-        .await
-        .map_err(crate::api_client::api_error)?
-        .result;
+    let link = api::WorkspaceLink {
+        path: args.mount_path,
+        target: source,
+        access,
+    };
+    let response = put_workspace_link(&api, args.session, link.clone()).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&response)?);
         return Ok(());
     }
 
-    print_mount(&response.mount);
+    print_workspace_link(&link);
     println!("session {}", response.session.id);
     Ok(())
 }
 
 async fn mount_delete(args: MountDeleteArgs) -> Result<()> {
     let api = HttpAgentApi::new(args.api_url);
+    let session = api
+        .read_session(api::SessionReadParams {
+            session_id: args.session.clone(),
+        })
+        .await
+        .map_err(crate::api_client::api_error)?
+        .result
+        .session;
+    let mut config = session
+        .config
+        .ok_or_else(|| anyhow::anyhow!("session is missing config"))?;
+    let vfs = config
+        .features
+        .as_mut()
+        .and_then(|features| features.vfs.as_mut())
+        .ok_or_else(|| anyhow::anyhow!("session does not grant VFS"))?;
+    let before = vfs.workspace_links.len();
+    vfs.workspace_links
+        .retain(|link| link.path != args.mount_path);
+    if vfs.workspace_links.len() == before {
+        anyhow::bail!("workspace link not found at {}", args.mount_path);
+    }
     let response = api
-        .delete_vfs_mount(api::VfsMountDeleteParams {
+        .put_session_config(api::SessionConfigPutParams {
             session_id: args.session,
-            mount_path: args.mount_path,
+            expected_config_revision: Some(session.config_revision),
+            config,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -444,27 +465,34 @@ async fn mount_delete(args: MountDeleteArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("deleted {}", response.mount_path);
+    println!("deleted {}", args.mount_path);
     println!("session {}", response.session.id);
     Ok(())
 }
 
 async fn mount_list(args: MountListArgs) -> Result<()> {
     let api = HttpAgentApi::new(args.api_url);
-    let response = api
-        .list_vfs_mounts(api::VfsMountListParams {
+    let session = api
+        .read_session(api::SessionReadParams {
             session_id: args.session,
         })
         .await
         .map_err(crate::api_client::api_error)?
-        .result;
+        .result
+        .session;
+    let links = session
+        .config
+        .and_then(|config| config.features)
+        .and_then(|features| features.vfs)
+        .map(|vfs| vfs.workspace_links)
+        .unwrap_or_default();
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&response.mounts)?);
+        println!("{}", serde_json::to_string_pretty(&links)?);
         return Ok(());
     }
 
-    for mount in &response.mounts {
-        print_mount(mount);
+    for link in &links {
+        print_workspace_link(link);
     }
     Ok(())
 }
@@ -490,41 +518,65 @@ pub(crate) async fn mount_workspace(
     session_id: String,
     mount_path: String,
     workspace_id: String,
-) -> Result<api::VfsMountPutResponse> {
+) -> Result<api::SessionConfigPutResponse> {
+    put_workspace_link(
+        api,
+        session_id,
+        api::WorkspaceLink {
+            path: mount_path,
+            target: api::WorkspaceLinkTarget::Workspace { workspace_id },
+            access: api::WorkspaceLinkAccess::ReadWrite,
+        },
+    )
+    .await
+}
+
+async fn put_workspace_link(
+    api: &HttpAgentApi,
+    session_id: String,
+    link: api::WorkspaceLink,
+) -> Result<api::SessionConfigPutResponse> {
+    let session = api
+        .read_session(api::SessionReadParams {
+            session_id: session_id.clone(),
+        })
+        .await
+        .map_err(crate::api_client::api_error)?
+        .result
+        .session;
+    let mut config = session
+        .config
+        .ok_or_else(|| anyhow::anyhow!("session is missing config"))?;
+    let vfs = config
+        .features
+        .as_mut()
+        .and_then(|features| features.vfs.as_mut())
+        .ok_or_else(|| anyhow::anyhow!("session does not grant VFS"))?;
+    vfs.workspace_links
+        .retain(|existing| existing.path != link.path);
+    vfs.workspace_links.push(link);
     Ok(api
-        .put_vfs_mount(api::VfsMountPutParams {
+        .put_session_config(api::SessionConfigPutParams {
             session_id,
-            mount_path,
-            source: api::VfsMountSourceInput::Workspace { workspace_id },
-            access: api::VfsMountAccess::ReadWrite,
+            expected_config_revision: Some(session.config_revision),
+            config,
         })
         .await
         .map_err(crate::api_client::api_error)?
         .result)
 }
 
-fn print_mount(mount: &api::VfsMountView) {
-    let access = match mount.access {
-        api::VfsMountAccess::ReadOnly => "readOnly",
-        api::VfsMountAccess::ReadWrite => "readWrite",
+fn print_workspace_link(link: &api::WorkspaceLink) {
+    let access = match link.access {
+        api::WorkspaceLinkAccess::ReadOnly => "readOnly",
+        api::WorkspaceLinkAccess::ReadWrite => "readWrite",
     };
-    match &mount.source {
-        api::VfsMountSourceView::Snapshot { snapshot_ref } => {
-            println!("{} snapshot {} {access}", mount.mount_path, snapshot_ref);
+    match &link.target {
+        api::WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
+            println!("{} snapshot {} {access}", link.path, snapshot_ref);
         }
-        api::VfsMountSourceView::Workspace {
-            workspace_id,
-            head_snapshot_ref,
-            revision,
-        } => {
-            let head = head_snapshot_ref.as_deref().unwrap_or("-");
-            let revision = revision
-                .map(|revision| revision.to_string())
-                .unwrap_or_else(|| "-".to_owned());
-            println!(
-                "{} workspace {} {access} head={} revision={}",
-                mount.mount_path, workspace_id, head, revision
-            );
+        api::WorkspaceLinkTarget::Workspace { workspace_id } => {
+            println!("{} workspace {} {access}", link.path, workspace_id);
         }
     }
 }

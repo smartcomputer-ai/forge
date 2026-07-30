@@ -231,13 +231,11 @@ async fn refresh_runtime_projection_before_run(
         .as_ref()
         .and_then(|config| config.features.vfs.as_ref());
     let vfs_catalog_enabled = vfs.is_some();
-    let environment_catalog_enabled = drive
-        .state()
-        .lifecycle
-        .config
-        .as_ref()
-        .is_some_and(|config| config.features.environments.is_some());
     let vfs_skills_enabled = vfs.is_some_and(|vfs| vfs.skills.is_some());
+    let vfs_prompts_enabled = vfs.is_some_and(|vfs| vfs.prompts.is_some());
+    let vfs_prompt_roots = vfs
+        .and_then(|vfs| vfs.prompts.as_ref())
+        .and_then(|prompts| prompts.roots.clone());
     let vfs_skill_roots = vfs
         .and_then(|vfs| vfs.skills.as_ref())
         .and_then(|skills| skills.roots.clone());
@@ -246,8 +244,13 @@ async fn refresh_runtime_projection_before_run(
             WorkflowActivities::runtime_projection_refresh,
             RuntimeProjectionRefreshActivityRequest {
                 session_id: drive.session_id().clone(),
+                workspace_links: vfs
+                    .map(|vfs| vfs.workspace_links.clone())
+                    .unwrap_or_default(),
                 vfs_catalog_enabled,
-                environment_catalog_enabled,
+                vfs_prompts_enabled,
+                vfs_prompt_roots,
+                active_instruction_inputs: active_instruction_inputs(drive.state()),
                 vfs_skills_enabled,
                 vfs_skill_roots,
                 active_catalog_ref: active_skill_catalog_ref(drive.state()),
@@ -256,23 +259,6 @@ async fn refresh_runtime_projection_before_run(
                     VFS_CATALOG_CONTEXT_KEY,
                     ContextEntryKind::VfsCatalog,
                 ),
-                active_environment_catalog_ref: active_context_ref(
-                    drive.state(),
-                    ENVIRONMENT_CATALOG_CONTEXT_KEY,
-                    ContextEntryKind::EnvironmentCatalog,
-                ),
-                active_environment_active_ref: active_context_ref(
-                    drive.state(),
-                    ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-                    ContextEntryKind::EnvironmentActive,
-                ),
-                active_environment_target: drive
-                    .state()
-                    .tooling
-                    .routing
-                    .default_targets
-                    .get("env")
-                    .cloned(),
             },
             activity_options(),
         )
@@ -296,6 +282,36 @@ fn active_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
         SKILL_CATALOG_CONTEXT_KEY,
         ContextEntryKind::SkillCatalog,
     )
+}
+
+fn active_instruction_inputs(
+    state: &CoreAgentState,
+) -> BTreeMap<ContextEntryKey, ContextEntryInput> {
+    state
+        .context
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, ContextEntryKind::Instructions))
+        .filter_map(|entry| {
+            let key = entry.key.clone()?;
+            (key.as_str() == "instructions" || key.as_str().starts_with("instructions.")).then(
+                || {
+                    (
+                        key,
+                        ContextEntryInput {
+                            kind: entry.kind.clone(),
+                            content_ref: entry.content_ref.clone(),
+                            media_type: entry.media_type.clone(),
+                            preview: entry.preview.clone(),
+                            provider_kind: entry.provider_kind.clone(),
+                            provider_item_id: entry.provider_item_id.clone(),
+                            token_estimate: entry.token_estimate.clone(),
+                        },
+                    )
+                },
+            )
+        })
+        .collect()
 }
 
 fn active_context_ref(

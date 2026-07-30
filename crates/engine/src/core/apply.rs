@@ -39,6 +39,9 @@ fn apply_event_kind(state: &mut CoreAgentState, entry: &CoreAgentEntry) -> Resul
         CoreAgentEvent::Context(event) => {
             crate::core::components::context::apply_event(state, event)
         }
+        CoreAgentEvent::Environment(event) => {
+            crate::core::components::environment::apply_event(state, event)
+        }
         CoreAgentEvent::ToolConfig(event) => {
             crate::core::components::tooling::apply_config_event(state, event)
         }

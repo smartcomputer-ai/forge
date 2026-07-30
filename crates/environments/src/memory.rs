@@ -4,22 +4,19 @@ use std::{
 };
 
 use async_trait::async_trait;
-use engine::SessionId;
 use host_protocol::{control::targets::HostTargetStatus, shared::HostTargetId};
 
 use super::*;
 
-type BindingKey = (SessionId, EnvironmentId);
-type CredentialKey = (SessionId, EnvironmentId, String);
+type CredentialKey = (EnvironmentId, String);
 type ProviderTargetKey = (EnvironmentProviderId, HostTargetId);
 
 #[derive(Default)]
 struct RegistryState {
     providers: BTreeMap<EnvironmentProviderId, EnvironmentProviderRecord>,
-    instances: BTreeMap<EnvironmentInstanceId, EnvironmentInstanceRecord>,
-    provider_targets: BTreeMap<ProviderTargetKey, EnvironmentInstanceId>,
-    bindings: BTreeMap<BindingKey, SessionEnvironmentBindingRecord>,
-    credentials: BTreeMap<CredentialKey, SessionEnvironmentCredentialRecord>,
+    environments: BTreeMap<EnvironmentId, EnvironmentRecord>,
+    provider_targets: BTreeMap<ProviderTargetKey, EnvironmentId>,
+    credentials: BTreeMap<CredentialKey, EnvironmentCredentialRecord>,
 }
 
 #[derive(Default)]
@@ -158,11 +155,11 @@ impl EnvironmentProviderStore for InMemoryEnvironmentRegistryStore {
 }
 
 #[async_trait]
-impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
-    async fn observe_instance(
+impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
+    async fn observe_environment(
         &self,
-        record: ObserveEnvironmentInstance,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError> {
+        record: ObserveEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
         let incoming = record.into_record();
         incoming.validate()?;
         let mut state = self.write_state()?;
@@ -173,19 +170,19 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
             incoming.provider_id.clone(),
             incoming.provider_target_id.clone(),
         );
-        let instance_id = state
+        let environment_id = state
             .provider_targets
             .get(&provider_key)
             .cloned()
-            .unwrap_or_else(|| incoming.instance_id.clone());
-        let record = if let Some(existing) = state.instances.get(&instance_id) {
+            .unwrap_or_else(|| incoming.environment_id.clone());
+        let record = if let Some(existing) = state.environments.get(&environment_id) {
             if incoming.observed_at_ms < existing.observed_at_ms {
                 return Ok(existing.clone());
             }
-            EnvironmentInstanceRecord {
-                instance_id: instance_id.clone(),
-                origin: if existing.origin == EnvironmentInstanceOrigin::Provisioned {
-                    EnvironmentInstanceOrigin::Provisioned
+            EnvironmentRecord {
+                environment_id: environment_id.clone(),
+                origin: if existing.origin == EnvironmentOrigin::Provisioned {
+                    EnvironmentOrigin::Provisioned
                 } else {
                     incoming.origin
                 },
@@ -193,59 +190,59 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
                 ..incoming
             }
         } else {
-            EnvironmentInstanceRecord {
-                instance_id: instance_id.clone(),
+            EnvironmentRecord {
+                environment_id: environment_id.clone(),
                 ..incoming
             }
         };
         record.validate()?;
         state
             .provider_targets
-            .insert(provider_key, instance_id.clone());
-        state.instances.insert(instance_id, record.clone());
+            .insert(provider_key, environment_id.clone());
+        state.environments.insert(environment_id, record.clone());
         Ok(record)
     }
 
-    async fn read_instance(
+    async fn read_environment(
         &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError> {
+        environment_id: &EnvironmentId,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
         self.read_state()?
-            .instances
-            .get(instance_id)
+            .environments
+            .get(environment_id)
             .cloned()
-            .ok_or_else(|| not_found("environment_instance", instance_id))
+            .ok_or_else(|| not_found("environment", environment_id))
     }
 
-    async fn read_instance_by_provider_target(
+    async fn read_environment_by_provider_target(
         &self,
         provider_id: &EnvironmentProviderId,
         provider_target_id: &HostTargetId,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError> {
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
         let state = self.read_state()?;
         let key = (provider_id.clone(), provider_target_id.clone());
-        let instance_id =
+        let environment_id =
             state
                 .provider_targets
                 .get(&key)
                 .ok_or_else(|| EnvironmentRegistryError::NotFound {
-                    kind: "environment_instance",
+                    kind: "environment",
                     id: format!("{provider_id}/{provider_target_id}"),
                 })?;
         state
-            .instances
-            .get(instance_id)
+            .environments
+            .get(environment_id)
             .cloned()
-            .ok_or_else(|| not_found("environment_instance", instance_id))
+            .ok_or_else(|| not_found("environment", environment_id))
     }
 
-    async fn list_instances(
+    async fn list_environments(
         &self,
-        request: ListEnvironmentInstances,
-    ) -> Result<Vec<EnvironmentInstanceRecord>, EnvironmentRegistryError> {
+        request: ListEnvironments,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
         Ok(self
             .read_state()?
-            .instances
+            .environments
             .values()
             .filter(|record| {
                 request
@@ -259,17 +256,17 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
             .collect())
     }
 
-    async fn mark_missing_provided_instances_unknown(
+    async fn mark_missing_provided_environments_unknown(
         &self,
         provider_id: &EnvironmentProviderId,
         observed_target_ids: &BTreeSet<HostTargetId>,
         observed_at_ms: i64,
-    ) -> Result<Vec<EnvironmentInstanceRecord>, EnvironmentRegistryError> {
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
         let mut state = self.write_state()?;
         let mut changed = Vec::new();
-        for record in state.instances.values_mut() {
+        for record in state.environments.values_mut() {
             if &record.provider_id == provider_id
-                && record.origin == EnvironmentInstanceOrigin::Provided
+                && record.origin == EnvironmentOrigin::Provided
                 && !observed_target_ids.contains(&record.provider_target_id)
                 && record.observed_at_ms <= observed_at_ms
             {
@@ -282,15 +279,15 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
         Ok(changed)
     }
 
-    async fn update_instance_status(
+    async fn update_environment_status(
         &self,
-        request: UpdateEnvironmentInstanceStatus,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError> {
+        request: UpdateEnvironmentStatus,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
         let mut state = self.write_state()?;
         let record = state
-            .instances
-            .get_mut(&request.instance_id)
-            .ok_or_else(|| not_found("environment_instance", &request.instance_id))?;
+            .environments
+            .get_mut(&request.environment_id)
+            .ok_or_else(|| not_found("environment", &request.environment_id))?;
         record.status = request.status;
         record.observed_at_ms = request.observed_at_ms;
         record.updated_at_ms = request.observed_at_ms;
@@ -298,30 +295,15 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
         Ok(record.clone())
     }
 
-    async fn begin_close_instance(
+    async fn begin_close_environment(
         &self,
-        request: BeginCloseEnvironmentInstance,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError> {
+        request: BeginCloseEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
         let mut state = self.write_state()?;
-        let bindings = state
-            .bindings
-            .values()
-            .filter(|binding| {
-                binding.instance_id == request.instance_id
-                    && binding.state == SessionEnvironmentBindingState::Attached
-            })
-            .map(|binding| format!("{}/{}", binding.session_id, binding.env_id))
-            .collect::<Vec<_>>();
-        if !bindings.is_empty() {
-            return Err(EnvironmentRegistryError::Occupied {
-                instance_id: request.instance_id,
-                bindings,
-            });
-        }
         let record = state
-            .instances
-            .get_mut(&request.instance_id)
-            .ok_or_else(|| not_found("environment_instance", &request.instance_id))?;
+            .environments
+            .get_mut(&request.environment_id)
+            .ok_or_else(|| not_found("environment", &request.environment_id))?;
         record.status = HostTargetStatus::Closing;
         record.updated_at_ms = request.updated_at_ms;
         Ok(record.clone())
@@ -329,138 +311,20 @@ impl EnvironmentInstanceStore for InMemoryEnvironmentRegistryStore {
 }
 
 #[async_trait]
-impl SessionEnvironmentBindingStore for InMemoryEnvironmentRegistryStore {
-    async fn put_binding(
-        &self,
-        record: PutSessionEnvironmentBinding,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError> {
-        let incoming = record.into_record();
-        incoming.validate()?;
-        let mut state = self.write_state()?;
-        let instance = state
-            .instances
-            .get(&incoming.instance_id)
-            .ok_or_else(|| not_found("environment_instance", &incoming.instance_id))?;
-        if !instance.is_attachable() {
-            return invalid(format!(
-                "environment instance {} is not attachable: {:?}",
-                instance.instance_id, instance.status
-            ));
-        }
-        let key = (incoming.session_id.clone(), incoming.env_id.clone());
-        let record = if let Some(existing) = state.bindings.get(&key).cloned() {
-            if existing.state == SessionEnvironmentBindingState::Attached
-                && existing.instance_id != incoming.instance_id
-            {
-                return Err(EnvironmentRegistryError::AlreadyExists {
-                    kind: "session_environment_binding",
-                    id: format!("{}/{}", incoming.session_id, incoming.env_id),
-                });
-            }
-            if existing.instance_id != incoming.instance_id {
-                state.credentials.retain(|(session_id, env_id, _), _| {
-                    session_id != &incoming.session_id || env_id != &incoming.env_id
-                });
-            }
-            SessionEnvironmentBindingRecord {
-                created_at_ms: existing.created_at_ms,
-                ..incoming
-            }
-        } else {
-            incoming
-        };
-        state.bindings.insert(key, record.clone());
-        Ok(record)
-    }
-
-    async fn read_binding(
-        &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError> {
-        self.read_state()?
-            .bindings
-            .get(&(session_id.clone(), env_id.clone()))
-            .cloned()
-            .ok_or_else(|| binding_not_found(session_id, env_id))
-    }
-
-    async fn list_bindings_for_session(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<SessionEnvironmentBindingRecord>, EnvironmentRegistryError> {
-        Ok(self
-            .read_state()?
-            .bindings
-            .values()
-            .filter(|binding| &binding.session_id == session_id)
-            .cloned()
-            .collect())
-    }
-
-    async fn list_bindings_for_instance(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<Vec<SessionEnvironmentBindingRecord>, EnvironmentRegistryError> {
-        Ok(self
-            .read_state()?
-            .bindings
-            .values()
-            .filter(|binding| &binding.instance_id == instance_id)
-            .cloned()
-            .collect())
-    }
-
-    async fn update_binding_state(
-        &self,
-        request: UpdateSessionEnvironmentBindingState,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError> {
-        let mut state = self.write_state()?;
-        let record = state
-            .bindings
-            .get_mut(&(request.session_id.clone(), request.env_id.clone()))
-            .ok_or_else(|| binding_not_found(&request.session_id, &request.env_id))?;
-        record.state = request.state;
-        record.updated_at_ms = request.updated_at_ms;
-        record.validate()?;
-        Ok(record.clone())
-    }
-
-    async fn delete_binding(
-        &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError> {
-        self.write_state()?
-            .bindings
-            .remove(&(session_id.clone(), env_id.clone()))
-            .ok_or_else(|| binding_not_found(session_id, env_id))
-    }
-}
-
-#[async_trait]
-impl SessionEnvironmentCredentialStore for InMemoryEnvironmentRegistryStore {
+impl EnvironmentCredentialStore for InMemoryEnvironmentRegistryStore {
     async fn bind_credential(
         &self,
-        record: CreateSessionEnvironmentCredential,
-    ) -> Result<SessionEnvironmentCredentialRecord, EnvironmentRegistryError> {
+        record: PutEnvironmentCredential,
+    ) -> Result<EnvironmentCredentialRecord, EnvironmentRegistryError> {
         let record = record.into_record();
         record.validate()?;
         let mut state = self.write_state()?;
-        let binding = state
-            .bindings
-            .get(&(record.session_id.clone(), record.env_id.clone()))
-            .ok_or_else(|| binding_not_found(&record.session_id, &record.env_id))?;
-        if binding.state != SessionEnvironmentBindingState::Attached {
-            return invalid("credentials require an attached environment binding");
+        if !state.environments.contains_key(&record.environment_id) {
+            return Err(not_found("environment", &record.environment_id));
         }
-        let key = (
-            record.session_id.clone(),
-            record.env_id.clone(),
-            record.env_name.clone(),
-        );
+        let key = (record.environment_id.clone(), record.env_name.clone());
         let record = if let Some(existing) = state.credentials.get(&key) {
-            SessionEnvironmentCredentialRecord {
+            EnvironmentCredentialRecord {
                 created_at_ms: existing.created_at_ms,
                 ..record
             }
@@ -473,31 +337,28 @@ impl SessionEnvironmentCredentialStore for InMemoryEnvironmentRegistryStore {
 
     async fn list_credentials(
         &self,
-        request: ListSessionEnvironmentCredentials,
-    ) -> Result<Vec<SessionEnvironmentCredentialRecord>, EnvironmentRegistryError> {
+        request: ListEnvironmentCredentials,
+    ) -> Result<Vec<EnvironmentCredentialRecord>, EnvironmentRegistryError> {
         Ok(self
             .read_state()?
             .credentials
             .values()
-            .filter(|record| {
-                record.session_id == request.session_id && record.env_id == request.env_id
-            })
+            .filter(|record| record.environment_id == request.environment_id)
             .cloned()
             .collect())
     }
 
     async fn unbind_credential(
         &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
+        environment_id: &EnvironmentId,
         env_name: &str,
-    ) -> Result<SessionEnvironmentCredentialRecord, EnvironmentRegistryError> {
+    ) -> Result<EnvironmentCredentialRecord, EnvironmentRegistryError> {
         self.write_state()?
             .credentials
-            .remove(&(session_id.clone(), env_id.clone(), env_name.to_owned()))
+            .remove(&(environment_id.clone(), env_name.to_owned()))
             .ok_or_else(|| EnvironmentRegistryError::NotFound {
-                kind: "session_environment_credential",
-                id: format!("{session_id}/{env_id}/{env_name}"),
+                kind: "environment_credential",
+                id: format!("{environment_id}/{env_name}"),
             })
     }
 }
@@ -506,12 +367,5 @@ fn not_found(kind: &'static str, id: &impl ToString) -> EnvironmentRegistryError
     EnvironmentRegistryError::NotFound {
         kind,
         id: id.to_string(),
-    }
-}
-
-fn binding_not_found(session_id: &SessionId, env_id: &EnvironmentId) -> EnvironmentRegistryError {
-    EnvironmentRegistryError::NotFound {
-        kind: "session_environment_binding",
-        id: format!("{session_id}/{env_id}"),
     }
 }

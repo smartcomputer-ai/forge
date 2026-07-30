@@ -32,11 +32,9 @@ use auth_api::{
     parse_auth_grant_id, registry_auth_grant_status_for_filter,
 };
 use blobs::{has_blobs, put_blobs, read_blob};
-use environment_lifecycle::{parse_core_session_id, parse_registry_environment_id};
+use environment_lifecycle::parse_registry_environment_id;
 use environment_providers::{map_environments_error, parse_environment_provider_id};
-use environments::{
-    activate_environment_command, deactivate_environment_command, parse_environment_id,
-};
+use environments::{activate_environment_command, deactivate_environment_command};
 use errors::*;
 use github_api::{
     auth_provider_create_draft, auth_provider_view, github_installation_grant_draft,
@@ -57,7 +55,7 @@ use skills::{
     active_skill_ids_after_upsert, skill_activation_context_input,
 };
 #[cfg(test)]
-use skills::{read_skill_doc_for_activation_from_vfs, skill_active_response, skill_list_response};
+use skills::{skill_active_response, skill_list_response};
 use vfs_api::{
     commit_vfs_snapshot, now_ms, read_vfs_snapshot, store_tool_documents, vfs_workspace_view,
 };
@@ -69,12 +67,10 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use crate::environment::{RuntimeEnvironment, SessionEnvironmentManager};
-
 use api::*;
 use api::{
     SkillActivationScope as ApiSkillActivationScope,
-    SkillActivationSource as ApiSkillActivationSource, VfsMountAccess as ApiVfsMountAccess,
+    SkillActivationSource as ApiSkillActivationSource,
 };
 use api_projection::{
     CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, api_kind_from_str, api_run_id,
@@ -89,10 +85,10 @@ use auth::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
-    BlobRef, CompactionPolicy, ContextEntry, ContextEntryInput, ContextEntryKey, ContextEntryKind,
-    ContextMessageRole, CoreAgentCommand, CoreAgentStatus, FunctionToolSpec,
-    ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig, RunId, RunStatus,
-    SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
+    BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry, ContextEntryInput,
+    ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentStatus,
+    FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig,
+    RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
     SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
     ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, WorkflowEndpointRef,
     WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
@@ -112,14 +108,11 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus
 use tools::{
     builtin::{BuiltinTool, BuiltinToolOperation},
     environment::jobs::{JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID},
-    fs::{FileSystem, FsPath, MountedVfsFileSystem},
     runtime::{ToolDocument, ToolTarget},
     skills::{
-        SkillCatalogSnapshot, SkillLocation, SkillMetadata, configured_vfs_skill_root_specs,
-        prepare_skill_catalog_publication, resolve_mounted_vfs_skill_roots,
-        skill_catalog_context_input,
+        SkillCatalogSnapshot, SkillMetadata, configured_vfs_skill_root_specs,
+        resolve_linked_vfs_skill_roots, skill_catalog_context_input,
     },
-    targets::ToolTargets,
     toolset::{
         ResolvedToolset, ToolsetConfig, ToolsetEnvironment, enable_concurrency_for_workflow_tools,
         materialize_workflow_tools, resolve_toolset,
@@ -131,9 +124,8 @@ use tools::{
     },
 };
 use vfs::{
-    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountAccess,
-    VfsMountRecord, VfsMountSource, VfsMountStore, VfsPath, VfsSnapshotRecord, VfsSnapshotSource,
-    VfsSnapshotStore, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsSnapshotRecord,
+    VfsSnapshotSource, VfsSnapshotStore, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
 };
 
 use super::{
@@ -229,11 +221,6 @@ enum ExistingRunSubmission {
     Reject,
 }
 
-enum ExistingAdmittedRunSubmission {
-    ReturnRun { run_id: RunId },
-    Reject,
-}
-
 pub(super) enum ContextAppendWaitOutcome {
     Applied { entry: ContextEntryInput },
     Failed { failure: AgentAdmissionFailure },
@@ -307,151 +294,6 @@ fn existing_run_submission(
         return Some(match message.submission_digest {
             existing if existing != digest => ExistingRunSubmission::Reject,
             _ => ExistingRunSubmission::Reject,
-        });
-    }
-    None
-}
-
-fn existing_admitted_run_submission(
-    state: &engine::CoreAgentState,
-    submission_id: &SubmissionId,
-    source: &engine::RunRequestSource,
-    run_config: &RunConfig,
-    notify_on_terminal: &[engine::RunTerminalNotifyIntent],
-) -> Option<ExistingAdmittedRunSubmission> {
-    if let Some(active) = state
-        .runs
-        .active
-        .as_ref()
-        .filter(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if active.origin == engine::RunOrigin::Requested
-                && active.source.matches_request(source)
-                && &active.run_config == run_config
-                && active.notify_on_terminal == notify_on_terminal
-            {
-                ExistingAdmittedRunSubmission::ReturnRun {
-                    run_id: active.run_id,
-                }
-            } else {
-                ExistingAdmittedRunSubmission::Reject
-            },
-        );
-    }
-    if let Some(queued) = state
-        .runs
-        .queued
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if queued.origin == engine::RunOrigin::Requested
-                && queued.source.matches_request(source)
-                && &queued.run_config == run_config
-                && queued.notify_on_terminal == notify_on_terminal
-            {
-                ExistingAdmittedRunSubmission::ReturnRun {
-                    run_id: queued.run_id,
-                }
-            } else {
-                ExistingAdmittedRunSubmission::Reject
-            },
-        );
-    }
-    if let Some(completed) = state
-        .runs
-        .completed
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
-        return Some(match completed.submission_digest {
-            Some(existing) if existing != digest => ExistingAdmittedRunSubmission::Reject,
-            _ => ExistingAdmittedRunSubmission::ReturnRun {
-                run_id: completed.run_id,
-            },
-        });
-    }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
-        return Some(match message.submission_digest {
-            existing if existing != digest => ExistingAdmittedRunSubmission::Reject,
-            _ => ExistingAdmittedRunSubmission::Reject,
-        });
-    }
-    None
-}
-
-enum ExistingMessageSubmission {
-    Accepted,
-    Reject,
-}
-
-fn existing_message_submission(
-    state: &engine::CoreAgentState,
-    submission_id: &SubmissionId,
-    input: &[engine::ContextEntryInput],
-) -> Option<ExistingMessageSubmission> {
-    if let Some(active) = state
-        .runs
-        .active
-        .as_ref()
-        .filter(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if active.origin == engine::RunOrigin::Message
-                && active.source.matches_message_input(input)
-            {
-                ExistingMessageSubmission::Accepted
-            } else {
-                ExistingMessageSubmission::Reject
-            },
-        );
-    }
-    if let Some(queued) = state
-        .runs
-        .queued
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if queued.origin == engine::RunOrigin::Message
-                && queued.source.matches_message_input(input)
-            {
-                ExistingMessageSubmission::Accepted
-            } else {
-                ExistingMessageSubmission::Reject
-            },
-        );
-    }
-    if let Some(completed) = state
-        .runs
-        .completed
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::message_submission_digest(input);
-        return Some(match completed.submission_digest {
-            Some(existing) if existing != digest => ExistingMessageSubmission::Reject,
-            _ => ExistingMessageSubmission::Accepted,
-        });
-    }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::message_submission_digest(input);
-        return Some(match message.submission_digest {
-            existing if existing != digest => ExistingMessageSubmission::Reject,
-            _ => ExistingMessageSubmission::Accepted,
         });
     }
     None
@@ -644,7 +486,6 @@ pub struct GatewayAgentApiBuilder {
     github_api_client: Option<Arc<dyn GitHubApiClient>>,
     model_discovery_openai: Option<Arc<openai::Client>>,
     model_discovery_anthropic: Option<Arc<anthropic::Client>>,
-    environments: Vec<RuntimeEnvironment>,
     host_controller_connector: Arc<dyn HostControllerConnector>,
 }
 
@@ -690,11 +531,6 @@ impl GatewayAgentApiBuilder {
     ) -> Self {
         self.model_discovery_openai = Some(openai);
         self.model_discovery_anthropic = Some(anthropic);
-        self
-    }
-
-    pub fn with_environment(mut self, environment: RuntimeEnvironment) -> Self {
-        self.environments.push(environment);
         self
     }
 
@@ -778,11 +614,6 @@ impl GatewayAgentApiBuilder {
                 github_api.clone(),
             ),
         );
-        let mut environment_manager =
-            SessionEnvironmentManager::new(self.store.clone(), self.store.clone());
-        for environment in self.environments {
-            environment_manager.insert_environment(environment);
-        }
         GatewayAgentApi {
             client: self.client,
             store: self.store,
@@ -797,7 +628,6 @@ impl GatewayAgentApiBuilder {
             mcp_oauth,
             github_api,
             model_discovery,
-            environment_manager,
             host_controller_connector: self.host_controller_connector,
         }
     }
@@ -817,7 +647,6 @@ pub struct GatewayAgentApi {
     mcp_oauth: McpOAuthDriver,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
-    environment_manager: SessionEnvironmentManager,
     host_controller_connector: Arc<dyn HostControllerConnector>,
 }
 
@@ -838,7 +667,6 @@ impl GatewayAgentApi {
             github_api_client: None,
             model_discovery_openai: None,
             model_discovery_anthropic: None,
-            environments: Vec::new(),
             host_controller_connector: Arc::new(WebSocketHostControllerConnector),
         }
     }
@@ -888,6 +716,11 @@ impl GatewayAgentApi {
     ) -> ToolsetConfig {
         let features = &session_config.features;
         let mut config = ToolsetConfig::empty();
+        config.environment_read = features.environments.is_some();
+        config.environment_selection = features
+            .environments
+            .as_ref()
+            .is_some_and(|environments| environments.selection_tools);
         config.builtin = match features.vfs.as_ref().and_then(|vfs| vfs.tools) {
             None => tools::toolset::BuiltinToolsetConfig::disabled(),
             Some(engine::VfsToolSurface::ReadOnly) => tools::toolset::BuiltinToolsetConfig {
@@ -1000,33 +833,8 @@ impl GatewayAgentApi {
         submission_id: SubmissionId,
         notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
     ) -> Result<String, AgentApiError> {
-        let loaded = self
-            .load_session_state_with_current_run_context(session_id)
-            .await?;
-        let run_config = self.run_config_for_start(session_id, None).await?;
         let input = run_input_from_api(self.store.as_ref(), &input).await?;
         let source = engine::RunRequestSource::Input { input };
-        if let Some(existing) = existing_admitted_run_submission(
-            &loaded.state,
-            &submission_id,
-            &source,
-            &run_config,
-            &notify_on_terminal,
-        ) {
-            return match existing {
-                ExistingAdmittedRunSubmission::ReturnRun { run_id } => {
-                    Ok(format!("run_{}", run_id.as_u64()))
-                }
-                ExistingAdmittedRunSubmission::Reject => {
-                    Err(duplicate_submission_error(&submission_id))
-                }
-            };
-        }
-        if loaded.state.lifecycle.status != CoreAgentStatus::Open {
-            return Err(AgentApiError::rejected(format!(
-                "session is not open: {session_id}"
-            )));
-        }
         let status_before_signal = self.query_status_optional(session_id).await?;
         let baseline_admission_failures = status_before_signal
             .as_ref()
@@ -1038,7 +846,7 @@ impl GatewayAgentApi {
                 notify_on_terminal,
                 submission_id: Some(submission_id.clone()),
                 source,
-                run_config,
+                run_config: RunConfig::default(),
             }),
         )
         .await?;
@@ -1054,31 +862,22 @@ impl GatewayAgentApi {
         input: Vec<InputItem>,
         submission_id: SubmissionId,
     ) -> Result<(), AgentApiError> {
-        let loaded = self
-            .load_session_state_with_current_run_context(session_id)
-            .await?;
         let input = run_input_from_api(self.store.as_ref(), &input).await?;
-        if let Some(existing) = existing_message_submission(&loaded.state, &submission_id, &input) {
-            return match existing {
-                ExistingMessageSubmission::Accepted => Ok(()),
-                ExistingMessageSubmission::Reject => {
-                    Err(duplicate_submission_error(&submission_id))
-                }
-            };
-        }
-        if loaded.state.lifecycle.status != CoreAgentStatus::Open {
-            return Err(AgentApiError::rejected(format!(
-                "session is not open: {session_id}"
-            )));
-        }
+        let status_before_signal = self.query_status_optional(session_id).await?;
+        let baseline_admission_failures = status_before_signal
+            .as_ref()
+            .map(|status| status.admission_failures.len())
+            .unwrap_or(0);
         self.submit_core_command(
             session_id,
             CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-                submission_id: Some(submission_id),
+                submission_id: Some(submission_id.clone()),
                 input,
             }),
         )
-        .await
+        .await?;
+        self.wait_for_message_admitted(session_id, &submission_id, baseline_admission_failures)
+            .await
     }
 
     /// Fleet-internal run start: identical to the public `session/runs/start`
@@ -1137,7 +936,10 @@ impl GatewayAgentApi {
             })?,
             None => self.allocate_submission_id(),
         };
-        let run_config = self.run_config_for_start(&session_id, config).await?;
+        let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
+            AgentApiError::invalid_request(format!("session is not open: {session_id}"))
+        })?;
+        let run_config = api_config::run_config_for_start(session_config, config)?;
         let source = match source {
             RunStartSource::Input { items } => engine::RunRequestSource::Input {
                 input: run_input_from_api(self.store.as_ref(), &items).await?,
@@ -1479,7 +1281,11 @@ impl GatewayAgentApi {
                         binding.definition.tool_id
                     ))
                 })?;
-            if let WorkflowToolCompletion::Promises {
+            if let WorkflowToolCompletion::Joined {
+                reply_schema_ref: Some(reply_schema_ref),
+                ..
+            }
+            | WorkflowToolCompletion::Promises {
                 reply_schema_ref: Some(reply_schema_ref),
                 ..
             } = &binding.completion
@@ -1605,17 +1411,14 @@ impl GatewayAgentApi {
         session_id: &SessionId,
     ) -> Result<SessionView, AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
-        let mut session = self
-            .projector()
+        self.projector()
             .project_session(ProjectSession {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
                 entries: &loaded.entries,
             })
-            .await?;
-        session.vfs_mounts = self.project_vfs_mounts(session_id).await?;
-        Ok(session)
+            .await
     }
 
     async fn project_run_by_id(
@@ -1718,9 +1521,15 @@ fn managed_workflow_tools_from_api(
                 }),
             };
             let target = match declaration.target {
-                WorkflowToolTargetInput::Bound { receiver } => WorkflowToolTarget::Bound {
-                    receiver: workflow_endpoint_from_api(receiver),
-                },
+                WorkflowToolTargetInput::Bound { receiver, dispatch } => {
+                    WorkflowToolTarget::Bound {
+                        receiver: workflow_endpoint_from_api(receiver),
+                        dispatch: match dispatch {
+                            BoundWorkflowToolDispatchInput::Pull => BoundWorkflowToolDispatch::Pull,
+                            BoundWorkflowToolDispatchInput::Push => BoundWorkflowToolDispatch::Push,
+                        },
+                    }
+                }
                 WorkflowToolTargetInput::Start { start } => WorkflowToolTarget::Start {
                     start: WorkflowStartRef {
                         recipe_format: start.recipe_format,
@@ -1736,6 +1545,17 @@ fn managed_workflow_tools_from_api(
             };
             let completion = match declaration.completion {
                 WorkflowToolCompletionInput::Accepted => WorkflowToolCompletion::Accepted,
+                WorkflowToolCompletionInput::Joined {
+                    reply_schema_ref,
+                    deadline_after_ms,
+                } => WorkflowToolCompletion::Joined {
+                    reply_schema_ref: parse_workflow_tool_blob_ref(
+                        &tool_id,
+                        "completion.replySchemaRef",
+                        reply_schema_ref,
+                    )?,
+                    deadline_after_ms,
+                },
                 WorkflowToolCompletionInput::Promises {
                     reply_schema_ref,
                     deadline_after_ms,
@@ -2088,6 +1908,8 @@ impl AgentApiService for GatewayAgentApi {
         // Declared MCP links must resolve (catalog record, grant/policy
         // compatibility) before the document enters the session log.
         self.desired_mcp_tools(&config.features).await?;
+        self.validate_workspace_link_targets(&config.features)
+            .await?;
         if &config == current_config {
             // The config event is an idempotent no-op, but derived managed
             // context may still need repair after an interrupted refresh.
@@ -2096,45 +1918,6 @@ impl AgentApiService for GatewayAgentApi {
             return Ok(AgentApiOutcome::new(SessionConfigPutResponse {
                 session: self.project_session_by_id(&session_id).await?,
             }));
-        }
-        // Revoking a granting feature while dependent bindings are live is a
-        // conflict (P95 §5): teardown is explicit, a config put never closes
-        // resources as a side effect.
-        if config.features.vfs.is_none() {
-            let mounts = self
-                .store
-                .list_mounts(&session_id)
-                .await
-                .map_err(map_vfs_catalog_error)?;
-            if !mounts.is_empty() {
-                let paths = mounts
-                    .iter()
-                    .map(|mount| mount.mount_path.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(AgentApiError::conflict(format!(
-                    "cannot revoke the vfs feature while mounts exist ({paths}); delete the mounts first"
-                )));
-            }
-        }
-        if config.features.environments.is_none() {
-            let environments = self
-                .project_session_environments(&session_id, &loaded.state)
-                .await?
-                .environments;
-            let live = environments
-                .iter()
-                .filter(|environment| {
-                    environment.state != api::SessionEnvironmentStateView::Detached
-                })
-                .map(|environment| environment.env_id.to_string())
-                .collect::<Vec<_>>();
-            if !live.is_empty() {
-                return Err(AgentApiError::conflict(format!(
-                    "cannot revoke the environments feature while environments are attached ({}); close them first",
-                    live.join(", ")
-                )));
-            }
         }
         let baseline_failures = self
             .query_status_optional(&session_id)
@@ -2301,8 +2084,6 @@ impl AgentApiService for GatewayAgentApi {
         })?;
         let loaded = self.load_session_state(&session_id).await?;
         if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
-            self.detach_all_session_environment_bindings(&session_id)
-                .await?;
             return Ok(AgentApiOutcome::new(SessionCloseResponse {
                 session: self.project_session_by_id(&session_id).await?,
             }));
@@ -2316,8 +2097,6 @@ impl AgentApiService for GatewayAgentApi {
             self.submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: false })
                 .await?;
             let session = self.wait_for_closed_session(&session_id).await?;
-            self.detach_all_session_environment_bindings(&session_id)
-                .await?;
             return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
         }
 
@@ -2330,8 +2109,6 @@ impl AgentApiService for GatewayAgentApi {
                 .is_ok();
             if signalled {
                 if let Ok(session) = self.wait_for_closed_session(&session_id).await {
-                    self.detach_all_session_environment_bindings(&session_id)
-                        .await?;
                     return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
                 }
             }
@@ -2349,8 +2126,6 @@ impl AgentApiService for GatewayAgentApi {
         // row; the expected-head CAS protects against a concurrent writer.
         self.force_close_session_in_store(&session_id).await?;
         let session = self.project_session_by_id(&session_id).await?;
-        self.detach_all_session_environment_bindings(&session_id)
-            .await?;
         Ok(AgentApiOutcome::new(SessionCloseResponse { session }))
     }
 
@@ -2893,40 +2668,6 @@ impl AgentApiService for GatewayAgentApi {
         }))
     }
 
-    async fn list_session_environments(
-        &self,
-        params: SessionEnvironmentListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentListResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        let loaded = self
-            .load_session_state_with_current_environment_projection(&session_id)
-            .await?;
-        Ok(AgentApiOutcome::new(
-            self.project_session_environments(&session_id, &loaded.state)
-                .await?,
-        ))
-    }
-
-    async fn read_session_environment(
-        &self,
-        params: SessionEnvironmentReadParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentReadResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        let env_id = parse_environment_id(params.env_id)?;
-        let loaded = self
-            .load_session_state_with_current_environment_projection(&session_id)
-            .await?;
-        Ok(AgentApiOutcome::new(SessionEnvironmentReadResponse {
-            environment: self
-                .project_session_environment(&session_id, &loaded.state, &env_id)
-                .await?,
-        }))
-    }
-
     async fn create_environment(
         &self,
         params: EnvironmentCreateParams,
@@ -2963,15 +2704,6 @@ impl AgentApiService for GatewayAgentApi {
             .map(AgentApiOutcome::new)
     }
 
-    async fn attach_session_environment(
-        &self,
-        params: SessionEnvironmentAttachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentAttachResponse>, AgentApiError> {
-        self.attach_session_environment_record(params)
-            .await
-            .map(AgentApiOutcome::new)
-    }
-
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
@@ -2979,45 +2711,28 @@ impl AgentApiService for GatewayAgentApi {
         let session_id = SessionId::try_new(params.session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;
-        let env_id = parse_environment_id(params.env_id)?;
+        let environment_id = parse_registry_environment_id(params.environment_id)?;
         let loaded = self.load_session_state(&session_id).await?;
         self.require_open_idle_session(&session_id, &loaded, "environment activation")?;
-        let target = self
-            .activation_target_for_environment(&session_id, &env_id)
+        self.selectable_environment_for_session(&loaded.state, &environment_id)
             .await?;
 
-        if loaded
-            .state
-            .tooling
-            .routing
-            .default_targets
-            .get(tools::targets::ENV_TARGET_NAMESPACE)
-            != Some(&target)
-        {
+        if loaded.state.environment.active_environment_id.as_ref() != Some(&environment_id) {
             let baseline_failures = self
                 .query_status_optional(&session_id)
                 .await?
                 .map(|status| status.admission_failures.len())
                 .unwrap_or(0);
-            self.submit_core_command(&session_id, activate_environment_command(target.clone()))
-                .await?;
-            self.wait_for_environment_default_target(&session_id, Some(&target), baseline_failures)
+            self.submit_core_command(
+                &session_id,
+                activate_environment_command(environment_id.clone()),
+            )
+            .await?;
+            self.wait_for_active_environment(&session_id, Some(&environment_id), baseline_failures)
                 .await?;
         }
-
-        let loaded = self
-            .load_session_state_with_current_environment_projection(&session_id)
-            .await?;
-        let environment = self
-            .project_session_environment(&session_id, &loaded.state, &env_id)
-            .await?;
-        let response = self
-            .project_session_environments(&session_id, &loaded.state)
-            .await?;
         Ok(AgentApiOutcome::new(SessionEnvironmentActivateResponse {
-            environment,
-            active_env_id: response.active_env_id,
-            environments: response.environments,
+            session: self.project_session_by_id(&session_id).await?,
         }))
     }
 
@@ -3031,13 +2746,7 @@ impl AgentApiService for GatewayAgentApi {
         let loaded = self.load_session_state(&session_id).await?;
         self.require_open_idle_session(&session_id, &loaded, "environment deactivation")?;
 
-        if loaded
-            .state
-            .tooling
-            .routing
-            .default_targets
-            .contains_key(tools::targets::ENV_TARGET_NAMESPACE)
-        {
+        if loaded.state.environment.active_environment_id.is_some() {
             let baseline_failures = self
                 .query_status_optional(&session_id)
                 .await?
@@ -3045,54 +2754,37 @@ impl AgentApiService for GatewayAgentApi {
                 .unwrap_or(0);
             self.submit_core_command(&session_id, deactivate_environment_command())
                 .await?;
-            self.wait_for_environment_default_target(&session_id, None, baseline_failures)
+            self.wait_for_active_environment(&session_id, None, baseline_failures)
                 .await?;
         }
-
-        let loaded = self
-            .load_session_state_with_current_environment_projection(&session_id)
-            .await?;
-        let response = self
-            .project_session_environments(&session_id, &loaded.state)
-            .await?;
         Ok(AgentApiOutcome::new(SessionEnvironmentDeactivateResponse {
-            active_env_id: response.active_env_id,
-            environments: response.environments,
+            session: self.project_session_by_id(&session_id).await?,
         }))
     }
 
-    async fn detach_session_environment(
+    async fn bind_environment_credential(
         &self,
-        params: SessionEnvironmentDetachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentDetachResponse>, AgentApiError> {
-        self.detach_session_environment_record(params)
+        params: EnvironmentCredentialBindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialBindResponse>, AgentApiError> {
+        self.bind_environment_credential_record(params)
             .await
             .map(AgentApiOutcome::new)
     }
 
-    async fn bind_session_environment_credential(
+    async fn list_environment_credentials(
         &self,
-        params: SessionEnvironmentCredentialBindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialBindResponse>, AgentApiError> {
-        self.bind_session_environment_credential_record(params)
+        params: EnvironmentCredentialListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialListResponse>, AgentApiError> {
+        self.list_environment_credential_records(params)
             .await
             .map(AgentApiOutcome::new)
     }
 
-    async fn list_session_environment_credentials(
+    async fn unbind_environment_credential(
         &self,
-        params: SessionEnvironmentCredentialListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialListResponse>, AgentApiError> {
-        self.list_session_environment_credential_records(params)
-            .await
-            .map(AgentApiOutcome::new)
-    }
-
-    async fn unbind_session_environment_credential(
-        &self,
-        params: SessionEnvironmentCredentialUnbindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>, AgentApiError> {
-        self.unbind_session_environment_credential_record(params)
+        params: EnvironmentCredentialUnbindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialUnbindResponse>, AgentApiError> {
+        self.unbind_environment_credential_record(params)
             .await
             .map(AgentApiOutcome::new)
     }
@@ -3258,45 +2950,6 @@ impl AgentApiService for GatewayAgentApi {
         let workspace = self.delete_vfs_workspace_record(params).await?;
         Ok(AgentApiOutcome::new(VfsWorkspaceDeleteResponse {
             workspace: vfs_workspace_view(workspace),
-        }))
-    }
-
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError> {
-        let (mount, session) = self.put_vfs_mount_record(params).await?;
-        Ok(AgentApiOutcome::new(VfsMountPutResponse {
-            mount: self.vfs_mount_view(mount).await?,
-            session,
-        }))
-    }
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError> {
-        let (mount_path, session) = self.delete_vfs_mount_record(params).await?;
-        Ok(AgentApiOutcome::new(VfsMountDeleteResponse {
-            mount_path,
-            session,
-        }))
-    }
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        self.store
-            .load_session(&session_id)
-            .await
-            .map_err(map_session_store_error)?
-            .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))?;
-        Ok(AgentApiOutcome::new(VfsMountListResponse {
-            mounts: self.project_vfs_mounts(&session_id).await?,
         }))
     }
 

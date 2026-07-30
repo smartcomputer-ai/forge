@@ -151,15 +151,17 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
                 "lightspeed.core.context.compaction_finished"
             }
         },
+        CoreAgentEvent::Environment(event) => match event {
+            crate::EnvironmentEvent::ActiveEnvironmentSet { .. } => {
+                "lightspeed.core.environment.active_set"
+            }
+            crate::EnvironmentEvent::ActiveEnvironmentCleared => {
+                "lightspeed.core.environment.active_cleared"
+            }
+        },
         CoreAgentEvent::ToolConfig(event) => match event {
             ToolConfigEvent::ToolsReplaced { .. } => "lightspeed.core.tool_config.tools_replaced",
             ToolConfigEvent::ToolsPatched { .. } => "lightspeed.core.tool_config.tools_patched",
-            ToolConfigEvent::DefaultTargetSet { .. } => {
-                "lightspeed.core.tool_config.default_target_set"
-            }
-            ToolConfigEvent::DefaultTargetCleared { .. } => {
-                "lightspeed.core.tool_config.default_target_cleared"
-            }
         },
         CoreAgentEvent::Tool(event) => match event {
             ToolEvent::BatchStarted { .. } => "lightspeed.core.tool.batch_started",

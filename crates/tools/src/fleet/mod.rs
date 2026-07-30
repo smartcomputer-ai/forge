@@ -288,43 +288,17 @@ pub struct AgentSpawnOutput {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentSendOutput {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submission_id: Option<String>,
-    pub status: AgentSendStatus,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentSendStatus {
-    Delivered,
-    NotReachable,
-    QueueFull,
+    pub target_session_id: String,
+    pub submission_id: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AgentRequestOutput {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target_session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub submission_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promise: Option<String>,
-    pub status: AgentRequestStatus,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AgentRequestStatus {
-    Delivered,
-    NotReachable,
-    QueueFull,
+    pub target_session_id: String,
+    pub run_id: String,
+    pub submission_id: String,
+    pub promise: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

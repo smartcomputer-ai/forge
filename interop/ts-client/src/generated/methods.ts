@@ -25,18 +25,11 @@ export const METHODS = [
   "session/skills/activate",
   "session/skills/deactivate",
   "session/profiles/apply",
-  "session/mounts/put",
-  "session/mounts/list",
-  "session/mounts/delete",
-  "session/environments/read",
-  "session/environments/list",
-  "session/environments/attach",
   "session/environments/activate",
   "session/environments/deactivate",
-  "session/environments/detach",
-  "session/environments/credentials/bind",
-  "session/environments/credentials/list",
-  "session/environments/credentials/unbind",
+  "environments/credentials/bind",
+  "environments/credentials/list",
+  "environments/credentials/unbind",
   "environments/create",
   "environments/read",
   "environments/list",
@@ -107,7 +100,7 @@ export const METHOD_INFO = {
   "session/managed/start": {
     scope: "universe",
     summary: "Create or reopen a managed session",
-    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
   },
   "session/read": {
     scope: "universe",
@@ -192,64 +185,29 @@ export const METHOD_INFO = {
   "session/profiles/apply": {
     scope: "universe",
     summary: "Apply a profile to a session",
-    description: "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
-  },
-  "session/mounts/put": {
-    scope: "universe",
-    summary: "Create or replace a session mount",
-    description: "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-  },
-  "session/mounts/list": {
-    scope: "universe",
-    summary: "List session mounts",
-    description: "Returns the session's snapshot/workspace bindings and access modes.",
-  },
-  "session/mounts/delete": {
-    scope: "universe",
-    summary: "Delete a session mount",
-    description: "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
-  },
-  "session/environments/read": {
-    scope: "universe",
-    summary: "Read a session environment binding",
-    description: "Returns one session-local environment alias joined with current instance/provider availability and activation state.",
-  },
-  "session/environments/list": {
-    scope: "universe",
-    summary: "List session environment bindings",
-    description: "Returns all environment aliases attached to the session and identifies the active tool target, if any.",
-  },
-  "session/environments/attach": {
-    scope: "universe",
-    summary: "Attach an environment to a session",
-    description: "Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.",
+    description: "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
   },
   "session/environments/activate": {
     scope: "universe",
     summary: "Activate a session environment",
-    description: "Selects an attached, available environment as the process/filesystem tool target while the session is idle.",
+    description: "Selects an allowed, live universe environment for environment-targeted tools while the session is idle.",
   },
   "session/environments/deactivate": {
     scope: "universe",
     summary: "Deactivate the session environment",
-    description: "Clears the active environment tool target without detaching any binding or closing the underlying instance.",
+    description: "Clears active environment selection without changing or closing the universe environment.",
   },
-  "session/environments/detach": {
-    scope: "universe",
-    summary: "Detach a session environment",
-    description: "Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.",
-  },
-  "session/environments/credentials/bind": {
+  "environments/credentials/bind": {
     scope: "universe",
     summary: "Bind a credential into an environment",
-    description: "Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.",
+    description: "Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.",
   },
-  "session/environments/credentials/list": {
+  "environments/credentials/list": {
     scope: "universe",
     summary: "List environment credential bindings",
-    description: "Returns variable names and credential source handles for a session environment; resolved secret values are never returned.",
+    description: "Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.",
   },
-  "session/environments/credentials/unbind": {
+  "environments/credentials/unbind": {
     scope: "universe",
     summary: "Unbind an environment credential",
     description: "Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.",
@@ -560,7 +518,7 @@ export interface MethodMap {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   "session/managed/start": {
     params: Api.ManagedSessionStartParams;
@@ -713,70 +671,16 @@ export interface MethodMap {
   /**
    * Apply a profile to a session
    *
-   * Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
+   * Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
    */
   "session/profiles/apply": {
     params: Api.ProfileApplyParams;
     result: Api.AgentApiOutcomeOfProfileApplyResponse;
   };
   /**
-   * Create or replace a session mount
-   *
-   * Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.
-   */
-  "session/mounts/put": {
-    params: Api.VfsMountPutParams;
-    result: Api.AgentApiOutcomeOfVfsMountPutResponse;
-  };
-  /**
-   * List session mounts
-   *
-   * Returns the session's snapshot/workspace bindings and access modes.
-   */
-  "session/mounts/list": {
-    params: Api.VfsMountListParams;
-    result: Api.AgentApiOutcomeOfVfsMountListResponse;
-  };
-  /**
-   * Delete a session mount
-   *
-   * Removes a binding from an open idle session without deleting its source snapshot or workspace.
-   */
-  "session/mounts/delete": {
-    params: Api.VfsMountDeleteParams;
-    result: Api.AgentApiOutcomeOfVfsMountDeleteResponse;
-  };
-  /**
-   * Read a session environment binding
-   *
-   * Returns one session-local environment alias joined with current instance/provider availability and activation state.
-   */
-  "session/environments/read": {
-    params: Api.SessionEnvironmentReadParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentReadResponse;
-  };
-  /**
-   * List session environment bindings
-   *
-   * Returns all environment aliases attached to the session and identifies the active tool target, if any.
-   */
-  "session/environments/list": {
-    params: Api.SessionEnvironmentListParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentListResponse;
-  };
-  /**
-   * Attach an environment to a session
-   *
-   * Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.
-   */
-  "session/environments/attach": {
-    params: Api.SessionEnvironmentAttachParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentAttachResponse;
-  };
-  /**
    * Activate a session environment
    *
-   * Selects an attached, available environment as the process/filesystem tool target while the session is idle.
+   * Selects an allowed, live universe environment for environment-targeted tools while the session is idle.
    */
   "session/environments/activate": {
     params: Api.SessionEnvironmentActivateParams;
@@ -785,47 +689,38 @@ export interface MethodMap {
   /**
    * Deactivate the session environment
    *
-   * Clears the active environment tool target without detaching any binding or closing the underlying instance.
+   * Clears active environment selection without changing or closing the universe environment.
    */
   "session/environments/deactivate": {
     params: Api.SessionEnvironmentDeactivateParams;
     result: Api.AgentApiOutcomeOfSessionEnvironmentDeactivateResponse;
   };
   /**
-   * Detach a session environment
-   *
-   * Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.
-   */
-  "session/environments/detach": {
-    params: Api.SessionEnvironmentDetachParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentDetachResponse;
-  };
-  /**
    * Bind a credential into an environment
    *
-   * Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.
+   * Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.
    */
-  "session/environments/credentials/bind": {
-    params: Api.SessionEnvironmentCredentialBindParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse;
+  "environments/credentials/bind": {
+    params: Api.EnvironmentCredentialBindParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialBindResponse;
   };
   /**
    * List environment credential bindings
    *
-   * Returns variable names and credential source handles for a session environment; resolved secret values are never returned.
+   * Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.
    */
-  "session/environments/credentials/list": {
-    params: Api.SessionEnvironmentCredentialListParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialListResponse;
+  "environments/credentials/list": {
+    params: Api.EnvironmentCredentialListParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialListResponse;
   };
   /**
    * Unbind an environment credential
    *
    * Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.
    */
-  "session/environments/credentials/unbind": {
-    params: Api.SessionEnvironmentCredentialUnbindParams;
-    result: Api.AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse;
+  "environments/credentials/unbind": {
+    params: Api.EnvironmentCredentialUnbindParams;
+    result: Api.AgentApiOutcomeOfEnvironmentCredentialUnbindResponse;
   };
   /**
    * Provision an environment instance
@@ -1342,7 +1237,7 @@ export const rpc = {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   sessionManagedStart(client: RpcCaller, params: Api.ManagedSessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
     return client.call("session/managed/start", params);
@@ -1478,63 +1373,15 @@ export const rpc = {
   /**
    * Apply a profile to a session
    *
-   * Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
+   * Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
    */
   sessionProfilesApply(client: RpcCaller, params: Api.ProfileApplyParams): Promise<Api.AgentApiOutcomeOfProfileApplyResponse> {
     return client.call("session/profiles/apply", params);
   },
   /**
-   * Create or replace a session mount
-   *
-   * Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.
-   */
-  sessionMountsPut(client: RpcCaller, params: Api.VfsMountPutParams): Promise<Api.AgentApiOutcomeOfVfsMountPutResponse> {
-    return client.call("session/mounts/put", params);
-  },
-  /**
-   * List session mounts
-   *
-   * Returns the session's snapshot/workspace bindings and access modes.
-   */
-  sessionMountsList(client: RpcCaller, params: Api.VfsMountListParams): Promise<Api.AgentApiOutcomeOfVfsMountListResponse> {
-    return client.call("session/mounts/list", params);
-  },
-  /**
-   * Delete a session mount
-   *
-   * Removes a binding from an open idle session without deleting its source snapshot or workspace.
-   */
-  sessionMountsDelete(client: RpcCaller, params: Api.VfsMountDeleteParams): Promise<Api.AgentApiOutcomeOfVfsMountDeleteResponse> {
-    return client.call("session/mounts/delete", params);
-  },
-  /**
-   * Read a session environment binding
-   *
-   * Returns one session-local environment alias joined with current instance/provider availability and activation state.
-   */
-  sessionEnvironmentsRead(client: RpcCaller, params: Api.SessionEnvironmentReadParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentReadResponse> {
-    return client.call("session/environments/read", params);
-  },
-  /**
-   * List session environment bindings
-   *
-   * Returns all environment aliases attached to the session and identifies the active tool target, if any.
-   */
-  sessionEnvironmentsList(client: RpcCaller, params: Api.SessionEnvironmentListParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentListResponse> {
-    return client.call("session/environments/list", params);
-  },
-  /**
-   * Attach an environment to a session
-   *
-   * Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.
-   */
-  sessionEnvironmentsAttach(client: RpcCaller, params: Api.SessionEnvironmentAttachParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentAttachResponse> {
-    return client.call("session/environments/attach", params);
-  },
-  /**
    * Activate a session environment
    *
-   * Selects an attached, available environment as the process/filesystem tool target while the session is idle.
+   * Selects an allowed, live universe environment for environment-targeted tools while the session is idle.
    */
   sessionEnvironmentsActivate(client: RpcCaller, params: Api.SessionEnvironmentActivateParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentActivateResponse> {
     return client.call("session/environments/activate", params);
@@ -1542,42 +1389,34 @@ export const rpc = {
   /**
    * Deactivate the session environment
    *
-   * Clears the active environment tool target without detaching any binding or closing the underlying instance.
+   * Clears active environment selection without changing or closing the universe environment.
    */
   sessionEnvironmentsDeactivate(client: RpcCaller, params: Api.SessionEnvironmentDeactivateParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentDeactivateResponse> {
     return client.call("session/environments/deactivate", params);
   },
   /**
-   * Detach a session environment
-   *
-   * Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.
-   */
-  sessionEnvironmentsDetach(client: RpcCaller, params: Api.SessionEnvironmentDetachParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentDetachResponse> {
-    return client.call("session/environments/detach", params);
-  },
-  /**
    * Bind a credential into an environment
    *
-   * Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.
+   * Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.
    */
-  sessionEnvironmentsCredentialsBind(client: RpcCaller, params: Api.SessionEnvironmentCredentialBindParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse> {
-    return client.call("session/environments/credentials/bind", params);
+  environmentsCredentialsBind(client: RpcCaller, params: Api.EnvironmentCredentialBindParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialBindResponse> {
+    return client.call("environments/credentials/bind", params);
   },
   /**
    * List environment credential bindings
    *
-   * Returns variable names and credential source handles for a session environment; resolved secret values are never returned.
+   * Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.
    */
-  sessionEnvironmentsCredentialsList(client: RpcCaller, params: Api.SessionEnvironmentCredentialListParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialListResponse> {
-    return client.call("session/environments/credentials/list", params);
+  environmentsCredentialsList(client: RpcCaller, params: Api.EnvironmentCredentialListParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialListResponse> {
+    return client.call("environments/credentials/list", params);
   },
   /**
    * Unbind an environment credential
    *
    * Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.
    */
-  sessionEnvironmentsCredentialsUnbind(client: RpcCaller, params: Api.SessionEnvironmentCredentialUnbindParams): Promise<Api.AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse> {
-    return client.call("session/environments/credentials/unbind", params);
+  environmentsCredentialsUnbind(client: RpcCaller, params: Api.EnvironmentCredentialUnbindParams): Promise<Api.AgentApiOutcomeOfEnvironmentCredentialUnbindResponse> {
+    return client.call("environments/credentials/unbind", params);
   },
   /**
    * Provision an environment instance

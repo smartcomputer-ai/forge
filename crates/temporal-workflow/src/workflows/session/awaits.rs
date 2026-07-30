@@ -1,21 +1,26 @@
 use super::*;
 
-/// The parked `await` call, if any, derived from typed core state. At most one
-/// can exist: a session has one active run with one active parked await.
-pub(super) struct ParkedAwait {
+/// The parked tool batch, if any, derived from typed core state.
+pub(super) struct ParkedToolBatch {
     pub run_id: engine::RunId,
     pub batch_id: engine::ToolBatchId,
-    pub spec: engine::AwaitSpec,
+    pub suspension: engine::ToolBatchSuspension,
 }
 
-pub(super) fn parked_await(core_state: &CoreAgentState) -> Option<ParkedAwait> {
+impl ParkedToolBatch {
+    pub(super) fn spec(&self) -> &engine::AwaitSpec {
+        self.suspension.spec()
+    }
+}
+
+pub(super) fn parked_tool_batch(core_state: &CoreAgentState) -> Option<ParkedToolBatch> {
     let active_run = core_state.runs.active.as_ref()?;
-    let parked = active_run.parked_await.as_ref()?;
+    let parked = active_run.parked_tool_batch.as_ref()?;
     let batch = active_run.tool_batches.get(&parked.batch_id)?;
-    Some(ParkedAwait {
+    Some(ParkedToolBatch {
         run_id: batch.run_id,
         batch_id: parked.batch_id,
-        spec: parked.spec.clone(),
+        suspension: parked.suspension.clone(),
     })
 }
 
@@ -23,38 +28,37 @@ pub(super) fn has_satisfied_await(state: &AgentSessionWorkflow) -> bool {
     if state
         .pending_tool_batch_resumes
         .iter()
-        .any(|resume| Some(resume.batch_id) == parked_await_batch_id(&state.core_state))
+        .any(|resume| Some(resume.batch_id) == parked_tool_batch_batch_id(&state.core_state))
     {
         return false;
     }
-    let Some(parked) = parked_await(&state.core_state) else {
+    let Some(parked) = parked_tool_batch(&state.core_state) else {
         return false;
     };
     let non_timeout_ms = parked
-        .spec
+        .spec()
         .deadline_at_ms
         .map_or(u64::MAX, |deadline| deadline.saturating_sub(1));
     engine::await_wake(&state.core_state, non_timeout_ms).is_some()
 }
 
-fn parked_await_batch_id(core_state: &CoreAgentState) -> Option<engine::ToolBatchId> {
-    parked_await(core_state).map(|parked| parked.batch_id)
+fn parked_tool_batch_batch_id(core_state: &CoreAgentState) -> Option<engine::ToolBatchId> {
+    parked_tool_batch(core_state).map(|parked| parked.batch_id)
 }
 
 pub(super) fn nearest_await_wake_ms(state: &AgentSessionWorkflow) -> Option<u64> {
-    parked_await(&state.core_state).and_then(|parked| parked.spec.deadline_at_ms)
+    parked_tool_batch(&state.core_state).and_then(|parked| parked.spec().deadline_at_ms)
 }
 
-/// Resolve the parked await if its mode or deadline is satisfied: snapshot
-/// every requested promise (total outcome), blob the output, and queue the
-/// deferred-batch resume. Timeout leaves the remaining promises pending and
-/// re-awaitable.
+/// Resume a parked tool batch when its Promise wait is satisfied. Explicit
+/// await snapshots model-owned Promises into blobs; Joined resumes directly
+/// from runtime-owned Promise state.
 pub(super) async fn process_satisfied_await(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
 ) -> anyhow::Result<()> {
     let now = workflow_time_ms(ctx);
     let resolved = ctx.state(|state| {
-        let parked = parked_await(&state.core_state)?;
+        let parked = parked_tool_batch(&state.core_state)?;
         if state
             .pending_tool_batch_resumes
             .iter()
@@ -74,29 +78,39 @@ pub(super) async fn process_satisfied_await(
         } else {
             Vec::new()
         };
-        let results = promise_snapshot(&parked.spec, &state.core_state);
+        let results = promise_snapshot(parked.spec(), &state.core_state);
         Some((parked, claim, outcome, results, mailbox_messages))
     });
     let Some((parked, claim, outcome, results, mailbox_messages)) = resolved else {
         return Ok(());
     };
 
-    let output = AwaitOutput {
-        outcome,
-        results,
-        mailbox_messages,
+    let resume_output = match &parked.suspension {
+        engine::ToolBatchSuspension::AwaitTool { .. } => {
+            let output = AwaitOutput {
+                outcome,
+                results,
+                mailbox_messages,
+            };
+            let output_ref = put_await_blob(ctx, serde_json::to_vec(&output)?).await?;
+            let summary_ref = put_await_blob(ctx, await_summary(&output).into_bytes()).await?;
+            engine::ToolBatchResumeOutput::AwaitTool {
+                output: engine::AwaitOutputRefs {
+                    output_ref,
+                    summary_ref,
+                },
+            }
+        }
+        engine::ToolBatchSuspension::JoinedWorkflowCalls { .. } => {
+            engine::ToolBatchResumeOutput::JoinedWorkflowCalls
+        }
     };
-    let output_ref = put_await_blob(ctx, serde_json::to_vec(&output)?).await?;
-    let summary_ref = put_await_blob(ctx, await_summary(&output).into_bytes()).await?;
-    let command = engine::ResumeAwaitCommand {
+    let command = engine::ResumeToolBatchCommand {
         run_id: parked.run_id,
         batch_id: parked.batch_id,
         claim,
         claim_observed_at_ms: now,
-        output: engine::AwaitOutputRefs {
-            output_ref,
-            summary_ref,
-        },
+        output: resume_output,
     };
     ctx.state_mut(|state| {
         state

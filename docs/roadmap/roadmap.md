@@ -50,12 +50,24 @@
   keep provider-direct
   read/cancel, let providers reject close or interrupt active jobs, and rely
   on Temporal plus provider idempotency instead of stored job/group rows
+- [x] [P106](p106-joined-workflow-tools.md) — completed 2026-07-30: add Joined as the ordinary
+  single-result workflow-tool form: durably park and resume the original tool
+  call without exposing a Promise or requiring model-authored `await`; make
+  bound pull/push dispatch independent of Accepted/Joined/Promises completion,
+  motivated by the first production Channels sessions where every provider
+  receipt currently costs an otherwise unnecessary await tool round. Advanced
+  2026-07-30 through the greenfield v4 dispatch foundation, pushed Accepted,
+  engine-native Joined, shared declaration readback, durable event diagnostics,
+  generated contracts, and passing serial live proofs
 
 ## Core
 - [x] [P91](p91-core-agent-structure-cleanup.md) — cleanup of CoreAgent structures: delete the SDK-era open-kernel layer, commit to a closed event vocabulary and core FSM
 - [x] [P95](p95-config-redesign.md) — config redesign: full-document puts with expected revisions, feature-oriented capability config (secure by default), feature versioning, derived toolset; removes patch semantics and the unused `session/messages/submit` RPC surface
 - [x] [P98](p98-context-revisions-and-instruction-reconciliation.md) — optional context-edit revision guards and atomic effective-instruction reconciliation, with the product default active only as a true fallback
-- [ ] optimize: we're rading all session events to get latest state, this will get expensve in the future
+- [x] [P107](p107-session-workspace-links.md) — move session VFS bindings into
+  `features.vfs.workspaceLinks`, derive filesystem/runtime projection from
+  config plus the VFS catalog, remove the `vfs_mounts` table and mount APIs,
+  and preserve dangling links when referenced workspaces are deleted
 
 ## Hosted Runtime
 - [ ] [P105](p105-unbounded-hosted-runs.md) — remove the hosted
@@ -63,6 +75,11 @@
   across history-driven Temporal continue-as-new boundaries, preserving
   durable progress and transient transport state without fixed-step rollover
   or workflow failure
+- [ ] [P109](p109-runtime-state-handoff.md) — remove owning-session log replay
+  from ordinary tool, Promise, environment, environment-job, and Fleet runtime
+  paths by carrying bounded facts from the Temporal workflow's current
+  `CoreAgentState`; retain replay for bootstrap, continue-as-new, recovery, and
+  explicit API/history reads
 
 ## Fleet (sub-agents)
 - [x] [P82](p82-session-graph-fork-clone.md) — session graph foundation: clone, fork (by-reference), and links in the store
@@ -83,6 +100,10 @@
 - [ ] incremental tool discovery support (at least OAI)
 
 ## Environmnets & Sandboxes
+- [ ] [P108](p108-universe-environments.md) — make environments and their
+  credentials universe resources, replace session attachment/catalog state
+  with one event-sourced active environment, add focused model discovery and
+  selection tools, and remove generic default-target routing
 - [ ] [P96](p96-environment-api.md) — environment API review: machines as universe resources vs session bindings, real presence leases, machine-keyed durable jobs, occupancy-checked teardown
 - [ ] Fix host-bridge fs routing doubled path: absolute guest paths get
       re-prefixed with the bridge root, so file-tool reads of shell-written

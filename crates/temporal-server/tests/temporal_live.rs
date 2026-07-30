@@ -725,12 +725,7 @@ async fn run_fake_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| {
-                matches!(
-                    entry.kind,
-                    ContextEntryKindView::VfsCatalog | ContextEntryKindView::EnvironmentCatalog
-                )
-            })
+            .any(|entry| matches!(entry.kind, ContextEntryKindView::VfsCatalog))
     );
 
     let mut enabled_config = started
@@ -742,6 +737,7 @@ async fn run_fake_live_client(
     let mut enabled_features = enabled_config.features.unwrap_or_default();
     enabled_features.vfs = Some(api::VfsFeature {
         version: api::CURRENT_FEATURE_VERSION,
+        workspace_links: Vec::new(),
         tools: None,
         prompts: None,
         skills: None,
@@ -749,6 +745,7 @@ async fn run_fake_live_client(
     enabled_features.environments = Some(api::EnvironmentsFeature {
         version: api::CURRENT_FEATURE_VERSION,
         providers: None,
+        selection_tools: false,
         jobs: false,
     });
     enabled_config.features = Some(enabled_features);
@@ -759,22 +756,82 @@ async fn run_fake_live_client(
             config: enabled_config,
         })
         .await?;
-    for expected in [
-        ContextEntryKindView::VfsCatalog,
-        ContextEntryKindView::EnvironmentCatalog,
-    ] {
-        assert!(
-            enabled
-                .result
-                .session
-                .active_context
-                .entries
-                .iter()
-                .any(|entry| entry.kind == expected)
-        );
-    }
+    assert!(
+        enabled
+            .result
+            .session
+            .active_context
+            .entries
+            .iter()
+            .any(|entry| entry.kind == ContextEntryKindView::VfsCatalog)
+    );
+    let selection_tool_names = [
+        tools::environment::control::ENVIRONMENT_LIST_TOOL_NAME,
+        tools::environment::control::ENVIRONMENT_ACTIVATE_TOOL_NAME,
+        tools::environment::control::ENVIRONMENT_DEACTIVATE_TOOL_NAME,
+    ];
+    assert!(
+        enabled
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| {
+                tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
+            })
+    );
+    assert!(selection_tool_names.iter().all(|name| {
+        enabled
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .all(|tool| tool.tool_id != *name)
+    }));
 
-    let mut disabled_config = enabled
+    let mut selection_config = enabled
+        .result
+        .session
+        .config
+        .clone()
+        .expect("enabled session config");
+    selection_config
+        .features
+        .as_mut()
+        .and_then(|features| features.environments.as_mut())
+        .expect("environment feature")
+        .selection_tools = true;
+    let selection_enabled = api
+        .put_session_config(SessionConfigPutParams {
+            session_id: session_id.as_str().to_owned(),
+            expected_config_revision: Some(enabled.result.session.config_revision),
+            config: selection_config,
+        })
+        .await?;
+    assert!(selection_tool_names.iter().all(|name| {
+        selection_enabled
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| tool.tool_id == *name)
+    }));
+    assert!(
+        selection_enabled
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| {
+                tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
+            })
+    );
+
+    let mut disabled_config = selection_enabled
         .result
         .session
         .config
@@ -787,7 +844,7 @@ async fn run_fake_live_client(
     let disabled = api
         .put_session_config(SessionConfigPutParams {
             session_id: session_id.as_str().to_owned(),
-            expected_config_revision: Some(enabled.result.session.config_revision),
+            expected_config_revision: Some(selection_enabled.result.session.config_revision),
             config: disabled_config,
         })
         .await?;
@@ -798,17 +855,12 @@ async fn run_fake_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| {
-                matches!(
-                    entry.kind,
-                    ContextEntryKindView::VfsCatalog | ContextEntryKindView::EnvironmentCatalog
-                )
-            })
+            .any(|entry| matches!(entry.kind, ContextEntryKindView::VfsCatalog))
     );
 
     let first = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -825,7 +877,7 @@ async fn run_fake_live_client(
 
     let second = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -844,7 +896,7 @@ async fn run_fake_live_client(
     // original run instead of starting a second one.
     let retried = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -860,7 +912,7 @@ async fn run_fake_live_client(
     // Same submission id with different input is a typed rejection.
     let mismatch = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1058,12 +1110,15 @@ async fn run_fleet_spawn_live_client(
                 batch_id: ToolBatchId::new(1),
                 call_id: ToolCallId::new("call_live_1"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_live_1"),
                 tool_name: ToolName::new(AGENT_SPAWN_TOOL_NAME),
                 arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1118,12 +1173,15 @@ async fn run_fleet_spawn_live_client(
                 batch_id: ToolBatchId::new(2),
                 call_id: ToolCallId::new("call_live_2"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_live_2"),
                 tool_name: ToolName::new(AGENT_SEND_TOOL_NAME),
                 arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1132,15 +1190,8 @@ async fn run_fleet_spawn_live_client(
     let output_ref = send_result.output_ref.expect("send output ref");
     let send_output: AgentSendOutput =
         serde_json::from_slice(&blobs.read_bytes(&output_ref).await?)?;
-    assert_eq!(
-        send_output.target_session_id.as_deref(),
-        Some(child_session_id.as_str())
-    );
-    assert_eq!(send_output.run_id, None);
-    let send_submission_id = send_output
-        .submission_id
-        .as_deref()
-        .expect("send submission id");
+    assert_eq!(send_output.target_session_id, child_session_id.as_str());
+    let send_submission_id = send_output.submission_id.as_str();
     let send_run_id =
         wait_for_run_id_by_submission(&client, &child_session_id, send_submission_id).await?;
     assert_ne!(send_run_id, child_run_id);
@@ -1203,8 +1254,7 @@ async fn run_fleet_profile_spawn_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "You are a profile-spawned live child.".to_owned(),
                 }),
-                mounts: Vec::new(),
-                environments: Vec::new(),
+                active_environment_id: None,
             },
         },
     })
@@ -1250,12 +1300,15 @@ async fn run_fleet_profile_spawn_live_client(
                 batch_id: ToolBatchId::new(1),
                 call_id: ToolCallId::new("call_profile_spawn"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_profile_spawn"),
                 tool_name: ToolName::new(AGENT_SPAWN_TOOL_NAME),
                 arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1382,8 +1435,7 @@ async fn run_fleet_profile_tools_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "Profile read tools should return this document.".to_owned(),
                 }),
-                mounts: Vec::new(),
-                environments: Vec::new(),
+                active_environment_id: None,
             },
         },
     })
@@ -1420,12 +1472,15 @@ async fn run_fleet_profile_tools_live_client(
                 batch_id: ToolBatchId::new(1),
                 call_id: ToolCallId::new("call_profile_list"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_profile_list"),
                 tool_name: ToolName::new(PROFILE_LIST_TOOL_NAME),
                 arguments_ref: list_arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1457,12 +1512,15 @@ async fn run_fleet_profile_tools_live_client(
                 batch_id: ToolBatchId::new(2),
                 call_id: ToolCallId::new("call_profile_read"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_profile_read"),
                 tool_name: ToolName::new(PROFILE_READ_TOOL_NAME),
                 arguments_ref: read_arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1513,7 +1571,7 @@ async fn run_fleet_wait_live_client(
 
     let parent_run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1646,12 +1704,15 @@ async fn run_fleet_send_report_back_live_client(
                 batch_id: ToolBatchId::new(1),
                 call_id: ToolCallId::new("call_mode_i_spawn"),
                 observed_at_ms,
+                fleet_policy: Some(engine::FleetFeature::default()),
             },
             &ToolInvocationRequest {
                 call_id: ToolCallId::new("call_mode_i_spawn"),
                 tool_name: ToolName::new(AGENT_SPAWN_TOOL_NAME),
                 arguments_ref,
                 execution_target: None,
+                workflow_tool: None,
+                promise_control: None,
             },
         )
         .await
@@ -1862,18 +1923,19 @@ async fn run_continue_as_new_live_client(
         .run_id()
         .to_owned();
 
-    let first = api.start_run(RunStartParams {
-        notify_on_terminal: None,
-        submission_id: None,
-        session_id: session_id.as_str().to_owned(),
-        source: RunStartSource::Input {
-            items: vec![InputItem::Text {
-                text: "first run before continue as new".to_owned(),
-            }],
-        },
-        config: None,
-    })
-    .await?;
+    let first = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "first run before continue as new".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
     let first_run_id = first.result.run.id.clone();
     let first_run = wait_for_terminal_run(&api, &session_id, &first_run_id).await?;
     assert_eq!(first_run.id, first_run_id);
@@ -1889,7 +1951,7 @@ async fn run_continue_as_new_live_client(
 
     let second = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1945,6 +2007,7 @@ async fn run_unbounded_hosted_run_live_client(
             features: Some(api::FeaturesConfig {
                 vfs: Some(api::VfsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: None,
                     prompts: None,
                     skills: None,
@@ -2014,7 +2077,7 @@ async fn run_missing_session_live_client(
 
     let error = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2198,7 +2261,7 @@ async fn run_context_append_live_client(
     // context present in the session.
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2261,7 +2324,7 @@ async fn run_admission_failure_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2290,7 +2353,7 @@ async fn run_admission_failure_live_client(
 
     let error = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2559,8 +2622,7 @@ async fn run_profiles_live_client(
                     instructions: Some(ProfileInstructions::Text {
                         text: "Use the profile instructions in this live test.".to_owned(),
                     }),
-                    mounts: Vec::new(),
-                    environments: Vec::new(),
+                    active_environment_id: None,
                 },
             },
         })
@@ -2665,8 +2727,7 @@ async fn run_profiles_live_client(
         .await?;
     assert!(!applied.result.applied.config_changed);
     assert!(!applied.result.applied.instructions_changed);
-    assert_eq!(applied.result.applied.mounts_changed, 0);
-    assert_eq!(applied.result.applied.environments_changed, 0);
+    assert!(!applied.result.applied.active_environment_changed);
 
     let cleared = api
         .apply_profile(ProfileApplyParams {
@@ -2722,7 +2783,7 @@ async fn run_profiles_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2790,7 +2851,7 @@ async fn run_openai_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {

@@ -70,7 +70,7 @@ impl EnvironmentJobWorkflow {
             .unwrap_or_else(|| {
                 compose_environment_job_workflow_id(
                     args.universe_id,
-                    &args.start.instance_id,
+                    &args.start.environment_id,
                     &args.start.job_group_id,
                 )
             });
@@ -83,7 +83,7 @@ impl EnvironmentJobWorkflow {
             .into());
         }
         ctx.state_mut(|state| {
-            state.snapshot.instance_id = args.start.instance_id.clone();
+            state.snapshot.environment_id = args.start.environment_id.clone();
             state.snapshot.job_group_id = args.start.job_group_id.clone();
             state.snapshot.started = args.started;
             state.snapshot.jobs = args.jobs.clone();
@@ -131,7 +131,7 @@ impl EnvironmentJobWorkflow {
                         WorkflowActivities::environment_job_cancel,
                         EnvironmentJobCancelActivityRequest {
                             universe_id: args.universe_id,
-                            instance_id: args.start.instance_id.clone(),
+                            environment_id: args.start.environment_id.clone(),
                             jobs: cancel.jobs,
                             scope: cancel.scope,
                             force: cancel.force,
@@ -165,7 +165,7 @@ impl EnvironmentJobWorkflow {
                         WorkflowActivities::environment_job_poll,
                         EnvironmentJobPollActivityRequest {
                             universe_id: args.universe_id,
-                            instance_id: args.start.instance_id.clone(),
+                            environment_id: args.start.environment_id.clone(),
                             job_group_id: args.start.job_group_id.clone(),
                             job_ids: args.job_ids.clone(),
                         },
@@ -299,7 +299,7 @@ async fn cancel_workflow_jobs(
             WorkflowActivities::environment_job_cancel,
             EnvironmentJobCancelActivityRequest {
                 universe_id: args.universe_id,
-                instance_id: args.start.instance_id.clone(),
+                environment_id: args.start.environment_id.clone(),
                 jobs,
                 scope: host_protocol::data::jobs::JobCancelScope::Job,
                 force: false,

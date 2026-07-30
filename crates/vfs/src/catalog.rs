@@ -1,11 +1,10 @@
 use async_trait::async_trait;
-use engine::{BlobRef, SessionId, StringIdError, validate_general_string_id};
+use engine::{BlobRef, StringIdError, validate_general_string_id};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
 use crate::manifest::VfsTotals;
-use crate::path::VfsPath;
 
 macro_rules! vfs_string_id {
     ($name:ident) => {
@@ -191,40 +190,6 @@ pub struct CompareAndSetVfsWorkspaceHead {
     pub updated_at_ms: i64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VfsMountRecord {
-    pub session_id: SessionId,
-    pub mount_path: VfsPath,
-    pub source: VfsMountSource,
-    pub access: VfsMountAccess,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum VfsMountSource {
-    Snapshot { snapshot_ref: BlobRef },
-    Workspace { workspace_id: VfsWorkspaceId },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum VfsMountAccess {
-    ReadOnly,
-    ReadWrite,
-}
-
-impl VfsMountAccess {
-    pub const fn is_writable(self) -> bool {
-        matches!(self, Self::ReadWrite)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct VfsMountTable {
-    pub session_id: SessionId,
-    pub mounts: Vec<VfsMountRecord>,
-}
-
 #[async_trait]
 pub trait VfsSnapshotStore: Send + Sync {
     async fn record_snapshot(&self, record: VfsSnapshotRecord) -> Result<(), VfsCatalogError>;
@@ -261,25 +226,9 @@ pub trait VfsWorkspaceStore: Send + Sync {
     ) -> Result<VfsWorkspaceRecord, VfsCatalogError>;
 }
 
-#[async_trait]
-pub trait VfsMountStore: Send + Sync {
-    async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError>;
+pub trait VfsCatalogStore: VfsSnapshotStore + VfsWorkspaceStore {}
 
-    async fn list_mounts(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<VfsMountRecord>, VfsCatalogError>;
-
-    async fn remove_mount(
-        &self,
-        session_id: &SessionId,
-        mount_path: &VfsPath,
-    ) -> Result<(), VfsCatalogError>;
-}
-
-pub trait VfsCatalogStore: VfsSnapshotStore + VfsWorkspaceStore + VfsMountStore {}
-
-impl<T> VfsCatalogStore for T where T: VfsSnapshotStore + VfsWorkspaceStore + VfsMountStore {}
+impl<T> VfsCatalogStore for T where T: VfsSnapshotStore + VfsWorkspaceStore {}
 
 #[cfg(test)]
 mod tests {
@@ -328,16 +277,5 @@ mod tests {
         let encoded = serde_json::to_string(&workspace).unwrap();
         let decoded: VfsWorkspaceRecord = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded, workspace);
-
-        let mount = VfsMountRecord {
-            session_id: SessionId::new("session-1"),
-            mount_path: VfsPath::parse("/workspace").unwrap(),
-            source: VfsMountSource::Workspace { workspace_id },
-            access: VfsMountAccess::ReadWrite,
-        };
-        assert!(mount.access.is_writable());
-        let encoded = serde_json::to_string(&mount).unwrap();
-        let decoded: VfsMountRecord = serde_json::from_str(&encoded).unwrap();
-        assert_eq!(decoded, mount);
     }
 }

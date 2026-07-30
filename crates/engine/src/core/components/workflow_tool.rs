@@ -8,7 +8,7 @@ use uuid::Uuid;
 use crate::{
     BlobRef, CodecError, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, DomainError, PromiseId,
     RunId, SessionId, ToolBatchId, ToolCallId, ToolEffect, ToolKind, ToolName, ToolSpec, TurnId,
-    WorkflowToolInvocationId, WorkflowToolId, storage::StoredSessionEntry,
+    WorkflowToolId, WorkflowToolInvocationId, storage::StoredSessionEntry,
 };
 
 const MANAGED_TOOL_DECLARATION_VERSION: u32 = 1;
@@ -26,12 +26,11 @@ const WORKFLOW_ID_MAX_LEN: usize = 512;
 const WORKFLOW_KIND_MAX_LEN: usize = 128;
 const SEMANTIC_TYPE_MAX_LEN: usize = 192;
 const RECIPE_FINGERPRINT_MAX_LEN: usize = 256;
-const BINDING_FINGERPRINT_DOMAIN: &str = "lightspeed.workflow-tool.binding.v3";
+const BINDING_FINGERPRINT_DOMAIN: &str = "lightspeed.workflow-tool.binding.v4";
 const CREATION_FINGERPRINT_DOMAIN: &str = "lightspeed.managed-session.creation.v1";
-/// v3: the unused provider-visible `model_name` alias is removed. Target
-/// lifecycle, completion, and explicit completion-key source remain covered.
+/// v4: bound dispatch is explicit and participates in binding identity.
 /// Greenfield identity change.
-const FINGERPRINT_ENCODING_VERSION: u32 = 3;
+const FINGERPRINT_ENCODING_VERSION: u32 = 4;
 const INVOCATION_ID_DOMAIN: &str = "lightspeed.workflow-tool.invocation.v1";
 const COMPLETION_PROMISE_ID_DOMAIN: &str = "lightspeed.workflow-tool.promise.v1";
 const EXECUTION_ID_DOMAIN: &str = "lightspeed.workflow-tool.execution.v1";
@@ -53,6 +52,7 @@ const EFFECT_TURN_ID: &str = "turn_id";
 const EFFECT_TOOL_BATCH_ID: &str = "tool_batch_id";
 const EFFECT_TOOL_CALL_ID: &str = "tool_call_id";
 const EFFECT_ARGUMENTS_REF: &str = "arguments_ref";
+const EFFECT_EXECUTION_CONTEXT_REF: &str = "execution_context_ref";
 const EFFECT_COMPLETION_PROMISES: &str = "completion_promises";
 const EFFECT_COMPLETION_DEADLINE_MS: &str = "completion_deadline_ms";
 
@@ -122,21 +122,43 @@ impl WorkflowStartRef {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum WorkflowToolTarget {
-    Bound { receiver: WorkflowEndpointRef },
-    Start { start: WorkflowStartRef },
+    Bound {
+        receiver: WorkflowEndpointRef,
+        dispatch: BoundWorkflowToolDispatch,
+    },
+    Start {
+        start: WorkflowStartRef,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+/// How an invocation of a bound workflow tool reaches its receiver.
+pub enum BoundWorkflowToolDispatch {
+    /// The receiver consumes the invocation from the authorized session log.
+    Pull,
+    /// The runtime durably emits the invocation to the receiver workflow.
+    Push,
 }
 
 impl WorkflowToolTarget {
     pub fn validate(&self) -> Result<(), DomainError> {
         match self {
-            Self::Bound { receiver } => receiver.validate(),
+            Self::Bound { receiver, .. } => receiver.validate(),
             Self::Start { start } => start.validate(),
         }
     }
 
     pub fn bound_receiver(&self) -> Option<&WorkflowEndpointRef> {
         match self {
-            Self::Bound { receiver } => Some(receiver),
+            Self::Bound { receiver, .. } => Some(receiver),
+            Self::Start { .. } => None,
+        }
+    }
+
+    pub fn bound_dispatch(&self) -> Option<BoundWorkflowToolDispatch> {
+        match self {
+            Self::Bound { dispatch, .. } => Some(*dispatch),
             Self::Start { .. } => None,
         }
     }
@@ -145,12 +167,18 @@ impl WorkflowToolTarget {
 /// Completion contract of a workflow tool. Conceptually completion is a set
 /// of keyed promises, possibly empty: `Accepted` is the empty set,
 /// request/reply is the singleton set with the reserved key `reply`.
-/// Delivery is derived from completion — `Accepted` is pull-consumed at the
-/// run boundary, promise-bearing invocations are pushed.
+/// Bound dispatch is declared independently on the target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum WorkflowToolCompletion {
     Accepted,
+    Joined {
+        /// Schema the single semantic reply payload must satisfy.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_schema_ref: Option<BlobRef>,
+        /// Required non-zero hard deadline for the runtime-owned reply.
+        deadline_after_ms: u64,
+    },
     Promises {
         /// Schema every keyed resolution payload must satisfy.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,9 +225,7 @@ impl WorkflowToolCompletionKeySource {
                 }
                 Ok(())
             }
-            Self::StringArray { pointer } => {
-                validate_completion_pointer(pointer, max_promises)
-            }
+            Self::StringArray { pointer } => validate_completion_pointer(pointer, max_promises),
             Self::ArrayIndices { pointer, prefix } => {
                 validate_completion_pointer(pointer, max_promises)?;
                 let largest_key = format!("{prefix}{}", max_promises.saturating_sub(1));
@@ -217,6 +243,17 @@ impl WorkflowToolCompletion {
     pub fn validate(&self) -> Result<(), DomainError> {
         match self {
             Self::Accepted => Ok(()),
+            Self::Joined {
+                deadline_after_ms, ..
+            } => {
+                if *deadline_after_ms == 0 {
+                    return Err(DomainError::InvariantViolation(
+                        "joined workflow tool completion requires a non-zero deadline_after_ms"
+                            .to_owned(),
+                    ));
+                }
+                Ok(())
+            }
             Self::Promises {
                 max_promises,
                 key_source,
@@ -234,6 +271,10 @@ impl WorkflowToolCompletion {
     }
 
     pub fn is_promise_bearing(&self) -> bool {
+        matches!(self, Self::Joined { .. } | Self::Promises { .. })
+    }
+
+    pub fn exposes_model_owned_promises(&self) -> bool {
         matches!(self, Self::Promises { .. })
     }
 }
@@ -319,7 +360,7 @@ impl WorkflowToolDefinition {
                 self.tool_id
             )));
         }
-        if self.tool.target_requirement.namespace().is_some() {
+        if self.tool.target_requirement != crate::ToolTargetRequirement::None {
             return Err(DomainError::InvariantViolation(format!(
                 "workflow tool {} must not declare an execution target",
                 self.tool_id
@@ -358,6 +399,10 @@ pub struct WorkflowToolInvocation {
     pub tool_batch_id: ToolBatchId,
     pub tool_call_id: ToolCallId,
     pub arguments_ref: BlobRef,
+    /// Opaque, runtime-supplied context for the receiving workflow. This is
+    /// separate from model-authored arguments so runtime state can be pinned
+    /// without changing the tool's declared argument schema.
+    pub execution_context_ref: Option<BlobRef>,
     /// Keyed promise set created atomically with this invocation; `None`
     /// for notify (`Accepted`) completion. Request/reply is the single
     /// reserved key `reply`.
@@ -454,14 +499,7 @@ impl WorkflowToolBinding {
         definition.validate()?;
         target.validate()?;
         completion.validate()?;
-        if matches!(target, WorkflowToolTarget::Start { .. })
-            && !completion.is_promise_bearing()
-        {
-            return Err(DomainError::InvariantViolation(format!(
-                "workflow tool {} fire-and-forget start targets are deferred; start targets require promise-bearing completion",
-                definition.tool_id
-            )));
-        }
+        validate_target_completion(&definition.tool_id, &target, &completion)?;
         let binding_fingerprint =
             binding_fingerprint(session_universe_id, &definition, &target, &completion)?;
         Ok(Self {
@@ -482,7 +520,10 @@ impl WorkflowToolBinding {
         Self::admit(
             session_universe_id,
             definition,
-            WorkflowToolTarget::Bound { receiver },
+            WorkflowToolTarget::Bound {
+                receiver,
+                dispatch: BoundWorkflowToolDispatch::Pull,
+            },
             WorkflowToolCompletion::Accepted,
         )
     }
@@ -495,14 +536,7 @@ impl WorkflowToolBinding {
         self.definition.validate()?;
         self.target.validate()?;
         self.completion.validate()?;
-        if matches!(self.target, WorkflowToolTarget::Start { .. })
-            && !self.completion.is_promise_bearing()
-        {
-            return Err(DomainError::InvariantViolation(format!(
-                "workflow tool {} start target requires promise-bearing completion",
-                self.definition.tool_id
-            )));
-        }
+        validate_target_completion(&self.definition.tool_id, &self.target, &self.completion)?;
         let expected = binding_fingerprint(
             self.session_universe_id,
             &self.definition,
@@ -546,9 +580,55 @@ impl WorkflowToolDeclaration {
     pub fn bound_notify(definition: WorkflowToolDefinition, receiver: WorkflowEndpointRef) -> Self {
         Self::new(
             definition,
-            WorkflowToolTarget::Bound { receiver },
+            WorkflowToolTarget::Bound {
+                receiver,
+                dispatch: BoundWorkflowToolDispatch::Pull,
+            },
             WorkflowToolCompletion::Accepted,
         )
+    }
+}
+
+fn validate_target_completion(
+    tool_id: &WorkflowToolId,
+    target: &WorkflowToolTarget,
+    completion: &WorkflowToolCompletion,
+) -> Result<(), DomainError> {
+    match (target, completion) {
+        (
+            WorkflowToolTarget::Bound {
+                dispatch: BoundWorkflowToolDispatch::Pull,
+                ..
+            },
+            WorkflowToolCompletion::Accepted,
+        )
+        | (
+            WorkflowToolTarget::Bound {
+                dispatch: BoundWorkflowToolDispatch::Push,
+                ..
+            },
+            WorkflowToolCompletion::Accepted
+            | WorkflowToolCompletion::Joined { .. }
+            | WorkflowToolCompletion::Promises { .. },
+        )
+        | (
+            WorkflowToolTarget::Start { .. },
+            WorkflowToolCompletion::Joined { .. } | WorkflowToolCompletion::Promises { .. },
+        ) => Ok(()),
+        (
+            WorkflowToolTarget::Bound {
+                dispatch: BoundWorkflowToolDispatch::Pull,
+                ..
+            },
+            WorkflowToolCompletion::Joined { .. } | WorkflowToolCompletion::Promises { .. },
+        ) => Err(DomainError::InvariantViolation(format!(
+            "workflow tool {tool_id} pull dispatch supports Accepted completion only"
+        ))),
+        (WorkflowToolTarget::Start { .. }, WorkflowToolCompletion::Accepted) => {
+            Err(DomainError::InvariantViolation(format!(
+                "workflow tool {tool_id} fire-and-forget start targets are deferred; start targets require promise-bearing completion"
+            )))
+        }
     }
 }
 
@@ -656,13 +736,15 @@ fn validate_controller_self_receiver(
     if binding.bound_receiver() != lifecycle_controller || lifecycle_controller.is_none() {
         return Ok(());
     }
-    if let WorkflowToolCompletion::Promises {
-        deadline_after_ms: Some(deadline_after_ms),
-        ..
-    } = &binding.completion
-        && *deadline_after_ms > 0
-    {
-        return Ok(());
+    match &binding.completion {
+        WorkflowToolCompletion::Joined {
+            deadline_after_ms, ..
+        } if *deadline_after_ms > 0 => return Ok(()),
+        WorkflowToolCompletion::Promises {
+            deadline_after_ms: Some(deadline_after_ms),
+            ..
+        } if *deadline_after_ms > 0 => return Ok(()),
+        _ => {}
     }
     if binding.completion.is_promise_bearing() {
         return Err(DomainError::InvariantViolation(format!(
@@ -827,11 +909,9 @@ impl WorkflowToolEmissionReadProjection<'_> {
                     })?;
                 validate_invocation_against_binding(binding, invocation)
                     .and_then(|()| require_bound_target(binding))
-                    .map_err(|error| {
-                        ReadToolEmissionsError::InvocationBindingMismatch {
-                            invocation_id: invocation.invocation_id.clone(),
-                            message: error.to_string(),
-                        }
+                    .map_err(|error| ReadToolEmissionsError::InvocationBindingMismatch {
+                        invocation_id: invocation.invocation_id.clone(),
+                        message: error.to_string(),
                     })?;
                 let expected_id = WorkflowToolInvocationId::for_call(
                     invocation.session_universe_id,
@@ -1189,10 +1269,8 @@ pub(crate) fn apply_event(
             let WorkflowToolTarget::Start { start } = &binding.target else {
                 unreachable!("start target was required above");
             };
-            let expected_execution_id = workflow_tool_execution_id(
-                &invocation.invocation_id,
-                &start.recipe_fingerprint,
-            );
+            let expected_execution_id =
+                workflow_tool_execution_id(&invocation.invocation_id, &start.recipe_fingerprint);
             if execution_id != &expected_execution_id {
                 return Err(DomainError::InvariantViolation(format!(
                     "workflow tool start intent {} execution id is not the canonical derivation",
@@ -1328,6 +1406,12 @@ pub fn workflow_tool_emit_effect(invocation: &WorkflowToolInvocation) -> ToolEff
         EFFECT_ARGUMENTS_REF.to_owned(),
         invocation.arguments_ref.as_str().to_owned(),
     );
+    if let Some(context_ref) = &invocation.execution_context_ref {
+        data.insert(
+            EFFECT_EXECUTION_CONTEXT_REF.to_owned(),
+            context_ref.as_str().to_owned(),
+        );
+    }
     if let Some(promises) = &invocation.completion_promises {
         let encoded: BTreeMap<&str, &str> = promises
             .iter()
@@ -1424,6 +1508,17 @@ pub(crate) fn invocation_from_emit_effect(
             "workflow tool emit effect has invalid arguments ref: {error}"
         ))
     })?;
+    let execution_context_ref = effect
+        .data
+        .get(EFFECT_EXECUTION_CONTEXT_REF)
+        .map(|value| {
+            BlobRef::parse(value.clone()).map_err(|error| {
+                DomainError::InvariantViolation(format!(
+                    "workflow tool emit effect has invalid execution context ref: {error}"
+                ))
+            })
+        })
+        .transpose()?;
     let completion_promises = effect
         .data
         .get(EFFECT_COMPLETION_PROMISES)
@@ -1464,6 +1559,7 @@ pub(crate) fn invocation_from_emit_effect(
         )?),
         tool_call_id,
         arguments_ref,
+        execution_context_ref,
         completion_promises,
     }))
 }
@@ -1622,10 +1718,31 @@ fn validate_completion_promises(
         (WorkflowToolCompletion::Accepted, Some(_)) => Err(DomainError::InvariantViolation(
             "notify-only workflow tool invocation must not include completion promises".to_owned(),
         )),
-        (WorkflowToolCompletion::Promises { .. }, None) => Err(DomainError::InvariantViolation(
-            "promise-bearing workflow tool invocation is missing its completion promises"
-                .to_owned(),
-        )),
+        (WorkflowToolCompletion::Joined { .. } | WorkflowToolCompletion::Promises { .. }, None) => {
+            Err(DomainError::InvariantViolation(
+                "promise-bearing workflow tool invocation is missing its completion promises"
+                    .to_owned(),
+            ))
+        }
+        (WorkflowToolCompletion::Joined { .. }, Some(promises)) => {
+            if promises.len() != 1 || !promises.contains_key(REPLY_COMPLETION_KEY) {
+                return Err(DomainError::InvariantViolation(format!(
+                    "joined workflow tool invocation must use the single reserved completion key `{REPLY_COMPLETION_KEY}`"
+                )));
+            }
+            let promise_id = promises
+                .get(REPLY_COMPLETION_KEY)
+                .expect("joined reply key was checked above");
+            let expected =
+                workflow_tool_promise_id(&invocation.invocation_id, REPLY_COMPLETION_KEY);
+            if promise_id != &expected {
+                return Err(DomainError::InvariantViolation(format!(
+                    "workflow tool completion promise {} is not the canonical derivation for key `{REPLY_COMPLETION_KEY}`",
+                    promise_id
+                )));
+            }
+            Ok(())
+        }
         (
             WorkflowToolCompletion::Promises {
                 max_promises,
@@ -1727,11 +1844,56 @@ fn validate_invocation_against_state(
         .expect("binding was validated above");
     if call.call.tool_name != binding.definition.tool.name
         || call.call.arguments_ref != invocation.arguments_ref
-        || call.status != crate::ToolCallStatus::Succeeded
     {
         return Err(DomainError::InvariantViolation(
-            "workflow tool invocation does not match a successful durable tool call".to_owned(),
+            "workflow tool invocation does not match its durable tool call".to_owned(),
         ));
+    }
+    match &binding.completion {
+        WorkflowToolCompletion::Joined { .. } => {
+            if call.status != crate::ToolCallStatus::Pending {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow tool invocation requires its original call to remain pending"
+                        .to_owned(),
+                ));
+            }
+            let Some(parked) = active_run.parked_tool_batch.as_ref() else {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow tool invocation requires a parked tool batch".to_owned(),
+                ));
+            };
+            let crate::ToolBatchSuspension::JoinedWorkflowCalls { calls, .. } = &parked.suspension
+            else {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow tool invocation requires a joined-workflow suspension"
+                        .to_owned(),
+                ));
+            };
+            if parked.batch_id != invocation.tool_batch_id
+                || !calls.iter().any(|joined| {
+                    joined.call_id == invocation.tool_call_id
+                        && joined.invocation_id == invocation.invocation_id
+                        && invocation
+                            .completion_promises
+                            .as_ref()
+                            .and_then(|promises| promises.get(REPLY_COMPLETION_KEY))
+                            == Some(&joined.promise_id)
+                })
+            {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow tool invocation is missing its durable parked mapping"
+                        .to_owned(),
+                ));
+            }
+        }
+        WorkflowToolCompletion::Accepted | WorkflowToolCompletion::Promises { .. } => {
+            if call.status != crate::ToolCallStatus::Succeeded {
+                return Err(DomainError::InvariantViolation(
+                    "workflow tool invocation does not match a successful durable tool call"
+                        .to_owned(),
+                ));
+            }
+        }
     }
     if let Some(promises) = &invocation.completion_promises {
         // Promise::Created events precede Emitted in the same append, so
@@ -1744,9 +1906,15 @@ fn validate_invocation_against_state(
                 ))
             })?;
             let expected_source = completion_promise_source(binding, invocation, key)?;
-            if promise.source != expected_source {
+            let expected_ownership =
+                if matches!(binding.completion, WorkflowToolCompletion::Joined { .. }) {
+                    crate::PromiseOwnership::Runtime
+                } else {
+                    crate::PromiseOwnership::Model
+                };
+            if promise.source != expected_source || promise.ownership != expected_ownership {
                 return Err(DomainError::InvariantViolation(format!(
-                    "workflow tool completion promise for key `{key}` has a mismatched source"
+                    "workflow tool completion promise for key `{key}` has mismatched source or ownership"
                 )));
             }
         }
@@ -1764,10 +1932,9 @@ pub fn completion_promise_source(
     key: &str,
 ) -> Result<crate::PromiseSource, DomainError> {
     let (producer_workflow_id, producer_workflow_kind) = match &binding.target {
-        WorkflowToolTarget::Bound { receiver } => (
-            receiver.workflow_id.clone(),
-            receiver.workflow_kind.clone(),
-        ),
+        WorkflowToolTarget::Bound { receiver, .. } => {
+            (receiver.workflow_id.clone(), receiver.workflow_kind.clone())
+        }
         WorkflowToolTarget::Start { start } => (
             workflow_tool_execution_id(&invocation.invocation_id, &start.recipe_fingerprint),
             WORKFLOW_TOOL_EXECUTION_KIND.to_owned(),
@@ -1890,9 +2057,16 @@ fn binding_fingerprint(
 
 fn update_target_fingerprint(hasher: &mut Sha256, target: &WorkflowToolTarget) {
     match target {
-        WorkflowToolTarget::Bound { receiver } => {
+        WorkflowToolTarget::Bound { receiver, dispatch } => {
             update_digest_part(hasher, b"bound");
             update_endpoint_fingerprint(hasher, receiver);
+            update_digest_part(
+                hasher,
+                match dispatch {
+                    BoundWorkflowToolDispatch::Pull => b"pull",
+                    BoundWorkflowToolDispatch::Push => b"push",
+                },
+            );
         }
         WorkflowToolTarget::Start { start } => {
             update_digest_part(hasher, b"start");
@@ -1909,6 +2083,19 @@ fn update_completion_fingerprint(hasher: &mut Sha256, completion: &WorkflowToolC
         WorkflowToolCompletion::Accepted => {
             update_digest_part(hasher, b"accepted");
         }
+        WorkflowToolCompletion::Joined {
+            reply_schema_ref,
+            deadline_after_ms,
+        } => {
+            update_digest_part(hasher, b"joined");
+            update_optional_part(
+                hasher,
+                reply_schema_ref
+                    .as_ref()
+                    .map(|blob_ref| blob_ref.as_str().as_bytes()),
+            );
+            update_digest_part(hasher, &deadline_after_ms.to_be_bytes());
+        }
         WorkflowToolCompletion::Promises {
             reply_schema_ref,
             deadline_after_ms,
@@ -1924,7 +2111,10 @@ fn update_completion_fingerprint(hasher: &mut Sha256, completion: &WorkflowToolC
             );
             update_optional_part(
                 hasher,
-                deadline_after_ms.map(u64::to_be_bytes).as_ref().map(|bytes| bytes.as_slice()),
+                deadline_after_ms
+                    .map(u64::to_be_bytes)
+                    .as_ref()
+                    .map(|bytes| bytes.as_slice()),
             );
             update_digest_part(hasher, &max_promises.to_be_bytes());
             match key_source {
@@ -2163,6 +2353,7 @@ mod tests {
                     definition("approve", "request_approval"),
                     WorkflowToolTarget::Bound {
                         receiver: controller.clone(),
+                        dispatch: BoundWorkflowToolDispatch::Push,
                     },
                     reply_completion_with_deadline(deadline_after_ms),
                 )],
@@ -2170,7 +2361,11 @@ mod tests {
             let error = to_controller.admit(universe_id).expect_err(
                 "promise-bearing completion bound to the controller needs a hard deadline",
             );
-            assert!(error.to_string().contains("non-zero promise deadline_after_ms"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("non-zero promise deadline_after_ms")
+            );
         }
 
         ManagedSessionWorkflowTools::v1(
@@ -2179,6 +2374,7 @@ mod tests {
                 definition("approve", "request_approval"),
                 WorkflowToolTarget::Bound {
                     receiver: controller.clone(),
+                    dispatch: BoundWorkflowToolDispatch::Push,
                 },
                 reply_completion_with_deadline(Some(30_000)),
             )],
@@ -2190,7 +2386,10 @@ mod tests {
             Some(controller),
             vec![WorkflowToolDeclaration::new(
                 definition("approve", "request_approval"),
-                WorkflowToolTarget::Bound { receiver: service },
+                WorkflowToolTarget::Bound {
+                    receiver: service,
+                    dispatch: BoundWorkflowToolDispatch::Push,
+                },
                 reply_completion(),
             )],
         );
@@ -2208,6 +2407,7 @@ mod tests {
             definition("approve", "request_approval"),
             WorkflowToolTarget::Bound {
                 receiver: controller.clone(),
+                dispatch: BoundWorkflowToolDispatch::Push,
             },
             reply_completion(),
         )
@@ -2231,7 +2431,11 @@ mod tests {
 
         let error = apply_config_event(&mut state, &event)
             .expect_err("durable replay must reject a deadline-free controller self-receiver");
-        assert!(error.to_string().contains("non-zero promise deadline_after_ms"));
+        assert!(
+            error
+                .to_string()
+                .contains("non-zero promise deadline_after_ms")
+        );
     }
 
     #[test]
@@ -2243,7 +2447,10 @@ mod tests {
             WorkflowToolTarget::Start { start: start_ref() },
             WorkflowToolCompletion::Accepted,
         );
-        assert!(fire_and_forget.is_err(), "fire-and-forget start is deferred");
+        assert!(
+            fire_and_forget.is_err(),
+            "fire-and-forget start is deferred"
+        );
 
         WorkflowToolBinding::admit(
             universe_id,
@@ -2264,10 +2471,27 @@ mod tests {
             receiver.clone(),
         )
         .expect("notify binding");
+        let pushed_notify = WorkflowToolBinding::admit(
+            universe_id,
+            definition("approve", "request_approval"),
+            WorkflowToolTarget::Bound {
+                receiver: receiver.clone(),
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
+            WorkflowToolCompletion::Accepted,
+        )
+        .expect("pushed notify binding");
+        assert_ne!(
+            notify.binding_fingerprint,
+            pushed_notify.binding_fingerprint
+        );
         let request_reply = WorkflowToolBinding::admit(
             universe_id,
             definition("approve", "request_approval"),
-            WorkflowToolTarget::Bound { receiver },
+            WorkflowToolTarget::Bound {
+                receiver,
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
             reply_completion(),
         )
         .expect("request/reply binding");
@@ -2281,6 +2505,7 @@ mod tests {
             definition("approve", "request_approval"),
             WorkflowToolTarget::Bound {
                 receiver: endpoint("service::approvals-1"),
+                dispatch: BoundWorkflowToolDispatch::Push,
             },
             WorkflowToolCompletion::Promises {
                 reply_schema_ref: None,
@@ -2308,13 +2533,102 @@ mod tests {
     }
 
     #[test]
+    fn pull_dispatch_rejects_promise_completion() {
+        let error = WorkflowToolBinding::admit(
+            Uuid::from_u128(1),
+            definition("approve", "request_approval"),
+            WorkflowToolTarget::Bound {
+                receiver: endpoint("service::approvals-1"),
+                dispatch: BoundWorkflowToolDispatch::Pull,
+            },
+            reply_completion(),
+        )
+        .expect_err("pull dispatch cannot strand promise completion");
+        assert!(
+            error
+                .to_string()
+                .contains("pull dispatch supports Accepted")
+        );
+    }
+
+    #[test]
+    fn joined_completion_requires_push_or_start_and_a_hard_deadline() {
+        let universe_id = Uuid::from_u128(1);
+        let receiver = endpoint("service::approvals-1");
+        let zero_deadline = WorkflowToolBinding::admit(
+            universe_id,
+            definition("approve", "request_approval"),
+            WorkflowToolTarget::Bound {
+                receiver: receiver.clone(),
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 0,
+            },
+        )
+        .expect_err("Joined requires a non-zero hard deadline");
+        assert!(zero_deadline.to_string().contains("non-zero deadline"));
+
+        let pull = WorkflowToolBinding::admit(
+            universe_id,
+            definition("approve", "request_approval"),
+            WorkflowToolTarget::Bound {
+                receiver: receiver.clone(),
+                dispatch: BoundWorkflowToolDispatch::Pull,
+            },
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect_err("pull cannot carry Joined completion");
+        assert!(pull.to_string().contains("pull dispatch supports Accepted"));
+
+        let pushed = WorkflowToolBinding::admit(
+            universe_id,
+            definition("approve", "request_approval"),
+            WorkflowToolTarget::Bound {
+                receiver,
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect("pushed Joined binding");
+        let started = WorkflowToolBinding::admit(
+            universe_id,
+            definition("launch", "launch_job"),
+            WorkflowToolTarget::Start { start: start_ref() },
+            WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: 30_000,
+            },
+        )
+        .expect("start Joined binding");
+        assert_eq!(
+            pushed.binding_fingerprint.as_str(),
+            "wtb:sha256:3c55e41daada8143c065da53c64c117c41183fe988c9d2902e43d63d21eebe30"
+        );
+        assert_eq!(
+            started.binding_fingerprint.as_str(),
+            "wtb:sha256:ffc405f383f4ce121255910991ecc5cbe54dd7f667066c923196282c346ec5f1"
+        );
+    }
+
+    #[test]
     fn completion_promise_map_must_be_canonical() {
         let universe_id = Uuid::from_u128(1);
         let receiver = endpoint("service::approvals-1");
         let binding = WorkflowToolBinding::admit(
             universe_id,
             definition("approve", "request_approval"),
-            WorkflowToolTarget::Bound { receiver },
+            WorkflowToolTarget::Bound {
+                receiver,
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
             reply_completion(),
         )
         .expect("binding");
@@ -2341,8 +2655,16 @@ mod tests {
             tool_batch_id: ToolBatchId::new(1),
             tool_call_id: ToolCallId::new("call-1"),
             arguments_ref: BlobRef::from_bytes(b"{}"),
+            execution_context_ref: None,
             completion_promises: None,
         };
+
+        invocation.execution_context_ref = Some(BlobRef::from_bytes(b"runtime context"));
+        let effect = workflow_tool_emit_effect(&invocation);
+        assert_eq!(
+            invocation_from_emit_effect(&effect).expect("decode emit effect"),
+            Some(invocation.clone())
+        );
 
         // Missing map on a promise-bearing binding.
         assert!(validate_completion_promises(&binding, &invocation).is_err());
@@ -2579,6 +2901,13 @@ mod tests {
             .get(&definition.tool_id)
             .cloned()
             .expect("durable workflow-tool binding");
+        assert!(request.calls.iter().all(|call| {
+            call.workflow_tool.as_ref().is_some_and(|runtime| {
+                runtime.version == crate::WorkflowToolCallRuntime::VERSION
+                    && runtime.binding == binding
+                    && runtime.prior_emission_count == 0
+            })
+        }));
         let invocations = request
             .calls
             .iter()
@@ -2603,6 +2932,7 @@ mod tests {
                 tool_batch_id: request.batch_id,
                 tool_call_id: call.call_id.clone(),
                 arguments_ref: call.arguments_ref.clone(),
+                execution_context_ref: None,
                 completion_promises: None,
             })
             .collect::<Vec<_>>();
@@ -2736,10 +3066,16 @@ mod tests {
             other_universe.bindings[0].binding_fingerprint
         );
         assert_ne!(left.creation_fingerprint, retargeted.creation_fingerprint);
-        assert_eq!(left.bindings[0].bound_receiver().cloned().unwrap(), controller);
+        assert_eq!(
+            left.bindings[0].bound_receiver().cloned().unwrap(),
+            controller
+        );
         assert_eq!(left.bindings[1].bound_receiver().cloned().unwrap(), service);
         assert_eq!(plugin_only.lifecycle_controller, None);
-        assert_eq!(plugin_only.bindings[0].bound_receiver().cloned().unwrap(), service);
+        assert_eq!(
+            plugin_only.bindings[0].bound_receiver().cloned().unwrap(),
+            service
+        );
         assert!(
             left.bindings
                 .iter()
@@ -2749,11 +3085,11 @@ mod tests {
         // and JSON formatting must never participate in these identities.
         assert_eq!(
             left.bindings[0].binding_fingerprint,
-            "wtb:sha256:61ca7103faaffe5d64f60c44ec348ee3ee26ede9328fa3373ac764b966a3c750"
+            "wtb:sha256:6ad3ad9ad868730cb7b96175e0e4107c370f4b722c4d05dcc556eb85555c0413"
         );
         assert_eq!(
             left.creation_fingerprint,
-            "msc:sha256:4e78a0b2012367125a485e2046b21ecea2de8c54a754990127a5ed98d54adabf"
+            "msc:sha256:cb2dd0c577f95b171e9631f1ecb7bd2f3166d191b6e1f9f3039381ebe9aa407b"
         );
     }
 

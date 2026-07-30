@@ -1,5 +1,4 @@
--- P96: provider presence, universe-owned environment instances, session
--- bindings, and environment-owned durable jobs.
+-- Universe environment providers, environments, and credentials.
 
 CREATE TABLE IF NOT EXISTS environment_providers (
     universe_id uuid NOT NULL
@@ -46,7 +45,7 @@ CREATE INDEX IF NOT EXISTS environment_providers_status_idx
 
 CREATE TABLE IF NOT EXISTS environments (
     universe_id uuid NOT NULL,
-    instance_id text NOT NULL,
+    environment_id text NOT NULL,
     provider_id text NOT NULL,
     provider_target_id text NOT NULL,
     origin text NOT NULL,
@@ -61,13 +60,13 @@ CREATE TABLE IF NOT EXISTS environments (
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
 
-    PRIMARY KEY (universe_id, instance_id),
+    PRIMARY KEY (universe_id, environment_id),
     UNIQUE (universe_id, provider_id, provider_target_id),
     FOREIGN KEY (universe_id, provider_id)
         REFERENCES environment_providers (universe_id, provider_id)
         ON DELETE RESTRICT,
-    CONSTRAINT environments_instance_id_format
-        CHECK (instance_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
+    CONSTRAINT environments_environment_id_format
+        CHECK (environment_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
     CONSTRAINT environments_provider_target_id_format
         CHECK (provider_target_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
     CONSTRAINT environments_origin_known
@@ -83,44 +82,11 @@ CREATE TABLE IF NOT EXISTS environments (
 );
 
 CREATE INDEX IF NOT EXISTS environments_provider_status_idx
-    ON environments (universe_id, provider_id, status, instance_id);
+    ON environments (universe_id, provider_id, status, environment_id);
 
-CREATE TABLE IF NOT EXISTS session_environment_bindings (
+CREATE TABLE IF NOT EXISTS environment_credentials (
     universe_id uuid NOT NULL,
-    session_id text NOT NULL,
-    env_id text NOT NULL,
-    instance_id text NOT NULL,
-    state text NOT NULL,
-    cwd text,
-    fs_routes_json jsonb NOT NULL DEFAULT '[]',
-    created_at_ms bigint NOT NULL,
-    updated_at_ms bigint NOT NULL,
-
-    PRIMARY KEY (universe_id, session_id, env_id),
-    FOREIGN KEY (universe_id, session_id)
-        REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
-    FOREIGN KEY (universe_id, instance_id)
-        REFERENCES environments (universe_id, instance_id) ON DELETE RESTRICT,
-    CONSTRAINT session_environment_bindings_env_id_format
-        CHECK (env_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
-    CONSTRAINT session_environment_bindings_state_known
-        CHECK (state IN ('attached', 'detached')),
-    CONSTRAINT session_environment_bindings_fs_routes_array
-        CHECK (jsonb_typeof(fs_routes_json) = 'array'),
-    CONSTRAINT session_environment_bindings_times_valid
-        CHECK (created_at_ms >= 0 AND updated_at_ms >= created_at_ms)
-);
-
-CREATE INDEX IF NOT EXISTS session_environment_bindings_instance_idx
-    ON session_environment_bindings (universe_id, instance_id, state, session_id, env_id);
-
-CREATE INDEX IF NOT EXISTS session_environment_bindings_session_state_idx
-    ON session_environment_bindings (universe_id, session_id, state, env_id);
-
-CREATE TABLE IF NOT EXISTS session_environment_credentials (
-    universe_id uuid NOT NULL,
-    session_id text NOT NULL,
-    env_id text NOT NULL,
+    environment_id text NOT NULL,
     env_name text NOT NULL,
     source_kind text NOT NULL,
     grant_id text,
@@ -129,9 +95,9 @@ CREATE TABLE IF NOT EXISTS session_environment_credentials (
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
 
-    PRIMARY KEY (universe_id, session_id, env_id, env_name),
-    FOREIGN KEY (universe_id, session_id, env_id)
-        REFERENCES session_environment_bindings (universe_id, session_id, env_id)
+    PRIMARY KEY (universe_id, environment_id, env_name),
+    FOREIGN KEY (universe_id, environment_id)
+        REFERENCES environments (universe_id, environment_id)
         ON DELETE CASCADE,
     FOREIGN KEY (universe_id, grant_id)
         REFERENCES auth_grants (universe_id, grant_id) ON DELETE RESTRICT,
@@ -139,16 +105,16 @@ CREATE TABLE IF NOT EXISTS session_environment_credentials (
         REFERENCES auth_providers (universe_id, provider_id) ON DELETE RESTRICT,
     FOREIGN KEY (universe_id, secret_id)
         REFERENCES auth_secrets (universe_id, secret_id) ON DELETE RESTRICT,
-    CONSTRAINT session_environment_credentials_env_name_format
+    CONSTRAINT environment_credentials_env_name_format
         CHECK (env_name ~ '^[A-Za-z_][A-Za-z0-9_]{0,127}$'),
-    CONSTRAINT session_environment_credentials_source_kind_known
+    CONSTRAINT environment_credentials_source_kind_known
         CHECK (source_kind IN ('auth_grant', 'auth_provider_credential', 'direct_secret')),
-    CONSTRAINT session_environment_credentials_source_exactly_one CHECK (
+    CONSTRAINT environment_credentials_source_exactly_one CHECK (
         (source_kind = 'auth_grant' AND grant_id IS NOT NULL AND auth_provider_id IS NULL AND secret_id IS NULL)
         OR (source_kind = 'auth_provider_credential' AND grant_id IS NULL AND auth_provider_id IS NOT NULL AND secret_id IS NULL)
         OR (source_kind = 'direct_secret' AND grant_id IS NULL AND auth_provider_id IS NULL AND secret_id IS NOT NULL)
     ),
-    CONSTRAINT session_environment_credentials_times_valid
+    CONSTRAINT environment_credentials_times_valid
         CHECK (created_at_ms >= 0 AND updated_at_ms >= created_at_ms)
 );
 
@@ -160,6 +126,6 @@ DROP TABLE IF EXISTS environment_job_groups;
 COMMENT ON TABLE environment_providers IS
     'Universe-scoped liveness leases for environment provider controllers.';
 COMMENT ON TABLE environments IS
-    'Universe-owned environment instances; the current connection source of truth.';
-COMMENT ON TABLE session_environment_bindings IS
-    'Session-local env:<id> aliases referencing environment instances.';
+    'Universe-owned environments; the current provider connection source of truth.';
+COMMENT ON TABLE environment_credentials IS
+    'Universe-owned credential bindings for an environment.';

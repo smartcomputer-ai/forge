@@ -312,37 +312,31 @@ mod tests {
     }
 
     #[test]
-    fn env_list_parse_accepts_session() {
+    fn env_list_parse_accepts_universe_scope() {
         let cli = Cli::try_parse_from([
             "lightspeed",
             "env",
             "list",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
         ])
         .expect("parse env list");
         assert!(matches!(cli.command, Command::Env(_)));
     }
 
     #[test]
-    fn env_attach_parse_accepts_environment_instance() {
+    fn env_activate_parse_accepts_environment() {
         let cli = Cli::try_parse_from([
             "lightspeed",
             "env",
-            "attach",
+            "activate",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
             "--session",
             "session_1",
-            "--instance-id",
-            "instance_1",
-            "--env-id",
-            "local-host",
-            "--activate",
+            "environment_1",
         ])
-        .expect("parse env attach");
+        .expect("parse env activate");
         assert!(matches!(cli.command, Command::Env(_)));
     }
 
@@ -354,8 +348,6 @@ mod tests {
             "close",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
             "local-host",
         ])
         .expect("parse env close");
@@ -371,9 +363,6 @@ mod tests {
             "bind",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "--env-id",
             "local-host",
             "--env-name",
             "GITHUB_TOKEN",
@@ -393,9 +382,6 @@ mod tests {
             "bind",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "--env-id",
             "local-host",
             "--env-name",
             "GITHUB_TOKEN",
@@ -417,9 +403,6 @@ mod tests {
             "list",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "--env-id",
             "local-host",
         ])
         .expect("parse env credentials list");
@@ -435,9 +418,6 @@ mod tests {
             "unbind",
             "--api-url",
             "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "--env-id",
             "local-host",
             "--env-name",
             "GITHUB_TOKEN",

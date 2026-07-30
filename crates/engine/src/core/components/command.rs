@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    BlobRef, ContextEntryInput, ContextEntryKey, ManagedSessionWorkflowTools, PromiseId,
-    PromiseResolution, ResumeAwaitCommand, RunId, RunRequestCommand, SessionConfig,
-    SubmitMessageCommand, ToolExecutionTarget, ToolName, ToolPatch, ToolSpec,
-    WorkflowToolDeclaration, WorkflowToolInvocationId,
+    BlobRef, ContextEntryInput, ContextEntryKey, EnvironmentId, ManagedSessionWorkflowTools,
+    PromiseId, PromiseResolution, ResumeToolBatchCommand, RunId, RunRequestCommand, SessionConfig,
+    SubmitMessageCommand, ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration,
+    WorkflowToolInvocationId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,12 +51,10 @@ pub enum CoreAgentCommand {
         expected_revision: Option<u64>,
         patch: ToolPatch,
     },
-    SetDefaultToolTarget {
-        target: ToolExecutionTarget,
+    SetActiveEnvironment {
+        environment_id: EnvironmentId,
     },
-    ClearDefaultToolTarget {
-        namespace: String,
-    },
+    ClearActiveEnvironment,
     UpsertContext {
         #[serde(default)]
         expected_revision: Option<u64>,
@@ -92,7 +90,7 @@ pub enum CoreAgentCommand {
     ForceCancelRun {
         run_id: RunId,
     },
-    ResumeAwait(ResumeAwaitCommand),
+    ResumeToolBatch(ResumeToolBatchCommand),
     /// Deliver a promise resolution. All transports converge here; a promise
     /// that is already terminal makes this an idempotent no-op
     /// (first-writer-wins).

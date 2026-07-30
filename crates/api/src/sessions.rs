@@ -65,8 +65,23 @@ pub struct WorkflowToolDeclarationInput {
     deny_unknown_fields
 )]
 pub enum WorkflowToolTargetInput {
-    Bound { receiver: WorkflowEndpointInput },
-    Start { start: WorkflowStartRefInput },
+    Bound {
+        receiver: WorkflowEndpointInput,
+        dispatch: BoundWorkflowToolDispatchInput,
+    },
+    Start {
+        start: WorkflowStartRefInput,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+/// How an invocation of a bound workflow tool reaches its receiver.
+pub enum BoundWorkflowToolDispatchInput {
+    /// The receiver consumes the invocation from the authorized session log.
+    Pull,
+    /// The runtime durably emits the invocation to the receiver workflow.
+    Push,
 }
 
 /// Opaque reference to a workflow-substrate recipe already stored through
@@ -81,9 +96,9 @@ pub struct WorkflowStartRefInput {
     pub recipe_fingerprint: String,
 }
 
-/// Completion contract for one workflow-tool invocation. Accepted tools
-/// produce no promises. Promise-bearing tools derive one or more promise keys
-/// from validated arguments and are pushed to their target workflow.
+/// Completion contract for one workflow-tool invocation. Joined tools park
+/// the original call on one runtime-owned reply; Promises exposes handles for
+/// model-controlled concurrency.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "type",
@@ -93,6 +108,11 @@ pub struct WorkflowStartRefInput {
 )]
 pub enum WorkflowToolCompletionInput {
     Accepted,
+    Joined {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_schema_ref: Option<String>,
+        deadline_after_ms: u64,
+    },
     Promises {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reply_schema_ref: Option<String>,
@@ -275,16 +295,19 @@ pub struct FeaturesConfig {
     pub mcp: Option<McpFeature>,
 }
 
-/// Grants the session virtual filesystem: mounts may be attached and the VFS
-/// catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
+/// Grants the session virtual filesystem. Workspace links declare the
+/// session-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
 /// no tools and no sourcing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VfsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
+    /// Catalog resources exposed in the session's workspace namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<WorkspaceLink>,
     /// Agent-facing filesystem tool surface; absent = no fs tools. Per-path
-    /// writability is defined by each mount's own access.
+    /// writability is defined by each workspace link's own access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
     /// Prompt-instruction sourcing from the VFS.
@@ -293,6 +316,32 @@ pub struct VfsFeature {
     /// Skill discovery sourcing from the VFS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<VfsSkillsConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceLink {
+    pub path: String,
+    pub target: WorkspaceLinkTarget,
+    pub access: WorkspaceLinkAccess,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum WorkspaceLinkTarget {
+    Workspace { workspace_id: String },
+    Snapshot { snapshot_ref: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceLinkAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -399,8 +448,9 @@ pub struct TimersFeature {
     pub version: u32,
 }
 
-/// Grants attaching/activating session environments and their process tool
-/// surface. Durable jobs are an independent, default-off sub-grant.
+/// Grants active session environments and their process tool surface.
+/// Model-driven selection and durable jobs are independent, default-off
+/// sub-grants.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EnvironmentsFeature {
@@ -409,9 +459,15 @@ pub struct EnvironmentsFeature {
     /// Absent means every registered provider is allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<EnvironmentProviderId>>,
+    /// Exposes `environment_list`, `environment_activate`, and
+    /// `environment_deactivate` to the model. `environment_read` is available
+    /// whenever environments are enabled, and external API/profile activation
+    /// remains available when this is false.
+    #[serde(default)]
+    pub selection_tools: bool,
     /// Grants the advanced durable-job tool surface. The workflow binding is
-    /// installed for the session when granted; model-visible tools still
-    /// require a ready attached environment with matching job capabilities.
+    /// installed for the session when granted; invocations still require an
+    /// active, ready environment with matching job capabilities.
     #[serde(default)]
     pub jobs: bool,
 }
@@ -555,11 +611,10 @@ pub enum ToolParallelismView {
 pub enum ToolTargetRequirementView {
     #[default]
     None,
-    Optional {
-        namespace: String,
-    },
-    Required {
-        namespace: String,
+    SessionFilesystem,
+    ActiveEnvironment,
+    Fixed {
+        target: ToolExecutionTargetView,
     },
 }
 
@@ -1055,9 +1110,8 @@ pub enum SessionEventKindView {
         upserted: Vec<String>,
         removed: Vec<String>,
     },
-    ToolDefaultTargetChanged {
-        namespace: String,
-        target: Option<ToolExecutionTargetView>,
+    ActiveEnvironmentChanged {
+        environment_id: Option<EnvironmentId>,
     },
     ToolBatchStarted {
         run_id: RunId,

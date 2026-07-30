@@ -19,14 +19,11 @@ use engine::{
     },
 };
 use environments::{
-    EnvironmentId, EnvironmentInstanceId, EnvironmentInstanceOrigin, EnvironmentInstanceStore,
-    EnvironmentProviderCapabilities, EnvironmentProviderHeartbeat, EnvironmentProviderId,
-    EnvironmentProviderKind, EnvironmentProviderStatus, EnvironmentProviderStore,
-    HostControllerConnectionSpec, ListEnvironmentInstances, ListEnvironmentProviders,
-    ObserveEnvironmentInstance, PutSessionEnvironmentBinding, RegisterEnvironmentProvider,
-    SessionEnvironmentBindingState, SessionEnvironmentBindingStore, SessionEnvironmentFsRoute,
-    SessionEnvironmentFsRouteAccess, UpdateEnvironmentInstanceStatus,
-    UpdateEnvironmentProviderStatus, UpdateSessionEnvironmentBindingState,
+    BeginCloseEnvironment, EnvironmentId, EnvironmentOrigin, EnvironmentProviderCapabilities,
+    EnvironmentProviderHeartbeat, EnvironmentProviderId, EnvironmentProviderKind,
+    EnvironmentProviderStatus, EnvironmentProviderStore, EnvironmentStore,
+    HostControllerConnectionSpec, ListEnvironmentProviders, ListEnvironments, ObserveEnvironment,
+    RegisterEnvironmentProvider, UpdateEnvironmentProviderStatus,
 };
 use host_protocol::{
     control::targets::HostTargetStatus,
@@ -46,9 +43,8 @@ use store_pg::{PgStore, PgStoreConfig, SecretsMasterKey};
 use tokio::sync::OnceCell;
 use uuid::Uuid;
 use vfs::{
-    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountAccess,
-    VfsMountRecord, VfsMountSource, VfsMountStore, VfsPath, VfsSnapshotRecord, VfsSnapshotSource,
-    VfsSnapshotStore, VfsTotals, VfsWorkspaceId, VfsWorkspaceStore,
+    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsSnapshotRecord,
+    VfsSnapshotSource, VfsSnapshotStore, VfsTotals, VfsWorkspaceId, VfsWorkspaceStore,
 };
 
 static MIGRATED: OnceCell<()> = OnceCell::const_new();
@@ -256,29 +252,6 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
         })
         .await
         .expect("create workspace");
-    store
-        .put_mount(VfsMountRecord {
-            session_id: source_id.clone(),
-            mount_path: VfsPath::parse("/workspace").expect("workspace path"),
-            source: VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            access: VfsMountAccess::ReadWrite,
-        })
-        .await
-        .expect("put workspace mount");
-    store
-        .put_mount(VfsMountRecord {
-            session_id: source_id.clone(),
-            mount_path: VfsPath::parse("/skills").expect("skills path"),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot_ref.clone(),
-            },
-            access: VfsMountAccess::ReadOnly,
-        })
-        .await
-        .expect("put snapshot mount");
-
     let clone = store
         .create_cloned_session(CreateClonedSession {
             source_session_id: source_id.clone(),
@@ -294,25 +267,6 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
         clone.head.as_ref().map(|head| head.seq),
         Some(EventSeq::new(1))
     );
-
-    let clone_mounts = store
-        .list_mounts(&clone_id)
-        .await
-        .expect("list clone mounts");
-    assert_eq!(clone_mounts.len(), 2);
-    assert!(
-        clone_mounts
-            .iter()
-            .all(|mount| mount.session_id == clone_id)
-    );
-    assert!(clone_mounts.iter().any(|mount| matches!(
-        &mount.source,
-        VfsMountSource::Workspace { workspace_id: id } if id == &workspace_id
-    )));
-    assert!(clone_mounts.iter().any(|mount| matches!(
-        &mount.source,
-        VfsMountSource::Snapshot { snapshot_ref: reference } if reference == &snapshot_ref
-    )));
 
     let workspace_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM vfs_workspaces WHERE universe_id = $1")
@@ -746,7 +700,7 @@ async fn pg_live_records_session_roots_and_blob_edges() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
-async fn pg_live_vfs_catalog_tracks_workspace_heads_and_mounts() {
+async fn pg_live_vfs_catalog_tracks_workspace_heads() {
     let store = live_store("vfs-catalog", 1024).await;
     let snapshot_ref = store
         .put_bytes(b"snapshot manifest".to_vec())
@@ -856,43 +810,6 @@ async fn pg_live_vfs_catalog_tracks_workspace_heads_and_mounts() {
         }
     );
 
-    let session_id = SessionId::new("session-vfs");
-    let workspace_mount = VfsMountRecord {
-        session_id: session_id.clone(),
-        mount_path: VfsPath::parse("/workspace").expect("workspace mount path"),
-        source: VfsMountSource::Workspace {
-            workspace_id: workspace_id.clone(),
-        },
-        access: VfsMountAccess::ReadWrite,
-    };
-    let snapshot_mount = VfsMountRecord {
-        session_id: session_id.clone(),
-        mount_path: VfsPath::parse("/skills/openai-docs").expect("skill mount path"),
-        source: VfsMountSource::Snapshot {
-            snapshot_ref: snapshot_ref.clone(),
-        },
-        access: VfsMountAccess::ReadOnly,
-    };
-    store
-        .put_mount(workspace_mount.clone())
-        .await
-        .expect("put workspace mount");
-    store
-        .put_mount(snapshot_mount.clone())
-        .await
-        .expect("put snapshot mount");
-    assert_eq!(
-        store.list_mounts(&session_id).await.expect("list mounts"),
-        vec![snapshot_mount.clone(), workspace_mount.clone()]
-    );
-    store
-        .remove_mount(&session_id, &snapshot_mount.mount_path)
-        .await
-        .expect("remove mount");
-    assert_eq!(
-        store.list_mounts(&session_id).await.expect("list mounts"),
-        vec![workspace_mount.clone()]
-    );
     let deleted = store
         .delete_workspace(&workspace_id)
         .await
@@ -902,10 +819,6 @@ async fn pg_live_vfs_catalog_tracks_workspace_heads_and_mounts() {
         store.read_workspace(&deleted.workspace_id).await,
         Err(VfsCatalogError::NotFound { .. })
     ));
-    assert_eq!(
-        store.list_mounts(&session_id).await.expect("list mounts"),
-        Vec::<VfsMountRecord>::new()
-    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1079,7 +992,7 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Postgres + MinIO env"]
-async fn pg_live_environment_instances_and_bindings() {
+async fn pg_live_universe_environments_are_independent_of_sessions() {
     let store = live_store("environments", 1024).await;
     for table in ["environment_jobs", "environment_job_groups"] {
         let relation: Option<String> = sqlx::query_scalar("SELECT to_regclass($1)::text")
@@ -1091,9 +1004,8 @@ async fn pg_live_environment_instances_and_bindings() {
     }
     let provider_id = EnvironmentProviderId::new("bridge-local");
     let target_id = HostTargetId::new("local-host");
-    let instance_id = EnvironmentInstanceId::new("instance-local");
+    let environment_id = EnvironmentId::new("instance-local");
     let session_id = SessionId::new("session-env");
-    let env_id = EnvironmentId::new("local");
 
     let provider = store
         .register_provider(RegisterEnvironmentProvider {
@@ -1144,11 +1056,11 @@ async fn pg_live_environment_instances_and_bindings() {
     );
 
     let instance = store
-        .observe_instance(ObserveEnvironmentInstance {
-            instance_id: instance_id.clone(),
+        .observe_environment(ObserveEnvironment {
+            environment_id: environment_id.clone(),
             provider_id: provider_id.clone(),
             provider_target_id: target_id.clone(),
-            origin: EnvironmentInstanceOrigin::Provided,
+            origin: EnvironmentOrigin::Provided,
             display_name: Some("Local host".to_owned()),
             status: HostTargetStatus::Ready,
             scope: HostScope::Default,
@@ -1169,10 +1081,10 @@ async fn pg_live_environment_instances_and_bindings() {
         .expect("upsert target");
     assert_eq!(
         store
-            .list_instances(ListEnvironmentInstances {
+            .list_environments(ListEnvironments {
                 provider_id: Some(provider_id.clone()),
                 status: Some(HostTargetStatus::Ready),
-                origin: Some(EnvironmentInstanceOrigin::Provided),
+                origin: Some(EnvironmentOrigin::Provided),
             })
             .await
             .expect("list instances"),
@@ -1188,50 +1100,14 @@ async fn pg_live_environment_instances_and_bindings() {
         .await
         .expect("create session");
 
-    let binding = store
-        .put_binding(PutSessionEnvironmentBinding {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            instance_id: instance_id.clone(),
-            cwd: Some(HostPath::new("/workspace").expect("cwd")),
-            fs_routes: vec![SessionEnvironmentFsRoute {
-                path: HostPath::new("/workspace").expect("route"),
-                source_path: None,
-                access: SessionEnvironmentFsRouteAccess::ReadWrite,
-                same_state_as_active_env: Some(env_id.clone()),
-            }],
-            updated_at_ms: 40,
-        })
-        .await
-        .expect("put binding");
-    assert_eq!(
-        store
-            .list_bindings_for_session(&session_id)
-            .await
-            .expect("list bindings"),
-        vec![binding.clone()]
-    );
-
-    let detached = store
-        .update_binding_state(UpdateSessionEnvironmentBindingState {
-            session_id: session_id.clone(),
-            env_id: env_id.clone(),
-            state: SessionEnvironmentBindingState::Detached,
+    let closing = store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: environment_id.clone(),
             updated_at_ms: 50,
         })
         .await
-        .expect("detach binding");
-    assert_eq!(detached.state, SessionEnvironmentBindingState::Detached);
-
-    let stopped = store
-        .update_instance_status(UpdateEnvironmentInstanceStatus {
-            instance_id: instance_id.clone(),
-            status: HostTargetStatus::Stopped,
-            observed_at_ms: 60,
-        })
-        .await
-        .expect("stop instance");
-    assert_eq!(stopped.status, HostTargetStatus::Stopped);
+        .expect("close environment while a session exists");
+    assert_eq!(closing.status, HostTargetStatus::Closing);
 
     let offline = store
         .update_provider_status(UpdateEnvironmentProviderStatus {
@@ -1243,11 +1119,6 @@ async fn pg_live_environment_instances_and_bindings() {
         .expect("mark provider offline");
     assert_eq!(offline.status, EnvironmentProviderStatus::Offline);
 
-    let deleted = store
-        .delete_binding(&session_id, &env_id)
-        .await
-        .expect("delete binding");
-    assert_eq!(deleted, detached);
     assert_eq!(
         store
             .read_provider(&provider_id)

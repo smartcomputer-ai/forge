@@ -38,3 +38,16 @@ pub(super) async fn call_tool_invoke_batch(
     .await
     .map_err(|error| anyhow::anyhow!("{error}"))
 }
+
+pub(super) async fn call_tool_prepare_promise_controls(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    request: engine::PromiseControlArgumentRequest,
+) -> anyhow::Result<engine::PromiseControlArgumentFacts> {
+    ctx.start_activity(
+        WorkflowActivities::tool_prepare_promise_controls,
+        ToolPreparePromiseControlsActivityRequest { request },
+        activity_options(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("{error}"))
+}

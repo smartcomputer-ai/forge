@@ -161,6 +161,7 @@ fn managed_session_creation_exposes_targets_and_completion_contracts() {
                 },
                 "target": {
                     "type": "bound",
+                    "dispatch": "push",
                     "receiver": {
                         "workflowId": "receiver-1",
                         "workflowKind": "order.receiver"
@@ -195,7 +196,10 @@ fn managed_session_creation_exposes_targets_and_completion_contracts() {
     );
     assert!(matches!(
         workflow_tools.tools[0].target,
-        WorkflowToolTargetInput::Bound { .. }
+        WorkflowToolTargetInput::Bound {
+            dispatch: BoundWorkflowToolDispatchInput::Push,
+            ..
+        }
     ));
     assert!(matches!(
         workflow_tools.tools[0].completion,
@@ -224,6 +228,7 @@ fn managed_session_creation_rejects_legacy_receiver_shortcut_and_tool_targets() 
             },
             "target": {
                 "type": "bound",
+                "dispatch": "pull",
                 "receiver": {
                     "workflowId": "receiver-1",
                     "workflowKind": "order.receiver"
@@ -237,6 +242,86 @@ fn managed_session_creation_rejects_legacy_receiver_shortcut_and_tool_targets() 
         }));
         assert!(result.is_err(), "{forbidden} must not be accepted");
     }
+}
+
+#[test]
+fn managed_session_creation_rejects_bound_target_without_dispatch() {
+    let result = serde_json::from_value::<ManagedSessionStartParams>(json!({
+        "workflowTools": {
+            "version": 1,
+            "tools": [{
+                "definition": {
+                    "toolId": "accept-order",
+                    "revision": 1,
+                    "semanticType": "orders.accepted.v1",
+                    "tool": {
+                        "name": "accept_order",
+                        "kind": {
+                            "type": "function",
+                            "inputSchemaRef": "sha256:input"
+                        }
+                    }
+                },
+                "target": {
+                    "type": "bound",
+                    "receiver": {
+                        "workflowId": "receiver-1",
+                        "workflowKind": "order.receiver"
+                    }
+                },
+                "completion": {"type": "accepted"}
+            }]
+        }
+    }));
+
+    assert!(result.is_err(), "bound dispatch must be explicit");
+}
+
+#[test]
+fn managed_session_creation_decodes_joined_completion_with_required_deadline() {
+    let params = serde_json::from_value::<ManagedSessionStartParams>(json!({
+        "workflowTools": {
+            "version": 1,
+            "tools": [{
+                "definition": {
+                    "toolId": "send-message",
+                    "revision": 1,
+                    "semanticType": "channels.receipt.v1",
+                    "tool": {
+                        "name": "message_send",
+                        "kind": {"type": "function", "inputSchemaRef": "sha256:input"}
+                    }
+                },
+                "target": {
+                    "type": "bound",
+                    "dispatch": "push",
+                    "receiver": {
+                        "workflowId": "channels-1",
+                        "workflowKind": "channels.session"
+                    }
+                },
+                "completion": {
+                    "type": "joined",
+                    "deadlineAfterMs": 30000
+                }
+            }]
+        }
+    }))
+    .expect("Joined managed session declaration");
+    assert!(matches!(
+        params.workflow_tools.tools[0].completion,
+        WorkflowToolCompletionInput::Joined {
+            deadline_after_ms: 30_000,
+            ..
+        }
+    ));
+
+    assert!(
+        serde_json::from_value::<WorkflowToolCompletionInput>(json!({
+            "type": "joined"
+        }))
+        .is_err()
+    );
 }
 
 #[test]
@@ -673,47 +758,6 @@ async fn dispatch_json_rpc_routes_skills_deactivate() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environments_list() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_LIST.to_owned(),
-            params: Some(json!({ "sessionId": "session_1" })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["environments"][0]["active"],
-        json!(true)
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environments_read() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_READ.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["environment"]["envId"],
-        json!("test")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_environments_create() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -736,30 +780,7 @@ async fn dispatch_json_rpc_routes_environments_create() {
 
     assert!(response.error.is_none());
     assert_eq!(
-        response.result.expect("result")["result"]["environment"]["instanceId"],
-        json!("evi_test")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environments_attach() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_ATTACH.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test",
-                "instanceId": "evi_test"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["environment"]["instanceId"],
+        response.result.expect("result")["result"]["environment"]["environmentId"],
         json!("evi_test")
     );
 }
@@ -773,7 +794,7 @@ async fn dispatch_json_rpc_routes_session_environments_activate() {
             method: METHOD_SESSION_ENVIRONMENTS_ACTIVATE.to_owned(),
             params: Some(json!({
                 "sessionId": "session_1",
-                "envId": "test"
+                "environmentId": "evi_test"
             })),
         },
     )
@@ -781,8 +802,8 @@ async fn dispatch_json_rpc_routes_session_environments_activate() {
 
     assert!(response.error.is_none());
     assert_eq!(
-        response.result.expect("result")["result"]["activeEnvId"],
-        json!("test")
+        response.result.expect("result")["result"]["session"]["activeEnvironmentId"],
+        json!("evi_test")
     );
 }
 
@@ -799,43 +820,18 @@ async fn dispatch_json_rpc_routes_session_environments_deactivate() {
     .await;
 
     assert!(response.error.is_none());
-    let result = response.result.expect("result");
-    assert!(result["result"]["activeEnvId"].is_null());
-    assert_eq!(result["result"]["environments"][0]["active"], json!(false));
+    assert!(response.result.expect("result")["result"]["session"]["activeEnvironmentId"].is_null());
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environments_detach() {
+async fn dispatch_json_rpc_routes_environment_credentials_bind() {
     let response = dispatch_json_rpc(
         &TestService,
         JsonRpcRequest {
             id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_DETACH.to_owned(),
+            method: METHOD_ENVIRONMENTS_CREDENTIALS_BIND.to_owned(),
             params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["environment"]["state"],
-        json!("detached")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environment_credentials_bind() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_BIND.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test",
+                "environmentId": "evi_test",
                 "envName": "GITHUB_TOKEN",
                 "source": {
                     "type": "authGrant",
@@ -859,15 +855,14 @@ async fn dispatch_json_rpc_routes_session_environment_credentials_bind() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environment_credentials_list() {
+async fn dispatch_json_rpc_routes_environment_credentials_list() {
     let response = dispatch_json_rpc(
         &TestService,
         JsonRpcRequest {
             id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_LIST.to_owned(),
+            method: METHOD_ENVIRONMENTS_CREDENTIALS_LIST.to_owned(),
             params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test"
+                "environmentId": "evi_test"
             })),
         },
     )
@@ -886,15 +881,14 @@ async fn dispatch_json_rpc_routes_session_environment_credentials_list() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_session_environment_credentials_unbind() {
+async fn dispatch_json_rpc_routes_environment_credentials_unbind() {
     let response = dispatch_json_rpc(
         &TestService,
         JsonRpcRequest {
             id: RequestId::Number(1),
-            method: METHOD_SESSION_ENVIRONMENTS_CREDENTIALS_UNBIND.to_owned(),
+            method: METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND.to_owned(),
             params: Some(json!({
-                "sessionId": "session_1",
-                "envId": "test",
+                "environmentId": "evi_test",
                 "envName": "GITHUB_TOKEN"
             })),
         },
@@ -1247,52 +1241,6 @@ async fn dispatch_json_rpc_routes_vfs_workspace_delete() {
     assert_eq!(
         response.result.expect("result")["result"]["workspace"]["workspaceId"],
         json!("workspace_1")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_vfs_mount_put() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_MOUNTS_PUT.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "mountPath": "/workspace",
-                "source": { "type": "workspace", "workspaceId": "workspace_1" },
-                "access": "readWrite"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["mount"]["source"]["workspaceId"],
-        json!("workspace_1")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_vfs_mount_delete() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_MOUNTS_DELETE.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "mountPath": "/workspace"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["mountPath"],
-        json!("/workspace")
     );
 }
 
@@ -1920,27 +1868,6 @@ impl AgentApiService for TestService {
         }))
     }
 
-    async fn list_session_environments(
-        &self,
-        _params: SessionEnvironmentListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentListResponse>, AgentApiError> {
-        let environment = test_session_environment(true);
-        Ok(AgentApiOutcome::new(SessionEnvironmentListResponse {
-            active_env_id: Some(environment.env_id.clone()),
-            environments: vec![environment],
-        }))
-    }
-
-    async fn read_session_environment(
-        &self,
-        params: SessionEnvironmentReadParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentReadResponse>, AgentApiError> {
-        assert_eq!(params.env_id, "test");
-        Ok(AgentApiOutcome::new(SessionEnvironmentReadResponse {
-            environment: test_session_environment(true),
-        }))
-    }
-
     async fn create_environment(
         &self,
         params: EnvironmentCreateParams,
@@ -1978,29 +1905,15 @@ impl AgentApiService for TestService {
         }))
     }
 
-    async fn attach_session_environment(
-        &self,
-        params: SessionEnvironmentAttachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentAttachResponse>, AgentApiError> {
-        let mut environment = test_session_environment(params.activate);
-        environment.env_id = params.env_id.unwrap_or_else(|| "attached".to_owned());
-        Ok(AgentApiOutcome::new(SessionEnvironmentAttachResponse {
-            active_env_id: params.activate.then(|| environment.env_id.clone()),
-            environments: vec![environment.clone()],
-            environment,
-        }))
-    }
-
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
     ) -> Result<AgentApiOutcome<SessionEnvironmentActivateResponse>, AgentApiError> {
-        assert_eq!(params.env_id, "test");
-        let environment = test_session_environment(true);
+        assert_eq!(params.environment_id, "evi_test");
+        let mut session = test_session("session_1".to_owned(), SessionStatus::Idle);
+        session.active_environment_id = Some(params.environment_id);
         Ok(AgentApiOutcome::new(SessionEnvironmentActivateResponse {
-            active_env_id: Some(environment.env_id.clone()),
-            environments: vec![environment.clone()],
-            environment,
+            session,
         }))
     }
 
@@ -2009,74 +1922,51 @@ impl AgentApiService for TestService {
         _params: SessionEnvironmentDeactivateParams,
     ) -> Result<AgentApiOutcome<SessionEnvironmentDeactivateResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionEnvironmentDeactivateResponse {
-            active_env_id: None,
-            environments: vec![test_session_environment(false)],
+            session: test_session("session_1".to_owned(), SessionStatus::Idle),
         }))
     }
 
-    async fn detach_session_environment(
+    async fn bind_environment_credential(
         &self,
-        _params: SessionEnvironmentDetachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentDetachResponse>, AgentApiError> {
-        let mut environment = test_session_environment(false);
-        environment.state = SessionEnvironmentStateView::Detached;
-        Ok(AgentApiOutcome::new(SessionEnvironmentDetachResponse {
-            active_env_id: None,
-            environments: vec![environment.clone()],
-            environment,
+        params: EnvironmentCredentialBindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialBindResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(EnvironmentCredentialBindResponse {
+            credential: test_environment_credential(
+                params.environment_id,
+                params.env_name,
+                params.source,
+            ),
         }))
     }
 
-    async fn bind_session_environment_credential(
+    async fn list_environment_credentials(
         &self,
-        params: SessionEnvironmentCredentialBindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialBindResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(
-            SessionEnvironmentCredentialBindResponse {
-                credential: test_session_environment_credential(
-                    params.session_id,
-                    params.env_id,
-                    params.env_name,
-                    params.source,
-                ),
-            },
-        ))
+        params: EnvironmentCredentialListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialListResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(EnvironmentCredentialListResponse {
+            credentials: vec![test_environment_credential(
+                params.environment_id,
+                "GITHUB_TOKEN".to_owned(),
+                EnvironmentCredentialSourceView::AuthGrant {
+                    grant_id: "authgrant_repo".to_owned(),
+                },
+            )],
+        }))
     }
 
-    async fn list_session_environment_credentials(
+    async fn unbind_environment_credential(
         &self,
-        params: SessionEnvironmentCredentialListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialListResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(
-            SessionEnvironmentCredentialListResponse {
-                credentials: vec![test_session_environment_credential(
-                    params.session_id,
-                    params.env_id,
-                    "GITHUB_TOKEN".to_owned(),
-                    SessionEnvironmentCredentialSourceView::AuthGrant {
-                        grant_id: "authgrant_repo".to_owned(),
-                    },
-                )],
-            },
-        ))
-    }
-
-    async fn unbind_session_environment_credential(
-        &self,
-        params: SessionEnvironmentCredentialUnbindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(
-            SessionEnvironmentCredentialUnbindResponse {
-                credential: test_session_environment_credential(
-                    params.session_id,
-                    params.env_id,
-                    params.env_name,
-                    SessionEnvironmentCredentialSourceView::AuthGrant {
-                        grant_id: "authgrant_repo".to_owned(),
-                    },
-                ),
-            },
-        ))
+        params: EnvironmentCredentialUnbindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialUnbindResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(EnvironmentCredentialUnbindResponse {
+            credential: test_environment_credential(
+                params.environment_id,
+                params.env_name,
+                EnvironmentCredentialSourceView::AuthGrant {
+                    grant_id: "authgrant_repo".to_owned(),
+                },
+            ),
+        }))
     }
 
     async fn create_environment_jobs(
@@ -2084,7 +1974,7 @@ impl AgentApiService for TestService {
         _params: EnvironmentJobCreateParams,
     ) -> Result<AgentApiOutcome<EnvironmentJobCreateResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(EnvironmentJobCreateResponse {
-            instance_id: "evi_test".to_owned(),
+            environment_id: "evi_test".to_owned(),
             job_group_id: "ejg_test".to_owned(),
             jobs: Vec::new(),
         }))
@@ -2297,60 +2187,6 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<VfsWorkspaceDeleteResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(VfsWorkspaceDeleteResponse {
             workspace: test_workspace(params.workspace_id, 4),
-        }))
-    }
-
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError> {
-        let mount = VfsMountView {
-            mount_path: params.mount_path,
-            source: match params.source {
-                VfsMountSourceInput::Snapshot { snapshot_ref } => {
-                    VfsMountSourceView::Snapshot { snapshot_ref }
-                }
-                VfsMountSourceInput::Workspace { workspace_id } => VfsMountSourceView::Workspace {
-                    workspace_id,
-                    head_snapshot_ref: Some(format!("sha256:{}", "3".repeat(64))),
-                    revision: Some(0),
-                },
-            },
-            access: params.access,
-        };
-        Ok(AgentApiOutcome::new(VfsMountPutResponse {
-            mount: mount.clone(),
-            session: SessionView {
-                vfs_mounts: vec![mount],
-                ..test_session(params.session_id, SessionStatus::Idle)
-            },
-        }))
-    }
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(VfsMountDeleteResponse {
-            mount_path: params.mount_path,
-            session: test_session(params.session_id, SessionStatus::Idle),
-        }))
-    }
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(VfsMountListResponse {
-            mounts: vec![VfsMountView {
-                mount_path: "/workspace".to_owned(),
-                source: VfsMountSourceView::Workspace {
-                    workspace_id: format!("workspace_{}", params.session_id),
-                    head_snapshot_ref: Some(format!("sha256:{}", "3".repeat(64))),
-                    revision: Some(0),
-                },
-                access: VfsMountAccess::ReadWrite,
-            }],
         }))
     }
 
@@ -2638,8 +2474,7 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
             instructions: Some(ProfileInstructions::Text {
                 text: "Be concise.".to_owned(),
             }),
-            mounts: Vec::new(),
-            environments: Vec::new(),
+            active_environment_id: None,
         },
         created_at_ms: 1,
         updated_at_ms: 2,
@@ -2668,48 +2503,23 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         managed: false,
         config_revision: 0,
         config: None,
+        active_environment_id: None,
         created_at_ms: 1,
         updated_at_ms: 2,
         runs: Vec::new(),
         active_context: ContextView::default(),
         active_tools: ActiveToolsView::default(),
         management: None,
-        vfs_mounts: Vec::new(),
     }
 }
 
-fn test_session_environment(active: bool) -> SessionEnvironmentView {
-    SessionEnvironmentView {
-        env_id: "test".to_owned(),
-        instance_id: "evi_test".to_owned(),
-        state: SessionEnvironmentStateView::Attached,
-        capabilities: SessionEnvironmentCapabilitiesView {
-            fs_read: true,
-            fs_write: true,
-            process_exec: true,
-            process_stdin: true,
-            network: false,
-            ..SessionEnvironmentCapabilitiesView::default()
-        },
-        exec_target: Some(ToolExecutionTargetView {
-            namespace: "env".to_owned(),
-            id: "test".to_owned(),
-        }),
-        cwd: Some("/workspace".to_owned()),
-        fs_routes: Vec::new(),
-        active,
-    }
-}
-
-fn test_session_environment_credential(
-    session_id: SessionId,
-    env_id: EnvironmentId,
+fn test_environment_credential(
+    environment_id: EnvironmentId,
     env_name: String,
-    source: SessionEnvironmentCredentialSourceView,
-) -> SessionEnvironmentCredentialView {
-    SessionEnvironmentCredentialView {
-        session_id,
-        env_id,
+    source: EnvironmentCredentialSourceView,
+) -> EnvironmentCredentialView {
+    EnvironmentCredentialView {
+        environment_id,
         env_name,
         source,
         created_at_ms: 1,
@@ -2778,10 +2588,10 @@ fn test_environment_target() -> EnvironmentTargetSummaryView {
 fn test_environment_instance() -> EnvironmentInstanceView {
     let capabilities = test_environment_target().capabilities;
     EnvironmentInstanceView {
-        instance_id: "evi_test".to_owned(),
+        environment_id: "evi_test".to_owned(),
         provider_id: "bridge-local".to_owned(),
         provider_target_id: "local".to_owned(),
-        origin: EnvironmentInstanceOriginView::Provided,
+        origin: EnvironmentOriginView::Provided,
         status: EnvironmentTargetStatusView::Ready,
         scope: HostScopeView::Default,
         capabilities,

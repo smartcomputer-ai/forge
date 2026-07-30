@@ -9,8 +9,8 @@ use auth::{
 };
 use engine::SessionId;
 use environments::{
-    EnvironmentId, ListSessionEnvironmentCredentials, SessionEnvironmentCredentialSource,
-    SessionEnvironmentCredentialStore,
+    EnvironmentCredentialSource, EnvironmentCredentialStore, EnvironmentId,
+    ListEnvironmentCredentials,
 };
 use host_protocol::{
     data::jobs::{StartJobsParams, StartJobsResponse},
@@ -29,7 +29,7 @@ use tools::environment::{
 
 #[derive(Clone)]
 pub(crate) struct EnvironmentCredentialResolver {
-    credentials: Arc<dyn SessionEnvironmentCredentialStore>,
+    credentials: Arc<dyn EnvironmentCredentialStore>,
     grants: Arc<dyn AuthGrantStore>,
     providers: Arc<dyn AuthProviderStore>,
     secrets: Arc<dyn SecretStore>,
@@ -38,7 +38,7 @@ pub(crate) struct EnvironmentCredentialResolver {
 
 impl EnvironmentCredentialResolver {
     pub(crate) fn from_pg_store(store: Arc<PgStore>) -> Self {
-        let credentials: Arc<dyn SessionEnvironmentCredentialStore> = store.clone();
+        let credentials: Arc<dyn EnvironmentCredentialStore> = store.clone();
         let grants: Arc<dyn AuthGrantStore> = store.clone();
         let providers: Arc<dyn AuthProviderStore> = store.clone();
         let secrets: Arc<dyn SecretStore> = store.clone();
@@ -55,14 +55,13 @@ impl EnvironmentCredentialResolver {
     pub(crate) async fn resolve_secret_env(
         &self,
         session_id: &SessionId,
-        env_id: &EnvironmentId,
+        environment_id: &EnvironmentId,
         explicit_env: &BTreeMap<String, String>,
     ) -> Result<BTreeMap<String, SecretString>, EnvironmentCredentialResolutionError> {
         let bindings = self
             .credentials
-            .list_credentials(ListSessionEnvironmentCredentials {
-                session_id: session_id.clone(),
-                env_id: env_id.clone(),
+            .list_credentials(ListEnvironmentCredentials {
+                environment_id: environment_id.clone(),
             })
             .await
             .map_err(|error| EnvironmentCredentialResolutionError::Store {
@@ -70,7 +69,7 @@ impl EnvironmentCredentialResolver {
             })?;
 
         let mut secret_env = BTreeMap::new();
-        let mut resolved_sources: BTreeMap<SessionEnvironmentCredentialSource, SecretString> =
+        let mut resolved_sources: BTreeMap<EnvironmentCredentialSource, SecretString> =
             BTreeMap::new();
         for binding in bindings {
             if explicit_env.contains_key(&binding.env_name) {
@@ -82,7 +81,12 @@ impl EnvironmentCredentialResolver {
                 value.clone()
             } else {
                 let value = self
-                    .resolve_source(&binding.env_name, &binding.source, session_id, env_id)
+                    .resolve_source(
+                        &binding.env_name,
+                        &binding.source,
+                        session_id,
+                        environment_id,
+                    )
                     .await?;
                 resolved_sources.insert(binding.source.clone(), value.clone());
                 value
@@ -95,19 +99,19 @@ impl EnvironmentCredentialResolver {
     async fn resolve_source(
         &self,
         env_name: &str,
-        source: &SessionEnvironmentCredentialSource,
+        source: &EnvironmentCredentialSource,
         session_id: &SessionId,
-        env_id: &EnvironmentId,
+        environment_id: &EnvironmentId,
     ) -> Result<SecretString, EnvironmentCredentialResolutionError> {
         match source {
-            SessionEnvironmentCredentialSource::AuthGrant { grant_id } => {
+            EnvironmentCredentialSource::AuthGrant { grant_id } => {
                 let grant = self.grants.read_grant(grant_id).await.map_err(|error| {
                     EnvironmentCredentialResolutionError::Source {
                         env_name: env_name.to_owned(),
                         message: error.to_string(),
                     }
                 })?;
-                let audience = token_audience_for_grant(&grant, session_id, env_id);
+                let audience = token_audience_for_grant(&grant, session_id, environment_id);
                 let Some(broker) = &self.broker else {
                     return Err(EnvironmentCredentialResolutionError::Source {
                         env_name: env_name.to_owned(),
@@ -123,7 +127,7 @@ impl EnvironmentCredentialResolver {
                     })?;
                 Ok(SecretString::new(value.expose()))
             }
-            SessionEnvironmentCredentialSource::AuthProviderCredential { provider_id } => {
+            EnvironmentCredentialSource::AuthProviderCredential { provider_id } => {
                 let provider = self
                     .providers
                     .read_auth_provider(provider_id)
@@ -154,7 +158,7 @@ impl EnvironmentCredentialResolver {
                     })?;
                 Ok(SecretString::new(value.expose()))
             }
-            SessionEnvironmentCredentialSource::DirectSecret { secret_id } => {
+            EnvironmentCredentialSource::DirectSecret { secret_id } => {
                 let (_, value) = self.secrets.read_secret(secret_id).await.map_err(|error| {
                     EnvironmentCredentialResolutionError::Source {
                         env_name: env_name.to_owned(),
@@ -170,14 +174,14 @@ impl EnvironmentCredentialResolver {
         &self,
         mut context: EnvironmentToolContext,
         session_id: SessionId,
-        env_id: EnvironmentId,
+        environment_id: EnvironmentId,
     ) -> EnvironmentToolContext {
         if let Some(process) = context.process.take() {
             context.process = Some(Arc::new(CredentialInjectingProcessExecutor {
                 inner: process,
                 resolver: self.clone(),
                 session_id: session_id.clone(),
-                env_id: env_id.clone(),
+                environment_id: environment_id.clone(),
             }));
         }
         if let Some(jobs) = context.jobs.take() {
@@ -185,7 +189,7 @@ impl EnvironmentCredentialResolver {
                 inner: jobs,
                 resolver: self.clone(),
                 session_id,
-                env_id,
+                environment_id,
             }));
         }
         context
@@ -208,7 +212,7 @@ struct CredentialInjectingProcessExecutor {
     inner: Arc<dyn ProcessExecutor>,
     resolver: EnvironmentCredentialResolver,
     session_id: SessionId,
-    env_id: EnvironmentId,
+    environment_id: EnvironmentId,
 }
 
 #[async_trait]
@@ -216,7 +220,7 @@ impl ProcessExecutor for CredentialInjectingProcessExecutor {
     async fn run_process(&self, mut request: ProcessRequest) -> ProcessExecResult<ProcessOutput> {
         let secret_env = self
             .resolver
-            .resolve_secret_env(&self.session_id, &self.env_id, &request.env)
+            .resolve_secret_env(&self.session_id, &self.environment_id, &request.env)
             .await
             .map_err(|error| ProcessError::InvalidRequest {
                 message: error.to_string(),
@@ -239,7 +243,7 @@ struct CredentialInjectingJobExecutor {
     inner: Arc<dyn JobExecutor>,
     resolver: EnvironmentCredentialResolver,
     session_id: SessionId,
-    env_id: EnvironmentId,
+    environment_id: EnvironmentId,
 }
 
 #[async_trait]
@@ -248,7 +252,7 @@ impl JobExecutor for CredentialInjectingJobExecutor {
         for job in &mut request.jobs {
             let secret_env = self
                 .resolver
-                .resolve_secret_env(&self.session_id, &self.env_id, &job.env)
+                .resolve_secret_env(&self.session_id, &self.environment_id, &job.env)
                 .await
                 .map_err(|error| JobError::InvalidRequest {
                     message: error.to_string(),
@@ -300,7 +304,7 @@ fn registry_token_broker(store: Arc<PgStore>) -> Option<Arc<dyn AuthTokenBroker>
 fn token_audience_for_grant(
     grant: &AuthGrantRecord,
     session_id: &SessionId,
-    env_id: &EnvironmentId,
+    environment_id: &EnvironmentId,
 ) -> TokenAudience {
     match grant.provider_kind {
         AuthProviderKind::GitHubApp => TokenAudience::GitHubApi(
@@ -315,10 +319,12 @@ fn token_audience_for_grant(
                 .clone()
                 .unwrap_or_else(|| format!("model:{}", grant.provider_id)),
         ),
-        _ => {
-            TokenAudience::McpResource(grant.audience.clone().unwrap_or_else(|| {
-                format!("environment:{}/{}", session_id.as_str(), env_id.as_str())
-            }))
-        }
+        _ => TokenAudience::McpResource(grant.audience.clone().unwrap_or_else(|| {
+            format!(
+                "environment:{}/{}",
+                session_id.as_str(),
+                environment_id.as_str()
+            )
+        })),
     }
 }

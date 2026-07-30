@@ -221,10 +221,7 @@ fn invocable_fake_tool(request: &LlmGenerationRequest) -> Option<ToolName> {
         .iter()
         .find(|tool| {
             matches!(tool.kind, ToolKind::Function(_))
-                && matches!(
-                    tool.target_requirement,
-                    ToolTargetRequirement::None | ToolTargetRequirement::Optional { .. }
-                )
+                && matches!(tool.target_requirement, ToolTargetRequirement::None)
         })
         .map(|tool| tool.name.clone())
 }

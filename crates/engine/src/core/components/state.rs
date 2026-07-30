@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ContextState, IdCursors, PromiseComponentState, SessionPosition, ToolingState,
-    WorkflowToolState,
+    ContextState, EnvironmentState, IdCursors, PromiseComponentState, SessionPosition,
+    ToolingState, WorkflowToolState,
     core::components::{lifecycle::LifecycleState, run::RunQueueState},
 };
 
@@ -13,6 +13,8 @@ pub struct CoreAgentState {
     pub lifecycle: LifecycleState,
     pub runs: RunQueueState,
     pub context: ContextState,
+    #[serde(default)]
+    pub environment: EnvironmentState,
     pub tooling: ToolingState,
     #[serde(default)]
     pub promises: PromiseComponentState,
@@ -28,6 +30,7 @@ impl CoreAgentState {
             lifecycle: LifecycleState::default(),
             runs: RunQueueState::default(),
             context: ContextState::default(),
+            environment: EnvironmentState::default(),
             tooling: ToolingState::default(),
             promises: PromiseComponentState::default(),
             workflow_tools: WorkflowToolState::default(),

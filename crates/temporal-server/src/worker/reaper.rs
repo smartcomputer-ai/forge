@@ -926,6 +926,7 @@ mod tests {
                 scope: PromiseScope::Run {
                     run_id: holder_run_id,
                 },
+                ownership: engine::PromiseOwnership::Model,
                 status: PromiseStatus::Pending,
                 payload_ref: None,
                 error_ref: None,
@@ -1027,6 +1028,7 @@ mod tests {
                 scope: PromiseScope::Run {
                     run_id: holder_run_id,
                 },
+                ownership: engine::PromiseOwnership::Model,
                 status: PromiseStatus::Pending,
                 payload_ref: None,
                 error_ref: None,
@@ -1097,7 +1099,7 @@ mod tests {
             active_turn_id: None,
             active_tool_batch_id: None,
             cancellation_grace_turn_id: None,
-            parked_await: None,
+            parked_tool_batch: None,
             tool_batches: BTreeMap::new(),
             completed_tool_batches: BTreeMap::new(),
             output_ref: None,

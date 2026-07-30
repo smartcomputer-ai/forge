@@ -155,15 +155,15 @@ pub struct SkillDependencies {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SkillLocation {
-    MountedSnapshot {
+    LinkedSnapshot {
         source_snapshot_ref: BlobRef,
-        source_mount_path: VfsPath,
+        source_link_path: VfsPath,
         skill_dir_path: VfsPath,
         skill_doc_path: VfsPath,
     },
-    MountedWorkspace {
+    LinkedWorkspace {
         workspace_id: VfsWorkspaceId,
-        source_mount_path: VfsPath,
+        source_link_path: VfsPath,
         skill_dir_path: VfsPath,
         skill_doc_path: VfsPath,
     },
@@ -199,6 +199,7 @@ impl SkillLoadWarning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum SkillLoadWarningKind {
+    UnavailableWorkspaceLink { reason: String },
     MissingSkillDoc,
     InvalidSkillDoc { message: String },
     Filesystem { message: String },
@@ -215,14 +216,14 @@ pub struct SkillCatalogRoot {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkillCatalogRootSource {
-    MountedSnapshot {
+    LinkedSnapshot {
         snapshot_ref: BlobRef,
-        mount_path: VfsPath,
+        link_path: VfsPath,
     },
-    MountedWorkspace {
+    LinkedWorkspace {
         workspace_id: VfsWorkspaceId,
         workspace_head_ref: BlobRef,
-        mount_path: VfsPath,
+        link_path: VfsPath,
     },
     HostFilesystem {
         target: ToolExecutionTarget,

@@ -810,7 +810,7 @@ impl ChatSessionDriver {
             | SessionEventKindView::ToolsPatched { .. }
             | SessionEventKindView::ToolBatchDeferred { .. }
             | SessionEventKindView::ToolBatchResumed { .. }
-            | SessionEventKindView::ToolDefaultTargetChanged { .. } => {}
+            | SessionEventKindView::ActiveEnvironmentChanged { .. } => {}
         }
         events
     }
@@ -1486,6 +1486,7 @@ fn dev_features(settings: &ChatDraftSettings) -> FeaturesConfig {
     FeaturesConfig {
         vfs: Some(VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
+            workspace_links: Vec::new(),
             tools: vfs_tools,
             prompts: Some(VfsPromptsConfig::default()),
             skills: Some(VfsSkillsConfig::default()),
@@ -1716,8 +1717,6 @@ fn system_note_text(entry: &ContextEntryView) -> Option<String> {
     let fallback = match &entry.kind {
         ContextEntryKindView::Instructions => "instructions",
         ContextEntryKindView::VfsCatalog => "VFS catalog",
-        ContextEntryKindView::EnvironmentCatalog => "environment catalog",
-        ContextEntryKindView::EnvironmentActive => "active environment",
         ContextEntryKindView::SkillCatalog => "skills catalog",
         ContextEntryKindView::SkillActivation { .. } => "skill activated",
         ContextEntryKindView::ReasoningState => "context item",
@@ -1901,6 +1900,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {
@@ -1926,7 +1926,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
 
         let settings = ChatDraftSettings {
@@ -2006,6 +2005,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {
@@ -2021,7 +2021,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),
@@ -2055,6 +2054,7 @@ mod tests {
             managed: false,
             config_revision: 0,
             config: None,
+            active_environment_id: None,
             created_at_ms: 0,
             updated_at_ms: 0,
             runs: vec![api::RunView {
@@ -2067,7 +2067,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),

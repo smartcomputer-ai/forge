@@ -1,7 +1,7 @@
 //! Runtime environment registry contracts.
 //!
-//! Providers advertise presence, environment instances own machine lifetime,
-//! and session bindings are lightweight aliases to instances.
+//! Providers advertise presence and universe environments own machine lifetime,
+//! connection observations, and credential bindings.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -11,7 +11,8 @@ use std::{
 
 use async_trait::async_trait;
 use auth::{AuthGrantId, AuthProviderId, SecretId};
-use engine::{SessionId, StringIdError, ToolExecutionTarget, validate_general_string_id};
+pub use engine::EnvironmentId;
+use engine::{StringIdError, validate_general_string_id};
 use host_protocol::{
     control::{
         handshake::ControllerCapabilities,
@@ -104,8 +105,6 @@ macro_rules! registry_string_id {
 }
 
 registry_string_id!(EnvironmentProviderId);
-registry_string_id!(EnvironmentInstanceId);
-registry_string_id!(EnvironmentId);
 registry_string_id!(EnvironmentJobGroupId);
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -115,12 +114,6 @@ pub enum EnvironmentRegistryError {
 
     #[error("environment registry {kind} not found: {id}")]
     NotFound { kind: &'static str, id: String },
-
-    #[error("environment instance {instance_id} is occupied: bindings={bindings:?}")]
-    Occupied {
-        instance_id: EnvironmentInstanceId,
-        bindings: Vec<String>,
-    },
 
     #[error("invalid environment registry request: {message}")]
     InvalidInput { message: String },
@@ -328,17 +321,17 @@ impl EnvironmentProviderCapabilities {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum EnvironmentInstanceOrigin {
+pub enum EnvironmentOrigin {
     Provided,
     Provisioned,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentInstanceRecord {
-    pub instance_id: EnvironmentInstanceId,
+pub struct EnvironmentRecord {
+    pub environment_id: EnvironmentId,
     pub provider_id: EnvironmentProviderId,
     pub provider_target_id: HostTargetId,
-    pub origin: EnvironmentInstanceOrigin,
+    pub origin: EnvironmentOrigin,
     pub display_name: Option<String>,
     pub status: HostTargetStatus,
     pub scope: HostScope,
@@ -351,7 +344,7 @@ pub struct EnvironmentInstanceRecord {
     pub updated_at_ms: i64,
 }
 
-impl EnvironmentInstanceRecord {
+impl EnvironmentRecord {
     pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
         validate_host_target_id(&self.provider_target_id)?;
         if self.connection.target_id != self.provider_target_id {
@@ -370,11 +363,11 @@ impl EnvironmentInstanceRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ObserveEnvironmentInstance {
-    pub instance_id: EnvironmentInstanceId,
+pub struct ObserveEnvironment {
+    pub environment_id: EnvironmentId,
     pub provider_id: EnvironmentProviderId,
     pub provider_target_id: HostTargetId,
-    pub origin: EnvironmentInstanceOrigin,
+    pub origin: EnvironmentOrigin,
     pub display_name: Option<String>,
     pub status: HostTargetStatus,
     pub scope: HostScope,
@@ -385,16 +378,16 @@ pub struct ObserveEnvironmentInstance {
     pub observed_at_ms: i64,
 }
 
-impl ObserveEnvironmentInstance {
+impl ObserveEnvironment {
     pub fn from_observation(
-        instance_id: EnvironmentInstanceId,
+        environment_id: EnvironmentId,
         provider_id: EnvironmentProviderId,
-        origin: EnvironmentInstanceOrigin,
+        origin: EnvironmentOrigin,
         observation: ObservedEnvironmentTarget,
         observed_at_ms: i64,
     ) -> Self {
         Self {
-            instance_id,
+            environment_id,
             provider_id,
             provider_target_id: observation.target.target_id,
             origin,
@@ -413,9 +406,9 @@ impl ObserveEnvironmentInstance {
         }
     }
 
-    pub fn into_record(self) -> EnvironmentInstanceRecord {
-        EnvironmentInstanceRecord {
-            instance_id: self.instance_id,
+    pub fn into_record(self) -> EnvironmentRecord {
+        EnvironmentRecord {
+            environment_id: self.environment_id,
             provider_id: self.provider_id,
             provider_target_id: self.provider_target_id,
             origin: self.origin,
@@ -434,101 +427,35 @@ impl ObserveEnvironmentInstance {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListEnvironmentInstances {
+pub struct ListEnvironments {
     pub provider_id: Option<EnvironmentProviderId>,
     pub status: Option<HostTargetStatus>,
-    pub origin: Option<EnvironmentInstanceOrigin>,
+    pub origin: Option<EnvironmentOrigin>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateEnvironmentInstanceStatus {
-    pub instance_id: EnvironmentInstanceId,
+pub struct UpdateEnvironmentStatus {
+    pub environment_id: EnvironmentId,
     pub status: HostTargetStatus,
     pub observed_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BeginCloseEnvironmentInstance {
-    pub instance_id: EnvironmentInstanceId,
-    pub updated_at_ms: i64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionEnvironmentBindingState {
-    Attached,
-    Detached,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionEnvironmentBindingRecord {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
-    pub instance_id: EnvironmentInstanceId,
-    pub state: SessionEnvironmentBindingState,
-    pub cwd: Option<HostPath>,
-    pub fs_routes: Vec<SessionEnvironmentFsRoute>,
-    pub created_at_ms: i64,
-    pub updated_at_ms: i64,
-}
-
-impl SessionEnvironmentBindingRecord {
-    pub fn exec_target(&self) -> ToolExecutionTarget {
-        ToolExecutionTarget::new("env", self.env_id.as_str())
-    }
-
-    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
-        for route in &self.fs_routes {
-            route.validate()?;
-        }
-        validate_timestamps(self.created_at_ms, self.updated_at_ms)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PutSessionEnvironmentBinding {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
-    pub instance_id: EnvironmentInstanceId,
-    pub cwd: Option<HostPath>,
-    pub fs_routes: Vec<SessionEnvironmentFsRoute>,
-    pub updated_at_ms: i64,
-}
-
-impl PutSessionEnvironmentBinding {
-    pub fn into_record(self) -> SessionEnvironmentBindingRecord {
-        SessionEnvironmentBindingRecord {
-            session_id: self.session_id,
-            env_id: self.env_id,
-            instance_id: self.instance_id,
-            state: SessionEnvironmentBindingState::Attached,
-            cwd: self.cwd,
-            fs_routes: self.fs_routes,
-            created_at_ms: self.updated_at_ms,
-            updated_at_ms: self.updated_at_ms,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpdateSessionEnvironmentBindingState {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
-    pub state: SessionEnvironmentBindingState,
+pub struct BeginCloseEnvironment {
+    pub environment_id: EnvironmentId,
     pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionEnvironmentCredentialRecord {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
+pub struct EnvironmentCredentialRecord {
+    pub environment_id: EnvironmentId,
     pub env_name: String,
-    pub source: SessionEnvironmentCredentialSource,
+    pub source: EnvironmentCredentialSource,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
-impl SessionEnvironmentCredentialRecord {
+impl EnvironmentCredentialRecord {
     pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
         validate_env_name(&self.env_name)?;
         validate_timestamps(self.created_at_ms, self.updated_at_ms)
@@ -536,19 +463,17 @@ impl SessionEnvironmentCredentialRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CreateSessionEnvironmentCredential {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
+pub struct PutEnvironmentCredential {
+    pub environment_id: EnvironmentId,
     pub env_name: String,
-    pub source: SessionEnvironmentCredentialSource,
+    pub source: EnvironmentCredentialSource,
     pub created_at_ms: i64,
 }
 
-impl CreateSessionEnvironmentCredential {
-    pub fn into_record(self) -> SessionEnvironmentCredentialRecord {
-        SessionEnvironmentCredentialRecord {
-            session_id: self.session_id,
-            env_id: self.env_id,
+impl PutEnvironmentCredential {
+    pub fn into_record(self) -> EnvironmentCredentialRecord {
+        EnvironmentCredentialRecord {
+            environment_id: self.environment_id,
             env_name: self.env_name,
             source: self.source,
             created_at_ms: self.created_at_ms,
@@ -559,51 +484,15 @@ impl CreateSessionEnvironmentCredential {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum SessionEnvironmentCredentialSource {
+pub enum EnvironmentCredentialSource {
     AuthGrant { grant_id: AuthGrantId },
     AuthProviderCredential { provider_id: AuthProviderId },
     DirectSecret { secret_id: SecretId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListSessionEnvironmentCredentials {
-    pub session_id: SessionId,
-    pub env_id: EnvironmentId,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionEnvironmentFsRoute {
-    pub path: HostPath,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_path: Option<HostPath>,
-    pub access: SessionEnvironmentFsRouteAccess,
-    pub same_state_as_active_env: Option<EnvironmentId>,
-}
-
-impl SessionEnvironmentFsRoute {
-    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
-        if !self.path.is_absolute() {
-            return invalid(format!(
-                "environment fs route path must be absolute: {}",
-                self.path
-            ));
-        }
-        if self
-            .source_path
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute())
-        {
-            return invalid("environment fs route source_path must be absolute");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionEnvironmentFsRouteAccess {
-    ReadOnly,
-    ReadWrite,
+pub struct ListEnvironmentCredentials {
+    pub environment_id: EnvironmentId,
 }
 
 #[async_trait]
@@ -635,86 +524,55 @@ pub trait EnvironmentProviderStore: Send + Sync {
 }
 
 #[async_trait]
-pub trait EnvironmentInstanceStore: Send + Sync {
-    async fn observe_instance(
+pub trait EnvironmentStore: Send + Sync {
+    async fn observe_environment(
         &self,
-        record: ObserveEnvironmentInstance,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError>;
-    async fn read_instance(
+        record: ObserveEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn read_environment(
         &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError>;
-    async fn read_instance_by_provider_target(
+        environment_id: &EnvironmentId,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn read_environment_by_provider_target(
         &self,
         provider_id: &EnvironmentProviderId,
         provider_target_id: &HostTargetId,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError>;
-    async fn list_instances(
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn list_environments(
         &self,
-        request: ListEnvironmentInstances,
-    ) -> Result<Vec<EnvironmentInstanceRecord>, EnvironmentRegistryError>;
-    async fn mark_missing_provided_instances_unknown(
+        request: ListEnvironments,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
+    async fn mark_missing_provided_environments_unknown(
         &self,
         provider_id: &EnvironmentProviderId,
         observed_target_ids: &BTreeSet<HostTargetId>,
         observed_at_ms: i64,
-    ) -> Result<Vec<EnvironmentInstanceRecord>, EnvironmentRegistryError>;
-    async fn update_instance_status(
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
+    async fn update_environment_status(
         &self,
-        request: UpdateEnvironmentInstanceStatus,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError>;
-    async fn begin_close_instance(
+        request: UpdateEnvironmentStatus,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn begin_close_environment(
         &self,
-        request: BeginCloseEnvironmentInstance,
-    ) -> Result<EnvironmentInstanceRecord, EnvironmentRegistryError>;
+        request: BeginCloseEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
 }
 
 #[async_trait]
-pub trait SessionEnvironmentBindingStore: Send + Sync {
-    async fn put_binding(
-        &self,
-        record: PutSessionEnvironmentBinding,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError>;
-    async fn read_binding(
-        &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError>;
-    async fn list_bindings_for_session(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<SessionEnvironmentBindingRecord>, EnvironmentRegistryError>;
-    async fn list_bindings_for_instance(
-        &self,
-        instance_id: &EnvironmentInstanceId,
-    ) -> Result<Vec<SessionEnvironmentBindingRecord>, EnvironmentRegistryError>;
-    async fn update_binding_state(
-        &self,
-        request: UpdateSessionEnvironmentBindingState,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError>;
-    async fn delete_binding(
-        &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
-    ) -> Result<SessionEnvironmentBindingRecord, EnvironmentRegistryError>;
-}
-
-#[async_trait]
-pub trait SessionEnvironmentCredentialStore: Send + Sync {
+pub trait EnvironmentCredentialStore: Send + Sync {
     async fn bind_credential(
         &self,
-        record: CreateSessionEnvironmentCredential,
-    ) -> Result<SessionEnvironmentCredentialRecord, EnvironmentRegistryError>;
+        record: PutEnvironmentCredential,
+    ) -> Result<EnvironmentCredentialRecord, EnvironmentRegistryError>;
     async fn list_credentials(
         &self,
-        request: ListSessionEnvironmentCredentials,
-    ) -> Result<Vec<SessionEnvironmentCredentialRecord>, EnvironmentRegistryError>;
+        request: ListEnvironmentCredentials,
+    ) -> Result<Vec<EnvironmentCredentialRecord>, EnvironmentRegistryError>;
     async fn unbind_credential(
         &self,
-        session_id: &SessionId,
-        env_id: &EnvironmentId,
+        environment_id: &EnvironmentId,
         env_name: &str,
-    ) -> Result<SessionEnvironmentCredentialRecord, EnvironmentRegistryError>;
+    ) -> Result<EnvironmentCredentialRecord, EnvironmentRegistryError>;
 }
 
 mod memory;

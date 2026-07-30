@@ -14,9 +14,10 @@ use crate::{
     PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, ToolInvokeBatchActivityRequest,
-    WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest,
-    WorkflowToolReplyValidationRequest, WorkflowToolReplyValidationResult,
-    WorkflowToolStartActivityRequest, WorkflowToolStartActivityResult,
+    ToolPreparePromiseControlsActivityRequest, WorkflowToolExecutionCancelRequest,
+    WorkflowToolExecutionCheckRequest, WorkflowToolReplyValidationRequest,
+    WorkflowToolReplyValidationResult, WorkflowToolStartActivityRequest,
+    WorkflowToolStartActivityResult,
 };
 
 pub const ACTIVITY_CREATE_OR_LOAD_SESSION: &str = "WorkflowActivities::create_or_load_session";
@@ -27,6 +28,8 @@ pub const ACTIVITY_LLM_GENERATE: &str = "WorkflowActivities::llm_generate";
 pub const ACTIVITY_PREPROCESS_RUN_INPUT: &str = "WorkflowActivities::preprocess_run_input";
 pub const ACTIVITY_CONTEXT_COMPACT: &str = "WorkflowActivities::context_compact";
 pub const ACTIVITY_TOOL_INVOKE_BATCH: &str = "WorkflowActivities::tool_invoke_batch";
+pub const ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS: &str =
+    "WorkflowActivities::tool_prepare_promise_controls";
 pub const ACTIVITY_RUNTIME_PROJECTION_REFRESH: &str =
     "WorkflowActivities::runtime_projection_refresh";
 pub const ACTIVITY_ENVIRONMENT_JOB_START: &str = "WorkflowActivities::environment_job_start";
@@ -108,6 +111,14 @@ impl WorkflowActivities {
         _ctx: ActivityContext,
         _request: ToolInvokeBatchActivityRequest,
     ) -> Result<ToolBatchOutcome, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    #[activity(name = ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS)]
+    pub async fn tool_prepare_promise_controls(
+        _ctx: ActivityContext,
+        _request: ToolPreparePromiseControlsActivityRequest,
+    ) -> Result<engine::PromiseControlArgumentFacts, ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 

@@ -37,7 +37,7 @@
       "summary": "Create or reopen a session"
     },
     {
-      "description": "Creates a session with an immutable lifecycle controller and/or workflow tools using the complete bound/start and Accepted/keyed-Promise vocabulary. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+      "description": "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
       "method": "session/managed/start",
       "params": {
         "schema": {
@@ -343,7 +343,7 @@
       "summary": "Deactivate a session skill"
     },
     {
-      "description": "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
+      "description": "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
       "method": "session/profiles/apply",
       "params": {
         "schema": {
@@ -361,115 +361,7 @@
       "summary": "Apply a profile to a session"
     },
     {
-      "description": "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-      "method": "session/mounts/put",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/VfsMountPutParams"
-        },
-        "type": "VfsMountPutParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfVfsMountPutResponse"
-        },
-        "type": "AgentApiOutcome<VfsMountPutResponse>"
-      },
-      "scope": "universe",
-      "summary": "Create or replace a session mount"
-    },
-    {
-      "description": "Returns the session's snapshot/workspace bindings and access modes.",
-      "method": "session/mounts/list",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/VfsMountListParams"
-        },
-        "type": "VfsMountListParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfVfsMountListResponse"
-        },
-        "type": "AgentApiOutcome<VfsMountListResponse>"
-      },
-      "scope": "universe",
-      "summary": "List session mounts"
-    },
-    {
-      "description": "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
-      "method": "session/mounts/delete",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/VfsMountDeleteParams"
-        },
-        "type": "VfsMountDeleteParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfVfsMountDeleteResponse"
-        },
-        "type": "AgentApiOutcome<VfsMountDeleteResponse>"
-      },
-      "scope": "universe",
-      "summary": "Delete a session mount"
-    },
-    {
-      "description": "Returns one session-local environment alias joined with current instance/provider availability and activation state.",
-      "method": "session/environments/read",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/SessionEnvironmentReadParams"
-        },
-        "type": "SessionEnvironmentReadParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentReadResponse"
-        },
-        "type": "AgentApiOutcome<SessionEnvironmentReadResponse>"
-      },
-      "scope": "universe",
-      "summary": "Read a session environment binding"
-    },
-    {
-      "description": "Returns all environment aliases attached to the session and identifies the active tool target, if any.",
-      "method": "session/environments/list",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/SessionEnvironmentListParams"
-        },
-        "type": "SessionEnvironmentListParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentListResponse"
-        },
-        "type": "AgentApiOutcome<SessionEnvironmentListResponse>"
-      },
-      "scope": "universe",
-      "summary": "List session environment bindings"
-    },
-    {
-      "description": "Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.",
-      "method": "session/environments/attach",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/SessionEnvironmentAttachParams"
-        },
-        "type": "SessionEnvironmentAttachParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentAttachResponse"
-        },
-        "type": "AgentApiOutcome<SessionEnvironmentAttachResponse>"
-      },
-      "scope": "universe",
-      "summary": "Attach an environment to a session"
-    },
-    {
-      "description": "Selects an attached, available environment as the process/filesystem tool target while the session is idle.",
+      "description": "Selects an allowed, live universe environment for environment-targeted tools while the session is idle.",
       "method": "session/environments/activate",
       "params": {
         "schema": {
@@ -487,7 +379,7 @@
       "summary": "Activate a session environment"
     },
     {
-      "description": "Clears the active environment tool target without detaching any binding or closing the underlying instance.",
+      "description": "Clears active environment selection without changing or closing the universe environment.",
       "method": "session/environments/deactivate",
       "params": {
         "schema": {
@@ -505,73 +397,55 @@
       "summary": "Deactivate the session environment"
     },
     {
-      "description": "Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.",
-      "method": "session/environments/detach",
+      "description": "Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.",
+      "method": "environments/credentials/bind",
       "params": {
         "schema": {
-          "$ref": "#/definitions/SessionEnvironmentDetachParams"
+          "$ref": "#/definitions/EnvironmentCredentialBindParams"
         },
-        "type": "SessionEnvironmentDetachParams"
+        "type": "EnvironmentCredentialBindParams"
       },
       "result": {
         "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentDetachResponse"
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentCredentialBindResponse"
         },
-        "type": "AgentApiOutcome<SessionEnvironmentDetachResponse>"
-      },
-      "scope": "universe",
-      "summary": "Detach a session environment"
-    },
-    {
-      "description": "Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.",
-      "method": "session/environments/credentials/bind",
-      "params": {
-        "schema": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialBindParams"
-        },
-        "type": "SessionEnvironmentCredentialBindParams"
-      },
-      "result": {
-        "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentCredentialBindResponse"
-        },
-        "type": "AgentApiOutcome<SessionEnvironmentCredentialBindResponse>"
+        "type": "AgentApiOutcome<EnvironmentCredentialBindResponse>"
       },
       "scope": "universe",
       "summary": "Bind a credential into an environment"
     },
     {
-      "description": "Returns variable names and credential source handles for a session environment; resolved secret values are never returned.",
-      "method": "session/environments/credentials/list",
+      "description": "Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.",
+      "method": "environments/credentials/list",
       "params": {
         "schema": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialListParams"
+          "$ref": "#/definitions/EnvironmentCredentialListParams"
         },
-        "type": "SessionEnvironmentCredentialListParams"
+        "type": "EnvironmentCredentialListParams"
       },
       "result": {
         "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentCredentialListResponse"
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentCredentialListResponse"
         },
-        "type": "AgentApiOutcome<SessionEnvironmentCredentialListResponse>"
+        "type": "AgentApiOutcome<EnvironmentCredentialListResponse>"
       },
       "scope": "universe",
       "summary": "List environment credential bindings"
     },
     {
       "description": "Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.",
-      "method": "session/environments/credentials/unbind",
+      "method": "environments/credentials/unbind",
       "params": {
         "schema": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialUnbindParams"
+          "$ref": "#/definitions/EnvironmentCredentialUnbindParams"
         },
-        "type": "SessionEnvironmentCredentialUnbindParams"
+        "type": "EnvironmentCredentialUnbindParams"
       },
       "result": {
         "schema": {
-          "$ref": "#/definitions/AgentApiOutcomeOfSessionEnvironmentCredentialUnbindResponse"
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentCredentialUnbindResponse"
         },
-        "type": "AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>"
+        "type": "AgentApiOutcome<EnvironmentCredentialUnbindResponse>"
       },
       "scope": "universe",
       "summary": "Unbind an environment credential"

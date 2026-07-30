@@ -53,36 +53,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "type": "object",
       "definitions": {
-        "AttachedHostSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "endpoint": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "providerOptions": {}
-          },
-          "type": "object"
-        },
         "CompactionPolicy": {
           "oneOf": [
             {
@@ -169,11 +139,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+          "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
           "properties": {
             "jobs": {
               "default": false,
-              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
               "type": "boolean"
             },
             "providers": {
@@ -185,6 +155,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "array",
                 "null"
               ]
+            },
+            "selectionTools": {
+              "default": false,
+              "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+              "type": "boolean"
             },
             "version": {
               "default": 1,
@@ -397,62 +372,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
-        "HostTargetCreateRequestView": {
-          "oneOf": [
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/SandboxTargetSpecView"
-                },
-                "type": {
-                  "const": "sandbox",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/AttachedHostSpecView"
-                },
-                "type": {
-                  "const": "attachedHost",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerType": {
-                  "type": "string"
-                },
-                "spec": {},
-                "type": {
-                  "const": "provider",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerType",
-                "spec"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "InlineAgentProfile": {
           "properties": {
+            "activeEnvironmentId": {
+              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "config": {
               "anyOf": [
                 {
@@ -475,12 +403,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
-            "environments": {
-              "items": {
-                "$ref": "#/definitions/ProfileEnvironment"
-              },
-              "type": "array"
-            },
             "instructions": {
               "anyOf": [
                 {
@@ -490,12 +412,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
-            },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
             }
           },
           "type": "object"
@@ -612,65 +528,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "ProfileEnvironment": {
-          "properties": {
-            "activate": {
-              "default": false,
-              "type": "boolean"
-            },
-            "envId": {
-              "type": "string"
-            },
-            "environment": {
-              "$ref": "#/definitions/ProfileEnvironmentSource"
-            }
-          },
-          "required": [
-            "envId",
-            "environment"
-          ],
-          "type": "object"
-        },
-        "ProfileEnvironmentSource": {
-          "oneOf": [
-            {
-              "properties": {
-                "instanceId": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "existing",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "instanceId"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerId": {
-                  "type": "string"
-                },
-                "request": {
-                  "$ref": "#/definitions/HostTargetCreateRequestView"
-                },
-                "type": {
-                  "const": "provision",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerId",
-                "request"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "ProfileId": {
           "type": "string"
         },
@@ -709,25 +566,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -772,42 +610,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "never"
           ],
           "type": "string"
-        },
-        "SandboxTargetSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "image": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "providerOptions": {},
-            "template": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -944,7 +746,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -977,59 +779,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -1138,6 +904,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -1310,11 +1141,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+          "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
           "properties": {
             "jobs": {
               "default": false,
-              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
               "type": "boolean"
             },
             "providers": {
@@ -1326,6 +1157,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "array",
                 "null"
               ]
+            },
+            "selectionTools": {
+              "default": false,
+              "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+              "type": "boolean"
             },
             "version": {
               "default": 1,
@@ -1796,7 +1632,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -1829,13 +1665,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
@@ -1947,6 +1790,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -2741,7 +2649,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_profiles_apply",
     "method": "session/profiles/apply",
     "summary": "Apply a profile to a session",
-    "description": "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
+    "description": "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
     "paramsType": "ProfileApplyParams",
     "resultType": "AgentApiOutcome<ProfileApplyResponse>",
     "inputSchema": {
@@ -2776,36 +2684,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       ],
       "type": "object",
       "definitions": {
-        "AttachedHostSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "endpoint": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "providerOptions": {}
-          },
-          "type": "object"
-        },
         "CompactionPolicy": {
           "oneOf": [
             {
@@ -2892,11 +2770,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+          "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
           "properties": {
             "jobs": {
               "default": false,
-              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
               "type": "boolean"
             },
             "providers": {
@@ -2908,6 +2786,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "array",
                 "null"
               ]
+            },
+            "selectionTools": {
+              "default": false,
+              "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+              "type": "boolean"
             },
             "version": {
               "default": 1,
@@ -3120,62 +3003,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
-        "HostTargetCreateRequestView": {
-          "oneOf": [
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/SandboxTargetSpecView"
-                },
-                "type": {
-                  "const": "sandbox",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/AttachedHostSpecView"
-                },
-                "type": {
-                  "const": "attachedHost",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerType": {
-                  "type": "string"
-                },
-                "spec": {},
-                "type": {
-                  "const": "provider",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerType",
-                "spec"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "InlineAgentProfile": {
           "properties": {
+            "activeEnvironmentId": {
+              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "config": {
               "anyOf": [
                 {
@@ -3198,12 +3034,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
-            "environments": {
-              "items": {
-                "$ref": "#/definitions/ProfileEnvironment"
-              },
-              "type": "array"
-            },
             "instructions": {
               "anyOf": [
                 {
@@ -3213,12 +3043,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
-            },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
             }
           },
           "type": "object"
@@ -3335,65 +3159,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "ProfileEnvironment": {
-          "properties": {
-            "activate": {
-              "default": false,
-              "type": "boolean"
-            },
-            "envId": {
-              "type": "string"
-            },
-            "environment": {
-              "$ref": "#/definitions/ProfileEnvironmentSource"
-            }
-          },
-          "required": [
-            "envId",
-            "environment"
-          ],
-          "type": "object"
-        },
-        "ProfileEnvironmentSource": {
-          "oneOf": [
-            {
-              "properties": {
-                "instanceId": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "existing",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "instanceId"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerId": {
-                  "type": "string"
-                },
-                "request": {
-                  "$ref": "#/definitions/HostTargetCreateRequestView"
-                },
-                "type": {
-                  "const": "provision",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerId",
-                "request"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "ProfileId": {
           "type": "string"
         },
@@ -3432,25 +3197,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -3495,42 +3241,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "never"
           ],
           "type": "string"
-        },
-        "SandboxTargetSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "image": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "providerOptions": {},
-            "template": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -3667,7 +3377,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -3700,59 +3410,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -3861,66 +3535,38 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
-        }
-      }
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_put",
-    "method": "session/mounts/put",
-    "summary": "Create or replace a session mount",
-    "description": "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-    "paramsType": "VfsMountPutParams",
-    "resultType": "AgentApiOutcome<VfsMountPutResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "access": {
-          "$ref": "#/definitions/VfsMountAccess"
         },
-        "mountPath": {
-          "type": "string"
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
         },
-        "sessionId": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/definitions/VfsMountSourceInput"
-        }
-      },
-      "required": [
-        "sessionId",
-        "mountPath",
-        "source",
-        "access"
-      ],
-      "type": "object",
-      "definitions": {
-        "VfsMountAccess": {
+        "WorkspaceLinkAccess": {
           "enum": [
             "readOnly",
             "readWrite"
           ],
           "type": "string"
         },
-        "VfsMountSourceInput": {
+        "WorkspaceLinkTarget": {
           "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
             {
               "properties": {
                 "type": {
@@ -3936,176 +3582,24 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "workspaceId"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
             }
           ]
-        }
-      }
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_list",
-    "method": "session/mounts/list",
-    "summary": "List session mounts",
-    "description": "Returns the session's snapshot/workspace bindings and access modes.",
-    "paramsType": "VfsMountListParams",
-    "resultType": "AgentApiOutcome<VfsMountListResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_delete",
-    "method": "session/mounts/delete",
-    "summary": "Delete a session mount",
-    "description": "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
-    "paramsType": "VfsMountDeleteParams",
-    "resultType": "AgentApiOutcome<VfsMountDeleteResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "mountPath": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "mountPath"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_environments_read",
-    "method": "session/environments/read",
-    "summary": "Read a session environment binding",
-    "description": "Returns one session-local environment alias joined with current instance/provider availability and activation state.",
-    "paramsType": "SessionEnvironmentReadParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentReadResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_environments_list",
-    "method": "session/environments/list",
-    "summary": "List session environment bindings",
-    "description": "Returns all environment aliases attached to the session and identifies the active tool target, if any.",
-    "paramsType": "SessionEnvironmentListParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentListResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_environments_attach",
-    "method": "session/environments/attach",
-    "summary": "Attach an environment to a session",
-    "description": "Binds an existing universe environment instance under a session-local alias, optionally activating it. The session must grant environments and allow the provider.",
-    "paramsType": "SessionEnvironmentAttachParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentAttachResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "activate": {
-          "default": false,
-          "type": "boolean"
-        },
-        "cwd": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "envId": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "fsRoutes": {
-          "items": {
-            "$ref": "#/definitions/SessionEnvironmentFsRouteView"
-          },
-          "type": "array"
-        },
-        "instanceId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "instanceId"
-      ],
-      "type": "object",
-      "definitions": {
-        "SessionEnvironmentFsAccessView": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "SessionEnvironmentFsRouteView": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/SessionEnvironmentFsAccessView"
-            },
-            "path": {
-              "type": "string"
-            },
-            "sameStateAsActiveEnv": {
-              "default": false,
-              "type": "boolean"
-            },
-            "sourcePath": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "required": [
-            "path",
-            "access"
-          ],
-          "type": "object"
         }
       }
     }
@@ -4114,13 +3608,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_environments_activate",
     "method": "session/environments/activate",
     "summary": "Activate a session environment",
-    "description": "Selects an attached, available environment as the process/filesystem tool target while the session is idle.",
+    "description": "Selects an allowed, live universe environment for environment-targeted tools while the session is idle.",
     "paramsType": "SessionEnvironmentActivateParams",
     "resultType": "AgentApiOutcome<SessionEnvironmentActivateResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "envId": {
+        "environmentId": {
           "type": "string"
         },
         "sessionId": {
@@ -4129,7 +3623,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "required": [
         "sessionId",
-        "envId"
+        "environmentId"
       ],
       "type": "object"
     }
@@ -4138,7 +3632,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_environments_deactivate",
     "method": "session/environments/deactivate",
     "summary": "Deactivate the session environment",
-    "description": "Clears the active environment tool target without detaching any binding or closing the underlying instance.",
+    "description": "Clears active environment selection without changing or closing the universe environment.",
     "paramsType": "SessionEnvironmentDeactivateParams",
     "resultType": "AgentApiOutcome<SessionEnvironmentDeactivateResponse>",
     "inputSchema": {
@@ -4155,61 +3649,33 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
-    "name": "lightspeed_session_environments_detach",
-    "method": "session/environments/detach",
-    "summary": "Detach a session environment",
-    "description": "Detaches the session-local binding; detaching the active target requires an idle session and deactivates it first. The universe instance and jobs remain independently owned.",
-    "paramsType": "SessionEnvironmentDetachParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentDetachResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "envId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_environments_credentials_bind",
-    "method": "session/environments/credentials/bind",
+    "name": "lightspeed_environments_credentials_bind",
+    "method": "environments/credentials/bind",
     "summary": "Bind a credential into an environment",
-    "description": "Maps an environment variable name to an existing grant/provider/direct-secret handle for one session binding. The response exposes only the source handle, never secret material.",
-    "paramsType": "SessionEnvironmentCredentialBindParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentCredentialBindResponse>",
+    "description": "Maps an environment variable name to an existing grant/provider/direct-secret handle for a universe environment. The response exposes only the source handle, never secret material.",
+    "paramsType": "EnvironmentCredentialBindParams",
+    "resultType": "AgentApiOutcome<EnvironmentCredentialBindResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "envId": {
-          "type": "string"
-        },
         "envName": {
           "type": "string"
         },
-        "sessionId": {
+        "environmentId": {
           "type": "string"
         },
         "source": {
-          "$ref": "#/definitions/SessionEnvironmentCredentialSourceView"
+          "$ref": "#/definitions/EnvironmentCredentialSourceView"
         }
       },
       "required": [
-        "sessionId",
-        "envId",
+        "environmentId",
         "envName",
         "source"
       ],
       "type": "object",
       "definitions": {
-        "SessionEnvironmentCredentialSourceView": {
+        "EnvironmentCredentialSourceView": {
           "oneOf": [
             {
               "properties": {
@@ -4265,52 +3731,44 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
-    "name": "lightspeed_session_environments_credentials_list",
-    "method": "session/environments/credentials/list",
+    "name": "lightspeed_environments_credentials_list",
+    "method": "environments/credentials/list",
     "summary": "List environment credential bindings",
-    "description": "Returns variable names and credential source handles for a session environment; resolved secret values are never returned.",
-    "paramsType": "SessionEnvironmentCredentialListParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentCredentialListResponse>",
+    "description": "Returns variable names and credential source handles for a universe environment; resolved secret values are never returned.",
+    "paramsType": "EnvironmentCredentialListParams",
+    "resultType": "AgentApiOutcome<EnvironmentCredentialListResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "envId": {
-          "type": "string"
-        },
-        "sessionId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "sessionId",
-        "envId"
+        "environmentId"
       ],
       "type": "object"
     }
   },
   {
-    "name": "lightspeed_session_environments_credentials_unbind",
-    "method": "session/environments/credentials/unbind",
+    "name": "lightspeed_environments_credentials_unbind",
+    "method": "environments/credentials/unbind",
     "summary": "Unbind an environment credential",
     "description": "Removes one variable-to-credential mapping without deleting the underlying grant, provider credential, or secret.",
-    "paramsType": "SessionEnvironmentCredentialUnbindParams",
-    "resultType": "AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>",
+    "paramsType": "EnvironmentCredentialUnbindParams",
+    "resultType": "AgentApiOutcome<EnvironmentCredentialUnbindResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "envId": {
-          "type": "string"
-        },
         "envName": {
           "type": "string"
         },
-        "sessionId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "sessionId",
-        "envId",
+        "environmentId",
         "envName"
       ],
       "type": "object"
@@ -4472,12 +3930,12 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "instanceId"
+        "environmentId"
       ],
       "type": "object"
     }
@@ -4537,12 +3995,12 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
-        "instanceId": {
+        "environmentId": {
           "type": "string"
         }
       },
       "required": [
-        "instanceId"
+        "environmentId"
       ],
       "type": "object"
     }
@@ -4587,6 +4045,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
+            "activeEnvironmentId": {
+              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "config": {
               "anyOf": [
                 {
@@ -4609,12 +4074,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
-            "environments": {
-              "items": {
-                "$ref": "#/definitions/ProfileEnvironment"
-              },
-              "type": "array"
-            },
             "instructions": {
               "anyOf": [
                 {
@@ -4625,12 +4084,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
-            },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             }
@@ -4638,36 +4091,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "required": [
             "profileId"
           ],
-          "type": "object"
-        },
-        "AttachedHostSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "endpoint": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "providerOptions": {}
-          },
           "type": "object"
         },
         "CompactionPolicy": {
@@ -4756,11 +4179,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+          "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
           "properties": {
             "jobs": {
               "default": false,
-              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
               "type": "boolean"
             },
             "providers": {
@@ -4772,6 +4195,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "array",
                 "null"
               ]
+            },
+            "selectionTools": {
+              "default": false,
+              "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+              "type": "boolean"
             },
             "version": {
               "default": 1,
@@ -4984,60 +4412,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
-        "HostTargetCreateRequestView": {
-          "oneOf": [
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/SandboxTargetSpecView"
-                },
-                "type": {
-                  "const": "sandbox",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/AttachedHostSpecView"
-                },
-                "type": {
-                  "const": "attachedHost",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerType": {
-                  "type": "string"
-                },
-                "spec": {},
-                "type": {
-                  "const": "provider",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerType",
-                "spec"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "LimitsConfig": {
           "additionalProperties": {
             "not": {}
@@ -5150,65 +4524,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "ProfileEnvironment": {
-          "properties": {
-            "activate": {
-              "default": false,
-              "type": "boolean"
-            },
-            "envId": {
-              "type": "string"
-            },
-            "environment": {
-              "$ref": "#/definitions/ProfileEnvironmentSource"
-            }
-          },
-          "required": [
-            "envId",
-            "environment"
-          ],
-          "type": "object"
-        },
-        "ProfileEnvironmentSource": {
-          "oneOf": [
-            {
-              "properties": {
-                "instanceId": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "existing",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "instanceId"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerId": {
-                  "type": "string"
-                },
-                "request": {
-                  "$ref": "#/definitions/HostTargetCreateRequestView"
-                },
-                "type": {
-                  "const": "provision",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerId",
-                "request"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "ProfileId": {
           "type": "string"
         },
@@ -5248,25 +4563,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
-        },
         "RemoteMcpApprovalPolicy": {
           "enum": [
             "providerDefault",
@@ -5274,42 +4570,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "never"
           ],
           "type": "string"
-        },
-        "SandboxTargetSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "image": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "providerOptions": {},
-            "template": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -5446,7 +4706,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -5479,59 +4739,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -5640,6 +4864,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -5711,6 +5000,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
+            "activeEnvironmentId": {
+              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "config": {
               "anyOf": [
                 {
@@ -5733,12 +5029,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
-            "environments": {
-              "items": {
-                "$ref": "#/definitions/ProfileEnvironment"
-              },
-              "type": "array"
-            },
             "instructions": {
               "anyOf": [
                 {
@@ -5749,12 +5039,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
-            },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             }
@@ -5762,36 +5046,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "required": [
             "profileId"
           ],
-          "type": "object"
-        },
-        "AttachedHostSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "endpoint": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "name": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "providerOptions": {}
-          },
           "type": "object"
         },
         "CompactionPolicy": {
@@ -5880,11 +5134,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants attaching/activating session environments and their process tool\nsurface. Durable jobs are an independent, default-off sub-grant.",
+          "description": "Grants active session environments and their process tool surface.\nModel-driven selection and durable jobs are independent, default-off\nsub-grants.",
           "properties": {
             "jobs": {
               "default": false,
-              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; model-visible tools still\nrequire a ready attached environment with matching job capabilities.",
+              "description": "Grants the advanced durable-job tool surface. The workflow binding is\ninstalled for the session when granted; invocations still require an\nactive, ready environment with matching job capabilities.",
               "type": "boolean"
             },
             "providers": {
@@ -5896,6 +5150,11 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "array",
                 "null"
               ]
+            },
+            "selectionTools": {
+              "default": false,
+              "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
+              "type": "boolean"
             },
             "version": {
               "default": 1,
@@ -6108,60 +5367,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
-        "HostTargetCreateRequestView": {
-          "oneOf": [
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/SandboxTargetSpecView"
-                },
-                "type": {
-                  "const": "sandbox",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "spec": {
-                  "$ref": "#/definitions/AttachedHostSpecView"
-                },
-                "type": {
-                  "const": "attachedHost",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "spec"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerType": {
-                  "type": "string"
-                },
-                "spec": {},
-                "type": {
-                  "const": "provider",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerType",
-                "spec"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "LimitsConfig": {
           "additionalProperties": {
             "not": {}
@@ -6274,65 +5479,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ],
           "type": "object"
         },
-        "ProfileEnvironment": {
-          "properties": {
-            "activate": {
-              "default": false,
-              "type": "boolean"
-            },
-            "envId": {
-              "type": "string"
-            },
-            "environment": {
-              "$ref": "#/definitions/ProfileEnvironmentSource"
-            }
-          },
-          "required": [
-            "envId",
-            "environment"
-          ],
-          "type": "object"
-        },
-        "ProfileEnvironmentSource": {
-          "oneOf": [
-            {
-              "properties": {
-                "instanceId": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "existing",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "instanceId"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "providerId": {
-                  "type": "string"
-                },
-                "request": {
-                  "$ref": "#/definitions/HostTargetCreateRequestView"
-                },
-                "type": {
-                  "const": "provision",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "providerId",
-                "request"
-              ],
-              "type": "object"
-            }
-          ]
-        },
         "ProfileId": {
           "type": "string"
         },
@@ -6372,25 +5518,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
-        },
         "RemoteMcpApprovalPolicy": {
           "enum": [
             "providerDefault",
@@ -6398,42 +5525,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "never"
           ],
           "type": "string"
-        },
-        "SandboxTargetSpecView": {
-          "properties": {
-            "cwd": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "env": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "image": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "labels": {
-              "additionalProperties": {
-                "type": "string"
-              },
-              "type": "object"
-            },
-            "providerOptions": {},
-            "template": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -6570,7 +5661,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -6603,59 +5694,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -6764,6 +5819,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }

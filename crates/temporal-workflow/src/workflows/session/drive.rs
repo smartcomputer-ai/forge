@@ -79,7 +79,7 @@ pub(super) async fn process_pending_tool_batch_resumes(
     }
     let mut drive = drive_from_state(ctx)?;
     for resume in resumes {
-        let command = CoreAgentCommand::ResumeAwait(resume.command);
+        let command = CoreAgentCommand::ResumeToolBatch(resume.command);
         match admit_and_append_command(ctx, &mut drive, command, None).await? {
             CommandAdmissionResult::Accepted => {}
             CommandAdmissionResult::Rejected(failure) => {
@@ -125,6 +125,14 @@ pub(super) async fn drive_until_idle(
                 action = drive.resume_context_compaction(result, workflow_time_ms(ctx))?;
             }
             CoreAgentAction::InvokeTools { request } => {
+                let request = match request.promise_control_argument_request() {
+                    Some(argument_request) => {
+                        let facts =
+                            call_tool_prepare_promise_controls(ctx, argument_request).await?;
+                        engine::attach_promise_control_runtime(drive.state(), request, facts)?
+                    }
+                    None => request,
+                };
                 let outcome = call_tool_invoke_batch(ctx, request).await?;
                 action = drive.resume_tool_batch_outcome(outcome, workflow_time_ms(ctx))?;
             }
@@ -314,9 +322,14 @@ fn detached_promise_followup_for_entry(
     if promise.scope != engine::PromiseScope::Session || !promise.status.is_terminal() {
         return None;
     }
-    if awaits::parked_await(&state.core_state)
-        .is_some_and(|parked| parked.spec.promise_ids.iter().any(|id| id == promise_id))
-    {
+    if awaits::parked_tool_batch(&state.core_state).is_some_and(|parked| {
+        parked
+            .suspension
+            .spec()
+            .promise_ids
+            .iter()
+            .any(|id| id == promise_id)
+    }) {
         return None;
     }
     Some(DetachedPromiseFollowup {
@@ -427,6 +440,7 @@ mod tests {
                     target_run_id: 1,
                 },
                 scope: engine::PromiseScope::Session,
+                ownership: engine::PromiseOwnership::Model,
                 status: engine::PromiseStatus::Resolved,
                 payload_ref: Some(payload_ref.clone()),
                 error_ref: None,

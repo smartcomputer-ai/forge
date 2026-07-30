@@ -429,30 +429,6 @@ async fn materialize_input_item(
                 extra: Default::default(),
             }))
         }
-        ContextEntryKind::EnvironmentCatalog => {
-            let catalog =
-                crate::environment_prompts::read_environment_catalog(blobs, &item.content_ref)
-                    .await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::environment_prompts::environment_catalog_text(&catalog),
-                ),
-                extra: Default::default(),
-            }))
-        }
-        ContextEntryKind::EnvironmentActive => {
-            let active =
-                crate::environment_prompts::read_environment_active(blobs, &item.content_ref)
-                    .await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::environment_prompts::environment_active_text(&active),
-                ),
-                extra: Default::default(),
-            }))
-        }
         ContextEntryKind::SkillCatalog => {
             let catalog =
                 crate::skill_prompts::read_skill_catalog(blobs, &item.content_ref).await?;

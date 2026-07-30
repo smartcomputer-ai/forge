@@ -14,23 +14,22 @@ use std::{
 use api::{
     AgentApiErrorKind, AgentApiService, AgentProfileInput, AuthProviderConfigInput,
     AuthProviderCreateParams, ContextEntryKindView, EnvironmentCloseParams,
-    EnvironmentCreateParams, EnvironmentJobCancelParams, EnvironmentJobCreateParams,
-    EnvironmentJobReadParams, EnvironmentListParams, EnvironmentProviderCapabilitiesView,
-    EnvironmentProviderHeartbeatParams, EnvironmentProviderImplementationView,
-    EnvironmentProviderKindView, EnvironmentProviderRegisterParams, EnvironmentReadParams,
-    EnvironmentTargetDescriptorView, EnvironmentTargetStatusView, EnvironmentTargetSummaryView,
-    HostCapabilitiesView, HostConnectionView, HostControllerConnectionView, HostScopeView,
-    HostTargetCreateRequestView, HostTransportView, InputItem, ProfileCreateParams,
-    ProfileDeleteParams, ProfileDocument, ProfileEnvironment, ProfileEnvironmentSource, ProfileId,
-    ProfileSource, RunStartParams, RunStartSource, RunStatus, SandboxTargetSpecView, SessionConfig,
-    SessionEnvironmentAttachParams, SessionEnvironmentCredentialBindParams,
-    SessionEnvironmentCredentialListParams, SessionEnvironmentCredentialSourceView,
-    SessionEnvironmentCredentialUnbindParams, SessionEnvironmentDetachParams,
-    SessionEnvironmentListParams, SessionEventsReadParams, SessionJobCancelScopeView,
+    EnvironmentCreateParams, EnvironmentCredentialBindParams, EnvironmentCredentialListParams,
+    EnvironmentCredentialSourceView, EnvironmentCredentialUnbindParams, EnvironmentJobCancelParams,
+    EnvironmentJobCreateParams, EnvironmentJobReadParams, EnvironmentListParams,
+    EnvironmentProviderCapabilitiesView, EnvironmentProviderHeartbeatParams,
+    EnvironmentProviderImplementationView, EnvironmentProviderKindView,
+    EnvironmentProviderRegisterParams, EnvironmentReadParams, EnvironmentTargetDescriptorView,
+    EnvironmentTargetStatusView, EnvironmentTargetSummaryView, HostCapabilitiesView,
+    HostConnectionView, HostControllerConnectionView, HostScopeView, HostTargetCreateRequestView,
+    HostTransportView, InputItem, ProfileCreateParams, ProfileDeleteParams, ProfileDocument,
+    ProfileId, ProfileSource, RunStartParams, RunStartSource, RunStatus, SandboxTargetSpecView,
+    SessionConfig, SessionConfigPutParams, SessionEnvironmentActivateParams,
+    SessionEnvironmentDeactivateParams, SessionEventsReadParams, SessionJobCancelScopeView,
     SessionJobDependencyInput, SessionJobDependencyPolicyView, SessionJobHandleInput,
     SessionJobHandleView, SessionJobReadEntryView, SessionJobStartSpecInput, SessionJobStatusView,
-    SessionListParams, SessionReadParams, SessionStartParams, VfsMountAccess as ApiVfsMountAccess,
-    VfsMountPutParams, VfsMountSourceInput,
+    SessionListParams, SessionReadParams, SessionStartParams, WorkspaceLink, WorkspaceLinkAccess,
+    WorkspaceLinkTarget,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -140,7 +139,7 @@ async fn temporal_live_fake_provider_create_attach_and_process_tool() -> anyhow:
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
-async fn temporal_live_profile_attaches_host_environment() -> anyhow::Result<()> {
+async fn temporal_live_profile_selects_universe_environment() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
@@ -316,26 +315,34 @@ async fn run_host_bridge_client(
         ]),
     )
     .await?;
-    api.put_vfs_mount(VfsMountPutParams {
+    let mut config = started_session
+        .result
+        .session
+        .config
+        .clone()
+        .expect("session config");
+    let features = config.features.as_mut().expect("features");
+    features
+        .vfs
+        .as_mut()
+        .expect("vfs")
+        .workspace_links
+        .push(WorkspaceLink {
+            path: "/skills".to_owned(),
+            target: WorkspaceLinkTarget::Snapshot {
+                snapshot_ref: skill_snapshot.snapshot_ref.to_string(),
+            },
+            access: WorkspaceLinkAccess::ReadOnly,
+        });
+    api.put_session_config(SessionConfigPutParams {
         session_id: session_id.as_str().to_owned(),
-        mount_path: "/skills".to_owned(),
-        source: VfsMountSourceInput::Snapshot {
-            snapshot_ref: skill_snapshot.snapshot_ref.as_str().to_owned(),
-        },
-        access: ApiVfsMountAccess::ReadOnly,
+        expected_config_revision: Some(started_session.result.session.config_revision),
+        config,
     })
     .await?;
 
-    let attached =
-        wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id, "bridge-local").await?;
-    assert_eq!(
-        attached.result.active_env_id.as_deref(),
-        Some("bridge-local")
-    );
-    assert_eq!(
-        attached.result.environment.cwd.as_deref(),
-        Some(path_str(&bridge_root)?)
-    );
+    let attached = wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id).await?;
+    assert!(attached.result.session.active_environment_id.is_some());
     let attached_session = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
@@ -387,6 +394,10 @@ async fn run_host_bridge_client(
         text.contains(BRIDGE_VFS_SKILL_MARKER),
         "final answer did not include marker from VFS /skills read: {text}"
     );
+    assert!(
+        text.contains(&provider_id),
+        "environment_read without an id did not return the active environment: {text}"
+    );
 
     let local_file = bridge_root.join(BRIDGE_FILE_NAME);
     let local_contents = tokio::fs::read_to_string(&local_file).await?;
@@ -396,9 +407,8 @@ async fn run_host_bridge_client(
         local_file.display()
     );
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
+    api.deactivate_session_environment(SessionEnvironmentDeactivateParams {
         session_id: session_id.as_str().to_owned(),
-        env_id: "bridge-local".to_owned(),
     })
     .await?;
     let detached_session = api
@@ -493,8 +503,8 @@ async fn run_host_bridge_jobs_client(
             .active_tools
             .tools
             .iter()
-            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME),
-        "the admitted workflow binding must remain hidden without a capable attached environment"
+            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_START_TOOL_NAME),
+        "environment job tools must be installed from the feature grant before activation"
     );
     let configured = api
         .read_session_events(SessionEventsReadParams {
@@ -509,13 +519,13 @@ async fn run_host_bridge_jobs_client(
         api::SessionEventKindView::SystemWorkflowToolConfigured { .. }
     )));
 
-    let attached =
-        wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id, "bridge-local").await?;
-    assert_eq!(
-        attached.result.active_env_id.as_deref(),
-        Some("bridge-local")
-    );
-    let instance_id = attached.result.environment.instance_id.clone();
+    let attached = wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id).await?;
+    let environment_id = attached
+        .result
+        .session
+        .active_environment_id
+        .clone()
+        .expect("active bridge environment");
     let attached_session = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
@@ -600,7 +610,7 @@ async fn run_host_bridge_jobs_client(
     );
     let created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.clone(),
+            environment_id: environment_id.clone(),
             request_id: "api_job_round_trip".to_owned(),
             jobs: vec![SessionJobStartSpecInput {
                 name: Some("api-live-job".to_owned()),
@@ -616,7 +626,7 @@ async fn run_host_bridge_jobs_client(
             }],
         })
         .await?;
-    assert_eq!(created.result.instance_id, instance_id);
+    assert_eq!(created.result.environment_id, environment_id);
     assert_eq!(created.result.jobs.len(), 1);
     let api_job = created.result.jobs[0].handle.clone();
 
@@ -626,7 +636,7 @@ async fn run_host_bridge_jobs_client(
         let read = api
             .read_environment_jobs(EnvironmentJobReadParams {
                 jobs: vec![SessionJobHandleInput {
-                    instance_id: api_job.instance_id.clone(),
+                    environment_id: api_job.environment_id.clone(),
                     job_id: api_job.job_id.clone(),
                 }],
                 output_bytes: Some(4096),
@@ -668,14 +678,14 @@ async fn run_host_bridge_jobs_client(
         api_local_file.display()
     );
 
-    run_api_job_queue_live_check(api.as_ref(), &instance_id, &bridge_root).await?;
-    run_api_job_parallel_live_check(api.as_ref(), &instance_id, &bridge_root).await?;
-    run_api_job_dag_live_check(api.as_ref(), &instance_id, &bridge_root).await?;
-    run_api_job_retry_live_check(api.as_ref(), &instance_id, &bridge_root).await?;
+    run_api_job_queue_live_check(api.as_ref(), &environment_id, &bridge_root).await?;
+    run_api_job_parallel_live_check(api.as_ref(), &environment_id, &bridge_root).await?;
+    run_api_job_dag_live_check(api.as_ref(), &environment_id, &bridge_root).await?;
+    run_api_job_retry_live_check(api.as_ref(), &environment_id, &bridge_root).await?;
 
     let cancel_created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.clone(),
+            environment_id: environment_id.clone(),
             request_id: "api_job_cancel".to_owned(),
             jobs: vec![SessionJobStartSpecInput {
                 name: Some("api-cancel-job".to_owned()),
@@ -695,7 +705,7 @@ async fn run_host_bridge_jobs_client(
     let cancelled = api
         .cancel_environment_jobs(EnvironmentJobCancelParams {
             jobs: vec![SessionJobHandleInput {
-                instance_id: cancel_job.instance_id.clone(),
+                environment_id: cancel_job.environment_id.clone(),
                 job_id: cancel_job.job_id.clone(),
             }],
             scope: SessionJobCancelScopeView::Job,
@@ -732,24 +742,23 @@ async fn run_host_bridge_jobs_client(
 
     let close_created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.clone(),
+            environment_id: environment_id.clone(),
             request_id: "api_job_close_active".to_owned(),
             jobs: vec![api_shell_job("active-at-close", "sleep 30")],
         })
         .await?;
     let close_job = close_created.result.jobs[0].handle.clone();
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
+    api.deactivate_session_environment(SessionEnvironmentDeactivateParams {
         session_id: session_id.as_str().to_owned(),
-        env_id: "bridge-local".to_owned(),
     })
     .await?;
 
     let close = api.close_environment(EnvironmentCloseParams {
-        instance_id: instance_id.clone(),
+        environment_id: environment_id.clone(),
     });
     let racing_start = api.create_environment_jobs(EnvironmentJobCreateParams {
-        instance_id: instance_id.clone(),
+        environment_id: environment_id.clone(),
         request_id: "api_job_close_race".to_owned(),
         jobs: vec![api_shell_job("close-race", "sleep 30")],
     });
@@ -846,12 +855,13 @@ async fn run_host_bridge_credential_client(
     })
     .await?;
 
-    let attached =
-        wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id, "bridge-local").await?;
-    assert_eq!(
-        attached.result.active_env_id.as_deref(),
-        Some("bridge-local")
-    );
+    let attached = wait_for_bridge_attach(api.as_ref(), &session_id, &provider_id).await?;
+    let environment_id = attached
+        .result
+        .session
+        .active_environment_id
+        .clone()
+        .expect("active bridge environment");
 
     let provider = api
         .create_auth_provider(AuthProviderCreateParams {
@@ -865,11 +875,10 @@ async fn run_host_bridge_credential_client(
     assert!(provider.result.provider.has_credential);
 
     let bound = api
-        .bind_session_environment_credential(SessionEnvironmentCredentialBindParams {
-            session_id: session_id.as_str().to_owned(),
-            env_id: "bridge-local".to_owned(),
+        .bind_environment_credential(EnvironmentCredentialBindParams {
+            environment_id: environment_id.clone(),
             env_name: BRIDGE_CREDENTIAL_ENV_NAME.to_owned(),
-            source: SessionEnvironmentCredentialSourceView::AuthProviderCredential {
+            source: EnvironmentCredentialSourceView::AuthProviderCredential {
                 provider_id: credential_provider_id.clone(),
             },
         })
@@ -877,9 +886,8 @@ async fn run_host_bridge_credential_client(
     assert_eq!(bound.result.credential.env_name, BRIDGE_CREDENTIAL_ENV_NAME);
 
     let listed = api
-        .list_session_environment_credentials(SessionEnvironmentCredentialListParams {
-            session_id: session_id.as_str().to_owned(),
-            env_id: "bridge-local".to_owned(),
+        .list_environment_credentials(EnvironmentCredentialListParams {
+            environment_id: environment_id.clone(),
         })
         .await?;
     assert!(
@@ -893,9 +901,8 @@ async fn run_host_bridge_credential_client(
     );
 
     let unbound = api
-        .unbind_session_environment_credential(SessionEnvironmentCredentialUnbindParams {
-            session_id: session_id.as_str().to_owned(),
-            env_id: "bridge-local".to_owned(),
+        .unbind_environment_credential(EnvironmentCredentialUnbindParams {
+            environment_id,
             env_name: BRIDGE_CREDENTIAL_ENV_NAME.to_owned(),
         })
         .await?;
@@ -904,9 +911,8 @@ async fn run_host_bridge_credential_client(
         BRIDGE_CREDENTIAL_ENV_NAME
     );
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
+    api.deactivate_session_environment(SessionEnvironmentDeactivateParams {
         session_id: session_id.as_str().to_owned(),
-        env_id: "bridge-local".to_owned(),
     })
     .await?;
 
@@ -925,7 +931,7 @@ async fn run_host_bridge_credential_client(
 
 async fn run_api_job_queue_live_check(
     api: &GatewayAgentApi,
-    instance_id: &str,
+    environment_id: &str,
     bridge_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let queue_file_name = "api-queue-order.txt";
@@ -939,7 +945,7 @@ async fn run_api_job_queue_live_check(
 
     let created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.to_owned(),
+            environment_id: environment_id.to_owned(),
             request_id: "api_live_queue".to_owned(),
             jobs: vec![first, second, third],
         })
@@ -967,14 +973,14 @@ async fn run_api_job_queue_live_check(
 
 async fn run_api_job_parallel_live_check(
     api: &GatewayAgentApi,
-    instance_id: &str,
+    environment_id: &str,
     bridge_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let order_file_name = "api-parallel-order.txt";
     let order_file = bridge_root.join(order_file_name);
     let created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.to_owned(),
+            environment_id: environment_id.to_owned(),
             request_id: "api_live_parallel".to_owned(),
             jobs: vec![
                 api_shell_job(
@@ -1019,7 +1025,7 @@ async fn run_api_job_parallel_live_check(
 
 async fn run_api_job_dag_live_check(
     api: &GatewayAgentApi,
-    instance_id: &str,
+    environment_id: &str,
     bridge_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let dag_file_name = "api-dag-order.txt";
@@ -1038,7 +1044,7 @@ async fn run_api_job_dag_live_check(
 
     let created = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.to_owned(),
+            environment_id: environment_id.to_owned(),
             request_id: "api_live_dag".to_owned(),
             jobs: vec![checkout, build, tests],
         })
@@ -1071,13 +1077,13 @@ async fn run_api_job_dag_live_check(
 
 async fn run_api_job_retry_live_check(
     api: &GatewayAgentApi,
-    instance_id: &str,
+    environment_id: &str,
     bridge_root: &std::path::Path,
 ) -> anyhow::Result<()> {
     let retry_file_name = "api-retry-count.txt";
     let retry_file = bridge_root.join(retry_file_name);
     let params = EnvironmentJobCreateParams {
-        instance_id: instance_id.to_owned(),
+        environment_id: environment_id.to_owned(),
         request_id: "api_live_retry".to_owned(),
         jobs: vec![api_shell_job(
             "retry",
@@ -1108,7 +1114,7 @@ async fn run_api_job_retry_live_check(
 
     let conflict = api
         .create_environment_jobs(EnvironmentJobCreateParams {
-            instance_id: instance_id.to_owned(),
+            environment_id: environment_id.to_owned(),
             request_id: "api_live_retry".to_owned(),
             jobs: vec![api_shell_job(
                 "retry",
@@ -1191,7 +1197,7 @@ async fn wait_for_environment_jobs_terminal(
 
 fn session_job_handle_input(handle: &SessionJobHandleView) -> SessionJobHandleInput {
     SessionJobHandleInput {
-        instance_id: handle.instance_id.clone(),
+        environment_id: handle.environment_id.clone(),
         job_id: handle.job_id.clone(),
     }
 }
@@ -1294,7 +1300,7 @@ async fn run_fake_provider_client(
         heartbeat.result.environments[0].provider_target_id,
         ATTACH_TARGET_ID
     );
-    let attach_instance_id = heartbeat.result.environments[0].instance_id.clone();
+    let attach_environment_id = heartbeat.result.environments[0].environment_id.clone();
 
     let started = api
         .start_session(SessionStartParams {
@@ -1308,47 +1314,30 @@ async fn run_fake_provider_client(
             profile: None,
         })
         .await?;
-    for expected in [
-        ContextEntryKindView::VfsCatalog,
-        ContextEntryKindView::EnvironmentCatalog,
-    ] {
-        assert!(
-            started
-                .result
-                .session
-                .active_context
-                .entries
-                .iter()
-                .any(|entry| entry.kind == expected)
-        );
-    }
+    assert!(
+        started
+            .result
+            .session
+            .active_context
+            .entries
+            .iter()
+            .any(|entry| entry.kind == ContextEntryKindView::VfsCatalog)
+    );
 
     let attached = api
-        .attach_session_environment(SessionEnvironmentAttachParams {
+        .activate_session_environment(SessionEnvironmentActivateParams {
             session_id: session_id.as_str().to_owned(),
-            env_id: Some("bridge-env".to_owned()),
-            instance_id: attach_instance_id,
-            cwd: None,
-            fs_routes: Vec::new(),
-            activate: true,
+            environment_id: attach_environment_id,
         })
         .await?;
-    assert_eq!(attached.result.active_env_id.as_deref(), Some("bridge-env"));
+    assert!(attached.result.session.active_environment_id.is_some());
     assert_eq!(provider.attach_count(), 0);
     let session = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
         })
         .await?;
-    assert!(
-        session
-            .result
-            .session
-            .active_context
-            .entries
-            .iter()
-            .any(|entry| { matches!(entry.kind, ContextEntryKindView::EnvironmentActive) })
-    );
+    assert!(session.result.session.active_environment_id.is_some());
 
     let first = api
         .start_run(RunStartParams {
@@ -1375,9 +1364,8 @@ async fn run_fake_provider_client(
     };
     assert!(first_text.contains(PROCESS_STDOUT));
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
+    api.deactivate_session_environment(SessionEnvironmentDeactivateParams {
         session_id: session_id.as_str().to_owned(),
-        env_id: "bridge-env".to_owned(),
     })
     .await?;
     assert_eq!(
@@ -1398,18 +1386,17 @@ async fn run_fake_provider_client(
             },
         })
         .await?;
-    let created_instance_id = created.result.environment.instance_id.clone();
+    let created_environment_id = created.result.environment.environment_id.clone();
     let created = api
-        .attach_session_environment(SessionEnvironmentAttachParams {
+        .activate_session_environment(SessionEnvironmentActivateParams {
             session_id: session_id.as_str().to_owned(),
-            env_id: Some("sandbox-env".to_owned()),
-            instance_id: created_instance_id.clone(),
-            cwd: None,
-            fs_routes: Vec::new(),
-            activate: true,
+            environment_id: created_environment_id.clone(),
         })
         .await?;
-    assert_eq!(created.result.active_env_id.as_deref(), Some("sandbox-env"));
+    assert_eq!(
+        created.result.session.active_environment_id.as_ref(),
+        Some(&created_environment_id)
+    );
     assert_eq!(provider.create_count(), 1);
 
     let second = api
@@ -1437,22 +1424,17 @@ async fn run_fake_provider_client(
     };
     assert!(second_text.contains(PROCESS_STDOUT));
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
-        session_id: session_id.as_str().to_owned(),
-        env_id: "sandbox-env".to_owned(),
-    })
-    .await?;
     provider.reject_next_close();
     let rejected = api
         .close_environment(EnvironmentCloseParams {
-            instance_id: created_instance_id.clone(),
+            environment_id: created_environment_id.clone(),
         })
         .await
         .expect_err("provider should reject the first close");
     assert_eq!(rejected.kind, AgentApiErrorKind::Rejected);
     let restored = api
         .read_environment(EnvironmentReadParams {
-            instance_id: created_instance_id.clone(),
+            environment_id: created_environment_id.clone(),
         })
         .await?;
     assert_eq!(
@@ -1460,7 +1442,7 @@ async fn run_fake_provider_client(
         EnvironmentTargetStatusView::Ready
     );
     api.close_environment(EnvironmentCloseParams {
-        instance_id: created_instance_id,
+        environment_id: created_environment_id,
     })
     .await?;
     assert_eq!(provider.close_count(), 2);
@@ -1521,13 +1503,13 @@ async fn run_profile_environment_client(
             observed_targets: vec![target_descriptor(provider.endpoint(), ATTACH_TARGET_ID)],
         })
         .await?;
-    let instance_id = heartbeat.result.environments[0].instance_id.clone();
+    let environment_id = heartbeat.result.environments[0].environment_id.clone();
 
     api.create_profile(ProfileCreateParams {
         profile: AgentProfileInput {
             profile_id: profile_id.clone(),
             display_name: Some("Profile environment".to_owned()),
-            description: Some("Attach fake host provider target".to_owned()),
+            description: Some("Select fake host provider environment".to_owned()),
             document: ProfileDocument {
                 config: Some(SessionConfig {
                     model: Some(api_projection::model_to_api(&model)),
@@ -1535,12 +1517,7 @@ async fn run_profile_environment_client(
                     ..SessionConfig::default()
                 }),
                 instructions: None,
-                mounts: Vec::new(),
-                environments: vec![ProfileEnvironment {
-                    env_id: "profile-env".to_owned(),
-                    environment: ProfileEnvironmentSource::Existing { instance_id },
-                    activate: true,
-                }],
+                active_environment_id: Some(environment_id.clone()),
             },
         },
     })
@@ -1559,16 +1536,10 @@ async fn run_profile_environment_client(
     assert_eq!(started.result.session.id, session_id.as_str());
     assert_eq!(provider.attach_count(), 0);
 
-    let environments = api
-        .list_session_environments(SessionEnvironmentListParams {
-            session_id: session_id.as_str().to_owned(),
-        })
-        .await?;
     assert_eq!(
-        environments.result.active_env_id.as_deref(),
-        Some("profile-env")
+        started.result.session.active_environment_id.as_ref(),
+        Some(&environment_id)
     );
-    assert_eq!(environments.result.environments.len(), 1);
 
     let run = api
         .start_run(RunStartParams {
@@ -1594,9 +1565,8 @@ async fn run_profile_environment_client(
     };
     assert!(text.contains(PROCESS_STDOUT));
 
-    api.detach_session_environment(SessionEnvironmentDetachParams {
+    api.deactivate_session_environment(SessionEnvironmentDeactivateParams {
         session_id: session_id.as_str().to_owned(),
-        env_id: "profile-env".to_owned(),
     })
     .await?;
     api.delete_profile(ProfileDeleteParams { profile_id })
@@ -1753,6 +1723,27 @@ struct BridgeFileLlm {
 impl BridgeFileLlm {
     fn new(blobs: Arc<dyn BlobStore>) -> Self {
         Self { blobs }
+    }
+
+    async fn read_environment_result(
+        &self,
+        request: &LlmGenerationRequest,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        if !request
+            .request
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_str() == "environment_read")
+        {
+            return Err(io_error("planned request did not expose environment_read"));
+        }
+        self.tool_call_result(
+            request,
+            "environment_read",
+            json!({}),
+            "bridge_read_environment",
+        )
+        .await
     }
 
     async fn exec_write_result(
@@ -1934,9 +1925,10 @@ impl CoreAgentLlm for BridgeFileLlm {
         request: LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         match current_run_tool_results(&request).len() {
-            0 => self.exec_write_result(&request).await,
-            1 => self.read_file_result(&request).await,
-            2 => self.read_vfs_skill_result(&request).await,
+            0 => self.read_environment_result(&request).await,
+            1 => self.exec_write_result(&request).await,
+            2 => self.read_file_result(&request).await,
+            3 => self.read_vfs_skill_result(&request).await,
             _ => self.final_result(&request).await,
         }
     }
@@ -2216,13 +2208,13 @@ impl CoreAgentLlm for BridgeJobsLlm {
 }
 
 struct BridgeJobHandle {
-    instance_id: String,
+    environment_id: String,
     job_id: String,
 }
 
 fn push_unique_job_handle(handles: &mut Vec<BridgeJobHandle>, candidate: BridgeJobHandle) {
     if !handles.iter().any(|handle| {
-        handle.instance_id == candidate.instance_id && handle.job_id == candidate.job_id
+        handle.environment_id == candidate.environment_id && handle.job_id == candidate.job_id
     }) {
         handles.push(candidate);
     }
@@ -2232,20 +2224,20 @@ impl BridgeJobHandle {
     fn parse(line: &str) -> Option<Self> {
         let (handle, _) = line.split_once(':')?;
         let mut parts = handle.trim().split('/');
-        let instance_id = parts.next()?.to_owned();
+        let environment_id = parts.next()?.to_owned();
         let job_id = parts.next()?.to_owned();
-        if parts.next().is_some() || instance_id.is_empty() || job_id.is_empty() {
+        if parts.next().is_some() || environment_id.is_empty() || job_id.is_empty() {
             return None;
         }
         Some(Self {
-            instance_id,
+            environment_id,
             job_id,
         })
     }
 
     fn json_arg(&self) -> Value {
         json!({
-            "instance_id": self.instance_id,
+            "environment_id": self.environment_id,
             "job_id": self.job_id
         })
     }
@@ -2254,7 +2246,7 @@ impl BridgeJobHandle {
         let value: Value = serde_json::from_str(text).ok()?;
         let summary = value.get("summary")?;
         Some(Self {
-            instance_id: summary.get("namespace")?.as_str()?.to_owned(),
+            environment_id: summary.get("namespace")?.as_str()?.to_owned(),
             job_id: summary.get("jobId")?.as_str()?.to_owned(),
         })
     }
@@ -2352,10 +2344,12 @@ fn env_live_features() -> api::FeaturesConfig {
         environments: Some(api::EnvironmentsFeature {
             version: api::CURRENT_FEATURE_VERSION,
             providers: None,
+            selection_tools: false,
             jobs: false,
         }),
         vfs: Some(api::VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
+            workspace_links: Vec::new(),
             tools: Some(api::VfsToolSurface::Edit),
             prompts: Some(api::VfsPromptsConfig::default()),
             skills: Some(api::VfsSkillsConfig::default()),
@@ -2378,8 +2372,7 @@ async fn wait_for_bridge_attach(
     api: &GatewayAgentApi,
     session_id: &engine::SessionId,
     provider_id: &str,
-    env_id: &str,
-) -> anyhow::Result<api::AgentApiOutcome<api::SessionEnvironmentAttachResponse>> {
+) -> anyhow::Result<api::AgentApiOutcome<api::SessionEnvironmentActivateResponse>> {
     let started = Instant::now();
     let mut last_error = None;
     loop {
@@ -2408,13 +2401,9 @@ async fn wait_for_bridge_attach(
             continue;
         };
         match api
-            .attach_session_environment(SessionEnvironmentAttachParams {
+            .activate_session_environment(SessionEnvironmentActivateParams {
                 session_id: session_id.as_str().to_owned(),
-                env_id: Some(env_id.to_owned()),
-                instance_id: instance.instance_id,
-                cwd: None,
-                fs_routes: Vec::new(),
-                activate: true,
+                environment_id: instance.environment_id,
             })
             .await
         {
@@ -2449,11 +2438,6 @@ fn host_bridge_binary_path() -> anyhow::Result<PathBuf> {
         "host-bridge binary not found at {}; run `cargo build -p host-bridge` or set HOST_BRIDGE_BIN",
         binary.display()
     );
-}
-
-fn path_str(path: &std::path::Path) -> anyhow::Result<&str> {
-    path.to_str()
-        .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
 }
 
 struct FakeHostProvider {

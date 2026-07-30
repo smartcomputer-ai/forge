@@ -97,52 +97,7 @@ ALTER TABLE vfs_workspaces
 CREATE INDEX IF NOT EXISTS vfs_workspaces_head_digest_idx
     ON vfs_workspaces (universe_id, head_snapshot_digest);
 
-CREATE TABLE IF NOT EXISTS vfs_mounts (
-    universe_id uuid NOT NULL
-        REFERENCES universes (universe_id) ON DELETE CASCADE,
-    session_id text NOT NULL,
-    mount_path text NOT NULL,
-    source_kind text NOT NULL,
-    snapshot_digest text,
-    workspace_id text,
-    access text NOT NULL,
-
-    PRIMARY KEY (universe_id, session_id, mount_path),
-    FOREIGN KEY (universe_id, snapshot_digest)
-        REFERENCES cas_blobs (universe_id, digest) ON DELETE RESTRICT,
-    FOREIGN KEY (universe_id, workspace_id)
-        REFERENCES vfs_workspaces (universe_id, workspace_id) ON DELETE CASCADE,
-
-    CONSTRAINT vfs_mounts_session_id_format
-        CHECK (session_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
-    CONSTRAINT vfs_mounts_mount_path_absolute
-        CHECK (mount_path LIKE '/%'),
-    CONSTRAINT vfs_mounts_source_kind_known
-        CHECK (source_kind IN ('snapshot', 'workspace')),
-    CONSTRAINT vfs_mounts_access_known
-        CHECK (access IN ('read_only', 'read_write')),
-    CONSTRAINT vfs_mounts_source_shape
-        CHECK (
-            (
-                source_kind = 'snapshot'
-                AND snapshot_digest IS NOT NULL
-                AND workspace_id IS NULL
-            )
-            OR
-            (
-                source_kind = 'workspace'
-                AND snapshot_digest IS NULL
-                AND workspace_id IS NOT NULL
-            )
-        )
-);
-
-CREATE INDEX IF NOT EXISTS vfs_mounts_session_idx
-    ON vfs_mounts (universe_id, session_id);
-
 COMMENT ON TABLE vfs_snapshots IS
     'Descriptive metadata for immutable CAS-backed VFS snapshot manifests.';
 COMMENT ON TABLE vfs_workspaces IS
     'Mutable workspace heads pointing at immutable VFS snapshot refs.';
-COMMENT ON TABLE vfs_mounts IS
-    'Session-visible VFS mount records for snapshot and workspace roots.';

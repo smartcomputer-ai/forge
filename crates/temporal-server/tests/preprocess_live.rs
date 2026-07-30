@@ -111,7 +111,7 @@ async fn run_audio_preprocess_live_client(
         .await?;
     let started = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -205,7 +205,7 @@ async fn run_transcodable_audio_preprocess_live_client(
         .await?;
     let started = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {

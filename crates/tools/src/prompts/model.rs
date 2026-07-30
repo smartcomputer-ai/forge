@@ -1,6 +1,6 @@
-use engine::{BlobRef, ContextEntryKey};
+use engine::{BlobRef, ContextEntryKey, WorkspaceLinkAccess};
 use serde::{Deserialize, Serialize};
-use vfs::{VfsMountAccess, VfsPath, VfsWorkspaceId};
+use vfs::{VfsPath, VfsWorkspaceId};
 
 use crate::fs::FsPath;
 
@@ -93,16 +93,16 @@ pub struct PromptSourceReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptSourceLocation {
-    MountedSnapshot {
+    LinkedSnapshot {
         source_snapshot_ref: BlobRef,
-        source_mount_path: VfsPath,
+        source_link_path: VfsPath,
         prompt_file_path: VfsPath,
     },
-    MountedWorkspace {
+    LinkedWorkspace {
         workspace_id: VfsWorkspaceId,
         workspace_revision: u64,
         workspace_head_ref: BlobRef,
-        source_mount_path: VfsPath,
+        source_link_path: VfsPath,
         prompt_file_path: VfsPath,
     },
 }
@@ -127,6 +127,7 @@ impl PromptWarning {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum PromptWarningKind {
+    UnavailableWorkspaceLink { reason: String },
     Filesystem { message: String },
     InvalidPath { message: String },
     InvalidUtf8 { message: String },
@@ -154,19 +155,19 @@ pub struct PromptRoot {
     pub root_id: String,
     pub root_path: FsPath,
     pub source: PromptRootSource,
-    pub access: VfsMountAccess,
+    pub access: WorkspaceLinkAccess,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PromptRootSource {
-    MountedSnapshot {
+    LinkedSnapshot {
         snapshot_ref: BlobRef,
-        mount_path: VfsPath,
+        link_path: VfsPath,
     },
-    MountedWorkspace {
+    LinkedWorkspace {
         workspace_id: VfsWorkspaceId,
         workspace_head_ref: BlobRef,
         workspace_revision: u64,
-        mount_path: VfsPath,
+        link_path: VfsPath,
     },
 }

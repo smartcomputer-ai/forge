@@ -308,6 +308,13 @@ pub(super) async fn process_pending_source_resolutions(
                         .workflow_tools
                         .emissions
                         .get(&invocation_id)
+                        .or_else(|| {
+                            state
+                                .core_state
+                                .workflow_tools
+                                .start_requests
+                                .get(&invocation_id)
+                        })
                 })
                 .and_then(|invocation| {
                     state
@@ -317,7 +324,10 @@ pub(super) async fn process_pending_source_resolutions(
                         .get(&invocation.tool_id)
                 })
                 .and_then(|binding| match &binding.completion {
-                    engine::WorkflowToolCompletion::Promises {
+                    engine::WorkflowToolCompletion::Joined {
+                        reply_schema_ref, ..
+                    }
+                    | engine::WorkflowToolCompletion::Promises {
                         reply_schema_ref, ..
                     } => reply_schema_ref.clone(),
                     engine::WorkflowToolCompletion::Accepted => None,

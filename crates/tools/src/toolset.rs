@@ -7,6 +7,7 @@ use engine::{ProviderApiKind, ToolName, ToolSpec, WorkflowToolBinding};
 use crate::{
     builtin::{BuiltinTool, BuiltinToolOperation, BuiltinToolSurface},
     concurrency::{ConcurrencyToolsetConfig, concurrency_tool_bindings, concurrency_tool_bundles},
+    environment::control::{environment_control_tool_bindings, environment_control_tool_bundles},
     error::{ToolError, ToolResult},
     fleet::{FleetToolsetConfig, fleet_tool_bindings, fleet_tool_bundles},
     runtime::{ToolCatalog, ToolDispatchMode, ToolDocument, ToolSpecBundle, ToolTarget},
@@ -25,6 +26,8 @@ pub struct ToolsetConfig {
     pub web_fetch: WebFetchToolConfig,
     pub fleet: FleetToolsetConfig,
     pub concurrency: ConcurrencyToolsetConfig,
+    pub environment_read: bool,
+    pub environment_selection: bool,
 }
 
 impl ToolsetConfig {
@@ -35,6 +38,8 @@ impl ToolsetConfig {
             web_fetch: WebFetchToolConfig::default(),
             fleet: FleetToolsetConfig::default(),
             concurrency: ConcurrencyToolsetConfig::default(),
+            environment_read: false,
+            environment_selection: false,
         }
     }
 
@@ -318,17 +323,16 @@ pub struct ResolvedToolset {
     pub provider_params_patch: ProviderParamsPatch,
 }
 
-/// Promise-bearing workflow tools create keyed P92 promises the agent must
-/// be able to `await`/`cancel`/`detach`; their admission therefore pulls the
-/// concurrency toolset into the derivation, exactly like fleet and process
-/// jobs do.
+/// Explicit-Promise workflow tools create model-owned P92 promises, so their
+/// admission pulls concurrency tools into the model toolset. Joined tools use
+/// runtime-owned Promises and must not grant await/cancel/detach.
 pub fn enable_concurrency_for_workflow_tools<'a>(
     config: &mut ToolsetConfig,
     bindings: impl IntoIterator<Item = &'a WorkflowToolBinding>,
 ) {
     if bindings
         .into_iter()
-        .any(|binding| binding.completion.is_promise_bearing())
+        .any(|binding| binding.completion.exposes_model_owned_promises())
     {
         config.concurrency.enabled = true;
     }
@@ -402,6 +406,10 @@ pub fn resolve_toolset(
                 message: "web.fetch was enabled but did not produce a function tool".to_owned(),
             })?;
         builder.add_web_fetch(bundle);
+    }
+
+    if config.environment_read || config.environment_selection {
+        builder.add_environment_control(config.environment_selection)?;
     }
 
     let mut concurrency = config.concurrency.clone();
@@ -481,6 +489,16 @@ impl ToolsetBuilder {
             self.add_bundle(bundle);
         }
         for binding in concurrency_tool_bindings(ToolDispatchMode::Local, config) {
+            self.catalog.insert(binding);
+        }
+        Ok(())
+    }
+
+    fn add_environment_control(&mut self, selection_tools: bool) -> ToolResult<()> {
+        for bundle in environment_control_tool_bundles(selection_tools)? {
+            self.add_bundle(bundle);
+        }
+        for binding in environment_control_tool_bindings(ToolDispatchMode::Local, selection_tools) {
             self.catalog.insert(binding);
         }
         Ok(())
@@ -596,6 +614,41 @@ mod tests {
                 .catalog
                 .get(&ToolName::new(CANCEL_TOOL_NAME))
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn environment_read_is_independent_from_default_off_selection_tools() {
+        let target = target(ProviderApiKind::OpenAiResponses);
+        let disabled = resolve_toolset(
+            ToolsetEnvironment { target: &target },
+            &ToolsetConfig::empty(),
+        )
+        .expect("disabled toolset");
+        assert!(
+            visible_names(&disabled)
+                .iter()
+                .all(|name| !name.starts_with("environment_"))
+        );
+
+        let mut config = ToolsetConfig::empty();
+        config.environment_read = true;
+        let read_only = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+            .expect("environment read toolset");
+        assert_eq!(visible_names(&read_only), vec!["environment_read"]);
+
+        config.environment_selection = true;
+        let enabled = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+            .expect("selection toolset");
+
+        assert_eq!(
+            visible_names(&enabled),
+            vec![
+                "environment_activate",
+                "environment_deactivate",
+                "environment_list",
+                "environment_read",
+            ]
         );
     }
 

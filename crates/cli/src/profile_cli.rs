@@ -5,11 +5,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
 use api::{
-    AgentApiErrorKind, AgentProfile, AgentProfileInput, EnvironmentListParams,
-    EnvironmentProviderListParams, EnvironmentProviderStatusView, EnvironmentTargetStatusView,
-    InlineAgentProfile, ProfileApplyParams, ProfileDeleteParams, ProfileEnvironmentSource,
-    ProfileId, ProfileListParams, ProfileMount, ProfilePutParams, ProfileReadParams, ProfileSource,
-    VfsMountAccess, VfsMountSourceInput,
+    AgentApiErrorKind, AgentProfile, AgentProfileInput, EnvironmentProviderListParams,
+    EnvironmentProviderStatusView, EnvironmentTargetStatusView, InlineAgentProfile,
+    ProfileApplyParams, ProfileDeleteParams, ProfileId, ProfileListParams, ProfilePutParams,
+    ProfileReadParams, ProfileSource, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
 };
 use clap::{Args, Subcommand};
 use serde::Deserialize;
@@ -90,14 +89,14 @@ struct ProvisionConfig {
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ProvisionValidate {
-    mounts: Option<bool>,
+    workspace_links: Option<bool>,
     mcp: Option<bool>,
     environments: Option<bool>,
 }
 
 impl ProvisionValidate {
-    fn mounts(&self) -> bool {
-        self.mounts.unwrap_or(true)
+    fn workspace_links(&self) -> bool {
+        self.workspace_links.unwrap_or(true)
     }
 
     fn mcp(&self) -> bool {
@@ -113,7 +112,7 @@ impl ProvisionValidate {
 #[serde(rename_all = "camelCase")]
 struct ProvisionVfs {
     path: PathBuf,
-    mount_path: String,
+    link_path: String,
     #[serde(default)]
     mode: ProvisionVfsMode,
     #[serde(default)]
@@ -268,12 +267,12 @@ pub(crate) async fn handle(args: ProfilesArgs) -> Result<()> {
 
 async fn provision_vfs(api: &HttpAgentApi, document: &mut ProfileImportDocument) -> Result<()> {
     validate_local_vfs(&document.provision, &document.base_dir).ensure_success()?;
-    let mut mount_paths = BTreeSet::new();
+    let mut link_paths = BTreeSet::new();
     for entry in document.provision.vfs.clone() {
-        if !mount_paths.insert(entry.mount_path.clone()) {
+        if !link_paths.insert(entry.link_path.clone()) {
             bail!(
-                "duplicate provision.vfs mountPath {}; each mount can be provisioned once",
-                entry.mount_path
+                "duplicate provision.vfs linkPath {}; each workspace link can be provisioned once",
+                entry.link_path
             );
         }
         let source_path = resolve_local_path(&document.base_dir, &entry.path);
@@ -284,22 +283,22 @@ async fn provision_vfs(api: &HttpAgentApi, document: &mut ProfileImportDocument)
                 let workspace_id = provision_workspace_id(&document.profile, &entry);
                 upsert_vfs_workspace(api, workspace_id.clone(), summary.snapshot_ref.clone())
                     .await?;
-                upsert_profile_mount(
+                upsert_profile_link(
                     &mut document.profile,
-                    &entry.mount_path,
-                    VfsMountSourceInput::Workspace { workspace_id },
-                    VfsMountAccess::ReadWrite,
-                );
+                    &entry.link_path,
+                    WorkspaceLinkTarget::Workspace { workspace_id },
+                    WorkspaceLinkAccess::ReadWrite,
+                )?;
             }
             ProvisionVfsMode::Snapshot => {
-                upsert_profile_mount(
+                upsert_profile_link(
                     &mut document.profile,
-                    &entry.mount_path,
-                    VfsMountSourceInput::Snapshot {
+                    &entry.link_path,
+                    WorkspaceLinkTarget::Snapshot {
                         snapshot_ref: summary.snapshot_ref,
                     },
-                    VfsMountAccess::ReadOnly,
-                );
+                    WorkspaceLinkAccess::ReadOnly,
+                )?;
             }
         }
     }
@@ -390,8 +389,8 @@ async fn validate_import_document(
 ) -> ValidationReport {
     let mut report = ValidationReport::default();
     report.extend(validate_local_vfs(&document.provision, &document.base_dir));
-    if document.provision.validate.mounts() {
-        validate_mounts(api, document, provision_has_run, &mut report).await;
+    if document.provision.validate.workspace_links() {
+        validate_workspace_links(api, document, provision_has_run, &mut report).await;
     }
     if document.provision.validate.mcp() {
         validate_mcp(api, &document.profile, &mut report).await;
@@ -439,12 +438,12 @@ fn prefix_validation_report(profile_id: &str, mut report: ValidationReport) -> V
 
 fn validate_local_vfs(provision: &ProvisionConfig, base_dir: &Path) -> ValidationReport {
     let mut report = ValidationReport::default();
-    let mut mount_paths = BTreeSet::new();
+    let mut link_paths = BTreeSet::new();
     for entry in &provision.vfs {
-        if !mount_paths.insert(entry.mount_path.clone()) {
+        if !link_paths.insert(entry.link_path.clone()) {
             report.error(format!(
-                "duplicate provision.vfs mountPath {}; each mount can be provisioned once",
-                entry.mount_path
+                "duplicate provision.vfs linkPath {}; each workspace link can be provisioned once",
+                entry.link_path
             ));
         }
         let path = resolve_local_path(base_dir, &entry.path);
@@ -480,24 +479,27 @@ fn validate_local_vfs(provision: &ProvisionConfig, base_dir: &Path) -> Validatio
     report
 }
 
-async fn validate_mounts(
+async fn validate_workspace_links(
     api: &HttpAgentApi,
     document: &ProfileImportDocument,
     provision_has_run: bool,
     report: &mut ValidationReport,
 ) {
-    let local_mounts = document
+    let local_links = document
         .provision
         .vfs
         .iter()
-        .map(|entry| entry.mount_path.as_str())
+        .map(|entry| entry.link_path.as_str())
         .collect::<BTreeSet<_>>();
-    for mount in &document.profile.document.mounts {
-        if !provision_has_run && local_mounts.contains(mount.mount_path.as_str()) {
+    let Some(links) = profile_workspace_links(&document.profile) else {
+        return;
+    };
+    for link in links {
+        if !provision_has_run && local_links.contains(link.path.as_str()) {
             continue;
         }
-        match &mount.source {
-            VfsMountSourceInput::Snapshot { snapshot_ref } => {
+        match &link.target {
+            WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
                 if let Err(error) = api
                     .read_vfs_snapshot(api::VfsSnapshotReadParams {
                         snapshot_ref: snapshot_ref.clone(),
@@ -505,14 +507,14 @@ async fn validate_mounts(
                     .await
                 {
                     report.error(format!(
-                        "mount {} references missing snapshot {}: {}",
-                        mount.mount_path,
+                        "workspace link {} references missing snapshot {}: {}",
+                        link.path,
                         snapshot_ref,
                         api_error(error)
                     ));
                 }
             }
-            VfsMountSourceInput::Workspace { workspace_id } => {
+            WorkspaceLinkTarget::Workspace { workspace_id } => {
                 if let Err(error) = api
                     .read_vfs_workspace(api::VfsWorkspaceReadParams {
                         workspace_id: workspace_id.clone(),
@@ -520,8 +522,8 @@ async fn validate_mounts(
                     .await
                 {
                     report.error(format!(
-                        "mount {} references missing workspace {}: {}",
-                        mount.mount_path,
+                        "workspace link {} references missing workspace {}: {}",
+                        link.path,
                         workspace_id,
                         api_error(error)
                     ));
@@ -579,9 +581,25 @@ async fn validate_environments(
     profile: &AgentProfileInput,
     report: &mut ValidationReport,
 ) {
-    if profile.document.environments.is_empty() {
+    let Some(environment_id) = profile.document.active_environment_id.as_ref() else {
         return;
-    }
+    };
+    let environment = match api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: environment_id.clone(),
+        })
+        .await
+    {
+        Ok(response) => response.result.environment,
+        Err(error) => {
+            report.error(format!(
+                "profile references missing environment {}: {}",
+                environment_id,
+                api_error(error)
+            ));
+            return;
+        }
+    };
     let providers = match api
         .list_environment_providers(EnvironmentProviderListParams::default())
         .await
@@ -599,91 +617,62 @@ async fn validate_environments(
         .into_iter()
         .map(|provider| (provider.provider_id.clone(), provider))
         .collect::<BTreeMap<_, _>>();
-    let instances = match api
-        .list_environments(EnvironmentListParams::default())
-        .await
+    if environment.status != EnvironmentTargetStatusView::Ready {
+        report.warning(format!(
+            "profile environment is {:?}, not ready",
+            environment.status
+        ));
+    }
+    if let Some(provider) = providers.get(&environment.provider_id)
+        && provider.status != EnvironmentProviderStatusView::Online
     {
-        Ok(response) => response
-            .result
-            .environments
-            .into_iter()
-            .map(|instance| (instance.instance_id.clone(), instance))
-            .collect::<BTreeMap<_, _>>(),
-        Err(error) => {
-            report.error(format!("failed to list environments: {}", api_error(error)));
-            BTreeMap::new()
-        }
-    };
-    for environment in &profile.document.environments {
-        let (provider_id, status) = match &environment.environment {
-            ProfileEnvironmentSource::Existing { instance_id } => {
-                let Some(instance) = instances.get(instance_id) else {
-                    report.error(format!(
-                        "environment {} references missing instance {}",
-                        environment.env_id, instance_id
-                    ));
-                    continue;
-                };
-                (instance.provider_id.as_str(), Some(instance.status))
-            }
-            ProfileEnvironmentSource::Provision { provider_id, .. } => {
-                let Some(provider) = providers.get(provider_id) else {
-                    report.error(format!(
-                        "environment {} references missing provider {}",
-                        environment.env_id, provider_id
-                    ));
-                    continue;
-                };
-                if !provider.capabilities.create_target {
-                    report.error(format!(
-                        "environment {} provider {} cannot provision targets",
-                        environment.env_id, provider_id
-                    ));
-                }
-                (provider_id.as_str(), None)
-            }
-        };
-        if status.is_some_and(|status| status != EnvironmentTargetStatusView::Ready) {
-            report.warning(format!(
-                "environment {} instance is {:?}, not ready",
-                environment.env_id, status
-            ));
-        }
-        if let Some(provider) = providers.get(provider_id)
-            && provider.status != EnvironmentProviderStatusView::Online
-        {
-            report.warning(format!(
-                "environment {} provider {} is {:?}, not online",
-                environment.env_id, provider_id, provider.status
-            ));
-        }
+        report.warning(format!(
+            "profile environment provider {} is {:?}, not online",
+            environment.provider_id, provider.status
+        ));
     }
 }
 
-fn upsert_profile_mount(
+fn upsert_profile_link(
     profile: &mut AgentProfileInput,
-    mount_path: &str,
-    source: VfsMountSourceInput,
-    default_access: VfsMountAccess,
-) {
-    let source_is_snapshot = matches!(source, VfsMountSourceInput::Snapshot { .. });
-    if let Some(mount) = profile
+    link_path: &str,
+    target: WorkspaceLinkTarget,
+    default_access: WorkspaceLinkAccess,
+) -> Result<()> {
+    let links = profile
         .document
-        .mounts
-        .iter_mut()
-        .find(|mount| mount.mount_path == mount_path)
-    {
-        mount.source = source;
-        if source_is_snapshot && mount.access == VfsMountAccess::ReadWrite {
-            mount.access = VfsMountAccess::ReadOnly;
+        .config
+        .as_mut()
+        .and_then(|config| config.features.as_mut())
+        .and_then(|features| features.vfs.as_mut())
+        .map(|vfs| &mut vfs.workspace_links)
+        .ok_or_else(|| anyhow!("profile provisioning requires config.features.vfs"))?;
+    let target_is_snapshot = matches!(target, WorkspaceLinkTarget::Snapshot { .. });
+    if let Some(link) = links.iter_mut().find(|link| link.path == link_path) {
+        link.target = target;
+        if target_is_snapshot && link.access == WorkspaceLinkAccess::ReadWrite {
+            link.access = WorkspaceLinkAccess::ReadOnly;
         }
-        return;
+        return Ok(());
     }
-    profile.document.mounts.push(ProfileMount {
-        mount_path: mount_path.to_owned(),
-        source,
+    links.push(WorkspaceLink {
+        path: link_path.to_owned(),
+        target,
         access: default_access,
     });
+    Ok(())
+}
+
+fn profile_workspace_links(profile: &AgentProfileInput) -> Option<&[WorkspaceLink]> {
+    profile
+        .document
+        .config
+        .as_ref()?
+        .features
+        .as_ref()?
+        .vfs
+        .as_ref()
+        .map(|vfs| vfs.workspace_links.as_slice())
 }
 
 fn provision_workspace_id(profile: &AgentProfileInput, entry: &ProvisionVfs) -> String {
@@ -691,19 +680,18 @@ fn provision_workspace_id(profile: &AgentProfileInput, entry: &ProvisionVfs) -> 
         .workspace_id
         .clone()
         .or_else(|| {
-            profile
-                .document
-                .mounts
+            profile_workspace_links(profile)
+                .unwrap_or_default()
                 .iter()
-                .find(|mount| mount.mount_path == entry.mount_path)
-                .and_then(|mount| match &mount.source {
-                    VfsMountSourceInput::Workspace { workspace_id } => Some(workspace_id.clone()),
-                    VfsMountSourceInput::Snapshot { .. } => None,
+                .find(|link| link.path == entry.link_path)
+                .and_then(|link| match &link.target {
+                    WorkspaceLinkTarget::Workspace { workspace_id } => Some(workspace_id.clone()),
+                    WorkspaceLinkTarget::Snapshot { .. } => None,
                 })
         })
         .unwrap_or_else(|| {
-            let mount = sanitize_id_component(&entry.mount_path);
-            format!("profile_{}_{}", profile.profile_id.as_str(), mount)
+            let link = sanitize_id_component(&entry.link_path);
+            format!("profile_{}_{}", profile.profile_id.as_str(), link)
         })
 }
 
@@ -718,7 +706,7 @@ fn sanitize_id_component(value: &str) -> String {
     }
     let out = out.trim_matches('_');
     if out.is_empty() {
-        "mount".to_owned()
+        "link".to_owned()
     } else {
         out.to_owned()
     }
@@ -915,12 +903,11 @@ mod tests {
         let document = parse_import_document_for_test(
             r#"{
               "profileId": "support",
-              "mounts": [],
               "provision": {
                 "vfs": [
                   {
                     "path": "./files",
-                    "mountPath": "/workspace",
+                    "linkPath": "/workspace",
                     "mode": "workspace",
                     "workspaceId": "profile_support_workspace"
                   }
@@ -930,7 +917,7 @@ mod tests {
         );
 
         assert_eq!(document.profile.profile_id.as_str(), "support");
-        assert_eq!(document.profile.document.mounts.len(), 0);
+        assert!(document.profile.document.config.is_none());
         assert_eq!(document.provision.vfs.len(), 1);
         assert_eq!(
             document.provision.vfs[0].workspace_id.as_deref(),
@@ -952,7 +939,7 @@ mod tests {
                   "vfs": [
                     {
                       "path": "./review-files",
-                      "mountPath": "/workspace",
+                      "linkPath": "/workspace",
                       "mode": "snapshot"
                     }
                   ]
@@ -966,7 +953,7 @@ mod tests {
         assert_eq!(batch.documents[0].profile.profile_id.as_str(), "support");
         assert_eq!(batch.documents[1].profile.profile_id.as_str(), "review");
         assert_eq!(batch.documents[1].provision.vfs.len(), 1);
-        assert_eq!(batch.documents[1].provision.vfs[0].mount_path, "/workspace");
+        assert_eq!(batch.documents[1].provision.vfs[0].link_path, "/workspace");
     }
 
     #[test]
@@ -983,59 +970,82 @@ mod tests {
     }
 
     #[test]
-    fn provisioned_mount_is_inserted_when_missing() {
+    fn provisioned_workspace_link_is_inserted_when_missing() {
         let mut profile = AgentProfileInput {
             profile_id: ProfileId::new("support"),
             display_name: None,
             description: None,
-            document: api::ProfileDocument::default(),
+            document: profile_document_with_vfs(Vec::new()),
         };
-        upsert_profile_mount(
+        upsert_profile_link(
             &mut profile,
             "/workspace",
-            VfsMountSourceInput::Workspace {
+            WorkspaceLinkTarget::Workspace {
                 workspace_id: "profile_support_workspace".to_owned(),
             },
-            VfsMountAccess::ReadWrite,
-        );
+            WorkspaceLinkAccess::ReadWrite,
+        )
+        .unwrap();
 
-        assert_eq!(profile.document.mounts.len(), 1);
-        assert_eq!(profile.document.mounts[0].mount_path, "/workspace");
-        assert_eq!(profile.document.mounts[0].access, VfsMountAccess::ReadWrite);
+        let links = profile_workspace_links(&profile).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].path, "/workspace");
+        assert_eq!(links[0].access, WorkspaceLinkAccess::ReadWrite);
     }
 
     #[test]
-    fn snapshot_mount_forces_read_only_access() {
+    fn snapshot_workspace_link_forces_read_only_access() {
         let mut profile = AgentProfileInput {
             profile_id: ProfileId::new("support"),
             display_name: None,
             description: None,
-            document: api::ProfileDocument {
-                mounts: vec![ProfileMount {
-                    mount_path: "/workspace".to_owned(),
-                    source: VfsMountSourceInput::Workspace {
-                        workspace_id: "profile_support_workspace".to_owned(),
-                    },
-                    access: VfsMountAccess::ReadWrite,
-                }],
-                ..api::ProfileDocument::default()
-            },
+            document: profile_document_with_vfs(vec![WorkspaceLink {
+                path: "/workspace".to_owned(),
+                target: WorkspaceLinkTarget::Workspace {
+                    workspace_id: "profile_support_workspace".to_owned(),
+                },
+                access: WorkspaceLinkAccess::ReadWrite,
+            }]),
         };
-        upsert_profile_mount(
+        upsert_profile_link(
             &mut profile,
             "/workspace",
-            VfsMountSourceInput::Snapshot {
+            WorkspaceLinkTarget::Snapshot {
                 snapshot_ref: format!("sha256:{}", "a".repeat(64)),
             },
-            VfsMountAccess::ReadOnly,
-        );
+            WorkspaceLinkAccess::ReadOnly,
+        )
+        .unwrap();
 
-        assert_eq!(profile.document.mounts.len(), 1);
-        assert_eq!(profile.document.mounts[0].access, VfsMountAccess::ReadOnly);
+        let links = profile_workspace_links(&profile).unwrap();
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].access, WorkspaceLinkAccess::ReadOnly);
         assert!(matches!(
-            profile.document.mounts[0].source,
-            VfsMountSourceInput::Snapshot { .. }
+            links[0].target,
+            WorkspaceLinkTarget::Snapshot { .. }
         ));
+    }
+
+    fn profile_document_with_vfs(workspace_links: Vec<WorkspaceLink>) -> api::ProfileDocument {
+        api::ProfileDocument {
+            config: Some(api::SessionConfig {
+                model: None,
+                generation: None,
+                limits: None,
+                context: None,
+                features: Some(api::FeaturesConfig {
+                    vfs: Some(api::VfsFeature {
+                        version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links,
+                        tools: None,
+                        prompts: None,
+                        skills: None,
+                    }),
+                    ..api::FeaturesConfig::default()
+                }),
+            }),
+            ..api::ProfileDocument::default()
+        }
     }
 
     fn parse_import_document_for_test(json: &str) -> ProfileImportDocument {

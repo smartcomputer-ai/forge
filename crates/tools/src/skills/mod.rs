@@ -7,13 +7,14 @@ pub mod vfs;
 
 pub use catalog::{
     SkillCatalogBuild, SkillCatalogBuilder, SkillCatalogError, SkillCatalogPublication,
-    SkillCatalogRootInput, build_skill_catalog, prepare_skill_catalog_publication,
+    SkillCatalogRootInput, build_skill_catalog, build_skill_catalog_with_warnings,
+    prepare_skill_catalog_publication, prepare_skill_catalog_publication_with_warnings,
     skill_catalog_context_input,
 };
 pub use model::*;
 pub use parser::{SkillFrontmatter, SkillParseError, parse_skill_frontmatter};
 pub use vfs::{
-    MountedVfsSkillCatalogRoots, SkillVfsRootError, VfsSkillRootSpec,
+    LinkedVfsSkillCatalogRoots, SkillVfsRootError, VfsSkillRootSpec,
     configured_vfs_skill_root_specs, conventional_vfs_skill_root_specs,
-    resolve_mounted_vfs_skill_roots,
+    resolve_linked_vfs_skill_roots,
 };

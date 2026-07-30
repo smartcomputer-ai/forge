@@ -132,21 +132,6 @@ pub trait AgentApiService: Send + Sync {
         params: SkillDeactivateParams,
     ) -> Result<AgentApiOutcome<SkillDeactivateResponse>, AgentApiError>;
 
-    async fn list_session_environments(
-        &self,
-        params: SessionEnvironmentListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentListResponse>, AgentApiError>;
-
-    async fn read_session_environment(
-        &self,
-        params: SessionEnvironmentReadParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentReadResponse>, AgentApiError>;
-
-    async fn attach_session_environment(
-        &self,
-        params: SessionEnvironmentAttachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentAttachResponse>, AgentApiError>;
-
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
@@ -156,11 +141,6 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: SessionEnvironmentDeactivateParams,
     ) -> Result<AgentApiOutcome<SessionEnvironmentDeactivateResponse>, AgentApiError>;
-
-    async fn detach_session_environment(
-        &self,
-        params: SessionEnvironmentDetachParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentDetachResponse>, AgentApiError>;
 
     async fn create_environment(
         &self,
@@ -182,20 +162,20 @@ pub trait AgentApiService: Send + Sync {
         params: EnvironmentCloseParams,
     ) -> Result<AgentApiOutcome<EnvironmentCloseResponse>, AgentApiError>;
 
-    async fn bind_session_environment_credential(
+    async fn bind_environment_credential(
         &self,
-        params: SessionEnvironmentCredentialBindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialBindResponse>, AgentApiError>;
+        params: EnvironmentCredentialBindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialBindResponse>, AgentApiError>;
 
-    async fn list_session_environment_credentials(
+    async fn list_environment_credentials(
         &self,
-        params: SessionEnvironmentCredentialListParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialListResponse>, AgentApiError>;
+        params: EnvironmentCredentialListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialListResponse>, AgentApiError>;
 
-    async fn unbind_session_environment_credential(
+    async fn unbind_environment_credential(
         &self,
-        params: SessionEnvironmentCredentialUnbindParams,
-    ) -> Result<AgentApiOutcome<SessionEnvironmentCredentialUnbindResponse>, AgentApiError>;
+        params: EnvironmentCredentialUnbindParams,
+    ) -> Result<AgentApiOutcome<EnvironmentCredentialUnbindResponse>, AgentApiError>;
 
     async fn create_environment_jobs(
         &self,
@@ -281,21 +261,6 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: VfsWorkspaceDeleteParams,
     ) -> Result<AgentApiOutcome<VfsWorkspaceDeleteResponse>, AgentApiError>;
-
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError>;
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError>;
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError>;
 
     /// Create-or-replace an MCP server document. `expected_revision` is
     /// checked only when the record already exists.

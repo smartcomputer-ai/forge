@@ -61,7 +61,7 @@ impl GatewayAgentApi {
 
     pub(super) async fn skill_catalog_refresh_command(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<Option<CoreAgentCommand>, AgentApiError> {
         let active_catalog_ref = active_skill_catalog_ref(state);
@@ -74,12 +74,8 @@ impl GatewayAgentApi {
         let Some(skills_config) = skills_config else {
             return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
         };
-        let mounts = self
-            .store
-            .list_mounts(session_id)
-            .await
-            .map_err(map_vfs_catalog_error)?;
-        let specs = configured_vfs_skill_root_specs(&mounts, skills_config.roots.as_deref())
+        let links = self.resolve_session_workspace_links(state).await?;
+        let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
             .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
         if specs.is_empty() {
             return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
@@ -87,14 +83,14 @@ impl GatewayAgentApi {
 
         let blobs: Arc<dyn BlobStore> = self.store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = self.store.clone();
-        let resolved = resolve_mounted_vfs_skill_roots(blobs, workspace_store, mounts, specs)
+        let resolved = resolve_linked_vfs_skill_roots(blobs, workspace_store, links, specs)
             .await
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
         let inputs = resolved
             .existing_directory_inputs()
             .await
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
-        if inputs.is_empty() {
+        if inputs.is_empty() && resolved.warnings().is_empty() {
             return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
         }
 
@@ -102,10 +98,15 @@ impl GatewayAgentApi {
         if let Some(catalog_ref) = active_catalog_ref {
             state.context.entries = vec![active_catalog_entry(catalog_ref)];
         }
-        let publication =
-            prepare_skill_catalog_publication(self.store.as_ref(), &state, None, &inputs)
-                .await
-                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        let publication = tools::skills::prepare_skill_catalog_publication_with_warnings(
+            self.store.as_ref(),
+            &state,
+            None,
+            &inputs,
+            resolved.warnings().to_vec(),
+        )
+        .await
+        .map_err(|error| AgentApiError::internal(error.to_string()))?;
         Ok(publication.command)
     }
 
@@ -159,17 +160,23 @@ impl GatewayAgentApi {
 
     pub(super) async fn read_skill_doc_for_activation(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         skill: &SkillMetadata,
     ) -> Result<String, AgentApiError> {
-        let mounts = self
+        let skill_doc_ref = skill.skill_doc_ref.as_ref().ok_or_else(|| {
+            AgentApiError::internal(format!(
+                "cataloged skill {} has no pinned skill document",
+                skill.skill_id
+            ))
+        })?;
+        let bytes = self
             .store
-            .list_mounts(session_id)
+            .read_bytes(skill_doc_ref)
             .await
-            .map_err(map_vfs_catalog_error)?;
-        let blobs: Arc<dyn BlobStore> = self.store.clone();
-        let workspace_store: Arc<dyn VfsWorkspaceStore> = self.store.clone();
-        read_skill_doc_for_activation_from_vfs(blobs, workspace_store, mounts, skill).await
+            .map_err(map_blob_read_error)?;
+        String::from_utf8(bytes).map_err(|error| {
+            AgentApiError::internal(format!("cataloged skill document is not UTF-8: {error}"))
+        })
     }
 
     pub(super) fn require_open_idle_session(
@@ -411,31 +418,6 @@ pub(super) fn skill_active_response(
             .filter_map(|activation| skill_activation_view(activation, catalog_ref, catalog))
             .collect(),
     }
-}
-
-pub(super) async fn read_skill_doc_for_activation_from_vfs(
-    blobs: Arc<dyn BlobStore>,
-    workspace_store: Arc<dyn VfsWorkspaceStore>,
-    mounts: Vec<VfsMountRecord>,
-    skill: &SkillMetadata,
-) -> Result<String, AgentApiError> {
-    let skill_doc_path = match &skill.location {
-        SkillLocation::MountedSnapshot { skill_doc_path, .. }
-        | SkillLocation::MountedWorkspace { skill_doc_path, .. } => skill_doc_path,
-        SkillLocation::HostFilesystem { .. } => {
-            return Err(AgentApiError::invalid_request(
-                "direct skill activation currently supports VFS-mounted skills only",
-            ));
-        }
-    };
-
-    let fs = MountedVfsFileSystem::new(blobs, workspace_store, mounts).map_err(map_fs_error)?;
-    let path = FsPath::new(skill_doc_path.as_str()).map_err(|error| {
-        AgentApiError::internal(format!(
-            "stored skill document path is invalid: {skill_doc_path}: {error}"
-        ))
-    })?;
-    fs.read_file_text(&path).await.map_err(map_fs_error)
 }
 
 pub(super) fn api_skill_activation_scope(entry: &ContextEntry) -> ApiSkillActivationScope {

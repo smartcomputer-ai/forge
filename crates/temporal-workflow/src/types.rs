@@ -72,10 +72,10 @@ pub fn compose_workflow_id(universe_id: Uuid, session_id: &SessionId) -> String 
 
 pub fn compose_environment_job_workflow_id(
     universe_id: Uuid,
-    instance_id: &str,
+    environment_id: &str,
     job_group_id: &str,
 ) -> String {
-    format!("{universe_id}/envjob-{instance_id}-{job_group_id}")
+    format!("{universe_id}/envjob-{environment_id}-{job_group_id}")
 }
 
 /// Split a composed workflow id back into `(universe_id, session_id)`.
@@ -193,8 +193,8 @@ pub struct AgentCompletedRunSummary {
 pub struct PendingEmission {
     pub receiver_workflow_id: String,
     pub envelope: EmissionEnvelope,
-    /// Delivery attempts so far. Only promise-bearing tool-invocation
-    /// envelopes retry; other bodies keep the legacy single-attempt,
+    /// Delivery attempts so far. Pushed workflow-tool invocation envelopes
+    /// retry independently; other bodies keep the legacy single-attempt,
     /// drop-on-missing semantics.
     #[serde(default)]
     pub attempts: u32,
@@ -372,7 +372,7 @@ pub struct AwaitPromiseResult {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingToolBatchResume {
     pub batch_id: ToolBatchId,
-    pub command: engine::ResumeAwaitCommand,
+    pub command: engine::ResumeToolBatchCommand,
 }
 
 /// Armed while the active run sits in `cancelling`; the workflow forces the
@@ -386,13 +386,13 @@ pub struct CancellingWatchdog {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobCredentialScope {
     pub session_id: SessionId,
-    pub env_id: String,
+    pub environment_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartActivityRequest {
     pub universe_id: Uuid,
-    pub instance_id: String,
+    pub environment_id: String,
     pub job_group_id: String,
     pub request_ref: BlobRef,
 }
@@ -473,7 +473,7 @@ fn default_environment_job_poll_ms() -> u64 {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobWorkflowSnapshot {
-    pub instance_id: String,
+    pub environment_id: String,
     pub job_group_id: String,
     #[serde(default)]
     pub started: bool,
@@ -489,7 +489,7 @@ pub struct EnvironmentJobWorkflowSnapshot {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobPollActivityRequest {
     pub universe_id: Uuid,
-    pub instance_id: String,
+    pub environment_id: String,
     pub job_group_id: String,
     pub job_ids: Vec<host_protocol::shared::JobId>,
 }
@@ -512,7 +512,7 @@ pub struct EnvironmentJobCancelSignal {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobCancelActivityRequest {
     pub universe_id: Uuid,
-    pub instance_id: String,
+    pub environment_id: String,
     pub jobs: Vec<host_protocol::shared::JobId>,
     pub scope: host_protocol::data::jobs::JobCancelScope,
     pub force: bool,
@@ -650,19 +650,26 @@ pub struct ToolInvokeBatchActivityRequest {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolPreparePromiseControlsActivityRequest {
+    pub request: engine::PromiseControlArgumentRequest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProjectionRefreshActivityRequest {
     pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<engine::WorkspaceLink>,
     pub vfs_catalog_enabled: bool,
-    pub environment_catalog_enabled: bool,
+    pub vfs_prompts_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vfs_prompt_roots: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub active_instruction_inputs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
     pub vfs_skills_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vfs_skill_roots: Option<Vec<String>>,
     pub active_catalog_ref: Option<BlobRef>,
     pub active_vfs_catalog_ref: Option<BlobRef>,
-    pub active_environment_catalog_ref: Option<BlobRef>,
-    pub active_environment_active_ref: Option<BlobRef>,
-    #[serde(default)]
-    pub active_environment_target: Option<engine::ToolExecutionTarget>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

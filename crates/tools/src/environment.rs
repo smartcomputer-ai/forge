@@ -10,6 +10,7 @@ use crate::{
     limits::ToolLimits,
 };
 
+pub mod control;
 pub mod jobs;
 pub mod process;
 pub mod projection;

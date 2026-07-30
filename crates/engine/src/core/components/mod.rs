@@ -6,6 +6,7 @@
 pub mod command;
 pub mod config;
 pub mod context;
+pub mod environment;
 pub mod error;
 pub mod event;
 pub mod ids;
@@ -28,14 +29,18 @@ pub use context::{
     ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ContextCompactionStatus,
     ContextCompactionTrigger, ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind,
     ContextEntrySource, ContextEvent, ContextMessageRole, ContextRemovalReason,
-    ContextRewriteReason, ContextSnapshot, ContextState, ENVIRONMENT_ACTIVE_CONTEXT_KEY,
-    ENVIRONMENT_CATALOG_CONTEXT_KEY, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
+    ContextRewriteReason, ContextSnapshot, ContextState, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     SKILL_ACTIVATION_CONTEXT_KEY_PREFIX, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
     SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, TokenEstimate,
     TokenEstimateQuality, VFS_CATALOG_CONTEXT_KEY, is_run_scoped_skill_activation_entry,
     skill_activation_context_key, validate_external_context_key,
+};
+pub use environment::{
+    ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND,
+    ENVIRONMENT_TARGET_NAMESPACE, EnvironmentEvent, EnvironmentState, environment_activate_effect,
+    environment_deactivate_effect,
 };
 pub use error::*;
 pub use event::*;
@@ -45,15 +50,17 @@ pub use llm::*;
 pub use log::*;
 pub use promise::{
     PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND, Promise,
-    PromiseComponentState, PromiseEvent, PromiseId, PromiseResolution, PromiseScope, PromiseSource,
-    PromiseStatus, promise_cancel_effect, promise_create_effect, promise_detach_effect,
+    PromiseComponentState, PromiseEvent, PromiseId, PromiseOwnership, PromiseResolution,
+    PromiseScope, PromiseSource, PromiseStatus, promise_cancel_effect, promise_create_effect,
+    promise_detach_effect,
 };
 pub use run::{
     AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitOutputRefs, AwaitSpec,
-    BufferedMessage, MessageStatus, ParkedAwait, ResumeAwaitCommand, RunEvent, RunFailure,
-    RunFailureKind, RunOrigin, RunQueueState, RunRecord, RunRequestCommand, RunRequestSource,
-    RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent, SteeringBatch,
-    SubmitMessageCommand, WakeReason, message_submission_digest, request_run_submission_digest,
+    BufferedMessage, JoinedWorkflowCall, MessageStatus, ParkedToolBatch, ResumeToolBatchCommand,
+    RunEvent, RunFailure, RunFailureKind, RunOrigin, RunQueueState, RunRecord, RunRequestCommand,
+    RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent,
+    SteeringBatch, SubmitMessageCommand, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
+    message_submission_digest, request_run_submission_digest,
 };
 pub use state::*;
 pub use tooling::{
@@ -61,7 +68,7 @@ pub use tooling::{
     ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
     RemoteMcpToolSpec, SecretRef, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
     ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionTarget, ToolKind,
-    ToolParallelism, ToolPatch, ToolRoutingState, ToolSpec, ToolTargetRequirement, ToolingState,
+    ToolParallelism, ToolPatch, ToolSpec, ToolTargetRequirement, ToolingState,
     UNAVAILABLE_TOOL_RESULT_CONTENT, unavailable_tool_result_ref, validate_tool_map,
 };
 pub use turn::{
@@ -69,15 +76,13 @@ pub use turn::{
     TurnOutcome, TurnState, TurnStatus,
 };
 pub use workflow_tool::{
-    AdmittedManagedSessionWorkflowTools, MAX_COMPLETION_PROMISES,
+    AdmittedManagedSessionWorkflowTools, BoundWorkflowToolDispatch, MAX_COMPLETION_PROMISES,
     MAX_WORKFLOW_TOOL_EMISSIONS_PER_READ, MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN,
     ManagedSessionWorkflowTools, REPLY_COMPLETION_KEY, ReadToolEmissionsError,
-    WORKFLOW_TOOL_EMIT_EFFECT_KIND, WorkflowEndpointRef, WorkflowStartRef,
-    WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
-    WorkflowToolConfigEvent,
-    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent, WorkflowToolInvocation,
-    WorkflowToolState, WorkflowToolTarget, WORKFLOW_TOOL_EXECUTION_KIND,
-    completion_promise_source, read_tool_emissions,
-    validate_completion_key, with_completion_deadline, workflow_tool_emit_effect,
-    workflow_tool_execution_id, workflow_tool_promise_id,
+    WORKFLOW_TOOL_EMIT_EFFECT_KIND, WORKFLOW_TOOL_EXECUTION_KIND, WorkflowEndpointRef,
+    WorkflowStartRef, WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    WorkflowToolConfigEvent, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent,
+    WorkflowToolInvocation, WorkflowToolState, WorkflowToolTarget, completion_promise_source,
+    read_tool_emissions, validate_completion_key, with_completion_deadline,
+    workflow_tool_emit_effect, workflow_tool_execution_id, workflow_tool_promise_id,
 };

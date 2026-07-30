@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveRun, AwaitSpec, BlobRef, ContextEntry, ContextEntryInput, ContextEntryKind,
-    ContextEntrySource, ContextEvent, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentState, CoreAgentStatus, DomainError, ParkedAwait, PlanningError, ProviderApiKind,
-    RunId, RunStatus, ToolBatchId, ToolCallId, ToolEffect, ToolName, TurnId, TurnOutcome,
-    TurnStatus, core::components::context::context_entries_from_inputs,
+    ActiveRun, BlobRef, ContextEntry, ContextEntryInput, ContextEntryKind, ContextEntrySource,
+    ContextEvent, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
+    CoreAgentStatus, DomainError, ParkedToolBatch, PlanningError, PromiseOwnership,
+    ProviderApiKind, RunId, RunStatus, ToolBatchId, ToolBatchSuspension, ToolCallId, ToolEffect,
+    ToolName, TurnId, TurnOutcome, TurnStatus,
+    core::components::context::context_entries_from_inputs,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -20,12 +21,6 @@ pub enum ConfigEvent {
     ToolsPatched {
         base_revision: u64,
         patch: ToolPatch,
-    },
-    DefaultTargetSet {
-        target: ToolExecutionTarget,
-    },
-    DefaultTargetCleared {
-        namespace: String,
     },
 }
 
@@ -58,8 +53,7 @@ pub enum Event {
         run_id: RunId,
         turn_id: TurnId,
         batch_id: ToolBatchId,
-        call_id: ToolCallId,
-        spec: AwaitSpec,
+        suspension: ToolBatchSuspension,
     },
     BatchResumed {
         run_id: RunId,
@@ -191,7 +185,6 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
 pub struct ToolingState {
     pub revision: u64,
     pub tools: BTreeMap<ToolName, ToolSpec>,
-    pub routing: ToolRoutingState,
 }
 
 pub fn validate_tool_map(tools: &BTreeMap<ToolName, ToolSpec>) -> Result<(), DomainError> {
@@ -336,27 +329,6 @@ impl ToolSpec {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolRoutingState {
-    pub default_targets: BTreeMap<String, ToolExecutionTarget>,
-}
-
-impl ToolRoutingState {
-    pub fn validate(&self) -> Result<(), DomainError> {
-        for (namespace, target) in &self.default_targets {
-            validate_target_namespace(namespace)?;
-            target.validate()?;
-            if target.namespace != *namespace {
-                return Err(DomainError::InvariantViolation(format!(
-                    "default target namespace {} does not match target namespace {}",
-                    namespace, target.namespace
-                )));
-            }
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolExecutionTarget {
     pub namespace: String,
@@ -382,51 +354,20 @@ impl ToolExecutionTarget {
 pub enum ToolTargetRequirement {
     #[default]
     None,
-    Optional {
-        namespace: String,
-    },
-    Required {
-        namespace: String,
+    SessionFilesystem,
+    ActiveEnvironment,
+    Fixed {
+        target: ToolExecutionTarget,
     },
 }
 
 impl ToolTargetRequirement {
-    pub fn optional(namespace: impl Into<String>) -> Self {
-        Self::Optional {
-            namespace: namespace.into(),
-        }
-    }
-
-    pub fn required(namespace: impl Into<String>) -> Self {
-        Self::Required {
-            namespace: namespace.into(),
-        }
-    }
-
-    pub fn namespace(&self) -> Option<&str> {
-        match self {
-            Self::None => None,
-            Self::Optional { namespace } | Self::Required { namespace } => Some(namespace),
-        }
-    }
-
     pub fn validate(&self) -> Result<(), DomainError> {
-        if let Some(namespace) = self.namespace() {
-            validate_target_namespace(namespace)?;
+        if let Self::Fixed { target } = self {
+            target.validate()?;
         }
         Ok(())
     }
-}
-
-pub(crate) fn validate_default_tool_target_set(
-    target: &ToolExecutionTarget,
-) -> Result<(), DomainError> {
-    target.validate()
-}
-
-pub(crate) fn validate_default_tool_target_clear(namespace: &str) -> Result<(), DomainError> {
-    let requirement = ToolTargetRequirement::required(namespace.to_owned());
-    requirement.validate()
 }
 
 pub(crate) fn validate_tool_execution_target_for_requirement(
@@ -442,26 +383,43 @@ pub(crate) fn validate_tool_execution_target_for_requirement(
         (ToolTargetRequirement::None, Some(_)) => Err(DomainError::InvariantViolation(
             "tool invocation target is not allowed for this tool".into(),
         )),
-        (ToolTargetRequirement::Optional { namespace }, None) => {
-            ToolTargetRequirement::required(namespace.clone()).validate()
-        }
-        (ToolTargetRequirement::Optional { namespace }, Some(target))
-        | (ToolTargetRequirement::Required { namespace }, Some(target)) => {
-            if target.namespace == *namespace {
+        (ToolTargetRequirement::SessionFilesystem, Some(target)) => {
+            if target == &ToolExecutionTarget::new("fs", "session") {
                 Ok(())
             } else {
                 Err(DomainError::InvariantViolation(format!(
-                    "tool invocation target namespace {} does not match required namespace {}",
-                    target.namespace, namespace
+                    "tool invocation target {}:{} is not the session filesystem",
+                    target.namespace, target.id
                 )))
             }
         }
-        (ToolTargetRequirement::Required { namespace }, None) => {
-            Err(DomainError::InvariantViolation(format!(
-                "tool invocation requires execution target namespace {}",
-                namespace
-            )))
+        (ToolTargetRequirement::ActiveEnvironment, Some(target)) => {
+            if target.namespace == crate::ENVIRONMENT_TARGET_NAMESPACE {
+                Ok(())
+            } else {
+                Err(DomainError::InvariantViolation(format!(
+                    "tool invocation target namespace {} is not the environment namespace",
+                    target.namespace
+                )))
+            }
         }
+        (ToolTargetRequirement::Fixed { target: required }, Some(target)) => {
+            if required == target {
+                Ok(())
+            } else {
+                Err(DomainError::InvariantViolation(
+                    "tool invocation target does not match its fixed target".to_owned(),
+                ))
+            }
+        }
+        (
+            ToolTargetRequirement::SessionFilesystem
+            | ToolTargetRequirement::ActiveEnvironment
+            | ToolTargetRequirement::Fixed { .. },
+            None,
+        ) => Err(DomainError::InvariantViolation(
+            "tool invocation requires an execution target".to_owned(),
+        )),
     }
 }
 
@@ -962,7 +920,7 @@ fn decide_active_tool_batch_invocations(
         DomainError::InvariantViolation(format!("active tool batch {} is missing", batch_id))
     })?;
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1031,7 +989,7 @@ fn decide_active_tool_batch_completion(
         DomainError::InvariantViolation(format!("active tool batch {} is missing", batch_id))
     })?;
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1118,23 +1076,18 @@ fn resolve_tool_execution_target(
     policy.target_requirement.validate()?;
     match &policy.target_requirement {
         ToolTargetRequirement::None => Ok(None),
-        ToolTargetRequirement::Optional { namespace } => Ok(state
-            .tooling
-            .routing
-            .default_targets
-            .get(namespace)
-            .cloned()),
-        ToolTargetRequirement::Required { namespace } => state
-            .tooling
-            .routing
-            .default_targets
-            .get(namespace)
-            .cloned()
+        ToolTargetRequirement::SessionFilesystem => {
+            Ok(Some(ToolExecutionTarget::new("fs", "session")))
+        }
+        ToolTargetRequirement::Fixed { target } => Ok(Some(target.clone())),
+        ToolTargetRequirement::ActiveEnvironment => state
+            .environment
+            .active_execution_target()
             .map(Some)
             .ok_or_else(|| {
                 DomainError::InvariantViolation(format!(
-                    "tool {} requires default execution target namespace {}",
-                    tool_name, namespace
+                    "tool {} requires an active environment",
+                    tool_name
                 ))
                 .into()
             }),
@@ -1290,16 +1243,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             run_id,
             turn_id,
             batch_id,
-            call_id,
-            spec,
-        } => defer_tool_batch(
-            state,
-            *run_id,
-            *turn_id,
-            *batch_id,
-            call_id.clone(),
-            spec.clone(),
-        ),
+            suspension,
+        } => defer_tool_batch(state, *run_id, *turn_id, *batch_id, suspension.clone()),
         Event::BatchResumed {
             run_id,
             turn_id,
@@ -1342,20 +1287,6 @@ pub(crate) fn apply_config_event(
             state.tooling.tools = patch.apply_to(&state.tooling.tools)?;
             bump_tooling_revision(state)?;
             Ok(())
-        }
-        ConfigEvent::DefaultTargetSet { target } => {
-            validate_default_tool_target_set(target)?;
-            state
-                .tooling
-                .routing
-                .default_targets
-                .insert(target.namespace.clone(), target.clone());
-            state.tooling.routing.validate()
-        }
-        ConfigEvent::DefaultTargetCleared { namespace } => {
-            validate_default_tool_target_clear(namespace)?;
-            state.tooling.routing.default_targets.remove(namespace);
-            state.tooling.routing.validate()
         }
     }
 }
@@ -1422,27 +1353,15 @@ fn initial_tool_call_execution_policy(
     if tool.target_requirement.validate().is_err() {
         return None;
     }
-    if let Some(namespace) = required_target_namespace(&tool.target_requirement) {
-        if !state
-            .tooling
-            .routing
-            .default_targets
-            .contains_key(namespace)
-        {
-            return None;
-        }
+    if tool.target_requirement == ToolTargetRequirement::ActiveEnvironment
+        && state.environment.active_environment_id.is_none()
+    {
+        return None;
     }
     Some(ToolCallExecutionPolicy {
         invokes_client_effect: true,
         target_requirement: tool.target_requirement,
     })
-}
-
-fn required_target_namespace(requirement: &ToolTargetRequirement) -> Option<&str> {
-    match requirement {
-        ToolTargetRequirement::Required { namespace } => Some(namespace.as_str()),
-        ToolTargetRequirement::None | ToolTargetRequirement::Optional { .. } => None,
-    }
 }
 
 fn planned_tool_for_turn(
@@ -1543,7 +1462,7 @@ fn complete_tool_batch(
             ));
         }
         if active_run
-            .parked_await
+            .parked_tool_batch
             .as_ref()
             .is_some_and(|parked| parked.batch_id == batch_id)
         {
@@ -1607,10 +1526,9 @@ fn defer_tool_batch(
     run_id: RunId,
     turn_id: TurnId,
     batch_id: ToolBatchId,
-    call_id: ToolCallId,
-    spec: AwaitSpec,
+    suspension: ToolBatchSuspension,
 ) -> Result<(), DomainError> {
-    let active_run = crate::core::components::run::active_run_mut(state, run_id)?;
+    let active_run = crate::core::components::run::active_run_ref(state, run_id)?;
     if active_run.status != RunStatus::Active {
         return Err(DomainError::InvariantViolation(
             "tool batches can only defer for active runs".into(),
@@ -1626,13 +1544,13 @@ fn defer_tool_batch(
             "deferred tool batch does not match active tool batch".into(),
         ));
     }
-    if active_run.parked_await.is_some() {
+    if active_run.parked_tool_batch.is_some() {
         return Err(DomainError::InvariantViolation(format!(
             "tool batch {} is already deferred",
             batch_id
         )));
     }
-    let batch = active_run.tool_batches.get_mut(&batch_id).ok_or_else(|| {
+    let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
         DomainError::InvariantViolation(format!("tool batch {} is missing", batch_id))
     })?;
     if batch.run_id != run_id || batch.turn_id != turn_id {
@@ -1640,24 +1558,88 @@ fn defer_tool_batch(
             "deferred tool batch does not match run/turn".into(),
         ));
     }
-    if !batch
-        .calls
-        .iter()
-        .any(|call_state| call_state.call.call_id == call_id)
-    {
-        return Err(DomainError::InvariantViolation(format!(
-            "await call {} is not in tool batch {}",
-            call_id, batch_id
-        )));
-    }
-    if !batch
-        .calls
-        .iter()
-        .any(|call_state| call_state.status == ToolCallStatus::Pending)
-    {
-        return Err(DomainError::InvariantViolation(
-            "tool batch deferral requires at least one pending call".into(),
-        ));
+    match &suspension {
+        ToolBatchSuspension::AwaitTool { call_id, .. } => {
+            if !batch.calls.iter().any(|call_state| {
+                call_state.call.call_id == *call_id && call_state.status == ToolCallStatus::Pending
+            }) {
+                return Err(DomainError::InvariantViolation(format!(
+                    "await call {} is not pending in tool batch {}",
+                    call_id, batch_id
+                )));
+            }
+        }
+        ToolBatchSuspension::JoinedWorkflowCalls { calls, spec } => {
+            if calls.is_empty() || spec.mode != crate::AwaitMode::All || spec.mailbox {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow suspension requires non-empty all-of Promise wait without mailbox"
+                        .into(),
+                ));
+            }
+            let mut call_ids = BTreeSet::new();
+            let mut promise_ids = BTreeSet::new();
+            for joined in calls {
+                if !call_ids.insert(joined.call_id.clone())
+                    || !promise_ids.insert(joined.promise_id.clone())
+                {
+                    return Err(DomainError::InvariantViolation(
+                        "joined workflow suspension contains duplicate call or Promise identity"
+                            .into(),
+                    ));
+                }
+                if !batch.calls.iter().any(|call_state| {
+                    call_state.call.call_id == joined.call_id
+                        && call_state.status == ToolCallStatus::Pending
+                }) {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "joined workflow call {} is not pending in tool batch {}",
+                        joined.call_id, batch_id
+                    )));
+                }
+                let promise = state
+                    .promises
+                    .promises
+                    .get(&joined.promise_id)
+                    .ok_or_else(|| {
+                        DomainError::InvariantViolation(format!(
+                            "joined workflow call {} references missing Promise {}",
+                            joined.call_id, joined.promise_id
+                        ))
+                    })?;
+                if promise.ownership != PromiseOwnership::Runtime
+                    || promise.scope != (crate::PromiseScope::Run { run_id })
+                {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "joined workflow Promise {} is not runtime-owned by run {}",
+                        joined.promise_id, run_id
+                    )));
+                }
+                match &promise.source {
+                    crate::PromiseSource::Workflow {
+                        invocation_id,
+                        completion_key,
+                        ..
+                    } if invocation_id == joined.invocation_id.as_str()
+                        && completion_key == crate::REPLY_COMPLETION_KEY => {}
+                    _ => {
+                        return Err(DomainError::InvariantViolation(format!(
+                            "joined workflow Promise {} does not match invocation {} reply source",
+                            joined.promise_id, joined.invocation_id
+                        )));
+                    }
+                }
+            }
+            if spec.promise_ids
+                != calls
+                    .iter()
+                    .map(|call| call.promise_id.clone())
+                    .collect::<Vec<_>>()
+            {
+                return Err(DomainError::InvariantViolation(
+                    "joined workflow suspension wait set does not match its call mappings".into(),
+                ));
+            }
+        }
     }
     if batch.calls.iter().any(|call_state| {
         matches!(
@@ -1669,10 +1651,10 @@ fn defer_tool_batch(
             "tool batch deferral requires all invocable calls to be pending".into(),
         ));
     }
-    active_run.parked_await = Some(ParkedAwait {
+    let active_run = crate::core::components::run::active_run_mut(state, run_id)?;
+    active_run.parked_tool_batch = Some(ParkedToolBatch {
         batch_id,
-        call_id,
-        spec,
+        suspension,
     });
     active_run.status = RunStatus::Parked;
     Ok(())
@@ -1699,7 +1681,7 @@ fn resume_deferred_tool_batch(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_none_or(|parked| parked.batch_id != batch_id)
     {
@@ -1708,7 +1690,7 @@ fn resume_deferred_tool_batch(
             batch_id
         )));
     }
-    active_run.parked_await = None;
+    active_run.parked_tool_batch = None;
     if active_run.status == RunStatus::Parked {
         active_run.status = RunStatus::Active;
     }
@@ -1760,7 +1742,7 @@ fn start_tool_call(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1882,7 +1864,7 @@ fn complete_tool_call(
         ));
     }
     if active_run
-        .parked_await
+        .parked_tool_batch
         .as_ref()
         .is_some_and(|parked| parked.batch_id == batch_id)
     {
@@ -1965,7 +1947,9 @@ mod tests {
     #[test]
     fn remote_mcp_tool_rejects_execution_target_requirement() {
         let mut tool = remote_mcp_tool("mcp_echo", "echo");
-        tool.target_requirement = ToolTargetRequirement::required("host");
+        tool.target_requirement = ToolTargetRequirement::Fixed {
+            target: ToolExecutionTarget::new("host", "test"),
+        };
 
         let error = tool
             .validate()

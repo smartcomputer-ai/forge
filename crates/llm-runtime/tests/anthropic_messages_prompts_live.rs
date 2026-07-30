@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use engine::{
     ContextConfig, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
     CoreAgentEvent, ModelSelection, ProviderApiKind, RunConfig, RunStatus, SessionConfig,
-    SessionId,
+    SessionId, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
 use llm_clients::anthropic::messages::{Client, Config};
@@ -20,8 +20,8 @@ use test_support::{DriveCommand, RunnerQuiescence, RunnerStores, SessionRunner};
 use tools::prompts::{PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX, active_prompt_instruction_entries};
 use vfs::{
     CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-    InlineFile, VfsCatalogError, VfsMountAccess, VfsMountRecord, VfsMountSource, VfsMountStore,
-    VfsPath, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore, create_inline_snapshot,
+    InlineFile, VfsCatalogError, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+    create_inline_snapshot,
 };
 
 mod support;
@@ -96,47 +96,7 @@ fn unquote_dotenv_value(value: &str) -> String {
 
 #[derive(Default)]
 struct LiveVfsCatalog {
-    mounts: Mutex<BTreeMap<SessionId, Vec<VfsMountRecord>>>,
     workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,
-}
-
-#[async_trait]
-impl VfsMountStore for LiveVfsCatalog {
-    async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-        self.mounts
-            .lock()
-            .expect("mount lock")
-            .entry(record.session_id.clone())
-            .or_default()
-            .push(record);
-        Ok(())
-    }
-
-    async fn list_mounts(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-        Ok(self
-            .mounts
-            .lock()
-            .expect("mount lock")
-            .get(session_id)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    async fn remove_mount(
-        &self,
-        session_id: &SessionId,
-        mount_path: &VfsPath,
-    ) -> Result<(), VfsCatalogError> {
-        let mut mounts = self.mounts.lock().expect("mount lock");
-        let Some(session_mounts) = mounts.get_mut(session_id) else {
-            return Ok(());
-        };
-        session_mounts.retain(|mount| &mount.mount_path != mount_path);
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -282,14 +242,13 @@ async fn anthropic_messages_live_uses_vfs_prompt_instructions() {
     })
     .await
     .expect("create workspace");
-    vfs.put_mount(VfsMountRecord {
-        session_id: session_id.clone(),
-        mount_path: VfsPath::parse("/workspace").unwrap(),
-        source: VfsMountSource::Workspace { workspace_id },
-        access: VfsMountAccess::ReadWrite,
-    })
-    .await
-    .expect("mount workspace");
+    let workspace_links = vec![WorkspaceLink {
+        path: "/workspace".to_owned(),
+        target: WorkspaceLinkTarget::Workspace {
+            workspace_id: workspace_id.to_string(),
+        },
+        access: WorkspaceLinkAccess::ReadWrite,
+    }];
 
     let model = ModelSelection {
         api_kind: ProviderApiKind::AnthropicMessages,
@@ -305,8 +264,7 @@ async fn anthropic_messages_live_uses_vfs_prompt_instructions() {
             )),
         ),
     ));
-    let stores =
-        RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs.clone(), vfs);
+    let stores = RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs);
     let runner = SessionRunner::new(stores, llm);
 
     runner
@@ -314,7 +272,7 @@ async fn anthropic_messages_live_uses_vfs_prompt_instructions() {
             session_id: session_id.clone(),
             observed_at_ms: 10,
             command: CoreAgentCommand::OpenSession {
-                config: session_config(model),
+                config: session_config(model, workspace_links),
             },
             max_steps: None,
         })
@@ -379,7 +337,7 @@ async fn anthropic_messages_live_uses_vfs_prompt_instructions() {
     );
 }
 
-fn session_config(model: ModelSelection) -> SessionConfig {
+fn session_config(model: ModelSelection, workspace_links: Vec<WorkspaceLink>) -> SessionConfig {
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
@@ -390,7 +348,14 @@ fn session_config(model: ModelSelection) -> SessionConfig {
         },
         limits: Default::default(),
         context: ContextConfig { compaction: None },
-        features: Default::default(),
+        features: engine::FeaturesConfig {
+            vfs: Some(engine::VfsFeature {
+                workspace_links,
+                prompts: Some(engine::VfsPromptsConfig::default()),
+                ..engine::VfsFeature::default()
+            }),
+            ..engine::FeaturesConfig::default()
+        },
     }
 }
 

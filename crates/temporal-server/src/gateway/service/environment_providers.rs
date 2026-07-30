@@ -1,17 +1,16 @@
-use super::environment_lifecycle::allocate_environment_instance_id;
+use super::environment_lifecycle::allocate_environment_id;
 use super::*;
 
 use std::collections::BTreeSet;
 
 use ::environments::{
-    EnvironmentInstanceOrigin, EnvironmentInstanceRecord,
-    EnvironmentProviderCapabilities as RegistryProviderCapabilities,
+    EnvironmentOrigin, EnvironmentProviderCapabilities as RegistryProviderCapabilities,
     EnvironmentProviderHeartbeat as RegistryProviderHeartbeat, EnvironmentProviderId,
     EnvironmentProviderKind as RegistryProviderKind, EnvironmentProviderPresence,
     EnvironmentProviderRecord, EnvironmentProviderStatus as RegistryProviderStatus,
-    EnvironmentRegistryError, HostControllerConnectionSpec, ListEnvironmentProviders,
-    ObserveEnvironmentInstance, ObservedEnvironmentTarget, RegisterEnvironmentProvider,
-    UpdateEnvironmentProviderStatus,
+    EnvironmentRecord, EnvironmentRegistryError, HostControllerConnectionSpec,
+    ListEnvironmentProviders, ObserveEnvironment, ObservedEnvironmentTarget,
+    RegisterEnvironmentProvider, UpdateEnvironmentProviderStatus,
 };
 use host_protocol::{
     control::{handshake::ControllerInitializeParams, targets::HostTargetStatus},
@@ -79,26 +78,24 @@ impl GatewayAgentApi {
         let mut instances = Vec::with_capacity(observations.len());
         for observation in observations {
             observed_ids.insert(observation.target.target_id.clone());
-            let instance_id =
-                match ::environments::EnvironmentInstanceStore::read_instance_by_provider_target(
+            let environment_id =
+                match ::environments::EnvironmentStore::read_environment_by_provider_target(
                     self.store.as_ref(),
                     &provider_id,
                     &observation.target.target_id,
                 )
                 .await
                 {
-                    Ok(instance) => instance.instance_id,
-                    Err(EnvironmentRegistryError::NotFound { .. }) => {
-                        allocate_environment_instance_id()
-                    }
+                    Ok(instance) => instance.environment_id,
+                    Err(EnvironmentRegistryError::NotFound { .. }) => allocate_environment_id(),
                     Err(error) => return Err(map_environments_error(error)),
                 };
-            let instance = ::environments::EnvironmentInstanceStore::observe_instance(
+            let instance = ::environments::EnvironmentStore::observe_environment(
                 self.store.as_ref(),
-                ObserveEnvironmentInstance::from_observation(
-                    instance_id,
+                ObserveEnvironment::from_observation(
+                    environment_id,
                     provider_id.clone(),
-                    EnvironmentInstanceOrigin::Provided,
+                    EnvironmentOrigin::Provided,
                     observation,
                     observed_at_ms,
                 ),
@@ -107,7 +104,7 @@ impl GatewayAgentApi {
             .map_err(map_environments_error)?;
             instances.push(environment_instance_view(&instance));
         }
-        ::environments::EnvironmentInstanceStore::mark_missing_provided_instances_unknown(
+        ::environments::EnvironmentStore::mark_missing_provided_environments_unknown(
             self.store.as_ref(),
             &provider_id,
             &observed_ids,
@@ -346,16 +343,14 @@ fn environment_provider_view(
     }
 }
 
-pub(super) fn environment_instance_view(
-    record: &EnvironmentInstanceRecord,
-) -> EnvironmentInstanceView {
+pub(super) fn environment_instance_view(record: &EnvironmentRecord) -> EnvironmentInstanceView {
     EnvironmentInstanceView {
-        instance_id: record.instance_id.as_str().to_owned(),
+        environment_id: record.environment_id.as_str().to_owned(),
         provider_id: record.provider_id.as_str().to_owned(),
         provider_target_id: record.provider_target_id.as_str().to_owned(),
         origin: match record.origin {
-            EnvironmentInstanceOrigin::Provided => EnvironmentInstanceOriginView::Provided,
-            EnvironmentInstanceOrigin::Provisioned => EnvironmentInstanceOriginView::Provisioned,
+            EnvironmentOrigin::Provided => EnvironmentOriginView::Provided,
+            EnvironmentOrigin::Provisioned => EnvironmentOriginView::Provisioned,
         },
         status: api_target_status(record.status),
         scope: api_host_scope(&record.scope),
@@ -478,12 +473,6 @@ pub(super) fn map_environments_error(error: EnvironmentRegistryError) -> AgentAp
         EnvironmentRegistryError::NotFound { kind, id } => {
             AgentApiError::not_found(format!("environment registry {kind} not found: {id}"))
         }
-        EnvironmentRegistryError::Occupied {
-            instance_id,
-            bindings,
-        } => AgentApiError::conflict(format!(
-            "environment instance {instance_id} is occupied by bindings {bindings:?}"
-        )),
         EnvironmentRegistryError::InvalidInput { message } => {
             AgentApiError::invalid_request(message)
         }

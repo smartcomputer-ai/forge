@@ -12,14 +12,10 @@ impl GatewayAgentApi {
         {
             return Ok(());
         }
-
-        let commands = self
-            .environment_projection_refresh_commands(session_id, state)
-            .await?;
+        let commands = self.environment_projection_refresh_commands(state).await?;
         if commands.is_empty() {
             return Ok(());
         }
-
         let expected = commands
             .iter()
             .filter_map(|command| match command {
@@ -36,7 +32,6 @@ impl GatewayAgentApi {
                 _ => None,
             })
             .collect::<Vec<_>>();
-
         let mut correlations = BTreeMap::new();
         for command in commands {
             correlations.extend(
@@ -61,52 +56,36 @@ impl GatewayAgentApi {
 
     pub(super) async fn environment_projection_refresh_commands(
         &self,
-        session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<Vec<CoreAgentCommand>, AgentApiError> {
-        let features = state
+        let enabled = state
             .lifecycle
             .config
             .as_ref()
-            .map(|config| &config.features);
-        let vfs_catalog_enabled = features.is_some_and(|features| features.vfs.is_some());
-        let environment_catalog_enabled =
-            features.is_some_and(|features| features.environments.is_some());
-        let mounts = if vfs_catalog_enabled {
-            self.store
-                .list_mounts(session_id)
-                .await
-                .map_err(map_vfs_catalog_error)?
-        } else {
-            Vec::new()
-        };
-        let environments = if environment_catalog_enabled {
-            self.load_session_runtime_environments(session_id).await?
-        } else {
-            Vec::new()
-        };
-        let refresh = self
-            .environment_manager
-            .refresh_projection_for_runtime_environments(
-                state,
-                mounts,
-                environments,
-                vfs_catalog_enabled,
-                environment_catalog_enabled,
-            )
-            .await
-            .map_err(map_session_environment_error)?;
-        Ok(refresh.commands)
-    }
-}
-
-fn map_session_environment_error(
-    error: crate::environment::SessionEnvironmentManagerError,
-) -> AgentApiError {
-    match error {
-        crate::environment::SessionEnvironmentManagerError::VfsCatalog(error) => {
-            map_vfs_catalog_error(error)
+            .is_some_and(|config| config.features.vfs.is_some());
+        if !enabled {
+            return Ok(state
+                .context
+                .entries
+                .iter()
+                .any(|entry| entry.kind == ContextEntryKind::VfsCatalog)
+                .then(|| CoreAgentCommand::RemoveContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(engine::VFS_CATALOG_CONTEXT_KEY),
+                })
+                .into_iter()
+                .collect());
         }
-        other => AgentApiError::internal(other.to_string()),
+        let links = self.resolve_session_workspace_links(state).await?;
+        let catalog = tools::environment::projection::vfs_catalog_from_workspace_links(&links)
+            .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        let publication = tools::environment::projection::prepare_vfs_catalog_publication(
+            self.store.as_ref(),
+            state,
+            catalog,
+        )
+        .await
+        .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        Ok(publication.command.into_iter().collect())
     }
 }

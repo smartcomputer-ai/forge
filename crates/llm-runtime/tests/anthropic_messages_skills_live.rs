@@ -13,7 +13,7 @@ use async_trait::async_trait;
 use engine::{
     BlobRef, ContextConfig, ContextEntryInput, ContextEntryKind, ContextMessageRole,
     CoreAgentCommand, CoreAgentEvent, ModelSelection, ProviderApiKind, RunConfig, RunStatus,
-    SessionConfig, SessionId,
+    SessionConfig, SessionId, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
 use llm_clients::anthropic::messages::{Client, Config};
@@ -21,14 +21,14 @@ use llm_runtime::{AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime};
 use test_support::{DriveCommand, RunnerQuiescence, RunnerStores, SessionRunner};
 use tools::{
     fs::tools::ReadFileResult,
-    fs::{FsPath, FsToolContext, MountedVfsFileSystem},
+    fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
     runtime::InlineToolRuntime,
     toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset},
 };
 use vfs::{
     CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-    InlineFile, VfsCatalogError, VfsMountAccess, VfsMountRecord, VfsMountSource, VfsMountStore,
-    VfsPath, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore, create_inline_snapshot,
+    InlineFile, ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsCatalogError, VfsPath,
+    VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore, create_inline_snapshot,
 };
 
 mod support;
@@ -103,47 +103,7 @@ fn unquote_dotenv_value(value: &str) -> String {
 
 #[derive(Default)]
 struct LiveVfsCatalog {
-    mounts: Mutex<BTreeMap<SessionId, Vec<VfsMountRecord>>>,
     workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,
-}
-
-#[async_trait]
-impl VfsMountStore for LiveVfsCatalog {
-    async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-        self.mounts
-            .lock()
-            .expect("mount lock")
-            .entry(record.session_id.clone())
-            .or_default()
-            .push(record);
-        Ok(())
-    }
-
-    async fn list_mounts(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-        Ok(self
-            .mounts
-            .lock()
-            .expect("mount lock")
-            .get(session_id)
-            .cloned()
-            .unwrap_or_default())
-    }
-
-    async fn remove_mount(
-        &self,
-        session_id: &SessionId,
-        mount_path: &VfsPath,
-    ) -> Result<(), VfsCatalogError> {
-        let mut mounts = self.mounts.lock().expect("mount lock");
-        let Some(session_mounts) = mounts.get_mut(session_id) else {
-            return Ok(());
-        };
-        session_mounts.retain(|mount| &mount.mount_path != mount_path);
-        Ok(())
-    }
 }
 
 #[async_trait]
@@ -284,24 +244,27 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
     )
     .await
     .expect("create skill snapshot");
-    vfs.put_mount(VfsMountRecord {
-        session_id: session_id.clone(),
-        mount_path: VfsPath::parse("/skills/system").unwrap(),
-        source: VfsMountSource::Snapshot {
-            snapshot_ref: snapshot.snapshot_ref,
+    let workspace_links = vec![WorkspaceLink {
+        path: "/skills/system".to_owned(),
+        target: WorkspaceLinkTarget::Snapshot {
+            snapshot_ref: snapshot.snapshot_ref.to_string(),
         },
-        access: VfsMountAccess::ReadOnly,
-    })
-    .await
-    .expect("mount skills");
+        access: WorkspaceLinkAccess::ReadOnly,
+    }];
 
-    let mounted_fs = MountedVfsFileSystem::new(
+    let linked_fs = LinkedVfsFileSystem::new(
         blobs.clone(),
         vfs.clone(),
-        vfs.list_mounts(&session_id).await.expect("list mounts"),
+        vec![ResolvedWorkspaceLink {
+            path: VfsPath::parse("/skills/system").unwrap(),
+            target: ResolvedWorkspaceLinkTarget::AvailableSnapshot {
+                snapshot_ref: snapshot.snapshot_ref,
+            },
+            access: WorkspaceLinkAccess::ReadOnly,
+        }],
     )
-    .expect("mounted fs");
-    let fs_ctx = FsToolContext::new(Arc::new(mounted_fs), blobs.clone()).with_cwd(FsPath::root());
+    .expect("linked fs");
+    let fs_ctx = FsToolContext::new(Arc::new(linked_fs), blobs.clone()).with_cwd(FsPath::root());
     let model = ModelSelection {
         api_kind: ProviderApiKind::AnthropicMessages,
         provider_id: "anthropic".to_string(),
@@ -328,8 +291,7 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
             )),
         ),
     ));
-    let stores =
-        RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs.clone(), vfs);
+    let stores = RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs);
     let runner = SessionRunner::new(stores, llm).with_tools(tools);
 
     runner
@@ -337,7 +299,7 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
             session_id: session_id.clone(),
             observed_at_ms: 10,
             command: CoreAgentCommand::OpenSession {
-                config: session_config(model),
+                config: session_config(model, workspace_links),
             },
             max_steps: None,
         })
@@ -355,17 +317,6 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
         })
         .await
         .expect("replace tools");
-    runner
-        .drive_command(DriveCommand {
-            session_id: session_id.clone(),
-            observed_at_ms: 13,
-            command: CoreAgentCommand::SetDefaultToolTarget {
-                target: tools::targets::session_fs_target(),
-            },
-            max_steps: None,
-        })
-        .await
-        .expect("set default target");
 
     let input_ref = blobs
         .put_bytes(
@@ -440,7 +391,7 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
     );
 }
 
-fn session_config(model: ModelSelection) -> SessionConfig {
+fn session_config(model: ModelSelection, workspace_links: Vec<WorkspaceLink>) -> SessionConfig {
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
@@ -451,7 +402,15 @@ fn session_config(model: ModelSelection) -> SessionConfig {
         },
         limits: Default::default(),
         context: ContextConfig { compaction: None },
-        features: Default::default(),
+        features: engine::FeaturesConfig {
+            vfs: Some(engine::VfsFeature {
+                workspace_links,
+                tools: Some(engine::VfsToolSurface::ReadOnly),
+                skills: Some(engine::VfsSkillsConfig::default()),
+                ..engine::VfsFeature::default()
+            }),
+            ..engine::FeaturesConfig::default()
+        },
     }
 }
 
