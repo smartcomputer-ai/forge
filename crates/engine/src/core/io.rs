@@ -20,7 +20,7 @@ use thiserror::Error;
 use crate::{
     AwaitSpec, BlobRef, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
     ContextEntryKind, LlmGenerationFacts, LlmGenerationStatus, LlmRequest, RunId, SessionId,
-    ToolBatchId, ToolCallId, ToolCallStatus, ToolExecutionTarget, ToolName, TurnId,
+    ToolBatchId, ToolCallId, ToolCallStatus, ToolExecutionTarget, ToolName, TurnId, WorkspaceLink,
 };
 
 #[async_trait]
@@ -84,6 +84,8 @@ pub struct ToolInvocationBatchRequest {
     pub batch_id: ToolBatchId,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub default_targets: BTreeMap<String, ToolExecutionTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<WorkspaceLink>,
     pub calls: Vec<ToolInvocationRequest>,
 }
 

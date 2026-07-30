@@ -9,9 +9,13 @@ use temporal_workflow::{
 use temporalio_sdk::activities::ActivityError;
 use tools::{
     environment::EnvironmentToolContext,
+    prompts::{
+        PromptAssemblyLimits, configured_vfs_prompt_root_specs,
+        prepare_prompt_instructions_publication_with_warnings, resolve_linked_vfs_prompt_roots,
+    },
     skills::{
-        configured_vfs_skill_root_specs, prepare_skill_catalog_publication,
-        resolve_mounted_vfs_skill_roots, skill_catalog_context_input,
+        configured_vfs_skill_root_specs, prepare_skill_catalog_publication_with_warnings,
+        resolve_linked_vfs_skill_roots, skill_catalog_context_input,
     },
     targets::ENV_TARGET_NAMESPACE,
 };
@@ -30,11 +34,13 @@ pub(super) async fn refresh_runtime_projection(
         });
     };
 
-    let mounts = deps
-        .mount_store
-        .list_mounts(&request.session_id)
-        .await
-        .map_err(activity_error)?;
+    let links = vfs::resolve_workspace_links(
+        deps.blobs.clone(),
+        deps.workspace_store.clone(),
+        &request.workspace_links,
+    )
+    .await
+    .map_err(activity_error)?;
     let mut state = CoreAgentState::new();
     if let Some(catalog_ref) = request.active_catalog_ref.clone() {
         state
@@ -90,11 +96,11 @@ pub(super) async fn refresh_runtime_projection(
                 .map_err(activity_error)?,
         );
     }
-    let manager = SessionEnvironmentManager::new(deps.blobs.clone(), deps.mount_store.clone());
+    let manager = SessionEnvironmentManager::new(deps.blobs.clone());
     let mut commands = manager
         .refresh_projection_for_runtime_environments(
             &state,
-            mounts.clone(),
+            links.clone(),
             environments,
             request.vfs_catalog_enabled,
             request.environment_catalog_enabled,
@@ -102,6 +108,48 @@ pub(super) async fn refresh_runtime_projection(
         .await
         .map(|refresh| refresh.commands)
         .map_err(activity_error)?;
+
+    let prompt_entries = if request.vfs_prompts_enabled {
+        let specs = configured_vfs_prompt_root_specs(&links, request.vfs_prompt_roots.as_deref())
+            .map_err(activity_error)?;
+        let resolved = resolve_linked_vfs_prompt_roots(
+            deps.blobs.clone(),
+            deps.workspace_store.clone(),
+            links.clone(),
+            specs,
+        )
+        .await
+        .map_err(activity_error)?;
+        let inputs = resolved
+            .existing_directory_inputs()
+            .await
+            .map_err(activity_error)?;
+        prepare_prompt_instructions_publication_with_warnings(
+            deps.blobs.as_ref(),
+            &inputs,
+            PromptAssemblyLimits::default(),
+            resolved.warnings().to_vec(),
+        )
+        .await
+        .map_err(activity_error)?
+        .desired
+    } else {
+        Default::default()
+    };
+    let desired_instructions = replace_prompt_instruction_source(
+        request.active_instruction_inputs.clone(),
+        prompt_entries,
+        deps.blobs.as_ref(),
+    )
+    .await
+    .map_err(activity_error)?;
+    if desired_instructions != request.active_instruction_inputs {
+        commands.push(CoreAgentCommand::ReplaceContextPrefix {
+            expected_revision: None,
+            key_prefix: ContextEntryKey::new("instructions"),
+            entries: desired_instructions,
+        });
+    }
 
     if !request.vfs_skills_enabled {
         return Ok(RuntimeProjectionRefreshActivityResult {
@@ -111,7 +159,7 @@ pub(super) async fn refresh_runtime_projection(
             ),
         });
     }
-    let specs = configured_vfs_skill_root_specs(&mounts, request.vfs_skill_roots.as_deref())
+    let specs = configured_vfs_skill_root_specs(&links, request.vfs_skill_roots.as_deref())
         .map_err(activity_error)?;
     if specs.is_empty() {
         return Ok(RuntimeProjectionRefreshActivityResult {
@@ -122,10 +170,10 @@ pub(super) async fn refresh_runtime_projection(
         });
     }
 
-    let resolved = resolve_mounted_vfs_skill_roots(
+    let resolved = resolve_linked_vfs_skill_roots(
         deps.blobs.clone(),
         deps.workspace_store.clone(),
-        mounts,
+        links,
         specs,
     )
     .await
@@ -134,7 +182,7 @@ pub(super) async fn refresh_runtime_projection(
         .existing_directory_inputs()
         .await
         .map_err(activity_error)?;
-    if inputs.is_empty() {
+    if inputs.is_empty() && resolved.warnings().is_empty() {
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(
                 commands,
@@ -143,13 +191,61 @@ pub(super) async fn refresh_runtime_projection(
         });
     }
 
-    let publication = prepare_skill_catalog_publication(deps.blobs.as_ref(), &state, None, &inputs)
-        .await
-        .map_err(activity_error)?;
+    let publication = prepare_skill_catalog_publication_with_warnings(
+        deps.blobs.as_ref(),
+        &state,
+        None,
+        &inputs,
+        resolved.warnings().to_vec(),
+    )
+    .await
+    .map_err(activity_error)?;
     if let Some(command) = publication.command {
         commands.push(command);
     }
     Ok(RuntimeProjectionRefreshActivityResult { commands })
+}
+
+async fn replace_prompt_instruction_source(
+    mut active: std::collections::BTreeMap<ContextEntryKey, engine::ContextEntryInput>,
+    prompts: std::collections::BTreeMap<ContextEntryKey, engine::ContextEntryInput>,
+    blobs: &dyn engine::storage::BlobStore,
+) -> Result<
+    std::collections::BTreeMap<ContextEntryKey, engine::ContextEntryInput>,
+    engine::storage::BlobStoreError,
+> {
+    active.retain(|key, _| {
+        !(key.as_str() == tools::prompts::PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX
+            || key.as_str().starts_with(&format!(
+                "{}.",
+                tools::prompts::PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX
+            )))
+    });
+    active.extend(prompts);
+    let default_key = ContextEntryKey::new("instructions.000.default");
+    active.remove(&default_key);
+    if active.is_empty() {
+        let content_ref = blobs
+            .put_bytes(
+                temporal_workflow::default_instructions()
+                    .as_bytes()
+                    .to_vec(),
+            )
+            .await?;
+        active.insert(
+            default_key,
+            engine::ContextEntryInput {
+                kind: ContextEntryKind::Instructions,
+                content_ref,
+                media_type: Some("text/plain".to_owned()),
+                preview: None,
+                provider_kind: None,
+                provider_item_id: None,
+                token_estimate: None,
+            },
+        );
+    }
+    Ok(active)
 }
 
 fn append_optional(
@@ -245,7 +341,7 @@ mod tests {
 
     use async_trait::async_trait;
     use engine::{
-        SessionId, ToolExecutionTarget,
+        SessionId, ToolExecutionTarget, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{BlobStore, InMemoryBlobStore},
     };
     use environments::{
@@ -261,8 +357,9 @@ mod tests {
     };
     use tools::environment::projection::{EnvironmentActive, EnvironmentCatalogSnapshot};
     use vfs::{
-        CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountRecord,
-        VfsMountStore, VfsPath, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+        CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
+        InlineFile, VfsCatalogError, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+        create_inline_snapshot,
     };
 
     use super::*;
@@ -306,7 +403,6 @@ mod tests {
         let deps = RuntimeProjectionActivityDeps {
             blobs: blobs.clone(),
             workspace_store: vfs.clone(),
-            mount_store: vfs,
             environment_bindings: bindings.clone(),
             environment_instances: bindings,
         };
@@ -317,8 +413,12 @@ mod tests {
                 session_id: SessionId::new("session_1"),
                 vfs_catalog_enabled: true,
                 environment_catalog_enabled: true,
+                vfs_prompts_enabled: false,
+                vfs_prompt_roots: None,
+                active_instruction_inputs: Default::default(),
                 vfs_skills_enabled: false,
                 vfs_skill_roots: None,
+                workspace_links: Vec::new(),
                 active_catalog_ref: None,
                 active_vfs_catalog_ref: None,
                 active_environment_catalog_ref: None,
@@ -367,6 +467,77 @@ mod tests {
         assert_eq!(active.env_id, "devbox");
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn runtime_projection_refreshes_prompt_instructions_from_request_links() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let snapshot = create_inline_snapshot(
+            blobs.as_ref(),
+            CreateInlineSnapshotRequest::new(vec![
+                InlineFile::new(
+                    ".lightspeed/prompts/instructions.md",
+                    b"Use the linked instructions.".to_vec(),
+                )
+                .unwrap(),
+            ]),
+        )
+        .await
+        .unwrap();
+        let vfs = Arc::new(EmptyVfsStore);
+        let environments = Arc::new(InMemoryEnvironmentRegistryStore::new());
+        let deps = RuntimeProjectionActivityDeps {
+            blobs: blobs.clone(),
+            workspace_store: vfs,
+            environment_bindings: environments.clone(),
+            environment_instances: environments,
+        };
+
+        let result = refresh_runtime_projection(
+            Some(&deps),
+            RuntimeProjectionRefreshActivityRequest {
+                session_id: SessionId::new("session-prompts"),
+                workspace_links: vec![WorkspaceLink {
+                    path: "/workspace".to_owned(),
+                    target: WorkspaceLinkTarget::Snapshot {
+                        snapshot_ref: snapshot.snapshot_ref.to_string(),
+                    },
+                    access: WorkspaceLinkAccess::ReadOnly,
+                }],
+                vfs_catalog_enabled: false,
+                environment_catalog_enabled: false,
+                vfs_prompts_enabled: true,
+                vfs_prompt_roots: Some(vec!["/workspace/.lightspeed/prompts".to_owned()]),
+                active_instruction_inputs: Default::default(),
+                vfs_skills_enabled: false,
+                vfs_skill_roots: None,
+                active_catalog_ref: None,
+                active_vfs_catalog_ref: None,
+                active_environment_catalog_ref: None,
+                active_environment_active_ref: None,
+                active_environment_target: None,
+            },
+        )
+        .await
+        .expect("refresh runtime projection");
+
+        let entries = result
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                CoreAgentCommand::ReplaceContextPrefix { entries, .. } => Some(entries),
+                _ => None,
+            })
+            .expect("prompt context replacement");
+        assert_eq!(entries.len(), 1);
+        assert!(
+            entries
+                .keys()
+                .next()
+                .unwrap()
+                .as_str()
+                .starts_with(tools::prompts::PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX)
+        );
+    }
+
     fn test_binding(session_id: &str, env_id: &str) -> PutSessionEnvironmentBinding {
         PutSessionEnvironmentBinding {
             session_id: SessionId::new(session_id),
@@ -412,28 +583,6 @@ mod tests {
     }
 
     struct EmptyVfsStore;
-
-    #[async_trait]
-    impl VfsMountStore for EmptyVfsStore {
-        async fn put_mount(&self, _record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-            Ok(())
-        }
-
-        async fn list_mounts(
-            &self,
-            _session_id: &SessionId,
-        ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-            Ok(Vec::new())
-        }
-
-        async fn remove_mount(
-            &self,
-            _session_id: &SessionId,
-            _mount_path: &VfsPath,
-        ) -> Result<(), VfsCatalogError> {
-            Ok(())
-        }
-    }
 
     #[async_trait]
     impl VfsWorkspaceStore for EmptyVfsStore {

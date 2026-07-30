@@ -179,37 +179,10 @@ Removes an active skill's injected context from an open idle session; the skill 
 
 **Apply a profile to a session**
 
-Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
+Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
 
 - Params: `ProfileApplyParams`
 - Result: `AgentApiOutcome<ProfileApplyResponse>`
-
-### `session/mounts/put`
-
-**Create or replace a session mount**
-
-Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.
-
-- Params: `VfsMountPutParams`
-- Result: `AgentApiOutcome<VfsMountPutResponse>`
-
-### `session/mounts/list`
-
-**List session mounts**
-
-Returns the session's snapshot/workspace bindings and access modes.
-
-- Params: `VfsMountListParams`
-- Result: `AgentApiOutcome<VfsMountListResponse>`
-
-### `session/mounts/delete`
-
-**Delete a session mount**
-
-Removes a binding from an open idle session without deleting its source snapshot or workspace.
-
-- Params: `VfsMountDeleteParams`
-- Result: `AgentApiOutcome<VfsMountDeleteResponse>`
 
 ### `session/environments/read`
 

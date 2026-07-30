@@ -12,6 +12,8 @@ impl GatewayAgentApi {
         config
             .validate()
             .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
+        self.validate_workspace_link_targets(&config.features)
+            .await?;
         Ok(config)
     }
 
@@ -97,6 +99,27 @@ fn features_from_api(
     Ok(engine::FeaturesConfig {
         vfs: features.vfs.map(|vfs| engine::VfsFeature {
             version: vfs.version,
+            workspace_links: vfs
+                .workspace_links
+                .into_iter()
+                .map(|link| engine::WorkspaceLink {
+                    path: link.path,
+                    target: match link.target {
+                        api::WorkspaceLinkTarget::Workspace { workspace_id } => {
+                            engine::WorkspaceLinkTarget::Workspace { workspace_id }
+                        }
+                        api::WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
+                            engine::WorkspaceLinkTarget::Snapshot { snapshot_ref }
+                        }
+                    },
+                    access: match link.access {
+                        api::WorkspaceLinkAccess::ReadOnly => engine::WorkspaceLinkAccess::ReadOnly,
+                        api::WorkspaceLinkAccess::ReadWrite => {
+                            engine::WorkspaceLinkAccess::ReadWrite
+                        }
+                    },
+                })
+                .collect(),
             tools: vfs.tools.map(|tools| match tools {
                 api::VfsToolSurface::ReadOnly => engine::VfsToolSurface::ReadOnly,
                 api::VfsToolSurface::Edit => engine::VfsToolSurface::Edit,

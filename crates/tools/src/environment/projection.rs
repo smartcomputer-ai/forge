@@ -3,12 +3,12 @@
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
     CoreAgentState, ENVIRONMENT_ACTIVE_CONTEXT_KEY, ENVIRONMENT_CATALOG_CONTEXT_KEY,
-    ToolExecutionTarget, VFS_CATALOG_CONTEXT_KEY,
+    ToolExecutionTarget, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess, WorkspaceLinkTarget,
     storage::{BlobStore, BlobStoreError},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use vfs::{VfsMountAccess, VfsMountRecord, VfsMountSource};
+use vfs::{ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget};
 
 use crate::fs::FsPath;
 
@@ -143,7 +143,15 @@ pub struct FsRoute {
     pub source_path: Option<FsPath>,
     pub access: FsRouteAccess,
     pub source: FsRouteSource,
+    pub availability: FsRouteAvailability,
     pub same_state_as_active_env: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum FsRouteAvailability {
+    Available,
+    Unavailable { reason: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,11 +161,11 @@ pub enum FsRouteAccess {
     ReadWrite,
 }
 
-impl From<VfsMountAccess> for FsRouteAccess {
-    fn from(value: VfsMountAccess) -> Self {
+impl From<WorkspaceLinkAccess> for FsRouteAccess {
+    fn from(value: WorkspaceLinkAccess) -> Self {
         match value {
-            VfsMountAccess::ReadOnly => Self::ReadOnly,
-            VfsMountAccess::ReadWrite => Self::ReadWrite,
+            WorkspaceLinkAccess::ReadOnly => Self::ReadOnly,
+            WorkspaceLinkAccess::ReadWrite => Self::ReadWrite,
         }
     }
 }
@@ -181,7 +189,7 @@ pub struct EnvironmentProjectionPublication<T> {
 
 #[derive(Clone, Debug, Default)]
 pub struct EnvironmentProjectionInput {
-    pub mounts: Vec<VfsMountRecord>,
+    pub workspace_links: Vec<ResolvedWorkspaceLink>,
     pub environments: Vec<EnvironmentRecord>,
     pub active_env_id: Option<String>,
     pub active_fs_routes: Vec<FsRoute>,
@@ -190,9 +198,9 @@ pub struct EnvironmentProjectionInput {
 }
 
 impl EnvironmentProjectionInput {
-    pub fn from_mounts(mounts: Vec<VfsMountRecord>) -> Self {
+    pub fn from_workspace_links(workspace_links: Vec<ResolvedWorkspaceLink>) -> Self {
         Self {
-            mounts,
+            workspace_links,
             environments: Vec::new(),
             active_env_id: None,
             active_fs_routes: Vec::new(),
@@ -293,12 +301,12 @@ pub async fn prepare_environment_active_publication(
     .await
 }
 
-pub fn vfs_catalog_from_mounts(
-    mounts: &[VfsMountRecord],
+pub fn vfs_catalog_from_workspace_links(
+    links: &[ResolvedWorkspaceLink],
 ) -> Result<VfsCatalog, EnvironmentProjectionError> {
-    let mut routes = mounts
+    let mut routes = links
         .iter()
-        .map(fs_route_from_vfs_mount)
+        .map(fs_route_from_workspace_link)
         .collect::<Result<Vec<_>, _>>()?;
     routes.sort_by(|left, right| left.path.cmp(&right.path));
     let revision = stable_revision(&encode_json(&routes)?);
@@ -310,7 +318,7 @@ pub async fn prepare_environment_projection_refresh(
     state: &CoreAgentState,
     input: EnvironmentProjectionInput,
 ) -> Result<EnvironmentProjectionRefresh, EnvironmentProjectionError> {
-    let vfs_catalog = vfs_catalog_from_mounts(&input.mounts)?;
+    let vfs_catalog = vfs_catalog_from_workspace_links(&input.workspace_links)?;
     let environment_catalog =
         environment_catalog_from_records(input.active_env_id.clone(), input.environments)?;
     let environment_active = if input.environment_catalog_enabled {
@@ -492,26 +500,58 @@ where
     })
 }
 
-fn fs_route_from_vfs_mount(record: &VfsMountRecord) -> Result<FsRoute, EnvironmentProjectionError> {
-    let path = FsPath::new(record.mount_path.as_str()).map_err(|error| {
+fn fs_route_from_workspace_link(
+    link: &ResolvedWorkspaceLink,
+) -> Result<FsRoute, EnvironmentProjectionError> {
+    let path = FsPath::new(link.path.as_str()).map_err(|error| {
         EnvironmentProjectionError::InvalidPath {
-            path: record.mount_path.as_str().to_owned(),
+            path: link.path.as_str().to_owned(),
             message: error.to_string(),
         }
     })?;
-    let source = match &record.source {
-        VfsMountSource::Snapshot { snapshot_ref } => FsRouteSource::VfsSnapshot {
-            snapshot_ref: snapshot_ref.clone(),
-        },
-        VfsMountSource::Workspace { workspace_id } => FsRouteSource::VfsWorkspace {
-            workspace_id: workspace_id.as_str().to_owned(),
-        },
+    let (source, availability) = match &link.target {
+        ResolvedWorkspaceLinkTarget::AvailableSnapshot { snapshot_ref } => (
+            FsRouteSource::VfsSnapshot {
+                snapshot_ref: snapshot_ref.clone(),
+            },
+            FsRouteAvailability::Available,
+        ),
+        ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => (
+            FsRouteSource::VfsWorkspace {
+                workspace_id: workspace.workspace_id.as_str().to_owned(),
+            },
+            FsRouteAvailability::Available,
+        ),
+        ResolvedWorkspaceLinkTarget::Unavailable {
+            declared_target,
+            reason,
+        } => {
+            let source = match declared_target {
+                WorkspaceLinkTarget::Snapshot { snapshot_ref } => FsRouteSource::VfsSnapshot {
+                    snapshot_ref: BlobRef::parse(snapshot_ref.clone()).map_err(|error| {
+                        EnvironmentProjectionError::Encode {
+                            message: error.to_string(),
+                        }
+                    })?,
+                },
+                WorkspaceLinkTarget::Workspace { workspace_id } => FsRouteSource::VfsWorkspace {
+                    workspace_id: workspace_id.clone(),
+                },
+            };
+            (
+                source,
+                FsRouteAvailability::Unavailable {
+                    reason: reason.clone(),
+                },
+            )
+        }
     };
     Ok(FsRoute {
         path,
         source_path: None,
-        access: record.access.into(),
+        access: link.access.into(),
         source,
+        availability,
         same_state_as_active_env: None,
     })
 }
@@ -594,8 +634,8 @@ fn stable_revision(bytes: &[u8]) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use engine::{SessionId, storage::InMemoryBlobStore};
-    use vfs::{VfsMountAccess, VfsMountSource, VfsPath, VfsWorkspaceId};
+    use engine::{WorkspaceLinkAccess, storage::InMemoryBlobStore};
+    use vfs::{ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsPath, VfsWorkspaceId};
 
     use super::*;
 
@@ -633,17 +673,10 @@ mod tests {
     }
 
     #[test]
-    fn vfs_catalog_from_mounts_projects_routes() {
-        let mount = VfsMountRecord {
-            session_id: SessionId::new("session_1"),
-            mount_path: VfsPath::parse("/workspace").expect("mount path"),
-            source: VfsMountSource::Workspace {
-                workspace_id: VfsWorkspaceId::new("workspace_1"),
-            },
-            access: VfsMountAccess::ReadWrite,
-        };
+    fn vfs_catalog_from_workspace_links_projects_routes() {
+        let link = workspace_link();
 
-        let catalog = vfs_catalog_from_mounts(&[mount]).expect("catalog");
+        let catalog = vfs_catalog_from_workspace_links(&[link]).expect("catalog");
 
         assert_ne!(catalog.revision, 0);
         assert_eq!(catalog.routes.len(), 1);
@@ -659,14 +692,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn projection_refresh_publishes_vfs_catalog_environment_catalog_and_active_environment() {
         let blobs = InMemoryBlobStore::new();
-        let mount = VfsMountRecord {
-            session_id: SessionId::new("session_1"),
-            mount_path: VfsPath::parse("/workspace").expect("mount path"),
-            source: VfsMountSource::Workspace {
-                workspace_id: VfsWorkspaceId::new("workspace_1"),
-            },
-            access: VfsMountAccess::ReadWrite,
-        };
+        let link = workspace_link();
         let environment = EnvironmentRecord {
             env_id: "local".to_owned(),
             kind: EnvironmentKind::AttachedHost,
@@ -690,13 +716,14 @@ mod tests {
             source: FsRouteSource::FusedWorkspace {
                 env_id: "local".to_owned(),
             },
+            availability: FsRouteAvailability::Available,
             same_state_as_active_env: Some("local".to_owned()),
         };
 
         let refresh = prepare_environment_projection_refresh(
             &blobs,
             &CoreAgentState::new(),
-            EnvironmentProjectionInput::from_mounts(vec![mount])
+            EnvironmentProjectionInput::from_workspace_links(vec![link])
                 .with_environments(vec![environment])
                 .with_active_environment("local", vec![active_route])
                 .with_catalog_grants(true, true),
@@ -823,6 +850,25 @@ mod tests {
                 CoreAgentCommand::RemoveContext { key, .. }
                     if key.as_str() == expected_key
             )));
+        }
+    }
+
+    fn workspace_link() -> ResolvedWorkspaceLink {
+        ResolvedWorkspaceLink {
+            path: VfsPath::parse("/workspace").expect("link path"),
+            target: ResolvedWorkspaceLinkTarget::AvailableWorkspace {
+                workspace: vfs::VfsWorkspaceRecord {
+                    workspace_id: VfsWorkspaceId::new("workspace_1"),
+                    display_name: None,
+                    base_snapshot_ref: None,
+                    head_snapshot_ref: BlobRef::from_bytes(b"head"),
+                    head_totals: vfs::VfsTotals::default(),
+                    revision: 0,
+                    created_at_ms: 1,
+                    updated_at_ms: 1,
+                },
+            },
+            access: WorkspaceLinkAccess::ReadWrite,
         }
     }
 }

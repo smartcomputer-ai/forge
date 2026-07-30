@@ -1486,6 +1486,7 @@ fn dev_features(settings: &ChatDraftSettings) -> FeaturesConfig {
     FeaturesConfig {
         vfs: Some(VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
+            workspace_links: Vec::new(),
             tools: vfs_tools,
             prompts: Some(VfsPromptsConfig::default()),
             skills: Some(VfsSkillsConfig::default()),
@@ -1926,7 +1927,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
 
         let settings = ChatDraftSettings {
@@ -2021,7 +2021,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),
@@ -2067,7 +2066,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),

@@ -38,7 +38,7 @@ use tools::{
         JobReadResultSet, is_environment_job_query_tool_name, visible_job_read_output,
     },
     fleet::is_fleet_tool,
-    fs::{FsPath, FsToolContext, MountedVfsFileSystem},
+    fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
     host_protocol::RemoteHostConnection,
     limits::ToolLimits,
     runtime::InlineToolRuntime,
@@ -47,7 +47,7 @@ use tools::{
     web::fetch::WebFetchToolConfig,
     workflow_tool::invoke_workflow_tool,
 };
-use vfs::{VfsCatalogError, VfsMountRecord, VfsMountStore, VfsWorkspaceStore};
+use vfs::{ResolvedWorkspaceLink, VfsCatalogError, VfsWorkspaceStore};
 
 use crate::{
     credential_injection::EnvironmentCredentialResolver,
@@ -68,7 +68,6 @@ struct WorkflowToolBatchRuntime {
 pub struct SessionTools {
     blobs: Arc<dyn BlobStore>,
     workspace_store: Arc<dyn VfsWorkspaceStore>,
-    mount_store: Arc<dyn VfsMountStore>,
     sessions: Option<Arc<dyn SessionStore>>,
     environments: SessionEnvironmentManager,
     environment_bindings: Option<Arc<dyn SessionEnvironmentBindingStore>>,
@@ -78,16 +77,11 @@ pub struct SessionTools {
 }
 
 impl SessionTools {
-    pub fn new(
-        blobs: Arc<dyn BlobStore>,
-        workspace_store: Arc<dyn VfsWorkspaceStore>,
-        mount_store: Arc<dyn VfsMountStore>,
-    ) -> Self {
-        let environments = SessionEnvironmentManager::new(blobs.clone(), mount_store.clone());
+    pub fn new(blobs: Arc<dyn BlobStore>, workspace_store: Arc<dyn VfsWorkspaceStore>) -> Self {
+        let environments = SessionEnvironmentManager::new(blobs.clone());
         Self {
             blobs,
             workspace_store,
-            mount_store,
             sessions: None,
             environments,
             environment_bindings: None,
@@ -107,8 +101,8 @@ impl SessionTools {
         sessions: Arc<dyn SessionStore>,
         runtime: Arc<dyn FleetChildRuntime>,
     ) -> Self {
-        let service = FleetService::new(sessions, runtime)
-            .with_vfs_stores(self.workspace_store.clone(), self.mount_store.clone());
+        let service =
+            FleetService::new(sessions, runtime).with_vfs_stores(self.workspace_store.clone());
         let service = match self.environment_bindings.clone() {
             Some(bindings) => service.with_environment_bindings(bindings),
             None => service,
@@ -149,12 +143,11 @@ impl SessionTools {
     pub fn from_pg_store(store: Arc<PgStore>) -> Self {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
-        let mount_store: Arc<dyn VfsMountStore> = store.clone();
         let sessions: Arc<dyn SessionStore> = store.clone();
         let environment_bindings: Arc<dyn SessionEnvironmentBindingStore> = store.clone();
         let environment_instances: Arc<dyn EnvironmentInstanceStore> = store.clone();
         let credentials = EnvironmentCredentialResolver::from_pg_store(store.clone());
-        Self::new(blobs, workspace_store, mount_store)
+        Self::new(blobs, workspace_store)
             .with_session_store(sessions)
             .with_environment_bindings(environment_bindings)
             .with_environment_instances(environment_instances)
@@ -935,9 +928,9 @@ impl SessionTools {
         .map_err(io_error)
     }
 
-    fn runtime_for_mounts(
+    fn runtime_for_workspace_links(
         &self,
-        mounts: Vec<VfsMountRecord>,
+        links: Vec<ResolvedWorkspaceLink>,
         environments: &SessionEnvironmentManager,
         active_env_target: Option<&engine::ToolExecutionTarget>,
     ) -> Result<InlineToolRuntime, CoreAgentIoError> {
@@ -945,20 +938,20 @@ impl SessionTools {
             environments.has_process_environment(),
             environments.has_job_environment(),
         )?;
-        let session_fs = if mounts.is_empty() {
+        let session_fs = if links.is_empty() {
             None
         } else {
-            let fs = MountedVfsFileSystem::new(
+            let fs = LinkedVfsFileSystem::new(
                 self.blobs.clone(),
                 self.workspace_store.clone(),
-                mounts.clone(),
+                links.clone(),
             )
             .map_err(io_error)?;
-            let cwd = mounted_vfs_cwd(fs.mounts())?;
+            let cwd = linked_vfs_cwd(fs.links())?;
             Some(FsToolContext::new(Arc::new(fs), self.blobs.clone()).with_cwd(cwd))
         };
         let targets = environments
-            .tool_targets(session_fs, &mounts, active_env_target)
+            .tool_targets(session_fs, &links, active_env_target)
             .map_err(io_error)?;
         Ok(InlineToolRuntime::with_targets_and_blob_store(
             targets,
@@ -1153,11 +1146,13 @@ impl CoreAgentTools for SessionTools {
             }));
         }
 
-        let mounts = self
-            .mount_store
-            .list_mounts(&request.session_id)
-            .await
-            .map_err(map_catalog_error)?;
+        let links = vfs::resolve_workspace_links(
+            self.blobs.clone(),
+            self.workspace_store.clone(),
+            &request.workspace_links,
+        )
+        .await
+        .map_err(map_catalog_error)?;
         let active_env_target = request
             .default_targets
             .get(tools::targets::ENV_TARGET_NAMESPACE);
@@ -1165,8 +1160,8 @@ impl CoreAgentTools for SessionTools {
             .environment_manager_for_session(&request.session_id)
             .await?;
         let has_session_fs =
-            !mounts.is_empty() || has_active_environment_fs(&environments, active_env_target);
-        let runtime = self.runtime_for_mounts(mounts, &environments, active_env_target)?;
+            !links.is_empty() || has_active_environment_fs(&environments, active_env_target);
+        let runtime = self.runtime_for_workspace_links(links, &environments, active_env_target)?;
 
         let mut results = Vec::with_capacity(request.calls.len());
         for call in &request.calls {
@@ -1261,11 +1256,8 @@ impl SessionTools {
     }
 }
 
-fn mounted_vfs_cwd(mounts: &[VfsMountRecord]) -> Result<FsPath, CoreAgentIoError> {
-    let cwd = if mounts
-        .iter()
-        .any(|mount| mount.mount_path.as_str() == "/workspace")
-    {
+fn linked_vfs_cwd(links: &[ResolvedWorkspaceLink]) -> Result<FsPath, CoreAgentIoError> {
+    let cwd = if links.iter().any(|link| link.path.as_str() == "/workspace") {
         "/workspace"
     } else {
         "/"
@@ -1334,7 +1326,8 @@ mod tests {
     use engine::{
         BlobRef, ContextEntryKind, FunctionToolSpec, RunId, SessionId, ToolBatchId, ToolCallId,
         ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, TurnId,
-        WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId, WorkspaceLink,
+        WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{
             AppendSessionEvents, CreateSession, InMemoryBlobStore, InMemorySessionStore,
             SessionStore,
@@ -1352,8 +1345,7 @@ mod tests {
     };
     use vfs::{
         CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-        InlineFile, VfsMountAccess, VfsMountSource, VfsPath, VfsWorkspaceId, VfsWorkspaceRecord,
-        create_inline_snapshot,
+        InlineFile, VfsWorkspaceId, VfsWorkspaceRecord, create_inline_snapshot,
     };
 
     use super::*;
@@ -1474,8 +1466,7 @@ mod tests {
             .await
             .expect("put invalid arguments");
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
-            .with_session_store(session_store);
+        let tools = SessionTools::new(blobs.clone(), catalog).with_session_store(session_store);
         let mut calls = vec![engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-invalid-schema"),
             tool_name: binding.definition.tool.name.clone(),
@@ -1505,6 +1496,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls,
             })
             .await
@@ -1555,7 +1547,6 @@ mod tests {
     #[derive(Default)]
     struct TestCatalog {
         workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,
-        mounts: Mutex<BTreeMap<SessionId, Vec<VfsMountRecord>>>,
     }
 
     #[derive(Default)]
@@ -1690,7 +1681,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         }
     }
 
@@ -1813,42 +1803,12 @@ mod tests {
         }
     }
 
-    #[async_trait]
-    impl VfsMountStore for TestCatalog {
-        async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-            self.mounts
-                .lock()
-                .expect("mount lock")
-                .entry(record.session_id.clone())
-                .or_default()
-                .push(record);
-            Ok(())
-        }
-
-        async fn list_mounts(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-            Ok(self
-                .mounts
-                .lock()
-                .expect("mount lock")
-                .get(session_id)
-                .cloned()
-                .unwrap_or_default())
-        }
-
-        async fn remove_mount(
-            &self,
-            _session_id: &SessionId,
-            _mount_path: &VfsPath,
-        ) -> Result<(), VfsCatalogError> {
-            Ok(())
-        }
-    }
-
-    async fn session_tools_with_readme_mount() -> (Arc<InMemoryBlobStore>, SessionTools, SessionId)
-    {
+    async fn session_tools_with_readme_link() -> (
+        Arc<InMemoryBlobStore>,
+        SessionTools,
+        SessionId,
+        Vec<WorkspaceLink>,
+    ) {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let session_id = SessionId::new("session_1");
@@ -1872,17 +1832,15 @@ mod tests {
             })
             .await
             .expect("workspace");
-        catalog
-            .put_mount(VfsMountRecord {
-                session_id: session_id.clone(),
-                mount_path: VfsPath::parse("/workspace").expect("mount path"),
-                source: VfsMountSource::Workspace { workspace_id },
-                access: VfsMountAccess::ReadWrite,
-            })
-            .await
-            .expect("mount");
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog);
-        (blobs, tools, session_id)
+        let workspace_links = vec![WorkspaceLink {
+            path: "/workspace".to_owned(),
+            target: WorkspaceLinkTarget::Workspace {
+                workspace_id: workspace_id.to_string(),
+            },
+            access: WorkspaceLinkAccess::ReadWrite,
+        }];
+        let tools = SessionTools::new(blobs.clone(), catalog);
+        (blobs, tools, session_id, workspace_links)
     }
 
     fn test_environment(
@@ -1913,7 +1871,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn session_tools_read_session_workspace_mount() {
-        let (blobs, tools, session_id) = session_tools_with_readme_mount().await;
+        let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let arguments_ref = blobs
             .put_bytes(br#"{"path":"README.md","offset":1,"limit":10}"#.to_vec())
             .await
@@ -1926,6 +1884,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("read_file"),
@@ -1948,7 +1907,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn session_tools_accept_claude_style_read_tool() {
-        let (blobs, tools, session_id) = session_tools_with_readme_mount().await;
+        let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let arguments_ref = blobs
             .put_bytes(br#"{"file_path":"README.md","offset":1,"limit":10}"#.to_vec())
             .await
@@ -1961,6 +1920,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("Read"),
@@ -1983,7 +1943,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn session_tools_route_file_tools_to_vfs_and_process_tools_to_environment() {
-        let (blobs, tools, session_id) = session_tools_with_readme_mount().await;
+        let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let process = Arc::new(RecordingProcessExecutor::default());
         let tools = tools.with_environment(test_environment(blobs.clone(), process.clone()));
         let read_args = blobs
@@ -2002,6 +1962,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links,
                 calls: vec![
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_read"),
@@ -2087,7 +2048,7 @@ mod tests {
         let catalog = Arc::new(TestCatalog::default());
         let fleet_runtime = Arc::new(FakeFleetRuntime::default());
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
+        let tools = SessionTools::new(blobs.clone(), catalog.clone())
             .with_fleet_runtime(session_store, fleet_runtime.clone());
         let arguments_ref = blobs
             .put_bytes(br#"{"input":"do child work"}"#.to_vec())
@@ -2101,6 +2062,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_spawn"),
                     tool_name: ToolName::new(::tools::fleet::AGENT_SPAWN_TOOL_NAME),
@@ -2162,7 +2124,7 @@ mod tests {
         let catalog = Arc::new(TestCatalog::default());
         let fleet_runtime = Arc::new(FakeFleetRuntime::default());
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
+        let tools = SessionTools::new(blobs.clone(), catalog.clone())
             .with_fleet_runtime(session_store, fleet_runtime.clone());
         let arguments_ref = blobs
             .put_bytes(br#"{"to":{"kind":"parent"},"text":"same"}"#.to_vec())
@@ -2176,6 +2138,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_send_1"),
@@ -2266,7 +2229,7 @@ mod tests {
             .expect("open parent with promise");
         let fleet_runtime = Arc::new(FakeFleetRuntime::default());
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
+        let tools = SessionTools::new(blobs.clone(), catalog.clone())
             .with_fleet_runtime(session_store, fleet_runtime);
         let wait_args = blobs
             .put_bytes(br#"{"promises":["promise_child"]}"#.to_vec())
@@ -2284,6 +2247,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_wait"),
@@ -2361,8 +2325,8 @@ mod tests {
             .await
             .expect("append promise");
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
-            .with_session_store(session_store);
+        let tools =
+            SessionTools::new(blobs.clone(), catalog.clone()).with_session_store(session_store);
         let wait_args = blobs
             .put_bytes(br#"{"promises":["promise_job"]}"#.to_vec())
             .await
@@ -2375,6 +2339,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_wait"),
                     tool_name: ToolName::new(::tools::concurrency::AWAIT_TOOL_NAME),
@@ -2441,8 +2406,8 @@ mod tests {
             .await
             .expect("append promise");
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
-            .with_session_store(session_store);
+        let tools =
+            SessionTools::new(blobs.clone(), catalog.clone()).with_session_store(session_store);
         let cancel_args = blobs
             .put_bytes(br#"{"promises":["promise_job"]}"#.to_vec())
             .await
@@ -2455,6 +2420,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_cancel"),
                     tool_name: ToolName::new(::tools::concurrency::CANCEL_TOOL_NAME),
@@ -2560,8 +2526,8 @@ mod tests {
             .await
             .expect("append state");
         let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog)
-            .with_session_store(session_store);
+        let tools =
+            SessionTools::new(blobs.clone(), catalog.clone()).with_session_store(session_store);
         let detach_args = blobs
             .put_bytes(br#"{"promises":["promise_job"]}"#.to_vec())
             .await
@@ -2574,6 +2540,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_detach"),
                     tool_name: ToolName::new(::tools::concurrency::DETACH_TOOL_NAME),
@@ -2605,7 +2572,7 @@ mod tests {
     async fn sleep_emits_timer_promise_effect_without_fleet_runtime() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog);
+        let tools = SessionTools::new(blobs.clone(), catalog);
         let sleep_args = blobs
             .put_bytes(br#"{"ms":50}"#.to_vec())
             .await
@@ -2618,6 +2585,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_sleep"),
                     tool_name: ToolName::new(::tools::concurrency::SLEEP_TOOL_NAME),
@@ -2642,7 +2610,7 @@ mod tests {
     async fn session_tools_fail_host_tool_without_mounts() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog);
+        let tools = SessionTools::new(blobs.clone(), catalog);
         let arguments_ref = BlobRef::from_bytes(b"{}");
 
         let result = tools
@@ -2652,6 +2620,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("read_file"),
@@ -2676,7 +2645,7 @@ mod tests {
     async fn targetless_web_fetch_runs_without_mounts() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
-        let tools = SessionTools::new(blobs.clone(), catalog.clone(), catalog);
+        let tools = SessionTools::new(blobs.clone(), catalog);
         let arguments_ref = blobs
             .put_bytes(br#"{"url":"http://127.0.0.1:1/","max_chars":1000}"#.to_vec())
             .await
@@ -2689,6 +2658,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("web_fetch"),

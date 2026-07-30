@@ -64,6 +64,10 @@
 - [x] [P91](p91-core-agent-structure-cleanup.md) — cleanup of CoreAgent structures: delete the SDK-era open-kernel layer, commit to a closed event vocabulary and core FSM
 - [x] [P95](p95-config-redesign.md) — config redesign: full-document puts with expected revisions, feature-oriented capability config (secure by default), feature versioning, derived toolset; removes patch semantics and the unused `session/messages/submit` RPC surface
 - [x] [P98](p98-context-revisions-and-instruction-reconciliation.md) — optional context-edit revision guards and atomic effective-instruction reconciliation, with the product default active only as a true fallback
+- [x] [P107](p107-session-workspace-links.md) — move session VFS bindings into
+  `features.vfs.workspaceLinks`, derive filesystem/runtime projection from
+  config plus the VFS catalog, remove the `vfs_mounts` table and mount APIs,
+  and preserve dangling links when referenced workspaces are deleted
 - [ ] optimize: we're rading all session events to get latest state, this will get expensve in the future
 
 ## Hosted Runtime

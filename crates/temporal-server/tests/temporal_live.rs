@@ -742,6 +742,7 @@ async fn run_fake_live_client(
     let mut enabled_features = enabled_config.features.unwrap_or_default();
     enabled_features.vfs = Some(api::VfsFeature {
         version: api::CURRENT_FEATURE_VERSION,
+        workspace_links: Vec::new(),
         tools: None,
         prompts: None,
         skills: None,
@@ -808,7 +809,7 @@ async fn run_fake_live_client(
 
     let first = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -825,7 +826,7 @@ async fn run_fake_live_client(
 
     let second = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -844,7 +845,7 @@ async fn run_fake_live_client(
     // original run instead of starting a second one.
     let retried = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -860,7 +861,7 @@ async fn run_fake_live_client(
     // Same submission id with different input is a typed rejection.
     let mismatch = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: Some("live-retry-1".to_owned()),
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1203,7 +1204,6 @@ async fn run_fleet_profile_spawn_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "You are a profile-spawned live child.".to_owned(),
                 }),
-                mounts: Vec::new(),
                 environments: Vec::new(),
             },
         },
@@ -1382,7 +1382,6 @@ async fn run_fleet_profile_tools_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "Profile read tools should return this document.".to_owned(),
                 }),
-                mounts: Vec::new(),
                 environments: Vec::new(),
             },
         },
@@ -1513,7 +1512,7 @@ async fn run_fleet_wait_live_client(
 
     let parent_run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1862,18 +1861,19 @@ async fn run_continue_as_new_live_client(
         .run_id()
         .to_owned();
 
-    let first = api.start_run(RunStartParams {
-        notify_on_terminal: None,
-        submission_id: None,
-        session_id: session_id.as_str().to_owned(),
-        source: RunStartSource::Input {
-            items: vec![InputItem::Text {
-                text: "first run before continue as new".to_owned(),
-            }],
-        },
-        config: None,
-    })
-    .await?;
+    let first = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "first run before continue as new".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
     let first_run_id = first.result.run.id.clone();
     let first_run = wait_for_terminal_run(&api, &session_id, &first_run_id).await?;
     assert_eq!(first_run.id, first_run_id);
@@ -1889,7 +1889,7 @@ async fn run_continue_as_new_live_client(
 
     let second = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1945,6 +1945,7 @@ async fn run_unbounded_hosted_run_live_client(
             features: Some(api::FeaturesConfig {
                 vfs: Some(api::VfsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: None,
                     prompts: None,
                     skills: None,
@@ -2014,7 +2015,7 @@ async fn run_missing_session_live_client(
 
     let error = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2198,7 +2199,7 @@ async fn run_context_append_live_client(
     // context present in the session.
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2261,7 +2262,7 @@ async fn run_admission_failure_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2290,7 +2291,7 @@ async fn run_admission_failure_live_client(
 
     let error = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2559,7 +2560,6 @@ async fn run_profiles_live_client(
                     instructions: Some(ProfileInstructions::Text {
                         text: "Use the profile instructions in this live test.".to_owned(),
                     }),
-                    mounts: Vec::new(),
                     environments: Vec::new(),
                 },
             },
@@ -2665,7 +2665,6 @@ async fn run_profiles_live_client(
         .await?;
     assert!(!applied.result.applied.config_changed);
     assert!(!applied.result.applied.instructions_changed);
-    assert_eq!(applied.result.applied.mounts_changed, 0);
     assert_eq!(applied.result.applied.environments_changed, 0);
 
     let cleared = api
@@ -2722,7 +2721,7 @@ async fn run_profiles_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -2790,7 +2789,7 @@ async fn run_openai_live_client(
 
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {

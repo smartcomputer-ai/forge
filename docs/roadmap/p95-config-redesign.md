@@ -1,6 +1,10 @@
 # P95: Config Redesign — Full-Document Puts, Feature-Oriented Session Config
 
 **Status**
+- Follow-on [P107](p107-session-workspace-links.md) revises P95's decision to
+  keep VFS bindings as imperative resource records: session workspace links
+  move under `features.vfs`, while workspace/snapshot state remains in the VFS
+  catalog.
 - Updated 2026-07-29: the `messaging` feature grant introduced by this design
   was removed when channel integration moved to the external Channels
   application; the remaining full-document config model is unchanged.
@@ -455,11 +459,11 @@ problem at the next layer up):
   error** that lists the bindings; teardown is explicit, a config put never
   closes resources as a side effect.
 
-Borderline case, decided: VFS mount declarations (path + source + access)
-look declarative and profiles template them, but mounts are created
-mid-session (agent-created workspaces, fleet share/isolate), so they stay
-resource verbs. If they stabilize into pure declarations they can lift into
-`features.vfs.mounts` later without changing the model.
+Superseded by P107 (2026-07-30): VFS session topology is now a standing
+declaration in `features.vfs.workspaceLinks`. Mutable workspace heads remain
+catalog/work state, while path, target identity, and access policy replay from
+session config. Fleet isolation creates catalog workspaces and then emits a
+child config replacement; it does not require a separate mount authority.
 
 Refinement (2026-07-09, after slice 6): two independent tests decide
 config membership, and each excluded candidate fails a different one.
@@ -480,12 +484,12 @@ config membership, and each excluded candidate fails a different one.
   rarely at idle; work state accumulated by the agent/runtime must not live
   in it, or profile apply ("make the session look like the profile")
   becomes destructive to work and every runtime change churns the config
-  revision. VFS mounts fail this test even though they pass stability (CAS
-  is internal and durable).
-- Profile `mounts`/`environments` are **one-shot setup steps** (applied
-  once, best-effort, counted in the apply summary), not standing
-  declarations — which is why environments may appear in a profile without
-  contradicting their exclusion from session config.
+  revision. P107 separates VFS workspace-link topology from mutable workspace
+  head state, so links pass this test while workspace contents remain outside
+  config.
+- Profile environments remain **one-shot setup steps**. Profile workspace
+  links now live in the profile's session config document and apply through
+  normal config replacement.
 
 ### 6. Feature versioning
 

@@ -89,15 +89,23 @@ pub async fn build_skill_catalog(
     target: Option<ToolExecutionTarget>,
     roots: &[SkillCatalogRootInput<'_>],
 ) -> Result<SkillCatalogBuild, SkillCatalogError> {
+    build_skill_catalog_with_warnings(blobs, target, roots, Vec::new()).await
+}
+
+pub async fn build_skill_catalog_with_warnings(
+    blobs: &dyn BlobStore,
+    target: Option<ToolExecutionTarget>,
+    roots: &[SkillCatalogRootInput<'_>],
+    mut warnings: Vec<SkillLoadWarning>,
+) -> Result<SkillCatalogBuild, SkillCatalogError> {
     let mut sorted_roots = roots.iter().collect::<Vec<_>>();
     sorted_roots.sort_by(compare_roots);
 
     let mut skills = Vec::new();
-    let mut warnings = Vec::new();
     let mut source_inputs = Vec::new();
 
     for input in sorted_roots {
-        let scan = scan_root(input).await;
+        let scan = scan_root(blobs, input).await?;
         skills.extend(scan.skills);
         warnings.extend(scan.warnings);
         source_inputs.push(scan.source_input);
@@ -127,7 +135,17 @@ pub async fn prepare_skill_catalog_publication(
     target: Option<ToolExecutionTarget>,
     roots: &[SkillCatalogRootInput<'_>],
 ) -> Result<SkillCatalogPublication, SkillCatalogError> {
-    let build = build_skill_catalog(blobs, target, roots).await?;
+    prepare_skill_catalog_publication_with_warnings(blobs, state, target, roots, Vec::new()).await
+}
+
+pub async fn prepare_skill_catalog_publication_with_warnings(
+    blobs: &dyn BlobStore,
+    state: &CoreAgentState,
+    target: Option<ToolExecutionTarget>,
+    roots: &[SkillCatalogRootInput<'_>],
+    warnings: Vec<SkillLoadWarning>,
+) -> Result<SkillCatalogPublication, SkillCatalogError> {
+    let build = build_skill_catalog_with_warnings(blobs, target, roots, warnings).await?;
     let command = if current_skill_catalog_ref(state).as_ref() == Some(&build.catalog_ref) {
         None
     } else {
@@ -167,7 +185,10 @@ fn current_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
         .map(|entry| entry.content_ref.clone())
 }
 
-async fn scan_root(input: &SkillCatalogRootInput<'_>) -> RootScanResult {
+async fn scan_root(
+    blobs: &dyn BlobStore,
+    input: &SkillCatalogRootInput<'_>,
+) -> Result<RootScanResult, SkillCatalogError> {
     let mut scan = RootScan::new(input);
     let entries = match input.root.fs_read_directory(input.fs).await {
         Ok(entries) => entries,
@@ -179,7 +200,7 @@ async fn scan_root(input: &SkillCatalogRootInput<'_>) -> RootScanResult {
                 },
             );
             scan.record_host_observation(HostRootObservation::root_error(error.to_string()));
-            return scan.finish(input);
+            return Ok(scan.finish(input));
         }
     };
 
@@ -273,7 +294,14 @@ async fn scan_root(input: &SkillCatalogRootInput<'_>) -> RootScanResult {
             skill_doc_path.as_str().to_owned(),
             frontmatter_ref,
         ));
-        match metadata_for_skill(input, &skill_dir_path, &skill_doc_path, frontmatter) {
+        let skill_doc_ref = blobs.put_bytes(markdown.into_bytes()).await?;
+        match metadata_for_skill(
+            input,
+            &skill_dir_path,
+            &skill_doc_path,
+            frontmatter,
+            skill_doc_ref,
+        ) {
             Ok(metadata) => scan.skills.push(metadata),
             Err(error) => {
                 scan.warn(
@@ -286,7 +314,7 @@ async fn scan_root(input: &SkillCatalogRootInput<'_>) -> RootScanResult {
         }
     }
 
-    scan.finish(input)
+    Ok(scan.finish(input))
 }
 
 fn metadata_for_skill(
@@ -294,12 +322,13 @@ fn metadata_for_skill(
     skill_dir_path: &FsPath,
     skill_doc_path: &FsPath,
     frontmatter: crate::skills::SkillFrontmatter,
+    skill_doc_ref: BlobRef,
 ) -> Result<SkillMetadata, SkillCatalogError> {
     let skill_id = skill_id_for_path(&input.root, skill_doc_path);
     let target = match &input.root.source {
         SkillCatalogRootSource::HostFilesystem { target } => Some(target.clone()),
-        SkillCatalogRootSource::MountedSnapshot { .. }
-        | SkillCatalogRootSource::MountedWorkspace { .. } => None,
+        SkillCatalogRootSource::LinkedSnapshot { .. }
+        | SkillCatalogRootSource::LinkedWorkspace { .. } => None,
     };
     let location = location_for_skill(&input.root, skill_dir_path, skill_doc_path)?;
     let source = source_for_root(&input.root);
@@ -321,17 +350,17 @@ fn metadata_for_skill(
         }),
         dependencies: SkillDependencies::default(),
         location,
-        skill_doc_ref: None,
+        skill_doc_ref: Some(skill_doc_ref),
     })
 }
 
 fn source_for_root(root: &SkillCatalogRoot) -> SkillSource {
     match &root.source {
-        SkillCatalogRootSource::MountedSnapshot { snapshot_ref, .. } => SkillSource::Snapshot {
+        SkillCatalogRootSource::LinkedSnapshot { snapshot_ref, .. } => SkillSource::Snapshot {
             root_id: root.root_id.clone(),
             snapshot_ref: snapshot_ref.clone(),
         },
-        SkillCatalogRootSource::MountedWorkspace { workspace_id, .. } => SkillSource::Workspace {
+        SkillCatalogRootSource::LinkedWorkspace { workspace_id, .. } => SkillSource::Workspace {
             root_id: root.root_id.clone(),
             workspace_id: workspace_id.clone(),
         },
@@ -348,22 +377,22 @@ fn location_for_skill(
     skill_doc_path: &FsPath,
 ) -> Result<SkillLocation, SkillCatalogError> {
     match &root.source {
-        SkillCatalogRootSource::MountedSnapshot {
+        SkillCatalogRootSource::LinkedSnapshot {
             snapshot_ref,
-            mount_path,
-        } => Ok(SkillLocation::MountedSnapshot {
+            link_path,
+        } => Ok(SkillLocation::LinkedSnapshot {
             source_snapshot_ref: snapshot_ref.clone(),
-            source_mount_path: mount_path.clone(),
+            source_link_path: link_path.clone(),
             skill_dir_path: vfs_path(skill_dir_path)?,
             skill_doc_path: vfs_path(skill_doc_path)?,
         }),
-        SkillCatalogRootSource::MountedWorkspace {
+        SkillCatalogRootSource::LinkedWorkspace {
             workspace_id,
             workspace_head_ref: _,
-            mount_path,
-        } => Ok(SkillLocation::MountedWorkspace {
+            link_path,
+        } => Ok(SkillLocation::LinkedWorkspace {
             workspace_id: workspace_id.clone(),
-            source_mount_path: mount_path.clone(),
+            source_link_path: link_path.clone(),
             skill_dir_path: vfs_path(skill_dir_path)?,
             skill_doc_path: vfs_path(skill_doc_path)?,
         }),
@@ -391,13 +420,13 @@ fn skill_id_for_path(root: &SkillCatalogRoot, skill_doc_path: &FsPath) -> SkillI
 
 fn source_key(source: &SkillCatalogRootSource) -> String {
     match source {
-        SkillCatalogRootSource::MountedSnapshot { snapshot_ref, .. } => {
+        SkillCatalogRootSource::LinkedSnapshot { snapshot_ref, .. } => {
             format!("snapshot:{snapshot_ref}")
         }
-        SkillCatalogRootSource::MountedWorkspace {
+        SkillCatalogRootSource::LinkedWorkspace {
             workspace_id,
             workspace_head_ref: _,
-            mount_path: _,
+            link_path: _,
         } => format!("workspace:{workspace_id}"),
         SkillCatalogRootSource::HostFilesystem { target } => {
             format!("host:{}:{}", target.namespace, target.id)
@@ -460,17 +489,17 @@ fn source_input_for_root(
     host_observations: &[HostRootObservation],
 ) -> SkillCatalogSourceInput {
     match &input.root.source {
-        SkillCatalogRootSource::MountedSnapshot { snapshot_ref, .. } => {
+        SkillCatalogRootSource::LinkedSnapshot { snapshot_ref, .. } => {
             SkillCatalogSourceInput::SnapshotRoot {
                 root_id: input.root.root_id.clone(),
                 snapshot_ref: snapshot_ref.clone(),
                 root_path: vfs_path(&input.root.root_path).unwrap_or_else(|_| VfsPath::root()),
             }
         }
-        SkillCatalogRootSource::MountedWorkspace {
+        SkillCatalogRootSource::LinkedWorkspace {
             workspace_id,
             workspace_head_ref,
-            mount_path: _,
+            link_path: _,
         } => SkillCatalogSourceInput::WorkspaceRoot {
             root_id: input.root.root_id.clone(),
             workspace_id: workspace_id.clone(),
@@ -500,8 +529,8 @@ fn host_root_fingerprint(
         root_path: input.root.root_path.as_str(),
         target: match &input.root.source {
             SkillCatalogRootSource::HostFilesystem { target } => Some(target),
-            SkillCatalogRootSource::MountedSnapshot { .. }
-            | SkillCatalogRootSource::MountedWorkspace { .. } => None,
+            SkillCatalogRootSource::LinkedSnapshot { .. }
+            | SkillCatalogRootSource::LinkedWorkspace { .. } => None,
         },
         observations,
     };
@@ -691,9 +720,9 @@ mod tests {
                 SkillCatalogRoot {
                     root_id: "system".to_owned(),
                     root_path: FsPath::new("/skills").unwrap(),
-                    source: SkillCatalogRootSource::MountedSnapshot {
+                    source: SkillCatalogRootSource::LinkedSnapshot {
                         snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
-                        mount_path: VfsPath::parse("/skills").unwrap(),
+                        link_path: VfsPath::parse("/skills").unwrap(),
                     },
                     trust: SkillTrustLevel::System,
                     scope: SkillScope::Global,
@@ -715,7 +744,7 @@ mod tests {
         );
         assert!(matches!(
             build.catalog.skills[0].location,
-            SkillLocation::MountedSnapshot { .. }
+            SkillLocation::LinkedSnapshot { .. }
         ));
     }
 
@@ -741,9 +770,9 @@ mod tests {
                     SkillCatalogRoot {
                         root_id: "one".to_owned(),
                         root_path: FsPath::new("/skills-one").unwrap(),
-                        source: SkillCatalogRootSource::MountedSnapshot {
+                        source: SkillCatalogRootSource::LinkedSnapshot {
                             snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
-                            mount_path: VfsPath::parse("/skills-one").unwrap(),
+                            link_path: VfsPath::parse("/skills-one").unwrap(),
                         },
                         trust: SkillTrustLevel::System,
                         scope: SkillScope::Global,
@@ -754,9 +783,9 @@ mod tests {
                     SkillCatalogRoot {
                         root_id: "two".to_owned(),
                         root_path: FsPath::new("/skills-two").unwrap(),
-                        source: SkillCatalogRootSource::MountedSnapshot {
+                        source: SkillCatalogRootSource::LinkedSnapshot {
                             snapshot_ref: BlobRef::from_bytes(b"snapshot-2"),
-                            mount_path: VfsPath::parse("/skills-two").unwrap(),
+                            link_path: VfsPath::parse("/skills-two").unwrap(),
                         },
                         trust: SkillTrustLevel::User,
                         scope: SkillScope::Global,
@@ -795,9 +824,9 @@ mod tests {
                 SkillCatalogRoot {
                     root_id: "system".to_owned(),
                     root_path: FsPath::new("/skills").unwrap(),
-                    source: SkillCatalogRootSource::MountedSnapshot {
+                    source: SkillCatalogRootSource::LinkedSnapshot {
                         snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
-                        mount_path: VfsPath::parse("/skills").unwrap(),
+                        link_path: VfsPath::parse("/skills").unwrap(),
                     },
                     trust: SkillTrustLevel::System,
                     scope: SkillScope::Global,
@@ -816,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn same_semantic_catalog_has_same_ref_when_body_changes_outside_frontmatter() {
+    async fn catalog_ref_changes_when_pinned_skill_body_changes() {
         let fs = skill_fs(&[(
             "/skills/review/SKILL.md",
             format!(
@@ -859,7 +888,7 @@ mod tests {
             .await
             .expect("second build");
 
-        assert_eq!(first.catalog_ref, second.catalog_ref);
+        assert_ne!(first.catalog_ref, second.catalog_ref);
         assert_eq!(
             first.build_record.source_fingerprint.digest,
             second.build_record.source_fingerprint.digest
@@ -915,10 +944,10 @@ mod tests {
         let root = |head: &[u8]| SkillCatalogRoot {
             root_id: "workspace".to_owned(),
             root_path: FsPath::new("/workspace/.lightspeed/skills").unwrap(),
-            source: SkillCatalogRootSource::MountedWorkspace {
+            source: SkillCatalogRootSource::LinkedWorkspace {
                 workspace_id: VfsWorkspaceId::new("workspace-1"),
                 workspace_head_ref: BlobRef::from_bytes(head),
-                mount_path: VfsPath::parse("/workspace").unwrap(),
+                link_path: VfsPath::parse("/workspace").unwrap(),
             },
             trust: SkillTrustLevel::Project,
             scope: SkillScope::Global,
@@ -1016,9 +1045,9 @@ mod tests {
         SkillCatalogRoot {
             root_id: root_id.to_owned(),
             root_path: FsPath::new(root_path).unwrap(),
-            source: SkillCatalogRootSource::MountedSnapshot {
+            source: SkillCatalogRootSource::LinkedSnapshot {
                 snapshot_ref: BlobRef::from_bytes(format!("{root_id}:{root_path}").as_bytes()),
-                mount_path: VfsPath::parse(root_path).unwrap(),
+                link_path: VfsPath::parse(root_path).unwrap(),
             },
             trust: SkillTrustLevel::System,
             scope: SkillScope::Global,

@@ -16,7 +16,7 @@ use llm_runtime::{
     provider_keys::ProviderKeyResolver, secrets::SecretResolver,
 };
 use store_pg::PgStore;
-use vfs::{VfsMountStore, VfsWorkspaceStore};
+use vfs::VfsWorkspaceStore;
 
 use crate::{
     config::pg_store_from_env,
@@ -52,7 +52,6 @@ pub struct ToolActivityDeps {
 pub struct RuntimeProjectionActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     pub(super) workspace_store: Arc<dyn VfsWorkspaceStore>,
-    pub(super) mount_store: Arc<dyn VfsMountStore>,
     pub(super) environment_bindings: Arc<dyn SessionEnvironmentBindingStore>,
     pub(super) environment_instances: Arc<dyn environments::EnvironmentInstanceStore>,
 }
@@ -117,14 +116,12 @@ impl ActivityState {
     pub fn with_runtime_projection_deps(
         mut self,
         workspace_store: Arc<dyn VfsWorkspaceStore>,
-        mount_store: Arc<dyn VfsMountStore>,
         environment_bindings: Arc<dyn SessionEnvironmentBindingStore>,
         environment_instances: Arc<dyn environments::EnvironmentInstanceStore>,
     ) -> Self {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
             blobs: self.storage.blobs.clone(),
             workspace_store,
-            mount_store,
             environment_bindings,
             environment_instances,
         });
@@ -154,12 +151,10 @@ impl ActivityState {
         let sessions: Arc<dyn SessionStore> = store.clone();
         let blobs: Arc<dyn BlobStore> = store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
-        let mount_store: Arc<dyn VfsMountStore> = store.clone();
         let environment_bindings: Arc<dyn SessionEnvironmentBindingStore> = store.clone();
         let environment_instances: Arc<dyn environments::EnvironmentInstanceStore> = store.clone();
         let mut state = Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(
             workspace_store,
-            mount_store,
             environment_bindings,
             environment_instances,
         );

@@ -49,7 +49,7 @@ impl GatewayAgentApi {
 
     pub(super) async fn prompt_instruction_source_map(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<BTreeMap<ContextEntryKey, ContextEntryInput>, AgentApiError> {
         let prompts_config = state
@@ -58,17 +58,14 @@ impl GatewayAgentApi {
             .as_ref()
             .and_then(|config| config.features.vfs.as_ref())
             .and_then(|vfs| vfs.prompts.as_ref());
-        let mounts = if prompts_config.is_some() {
-            self.store
-                .list_mounts(session_id)
-                .await
-                .map_err(map_vfs_catalog_error)?
+        let links = if prompts_config.is_some() {
+            self.resolve_session_workspace_links(state).await?
         } else {
             Vec::new()
         };
         let specs = match prompts_config {
             Some(config) => {
-                tools::prompts::configured_vfs_prompt_root_specs(&mounts, config.roots.as_deref())
+                tools::prompts::configured_vfs_prompt_root_specs(&links, config.roots.as_deref())
                     .map_err(|error| AgentApiError::invalid_request(error.to_string()))?
             }
             None => Vec::new(),
@@ -87,17 +84,18 @@ impl GatewayAgentApi {
         let blobs: Arc<dyn BlobStore> = self.store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = self.store.clone();
         let resolved =
-            tools::prompts::resolve_mounted_vfs_prompt_roots(blobs, workspace_store, mounts, specs)
+            tools::prompts::resolve_linked_vfs_prompt_roots(blobs, workspace_store, links, specs)
                 .await
                 .map_err(|error| AgentApiError::internal(error.to_string()))?;
         let inputs = resolved
             .existing_directory_inputs()
             .await
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
-        let publication = tools::prompts::prepare_prompt_instructions_publication(
+        let publication = tools::prompts::prepare_prompt_instructions_publication_with_warnings(
             self.store.as_ref(),
             &inputs,
             tools::prompts::PromptAssemblyLimits::default(),
+            resolved.warnings().to_vec(),
         )
         .await
         .map_err(|error| AgentApiError::internal(error.to_string()))?;

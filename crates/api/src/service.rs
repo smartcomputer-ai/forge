@@ -282,21 +282,6 @@ pub trait AgentApiService: Send + Sync {
         params: VfsWorkspaceDeleteParams,
     ) -> Result<AgentApiOutcome<VfsWorkspaceDeleteResponse>, AgentApiError>;
 
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError>;
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError>;
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError>;
-
     /// Create-or-replace an MCP server document. `expected_revision` is
     /// checked only when the record already exists.
     async fn put_mcp_server(

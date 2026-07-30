@@ -99,7 +99,6 @@ impl<'a> CoreAgentProjector<'a> {
                 &params.state.tooling.tools,
             ),
             management: session_management_to_api(params.state),
-            vfs_mounts: Vec::new(),
         })
     }
 
@@ -1372,6 +1371,29 @@ fn features_config_to_api(
 fn vfs_feature_to_api(vfs: &engine::VfsFeature) -> api::VfsFeature {
     api::VfsFeature {
         version: vfs.version,
+        workspace_links: vfs
+            .workspace_links
+            .iter()
+            .map(|link| api::WorkspaceLink {
+                path: link.path.clone(),
+                target: match &link.target {
+                    engine::WorkspaceLinkTarget::Workspace { workspace_id } => {
+                        api::WorkspaceLinkTarget::Workspace {
+                            workspace_id: workspace_id.clone(),
+                        }
+                    }
+                    engine::WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
+                        api::WorkspaceLinkTarget::Snapshot {
+                            snapshot_ref: snapshot_ref.clone(),
+                        }
+                    }
+                },
+                access: match link.access {
+                    engine::WorkspaceLinkAccess::ReadOnly => api::WorkspaceLinkAccess::ReadOnly,
+                    engine::WorkspaceLinkAccess::ReadWrite => api::WorkspaceLinkAccess::ReadWrite,
+                },
+            })
+            .collect(),
         tools: vfs.tools.map(|tools| match tools {
             engine::VfsToolSurface::ReadOnly => api::VfsToolSurface::ReadOnly,
             engine::VfsToolSurface::Edit => api::VfsToolSurface::Edit,
@@ -2585,6 +2607,7 @@ mod tests {
             features: engine::FeaturesConfig {
                 vfs: Some(engine::VfsFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: Some(engine::VfsToolSurface::ReadOnly),
                     prompts: Some(engine::VfsPromptsConfig {
                         roots: Some(vec!["/prompts".to_owned()]),
@@ -2659,6 +2682,7 @@ mod tests {
                 features: Some(api::FeaturesConfig {
                     vfs: Some(api::VfsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links: Vec::new(),
                         tools: Some(api::VfsToolSurface::ReadOnly),
                         prompts: Some(api::VfsPromptsConfig {
                             roots: Some(vec!["/prompts".to_owned()]),

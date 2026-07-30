@@ -328,13 +328,7 @@ api_methods! {
     METHOD_SESSION_SKILLS_DEACTIVATE => deactivate_skill(SkillDeactivateParams) -> SkillDeactivateResponse =>
         ["Deactivate a session skill", "Removes an active skill's injected context from an open idle session; the skill must currently be active."],
     METHOD_SESSION_PROFILES_APPLY => apply_profile(ProfileApplyParams) -> ProfileApplyResponse =>
-        ["Apply a profile to a session", "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes."],
-    METHOD_SESSION_MOUNTS_PUT => put_vfs_mount(VfsMountPutParams) -> VfsMountPutResponse =>
-        ["Create or replace a session mount", "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head."],
-    METHOD_SESSION_MOUNTS_LIST => list_vfs_mounts(VfsMountListParams) -> VfsMountListResponse =>
-        ["List session mounts", "Returns the session's snapshot/workspace bindings and access modes."],
-    METHOD_SESSION_MOUNTS_DELETE => delete_vfs_mount(VfsMountDeleteParams) -> VfsMountDeleteResponse =>
-        ["Delete a session mount", "Removes a binding from an open idle session without deleting its source snapshot or workspace."],
+        ["Apply a profile to a session", "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes."],
     METHOD_SESSION_ENVIRONMENTS_READ => read_session_environment(SessionEnvironmentReadParams) -> SessionEnvironmentReadResponse =>
         ["Read a session environment binding", "Returns one session-local environment alias joined with current instance/provider availability and activation state."],
     METHOD_SESSION_ENVIRONMENTS_LIST => list_session_environments(SessionEnvironmentListParams) -> SessionEnvironmentListResponse =>

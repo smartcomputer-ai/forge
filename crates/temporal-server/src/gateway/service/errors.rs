@@ -95,25 +95,6 @@ pub(super) fn map_vfs_catalog_error(error: VfsCatalogError) -> AgentApiError {
     }
 }
 
-pub(super) fn map_fs_error(error: tools::fs::FsError) -> AgentApiError {
-    match error {
-        tools::fs::FsError::InvalidPath(error) => AgentApiError::invalid_request(error.to_string()),
-        tools::fs::FsError::InvalidInput { message } => AgentApiError::invalid_request(message),
-        tools::fs::FsError::NotFound { path } => {
-            AgentApiError::not_found(format!("vfs path not found: {path}"))
-        }
-        tools::fs::FsError::AlreadyExists { path } => {
-            AgentApiError::conflict(format!("vfs path already exists: {path}"))
-        }
-        tools::fs::FsError::PermissionDenied { path } => {
-            AgentApiError::rejected(format!("vfs permission denied: {path}"))
-        }
-        tools::fs::FsError::Unsupported { message }
-        | tools::fs::FsError::InvalidData { message }
-        | tools::fs::FsError::Failed { message } => AgentApiError::internal(message),
-    }
-}
-
 pub(super) fn map_input_blob_store_error(error: BlobStoreError) -> AgentApiError {
     match error {
         BlobStoreError::NotFound { blob_ref } => AgentApiError::invalid_request(format!(

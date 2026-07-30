@@ -158,16 +158,16 @@ impl VfsWorkspaceFileSystem {
 }
 
 #[derive(Clone)]
-pub struct MountedVfsFileSystem {
+pub struct LinkedVfsFileSystem {
     blobs: Arc<dyn BlobStore>,
     workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
-    mounts: Arc<Vec<::vfs::VfsMountRecord>>,
+    links: Arc<Vec<::vfs::ResolvedWorkspaceLink>>,
     effects: ToolEffectLog,
 }
 
 #[derive(Clone, Debug)]
-struct ResolvedMount {
-    mount: ::vfs::VfsMountRecord,
+struct RoutedWorkspaceLink {
+    link: ::vfs::ResolvedWorkspaceLink,
     inner_path: FsPath,
 }
 
@@ -195,109 +195,112 @@ impl ToolEffectLog {
     }
 }
 
-impl MountedVfsFileSystem {
+impl LinkedVfsFileSystem {
     pub fn new(
         blobs: Arc<dyn BlobStore>,
         workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
-        mut mounts: Vec<::vfs::VfsMountRecord>,
+        mut links: Vec<::vfs::ResolvedWorkspaceLink>,
     ) -> FsResult<Self> {
-        validate_mounts(&mounts)?;
-        mounts.sort_by(|left, right| {
+        validate_links(&links)?;
+        links.sort_by(|left, right| {
             right
-                .mount_path
+                .path
                 .depth()
-                .cmp(&left.mount_path.depth())
-                .then_with(|| left.mount_path.cmp(&right.mount_path))
+                .cmp(&left.path.depth())
+                .then_with(|| left.path.cmp(&right.path))
         });
         Ok(Self {
             blobs,
             workspace_store,
-            mounts: Arc::new(mounts),
+            links: Arc::new(links),
             effects: ToolEffectLog::default(),
         })
     }
 
-    pub fn from_mount_table(
-        blobs: Arc<dyn BlobStore>,
-        workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
-        mount_table: ::vfs::VfsMountTable,
-    ) -> FsResult<Self> {
-        Self::new(blobs, workspace_store, mount_table.mounts)
+    pub fn links(&self) -> &[::vfs::ResolvedWorkspaceLink] {
+        self.links.as_slice()
     }
 
-    pub fn mounts(&self) -> &[::vfs::VfsMountRecord] {
-        self.mounts.as_slice()
-    }
-
-    fn resolve_mount(&self, path: &FsPath) -> FsResult<Option<ResolvedMount>> {
+    fn route_link(&self, path: &FsPath) -> FsResult<Option<RoutedWorkspaceLink>> {
         let vfs_path = fs_path_to_vfs_path(path)?;
-        for mount in self.mounts.iter() {
-            if vfs_path_starts_with(&vfs_path, &mount.mount_path) {
-                return Ok(Some(ResolvedMount {
-                    mount: mount.clone(),
-                    inner_path: vfs_path_to_fs_path(&strip_mount_path(
-                        &vfs_path,
-                        &mount.mount_path,
-                    )?)?,
+        for link in self.links.iter() {
+            if vfs_path_starts_with(&vfs_path, &link.path) {
+                return Ok(Some(RoutedWorkspaceLink {
+                    link: link.clone(),
+                    inner_path: vfs_path_to_fs_path(&strip_link_path(&vfs_path, &link.path)?)?,
                 }));
             }
         }
         Ok(None)
     }
 
-    async fn file_system_for_mount(
+    async fn file_system_for_link(
         &self,
-        mount: &::vfs::VfsMountRecord,
+        link: &::vfs::ResolvedWorkspaceLink,
         request_path: &FsPath,
     ) -> FsResult<Box<dyn FileSystem>> {
-        match &mount.source {
-            ::vfs::VfsMountSource::Snapshot { snapshot_ref } => {
+        match &link.target {
+            ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot { snapshot_ref } => {
                 let fs = VfsSnapshotFileSystem::new(self.blobs.clone(), snapshot_ref.clone())
                     .await
                     .map_err(|error| map_vfs_error(error, request_path))?;
                 Ok(Box::new(fs))
             }
-            ::vfs::VfsMountSource::Workspace { workspace_id } => {
+            ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
                 Ok(Box::new(VfsWorkspaceFileSystem::with_effect_log(
                     self.blobs.clone(),
                     self.workspace_store.clone(),
-                    workspace_id.clone(),
+                    workspace.workspace_id.clone(),
                     self.effects.clone(),
                 )))
+            }
+            ::vfs::ResolvedWorkspaceLinkTarget::Unavailable { reason, .. } => {
+                Err(FsError::Unavailable {
+                    path: request_path.clone(),
+                    message: reason.clone(),
+                })
             }
         }
     }
 
-    fn writable_workspace_for_mount(
+    fn writable_workspace_for_link(
         &self,
-        mount: &::vfs::VfsMountRecord,
+        link: &::vfs::ResolvedWorkspaceLink,
         request_path: &FsPath,
     ) -> FsResult<VfsWorkspaceFileSystem> {
-        if !mount.access.is_writable() {
+        if !link.is_writable() {
             return Err(FsError::PermissionDenied {
                 path: request_path.clone(),
             });
         }
-        match &mount.source {
-            ::vfs::VfsMountSource::Workspace { workspace_id } => {
+        match &link.target {
+            ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
                 Ok(VfsWorkspaceFileSystem::with_effect_log(
                     self.blobs.clone(),
                     self.workspace_store.clone(),
-                    workspace_id.clone(),
+                    workspace.workspace_id.clone(),
                     self.effects.clone(),
                 ))
             }
-            ::vfs::VfsMountSource::Snapshot { .. } => Err(FsError::PermissionDenied {
-                path: request_path.clone(),
-            }),
+            ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot { .. } => {
+                Err(FsError::PermissionDenied {
+                    path: request_path.clone(),
+                })
+            }
+            ::vfs::ResolvedWorkspaceLinkTarget::Unavailable { reason, .. } => {
+                Err(FsError::Unavailable {
+                    path: request_path.clone(),
+                    message: reason.clone(),
+                })
+            }
         }
     }
 
     fn synthetic_directory_entries(&self, path: &FsPath) -> FsResult<Vec<ReadDirectoryEntry>> {
         let vfs_path = fs_path_to_vfs_path(path)?;
         let mut entries = BTreeMap::new();
-        for mount in self.mounts.iter() {
-            if let Some(file_name) = immediate_mount_child(&vfs_path, &mount.mount_path) {
+        for link in self.links.iter() {
+            if let Some(file_name) = immediate_link_child(&vfs_path, &link.path) {
                 entries.insert(
                     file_name.to_owned(),
                     ReadDirectoryEntry {
@@ -559,9 +562,9 @@ impl FileSystem for VfsWorkspaceFileSystem {
 }
 
 #[async_trait]
-impl FileSystem for MountedVfsFileSystem {
+impl FileSystem for LinkedVfsFileSystem {
     fn access_policy(&self) -> FileAccessPolicy {
-        if self.mounts.iter().any(|mount| mount.access.is_writable()) {
+        if self.links.iter().any(|link| link.is_writable()) {
             FileAccessPolicy::FullReadWrite
         } else {
             FileAccessPolicy::FullReadOnly
@@ -569,8 +572,8 @@ impl FileSystem for MountedVfsFileSystem {
     }
 
     async fn read_file(&self, path: &FsPath) -> FsResult<Vec<u8>> {
-        if let Some(resolved) = self.resolve_mount(path)? {
-            let fs = self.file_system_for_mount(&resolved.mount, path).await?;
+        if let Some(resolved) = self.route_link(path)? {
+            let fs = self.file_system_for_link(&resolved.link, path).await?;
             return fs.read_file(&resolved.inner_path).await;
         }
         if self.synthetic_metadata(path)?.is_some() {
@@ -582,10 +585,10 @@ impl FileSystem for MountedVfsFileSystem {
     }
 
     async fn write_file(&self, path: &FsPath, contents: Vec<u8>) -> FsResult<()> {
-        let Some(resolved) = self.resolve_mount(path)? else {
+        let Some(resolved) = self.route_link(path)? else {
             return Err(FsError::PermissionDenied { path: path.clone() });
         };
-        let fs = self.writable_workspace_for_mount(&resolved.mount, path)?;
+        let fs = self.writable_workspace_for_link(&resolved.link, path)?;
         fs.write_file(&resolved.inner_path, contents).await
     }
 
@@ -594,8 +597,8 @@ impl FileSystem for MountedVfsFileSystem {
         path: &FsPath,
         options: CreateDirectoryOptions,
     ) -> FsResult<()> {
-        if let Some(resolved) = self.resolve_mount(path)? {
-            let fs = self.writable_workspace_for_mount(&resolved.mount, path)?;
+        if let Some(resolved) = self.route_link(path)? {
+            let fs = self.writable_workspace_for_link(&resolved.link, path)?;
             return fs.create_directory(&resolved.inner_path, options).await;
         }
         if self.synthetic_metadata(path)?.is_some() {
@@ -609,8 +612,8 @@ impl FileSystem for MountedVfsFileSystem {
     }
 
     async fn get_metadata(&self, path: &FsPath) -> FsResult<FileMetadata> {
-        if let Some(resolved) = self.resolve_mount(path)? {
-            let fs = self.file_system_for_mount(&resolved.mount, path).await?;
+        if let Some(resolved) = self.route_link(path)? {
+            let fs = self.file_system_for_link(&resolved.link, path).await?;
             return fs.get_metadata(&resolved.inner_path).await;
         }
         if let Some(metadata) = self.synthetic_metadata(path)? {
@@ -620,8 +623,8 @@ impl FileSystem for MountedVfsFileSystem {
     }
 
     async fn read_directory(&self, path: &FsPath) -> FsResult<Vec<ReadDirectoryEntry>> {
-        if let Some(resolved) = self.resolve_mount(path)? {
-            let fs = self.file_system_for_mount(&resolved.mount, path).await?;
+        if let Some(resolved) = self.route_link(path)? {
+            let fs = self.file_system_for_link(&resolved.link, path).await?;
             return fs.read_directory(&resolved.inner_path).await;
         }
         let entries = self.synthetic_directory_entries(path)?;
@@ -632,10 +635,10 @@ impl FileSystem for MountedVfsFileSystem {
     }
 
     async fn remove(&self, path: &FsPath, options: RemoveOptions) -> FsResult<()> {
-        let Some(resolved) = self.resolve_mount(path)? else {
+        let Some(resolved) = self.route_link(path)? else {
             return Err(FsError::PermissionDenied { path: path.clone() });
         };
-        let fs = self.writable_workspace_for_mount(&resolved.mount, path)?;
+        let fs = self.writable_workspace_for_link(&resolved.link, path)?;
         fs.remove(&resolved.inner_path, options).await
     }
 
@@ -646,11 +649,11 @@ impl FileSystem for MountedVfsFileSystem {
         options: CopyOptions,
     ) -> FsResult<()> {
         if let (Some(source), Some(destination)) = (
-            self.resolve_mount(source_path)?,
-            self.resolve_mount(destination_path)?,
-        ) && source.mount.mount_path == destination.mount.mount_path
+            self.route_link(source_path)?,
+            self.route_link(destination_path)?,
+        ) && source.link.path == destination.link.path
         {
-            let fs = self.writable_workspace_for_mount(&destination.mount, destination_path)?;
+            let fs = self.writable_workspace_for_link(&destination.link, destination_path)?;
             return fs
                 .copy(&source.inner_path, &destination.inner_path, options)
                 .await;
@@ -693,54 +696,54 @@ fn vfs_path_to_fs_path(path: &::vfs::VfsPath) -> FsResult<FsPath> {
     FsPath::new(path.as_str()).map_err(Into::into)
 }
 
-fn strip_mount_path(
-    path: &::vfs::VfsPath,
-    mount_path: &::vfs::VfsPath,
-) -> FsResult<::vfs::VfsPath> {
-    if mount_path.is_root() {
+fn strip_link_path(path: &::vfs::VfsPath, link_path: &::vfs::VfsPath) -> FsResult<::vfs::VfsPath> {
+    if link_path.is_root() {
         return Ok(path.clone());
     }
-    if path == mount_path {
+    if path == link_path {
         return Ok(::vfs::VfsPath::root());
     }
     let suffix = path
         .as_str()
-        .strip_prefix(mount_path.as_str())
+        .strip_prefix(link_path.as_str())
         .ok_or_else(|| FsError::InvalidInput {
-            message: format!("path {path} is not under mount {mount_path}"),
+            message: format!("path {path} is not under workspace link {link_path}"),
         })?;
     ::vfs::VfsPath::parse(suffix).map_err(|error| FsError::InvalidInput {
         message: error.to_string(),
     })
 }
 
-fn validate_mounts(mounts: &[::vfs::VfsMountRecord]) -> FsResult<()> {
+fn validate_links(links: &[::vfs::ResolvedWorkspaceLink]) -> FsResult<()> {
     let mut seen = BTreeSet::new();
-    for mount in mounts {
-        if !seen.insert(mount.mount_path.clone()) {
+    for link in links {
+        if !seen.insert(link.path.clone()) {
             return Err(FsError::InvalidInput {
-                message: format!("duplicate vfs mount path: {}", mount.mount_path),
+                message: format!("duplicate workspace link path: {}", link.path),
             });
         }
-        if mount.access.is_writable()
-            && matches!(mount.source, ::vfs::VfsMountSource::Snapshot { .. })
+        if link.is_writable()
+            && matches!(
+                link.target,
+                ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot { .. }
+            )
         {
             return Err(FsError::InvalidInput {
-                message: format!("snapshot mount cannot be writable: {}", mount.mount_path),
+                message: format!("snapshot workspace link cannot be writable: {}", link.path),
             });
         }
     }
 
-    let mounts = mounts.iter().collect::<Vec<_>>();
-    for (index, left) in mounts.iter().enumerate() {
-        for right in mounts.iter().skip(index + 1) {
-            if vfs_path_starts_with(&left.mount_path, &right.mount_path)
-                || vfs_path_starts_with(&right.mount_path, &left.mount_path)
+    let links = links.iter().collect::<Vec<_>>();
+    for (index, left) in links.iter().enumerate() {
+        for right in links.iter().skip(index + 1) {
+            if vfs_path_starts_with(&left.path, &right.path)
+                || vfs_path_starts_with(&right.path, &left.path)
             {
                 return Err(FsError::InvalidInput {
                     message: format!(
-                        "nested vfs mounts are not supported: {} and {}",
-                        left.mount_path, right.mount_path
+                        "nested workspace links are not supported: {} and {}",
+                        left.path, right.path
                     ),
                 });
             }
@@ -749,21 +752,21 @@ fn validate_mounts(mounts: &[::vfs::VfsMountRecord]) -> FsResult<()> {
     Ok(())
 }
 
-fn immediate_mount_child<'a>(
+fn immediate_link_child<'a>(
     parent: &::vfs::VfsPath,
-    mount_path: &'a ::vfs::VfsPath,
+    link_path: &'a ::vfs::VfsPath,
 ) -> Option<&'a str> {
     let parent_components = parent.components();
-    let mount_components = mount_path.components();
-    if parent_components.len() >= mount_components.len() {
+    let link_components = link_path.components();
+    if parent_components.len() >= link_components.len() {
         return None;
     }
     if parent_components
         .iter()
-        .zip(mount_components.iter())
+        .zip(link_components.iter())
         .all(|(left, right)| left == right)
     {
-        Some(mount_components[parent_components.len()])
+        Some(link_components[parent_components.len()])
     } else {
         None
     }
@@ -1088,29 +1091,26 @@ mod tests {
         workspace_id
     }
 
-    fn mount_record(
-        session_id: &SessionId,
-        mount_path: &str,
-        source: ::vfs::VfsMountSource,
-        access: ::vfs::VfsMountAccess,
-    ) -> ::vfs::VfsMountRecord {
-        ::vfs::VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: ::vfs::VfsPath::parse(mount_path).unwrap(),
-            source,
+    fn resolved_link(
+        path: &str,
+        target: ::vfs::ResolvedWorkspaceLinkTarget,
+        access: engine::WorkspaceLinkAccess,
+    ) -> ::vfs::ResolvedWorkspaceLink {
+        ::vfs::ResolvedWorkspaceLink {
+            path: ::vfs::VfsPath::parse(path).unwrap(),
+            target,
             access,
         }
     }
 
-    async fn test_mounted_fs() -> (
+    async fn test_linked_fs() -> (
         Arc<InMemoryBlobStore>,
         Arc<TestWorkspaceStore>,
-        MountedVfsFileSystem,
+        LinkedVfsFileSystem,
         ::vfs::VfsWorkspaceId,
     ) {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let store = Arc::new(TestWorkspaceStore::default());
-        let session_id = SessionId::new("session_1");
 
         let skill_snapshot = create_test_snapshot(
             blobs.as_ref(),
@@ -1127,29 +1127,29 @@ mod tests {
             workspace_snapshot.snapshot_ref,
         )
         .await;
-        let fs = MountedVfsFileSystem::new(
+        let workspace = store
+            .read_workspace(&workspace_id)
+            .await
+            .expect("workspace");
+        let fs = LinkedVfsFileSystem::new(
             blobs.clone(),
             store.clone(),
             vec![
-                mount_record(
-                    &session_id,
+                resolved_link(
                     "/skills/rust",
-                    ::vfs::VfsMountSource::Snapshot {
+                    ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot {
                         snapshot_ref: skill_snapshot.snapshot_ref,
                     },
-                    ::vfs::VfsMountAccess::ReadOnly,
+                    engine::WorkspaceLinkAccess::ReadOnly,
                 ),
-                mount_record(
-                    &session_id,
+                resolved_link(
                     "/workspace",
-                    ::vfs::VfsMountSource::Workspace {
-                        workspace_id: workspace_id.clone(),
-                    },
-                    ::vfs::VfsMountAccess::ReadWrite,
+                    ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace },
+                    engine::WorkspaceLinkAccess::ReadWrite,
                 ),
             ],
         )
-        .expect("mounted fs");
+        .expect("linked fs");
 
         (blobs, store, fs, workspace_id)
     }
@@ -1457,6 +1457,7 @@ mod tests {
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
                 default_targets: Default::default(),
+                workspace_links: Vec::new(),
                 calls: vec![ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("write_file"),
@@ -1605,8 +1606,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mounted_vfs_file_system_lists_synthetic_directories_and_routes_mounts() {
-        let (_blobs, _store, fs, workspace_id) = test_mounted_fs().await;
+    async fn linked_vfs_file_system_lists_synthetic_directories_and_routes_links() {
+        let (_blobs, _store, fs, workspace_id) = test_linked_fs().await;
 
         assert_eq!(fs.access_policy(), FileAccessPolicy::FullReadWrite);
         assert_eq!(
@@ -1677,74 +1678,75 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mounted_vfs_file_system_rejects_invalid_mount_tables() {
+    async fn linked_vfs_file_system_rejects_invalid_link_tables() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let store = Arc::new(TestWorkspaceStore::default());
-        let session_id = SessionId::new("session_1");
         let snapshot_ref = BlobRef::from_bytes(b"snapshot");
-        let workspace_id = ::vfs::VfsWorkspaceId::new("workspace_1");
+        let workspace = ::vfs::VfsWorkspaceRecord {
+            workspace_id: ::vfs::VfsWorkspaceId::new("workspace_1"),
+            display_name: None,
+            base_snapshot_ref: None,
+            head_snapshot_ref: snapshot_ref.clone(),
+            head_totals: ::vfs::VfsTotals::default(),
+            revision: 0,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
 
         let duplicate = vec![
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/workspace",
-                ::vfs::VfsMountSource::Workspace {
-                    workspace_id: workspace_id.clone(),
+                ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace {
+                    workspace: workspace.clone(),
                 },
-                ::vfs::VfsMountAccess::ReadWrite,
+                engine::WorkspaceLinkAccess::ReadWrite,
             ),
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/workspace",
-                ::vfs::VfsMountSource::Workspace {
-                    workspace_id: workspace_id.clone(),
-                },
-                ::vfs::VfsMountAccess::ReadWrite,
+                ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace },
+                engine::WorkspaceLinkAccess::ReadWrite,
             ),
         ];
         assert!(matches!(
-            MountedVfsFileSystem::new(blobs.clone(), store.clone(), duplicate),
+            LinkedVfsFileSystem::new(blobs.clone(), store.clone(), duplicate),
             Err(FsError::InvalidInput { .. })
         ));
 
         let nested = vec![
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/skills",
-                ::vfs::VfsMountSource::Snapshot {
+                ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot {
                     snapshot_ref: snapshot_ref.clone(),
                 },
-                ::vfs::VfsMountAccess::ReadOnly,
+                engine::WorkspaceLinkAccess::ReadOnly,
             ),
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/skills/rust",
-                ::vfs::VfsMountSource::Snapshot {
+                ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot {
                     snapshot_ref: snapshot_ref.clone(),
                 },
-                ::vfs::VfsMountAccess::ReadOnly,
+                engine::WorkspaceLinkAccess::ReadOnly,
             ),
         ];
         assert!(matches!(
-            MountedVfsFileSystem::new(blobs.clone(), store.clone(), nested),
+            LinkedVfsFileSystem::new(blobs.clone(), store.clone(), nested),
             Err(FsError::InvalidInput { .. })
         ));
 
-        let writable_snapshot = vec![mount_record(
-            &session_id,
+        let writable_snapshot = vec![resolved_link(
             "/skills/rust",
-            ::vfs::VfsMountSource::Snapshot { snapshot_ref },
-            ::vfs::VfsMountAccess::ReadWrite,
+            ::vfs::ResolvedWorkspaceLinkTarget::AvailableSnapshot { snapshot_ref },
+            engine::WorkspaceLinkAccess::ReadWrite,
         )];
         assert!(matches!(
-            MountedVfsFileSystem::new(blobs, store, writable_snapshot),
+            LinkedVfsFileSystem::new(blobs, store, writable_snapshot),
             Err(FsError::InvalidInput { .. })
         ));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mounted_vfs_file_system_copies_across_mounts() {
-        let (_blobs, _store, fs, _workspace_id) = test_mounted_fs().await;
+    async fn linked_vfs_file_system_copies_across_links() {
+        let (_blobs, _store, fs, _workspace_id) = test_linked_fs().await;
 
         fs.copy(
             &FsPath::new("/skills/rust/SKILL.md").unwrap(),
@@ -1786,8 +1788,8 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn existing_file_tools_work_against_mounted_vfs_file_system() {
-        let (blobs, _store, fs, _workspace_id) = test_mounted_fs().await;
+    async fn existing_file_tools_work_against_linked_vfs_file_system() {
+        let (blobs, _store, fs, _workspace_id) = test_linked_fs().await;
         let fs_ctx = FsToolContext::new(Arc::new(fs.clone()), blobs)
             .with_cwd(FsPath::new("/workspace").unwrap());
 

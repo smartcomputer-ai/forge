@@ -138,12 +138,6 @@ impl GatewayAgentApi {
             .apply_profile_instructions(session_id, document.instructions.clone())
             .await?;
 
-        for mount in &document.mounts {
-            if self.apply_profile_mount(session_id, mount.clone()).await? {
-                applied.mounts_changed = applied.mounts_changed.saturating_add(1);
-            }
-        }
-
         if expected_tools_revision.is_some() {
             self.assert_tools_revision(session_id, expected_tools_revision)
                 .await?;
@@ -310,41 +304,6 @@ impl GatewayAgentApi {
             source_entries,
         )
         .await
-    }
-
-    async fn apply_profile_mount(
-        &self,
-        session_id: &SessionId,
-        mount: api::ProfileMount,
-    ) -> Result<bool, AgentApiError> {
-        let mount_path = VfsPath::parse(&mount.mount_path).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid vfs mount path: {error}"))
-        })?;
-        let access = vfs_api::core_vfs_mount_access(mount.access);
-        let source = self
-            .validate_vfs_mount_source(mount.source.clone(), access)
-            .await?;
-        let existing = self
-            .store
-            .list_mounts(session_id)
-            .await
-            .map_err(map_vfs_catalog_error)?
-            .into_iter()
-            .find(|existing| existing.mount_path == mount_path);
-        if existing
-            .as_ref()
-            .is_some_and(|existing| existing.source == source && existing.access == access)
-        {
-            return Ok(false);
-        }
-        self.put_vfs_mount_record(VfsMountPutParams {
-            session_id: session_id.as_str().to_owned(),
-            mount_path: mount.mount_path,
-            source: mount.source,
-            access: mount.access,
-        })
-        .await?;
-        Ok(true)
     }
 
     async fn apply_profile_environment(

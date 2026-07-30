@@ -1,16 +1,18 @@
-//! Skill catalog root resolution for CAS-backed VFS mounts.
+//! Skill catalog root resolution for CAS-backed VFS workspace links.
 
 use std::{collections::BTreeSet, sync::Arc};
 
 use engine::storage::BlobStore;
 use thiserror::Error;
-use vfs::{VfsMountRecord, VfsMountSource, VfsPath, VfsWorkspaceId, VfsWorkspaceStore};
+use vfs::{
+    ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsPath, VfsWorkspaceId, VfsWorkspaceStore,
+};
 
 use crate::{
-    fs::{FileSystem, FsError, FsPath, MountedVfsFileSystem},
+    fs::{FileSystem, FsError, FsPath, LinkedVfsFileSystem},
     skills::{
-        SkillCatalogRoot, SkillCatalogRootInput, SkillCatalogRootSource, SkillScope,
-        SkillTrustLevel,
+        SkillCatalogRoot, SkillCatalogRootInput, SkillCatalogRootSource, SkillLoadWarning,
+        SkillLoadWarningKind, SkillScope, SkillTrustLevel,
     },
 };
 
@@ -38,13 +40,14 @@ impl VfsSkillRootSpec {
     }
 }
 
-pub struct MountedVfsSkillCatalogRoots {
-    fs: MountedVfsFileSystem,
+pub struct LinkedVfsSkillCatalogRoots {
+    fs: LinkedVfsFileSystem,
     roots: Vec<SkillCatalogRoot>,
+    warnings: Vec<SkillLoadWarning>,
 }
 
-impl MountedVfsSkillCatalogRoots {
-    pub fn fs(&self) -> &MountedVfsFileSystem {
+impl LinkedVfsSkillCatalogRoots {
+    pub fn fs(&self) -> &LinkedVfsFileSystem {
         &self.fs
     }
 
@@ -52,8 +55,18 @@ impl MountedVfsSkillCatalogRoots {
         &self.roots
     }
 
-    pub fn into_parts(self) -> (MountedVfsFileSystem, Vec<SkillCatalogRoot>) {
-        (self.fs, self.roots)
+    pub fn warnings(&self) -> &[SkillLoadWarning] {
+        &self.warnings
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        LinkedVfsFileSystem,
+        Vec<SkillCatalogRoot>,
+        Vec<SkillLoadWarning>,
+    ) {
+        (self.fs, self.roots, self.warnings)
     }
 
     pub fn inputs(&self) -> Vec<SkillCatalogRootInput<'_>> {
@@ -97,8 +110,8 @@ pub enum SkillVfsRootError {
     #[error("invalid configured VFS skill root {root}: {message}")]
     InvalidConfiguredRoot { root: String, message: String },
 
-    #[error("VFS skill root {root_id} at {root_path} is not under a mounted VFS path")]
-    UnmountedRoot { root_id: String, root_path: VfsPath },
+    #[error("VFS skill root {root_id} at {root_path} is not under a workspace link")]
+    UnlinkedRoot { root_id: String, root_path: VfsPath },
 
     #[error("invalid VFS skill root {root_id} at {root_path}: {message}")]
     InvalidRootPath {
@@ -107,7 +120,7 @@ pub enum SkillVfsRootError {
         message: String,
     },
 
-    #[error("failed to build mounted VFS filesystem: {message}")]
+    #[error("failed to build linked VFS filesystem: {message}")]
     Filesystem { message: String },
 
     #[error("failed to read VFS workspace {workspace_id}: {message}")]
@@ -117,49 +130,69 @@ pub enum SkillVfsRootError {
     },
 }
 
-pub async fn resolve_mounted_vfs_skill_roots(
+pub async fn resolve_linked_vfs_skill_roots(
     blobs: Arc<dyn BlobStore>,
     workspace_store: Arc<dyn VfsWorkspaceStore>,
-    mounts: Vec<VfsMountRecord>,
+    links: Vec<ResolvedWorkspaceLink>,
     specs: Vec<VfsSkillRootSpec>,
-) -> Result<MountedVfsSkillCatalogRoots, SkillVfsRootError> {
+) -> Result<LinkedVfsSkillCatalogRoots, SkillVfsRootError> {
     validate_specs(&specs)?;
-    let fs =
-        MountedVfsFileSystem::new(blobs, workspace_store.clone(), mounts).map_err(|error| {
-            SkillVfsRootError::Filesystem {
-                message: error.to_string(),
-            }
-        })?;
+    let fs = LinkedVfsFileSystem::new(blobs, workspace_store, links).map_err(|error| {
+        SkillVfsRootError::Filesystem {
+            message: error.to_string(),
+        }
+    })?;
 
     let mut roots = Vec::with_capacity(specs.len());
+    let mut warnings = Vec::new();
     for spec in specs {
-        roots.push(resolve_root(&workspace_store, fs.mounts(), spec).await?);
+        if let Some(link) = link_for_root(fs.links(), &spec.root_path)
+            && let ResolvedWorkspaceLinkTarget::Unavailable { reason, .. } = &link.target
+        {
+            warnings.push(SkillLoadWarning::new(
+                spec.root_id.clone(),
+                Some(spec.root_path.to_string()),
+                SkillLoadWarningKind::UnavailableWorkspaceLink {
+                    reason: reason.clone(),
+                },
+            ));
+        }
+        if let Some(root) = resolve_root(fs.links(), spec).await? {
+            roots.push(root);
+        }
     }
 
-    Ok(MountedVfsSkillCatalogRoots { fs, roots })
+    Ok(LinkedVfsSkillCatalogRoots {
+        fs,
+        roots,
+        warnings,
+    })
 }
 
-pub fn conventional_vfs_skill_root_specs(mounts: &[VfsMountRecord]) -> Vec<VfsSkillRootSpec> {
+pub fn conventional_vfs_skill_root_specs(links: &[ResolvedWorkspaceLink]) -> Vec<VfsSkillRootSpec> {
     let mut specs = Vec::new();
     let mut seen = BTreeSet::new();
-    for mount in mounts {
-        if is_skills_mount(&mount.mount_path) {
-            push_spec(
-                &mut specs,
-                &mut seen,
-                spec_for_skills_mount(&mount.mount_path),
-            );
+    for link in links {
+        if is_skills_link(&link.path) {
+            push_spec(&mut specs, &mut seen, spec_for_skills_link(&link.path));
         }
-        if matches!(mount.source, VfsMountSource::Workspace { .. }) {
+        if matches!(
+            link.target,
+            ResolvedWorkspaceLinkTarget::AvailableWorkspace { .. }
+                | ResolvedWorkspaceLinkTarget::Unavailable {
+                    declared_target: engine::WorkspaceLinkTarget::Workspace { .. },
+                    ..
+                }
+        ) {
             push_spec(
                 &mut specs,
                 &mut seen,
-                workspace_skill_root(&mount.mount_path, ".lightspeed/skills"),
+                workspace_skill_root(&link.path, ".lightspeed/skills"),
             );
             push_spec(
                 &mut specs,
                 &mut seen,
-                workspace_skill_root(&mount.mount_path, ".agents/skills"),
+                workspace_skill_root(&link.path, ".agents/skills"),
             );
         }
     }
@@ -167,11 +200,11 @@ pub fn conventional_vfs_skill_root_specs(mounts: &[VfsMountRecord]) -> Vec<VfsSk
 }
 
 pub fn configured_vfs_skill_root_specs(
-    mounts: &[VfsMountRecord],
+    links: &[ResolvedWorkspaceLink],
     roots: Option<&[String]>,
 ) -> Result<Vec<VfsSkillRootSpec>, SkillVfsRootError> {
     let Some(roots) = roots else {
-        return Ok(conventional_vfs_skill_root_specs(mounts));
+        return Ok(conventional_vfs_skill_root_specs(links));
     };
     roots
         .iter()
@@ -183,9 +216,12 @@ pub fn configured_vfs_skill_root_specs(
                 })?;
             let trust = if path.as_str() == "/skills/system" {
                 SkillTrustLevel::System
-            } else if mount_for_root(mounts, &path)
-                .is_some_and(|mount| matches!(mount.source, VfsMountSource::Workspace { .. }))
-            {
+            } else if link_for_root(links, &path).is_some_and(|link| {
+                matches!(
+                    link.target,
+                    ResolvedWorkspaceLinkTarget::AvailableWorkspace { .. }
+                )
+            }) {
                 SkillTrustLevel::Project
             } else {
                 SkillTrustLevel::User
@@ -210,12 +246,12 @@ fn push_spec(
     }
 }
 
-fn is_skills_mount(path: &VfsPath) -> bool {
+fn is_skills_link(path: &VfsPath) -> bool {
     let components = path.components();
     components.first() == Some(&"skills") && components.len() >= 2
 }
 
-fn spec_for_skills_mount(path: &VfsPath) -> VfsSkillRootSpec {
+fn spec_for_skills_link(path: &VfsPath) -> VfsSkillRootSpec {
     let trust = if path.as_str() == "/skills/system" {
         SkillTrustLevel::System
     } else {
@@ -229,8 +265,8 @@ fn spec_for_skills_mount(path: &VfsPath) -> VfsSkillRootSpec {
     )
 }
 
-fn workspace_skill_root(mount_path: &VfsPath, suffix: &str) -> VfsSkillRootSpec {
-    let path = append_vfs_path(mount_path, suffix);
+fn workspace_skill_root(link_path: &VfsPath, suffix: &str) -> VfsSkillRootSpec {
+    let path = append_vfs_path(link_path, suffix);
     VfsSkillRootSpec::new(
         root_id_for_vfs_path("workspace", &path),
         path,
@@ -270,16 +306,14 @@ fn validate_specs(specs: &[VfsSkillRootSpec]) -> Result<(), SkillVfsRootError> {
 }
 
 async fn resolve_root(
-    workspace_store: &Arc<dyn VfsWorkspaceStore>,
-    mounts: &[VfsMountRecord],
+    links: &[ResolvedWorkspaceLink],
     spec: VfsSkillRootSpec,
-) -> Result<SkillCatalogRoot, SkillVfsRootError> {
-    let mount = mount_for_root(mounts, &spec.root_path).ok_or_else(|| {
-        SkillVfsRootError::UnmountedRoot {
+) -> Result<Option<SkillCatalogRoot>, SkillVfsRootError> {
+    let link =
+        link_for_root(links, &spec.root_path).ok_or_else(|| SkillVfsRootError::UnlinkedRoot {
             root_id: spec.root_id.clone(),
             root_path: spec.root_path.clone(),
-        }
-    })?;
+        })?;
     let root_path = FsPath::new(spec.root_path.as_str()).map_err(|error| {
         SkillVfsRootError::InvalidRootPath {
             root_id: spec.root_id.clone(),
@@ -287,44 +321,39 @@ async fn resolve_root(
             message: error.to_string(),
         }
     })?;
-    let source = match &mount.source {
-        VfsMountSource::Snapshot { snapshot_ref } => SkillCatalogRootSource::MountedSnapshot {
-            snapshot_ref: snapshot_ref.clone(),
-            mount_path: mount.mount_path.clone(),
-        },
-        VfsMountSource::Workspace { workspace_id } => {
-            let workspace =
-                workspace_store
-                    .read_workspace(workspace_id)
-                    .await
-                    .map_err(|error| SkillVfsRootError::Workspace {
-                        workspace_id: workspace_id.clone(),
-                        message: error.to_string(),
-                    })?;
-            SkillCatalogRootSource::MountedWorkspace {
-                workspace_id: workspace_id.clone(),
-                workspace_head_ref: workspace.head_snapshot_ref,
-                mount_path: mount.mount_path.clone(),
+    let source = match &link.target {
+        ResolvedWorkspaceLinkTarget::AvailableSnapshot { snapshot_ref } => {
+            SkillCatalogRootSource::LinkedSnapshot {
+                snapshot_ref: snapshot_ref.clone(),
+                link_path: link.path.clone(),
             }
         }
+        ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
+            SkillCatalogRootSource::LinkedWorkspace {
+                workspace_id: workspace.workspace_id.clone(),
+                workspace_head_ref: workspace.head_snapshot_ref.clone(),
+                link_path: link.path.clone(),
+            }
+        }
+        ResolvedWorkspaceLinkTarget::Unavailable { .. } => return Ok(None),
     };
 
-    Ok(SkillCatalogRoot {
+    Ok(Some(SkillCatalogRoot {
         root_id: spec.root_id,
         root_path,
         source,
         trust: spec.trust,
         scope: spec.scope,
-    })
+    }))
 }
 
-fn mount_for_root<'a>(
-    mounts: &'a [VfsMountRecord],
+fn link_for_root<'a>(
+    links: &'a [ResolvedWorkspaceLink],
     root_path: &VfsPath,
-) -> Option<&'a VfsMountRecord> {
-    mounts
+) -> Option<&'a ResolvedWorkspaceLink> {
+    links
         .iter()
-        .find(|mount| vfs_path_starts_with(root_path, &mount.mount_path))
+        .find(|link| vfs_path_starts_with(root_path, &link.path))
 }
 
 fn vfs_path_starts_with(path: &VfsPath, base: &VfsPath) -> bool {
@@ -342,17 +371,18 @@ mod tests {
     use std::collections::BTreeMap;
 
     use async_trait::async_trait;
-    use engine::{SessionId, storage::InMemoryBlobStore};
+    use engine::{WorkspaceLinkAccess, WorkspaceLinkTarget, storage::InMemoryBlobStore};
     use vfs::{
         CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-        InlineFile, VfsCatalogError, VfsMountAccess, VfsWorkspaceRecord, create_inline_snapshot,
+        InlineFile, ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsCatalogError,
+        VfsWorkspaceRecord, create_inline_snapshot,
     };
 
     use super::*;
     use crate::skills::{SkillLocation, build_skill_catalog};
 
     #[tokio::test]
-    async fn resolves_snapshot_mount_as_skill_catalog_root() {
+    async fn resolves_snapshot_link_as_skill_catalog_root() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let workspace_store = Arc::new(TestWorkspaceStore::default());
         let snapshot = create_inline_snapshot(
@@ -365,20 +395,18 @@ mod tests {
         )
         .await
         .expect("snapshot");
-        let session_id = SessionId::new("session_1");
-        let mounts = vec![mount_record(
-            &session_id,
+        let links = vec![resolved_link(
             "/skills/system",
-            VfsMountSource::Snapshot {
+            ResolvedWorkspaceLinkTarget::AvailableSnapshot {
                 snapshot_ref: snapshot.snapshot_ref.clone(),
             },
-            VfsMountAccess::ReadOnly,
+            WorkspaceLinkAccess::ReadOnly,
         )];
 
-        let resolved = resolve_mounted_vfs_skill_roots(
+        let resolved = resolve_linked_vfs_skill_roots(
             blobs.clone(),
             workspace_store,
-            mounts,
+            links,
             vec![VfsSkillRootSpec::new(
                 "system",
                 VfsPath::parse("/skills/system").unwrap(),
@@ -393,7 +421,7 @@ mod tests {
         assert_eq!(resolved.roots()[0].root_path.as_str(), "/skills/system");
         assert!(matches!(
             resolved.roots()[0].source,
-            SkillCatalogRootSource::MountedSnapshot { .. }
+            SkillCatalogRootSource::LinkedSnapshot { .. }
         ));
 
         let inputs = resolved.inputs();
@@ -405,13 +433,13 @@ mod tests {
         assert_eq!(build.catalog.skills[0].name, "review");
         assert!(matches!(
             &build.catalog.skills[0].location,
-            SkillLocation::MountedSnapshot {
+            SkillLocation::LinkedSnapshot {
                 source_snapshot_ref,
-                source_mount_path,
+                source_link_path,
                 skill_doc_path,
                 ..
             } if source_snapshot_ref == &snapshot.snapshot_ref
-                && source_mount_path.as_str() == "/skills/system"
+                && source_link_path.as_str() == "/skills/system"
                 && skill_doc_path.as_str() == "/skills/system/review/SKILL.md"
         ));
     }
@@ -431,7 +459,7 @@ mod tests {
         .await
         .expect("snapshot");
         let workspace_id = VfsWorkspaceId::new("workspace_1");
-        workspace_store
+        let workspace = workspace_store
             .create_workspace(CreateVfsWorkspaceRecord {
                 workspace_id: workspace_id.clone(),
                 display_name: None,
@@ -442,20 +470,16 @@ mod tests {
             })
             .await
             .expect("workspace");
-        let session_id = SessionId::new("session_1");
-        let mounts = vec![mount_record(
-            &session_id,
+        let links = vec![resolved_link(
             "/workspace",
-            VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            VfsMountAccess::ReadWrite,
+            ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace },
+            WorkspaceLinkAccess::ReadWrite,
         )];
 
-        let resolved = resolve_mounted_vfs_skill_roots(
+        let resolved = resolve_linked_vfs_skill_roots(
             blobs.clone(),
             workspace_store,
-            mounts,
+            links,
             vec![VfsSkillRootSpec::new(
                 "project",
                 VfsPath::parse("/workspace/.lightspeed/skills").unwrap(),
@@ -468,13 +492,13 @@ mod tests {
 
         assert!(matches!(
             &resolved.roots()[0].source,
-            SkillCatalogRootSource::MountedWorkspace {
+            SkillCatalogRootSource::LinkedWorkspace {
                 workspace_id: resolved_workspace_id,
                 workspace_head_ref,
-                mount_path,
+                link_path,
             } if resolved_workspace_id == &workspace_id
                 && workspace_head_ref == &snapshot.snapshot_ref
-                && mount_path.as_str() == "/workspace"
+                && link_path.as_str() == "/workspace"
         ));
 
         let inputs = resolved.inputs();
@@ -485,23 +509,23 @@ mod tests {
         assert_eq!(build.catalog.skills.len(), 1);
         assert!(matches!(
             &build.catalog.skills[0].location,
-            SkillLocation::MountedWorkspace {
+            SkillLocation::LinkedWorkspace {
                 workspace_id: resolved_workspace_id,
-                source_mount_path,
+                source_link_path,
                 skill_doc_path,
                 ..
             } if resolved_workspace_id == &workspace_id
-                && source_mount_path.as_str() == "/workspace"
+                && source_link_path.as_str() == "/workspace"
                 && skill_doc_path.as_str() == "/workspace/.lightspeed/skills/review/SKILL.md"
         ));
     }
 
     #[tokio::test]
-    async fn rejects_unmounted_skill_root() {
+    async fn rejects_unlinked_skill_root() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let workspace_store = Arc::new(TestWorkspaceStore::default());
 
-        let result = resolve_mounted_vfs_skill_roots(
+        let result = resolve_linked_vfs_skill_roots(
             blobs,
             workspace_store,
             Vec::new(),
@@ -516,11 +540,46 @@ mod tests {
 
         assert_eq!(
             result.err(),
-            Some(SkillVfsRootError::UnmountedRoot {
+            Some(SkillVfsRootError::UnlinkedRoot {
                 root_id: "system".to_owned(),
                 root_path: VfsPath::parse("/skills/system").unwrap(),
             })
         );
+    }
+
+    #[tokio::test]
+    async fn unavailable_link_becomes_a_source_warning_without_a_root() {
+        let resolved = resolve_linked_vfs_skill_roots(
+            Arc::new(InMemoryBlobStore::new()),
+            Arc::new(TestWorkspaceStore::default()),
+            vec![resolved_link(
+                "/skills/system",
+                ResolvedWorkspaceLinkTarget::Unavailable {
+                    declared_target: WorkspaceLinkTarget::Workspace {
+                        workspace_id: "deleted".to_owned(),
+                    },
+                    reason: "workspace was deleted".to_owned(),
+                },
+                WorkspaceLinkAccess::ReadWrite,
+            )],
+            vec![VfsSkillRootSpec::new(
+                "system",
+                VfsPath::parse("/skills/system").unwrap(),
+                SkillTrustLevel::System,
+                SkillScope::Global,
+            )],
+        )
+        .await
+        .expect("unavailable links degrade per source");
+
+        assert!(resolved.roots().is_empty());
+        assert!(matches!(
+            resolved.warnings(),
+            [SkillLoadWarning {
+                kind: SkillLoadWarningKind::UnavailableWorkspaceLink { reason },
+                ..
+            }] if reason == "workspace was deleted"
+        ));
     }
 
     #[test]
@@ -545,16 +604,14 @@ mod tests {
         .unwrap()
     }
 
-    fn mount_record(
-        session_id: &SessionId,
-        mount_path: &str,
-        source: VfsMountSource,
-        access: VfsMountAccess,
-    ) -> VfsMountRecord {
-        VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse(mount_path).unwrap(),
-            source,
+    fn resolved_link(
+        path: &str,
+        target: ResolvedWorkspaceLinkTarget,
+        access: WorkspaceLinkAccess,
+    ) -> ResolvedWorkspaceLink {
+        ResolvedWorkspaceLink {
+            path: VfsPath::parse(path).unwrap(),
+            target,
             access,
         }
     }

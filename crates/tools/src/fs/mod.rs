@@ -30,7 +30,7 @@ pub use session::{
     SessionFileSystemRouteSource,
 };
 use thiserror::Error;
-pub use vfs::{MountedVfsFileSystem, VfsSnapshotFileSystem, VfsWorkspaceFileSystem};
+pub use vfs::{LinkedVfsFileSystem, VfsSnapshotFileSystem, VfsWorkspaceFileSystem};
 
 use crate::limits::ToolLimits;
 
@@ -49,6 +49,9 @@ pub enum FsError {
 
     #[error("filesystem permission denied for path: {path}")]
     PermissionDenied { path: FsPath },
+
+    #[error("workspace link unavailable for path {path}: {message}")]
+    Unavailable { path: FsPath, message: String },
 
     #[error("filesystem operation unsupported: {message}")]
     Unsupported { message: String },

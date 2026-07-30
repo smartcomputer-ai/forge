@@ -43,9 +43,6 @@ pub const METHOD_SESSION_SKILLS_DEACTIVATE: &str = "session/skills/deactivate";
 // ── Sessions: bindings to universe resources ───────────────────────────────
 
 pub const METHOD_SESSION_PROFILES_APPLY: &str = "session/profiles/apply";
-pub const METHOD_SESSION_MOUNTS_PUT: &str = "session/mounts/put";
-pub const METHOD_SESSION_MOUNTS_LIST: &str = "session/mounts/list";
-pub const METHOD_SESSION_MOUNTS_DELETE: &str = "session/mounts/delete";
 
 // ── Sessions: environments ──────────────────────────────────────────────────
 

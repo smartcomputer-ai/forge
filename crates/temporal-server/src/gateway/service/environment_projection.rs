@@ -72,11 +72,8 @@ impl GatewayAgentApi {
         let vfs_catalog_enabled = features.is_some_and(|features| features.vfs.is_some());
         let environment_catalog_enabled =
             features.is_some_and(|features| features.environments.is_some());
-        let mounts = if vfs_catalog_enabled {
-            self.store
-                .list_mounts(session_id)
-                .await
-                .map_err(map_vfs_catalog_error)?
+        let links = if vfs_catalog_enabled {
+            self.resolve_session_workspace_links(state).await?
         } else {
             Vec::new()
         };
@@ -89,7 +86,7 @@ impl GatewayAgentApi {
             .environment_manager
             .refresh_projection_for_runtime_environments(
                 state,
-                mounts,
+                links,
                 environments,
                 vfs_catalog_enabled,
                 environment_catalog_enabled,

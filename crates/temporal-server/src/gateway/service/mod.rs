@@ -57,7 +57,7 @@ use skills::{
     active_skill_ids_after_upsert, skill_activation_context_input,
 };
 #[cfg(test)]
-use skills::{read_skill_doc_for_activation_from_vfs, skill_active_response, skill_list_response};
+use skills::{skill_active_response, skill_list_response};
 use vfs_api::{
     commit_vfs_snapshot, now_ms, read_vfs_snapshot, store_tool_documents, vfs_workspace_view,
 };
@@ -74,7 +74,7 @@ use crate::environment::{RuntimeEnvironment, SessionEnvironmentManager};
 use api::*;
 use api::{
     SkillActivationScope as ApiSkillActivationScope,
-    SkillActivationSource as ApiSkillActivationSource, VfsMountAccess as ApiVfsMountAccess,
+    SkillActivationSource as ApiSkillActivationSource,
 };
 use api_projection::{
     CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, api_kind_from_str, api_run_id,
@@ -112,12 +112,10 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus
 use tools::{
     builtin::{BuiltinTool, BuiltinToolOperation},
     environment::jobs::{JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID},
-    fs::{FileSystem, FsPath, MountedVfsFileSystem},
     runtime::{ToolDocument, ToolTarget},
     skills::{
-        SkillCatalogSnapshot, SkillLocation, SkillMetadata, configured_vfs_skill_root_specs,
-        prepare_skill_catalog_publication, resolve_mounted_vfs_skill_roots,
-        skill_catalog_context_input,
+        SkillCatalogSnapshot, SkillMetadata, configured_vfs_skill_root_specs,
+        resolve_linked_vfs_skill_roots, skill_catalog_context_input,
     },
     targets::ToolTargets,
     toolset::{
@@ -131,9 +129,8 @@ use tools::{
     },
 };
 use vfs::{
-    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountAccess,
-    VfsMountRecord, VfsMountSource, VfsMountStore, VfsPath, VfsSnapshotRecord, VfsSnapshotSource,
-    VfsSnapshotStore, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsSnapshotRecord,
+    VfsSnapshotSource, VfsSnapshotStore, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
 };
 
 use super::{
@@ -778,8 +775,7 @@ impl GatewayAgentApiBuilder {
                 github_api.clone(),
             ),
         );
-        let mut environment_manager =
-            SessionEnvironmentManager::new(self.store.clone(), self.store.clone());
+        let mut environment_manager = SessionEnvironmentManager::new(self.store.clone());
         for environment in self.environments {
             environment_manager.insert_environment(environment);
         }
@@ -1609,17 +1605,14 @@ impl GatewayAgentApi {
         session_id: &SessionId,
     ) -> Result<SessionView, AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
-        let mut session = self
-            .projector()
+        self.projector()
             .project_session(ProjectSession {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
                 entries: &loaded.entries,
             })
-            .await?;
-        session.vfs_mounts = self.project_vfs_mounts(session_id).await?;
-        Ok(session)
+            .await
     }
 
     async fn project_run_by_id(
@@ -2109,6 +2102,8 @@ impl AgentApiService for GatewayAgentApi {
         // Declared MCP links must resolve (catalog record, grant/policy
         // compatibility) before the document enters the session log.
         self.desired_mcp_tools(&config.features).await?;
+        self.validate_workspace_link_targets(&config.features)
+            .await?;
         if &config == current_config {
             // The config event is an idempotent no-op, but derived managed
             // context may still need repair after an interrupted refresh.
@@ -2121,23 +2116,6 @@ impl AgentApiService for GatewayAgentApi {
         // Revoking a granting feature while dependent bindings are live is a
         // conflict (P95 §5): teardown is explicit, a config put never closes
         // resources as a side effect.
-        if config.features.vfs.is_none() {
-            let mounts = self
-                .store
-                .list_mounts(&session_id)
-                .await
-                .map_err(map_vfs_catalog_error)?;
-            if !mounts.is_empty() {
-                let paths = mounts
-                    .iter()
-                    .map(|mount| mount.mount_path.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(AgentApiError::conflict(format!(
-                    "cannot revoke the vfs feature while mounts exist ({paths}); delete the mounts first"
-                )));
-            }
-        }
         if config.features.environments.is_none() {
             let environments = self
                 .project_session_environments(&session_id, &loaded.state)
@@ -3279,45 +3257,6 @@ impl AgentApiService for GatewayAgentApi {
         let workspace = self.delete_vfs_workspace_record(params).await?;
         Ok(AgentApiOutcome::new(VfsWorkspaceDeleteResponse {
             workspace: vfs_workspace_view(workspace),
-        }))
-    }
-
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError> {
-        let (mount, session) = self.put_vfs_mount_record(params).await?;
-        Ok(AgentApiOutcome::new(VfsMountPutResponse {
-            mount: self.vfs_mount_view(mount).await?,
-            session,
-        }))
-    }
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError> {
-        let (mount_path, session) = self.delete_vfs_mount_record(params).await?;
-        Ok(AgentApiOutcome::new(VfsMountDeleteResponse {
-            mount_path,
-            session,
-        }))
-    }
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        self.store
-            .load_session(&session_id)
-            .await
-            .map_err(map_session_store_error)?
-            .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))?;
-        Ok(AgentApiOutcome::new(VfsMountListResponse {
-            mounts: self.project_vfs_mounts(&session_id).await?,
         }))
     }
 

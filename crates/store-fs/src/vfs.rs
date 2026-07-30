@@ -5,14 +5,13 @@ use std::{
 };
 
 use async_trait::async_trait;
-use engine::{BlobRef, SessionId};
+use engine::BlobRef;
 use serde::{Serialize, de::DeserializeOwned};
 use tokio::{fs, sync::Mutex};
 
 use ::vfs::{
-    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountRecord,
-    VfsMountSource, VfsMountStore, VfsPath, VfsSnapshotRecord, VfsSnapshotStore, VfsWorkspaceId,
-    VfsWorkspaceRecord, VfsWorkspaceStore,
+    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsSnapshotRecord,
+    VfsSnapshotStore, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
 };
 
 #[derive(Clone)]
@@ -50,7 +49,6 @@ impl FsVfsCatalogStore {
     async fn ensure_layout(&self) -> io::Result<()> {
         fs::create_dir_all(self.snapshots_root()).await?;
         fs::create_dir_all(self.workspaces_root()).await?;
-        fs::create_dir_all(self.mounts_root()).await?;
         Ok(())
     }
 
@@ -66,10 +64,6 @@ impl FsVfsCatalogStore {
         self.vfs_root().join("workspaces")
     }
 
-    fn mounts_root(&self) -> PathBuf {
-        self.vfs_root().join("mounts")
-    }
-
     fn snapshot_path(&self, snapshot_ref: &BlobRef) -> PathBuf {
         self.snapshots_root().join(format!(
             "{}.json",
@@ -82,85 +76,6 @@ impl FsVfsCatalogStore {
             "{}.json",
             crate::encode_component(workspace_id.as_str())
         ))
-    }
-
-    fn session_mounts_dir(&self, session_id: &SessionId) -> PathBuf {
-        self.mounts_root()
-            .join(crate::encode_component(session_id.as_str()))
-    }
-
-    fn mount_path(&self, session_id: &SessionId, mount_path: &VfsPath) -> PathBuf {
-        self.session_mounts_dir(session_id).join(format!(
-            "{}.json",
-            crate::encode_component(mount_path.as_str())
-        ))
-    }
-
-    async fn remove_workspace_mounts_locked(
-        &self,
-        workspace_id: &VfsWorkspaceId,
-    ) -> Result<(), VfsCatalogError> {
-        let root = self.mounts_root();
-        let mut sessions = match fs::read_dir(&root).await {
-            Ok(read_dir) => read_dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-            Err(error) => return Err(catalog_io_error("read vfs mounts directory", &root, error)),
-        };
-
-        while let Some(session_entry) = sessions
-            .next_entry()
-            .await
-            .map_err(|error| catalog_io_error("read vfs mounts directory", &root, error))?
-        {
-            let session_dir = session_entry.path();
-            let file_type = session_entry.file_type().await.map_err(|error| {
-                catalog_io_error("stat vfs session mounts directory", &session_dir, error)
-            })?;
-            if !file_type.is_dir() {
-                continue;
-            }
-
-            let mut mounts = match fs::read_dir(&session_dir).await {
-                Ok(read_dir) => read_dir,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-                Err(error) => {
-                    return Err(catalog_io_error(
-                        "read vfs session mounts directory",
-                        &session_dir,
-                        error,
-                    ));
-                }
-            };
-            while let Some(mount_entry) = mounts.next_entry().await.map_err(|error| {
-                catalog_io_error("read vfs session mounts directory", &session_dir, error)
-            })? {
-                let path = mount_entry.path();
-                let file_type = mount_entry
-                    .file_type()
-                    .await
-                    .map_err(|error| catalog_io_error("stat vfs mount record", &path, error))?;
-                if !file_type.is_file() {
-                    continue;
-                }
-                if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
-                    continue;
-                }
-
-                let mount: VfsMountRecord =
-                    read_required_json("mount", "unknown", "read vfs mount record", &path).await?;
-                if matches!(
-                    &mount.source,
-                    VfsMountSource::Workspace {
-                        workspace_id: mounted_workspace_id
-                    } if mounted_workspace_id == workspace_id
-                ) {
-                    fs::remove_file(&path).await.map_err(|error| {
-                        catalog_io_error("delete vfs mount record", &path, error)
-                    })?;
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -348,82 +263,7 @@ impl VfsWorkspaceStore for FsVfsCatalogStore {
         fs::remove_file(&path)
             .await
             .map_err(|error| catalog_io_error("delete vfs workspace record", &path, error))?;
-        self.remove_workspace_mounts_locked(workspace_id).await?;
         Ok(workspace)
-    }
-}
-
-#[async_trait]
-impl VfsMountStore for FsVfsCatalogStore {
-    async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-        let _guard = self.lock.lock().await;
-        let path = self.mount_path(&record.session_id, &record.mount_path);
-        write_json("write vfs mount record", &path, &record).await
-    }
-
-    async fn list_mounts(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-        let _guard = self.lock.lock().await;
-        let dir = self.session_mounts_dir(session_id);
-        let mut read_dir = match fs::read_dir(&dir).await {
-            Ok(read_dir) => read_dir,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(catalog_io_error("read vfs mounts directory", &dir, error)),
-        };
-
-        let mut mounts = Vec::new();
-        while let Some(entry) = read_dir
-            .next_entry()
-            .await
-            .map_err(|error| catalog_io_error("read vfs mounts directory entry", &dir, error))?
-        {
-            let file_type = entry.file_type().await.map_err(|error| {
-                catalog_io_error("read vfs mount entry type", &entry.path(), error)
-            })?;
-            if !file_type.is_file() {
-                continue;
-            }
-            if entry
-                .path()
-                .extension()
-                .and_then(|extension| extension.to_str())
-                != Some("json")
-            {
-                continue;
-            }
-            mounts.push(
-                read_required_json::<VfsMountRecord>(
-                    "mount",
-                    &format!("{}:{}", session_id, entry.path().display()),
-                    "read vfs mount record",
-                    &entry.path(),
-                )
-                .await?,
-            );
-        }
-        mounts.sort_by(|left, right| left.mount_path.cmp(&right.mount_path));
-        Ok(mounts)
-    }
-
-    async fn remove_mount(
-        &self,
-        session_id: &SessionId,
-        mount_path: &VfsPath,
-    ) -> Result<(), VfsCatalogError> {
-        let _guard = self.lock.lock().await;
-        let path = self.mount_path(session_id, mount_path);
-        match fs::remove_file(&path).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                Err(VfsCatalogError::NotFound {
-                    kind: "mount",
-                    id: format!("{session_id}:{mount_path}"),
-                })
-            }
-            Err(error) => Err(catalog_io_error("remove vfs mount record", &path, error)),
-        }
     }
 }
 
@@ -471,12 +311,10 @@ fn catalog_io_error(action: &str, path: &Path, error: io::Error) -> VfsCatalogEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::vfs::{
-        VfsMountAccess, VfsMountSource, VfsSnapshotSource, VfsSnapshotSource as SnapshotSource,
-    };
+    use ::vfs::{VfsSnapshotSource, VfsSnapshotSource as SnapshotSource};
 
     #[tokio::test(flavor = "current_thread")]
-    async fn fs_vfs_catalog_persists_snapshot_workspace_and_mounts() {
+    async fn fs_vfs_catalog_persists_snapshots_and_workspaces() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
         let store = FsVfsCatalogStore::open(temp_dir.path())
             .await
@@ -579,43 +417,6 @@ mod tests {
         assert_eq!(listed[0].workspace_id, workspace_id);
         assert_eq!(listed[0].display_name.as_deref(), Some("Scratch v2"));
 
-        let session_id = SessionId::new("session-1");
-        let skill_mount = VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/skills/openai-docs").unwrap(),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot_ref.clone(),
-            },
-            access: VfsMountAccess::ReadOnly,
-        };
-        let workspace_mount = VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/workspace").unwrap(),
-            source: VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            access: VfsMountAccess::ReadWrite,
-        };
-        store
-            .put_mount(workspace_mount.clone())
-            .await
-            .expect("put workspace mount");
-        store
-            .put_mount(skill_mount.clone())
-            .await
-            .expect("put skill mount");
-        assert_eq!(
-            store.list_mounts(&session_id).await.expect("list mounts"),
-            vec![skill_mount.clone(), workspace_mount.clone()]
-        );
-        store
-            .remove_mount(&session_id, &skill_mount.mount_path)
-            .await
-            .expect("remove mount");
-        assert_eq!(
-            store.list_mounts(&session_id).await.expect("list mounts"),
-            vec![workspace_mount.clone()]
-        );
         let deleted = store
             .delete_workspace(&workspace_id)
             .await
@@ -625,10 +426,6 @@ mod tests {
             store.read_workspace(&deleted.workspace_id).await,
             Err(VfsCatalogError::NotFound { .. })
         ));
-        assert_eq!(
-            store.list_mounts(&session_id).await.expect("list mounts"),
-            Vec::<VfsMountRecord>::new()
-        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -25,9 +25,6 @@ export const METHODS = [
   "session/skills/activate",
   "session/skills/deactivate",
   "session/profiles/apply",
-  "session/mounts/put",
-  "session/mounts/list",
-  "session/mounts/delete",
   "session/environments/read",
   "session/environments/list",
   "session/environments/attach",
@@ -192,22 +189,7 @@ export const METHOD_INFO = {
   "session/profiles/apply": {
     scope: "universe",
     summary: "Apply a profile to a session",
-    description: "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
-  },
-  "session/mounts/put": {
-    scope: "universe",
-    summary: "Create or replace a session mount",
-    description: "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-  },
-  "session/mounts/list": {
-    scope: "universe",
-    summary: "List session mounts",
-    description: "Returns the session's snapshot/workspace bindings and access modes.",
-  },
-  "session/mounts/delete": {
-    scope: "universe",
-    summary: "Delete a session mount",
-    description: "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
+    description: "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
   },
   "session/environments/read": {
     scope: "universe",
@@ -713,38 +695,11 @@ export interface MethodMap {
   /**
    * Apply a profile to a session
    *
-   * Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
+   * Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
    */
   "session/profiles/apply": {
     params: Api.ProfileApplyParams;
     result: Api.AgentApiOutcomeOfProfileApplyResponse;
-  };
-  /**
-   * Create or replace a session mount
-   *
-   * Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.
-   */
-  "session/mounts/put": {
-    params: Api.VfsMountPutParams;
-    result: Api.AgentApiOutcomeOfVfsMountPutResponse;
-  };
-  /**
-   * List session mounts
-   *
-   * Returns the session's snapshot/workspace bindings and access modes.
-   */
-  "session/mounts/list": {
-    params: Api.VfsMountListParams;
-    result: Api.AgentApiOutcomeOfVfsMountListResponse;
-  };
-  /**
-   * Delete a session mount
-   *
-   * Removes a binding from an open idle session without deleting its source snapshot or workspace.
-   */
-  "session/mounts/delete": {
-    params: Api.VfsMountDeleteParams;
-    result: Api.AgentApiOutcomeOfVfsMountDeleteResponse;
   };
   /**
    * Read a session environment binding
@@ -1478,34 +1433,10 @@ export const rpc = {
   /**
    * Apply a profile to a session
    *
-   * Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
+   * Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.
    */
   sessionProfilesApply(client: RpcCaller, params: Api.ProfileApplyParams): Promise<Api.AgentApiOutcomeOfProfileApplyResponse> {
     return client.call("session/profiles/apply", params);
-  },
-  /**
-   * Create or replace a session mount
-   *
-   * Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.
-   */
-  sessionMountsPut(client: RpcCaller, params: Api.VfsMountPutParams): Promise<Api.AgentApiOutcomeOfVfsMountPutResponse> {
-    return client.call("session/mounts/put", params);
-  },
-  /**
-   * List session mounts
-   *
-   * Returns the session's snapshot/workspace bindings and access modes.
-   */
-  sessionMountsList(client: RpcCaller, params: Api.VfsMountListParams): Promise<Api.AgentApiOutcomeOfVfsMountListResponse> {
-    return client.call("session/mounts/list", params);
-  },
-  /**
-   * Delete a session mount
-   *
-   * Removes a binding from an open idle session without deleting its source snapshot or workspace.
-   */
-  sessionMountsDelete(client: RpcCaller, params: Api.VfsMountDeleteParams): Promise<Api.AgentApiOutcomeOfVfsMountDeleteResponse> {
-    return client.call("session/mounts/delete", params);
   },
   /**
    * Read a session environment binding

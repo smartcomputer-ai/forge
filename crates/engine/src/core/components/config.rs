@@ -140,19 +140,23 @@ impl FeaturesConfig {
     }
 }
 
-/// Grants the session virtual filesystem: mounts may be attached and the VFS
-/// catalog is surfaced to the session. The sub-blocks grant the agent tool
+/// Grants the session virtual filesystem. Workspace links declare the
+/// session-visible namespace and the VFS catalog is surfaced to the session.
+/// The sub-blocks grant the agent tool
 /// surface and prompt/skill sourcing independently — `{}` grants a VFS with
-/// no tools and no sourcing. Sourcing from mounted environments is a later,
+/// no tools and no sourcing. Sourcing from linked environments is a later,
 /// environment-specific concern and does not live here.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VfsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
+    /// Catalog resources exposed in the session's workspace namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<WorkspaceLink>,
     /// Agent-facing filesystem tool surface: absent = no fs tools (a
     /// sourcing-only VFS is valid); `read_only` installs the read surface;
     /// `edit` adds the write tools. Per-path writability is defined and
-    /// enforced by each mount's own access — this field shapes which tools
+    /// enforced by each workspace link's own access — this field shapes which tools
     /// exist, not path permissions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
@@ -170,11 +174,33 @@ impl Default for VfsFeature {
     fn default() -> Self {
         Self {
             version: CURRENT_FEATURE_VERSION,
+            workspace_links: Vec::new(),
             tools: None,
             prompts: None,
             skills: None,
         }
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceLink {
+    pub path: String,
+    pub target: WorkspaceLinkTarget,
+    pub access: WorkspaceLinkAccess,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum WorkspaceLinkTarget {
+    Workspace { workspace_id: String },
+    Snapshot { snapshot_ref: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceLinkAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -518,11 +544,12 @@ fn validate_features(
 ) -> Result<(), DomainError> {
     if let Some(vfs) = &features.vfs {
         validate_feature_version("vfs", vfs.version)?;
+        let link_paths = validate_workspace_links(&vfs.workspace_links)?;
         if let Some(prompts) = &vfs.prompts {
-            validate_source_roots("vfs prompts", prompts.roots.as_deref())?;
+            validate_source_roots("vfs prompts", prompts.roots.as_deref(), &link_paths)?;
         }
         if let Some(skills) = &vfs.skills {
-            validate_source_roots("vfs skills", skills.roots.as_deref())?;
+            validate_source_roots("vfs skills", skills.roots.as_deref(), &link_paths)?;
         }
     }
     if let Some(web) = &features.web {
@@ -545,6 +572,70 @@ fn validate_features(
     Ok(())
 }
 
+fn validate_workspace_links(links: &[WorkspaceLink]) -> Result<Vec<String>, DomainError> {
+    let mut paths = Vec::with_capacity(links.len());
+    for link in links {
+        let path = canonical_workspace_link_path(&link.path)?;
+        if paths.iter().any(|existing: &String| {
+            existing == &path
+                || existing == "/"
+                || path == "/"
+                || existing.starts_with(&format!("{path}/"))
+                || path.starts_with(&format!("{existing}/"))
+        }) {
+            return Err(DomainError::InvariantViolation(format!(
+                "workspace link path {path:?} overlaps another workspace link"
+            )));
+        }
+        match &link.target {
+            WorkspaceLinkTarget::Workspace { workspace_id } => {
+                if workspace_id.trim().is_empty() {
+                    return Err(DomainError::InvariantViolation(
+                        "workspace link workspace_id must not be empty".to_owned(),
+                    ));
+                }
+            }
+            WorkspaceLinkTarget::Snapshot { snapshot_ref } => {
+                if snapshot_ref.trim().is_empty() {
+                    return Err(DomainError::InvariantViolation(
+                        "workspace link snapshot_ref must not be empty".to_owned(),
+                    ));
+                }
+                if link.access != WorkspaceLinkAccess::ReadOnly {
+                    return Err(DomainError::InvariantViolation(format!(
+                        "snapshot workspace link at {path:?} must be read_only"
+                    )));
+                }
+            }
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+fn canonical_workspace_link_path(path: &str) -> Result<String, DomainError> {
+    if path.is_empty() || !path.starts_with('/') {
+        return Err(DomainError::InvariantViolation(format!(
+            "workspace link path {path:?} must be absolute"
+        )));
+    }
+    if path.len() > 1 && path.ends_with('/') {
+        return Err(DomainError::InvariantViolation(format!(
+            "workspace link path {path:?} must be canonical"
+        )));
+    }
+    if path
+        .split('/')
+        .skip(1)
+        .any(|part| part.is_empty() || part == "." || part == ".." || part.contains('\0'))
+    {
+        return Err(DomainError::InvariantViolation(format!(
+            "workspace link path {path:?} must be canonical"
+        )));
+    }
+    Ok(path.to_owned())
+}
+
 fn validate_feature_version(feature: &str, version: u32) -> Result<(), DomainError> {
     if version == CURRENT_FEATURE_VERSION {
         Ok(())
@@ -556,7 +647,11 @@ fn validate_feature_version(feature: &str, version: u32) -> Result<(), DomainErr
     }
 }
 
-fn validate_source_roots(feature: &str, roots: Option<&[String]>) -> Result<(), DomainError> {
+fn validate_source_roots(
+    feature: &str,
+    roots: Option<&[String]>,
+    link_paths: &[String],
+) -> Result<(), DomainError> {
     let Some(roots) = roots else {
         return Ok(());
     };
@@ -566,11 +661,21 @@ fn validate_source_roots(feature: &str, roots: Option<&[String]>) -> Result<(), 
             feature
         )));
     }
-    if roots.iter().any(|root| root.trim().is_empty()) {
-        return Err(DomainError::InvariantViolation(format!(
-            "{} roots must not contain empty paths",
-            feature
-        )));
+    let mut seen = std::collections::BTreeSet::new();
+    for root in roots {
+        let root = canonical_workspace_link_path(root)?;
+        if !seen.insert(root.clone()) {
+            return Err(DomainError::InvariantViolation(format!(
+                "{feature} root {root:?} is declared more than once"
+            )));
+        }
+        if !link_paths.iter().any(|link_path| {
+            root == *link_path || link_path == "/" || root.starts_with(&format!("{link_path}/"))
+        }) {
+            return Err(DomainError::InvariantViolation(format!(
+                "{feature} root {root:?} is not under a workspace link"
+            )));
+        }
     }
     Ok(())
 }
@@ -969,6 +1074,62 @@ mod tests {
             .expect_err("explicit empty roots must fail validation");
 
         assert!(matches!(error, DomainError::InvariantViolation(_)));
+    }
+
+    #[test]
+    fn workspace_links_validate_topology_access_and_explicit_roots() {
+        let workspace = WorkspaceLink {
+            path: "/workspace".to_owned(),
+            target: WorkspaceLinkTarget::Workspace {
+                workspace_id: "workspace_1".to_owned(),
+            },
+            access: WorkspaceLinkAccess::ReadWrite,
+        };
+        let mut config = config(ProviderApiKind::OpenAiResponses, None);
+        config.features.vfs = Some(VfsFeature {
+            workspace_links: vec![workspace.clone()],
+            prompts: Some(VfsPromptsConfig {
+                roots: Some(vec!["/workspace/.agents/prompts".to_owned()]),
+            }),
+            ..VfsFeature::default()
+        });
+        config.validate().expect("valid workspace link topology");
+
+        config
+            .features
+            .vfs
+            .as_mut()
+            .unwrap()
+            .workspace_links
+            .push(WorkspaceLink {
+                path: "/workspace/nested".to_owned(),
+                ..workspace.clone()
+            });
+        assert!(matches!(
+            config.validate(),
+            Err(DomainError::InvariantViolation(_))
+        ));
+
+        config.features.vfs.as_mut().unwrap().workspace_links = vec![WorkspaceLink {
+            path: "/skills".to_owned(),
+            target: WorkspaceLinkTarget::Snapshot {
+                snapshot_ref: format!("sha256:{}", "a".repeat(64)),
+            },
+            access: WorkspaceLinkAccess::ReadWrite,
+        }];
+        assert!(matches!(
+            config.validate(),
+            Err(DomainError::InvariantViolation(_))
+        ));
+
+        config.features.vfs.as_mut().unwrap().workspace_links = vec![workspace];
+        config.features.vfs.as_mut().unwrap().prompts = Some(VfsPromptsConfig {
+            roots: Some(vec!["/outside/prompts".to_owned()]),
+        });
+        assert!(matches!(
+            config.validate(),
+            Err(DomainError::InvariantViolation(_))
+        ));
     }
 
     #[test]

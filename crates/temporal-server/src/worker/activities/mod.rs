@@ -293,6 +293,7 @@ mod tests {
                     turn_id: TurnId::new(1),
                     batch_id: ToolBatchId::new(1),
                     default_targets: Default::default(),
+                    workspace_links: Vec::new(),
                     calls: vec![ToolInvocationRequest {
                         call_id: tool_call.call_id.clone(),
                         tool_name: tool_call.tool_name.clone(),

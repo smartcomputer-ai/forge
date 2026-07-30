@@ -23,14 +23,14 @@ use api::{
     HostTargetCreateRequestView, HostTransportView, InputItem, ProfileCreateParams,
     ProfileDeleteParams, ProfileDocument, ProfileEnvironment, ProfileEnvironmentSource, ProfileId,
     ProfileSource, RunStartParams, RunStartSource, RunStatus, SandboxTargetSpecView, SessionConfig,
-    SessionEnvironmentAttachParams, SessionEnvironmentCredentialBindParams,
+    SessionConfigPutParams, SessionEnvironmentAttachParams, SessionEnvironmentCredentialBindParams,
     SessionEnvironmentCredentialListParams, SessionEnvironmentCredentialSourceView,
     SessionEnvironmentCredentialUnbindParams, SessionEnvironmentDetachParams,
     SessionEnvironmentListParams, SessionEventsReadParams, SessionJobCancelScopeView,
     SessionJobDependencyInput, SessionJobDependencyPolicyView, SessionJobHandleInput,
     SessionJobHandleView, SessionJobReadEntryView, SessionJobStartSpecInput, SessionJobStatusView,
-    SessionListParams, SessionReadParams, SessionStartParams, VfsMountAccess as ApiVfsMountAccess,
-    VfsMountPutParams, VfsMountSourceInput,
+    SessionListParams, SessionReadParams, SessionStartParams, WorkspaceLink, WorkspaceLinkAccess,
+    WorkspaceLinkTarget,
 };
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -316,13 +316,29 @@ async fn run_host_bridge_client(
         ]),
     )
     .await?;
-    api.put_vfs_mount(VfsMountPutParams {
+    let mut config = started_session
+        .result
+        .session
+        .config
+        .clone()
+        .expect("session config");
+    let features = config.features.as_mut().expect("features");
+    features
+        .vfs
+        .as_mut()
+        .expect("vfs")
+        .workspace_links
+        .push(WorkspaceLink {
+            path: "/skills".to_owned(),
+            target: WorkspaceLinkTarget::Snapshot {
+                snapshot_ref: skill_snapshot.snapshot_ref.to_string(),
+            },
+            access: WorkspaceLinkAccess::ReadOnly,
+        });
+    api.put_session_config(SessionConfigPutParams {
         session_id: session_id.as_str().to_owned(),
-        mount_path: "/skills".to_owned(),
-        source: VfsMountSourceInput::Snapshot {
-            snapshot_ref: skill_snapshot.snapshot_ref.as_str().to_owned(),
-        },
-        access: ApiVfsMountAccess::ReadOnly,
+        expected_config_revision: Some(started_session.result.session.config_revision),
+        config,
     })
     .await?;
 
@@ -1535,7 +1551,6 @@ async fn run_profile_environment_client(
                     ..SessionConfig::default()
                 }),
                 instructions: None,
-                mounts: Vec::new(),
                 environments: vec![ProfileEnvironment {
                     env_id: "profile-env".to_owned(),
                     environment: ProfileEnvironmentSource::Existing { instance_id },
@@ -2356,6 +2371,7 @@ fn env_live_features() -> api::FeaturesConfig {
         }),
         vfs: Some(api::VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
+            workspace_links: Vec::new(),
             tools: Some(api::VfsToolSurface::Edit),
             prompts: Some(api::VfsPromptsConfig::default()),
             skills: Some(api::VfsSkillsConfig::default()),

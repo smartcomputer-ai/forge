@@ -130,8 +130,9 @@ pub(super) async fn validate_workflow_tool_reply(
         .read_bytes(&request.reply_schema_ref)
         .await
         .map_err(activity_error)?;
-    let schema: serde_json::Value = serde_json::from_slice(&schema_bytes)
-        .map_err(|error| activity_error(anyhow::anyhow!("reply schema is not valid JSON: {error}")))?;
+    let schema: serde_json::Value = serde_json::from_slice(&schema_bytes).map_err(|error| {
+        activity_error(anyhow::anyhow!("reply schema is not valid JSON: {error}"))
+    })?;
     let validator = jsonschema::validator_for(&schema)
         .map_err(|error| activity_error(anyhow::anyhow!("reply schema is unsupported: {error}")))?;
 
@@ -322,8 +323,8 @@ mod tests {
         CoreAgentIoError, CoreAgentLlm, CoreAgentTools, LlmFinish, LlmGenerationFacts,
         LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, ObservedToolCall,
         StoredEvent, ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest,
-        ToolInvocationBatchResult, ToolInvocationResult, ToolName, WorkflowToolInvocation,
-        WorkflowToolInvocationId, WorkflowToolBinding,
+        ToolInvocationBatchResult, ToolInvocationResult, ToolName, WorkflowToolBinding,
+        WorkflowToolInvocation, WorkflowToolInvocationId,
         storage::{BlobStore, InMemoryBlobStore, InMemorySessionStore, SessionPage, SessionRecord},
     };
     use serde_json::json;
@@ -686,8 +687,7 @@ mod tests {
             ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
             FunctionToolSpec, ManagedSessionWorkflowTools, RunConfig, RunRequestCommand,
             RunRequestSource, ToolKind, ToolParallelism, ToolSpec, ToolTargetRequirement,
-            WorkflowEndpointRef, WorkflowToolDeclaration, WorkflowToolDefinition,
-            WorkflowToolId,
+            WorkflowEndpointRef, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId,
         };
         use test_support::{DriveCommand, RunnerStores, SessionRunner};
         use uuid::Uuid;

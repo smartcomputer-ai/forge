@@ -199,8 +199,9 @@ cargo run -p cli -- chat --new --profile example.workspace-prompts-skills \
 ```
 
 The workspace-backed profile provisions `profiles/workspace-prompts-skills/` as
-a VFS workspace and mounts it at `/workspace`. The local `provision` block is
-consumed by the CLI during import and is not stored in the profile record.
+a VFS workspace and links it at `/workspace` through
+`features.vfs.workspaceLinks`. The local `provision` block is consumed by the
+CLI during import and is not stored in the profile record.
 
 There is also a multi-profile Fleet demo:
 
@@ -224,16 +225,17 @@ non-empty JSON array of profile objects. See `profiles/README.md` for the full
 set of examples, including the MCP echo profile, which requires registering the
 test MCP server before import.
 
-To chat with a local directory mounted as a writable CAS-backed VFS workspace:
+To chat with a local directory linked as a writable CAS-backed VFS workspace:
 
 ```bash
 cargo run -p cli -- chat --new --mount docs/
 ```
 
 The CLI snapshots the directory locally, uploads missing blobs, creates a VFS
-workspace from that snapshot, mounts it at `/workspace`, and starts the chat
-session with `/workspace` as the working directory. Use `--mount-path` to pick
-a different VFS mount path.
+workspace from that snapshot, places a workspace link at `/workspace` in the
+initial session config, and starts the chat session with `/workspace` as the
+working directory. `--mount` and `--mount-path` are CLI convenience spellings;
+the durable API/config vocabulary is workspace links.
 
 The `cli` package builds the `lightspeed` binary, so installed usage is equivalent:
 

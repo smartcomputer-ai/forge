@@ -490,12 +490,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
-            },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
             }
           },
           "type": "object"
@@ -709,25 +703,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -944,7 +919,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -977,59 +952,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -1138,6 +1077,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -1796,7 +1800,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -1829,13 +1833,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
@@ -1947,6 +1958,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -2741,7 +2817,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_profiles_apply",
     "method": "session/profiles/apply",
     "summary": "Apply a profile to a session",
-    "description": "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
+    "description": "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
     "paramsType": "ProfileApplyParams",
     "resultType": "AgentApiOutcome<ProfileApplyResponse>",
     "inputSchema": {
@@ -3213,12 +3289,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
-            },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
             }
           },
           "type": "object"
@@ -3432,25 +3502,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -3667,7 +3718,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -3700,59 +3751,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -3861,66 +3876,38 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
-        }
-      }
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_put",
-    "method": "session/mounts/put",
-    "summary": "Create or replace a session mount",
-    "description": "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-    "paramsType": "VfsMountPutParams",
-    "resultType": "AgentApiOutcome<VfsMountPutResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "access": {
-          "$ref": "#/definitions/VfsMountAccess"
         },
-        "mountPath": {
-          "type": "string"
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
         },
-        "sessionId": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/definitions/VfsMountSourceInput"
-        }
-      },
-      "required": [
-        "sessionId",
-        "mountPath",
-        "source",
-        "access"
-      ],
-      "type": "object",
-      "definitions": {
-        "VfsMountAccess": {
+        "WorkspaceLinkAccess": {
           "enum": [
             "readOnly",
             "readWrite"
           ],
           "type": "string"
         },
-        "VfsMountSourceInput": {
+        "WorkspaceLinkTarget": {
           "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
             {
               "properties": {
                 "type": {
@@ -3936,54 +3923,26 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "workspaceId"
               ],
               "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
             }
           ]
         }
       }
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_list",
-    "method": "session/mounts/list",
-    "summary": "List session mounts",
-    "description": "Returns the session's snapshot/workspace bindings and access modes.",
-    "paramsType": "VfsMountListParams",
-    "resultType": "AgentApiOutcome<VfsMountListResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_mounts_delete",
-    "method": "session/mounts/delete",
-    "summary": "Delete a session mount",
-    "description": "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
-    "paramsType": "VfsMountDeleteParams",
-    "resultType": "AgentApiOutcome<VfsMountDeleteResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "mountPath": {
-          "type": "string"
-        },
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "mountPath"
-      ],
-      "type": "object"
     }
   },
   {
@@ -4625,12 +4584,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
-            },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             }
@@ -5248,25 +5201,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
-        },
         "RemoteMcpApprovalPolicy": {
           "enum": [
             "providerDefault",
@@ -5446,7 +5380,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -5479,59 +5413,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -5640,6 +5538,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }
@@ -5749,12 +5712,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "mounts": {
-              "items": {
-                "$ref": "#/definitions/ProfileMount"
-              },
-              "type": "array"
-            },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             }
@@ -6372,25 +6329,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
-        "ProfileMount": {
-          "properties": {
-            "access": {
-              "$ref": "#/definitions/VfsMountAccess"
-            },
-            "mountPath": {
-              "type": "string"
-            },
-            "source": {
-              "$ref": "#/definitions/VfsMountSourceInput"
-            }
-          },
-          "required": [
-            "mountPath",
-            "source",
-            "access"
-          ],
-          "type": "object"
-        },
         "RemoteMcpApprovalPolicy": {
           "enum": [
             "providerDefault",
@@ -6570,7 +6508,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+          "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
           "properties": {
             "prompts": {
               "anyOf": [
@@ -6603,59 +6541,23 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
             },
             "version": {
               "default": 1,
               "format": "uint32",
               "minimum": 0,
               "type": "integer"
+            },
+            "workspaceLinks": {
+              "description": "Catalog resources exposed in the session's workspace namespace.",
+              "items": {
+                "$ref": "#/definitions/WorkspaceLink"
+              },
+              "type": "array"
             }
           },
           "type": "object"
-        },
-        "VfsMountAccess": {
-          "enum": [
-            "readOnly",
-            "readWrite"
-          ],
-          "type": "string"
-        },
-        "VfsMountSourceInput": {
-          "oneOf": [
-            {
-              "properties": {
-                "snapshotRef": {
-                  "type": "string"
-                },
-                "type": {
-                  "const": "snapshot",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "snapshotRef"
-              ],
-              "type": "object"
-            },
-            {
-              "properties": {
-                "type": {
-                  "const": "workspace",
-                  "type": "string"
-                },
-                "workspaceId": {
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "workspaceId"
-              ],
-              "type": "object"
-            }
-          ]
         },
         "VfsPromptsConfig": {
           "additionalProperties": {
@@ -6764,6 +6666,71 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "WorkspaceLink": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "access": {
+              "$ref": "#/definitions/WorkspaceLinkAccess"
+            },
+            "path": {
+              "type": "string"
+            },
+            "target": {
+              "$ref": "#/definitions/WorkspaceLinkTarget"
+            }
+          },
+          "required": [
+            "path",
+            "target",
+            "access"
+          ],
+          "type": "object"
+        },
+        "WorkspaceLinkAccess": {
+          "enum": [
+            "readOnly",
+            "readWrite"
+          ],
+          "type": "string"
+        },
+        "WorkspaceLinkTarget": {
+          "oneOf": [
+            {
+              "properties": {
+                "type": {
+                  "const": "workspace",
+                  "type": "string"
+                },
+                "workspaceId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "workspaceId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "snapshotRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "snapshot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "snapshotRef"
+              ],
+              "type": "object"
+            }
+          ]
         }
       }
     }

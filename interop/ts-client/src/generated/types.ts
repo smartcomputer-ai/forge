@@ -225,6 +225,24 @@ export type FleetSpawnBase = "self" | "session" | "profile";
 export type VfsToolSurface = "readOnly" | "edit";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLinkAccess".
+ */
+export type WorkspaceLinkAccess = "readOnly" | "readWrite";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLinkTarget".
+ */
+export type WorkspaceLinkTarget =
+  | {
+      type: "workspace";
+      workspaceId: string;
+    }
+  | {
+      snapshotRef: string;
+      type: "snapshot";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolChoice".
  */
 export type ToolChoice =
@@ -369,26 +387,6 @@ export type RunStatus = "queued" | "running" | "cancelling" | "completed" | "fai
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "notLoaded" | "idle" | "active" | "closed" | "error";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountAccess".
- */
-export type VfsMountAccess = "readOnly" | "readWrite";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountSourceView".
- */
-export type VfsMountSourceView =
-  | {
-      snapshotRef: string;
-      type: "snapshot";
-    }
-  | {
-      headSnapshotRef?: string | null;
-      revision?: number | null;
-      type: "workspace";
-      workspaceId: string;
-    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionEventKindView".
@@ -953,19 +951,6 @@ export type ProfileInstructions =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountSourceInput".
- */
-export type VfsMountSourceInput =
-  | {
-      snapshotRef: string;
-      type: "snapshot";
-    }
-  | {
-      type: "workspace";
-      workspaceId: string;
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionLifecycleStatus".
  */
 export type SessionLifecycleStatus = "new" | "open" | "closed";
@@ -1147,7 +1132,6 @@ export interface SessionView {
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
-  vfsMounts?: VfsMountView[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1354,8 +1338,8 @@ export interface TimersFeature {
   version?: number;
 }
 /**
- * Grants the session virtual filesystem: mounts may be attached and the VFS
- * catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
+ * Grants the session virtual filesystem. Workspace links declare the
+ * session-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
  * no tools and no sourcing.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1372,10 +1356,14 @@ export interface VfsFeature {
   skills?: VfsSkillsConfig | null;
   /**
    * Agent-facing filesystem tool surface; absent = no fs tools. Per-path
-   * writability is defined by each mount's own access.
+   * writability is defined by each workspace link's own access.
    */
   tools?: VfsToolSurface | null;
   version?: number;
+  /**
+   * Catalog resources exposed in the session's workspace namespace.
+   */
+  workspaceLinks?: WorkspaceLink[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1398,6 +1386,15 @@ export interface VfsSkillsConfig {
    * non-empty.
    */
   roots?: string[] | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WorkspaceLink".
+ */
+export interface WorkspaceLink {
+  access: WorkspaceLinkAccess;
+  path: string;
+  target: WorkspaceLinkTarget;
 }
 /**
  * Grants network access through the web toolset; `fetch` and `search` are
@@ -1575,15 +1572,6 @@ export interface ToolEffectView {
     [k: string]: string;
   };
   kind: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountView".
- */
-export interface VfsMountView {
-  access: VfsMountAccess;
-  mountPath: string;
-  source: VfsMountSourceView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2846,7 +2834,6 @@ export interface ProfileApplySummary {
   configChanged: boolean;
   environmentsChanged: number;
   instructionsChanged: boolean;
-  mountsChanged: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2874,7 +2861,6 @@ export interface AgentProfile {
   displayName?: string | null;
   environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
   profileId: ProfileId;
   revision: number;
   updatedAtMs: number;
@@ -2916,15 +2902,6 @@ export interface AttachedHostSpecView {
   };
   name?: string | null;
   providerOptions?: unknown;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ProfileMount".
- */
-export interface ProfileMount {
-  access: VfsMountAccess;
-  mountPath: string;
-  source: VfsMountSourceInput;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3469,53 +3446,6 @@ export interface SkillListItem {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountDeleteResponse".
- */
-export interface AgentApiOutcomeOfVfsMountDeleteResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountDeleteResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountDeleteResponse".
- */
-export interface VfsMountDeleteResponse {
-  mountPath: string;
-  session: SessionView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountListResponse".
- */
-export interface AgentApiOutcomeOfVfsMountListResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountListResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountListResponse".
- */
-export interface VfsMountListResponse {
-  mounts?: VfsMountView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfVfsMountPutResponse".
- */
-export interface AgentApiOutcomeOfVfsMountPutResponse {
-  notifications?: AgentNotification[];
-  result: VfsMountPutResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountPutResponse".
- */
-export interface VfsMountPutResponse {
-  mount: VfsMountView;
-  session: SessionView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfVfsSnapshotCommitResponse".
  */
 export interface AgentApiOutcomeOfVfsSnapshotCommitResponse {
@@ -3655,7 +3585,6 @@ export interface AgentProfileInput {
   displayName?: string | null;
   environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
   profileId: ProfileId;
 }
 /**
@@ -4065,7 +3994,6 @@ export interface InlineAgentProfile {
   displayName?: string | null;
   environments?: ProfileEnvironment[];
   instructions?: ProfileInstructions | null;
-  mounts?: ProfileMount[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4523,31 +4451,6 @@ export interface SkillDeactivateParams {
  */
 export interface SkillListParams {
   sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountDeleteParams".
- */
-export interface VfsMountDeleteParams {
-  mountPath: string;
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountListParams".
- */
-export interface VfsMountListParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "VfsMountPutParams".
- */
-export interface VfsMountPutParams {
-  access: VfsMountAccess;
-  mountPath: string;
-  sessionId: string;
-  source: VfsMountSourceInput;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

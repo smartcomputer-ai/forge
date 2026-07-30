@@ -149,44 +149,6 @@ impl PgStore {
         })
     }
 
-    pub async fn copy_session_resources(
-        &self,
-        source_session_id: &SessionId,
-        child_session_id: &SessionId,
-    ) -> Result<(), SessionStoreError> {
-        self.ensure_universe()
-            .await
-            .map_err(|error| session_store_error("ensure universe", error))?;
-        let mut tx = self.pool.begin().await.map_err(|error| {
-            session_sql_error("begin copy session resources transaction", error)
-        })?;
-        lock_session(
-            &mut tx,
-            self.config.universe_id,
-            source_session_id,
-            "copy resources source",
-        )
-        .await?;
-        lock_session(
-            &mut tx,
-            self.config.universe_id,
-            child_session_id,
-            "copy resources child",
-        )
-        .await?;
-        copy_session_resources_in_tx(
-            &mut tx,
-            self.config.universe_id,
-            source_session_id,
-            child_session_id,
-        )
-        .await?;
-        tx.commit()
-            .await
-            .map_err(|error| session_sql_error("commit copy session resources", error))?;
-        Ok(())
-    }
-
     async fn read_all_effective_events(
         &self,
         session_id: &SessionId,
@@ -663,13 +625,6 @@ impl SessionStore for PgStore {
             });
         };
         let record = session_record_from_row(&row)?;
-        copy_session_resources_in_tx(
-            &mut tx,
-            self.config.universe_id,
-            &request.source_session_id,
-            &record.session_id,
-        )
-        .await?;
         let (record, _) = append_events_in_tx(
             &mut tx,
             self.config.universe_id,
@@ -779,13 +734,6 @@ impl SessionStore for PgStore {
             });
         };
         let record = session_record_from_row(&row)?;
-        copy_session_resources_in_tx(
-            &mut tx,
-            self.config.universe_id,
-            &request.source_session_id,
-            &record.session_id,
-        )
-        .await?;
         tx.commit()
             .await
             .map_err(|error| session_sql_error("commit fork transaction", error))?;
@@ -1167,51 +1115,6 @@ async fn lock_session(
         });
     };
     session_record_from_row(&row)
-}
-
-async fn copy_session_resources_in_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    universe_id: Uuid,
-    source_session_id: &SessionId,
-    child_session_id: &SessionId,
-) -> Result<(), SessionStoreError> {
-    sqlx::query(
-        r#"
-        INSERT INTO vfs_mounts (
-            universe_id,
-            session_id,
-            mount_path,
-            source_kind,
-            snapshot_digest,
-            workspace_id,
-            access
-        )
-        SELECT
-            universe_id,
-            $3,
-            mount_path,
-            source_kind,
-            snapshot_digest,
-            workspace_id,
-            access
-        FROM vfs_mounts
-        WHERE universe_id = $1 AND session_id = $2
-        ON CONFLICT (universe_id, session_id, mount_path) DO UPDATE
-        SET
-            source_kind = EXCLUDED.source_kind,
-            snapshot_digest = EXCLUDED.snapshot_digest,
-            workspace_id = EXCLUDED.workspace_id,
-            access = EXCLUDED.access
-        "#,
-    )
-    .bind(universe_id)
-    .bind(source_session_id.as_str())
-    .bind(child_session_id.as_str())
-    .execute(&mut **tx)
-    .await
-    .map_err(|error| session_sql_error("copy vfs mounts", error))?;
-
-    Ok(())
 }
 
 async fn append_events_in_tx(

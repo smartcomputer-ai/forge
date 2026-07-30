@@ -1,9 +1,9 @@
-use async_trait::async_trait;
-
 use api::BlobPutItem;
 
 use super::*;
 use crate::gateway::service::prompts::{active_prompt_context_entries, prompt_report_ref};
+use tools::{fs::FsPath, skills::SkillLocation};
+use vfs::VfsPath;
 
 #[test]
 fn admission_failure_mapping_uses_gateway_error_kinds() {
@@ -868,60 +868,6 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn read_skill_doc_for_activation_reads_cataloged_vfs_bytes() {
-    let blobs = Arc::new(engine::storage::InMemoryBlobStore::new());
-    let skill_body = "---\nname: review\ndescription: Use when testing review.\n---\nsecret body\n";
-    let snapshot = vfs::create_inline_snapshot(
-        blobs.as_ref(),
-        vfs::CreateInlineSnapshotRequest::new(vec![
-            vfs::InlineFile::new("review/SKILL.md", skill_body.as_bytes().to_vec()).unwrap(),
-        ]),
-    )
-    .await
-    .expect("create skill snapshot");
-    let workspace_store = Arc::new(EmptyWorkspaceStore);
-    let mount = VfsMountRecord {
-        session_id: SessionId::new("session_1"),
-        mount_path: VfsPath::parse("/skills/system").unwrap(),
-        source: VfsMountSource::Snapshot {
-            snapshot_ref: snapshot.snapshot_ref.clone(),
-        },
-        access: VfsMountAccess::ReadOnly,
-    };
-    let skill = test_skill_metadata_with_snapshot(
-        "skill:review",
-        "review",
-        true,
-        snapshot.snapshot_ref.clone(),
-    );
-
-    let body = read_skill_doc_for_activation_from_vfs(blobs, workspace_store, vec![mount], &skill)
-        .await
-        .expect("read skill doc");
-
-    assert_eq!(body, skill_body);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn read_skill_doc_for_activation_rejects_host_locations() {
-    let blobs = Arc::new(engine::storage::InMemoryBlobStore::new());
-    let workspace_store = Arc::new(EmptyWorkspaceStore);
-    let mut skill = test_skill_metadata("skill:host", "host", true);
-    skill.location = SkillLocation::HostFilesystem {
-        target: engine::ToolExecutionTarget::new("host", "vm-1"),
-        root_path: "/skills".to_owned(),
-        skill_dir_path: "/skills/host".to_owned(),
-        skill_doc_path: "/skills/host/SKILL.md".to_owned(),
-    };
-
-    let error = read_skill_doc_for_activation_from_vfs(blobs, workspace_store, Vec::new(), &skill)
-        .await
-        .expect_err("host location should not read through VFS");
-
-    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
-}
-
 #[test]
 fn session_start_config_maps_reasoning_and_max_output_tokens() {
     let config = engine_session_config_from_api(
@@ -1277,6 +1223,7 @@ fn vfs_feature_grant_maps_tool_surfaces() {
                 features: Some(api::FeaturesConfig {
                     vfs: Some(api::VfsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links: Vec::new(),
                         tools: Some(api_surface),
                         prompts: None,
                         skills: None,
@@ -1301,6 +1248,7 @@ fn vfs_feature_grant_maps_tool_surfaces() {
             features: Some(api::FeaturesConfig {
                 vfs: Some(api::VfsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
                     tools: None,
                     prompts: None,
                     skills: None,
@@ -1876,9 +1824,9 @@ fn test_skill_metadata_with_snapshot(
         trust: tools::skills::SkillTrustLevel::System,
         interface: None,
         dependencies: tools::skills::SkillDependencies::default(),
-        location: SkillLocation::MountedSnapshot {
+        location: SkillLocation::LinkedSnapshot {
             source_snapshot_ref: snapshot_ref,
-            source_mount_path: VfsPath::parse("/skills/system").unwrap(),
+            source_link_path: VfsPath::parse("/skills/system").unwrap(),
             skill_dir_path: VfsPath::parse(format!("/skills/system/{name}")).unwrap(),
             skill_doc_path: VfsPath::parse(format!("/skills/system/{name}/SKILL.md")).unwrap(),
         },
@@ -1992,50 +1940,6 @@ fn test_function_tool(tool_name: ToolName) -> engine::ToolSpec {
         }),
         parallelism: engine::ToolParallelism::Exclusive,
         target_requirement: engine::ToolTargetRequirement::None,
-    }
-}
-
-struct EmptyWorkspaceStore;
-
-#[async_trait]
-impl VfsWorkspaceStore for EmptyWorkspaceStore {
-    async fn create_workspace(
-        &self,
-        _record: vfs::CreateVfsWorkspaceRecord,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found("create"))
-    }
-
-    async fn read_workspace(
-        &self,
-        workspace_id: &VfsWorkspaceId,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found(workspace_id.as_str()))
-    }
-
-    async fn list_workspaces(&self) -> Result<Vec<vfs::VfsWorkspaceRecord>, vfs::VfsCatalogError> {
-        Ok(Vec::new())
-    }
-
-    async fn compare_and_set_head(
-        &self,
-        _request: vfs::CompareAndSetVfsWorkspaceHead,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found("compare_and_set"))
-    }
-
-    async fn delete_workspace(
-        &self,
-        workspace_id: &VfsWorkspaceId,
-    ) -> Result<vfs::VfsWorkspaceRecord, vfs::VfsCatalogError> {
-        Err(workspace_not_found(workspace_id.as_str()))
-    }
-}
-
-fn workspace_not_found(id: &str) -> vfs::VfsCatalogError {
-    vfs::VfsCatalogError::NotFound {
-        kind: "workspace",
-        id: id.to_owned(),
     }
 }
 

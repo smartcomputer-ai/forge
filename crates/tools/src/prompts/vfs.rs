@@ -1,14 +1,16 @@
-//! Prompt root resolution for CAS-backed VFS mounts.
+//! Prompt root resolution for CAS-backed VFS workspace links.
 
 use std::{collections::BTreeSet, sync::Arc};
 
 use engine::storage::BlobStore;
 use thiserror::Error;
-use vfs::{VfsMountRecord, VfsMountSource, VfsPath, VfsWorkspaceId, VfsWorkspaceStore};
+use vfs::{
+    ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsPath, VfsWorkspaceId, VfsWorkspaceStore,
+};
 
 use crate::{
-    fs::{FileSystem, FsError, FsPath, MountedVfsFileSystem},
-    prompts::{PromptRoot, PromptRootInput, PromptRootSource},
+    fs::{FileSystem, FsError, FsPath, LinkedVfsFileSystem},
+    prompts::{PromptRoot, PromptRootInput, PromptRootSource, PromptWarning, PromptWarningKind},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -26,13 +28,14 @@ impl VfsPromptRootSpec {
     }
 }
 
-pub struct MountedVfsPromptRoots {
-    fs: MountedVfsFileSystem,
+pub struct LinkedVfsPromptRoots {
+    fs: LinkedVfsFileSystem,
     roots: Vec<PromptRoot>,
+    warnings: Vec<PromptWarning>,
 }
 
-impl MountedVfsPromptRoots {
-    pub fn fs(&self) -> &MountedVfsFileSystem {
+impl LinkedVfsPromptRoots {
+    pub fn fs(&self) -> &LinkedVfsFileSystem {
         &self.fs
     }
 
@@ -40,8 +43,12 @@ impl MountedVfsPromptRoots {
         &self.roots
     }
 
-    pub fn into_parts(self) -> (MountedVfsFileSystem, Vec<PromptRoot>) {
-        (self.fs, self.roots)
+    pub fn warnings(&self) -> &[PromptWarning] {
+        &self.warnings
+    }
+
+    pub fn into_parts(self) -> (LinkedVfsFileSystem, Vec<PromptRoot>, Vec<PromptWarning>) {
+        (self.fs, self.roots, self.warnings)
     }
 
     pub fn inputs(&self) -> Vec<PromptRootInput<'_>> {
@@ -85,8 +92,8 @@ pub enum PromptVfsRootError {
     #[error("invalid configured VFS prompt root {root}: {message}")]
     InvalidConfiguredRoot { root: String, message: String },
 
-    #[error("VFS prompt root {root_id} at {root_path} is not under a mounted VFS path")]
-    UnmountedRoot { root_id: String, root_path: VfsPath },
+    #[error("VFS prompt root {root_id} at {root_path} is not under a workspace link")]
+    UnlinkedRoot { root_id: String, root_path: VfsPath },
 
     #[error("invalid VFS prompt root {root_id} at {root_path}: {message}")]
     InvalidRootPath {
@@ -95,7 +102,7 @@ pub enum PromptVfsRootError {
         message: String,
     },
 
-    #[error("failed to build mounted VFS filesystem: {message}")]
+    #[error("failed to build linked VFS filesystem: {message}")]
     Filesystem { message: String },
 
     #[error("failed to read VFS workspace {workspace_id}: {message}")]
@@ -105,42 +112,68 @@ pub enum PromptVfsRootError {
     },
 }
 
-pub async fn resolve_mounted_vfs_prompt_roots(
+pub async fn resolve_linked_vfs_prompt_roots(
     blobs: Arc<dyn BlobStore>,
     workspace_store: Arc<dyn VfsWorkspaceStore>,
-    mounts: Vec<VfsMountRecord>,
+    links: Vec<ResolvedWorkspaceLink>,
     specs: Vec<VfsPromptRootSpec>,
-) -> Result<MountedVfsPromptRoots, PromptVfsRootError> {
+) -> Result<LinkedVfsPromptRoots, PromptVfsRootError> {
     validate_specs(&specs)?;
-    let fs =
-        MountedVfsFileSystem::new(blobs, workspace_store.clone(), mounts).map_err(|error| {
-            PromptVfsRootError::Filesystem {
-                message: error.to_string(),
-            }
-        })?;
+    let fs = LinkedVfsFileSystem::new(blobs, workspace_store, links).map_err(|error| {
+        PromptVfsRootError::Filesystem {
+            message: error.to_string(),
+        }
+    })?;
 
     let mut roots = Vec::with_capacity(specs.len());
+    let mut warnings = Vec::new();
     for spec in specs {
-        roots.push(resolve_root(&workspace_store, fs.mounts(), spec).await?);
+        if let Some(link) = link_for_root(fs.links(), &spec.root_path)
+            && let ResolvedWorkspaceLinkTarget::Unavailable { reason, .. } = &link.target
+        {
+            warnings.push(PromptWarning::new(
+                spec.root_id.clone(),
+                Some(spec.root_path.to_string()),
+                PromptWarningKind::UnavailableWorkspaceLink {
+                    reason: reason.clone(),
+                },
+            ));
+        }
+        if let Some(root) = resolve_root(fs.links(), spec).await? {
+            roots.push(root);
+        }
     }
 
-    Ok(MountedVfsPromptRoots { fs, roots })
+    Ok(LinkedVfsPromptRoots {
+        fs,
+        roots,
+        warnings,
+    })
 }
 
-pub fn conventional_vfs_prompt_root_specs(mounts: &[VfsMountRecord]) -> Vec<VfsPromptRootSpec> {
+pub fn conventional_vfs_prompt_root_specs(
+    links: &[ResolvedWorkspaceLink],
+) -> Vec<VfsPromptRootSpec> {
     let mut specs = Vec::new();
     let mut seen = BTreeSet::new();
-    for mount in mounts {
-        if matches!(mount.source, VfsMountSource::Workspace { .. }) {
+    for link in links {
+        if matches!(
+            link.target,
+            ResolvedWorkspaceLinkTarget::AvailableWorkspace { .. }
+                | ResolvedWorkspaceLinkTarget::Unavailable {
+                    declared_target: engine::WorkspaceLinkTarget::Workspace { .. },
+                    ..
+                }
+        ) {
             push_spec(
                 &mut specs,
                 &mut seen,
-                workspace_prompt_root(&mount.mount_path, ".lightspeed/prompts"),
+                workspace_prompt_root(&link.path, ".lightspeed/prompts"),
             );
             push_spec(
                 &mut specs,
                 &mut seen,
-                workspace_prompt_root(&mount.mount_path, ".agents/prompts"),
+                workspace_prompt_root(&link.path, ".agents/prompts"),
             );
         }
     }
@@ -148,11 +181,11 @@ pub fn conventional_vfs_prompt_root_specs(mounts: &[VfsMountRecord]) -> Vec<VfsP
 }
 
 pub fn configured_vfs_prompt_root_specs(
-    mounts: &[VfsMountRecord],
+    links: &[ResolvedWorkspaceLink],
     roots: Option<&[String]>,
 ) -> Result<Vec<VfsPromptRootSpec>, PromptVfsRootError> {
     let Some(roots) = roots else {
-        return Ok(conventional_vfs_prompt_root_specs(mounts));
+        return Ok(conventional_vfs_prompt_root_specs(links));
     };
     roots
         .iter()
@@ -181,8 +214,8 @@ fn push_spec(
     }
 }
 
-fn workspace_prompt_root(mount_path: &VfsPath, suffix: &str) -> VfsPromptRootSpec {
-    let path = append_vfs_path(mount_path, suffix);
+fn workspace_prompt_root(link_path: &VfsPath, suffix: &str) -> VfsPromptRootSpec {
+    let path = append_vfs_path(link_path, suffix);
     VfsPromptRootSpec::new(root_id_for_vfs_path("workspace", &path), path)
 }
 
@@ -217,16 +250,14 @@ fn validate_specs(specs: &[VfsPromptRootSpec]) -> Result<(), PromptVfsRootError>
 }
 
 async fn resolve_root(
-    workspace_store: &Arc<dyn VfsWorkspaceStore>,
-    mounts: &[VfsMountRecord],
+    links: &[ResolvedWorkspaceLink],
     spec: VfsPromptRootSpec,
-) -> Result<PromptRoot, PromptVfsRootError> {
-    let mount = mount_for_root(mounts, &spec.root_path).ok_or_else(|| {
-        PromptVfsRootError::UnmountedRoot {
+) -> Result<Option<PromptRoot>, PromptVfsRootError> {
+    let link =
+        link_for_root(links, &spec.root_path).ok_or_else(|| PromptVfsRootError::UnlinkedRoot {
             root_id: spec.root_id.clone(),
             root_path: spec.root_path.clone(),
-        }
-    })?;
+        })?;
     let root_path = FsPath::new(spec.root_path.as_str()).map_err(|error| {
         PromptVfsRootError::InvalidRootPath {
             root_id: spec.root_id.clone(),
@@ -234,44 +265,39 @@ async fn resolve_root(
             message: error.to_string(),
         }
     })?;
-    let source = match &mount.source {
-        VfsMountSource::Snapshot { snapshot_ref } => PromptRootSource::MountedSnapshot {
-            snapshot_ref: snapshot_ref.clone(),
-            mount_path: mount.mount_path.clone(),
-        },
-        VfsMountSource::Workspace { workspace_id } => {
-            let workspace =
-                workspace_store
-                    .read_workspace(workspace_id)
-                    .await
-                    .map_err(|error| PromptVfsRootError::Workspace {
-                        workspace_id: workspace_id.clone(),
-                        message: error.to_string(),
-                    })?;
-            PromptRootSource::MountedWorkspace {
-                workspace_id: workspace_id.clone(),
-                workspace_head_ref: workspace.head_snapshot_ref,
-                workspace_revision: workspace.revision,
-                mount_path: mount.mount_path.clone(),
+    let source = match &link.target {
+        ResolvedWorkspaceLinkTarget::AvailableSnapshot { snapshot_ref } => {
+            PromptRootSource::LinkedSnapshot {
+                snapshot_ref: snapshot_ref.clone(),
+                link_path: link.path.clone(),
             }
         }
+        ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
+            PromptRootSource::LinkedWorkspace {
+                workspace_id: workspace.workspace_id.clone(),
+                workspace_head_ref: workspace.head_snapshot_ref.clone(),
+                workspace_revision: workspace.revision,
+                link_path: link.path.clone(),
+            }
+        }
+        ResolvedWorkspaceLinkTarget::Unavailable { .. } => return Ok(None),
     };
 
-    Ok(PromptRoot {
+    Ok(Some(PromptRoot {
         root_id: spec.root_id,
         root_path,
         source,
-        access: mount.access,
-    })
+        access: link.access,
+    }))
 }
 
-fn mount_for_root<'a>(
-    mounts: &'a [VfsMountRecord],
+fn link_for_root<'a>(
+    links: &'a [ResolvedWorkspaceLink],
     root_path: &VfsPath,
-) -> Option<&'a VfsMountRecord> {
-    mounts
+) -> Option<&'a ResolvedWorkspaceLink> {
+    links
         .iter()
-        .find(|mount| vfs_path_starts_with(root_path, &mount.mount_path))
+        .find(|link| vfs_path_starts_with(root_path, &link.path))
 }
 
 fn vfs_path_starts_with(path: &VfsPath, base: &VfsPath) -> bool {
@@ -289,10 +315,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use async_trait::async_trait;
-    use engine::{BlobRef, SessionId, storage::InMemoryBlobStore};
+    use engine::{BlobRef, WorkspaceLinkAccess, storage::InMemoryBlobStore};
     use vfs::{
         CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-        InlineFile, VfsCatalogError, VfsMountAccess, VfsWorkspaceRecord, create_inline_snapshot,
+        InlineFile, ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsCatalogError,
+        VfsWorkspaceRecord, create_inline_snapshot,
     };
 
     use super::*;
@@ -315,7 +342,7 @@ mod tests {
         .await
         .expect("snapshot");
         let workspace_id = VfsWorkspaceId::new("workspace_1");
-        workspace_store
+        let workspace = workspace_store
             .create_workspace(CreateVfsWorkspaceRecord {
                 workspace_id: workspace_id.clone(),
                 display_name: None,
@@ -326,19 +353,15 @@ mod tests {
             })
             .await
             .expect("workspace");
-        let session_id = SessionId::new("session_1");
-        let mounts = vec![mount_record(
-            &session_id,
+        let links = vec![resolved_link(
             "/workspace",
-            VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            VfsMountAccess::ReadWrite,
+            ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace },
+            WorkspaceLinkAccess::ReadWrite,
         )];
-        let specs = conventional_vfs_prompt_root_specs(&mounts);
+        let specs = conventional_vfs_prompt_root_specs(&links);
 
         let resolved =
-            resolve_mounted_vfs_prompt_roots(blobs.clone(), workspace_store, mounts, specs)
+            resolve_linked_vfs_prompt_roots(blobs.clone(), workspace_store, links, specs)
                 .await
                 .expect("resolve roots");
         let inputs = resolved
@@ -362,39 +385,36 @@ mod tests {
         );
         assert!(matches!(
             &build.report.sources[0].source,
-            crate::prompts::PromptSourceLocation::MountedWorkspace {
+            crate::prompts::PromptSourceLocation::LinkedWorkspace {
                 workspace_id: source_workspace_id,
                 workspace_revision,
-                source_mount_path,
+                source_link_path,
                 prompt_file_path,
                 ..
             } if source_workspace_id == &workspace_id
                 && *workspace_revision == 0
-                && source_mount_path.as_str() == "/workspace"
+                && source_link_path.as_str() == "/workspace"
                 && prompt_file_path.as_str() == "/workspace/.lightspeed/prompts/instructions.md"
         ));
         assert!(build.report.sources[0].writable);
     }
 
     #[test]
-    fn conventional_prompt_roots_are_added_for_workspace_mounts_only() {
-        let session_id = SessionId::new("session_1");
+    fn conventional_prompt_roots_are_added_for_workspace_links_only() {
         let roots = conventional_vfs_prompt_root_specs(&[
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/workspace",
-                VfsMountSource::Workspace {
-                    workspace_id: VfsWorkspaceId::new("workspace_1"),
+                ResolvedWorkspaceLinkTarget::AvailableWorkspace {
+                    workspace: workspace_record("workspace_1", BlobRef::from_bytes(b"head")),
                 },
-                VfsMountAccess::ReadWrite,
+                WorkspaceLinkAccess::ReadWrite,
             ),
-            mount_record(
-                &session_id,
+            resolved_link(
                 "/skills/system",
-                VfsMountSource::Snapshot {
+                ResolvedWorkspaceLinkTarget::AvailableSnapshot {
                     snapshot_ref: engine::BlobRef::from_bytes(b"snapshot"),
                 },
-                VfsMountAccess::ReadOnly,
+                WorkspaceLinkAccess::ReadOnly,
             ),
         ]);
 
@@ -427,17 +447,28 @@ mod tests {
         );
     }
 
-    fn mount_record(
-        session_id: &SessionId,
-        mount_path: &str,
-        source: VfsMountSource,
-        access: VfsMountAccess,
-    ) -> VfsMountRecord {
-        VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse(mount_path).unwrap(),
-            source,
+    fn resolved_link(
+        path: &str,
+        target: ResolvedWorkspaceLinkTarget,
+        access: WorkspaceLinkAccess,
+    ) -> ResolvedWorkspaceLink {
+        ResolvedWorkspaceLink {
+            path: VfsPath::parse(path).unwrap(),
+            target,
             access,
+        }
+    }
+
+    fn workspace_record(workspace_id: &str, head_snapshot_ref: BlobRef) -> VfsWorkspaceRecord {
+        VfsWorkspaceRecord {
+            workspace_id: VfsWorkspaceId::new(workspace_id),
+            display_name: None,
+            base_snapshot_ref: None,
+            head_snapshot_ref,
+            head_totals: vfs::VfsTotals::default(),
+            revision: 0,
+            created_at_ms: 1,
+            updated_at_ms: 1,
         }
     }
 

@@ -97,10 +97,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
             source_session_id: parent.clone(),
             session_id: SessionId::new("managed-clone"),
             created_at_ms: 19,
-            opening_events: vec![lifecycle_event(
-                19,
-                CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND,
-            )],
+            opening_events: vec![lifecycle_event(19, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND)],
         })
         .await
         .expect_err("managed session cannot be cloned");

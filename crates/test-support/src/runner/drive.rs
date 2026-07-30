@@ -13,11 +13,12 @@ use tools::{
     environment::projection::{EnvironmentProjectionInput, prepare_environment_projection_refresh},
     prompts::{
         PromptAssemblyLimits, configured_vfs_prompt_root_specs,
-        prepare_prompt_instructions_publication, resolve_mounted_vfs_prompt_roots,
+        prepare_prompt_instructions_publication,
+        prepare_prompt_instructions_publication_with_warnings, resolve_linked_vfs_prompt_roots,
     },
     skills::{
-        configured_vfs_skill_root_specs, prepare_skill_catalog_publication,
-        resolve_mounted_vfs_skill_roots,
+        configured_vfs_skill_root_specs, prepare_skill_catalog_publication_with_warnings,
+        resolve_linked_vfs_skill_roots,
     },
 };
 
@@ -117,7 +118,7 @@ impl SessionRunner {
 
     async fn refresh_prompt_instructions_command(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         state: &CoreAgentState,
     ) -> Result<Option<CoreAgentCommand>, RunnerError> {
         let prompt_config = state
@@ -126,24 +127,13 @@ impl SessionRunner {
             .as_ref()
             .and_then(|config| config.features.vfs.as_ref())
             .and_then(|vfs| vfs.prompts.as_ref());
-        let mounts = if prompt_config.is_some() {
-            match self.stores.vfs_mount_store.as_ref() {
-                Some(mount_store) => {
-                    mount_store.list_mounts(session_id).await.map_err(|error| {
-                        RunnerError::InvalidRequest {
-                            message: format!(
-                                "load VFS mounts for prompt instructions refresh: {error}"
-                            ),
-                        }
-                    })?
-                }
-                None => Vec::new(),
-            }
+        let links = if prompt_config.is_some() {
+            self.resolve_workspace_links(state).await?
         } else {
             Vec::new()
         };
         let specs = match prompt_config {
-            Some(config) => configured_vfs_prompt_root_specs(&mounts, config.roots.as_deref())
+            Some(config) => configured_vfs_prompt_root_specs(&links, config.roots.as_deref())
                 .map_err(|error| RunnerError::InvalidRequest {
                     message: format!("configure VFS prompt roots: {error}"),
                 })?,
@@ -166,10 +156,10 @@ impl SessionRunner {
                     message: "VFS prompt sourcing requires a workspace store".to_owned(),
                 }
             })?;
-            let resolved = resolve_mounted_vfs_prompt_roots(
+            let resolved = resolve_linked_vfs_prompt_roots(
                 self.stores.blobs.clone(),
                 workspace_store.clone(),
-                mounts,
+                links,
                 specs,
             )
             .await
@@ -182,10 +172,11 @@ impl SessionRunner {
                 .map_err(|error| RunnerError::InvalidRequest {
                     message: format!("filter VFS prompt roots: {error}"),
                 })?;
-            let publication = prepare_prompt_instructions_publication(
+            let publication = prepare_prompt_instructions_publication_with_warnings(
                 self.stores.blobs.as_ref(),
                 &inputs,
                 PromptAssemblyLimits::default(),
+                resolved.warnings().to_vec(),
             )
             .await
             .map_err(|error| RunnerError::InvalidRequest {
@@ -296,7 +287,7 @@ impl SessionRunner {
 
     async fn refresh_environment_projection_commands(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         state: &CoreAgentState,
     ) -> Result<Vec<CoreAgentCommand>, RunnerError> {
         let features = state
@@ -307,26 +298,15 @@ impl SessionRunner {
         let vfs_catalog_enabled = features.is_some_and(|features| features.vfs.is_some());
         let environment_catalog_enabled =
             features.is_some_and(|features| features.environments.is_some());
-        let mounts = if vfs_catalog_enabled {
-            match self.stores.vfs_mount_store.as_ref() {
-                Some(mount_store) => {
-                    mount_store.list_mounts(session_id).await.map_err(|error| {
-                        RunnerError::InvalidRequest {
-                            message: format!(
-                                "load VFS mounts for environment projection refresh: {error}"
-                            ),
-                        }
-                    })?
-                }
-                None => Vec::new(),
-            }
+        let links = if vfs_catalog_enabled {
+            self.resolve_workspace_links(state).await?
         } else {
             Vec::new()
         };
         let refresh = prepare_environment_projection_refresh(
             self.stores.blobs.as_ref(),
             state,
-            EnvironmentProjectionInput::from_mounts(mounts)
+            EnvironmentProjectionInput::from_workspace_links(links)
                 .with_catalog_grants(vfs_catalog_enabled, environment_catalog_enabled),
         )
         .await
@@ -360,7 +340,7 @@ impl SessionRunner {
 
     async fn refresh_skill_catalog_command(
         &self,
-        session_id: &SessionId,
+        _session_id: &SessionId,
         state: &CoreAgentState,
     ) -> Result<Option<CoreAgentCommand>, RunnerError> {
         let skills_config = state
@@ -374,17 +354,13 @@ impl SessionRunner {
                 active_skill_catalog_ref(state).as_ref(),
             ));
         };
-        let Some(mount_store) = self.stores.vfs_mount_store.as_ref() else {
+        let Some(workspace_store) = self.stores.vfs_workspace_store.as_ref() else {
             return Ok(clear_catalog_command(
                 active_skill_catalog_ref(state).as_ref(),
             ));
         };
-        let mounts = mount_store.list_mounts(session_id).await.map_err(|error| {
-            RunnerError::InvalidRequest {
-                message: format!("load VFS mounts for skill catalog refresh: {error}"),
-            }
-        })?;
-        let specs = configured_vfs_skill_root_specs(&mounts, skills_config.roots.as_deref())
+        let links = self.resolve_workspace_links(state).await?;
+        let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
             .map_err(|error| RunnerError::InvalidRequest {
                 message: format!("configure VFS skill roots: {error}"),
             })?;
@@ -394,15 +370,10 @@ impl SessionRunner {
             ));
         }
 
-        let workspace_store = self.stores.vfs_workspace_store.as_ref().ok_or_else(|| {
-            RunnerError::InvalidRequest {
-                message: "VFS skill sourcing requires a workspace store".to_owned(),
-            }
-        })?;
-        let resolved = resolve_mounted_vfs_skill_roots(
+        let resolved = resolve_linked_vfs_skill_roots(
             self.stores.blobs.clone(),
             workspace_store.clone(),
-            mounts,
+            links,
             specs,
         )
         .await
@@ -415,19 +386,54 @@ impl SessionRunner {
             .map_err(|error| RunnerError::InvalidRequest {
                 message: format!("filter VFS skill roots: {error}"),
             })?;
-        if inputs.is_empty() {
+        if inputs.is_empty() && resolved.warnings().is_empty() {
             return Ok(clear_catalog_command(
                 active_skill_catalog_ref(state).as_ref(),
             ));
         }
 
-        let publication =
-            prepare_skill_catalog_publication(self.stores.blobs.as_ref(), state, None, &inputs)
-                .await
-                .map_err(|error| RunnerError::InvalidRequest {
-                    message: format!("prepare skill catalog publication: {error}"),
-                })?;
+        let publication = prepare_skill_catalog_publication_with_warnings(
+            self.stores.blobs.as_ref(),
+            state,
+            None,
+            &inputs,
+            resolved.warnings().to_vec(),
+        )
+        .await
+        .map_err(|error| RunnerError::InvalidRequest {
+            message: format!("prepare skill catalog publication: {error}"),
+        })?;
         Ok(publication.command)
+    }
+
+    async fn resolve_workspace_links(
+        &self,
+        state: &CoreAgentState,
+    ) -> Result<Vec<vfs::ResolvedWorkspaceLink>, RunnerError> {
+        let declarations = state
+            .lifecycle
+            .config
+            .as_ref()
+            .and_then(|config| config.features.vfs.as_ref())
+            .map(|vfs| vfs.workspace_links.as_slice())
+            .unwrap_or_default();
+        if declarations.is_empty() {
+            return Ok(Vec::new());
+        }
+        let workspace_store = self.stores.vfs_workspace_store.as_ref().ok_or_else(|| {
+            RunnerError::InvalidRequest {
+                message: "workspace links require a VFS workspace store".to_owned(),
+            }
+        })?;
+        vfs::resolve_workspace_links(
+            self.stores.blobs.clone(),
+            workspace_store.clone(),
+            declarations,
+        )
+        .await
+        .map_err(|error| RunnerError::InvalidRequest {
+            message: format!("resolve workspace links: {error}"),
+        })
     }
 
     pub async fn drive_until_quiescent(
@@ -817,7 +823,7 @@ mod tests {
         ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentEvent, FunctionToolSpec,
         LlmFinish, ModelSelection, ObservedToolCall, ProviderApiKind, RunConfig, RunStatus,
         SessionConfig, SessionId, ToolCallResult, ToolKind, ToolName, ToolParallelism, ToolSpec,
-        ToolTargetRequirement, TurnEvent,
+        ToolTargetRequirement, TurnEvent, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{
             BlobStore, CreateForkedSession, CreateSession, InMemoryBlobStore, InMemorySessionStore,
             SessionStore,
@@ -830,15 +836,15 @@ mod tests {
     use tools::skills::{SkillCatalogSnapshot, SkillLocation};
     use tools::{
         fs::tools::ReadFileResult,
-        fs::{FileSystem, FsPath, FsToolContext, MountedVfsFileSystem},
+        fs::{FileSystem, FsPath, FsToolContext, LinkedVfsFileSystem},
         runtime::InlineToolRuntime,
         runtime::ToolTarget,
         toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset},
     };
     use vfs::{
         CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
-        InlineFile, VfsCatalogError, VfsMountAccess, VfsMountRecord, VfsMountSource, VfsMountStore,
-        VfsPath, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore, create_inline_snapshot,
+        InlineFile, ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget, VfsCatalogError, VfsPath,
+        VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore, create_inline_snapshot,
     };
 
     use super::*;
@@ -910,47 +916,7 @@ mod tests {
 
     #[derive(Default)]
     struct TestVfsCatalog {
-        mounts: Mutex<BTreeMap<SessionId, Vec<VfsMountRecord>>>,
         workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,
-    }
-
-    #[async_trait]
-    impl VfsMountStore for TestVfsCatalog {
-        async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-            self.mounts
-                .lock()
-                .expect("mount lock")
-                .entry(record.session_id.clone())
-                .or_default()
-                .push(record);
-            Ok(())
-        }
-
-        async fn list_mounts(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-            Ok(self
-                .mounts
-                .lock()
-                .expect("mount lock")
-                .get(session_id)
-                .cloned()
-                .unwrap_or_default())
-        }
-
-        async fn remove_mount(
-            &self,
-            session_id: &SessionId,
-            mount_path: &VfsPath,
-        ) -> Result<(), VfsCatalogError> {
-            let mut mounts = self.mounts.lock().expect("mount lock");
-            let Some(session_mounts) = mounts.get_mut(session_id) else {
-                return Ok(());
-            };
-            session_mounts.retain(|mount| &mount.mount_path != mount_path);
-            Ok(())
-        }
     }
 
     #[async_trait]
@@ -1227,6 +1193,36 @@ mod tests {
         config
     }
 
+    fn vfs_config_with_links(
+        prompts: bool,
+        skills: bool,
+        workspace_links: Vec<WorkspaceLink>,
+    ) -> SessionConfig {
+        let mut config = vfs_config(prompts, skills);
+        config.features.vfs.as_mut().unwrap().workspace_links = workspace_links;
+        config
+    }
+
+    fn snapshot_link(path: &str, snapshot_ref: &BlobRef) -> WorkspaceLink {
+        WorkspaceLink {
+            path: path.to_owned(),
+            target: WorkspaceLinkTarget::Snapshot {
+                snapshot_ref: snapshot_ref.to_string(),
+            },
+            access: WorkspaceLinkAccess::ReadOnly,
+        }
+    }
+
+    fn workspace_link(path: &str, workspace_id: &VfsWorkspaceId) -> WorkspaceLink {
+        WorkspaceLink {
+            path: path.to_owned(),
+            target: WorkspaceLinkTarget::Workspace {
+                workspace_id: workspace_id.to_string(),
+            },
+            access: WorkspaceLinkAccess::ReadWrite,
+        }
+    }
+
     fn standalone_compaction_config() -> SessionConfig {
         let mut config = config();
         config.context.compaction = Some(CompactionPolicy::ProviderStandalone {
@@ -1346,8 +1342,8 @@ mod tests {
         let sessions = Arc::new(InMemorySessionStore::new());
         let blobs = Arc::new(InMemoryBlobStore::new());
         let vfs = Arc::new(TestVfsCatalog::default());
-        let stores = RunnerStores::new(sessions.clone(), blobs.clone())
-            .with_vfs_catalog(vfs.clone(), vfs.clone());
+        let stores =
+            RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs.clone());
         let session_id = SessionId::new("session-environment-projection");
         sessions
             .create_session(CreateSession {
@@ -1365,16 +1361,7 @@ mod tests {
         )
         .await
         .expect("create snapshot");
-        vfs.put_mount(VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/workspace").unwrap(),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot.snapshot_ref,
-            },
-            access: VfsMountAccess::ReadOnly,
-        })
-        .await
-        .expect("mount workspace");
+        let link = snapshot_link("/workspace", &snapshot.snapshot_ref);
         let llm = Arc::new(CaptureFinalLlm::default());
         let runner = SessionRunner::new(stores, llm.clone());
 
@@ -1383,7 +1370,7 @@ mod tests {
                 session_id: session_id.clone(),
                 observed_at_ms: 10,
                 command: CoreAgentCommand::OpenSession {
-                    config: vfs_config(false, false),
+                    config: vfs_config_with_links(false, false, vec![link]),
                 },
                 max_steps: None,
             })
@@ -1515,8 +1502,8 @@ mod tests {
         let sessions = Arc::new(InMemorySessionStore::new());
         let blobs = Arc::new(InMemoryBlobStore::new());
         let vfs = Arc::new(TestVfsCatalog::default());
-        let stores = RunnerStores::new(sessions.clone(), blobs.clone())
-            .with_vfs_catalog(vfs.clone(), vfs.clone());
+        let stores =
+            RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs.clone());
         let session_id = SessionId::new("session-a");
         sessions
             .create_session(CreateSession {
@@ -1539,16 +1526,7 @@ mod tests {
         )
         .await
         .expect("create snapshot");
-        vfs.put_mount(VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/skills/system").unwrap(),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot.snapshot_ref.clone(),
-            },
-            access: VfsMountAccess::ReadOnly,
-        })
-        .await
-        .expect("mount skills");
+        let link = snapshot_link("/skills/system", &snapshot.snapshot_ref);
         let runner = SessionRunner::new(
             stores,
             Arc::new(ToolThenFinalLlm {
@@ -1560,7 +1538,7 @@ mod tests {
                 session_id: session_id.clone(),
                 observed_at_ms: 10,
                 command: CoreAgentCommand::OpenSession {
-                    config: vfs_config(false, true),
+                    config: vfs_config_with_links(false, true, vec![link]),
                 },
                 max_steps: None,
             })
@@ -1586,13 +1564,13 @@ mod tests {
         assert_eq!(catalog.skills[0].name, "deploy-review");
         assert!(matches!(
             &catalog.skills[0].location,
-            SkillLocation::MountedSnapshot {
+            SkillLocation::LinkedSnapshot {
                 source_snapshot_ref,
-                source_mount_path,
+                source_link_path,
                 skill_doc_path,
                 ..
             } if source_snapshot_ref == &snapshot.snapshot_ref
-                && source_mount_path.as_str() == "/skills/system"
+                && source_link_path.as_str() == "/skills/system"
                 && skill_doc_path.as_str() == "/skills/system/deploy-review/SKILL.md"
         ));
         assert!(outcome.emitted_entries.iter().any(|entry| {
@@ -1611,8 +1589,8 @@ mod tests {
         let sessions = Arc::new(InMemorySessionStore::new());
         let blobs = Arc::new(InMemoryBlobStore::new());
         let vfs = Arc::new(TestVfsCatalog::default());
-        let stores = RunnerStores::new(sessions.clone(), blobs.clone())
-            .with_vfs_catalog(vfs.clone(), vfs.clone());
+        let stores =
+            RunnerStores::new(sessions.clone(), blobs.clone()).with_vfs_catalog(vfs.clone());
         let session_id = SessionId::new("session-prompts");
         sessions
             .create_session(CreateSession {
@@ -1650,16 +1628,7 @@ mod tests {
         })
         .await
         .expect("create workspace");
-        vfs.put_mount(VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/workspace").unwrap(),
-            source: VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            access: VfsMountAccess::ReadWrite,
-        })
-        .await
-        .expect("mount workspace");
+        let link = workspace_link("/workspace", &workspace_id);
         let llm = Arc::new(CaptureFinalLlm::default());
         let runner = SessionRunner::new(stores, llm.clone());
         runner
@@ -1667,7 +1636,7 @@ mod tests {
                 session_id: session_id.clone(),
                 observed_at_ms: 10,
                 command: CoreAgentCommand::OpenSession {
-                    config: vfs_config(true, false),
+                    config: vfs_config_with_links(true, false, vec![link]),
                 },
                 max_steps: None,
             })
@@ -1880,8 +1849,8 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let blob_store: Arc<dyn BlobStore> = blobs.clone();
         let vfs = Arc::new(TestVfsCatalog::default());
-        let stores = RunnerStores::new(sessions.clone(), blob_store.clone())
-            .with_vfs_catalog(vfs.clone(), vfs.clone());
+        let stores =
+            RunnerStores::new(sessions.clone(), blob_store.clone()).with_vfs_catalog(vfs.clone());
         let session_id = SessionId::new("session-a");
         sessions
             .create_session(CreateSession {
@@ -1904,25 +1873,20 @@ mod tests {
         )
         .await
         .expect("create snapshot");
-        vfs.put_mount(VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/skills/system").unwrap(),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot.snapshot_ref.clone(),
-            },
-            access: VfsMountAccess::ReadOnly,
-        })
-        .await
-        .expect("mount skills");
-
-        let mounted_fs = MountedVfsFileSystem::new(
+        let linked_fs = LinkedVfsFileSystem::new(
             blob_store.clone(),
             vfs.clone(),
-            vfs.list_mounts(&session_id).await.expect("list mounts"),
+            vec![ResolvedWorkspaceLink {
+                path: VfsPath::parse("/skills/system").unwrap(),
+                target: ResolvedWorkspaceLinkTarget::AvailableSnapshot {
+                    snapshot_ref: snapshot.snapshot_ref.clone(),
+                },
+                access: WorkspaceLinkAccess::ReadOnly,
+            }],
         )
-        .expect("mounted fs");
+        .expect("linked fs");
         let ctx =
-            FsToolContext::new(Arc::new(mounted_fs), blob_store.clone()).with_cwd(FsPath::root());
+            FsToolContext::new(Arc::new(linked_fs), blob_store.clone()).with_cwd(FsPath::root());
         let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
         let toolset = resolve_toolset(
             ToolsetEnvironment { target: &target },
@@ -2014,8 +1978,8 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let blob_store: Arc<dyn BlobStore> = blobs.clone();
         let vfs = Arc::new(TestVfsCatalog::default());
-        let stores = RunnerStores::new(sessions.clone(), blob_store.clone())
-            .with_vfs_catalog(vfs.clone(), vfs.clone());
+        let stores =
+            RunnerStores::new(sessions.clone(), blob_store.clone()).with_vfs_catalog(vfs.clone());
         let session_id = SessionId::new("session-workspace");
         sessions
             .create_session(CreateSession {
@@ -2049,25 +2013,20 @@ mod tests {
         })
         .await
         .expect("create workspace");
-        vfs.put_mount(VfsMountRecord {
-            session_id: session_id.clone(),
-            mount_path: VfsPath::parse("/skills/system").unwrap(),
-            source: VfsMountSource::Workspace {
-                workspace_id: workspace_id.clone(),
-            },
-            access: VfsMountAccess::ReadWrite,
-        })
-        .await
-        .expect("mount skills workspace");
-
-        let mounted_fs = MountedVfsFileSystem::new(
+        let linked_fs = LinkedVfsFileSystem::new(
             blob_store.clone(),
             vfs.clone(),
-            vfs.list_mounts(&session_id).await.expect("list mounts"),
+            vec![ResolvedWorkspaceLink {
+                path: VfsPath::parse("/skills/system").unwrap(),
+                target: ResolvedWorkspaceLinkTarget::AvailableWorkspace {
+                    workspace: vfs.read_workspace(&workspace_id).await.unwrap(),
+                },
+                access: WorkspaceLinkAccess::ReadWrite,
+            }],
         )
-        .expect("mounted fs");
+        .expect("linked fs");
         let ctx =
-            FsToolContext::new(Arc::new(mounted_fs), blob_store.clone()).with_cwd(FsPath::root());
+            FsToolContext::new(Arc::new(linked_fs), blob_store.clone()).with_cwd(FsPath::root());
         let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
         let toolset = resolve_toolset(
             ToolsetEnvironment { target: &target },
@@ -2163,12 +2122,18 @@ mod tests {
         .await
         .expect("update workspace head");
 
-        let current_fs = MountedVfsFileSystem::new(
+        let current_fs = LinkedVfsFileSystem::new(
             blob_store.clone(),
             vfs.clone(),
-            vfs.list_mounts(&session_id).await.expect("list mounts"),
+            vec![ResolvedWorkspaceLink {
+                path: VfsPath::parse("/skills/system").unwrap(),
+                target: ResolvedWorkspaceLinkTarget::AvailableWorkspace {
+                    workspace: vfs.read_workspace(&workspace_id).await.unwrap(),
+                },
+                access: WorkspaceLinkAccess::ReadWrite,
+            }],
         )
-        .expect("current mounted fs");
+        .expect("current linked fs");
         let current_skill = current_fs
             .read_file_text(&FsPath::new("/skills/system/deploy-review/SKILL.md").unwrap())
             .await

@@ -1,13 +1,13 @@
 use async_trait::async_trait;
-use engine::{BlobRef, SessionId};
+use engine::BlobRef;
 use sqlx::Row;
 
 use crate::{PgStore, shared::sha256_hex};
 
 use ::vfs::{
-    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountAccess,
-    VfsMountRecord, VfsMountSource, VfsMountStore, VfsPath, VfsSnapshotRecord, VfsSnapshotSource,
-    VfsSnapshotStore, VfsTotals, VfsWorkspaceId, VfsWorkspaceRecord, VfsWorkspaceStore,
+    CompareAndSetVfsWorkspaceHead, CreateVfsWorkspaceRecord, VfsCatalogError, VfsSnapshotRecord,
+    VfsSnapshotSource, VfsSnapshotStore, VfsTotals, VfsWorkspaceId, VfsWorkspaceRecord,
+    VfsWorkspaceStore,
 };
 
 const WORKSPACE_COLUMNS: &str = r#"
@@ -294,100 +294,6 @@ impl VfsWorkspaceStore for PgStore {
     }
 }
 
-#[async_trait]
-impl VfsMountStore for PgStore {
-    async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-        self.ensure_universe()
-            .await
-            .map_err(|error| catalog_store_error("ensure universe", error))?;
-        let (source_kind, snapshot_digest, workspace_id) = mount_source_columns(&record.source)?;
-        sqlx::query(
-            r#"
-            INSERT INTO vfs_mounts (
-                universe_id,
-                session_id,
-                mount_path,
-                source_kind,
-                snapshot_digest,
-                workspace_id,
-                access
-            )
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (universe_id, session_id, mount_path) DO UPDATE
-            SET
-                source_kind = EXCLUDED.source_kind,
-                snapshot_digest = EXCLUDED.snapshot_digest,
-                workspace_id = EXCLUDED.workspace_id,
-                access = EXCLUDED.access
-            "#,
-        )
-        .bind(self.config.universe_id)
-        .bind(record.session_id.as_str())
-        .bind(record.mount_path.as_str())
-        .bind(source_kind)
-        .bind(snapshot_digest)
-        .bind(workspace_id)
-        .bind(mount_access_to_str(record.access))
-        .execute(&self.pool)
-        .await
-        .map_err(|error| catalog_sql_error("put vfs mount", error))?;
-        Ok(())
-    }
-
-    async fn list_mounts(
-        &self,
-        session_id: &SessionId,
-    ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-        let rows = sqlx::query(
-            r#"
-            SELECT
-                session_id,
-                mount_path,
-                source_kind,
-                snapshot_digest,
-                workspace_id,
-                access
-            FROM vfs_mounts
-            WHERE universe_id = $1 AND session_id = $2
-            ORDER BY mount_path
-            "#,
-        )
-        .bind(self.config.universe_id)
-        .bind(session_id.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|error| catalog_sql_error("list vfs mounts", error))?;
-
-        rows.iter().map(mount_record_from_row).collect()
-    }
-
-    async fn remove_mount(
-        &self,
-        session_id: &SessionId,
-        mount_path: &VfsPath,
-    ) -> Result<(), VfsCatalogError> {
-        let result = sqlx::query(
-            r#"
-            DELETE FROM vfs_mounts
-            WHERE universe_id = $1 AND session_id = $2 AND mount_path = $3
-            "#,
-        )
-        .bind(self.config.universe_id)
-        .bind(session_id.as_str())
-        .bind(mount_path.as_str())
-        .execute(&self.pool)
-        .await
-        .map_err(|error| catalog_sql_error("remove vfs mount", error))?;
-        if result.rows_affected() == 0 {
-            return Err(VfsCatalogError::NotFound {
-                kind: "mount",
-                id: format!("{session_id}:{mount_path}"),
-            });
-        }
-        Ok(())
-    }
-}
-
 fn snapshot_record_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<VfsSnapshotRecord, VfsCatalogError> {
@@ -465,91 +371,6 @@ fn workspace_record_from_row(
         created_at_ms,
         updated_at_ms,
     })
-}
-
-fn mount_record_from_row(row: &sqlx::postgres::PgRow) -> Result<VfsMountRecord, VfsCatalogError> {
-    let session_id: String = row
-        .try_get("session_id")
-        .map_err(|error| catalog_sql_error("decode vfs mount session id", error))?;
-    let mount_path: String = row
-        .try_get("mount_path")
-        .map_err(|error| catalog_sql_error("decode vfs mount path", error))?;
-    let source_kind: String = row
-        .try_get("source_kind")
-        .map_err(|error| catalog_sql_error("decode vfs mount source kind", error))?;
-    let snapshot_digest: Option<String> = row
-        .try_get("snapshot_digest")
-        .map_err(|error| catalog_sql_error("decode vfs mount snapshot digest", error))?;
-    let workspace_id: Option<String> = row
-        .try_get("workspace_id")
-        .map_err(|error| catalog_sql_error("decode vfs mount workspace id", error))?;
-    let access: String = row
-        .try_get("access")
-        .map_err(|error| catalog_sql_error("decode vfs mount access", error))?;
-
-    Ok(VfsMountRecord {
-        session_id: SessionId::try_new(session_id).map_err(|error| VfsCatalogError::Store {
-            message: format!("decode vfs mount session id: {error}"),
-        })?,
-        mount_path: VfsPath::parse(mount_path).map_err(|error| VfsCatalogError::Store {
-            message: format!("decode vfs mount path: {error}"),
-        })?,
-        source: match source_kind.as_str() {
-            "snapshot" => VfsMountSource::Snapshot {
-                snapshot_ref: blob_ref_from_digest(snapshot_digest.as_deref().ok_or_else(
-                    || VfsCatalogError::Store {
-                        message: "vfs snapshot mount row has no snapshot digest".to_string(),
-                    },
-                )?)?,
-            },
-            "workspace" => VfsMountSource::Workspace {
-                workspace_id: VfsWorkspaceId::try_new(workspace_id.ok_or_else(|| {
-                    VfsCatalogError::Store {
-                        message: "vfs workspace mount row has no workspace id".to_string(),
-                    }
-                })?)
-                .map_err(|error| VfsCatalogError::Store {
-                    message: format!("decode vfs mount workspace id: {error}"),
-                })?,
-            },
-            other => {
-                return Err(VfsCatalogError::Store {
-                    message: format!("unsupported vfs mount source kind '{other}'"),
-                });
-            }
-        },
-        access: mount_access_from_str(&access)?,
-    })
-}
-
-fn mount_source_columns(
-    source: &VfsMountSource,
-) -> Result<(&'static str, Option<&str>, Option<&str>), VfsCatalogError> {
-    match source {
-        VfsMountSource::Snapshot { snapshot_ref } => {
-            Ok(("snapshot", Some(catalog_digest(snapshot_ref)?), None))
-        }
-        VfsMountSource::Workspace { workspace_id } => {
-            Ok(("workspace", None, Some(workspace_id.as_str())))
-        }
-    }
-}
-
-fn mount_access_to_str(access: VfsMountAccess) -> &'static str {
-    match access {
-        VfsMountAccess::ReadOnly => "read_only",
-        VfsMountAccess::ReadWrite => "read_write",
-    }
-}
-
-fn mount_access_from_str(value: &str) -> Result<VfsMountAccess, VfsCatalogError> {
-    match value {
-        "read_only" => Ok(VfsMountAccess::ReadOnly),
-        "read_write" => Ok(VfsMountAccess::ReadWrite),
-        other => Err(VfsCatalogError::Store {
-            message: format!("unsupported vfs mount access '{other}'"),
-        }),
-    }
 }
 
 fn catalog_digest(blob_ref: &BlobRef) -> Result<&str, VfsCatalogError> {

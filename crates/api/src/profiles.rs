@@ -182,8 +182,6 @@ pub struct ProfileDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<ProfileInstructions>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mounts: Vec<ProfileMount>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub environments: Vec<ProfileEnvironment>,
 }
 
@@ -196,14 +194,6 @@ pub struct ProfileDocument {
 pub enum ProfileInstructions {
     Text { text: String },
     TextRef { blob_ref: String },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ProfileMount {
-    pub mount_path: String,
-    pub source: VfsMountSourceInput,
-    pub access: VfsMountAccess,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -334,6 +324,5 @@ pub struct ProfileApplyResponse {
 pub struct ProfileApplySummary {
     pub config_changed: bool,
     pub instructions_changed: bool,
-    pub mounts_changed: u32,
     pub environments_changed: u32,
 }

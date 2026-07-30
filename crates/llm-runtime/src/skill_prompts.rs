@@ -54,8 +54,8 @@ fn skill_catalog_entry(skill: &SkillMetadata) -> String {
 
 fn skill_doc_path(location: &SkillLocation) -> &str {
     match location {
-        SkillLocation::MountedSnapshot { skill_doc_path, .. }
-        | SkillLocation::MountedWorkspace { skill_doc_path, .. } => skill_doc_path.as_str(),
+        SkillLocation::LinkedSnapshot { skill_doc_path, .. }
+        | SkillLocation::LinkedWorkspace { skill_doc_path, .. } => skill_doc_path.as_str(),
         SkillLocation::HostFilesystem { skill_doc_path, .. } => skill_doc_path,
     }
 }

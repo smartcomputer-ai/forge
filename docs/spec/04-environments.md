@@ -39,7 +39,7 @@ So the design needs two things:
    runtime having to guess.
 
 The concrete failure this refactor addressed: the hosted runtime used to map the
-session's VFS mounts into a `host:local` target that had **no process executor**
+session's VFS workspace links into a `host:local` target that had **no process executor**
 (`crates/temporal-server/src/worker/session_tools.rs`). File tools worked; an
 `exec` against those same paths could not. The agent had no way to know this in
 advance, so it tried to `run_process` on a VFS path and looped on the failure.
@@ -88,9 +88,9 @@ builds on them rather than replacing them.
 - **A fused filesystem primitive.** `SessionFileSystem`
   (`crates/tools/src/fs/session.rs`) routes by deepest matching prefix across
   generic `FileSystem` backends and exposes route metadata for projection.
-  `MountedVfsFileSystem` (`crates/tools/src/fs/vfs.rs`) remains the VFS
-  implementation over `VfsMountTable`, dispatching to snapshot/workspace
-  filesystems and preserving workspace commit effects.
+  `LinkedVfsFileSystem` (`crates/tools/src/fs/vfs.rs`) is the VFS
+  implementation over config-owned workspace links, dispatching to
+  snapshot/workspace filesystems and preserving workspace commit effects.
 - **The skill catalog as the projection precedent.** A typed runtime fact
   (the skill catalog) is written to CAS, published into model context as a keyed
   `ContextEntryKind::SkillCatalog` entry, and rendered provider-neutrally into
@@ -141,7 +141,7 @@ not shadowed by VFS. There is **no implicit sync** between a VFS workspace and a
 environment filesystem. If a VFS path and an environment path have the same
 name, file tools see the VFS path and shell commands see the environment path;
 the projection must therefore report `same_state_as_active_env: None` for the
-VFS route. This means VFS mounts should stay out of the way of the active
+VFS route. This means VFS workspace links should stay out of the way of the active
 environment's working directory unless that separation is intentional.
 
 So "VFS fuses *into* the host's namespace" was the wrong framing. The correct
@@ -181,7 +181,7 @@ one-active-environment rule is precisely how we avoid it.
   plus, when an environment is active, that environment's filesystem routes.
   VFS routes have precedence over environment routes on collision; environment
   routes fill the remaining path space. Generalize the existing
-  `MountedVfsFileSystem::resolve_mount` so a resolved route can point at either
+  `SessionFileSystem` route resolution lets a route point at either
   a VFS source or the active environment's host filesystem, with VFS-first
   precedence. With one active environment the path is unambiguous; no per-call
   environment selection is needed.
@@ -221,7 +221,7 @@ shape, with VFS handled as an always-present standing entry rather than a
 catalog item — because VFS is never *selected*, it is simply always there:
 
 - **`ContextEntryKind::VfsCatalog`** — a standing entry, published whenever VFS
-  mounts change, describing the VFS routes the agent always has via fs tools
+  workspace links change, describing the VFS routes the agent always has via fs tools
   (`/skills`, `/prompts`, `/workspace`, …) and stating plainly that the VFS has
   no shell. Always present when a VFS exists.
 - **`ContextEntryKind::EnvironmentCatalog`** — the menu of *environments only*
@@ -375,7 +375,7 @@ The routing rule is:
 
 Operational consequence: VFS should stay out of the way of the attached
 environment. Use reserved paths like `/skills` and `/prompts` for VFS-only
-resources. Avoid mounting a VFS workspace at the active environment cwd unless
+resources. Avoid linking a VFS workspace at the active environment cwd unless
 the intended behavior is that file tools and shell commands intentionally see
 different states at the same path.
 
@@ -426,7 +426,7 @@ Implemented:
    projection schemas, provider-neutral rendering, and instructive no-shell
    failures.
 3. **Session environment manager and active runtime wiring (P77-P78).** Added one
-   runtime owner that composes VFS mounts, active environment routes, context
+   runtime owner that composes VFS workspace links, active environment routes, context
    republication, and `ToolTargets`; activation lowers to the `env` default
    target used by process tools.
 4. **Public session environment API (P79-P80).** Added list/read/create/attach/
@@ -437,7 +437,7 @@ Implemented:
    CLI helpers. The live bridge test proves a session can attach and activate a
    bridge provider and that exec/file tools can operate on the same attached host
    filesystem.
-6. **VFS-first collision precedence.** Implemented the decision above: VFS mount
+6. **VFS-first collision precedence.** Implemented the decision above: VFS link
    routes shadow active-environment routes on collision, active environments can
    be mounted broadly, and file-tool cwd follows the active environment cwd when
    one is active.

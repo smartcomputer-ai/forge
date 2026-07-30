@@ -652,8 +652,15 @@ pub struct ToolInvokeBatchActivityRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProjectionRefreshActivityRequest {
     pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<engine::WorkspaceLink>,
     pub vfs_catalog_enabled: bool,
     pub environment_catalog_enabled: bool,
+    pub vfs_prompts_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vfs_prompt_roots: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub active_instruction_inputs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
     pub vfs_skills_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vfs_skill_roots: Option<Vec<String>>,

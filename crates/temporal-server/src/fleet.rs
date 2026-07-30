@@ -11,15 +11,16 @@ use api::{
 use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core_agent_state};
 use async_trait::async_trait;
 use engine::{
-    BlobRef, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentIoError, EventSeq,
-    PromiseId, PromiseScope, PromiseSource, PromiseStatus, RunId, RunTerminalNotifyIntent,
-    SessionId, SubmissionId, ToolBatchId, ToolBatchOutcome, ToolCallId, ToolCallStatus,
-    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnId,
-    core_agent_clone_opening_events, promise_cancel_effect, promise_create_effect,
-    promise_detach_effect,
+    BlobRef, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentAction,
+    CoreAgentCommand, CoreAgentDrive, CoreAgentIoError, EventSeq, PromiseId, PromiseScope,
+    PromiseSource, PromiseStatus, RunId, RunTerminalNotifyIntent, SessionId, SubmissionId,
+    ToolBatchId, ToolBatchOutcome, ToolCallId, ToolCallStatus, ToolInvocationBatchResult,
+    ToolInvocationRequest, ToolInvocationResult, TurnId, core_agent_clone_opening_events,
+    promise_cancel_effect, promise_create_effect, promise_detach_effect,
     storage::{
-        BlobStore, BlobStoreError, CreateClonedSession, CreateForkedSession, ListSessionLinks,
-        SessionLinkDirection, SessionRecord, SessionStore, SessionStoreError, UpsertSessionLink,
+        AppendSessionEvents, BlobStore, BlobStoreError, CreateClonedSession, CreateForkedSession,
+        ListSessionLinks, SessionLinkDirection, SessionRecord, SessionStore, SessionStoreError,
+        UpsertSessionLink,
     },
 };
 use environments::{
@@ -44,10 +45,7 @@ use tools::{
         ProfileReadArgs, ProfileReadOutput, VfsPolicy,
     },
 };
-use vfs::{
-    CreateVfsWorkspaceRecord, VfsCatalogError, VfsMountSource, VfsMountStore, VfsPath,
-    VfsWorkspaceId, VfsWorkspaceStore,
-};
+use vfs::{CreateVfsWorkspaceRecord, VfsCatalogError, VfsPath, VfsWorkspaceId, VfsWorkspaceStore};
 
 use crate::gateway::GatewayAgentApi;
 
@@ -67,7 +65,6 @@ pub struct FleetService {
     sessions: Arc<dyn SessionStore>,
     runtime: Arc<dyn FleetChildRuntime>,
     workspace_store: Option<Arc<dyn VfsWorkspaceStore>>,
-    mount_store: Option<Arc<dyn VfsMountStore>>,
     environment_bindings: Option<Arc<dyn SessionEnvironmentBindingStore>>,
 }
 
@@ -77,18 +74,12 @@ impl FleetService {
             sessions,
             runtime,
             workspace_store: None,
-            mount_store: None,
             environment_bindings: None,
         }
     }
 
-    pub fn with_vfs_stores(
-        mut self,
-        workspace_store: Arc<dyn VfsWorkspaceStore>,
-        mount_store: Arc<dyn VfsMountStore>,
-    ) -> Self {
+    pub fn with_vfs_stores(mut self, workspace_store: Arc<dyn VfsWorkspaceStore>) -> Self {
         self.workspace_store = Some(workspace_store);
-        self.mount_store = Some(mount_store);
         self
     }
 
@@ -1003,7 +994,7 @@ impl FleetService {
         match args.vfs {
             VfsPolicy::Share => Ok(()),
             VfsPolicy::Isolate => {
-                self.isolate_vfs_mounts(child_session_id, observed_at_ms)
+                self.isolate_workspace_links(child_session_id, observed_at_ms)
                     .await
             }
         }
@@ -1042,7 +1033,7 @@ impl FleetService {
         Ok(())
     }
 
-    async fn isolate_vfs_mounts(
+    async fn isolate_workspace_links(
         &self,
         child_session_id: &SessionId,
         observed_at_ms: u64,
@@ -1050,19 +1041,41 @@ impl FleetService {
         let workspace_store = self.workspace_store.as_ref().ok_or_else(|| {
             AgentApiError::internal("agent_spawn vfs isolate requires a workspace store")
         })?;
-        let mount_store = self.mount_store.as_ref().ok_or_else(|| {
-            AgentApiError::internal("agent_spawn vfs isolate requires a mount store")
-        })?;
         let created_at_ms = nonnegative_i64(observed_at_ms, "observed_at_ms")?;
-        let mounts = mount_store
-            .list_mounts(child_session_id)
+        let record = self
+            .sessions
+            .load_session(child_session_id)
             .await
-            .map_err(map_vfs_catalog_error)?;
-        for mount in mounts {
-            let VfsMountSource::Workspace { workspace_id } = mount.source.clone() else {
+            .map_err(map_session_store_error)?
+            .ok_or_else(|| {
+                AgentApiError::not_found(format!("session not found: {child_session_id}"))
+            })?;
+        let entries = read_all_session_entries(
+            self.sessions.as_ref(),
+            child_session_id,
+            MAX_EVENT_PAGE_LIMIT as usize,
+        )
+        .await?;
+        let state = replay_core_agent_state(&entries)?;
+        let mut config =
+            state.lifecycle.config.clone().ok_or_else(|| {
+                AgentApiError::internal("isolated child session is missing config")
+            })?;
+        let Some(vfs) = config.features.vfs.as_mut() else {
+            return Ok(());
+        };
+        let mut changed = false;
+        for link in &mut vfs.workspace_links {
+            let engine::WorkspaceLinkTarget::Workspace { workspace_id } = &link.target else {
                 continue;
             };
-            let child_workspace_id = isolated_workspace_id(child_session_id, &mount.mount_path);
+            let workspace_id = VfsWorkspaceId::try_new(workspace_id.clone()).map_err(|error| {
+                AgentApiError::invalid_request(format!("invalid linked workspace id: {error}"))
+            })?;
+            let link_path = VfsPath::parse(&link.path).map_err(|error| {
+                AgentApiError::invalid_request(format!("invalid workspace link path: {error}"))
+            })?;
+            let child_workspace_id = isolated_workspace_id(child_session_id, &link_path);
             if workspace_id == child_workspace_id {
                 continue;
             }
@@ -1084,14 +1097,43 @@ impl FleetService {
                 Ok(_) | Err(VfsCatalogError::AlreadyExists { .. }) => {}
                 Err(error) => return Err(map_vfs_catalog_error(error)),
             }
-            let mut isolated_mount = mount;
-            isolated_mount.source = VfsMountSource::Workspace {
-                workspace_id: child_workspace_id,
+            link.target = engine::WorkspaceLinkTarget::Workspace {
+                workspace_id: child_workspace_id.to_string(),
             };
-            mount_store
-                .put_mount(isolated_mount)
+            changed = true;
+        }
+        if changed {
+            let mut drive = CoreAgentDrive::from_replayed(
+                child_session_id.clone(),
+                state.clone(),
+                record.head.clone(),
+            );
+            let action = drive
+                .admit_command(
+                    CoreAgentCommand::ReplaceSessionConfig {
+                        expected_revision: Some(state.lifecycle.config_revision),
+                        config,
+                    },
+                    observed_at_ms,
+                )
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+            let CoreAgentAction::AppendEvents {
+                expected_head,
+                events,
+            } = action
+            else {
+                return Err(AgentApiError::internal(
+                    "isolating workspace links produced no config event",
+                ));
+            };
+            self.sessions
+                .append(AppendSessionEvents {
+                    session_id: child_session_id.clone(),
+                    expected_head,
+                    events,
+                })
                 .await
-                .map_err(map_vfs_catalog_error)?;
+                .map_err(map_session_store_error)?;
         }
         Ok(())
     }
@@ -2548,12 +2590,11 @@ fn profile_list_model_visible_text(output: &ProfileListOutput) -> String {
 fn profile_read_model_visible_text(output: &ProfileReadOutput) -> String {
     let profile = &output.profile;
     format!(
-        "Read profile {} revision {}: config {}, instructions {}, {} mount(s), {} environment(s).",
+        "Read profile {} revision {}: config {}, instructions {}, {} environment(s).",
         profile.profile_id,
         profile.revision,
         yes_no(profile.document.config.is_some()),
         yes_no(profile.document.instructions.is_some()),
-        profile.document.mounts.len(),
         profile.document.environments.len()
     )
 }
@@ -2605,9 +2646,10 @@ mod tests {
         ContextConfig, FeaturesConfig, FleetFeature, FleetProfilesConfig, FleetSpawnBase,
         FleetSpawnConfig, GenerationConfig, LimitsConfig, ModelSelection, ProviderApiKind,
         RunConfig, SessionConfig, ToolBatchOutcome, ToolCallId, ToolInvocationRequest, ToolName,
+        WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{CreateSession, InMemorySessionStore, SessionStore},
     };
-    use vfs::{CompareAndSetVfsWorkspaceHead, VfsMountAccess, VfsMountRecord, VfsWorkspaceRecord};
+    use vfs::{CompareAndSetVfsWorkspaceHead, VfsWorkspaceRecord};
 
     use super::*;
 
@@ -3218,8 +3260,9 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn vfs_isolate_rewrites_workspace_mounts_and_keeps_snapshots() {
+    async fn vfs_isolate_rewrites_workspace_links_and_keeps_snapshots() {
         let vfs = Arc::new(TestVfsCatalog::default());
+        let sessions = Arc::new(InMemorySessionStore::new());
         let child = SessionId::new("child");
         let source_workspace = VfsWorkspaceId::new("workspace_source");
         let head = BlobRef::from_bytes(b"snapshot-head");
@@ -3233,36 +3276,51 @@ mod tests {
         })
         .await
         .expect("source workspace");
-        vfs.put_mount(VfsMountRecord {
-            session_id: child.clone(),
-            mount_path: VfsPath::parse("/workspace").expect("path"),
-            source: VfsMountSource::Workspace {
-                workspace_id: source_workspace.clone(),
-            },
-            access: VfsMountAccess::ReadWrite,
-        })
-        .await
-        .expect("workspace mount");
         let snapshot_ref = BlobRef::from_bytes(b"snapshot-mount");
-        vfs.put_mount(VfsMountRecord {
-            session_id: child.clone(),
-            mount_path: VfsPath::parse("/readonly").expect("path"),
-            source: VfsMountSource::Snapshot {
-                snapshot_ref: snapshot_ref.clone(),
-            },
-            access: VfsMountAccess::ReadOnly,
-        })
-        .await
-        .expect("snapshot mount");
+        let mut state = open_state();
+        state.lifecycle.config.as_mut().unwrap().features.vfs = Some(engine::VfsFeature {
+            workspace_links: vec![
+                WorkspaceLink {
+                    path: "/workspace".to_owned(),
+                    target: WorkspaceLinkTarget::Workspace {
+                        workspace_id: source_workspace.to_string(),
+                    },
+                    access: WorkspaceLinkAccess::ReadWrite,
+                },
+                WorkspaceLink {
+                    path: "/readonly".to_owned(),
+                    target: WorkspaceLinkTarget::Snapshot {
+                        snapshot_ref: snapshot_ref.to_string(),
+                    },
+                    access: WorkspaceLinkAccess::ReadOnly,
+                },
+            ],
+            ..engine::VfsFeature::default()
+        });
+        sessions
+            .create_session(CreateSession {
+                session_id: child.clone(),
+                display_name: None,
+                created_at_ms: 2,
+            })
+            .await
+            .expect("create child");
+        let opening_events =
+            engine::core_agent_clone_opening_events(&state, 2).expect("opening events");
+        sessions
+            .append(AppendSessionEvents {
+                session_id: child.clone(),
+                expected_head: None,
+                events: opening_events,
+            })
+            .await
+            .expect("open child");
 
-        let service = FleetService::new(
-            Arc::new(InMemorySessionStore::new()),
-            Arc::new(FakeRuntime::default()),
-        )
-        .with_vfs_stores(vfs.clone(), vfs.clone())
-        .with_environment_bindings(Arc::new(
-            environments::InMemoryEnvironmentRegistryStore::new(),
-        ));
+        let service = FleetService::new(sessions.clone(), Arc::new(FakeRuntime::default()))
+            .with_vfs_stores(vfs.clone())
+            .with_environment_bindings(Arc::new(
+                environments::InMemoryEnvironmentRegistryStore::new(),
+            ));
         service
             .apply_resource_policies(
                 &child,
@@ -3277,28 +3335,34 @@ mod tests {
             .await
             .expect("isolate");
 
-        let mounts = vfs.list_mounts(&child).await.expect("mounts");
-        let workspace_mount = mounts
-            .iter()
-            .find(|mount| mount.mount_path.as_str() == "/workspace")
-            .expect("workspace mount");
-        let VfsMountSource::Workspace { workspace_id } = &workspace_mount.source else {
-            panic!("workspace mount source");
+        let entries = read_all_session_entries(sessions.as_ref(), &child, 100)
+            .await
+            .expect("child entries");
+        let state = replay_core_agent_state(&entries).expect("child state");
+        let links = &state
+            .lifecycle
+            .config
+            .unwrap()
+            .features
+            .vfs
+            .unwrap()
+            .workspace_links;
+        let WorkspaceLinkTarget::Workspace { workspace_id } = &links[0].target else {
+            panic!("workspace link target");
         };
-        assert_ne!(workspace_id, &source_workspace);
+        let workspace_id = VfsWorkspaceId::try_new(workspace_id.clone()).unwrap();
+        assert_ne!(workspace_id, source_workspace);
         let child_workspace = vfs
-            .read_workspace(workspace_id)
+            .read_workspace(&workspace_id)
             .await
             .expect("child workspace");
         assert_eq!(child_workspace.base_snapshot_ref, Some(head.clone()));
         assert_eq!(child_workspace.head_snapshot_ref, head);
-        let snapshot_mount = mounts
-            .iter()
-            .find(|mount| mount.mount_path.as_str() == "/readonly")
-            .expect("snapshot mount");
         assert_eq!(
-            snapshot_mount.source,
-            VfsMountSource::Snapshot { snapshot_ref }
+            links[1].target,
+            WorkspaceLinkTarget::Snapshot {
+                snapshot_ref: snapshot_ref.to_string()
+            }
         );
     }
 
@@ -4533,6 +4597,7 @@ mod tests {
                 features: Some(api::FeaturesConfig {
                     vfs: Some(api::VfsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
+                        workspace_links: Vec::new(),
                         tools: Some(api::VfsToolSurface::Edit),
                         prompts: None,
                         skills: None,
@@ -4551,7 +4616,6 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
-            vfs_mounts: Vec::new(),
         }
     }
 
@@ -4592,7 +4656,6 @@ mod tests {
     #[derive(Default)]
     struct TestVfsCatalog {
         workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,
-        mounts: Mutex<BTreeMap<(SessionId, VfsPath), VfsMountRecord>>,
     }
 
     #[async_trait]
@@ -4680,49 +4743,6 @@ mod tests {
                     kind: "workspace",
                     id: workspace_id.to_string(),
                 })
-        }
-    }
-
-    #[async_trait]
-    impl VfsMountStore for TestVfsCatalog {
-        async fn put_mount(&self, record: VfsMountRecord) -> Result<(), VfsCatalogError> {
-            self.mounts.lock().expect("mount lock").insert(
-                (record.session_id.clone(), record.mount_path.clone()),
-                record,
-            );
-            Ok(())
-        }
-
-        async fn list_mounts(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<Vec<VfsMountRecord>, VfsCatalogError> {
-            let mut mounts: Vec<_> = self
-                .mounts
-                .lock()
-                .expect("mount lock")
-                .values()
-                .filter(|mount| &mount.session_id == session_id)
-                .cloned()
-                .collect();
-            mounts.sort_by(|left, right| left.mount_path.as_str().cmp(right.mount_path.as_str()));
-            Ok(mounts)
-        }
-
-        async fn remove_mount(
-            &self,
-            session_id: &SessionId,
-            mount_path: &VfsPath,
-        ) -> Result<(), VfsCatalogError> {
-            self.mounts
-                .lock()
-                .expect("mount lock")
-                .remove(&(session_id.clone(), mount_path.clone()))
-                .ok_or_else(|| VfsCatalogError::NotFound {
-                    kind: "mount",
-                    id: format!("{session_id}:{mount_path}"),
-                })?;
-            Ok(())
         }
     }
 }

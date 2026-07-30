@@ -124,8 +124,8 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   is not a production runtime and must not expose an `AgentApiService`.
 - `crates/tools/` — optional tool packages for session filesystems,
   environment actions, web, prompts, and skills.
-- `crates/vfs/` — virtual filesystem models, validation, snapshots, mounts,
-  and store traits.
+- `crates/vfs/` — virtual filesystem models, validation, snapshots, mutable
+  workspaces, transient workspace-link resolution, and store traits.
 - `crates/host-protocol/`, `crates/host-client/`, and `crates/host-bridge/` —
   environment host wire protocol, client, and bridge daemon used for borrowed
   compute.
@@ -194,6 +194,10 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   pattern. The session toolset — including remote MCP tools declared under
   `features.mcp` — is derived from config and never written directly by
   clients. See `docs/roadmap/p95-config-redesign.md`.
+- VFS session topology is declared only by
+  `features.vfs.workspaceLinks`. Snapshots and mutable workspace heads remain
+  catalog resources; resolved links are transient, and no session-link or
+  mount table is authoritative. See `docs/roadmap/p107-session-workspace-links.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

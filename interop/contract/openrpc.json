@@ -1336,57 +1336,6 @@
         ],
         "type": "object"
       },
-      "AgentApiOutcomeOfVfsMountDeleteResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/VfsMountDeleteResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfVfsMountListResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/VfsMountListResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfVfsMountPutResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/VfsMountPutResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
       "AgentApiOutcomeOfVfsSnapshotCommitResponse": {
         "properties": {
           "notifications": {
@@ -1716,12 +1665,6 @@
               }
             ]
           },
-          "mounts": {
-            "items": {
-              "$ref": "#/components/schemas/ProfileMount"
-            },
-            "type": "array"
-          },
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
           },
@@ -1782,12 +1725,6 @@
                 "type": "null"
               }
             ]
-          },
-          "mounts": {
-            "items": {
-              "$ref": "#/components/schemas/ProfileMount"
-            },
-            "type": "array"
           },
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
@@ -4789,12 +4726,6 @@
                 "type": "null"
               }
             ]
-          },
-          "mounts": {
-            "items": {
-              "$ref": "#/components/schemas/ProfileMount"
-            },
-            "type": "array"
           }
         },
         "type": "object"
@@ -6068,8 +5999,7 @@
             "default": {
               "configChanged": false,
               "environmentsChanged": 0,
-              "instructionsChanged": false,
-              "mountsChanged": 0
+              "instructionsChanged": false
             }
           },
           "session": {
@@ -6093,17 +6023,11 @@
           },
           "instructionsChanged": {
             "type": "boolean"
-          },
-          "mountsChanged": {
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
           }
         },
         "required": [
           "configChanged",
           "instructionsChanged",
-          "mountsChanged",
           "environmentsChanged"
         ],
         "type": "object"
@@ -6263,25 +6187,6 @@
             "type": "array"
           }
         },
-        "type": "object"
-      },
-      "ProfileMount": {
-        "properties": {
-          "access": {
-            "$ref": "#/components/schemas/VfsMountAccess"
-          },
-          "mountPath": {
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/VfsMountSourceInput"
-          }
-        },
-        "required": [
-          "mountPath",
-          "source",
-          "access"
-        ],
         "type": "object"
       },
       "ProfilePutParams": {
@@ -9546,12 +9451,6 @@
             "format": "uint64",
             "minimum": 0,
             "type": "integer"
-          },
-          "vfsMounts": {
-            "items": {
-              "$ref": "#/components/schemas/VfsMountView"
-            },
-            "type": "array"
           }
         },
         "required": [
@@ -10327,7 +10226,7 @@
       },
       "VfsFeature": {
         "additionalProperties": false,
-        "description": "Grants the session virtual filesystem: mounts may be attached and the VFS\ncatalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
+        "description": "Grants the session virtual filesystem. Workspace links declare the\nsession-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with\nno tools and no sourcing.",
         "properties": {
           "prompts": {
             "anyOf": [
@@ -10360,218 +10259,22 @@
                 "type": "null"
               }
             ],
-            "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each mount's own access."
+            "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
           },
           "version": {
             "default": 1,
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "VfsMountAccess": {
-        "enum": [
-          "readOnly",
-          "readWrite"
-        ],
-        "type": "string"
-      },
-      "VfsMountDeleteParams": {
-        "properties": {
-          "mountPath": {
-            "type": "string"
           },
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId",
-          "mountPath"
-        ],
-        "type": "object"
-      },
-      "VfsMountDeleteResponse": {
-        "properties": {
-          "mountPath": {
-            "type": "string"
-          },
-          "session": {
-            "$ref": "#/components/schemas/SessionView"
-          }
-        },
-        "required": [
-          "mountPath",
-          "session"
-        ],
-        "type": "object"
-      },
-      "VfsMountListParams": {
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId"
-        ],
-        "type": "object"
-      },
-      "VfsMountListResponse": {
-        "properties": {
-          "mounts": {
-            "default": [],
+          "workspaceLinks": {
+            "description": "Catalog resources exposed in the session's workspace namespace.",
             "items": {
-              "$ref": "#/components/schemas/VfsMountView"
+              "$ref": "#/components/schemas/WorkspaceLink"
             },
             "type": "array"
           }
         },
-        "type": "object"
-      },
-      "VfsMountPutParams": {
-        "properties": {
-          "access": {
-            "$ref": "#/components/schemas/VfsMountAccess"
-          },
-          "mountPath": {
-            "type": "string"
-          },
-          "sessionId": {
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/VfsMountSourceInput"
-          }
-        },
-        "required": [
-          "sessionId",
-          "mountPath",
-          "source",
-          "access"
-        ],
-        "type": "object"
-      },
-      "VfsMountPutResponse": {
-        "properties": {
-          "mount": {
-            "$ref": "#/components/schemas/VfsMountView"
-          },
-          "session": {
-            "$ref": "#/components/schemas/SessionView"
-          }
-        },
-        "required": [
-          "mount",
-          "session"
-        ],
-        "type": "object"
-      },
-      "VfsMountSourceInput": {
-        "oneOf": [
-          {
-            "properties": {
-              "snapshotRef": {
-                "type": "string"
-              },
-              "type": {
-                "const": "snapshot",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "snapshotRef"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "const": "workspace",
-                "type": "string"
-              },
-              "workspaceId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "workspaceId"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "VfsMountSourceView": {
-        "oneOf": [
-          {
-            "properties": {
-              "snapshotRef": {
-                "type": "string"
-              },
-              "type": {
-                "const": "snapshot",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "snapshotRef"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "headSnapshotRef": {
-                "type": [
-                  "string",
-                  "null"
-                ]
-              },
-              "revision": {
-                "format": "uint64",
-                "minimum": 0,
-                "type": [
-                  "integer",
-                  "null"
-                ]
-              },
-              "type": {
-                "const": "workspace",
-                "type": "string"
-              },
-              "workspaceId": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "workspaceId"
-            ],
-            "type": "object"
-          }
-        ]
-      },
-      "VfsMountView": {
-        "properties": {
-          "access": {
-            "$ref": "#/components/schemas/VfsMountAccess"
-          },
-          "mountPath": {
-            "type": "string"
-          },
-          "source": {
-            "$ref": "#/components/schemas/VfsMountSourceView"
-          }
-        },
-        "required": [
-          "mountPath",
-          "source",
-          "access"
-        ],
         "type": "object"
       },
       "VfsPromptsConfig": {
@@ -11270,6 +10973,69 @@
             "type": "object"
           }
         ]
+      },
+      "WorkspaceLink": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/WorkspaceLinkAccess"
+          },
+          "path": {
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/WorkspaceLinkTarget"
+          }
+        },
+        "required": [
+          "path",
+          "target",
+          "access"
+        ],
+        "type": "object"
+      },
+      "WorkspaceLinkAccess": {
+        "enum": [
+          "readOnly",
+          "readWrite"
+        ],
+        "type": "string"
+      },
+      "WorkspaceLinkTarget": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "workspace",
+                "type": "string"
+              },
+              "workspaceId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "workspaceId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "snapshotRef": {
+                "type": "string"
+              },
+              "type": {
+                "const": "snapshot",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "snapshotRef"
+            ],
+            "type": "object"
+          }
+        ]
       }
     }
   },
@@ -11679,7 +11445,7 @@
       "summary": "Deactivate a session skill"
     },
     {
-      "description": "Applies a named or inline profile's config, instructions, mounts, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
+      "description": "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",
       "name": "session/profiles/apply",
       "paramStructure": "by-name",
       "params": [
@@ -11698,69 +11464,6 @@
         }
       },
       "summary": "Apply a profile to a session"
-    },
-    {
-      "description": "Binds a snapshot or workspace at a path on an open idle session that grants VFS. Workspace mounts follow that workspace's current head.",
-      "name": "session/mounts/put",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/VfsMountPutParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfVfsMountPutResponse"
-        }
-      },
-      "summary": "Create or replace a session mount"
-    },
-    {
-      "description": "Returns the session's snapshot/workspace bindings and access modes.",
-      "name": "session/mounts/list",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/VfsMountListParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfVfsMountListResponse"
-        }
-      },
-      "summary": "List session mounts"
-    },
-    {
-      "description": "Removes a binding from an open idle session without deleting its source snapshot or workspace.",
-      "name": "session/mounts/delete",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/VfsMountDeleteParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfVfsMountDeleteResponse"
-        }
-      },
-      "summary": "Delete a session mount"
     },
     {
       "description": "Returns one session-local environment alias joined with current instance/provider availability and activation state.",

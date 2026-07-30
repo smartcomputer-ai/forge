@@ -1335,52 +1335,6 @@ async fn dispatch_json_rpc_routes_vfs_workspace_delete() {
     );
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_vfs_mount_put() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_MOUNTS_PUT.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "mountPath": "/workspace",
-                "source": { "type": "workspace", "workspaceId": "workspace_1" },
-                "access": "readWrite"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["mount"]["source"]["workspaceId"],
-        json!("workspace_1")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_vfs_mount_delete() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_MOUNTS_DELETE.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "mountPath": "/workspace"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["mountPath"],
-        json!("/workspace")
-    );
-}
-
 #[test]
 fn session_event_serializes_with_cursor_and_kind() {
     let event = SessionEventView {
@@ -2385,60 +2339,6 @@ impl AgentApiService for TestService {
         }))
     }
 
-    async fn put_vfs_mount(
-        &self,
-        params: VfsMountPutParams,
-    ) -> Result<AgentApiOutcome<VfsMountPutResponse>, AgentApiError> {
-        let mount = VfsMountView {
-            mount_path: params.mount_path,
-            source: match params.source {
-                VfsMountSourceInput::Snapshot { snapshot_ref } => {
-                    VfsMountSourceView::Snapshot { snapshot_ref }
-                }
-                VfsMountSourceInput::Workspace { workspace_id } => VfsMountSourceView::Workspace {
-                    workspace_id,
-                    head_snapshot_ref: Some(format!("sha256:{}", "3".repeat(64))),
-                    revision: Some(0),
-                },
-            },
-            access: params.access,
-        };
-        Ok(AgentApiOutcome::new(VfsMountPutResponse {
-            mount: mount.clone(),
-            session: SessionView {
-                vfs_mounts: vec![mount],
-                ..test_session(params.session_id, SessionStatus::Idle)
-            },
-        }))
-    }
-
-    async fn delete_vfs_mount(
-        &self,
-        params: VfsMountDeleteParams,
-    ) -> Result<AgentApiOutcome<VfsMountDeleteResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(VfsMountDeleteResponse {
-            mount_path: params.mount_path,
-            session: test_session(params.session_id, SessionStatus::Idle),
-        }))
-    }
-
-    async fn list_vfs_mounts(
-        &self,
-        params: VfsMountListParams,
-    ) -> Result<AgentApiOutcome<VfsMountListResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(VfsMountListResponse {
-            mounts: vec![VfsMountView {
-                mount_path: "/workspace".to_owned(),
-                source: VfsMountSourceView::Workspace {
-                    workspace_id: format!("workspace_{}", params.session_id),
-                    head_snapshot_ref: Some(format!("sha256:{}", "3".repeat(64))),
-                    revision: Some(0),
-                },
-                access: VfsMountAccess::ReadWrite,
-            }],
-        }))
-    }
-
     async fn put_mcp_server(
         &self,
         params: McpServerPutParams,
@@ -2723,7 +2623,6 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
             instructions: Some(ProfileInstructions::Text {
                 text: "Be concise.".to_owned(),
             }),
-            mounts: Vec::new(),
             environments: Vec::new(),
         },
         created_at_ms: 1,
@@ -2759,7 +2658,6 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_context: ContextView::default(),
         active_tools: ActiveToolsView::default(),
         management: None,
-        vfs_mounts: Vec::new(),
     }
 }
 

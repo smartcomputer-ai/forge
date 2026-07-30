@@ -295,16 +295,19 @@ pub struct FeaturesConfig {
     pub mcp: Option<McpFeature>,
 }
 
-/// Grants the session virtual filesystem: mounts may be attached and the VFS
-/// catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
+/// Grants the session virtual filesystem. Workspace links declare the
+/// session-visible namespace and the VFS catalog is surfaced. Sub-grants are independent; `{}` grants a VFS with
 /// no tools and no sourcing.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VfsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
+    /// Catalog resources exposed in the session's workspace namespace.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<WorkspaceLink>,
     /// Agent-facing filesystem tool surface; absent = no fs tools. Per-path
-    /// writability is defined by each mount's own access.
+    /// writability is defined by each workspace link's own access.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
     /// Prompt-instruction sourcing from the VFS.
@@ -313,6 +316,32 @@ pub struct VfsFeature {
     /// Skill discovery sourcing from the VFS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<VfsSkillsConfig>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkspaceLink {
+    pub path: String,
+    pub target: WorkspaceLinkTarget,
+    pub access: WorkspaceLinkAccess,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum WorkspaceLinkTarget {
+    Workspace { workspace_id: String },
+    Snapshot { snapshot_ref: String },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceLinkAccess {
+    ReadOnly,
+    ReadWrite,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

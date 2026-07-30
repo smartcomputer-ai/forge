@@ -203,7 +203,8 @@ fn capabilities(capabilities: &EnvironmentCapabilities) -> String {
 #[cfg(test)]
 mod tests {
     use tools::environment::projection::{
-        EnvironmentCatalogSnapshot, FsRoute, FsRouteAccess, FsRouteSource, VfsCatalog,
+        EnvironmentCatalogSnapshot, FsRoute, FsRouteAccess, FsRouteAvailability, FsRouteSource,
+        VfsCatalog,
     };
 
     use super::*;
@@ -220,6 +221,7 @@ mod tests {
                     workspace_id: "workspace_1".to_owned(),
                 },
                 same_state_as_active_env: None,
+                availability: FsRouteAvailability::Available,
             }],
         );
 

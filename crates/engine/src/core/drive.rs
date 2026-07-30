@@ -695,6 +695,13 @@ pub fn next_tool_batch_request(
         turn_id: batch.turn_id,
         batch_id: batch.batch_id,
         default_targets: state.tooling.routing.default_targets.clone(),
+        workspace_links: state
+            .lifecycle
+            .config
+            .as_ref()
+            .and_then(|config| config.features.vfs.as_ref())
+            .map(|vfs| vfs.workspace_links.clone())
+            .unwrap_or_default(),
         calls,
     }))
 }

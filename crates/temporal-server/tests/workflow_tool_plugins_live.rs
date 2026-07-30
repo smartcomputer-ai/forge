@@ -119,13 +119,9 @@ impl TestBoundPluginWorkflow {
                         else {
                             continue;
                         };
-                        let holder = temporal_workflow::compose_workflow_id(
-                            args.universe_id,
-                            session_id,
-                        );
-                        for (_key, promise_id) in
-                            invocation.completion_promises.iter().flatten()
-                        {
+                        let holder =
+                            temporal_workflow::compose_workflow_id(args.universe_id, session_id);
+                        for (_key, promise_id) in invocation.completion_promises.iter().flatten() {
                             let reply = EmissionEnvelope::source_resolution(
                                 args.universe_id,
                                 ctx.workflow_id().to_owned(),
@@ -137,10 +133,7 @@ impl TestBoundPluginWorkflow {
                             for _ in 0..2 {
                                 let _ = ctx
                                     .external_workflow(holder.clone(), None)
-                                    .signal(
-                                        AgentSessionWorkflow::deliver_emission,
-                                        reply.clone(),
-                                    )
+                                    .signal(AgentSessionWorkflow::deliver_emission, reply.clone())
                                     .await;
                                 ctx.state_mut(|state| state.snapshot.replies_sent += 1);
                             }
@@ -244,13 +237,9 @@ impl TestSelfReceiverControllerWorkflow {
                         else {
                             continue;
                         };
-                        let holder = temporal_workflow::compose_workflow_id(
-                            args.universe_id,
-                            session_id,
-                        );
-                        for (_key, promise_id) in
-                            invocation.completion_promises.iter().flatten()
-                        {
+                        let holder =
+                            temporal_workflow::compose_workflow_id(args.universe_id, session_id);
+                        for (_key, promise_id) in invocation.completion_promises.iter().flatten() {
                             let reply = EmissionEnvelope::source_resolution(
                                 args.universe_id,
                                 ctx.workflow_id().to_owned(),
@@ -264,10 +253,7 @@ impl TestSelfReceiverControllerWorkflow {
                             for _ in 0..2 {
                                 let _ = ctx
                                     .external_workflow(holder.clone(), None)
-                                    .signal(
-                                        AgentSessionWorkflow::deliver_emission,
-                                        reply.clone(),
-                                    )
+                                    .signal(AgentSessionWorkflow::deliver_emission, reply.clone())
                                     .await;
                                 ctx.state_mut(|state| state.snapshot.replies_sent += 1);
                             }
@@ -287,8 +273,7 @@ impl TestSelfReceiverControllerWorkflow {
 
             if args.continue_after_enqueue
                 && ctx.state(|state| {
-                    !state.snapshot.outbox.is_empty()
-                        && state.snapshot.continue_as_new_count == 0
+                    !state.snapshot.outbox.is_empty() && state.snapshot.continue_as_new_count == 0
                 })
             {
                 let mut next = args.clone();
@@ -534,9 +519,7 @@ impl WorkflowToolScriptedLlm {
             .any(|tool| tool.name.as_str() == tool_name)
         {
             return Err(CoreAgentIoError::Failed {
-                message: format!(
-                    "scripted workflow-tool test expected {tool_name} in the toolset"
-                ),
+                message: format!("scripted workflow-tool test expected {tool_name} in the toolset"),
             });
         }
         let arguments_ref = self
@@ -684,10 +667,7 @@ impl CoreAgentLlm for WorkflowToolScriptedLlm {
                             .await;
                     }
                     return self
-                        .final_result(
-                            &request,
-                            format!("workflow tool test done: {tool_result}"),
-                        )
+                        .final_result(&request, format!("workflow tool test done: {tool_result}"))
                         .await;
                 }
                 ContextEntryKind::Message {
@@ -737,7 +717,9 @@ async fn tool_definition(
     semantic_type: &str,
 ) -> anyhow::Result<WorkflowToolDefinition> {
     let input_schema_ref = blobs
-        .put_bytes(serde_json::to_vec(&serde_json::json!({ "type": "object" }))?)
+        .put_bytes(serde_json::to_vec(
+            &serde_json::json!({ "type": "object" }),
+        )?)
         .await?;
     Ok(WorkflowToolDefinition {
         tool_id: engine::WorkflowToolId::new(tool_id),
@@ -807,8 +789,8 @@ where
     let session_queue = format!("lightspeed-agent-live-{}", uuid::Uuid::new_v4().simple());
     let plugin_queue = format!("lightspeed-plugin-live-{}", uuid::Uuid::new_v4().simple());
     let session_id = SessionId::new(format!("session_live_{}", uuid::Uuid::new_v4().simple()));
-    let temporal_target = std::env::var("TEMPORAL_ADDRESS")
-        .unwrap_or_else(|_| DEFAULT_TEMPORAL_TARGET.to_owned());
+    let temporal_target =
+        std::env::var("TEMPORAL_ADDRESS").unwrap_or_else(|_| DEFAULT_TEMPORAL_TARGET.to_owned());
     let namespace = std::env::var("TEMPORAL_NAMESPACE")
         .unwrap_or_else(|_| DEFAULT_TEMPORAL_NAMESPACE.to_owned());
 
@@ -904,7 +886,7 @@ async fn start_managed_session_and_run(
     eprintln!("managed session started: {session_id}");
     let run = api
         .start_run(RunStartParams {
-        notify_on_terminal: None,
+            notify_on_terminal: None,
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
@@ -1478,7 +1460,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
         .map_err(|error| anyhow::anyhow!("start managed session: {error:?}"))?;
         let run = api
             .start_run(RunStartParams {
-        notify_on_terminal: None,
+                notify_on_terminal: None,
                 submission_id: None,
                 session_id: session_id.as_str().to_owned(),
                 source: RunStartSource::Input {
@@ -1557,7 +1539,11 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
             PromiseResolution::Resolved { payload_ref: None },
         );
         session_handle
-            .signal(AgentSessionWorkflow::deliver_emission, forged, temporalio_client::WorkflowSignalOptions::default())
+            .signal(
+                AgentSessionWorkflow::deliver_emission,
+                forged,
+                temporalio_client::WorkflowSignalOptions::default(),
+            )
             .await
             .map_err(|error| anyhow::anyhow!("signal forged reply: {error}"))?;
         let started = std::time::Instant::now();
@@ -1711,9 +1697,13 @@ async fn workflow_tool_start_on_call_resolves_via_plugin_worker() -> anyhow::Res
         let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
         let recipe_ref = blobs.put_bytes(recipe).await?;
 
-        let definition =
-            tool_definition(&blobs, "launch", LAUNCH_JOB_TOOL, "lightspeed.test.launch.v1")
-                .await?;
+        let definition = tool_definition(
+            &blobs,
+            "launch",
+            LAUNCH_JOB_TOOL,
+            "lightspeed.test.launch.v1",
+        )
+        .await?;
         let run = start_managed_session_and_run(
             &api,
             &session_id,
@@ -1796,9 +1786,13 @@ async fn workflow_tool_start_recovery_query_resolves_silent_execution() -> anyho
         let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
         let recipe_ref = blobs.put_bytes(recipe).await?;
 
-        let definition =
-            tool_definition(&blobs, "launch", LAUNCH_JOB_TOOL, "lightspeed.test.launch.v1")
-                .await?;
+        let definition = tool_definition(
+            &blobs,
+            "launch",
+            LAUNCH_JOB_TOOL,
+            "lightspeed.test.launch.v1",
+        )
+        .await?;
         let run = start_managed_session_and_run(
             &api,
             &session_id,
@@ -1839,80 +1833,79 @@ async fn workflow_tool_dead_receiver_fails_promise_terminally() -> anyhow::Resul
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
-    run_with_plugin_worker(|_client, api, blobs, session_id, _plugin_queue| async move {
-        let absent_controller = WorkflowEndpointRef {
-            workflow_id: format!(
-                "channels/never-started-{}",
-                uuid::Uuid::new_v4().simple()
-            ),
-            workflow_kind: "channels.session".to_owned(),
-        };
-        let definition = tool_definition(
-            &blobs,
-            "approve",
-            REQUEST_APPROVAL_TOOL,
-            "lightspeed.test.approval.v1",
-        )
-        .await?;
-        api.start_managed_session_for_workflow_with_profile(
-            &session_id,
-            false,
-            None,
-            engine::ManagedSessionWorkflowTools::v1(
-                Some(absent_controller.clone()),
-                vec![WorkflowToolDeclaration::new(
-                    definition,
-                    WorkflowToolTarget::Bound {
-                        receiver: absent_controller,
-                        dispatch: engine::BoundWorkflowToolDispatch::Push,
+    run_with_plugin_worker(
+        |_client, api, blobs, session_id, _plugin_queue| async move {
+            let absent_controller = WorkflowEndpointRef {
+                workflow_id: format!("channels/never-started-{}", uuid::Uuid::new_v4().simple()),
+                workflow_kind: "channels.session".to_owned(),
+            };
+            let definition = tool_definition(
+                &blobs,
+                "approve",
+                REQUEST_APPROVAL_TOOL,
+                "lightspeed.test.approval.v1",
+            )
+            .await?;
+            api.start_managed_session_for_workflow_with_profile(
+                &session_id,
+                false,
+                None,
+                engine::ManagedSessionWorkflowTools::v1(
+                    Some(absent_controller.clone()),
+                    vec![WorkflowToolDeclaration::new(
+                        definition,
+                        WorkflowToolTarget::Bound {
+                            receiver: absent_controller,
+                            dispatch: engine::BoundWorkflowToolDispatch::Push,
+                        },
+                        promises_completion(Some(30_000), None),
+                    )],
+                ),
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!("start absent-controller session: {error:?}"))?;
+            let started = api
+                .start_run(RunStartParams {
+                    notify_on_terminal: None,
+                    submission_id: None,
+                    session_id: session_id.as_str().to_owned(),
+                    source: RunStartSource::Input {
+                        items: vec![InputItem::Text {
+                            text: format!("CALL {REQUEST_APPROVAL_TOOL}"),
+                        }],
                     },
-                    promises_completion(Some(30_000), None),
-                )],
-            ),
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!("start absent-controller session: {error:?}"))?;
-        let started = api
-            .start_run(RunStartParams {
-                notify_on_terminal: None,
-                submission_id: None,
-                session_id: session_id.as_str().to_owned(),
-                source: RunStartSource::Input {
-                    items: vec![InputItem::Text {
-                        text: format!("CALL {REQUEST_APPROVAL_TOOL}"),
-                    }],
-                },
-                config: None,
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("start absent-controller run: {error:?}"))?;
-        let run = wait_for_terminal_run_slow(&api, &session_id, &started.result.run.id).await?;
+                    config: None,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("start absent-controller run: {error:?}"))?;
+            let run = wait_for_terminal_run_slow(&api, &session_id, &started.result.run.id).await?;
 
-        assert_eq!(run.status, api::RunStatus::Completed);
-        let output = final_assistant_text(&run).expect("assistant output");
-        assert!(
-            output.contains("failed"),
-            "await must observe the terminal delivery failure: {output}"
-        );
+            assert_eq!(run.status, api::RunStatus::Completed);
+            let output = final_assistant_text(&run).expect("assistant output");
+            assert!(
+                output.contains("failed"),
+                "await must observe the terminal delivery failure: {output}"
+            );
 
-        let events = api
-            .read_session_events(api::SessionEventsReadParams {
-                session_id: session_id.as_str().to_owned(),
-                after: None,
-                limit: Some(200),
-                wait_ms: None,
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("read events: {error:?}"))?;
-        assert!(
-            events.result.events.iter().any(|event| matches!(
-                event.kind,
-                api::SessionEventKindView::WorkflowToolDeliveryFailed { .. }
-            )),
-            "terminal DeliveryFailed must be projected"
-        );
-        Ok(())
-    })
+            let events = api
+                .read_session_events(api::SessionEventsReadParams {
+                    session_id: session_id.as_str().to_owned(),
+                    after: None,
+                    limit: Some(200),
+                    wait_ms: None,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("read events: {error:?}"))?;
+            assert!(
+                events.result.events.iter().any(|event| matches!(
+                    event.kind,
+                    api::SessionEventKindView::WorkflowToolDeliveryFailed { .. }
+                )),
+                "terminal DeliveryFailed must be projected"
+            );
+            Ok(())
+        },
+    )
     .await
 }
 
@@ -2023,7 +2016,7 @@ async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
             async move {
                 let run = api
                     .start_run(RunStartParams {
-        notify_on_terminal: None,
+                        notify_on_terminal: None,
                         submission_id: None,
                         session_id: session_id.as_str().to_owned(),
                         source: RunStartSource::Input {
@@ -2035,7 +2028,12 @@ async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
                     })
                     .await
                     .map_err(|error| anyhow::anyhow!("start run: {error:?}"))?;
-                let expected_promises = run.result.run.id.trim_start_matches("run_").parse::<usize>()?;
+                let expected_promises = run
+                    .result
+                    .run
+                    .id
+                    .trim_start_matches("run_")
+                    .parse::<usize>()?;
                 let started = std::time::Instant::now();
                 let promise_id = loop {
                     if started.elapsed() > Duration::from_secs(30) {
@@ -2066,7 +2064,9 @@ async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
                     .map_err(|error| anyhow::anyhow!("signal reply: {error}"))?;
                 let run = wait_for_terminal_run_slow(&api, &session_id, &run.result.run.id).await?;
                 assert_eq!(run.status, api::RunStatus::Completed);
-                let output = final_assistant_text(&run).expect("assistant output").to_owned();
+                let output = final_assistant_text(&run)
+                    .expect("assistant output")
+                    .to_owned();
                 assert!(
                     output.contains(expect),
                     "expected `{expect}` in await outcome: {output}"
@@ -2176,105 +2176,112 @@ async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
-    run_with_plugin_worker_opts(Some(30), |_client, api, blobs, session_id, plugin_queue| async move {
-        let recipe = serde_json::to_vec(&WorkflowToolRecipeV1 {
-            workflow_type: "TestSlowStartPluginWorkflow".to_owned(),
-            task_queue: plugin_queue,
-        })?;
-        let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
-        let recipe_ref = blobs.put_bytes(recipe).await?;
-        let definition =
-            tool_definition(&blobs, "launch", LAUNCH_JOB_TOOL, "lightspeed.test.launch.v1")
-                .await?;
-        let run = start_managed_session_and_run(
-            &api,
-            &session_id,
-            vec![WorkflowToolDeclaration::new(
-                definition,
-                WorkflowToolTarget::Start {
-                    start: WorkflowStartRef {
-                        recipe_format: 1,
-                        revision: 1,
-                        recipe_ref,
-                        recipe_fingerprint,
+    run_with_plugin_worker_opts(
+        Some(30),
+        |_client, api, blobs, session_id, plugin_queue| async move {
+            let recipe = serde_json::to_vec(&WorkflowToolRecipeV1 {
+                workflow_type: "TestSlowStartPluginWorkflow".to_owned(),
+                task_queue: plugin_queue,
+            })?;
+            let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
+            let recipe_ref = blobs.put_bytes(recipe).await?;
+            let definition = tool_definition(
+                &blobs,
+                "launch",
+                LAUNCH_JOB_TOOL,
+                "lightspeed.test.launch.v1",
+            )
+            .await?;
+            let run = start_managed_session_and_run(
+                &api,
+                &session_id,
+                vec![WorkflowToolDeclaration::new(
+                    definition,
+                    WorkflowToolTarget::Start {
+                        start: WorkflowStartRef {
+                            recipe_format: 1,
+                            revision: 1,
+                            recipe_ref,
+                            recipe_fingerprint,
+                        },
                     },
-                },
-                joined_completion(60_000, None),
-            )],
-            LAUNCH_JOB_TOOL,
-        )
-        .await?;
+                    joined_completion(60_000, None),
+                )],
+                LAUNCH_JOB_TOOL,
+            )
+            .await?;
 
-        assert_eq!(run.status, api::RunStatus::Completed);
-        let joined_call = run
-            .tool_batches
-            .iter()
-            .flat_map(|batch| &batch.calls)
-            .find(|call| call.tool_name == LAUNCH_JOB_TOOL)
-            .expect("original Start + Joined call");
-        assert!(
-            run.tool_batches
+            assert_eq!(run.status, api::RunStatus::Completed);
+            let joined_call = run
+                .tool_batches
                 .iter()
                 .flat_map(|batch| &batch.calls)
-                .all(|call| call.tool_name != AWAIT_TOOL_NAME),
-            "Joined continue-as-new proof must not call await"
-        );
-        let session = api
-            .read_session(SessionReadParams {
-                session_id: session_id.as_str().to_owned(),
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("read continued Joined session: {error:?}"))?;
-        let completion = &session
-            .result
-            .session
-            .management
-            .as_ref()
-            .and_then(|management| management.tools.first())
-            .ok_or_else(|| anyhow::anyhow!("continued Joined declaration was not projected"))?
-            .completion;
-        assert_eq!(
-            completion.clone(),
-            api::WorkflowToolCompletionInput::Joined {
-                reply_schema_ref: None,
-                deadline_after_ms: 60_000,
-            }
-        );
+                .find(|call| call.tool_name == LAUNCH_JOB_TOOL)
+                .expect("original Start + Joined call");
+            assert!(
+                run.tool_batches
+                    .iter()
+                    .flat_map(|batch| &batch.calls)
+                    .all(|call| call.tool_name != AWAIT_TOOL_NAME),
+                "Joined continue-as-new proof must not call await"
+            );
+            let session = api
+                .read_session(SessionReadParams {
+                    session_id: session_id.as_str().to_owned(),
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("read continued Joined session: {error:?}"))?;
+            let completion = &session
+                .result
+                .session
+                .management
+                .as_ref()
+                .and_then(|management| management.tools.first())
+                .ok_or_else(|| anyhow::anyhow!("continued Joined declaration was not projected"))?
+                .completion;
+            assert_eq!(
+                completion.clone(),
+                api::WorkflowToolCompletionInput::Joined {
+                    reply_schema_ref: None,
+                    deadline_after_ms: 60_000,
+                }
+            );
 
-        let events = api
-            .read_session_events(api::SessionEventsReadParams {
-                session_id: session_id.as_str().to_owned(),
-                after: None,
-                limit: Some(500),
-                wait_ms: None,
-            })
-            .await
-            .map_err(|error| anyhow::anyhow!("read continued Joined events: {error:?}"))?;
-        let (event_call_id, promise_id) = events
-            .result
-            .events
-            .iter()
-            .find_map(|event| match &event.kind {
-                api::SessionEventKindView::WorkflowToolStartRequested {
-                    call_id,
-                    completion_promises,
+            let events = api
+                .read_session_events(api::SessionEventsReadParams {
+                    session_id: session_id.as_str().to_owned(),
+                    after: None,
+                    limit: Some(500),
+                    wait_ms: None,
+                })
+                .await
+                .map_err(|error| anyhow::anyhow!("read continued Joined events: {error:?}"))?;
+            let (event_call_id, promise_id) = events
+                .result
+                .events
+                .iter()
+                .find_map(|event| match &event.kind {
+                    api::SessionEventKindView::WorkflowToolStartRequested {
+                        call_id,
+                        completion_promises,
+                        ..
+                    } => completion_promises
+                        .get(engine::REPLY_COMPLETION_KEY)
+                        .map(|promise_id| (call_id.clone(), promise_id.clone())),
+                    _ => None,
+                })
+                .ok_or_else(|| anyhow::anyhow!("continued Joined start event was not projected"))?;
+            assert_eq!(event_call_id, joined_call.call_id);
+            assert!(events.result.events.iter().any(|event| matches!(
+                &event.kind,
+                api::SessionEventKindView::PromiseResolved {
+                    promise_id: resolved,
                     ..
-                } => completion_promises
-                    .get(engine::REPLY_COMPLETION_KEY)
-                    .map(|promise_id| (call_id.clone(), promise_id.clone())),
-                _ => None,
-            })
-            .ok_or_else(|| anyhow::anyhow!("continued Joined start event was not projected"))?;
-        assert_eq!(event_call_id, joined_call.call_id);
-        assert!(events.result.events.iter().any(|event| matches!(
-            &event.kind,
-            api::SessionEventKindView::PromiseResolved {
-                promise_id: resolved,
-                ..
-            } if resolved == &promise_id
-        )));
-        Ok(())
-    })
+                } if resolved == &promise_id
+            )));
+            Ok(())
+        },
+    )
     .await
 }
 
@@ -2332,7 +2339,7 @@ async fn workflow_tool_run_terminal_auto_cancel_notifies_bound_receiver() -> any
         .map_err(|error| anyhow::anyhow!("start managed session: {error:?}"))?;
         let run = api
             .start_run(RunStartParams {
-        notify_on_terminal: None,
+                notify_on_terminal: None,
                 submission_id: None,
                 session_id: session_id.as_str().to_owned(),
                 source: RunStartSource::Input {
@@ -2503,42 +2510,48 @@ async fn workflow_tool_start_deadline_fails_unserved_queue() -> anyhow::Result<(
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
-    run_with_plugin_worker(|_client, api, blobs, session_id, _plugin_queue| async move {
-        let recipe = serde_json::to_vec(&WorkflowToolRecipeV1 {
-            workflow_type: "TestStartPluginWorkflow".to_owned(),
-            task_queue: format!("lightspeed-plugin-absent-{}", uuid::Uuid::new_v4().simple()),
-        })?;
-        let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
-        let recipe_ref = blobs.put_bytes(recipe).await?;
-        let definition =
-            tool_definition(&blobs, "launch", LAUNCH_JOB_TOOL, "lightspeed.test.launch.v1")
-                .await?;
-        let run = start_managed_session_and_run(
-            &api,
-            &session_id,
-            vec![WorkflowToolDeclaration::new(
-                definition,
-                WorkflowToolTarget::Start {
-                    start: WorkflowStartRef {
-                        recipe_format: 1,
-                        revision: 1,
-                        recipe_ref,
-                        recipe_fingerprint,
+    run_with_plugin_worker(
+        |_client, api, blobs, session_id, _plugin_queue| async move {
+            let recipe = serde_json::to_vec(&WorkflowToolRecipeV1 {
+                workflow_type: "TestStartPluginWorkflow".to_owned(),
+                task_queue: format!("lightspeed-plugin-absent-{}", uuid::Uuid::new_v4().simple()),
+            })?;
+            let recipe_fingerprint = workflow_tool_recipe_fingerprint(&recipe);
+            let recipe_ref = blobs.put_bytes(recipe).await?;
+            let definition = tool_definition(
+                &blobs,
+                "launch",
+                LAUNCH_JOB_TOOL,
+                "lightspeed.test.launch.v1",
+            )
+            .await?;
+            let run = start_managed_session_and_run(
+                &api,
+                &session_id,
+                vec![WorkflowToolDeclaration::new(
+                    definition,
+                    WorkflowToolTarget::Start {
+                        start: WorkflowStartRef {
+                            recipe_format: 1,
+                            revision: 1,
+                            recipe_ref,
+                            recipe_fingerprint,
+                        },
                     },
-                },
-                promises_completion(Some(10_000), None),
-            )],
-            LAUNCH_JOB_TOOL,
-        )
-        .await?;
+                    promises_completion(Some(10_000), None),
+                )],
+                LAUNCH_JOB_TOOL,
+            )
+            .await?;
 
-        assert_eq!(run.status, api::RunStatus::Completed);
-        let output = final_assistant_text(&run).expect("assistant output");
-        assert!(
-            output.contains("failed"),
-            "hard deadline must fail the unserved start's promise: {output}"
-        );
-        Ok(())
-    })
+            assert_eq!(run.status, api::RunStatus::Completed);
+            let output = final_assistant_text(&run).expect("assistant output");
+            assert!(
+                output.contains("failed"),
+                "hard deadline must fail the unserved start's promise: {output}"
+            );
+            Ok(())
+        },
+    )
     .await
 }

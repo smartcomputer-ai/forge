@@ -27,8 +27,6 @@ pub struct SessionView {
     /// indicates external session ownership; tool-only declarations do not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management: Option<SessionManagementView>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub vfs_mounts: Vec<VfsMountView>,
 }
 
 /// Managed-session reads use the same immutable declaration document accepted
