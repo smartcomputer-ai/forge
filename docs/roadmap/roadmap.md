@@ -57,6 +57,13 @@
 - [x] [P98](p98-context-revisions-and-instruction-reconciliation.md) — optional context-edit revision guards and atomic effective-instruction reconciliation, with the product default active only as a true fallback
 - [ ] optimize: we're rading all session events to get latest state, this will get expensve in the future
 
+## Hosted Runtime
+- [ ] [P105](p105-unbounded-hosted-runs.md) — remove the hosted
+  `max_steps_per_input = 128` ceiling; let one logical run execute for hours
+  across history-driven Temporal continue-as-new boundaries, preserving
+  durable progress and transient transport state without fixed-step rollover
+  or workflow failure
+
 ## Fleet (sub-agents)
 - [x] [P82](p82-session-graph-fork-clone.md) — session graph foundation: clone, fork (by-reference), and links in the store
 - [x] [P83](p83-fleet-subagent-control-plane.md) — agent-facing Fleet control plane (spawn/task/read/list/cancel) on top of P82
