@@ -10,11 +10,16 @@ pub(super) fn record_admission_failure(
     });
 }
 
-pub(super) fn record_error(ctx: &WorkflowContext<AgentSessionWorkflow>, error: &anyhow::Error) {
+pub(super) fn record_error(
+    ctx: &WorkflowContext<AgentSessionWorkflow>,
+    error: &anyhow::Error,
+    error_class: &'static str,
+) {
     let message = error.to_string();
     ctx.state_mut(|state| {
-        state.last_error = Some(message);
+        state.last_error = Some(message.clone());
     });
+    observability::log_workflow_failure(ctx, error_class, &message);
 }
 
 /// Record a failure that occurred during session bootstrap (rehydration). This
@@ -27,7 +32,8 @@ pub(super) fn record_bootstrap_error(
 ) {
     let message = error.to_string();
     ctx.state_mut(|state| {
-        state.last_error = Some(message);
+        state.last_error = Some(message.clone());
         state.bootstrap_failed = true;
     });
+    observability::log_workflow_failure(ctx, "bootstrap", &message);
 }

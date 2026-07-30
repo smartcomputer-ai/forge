@@ -15,11 +15,20 @@ use crate::worker::FAKE_TOOL_NAME;
 #[derive(Clone)]
 pub struct FakeLlm {
     blobs: Arc<dyn BlobStore>,
+    tool_rounds_before_final: usize,
 }
 
 impl FakeLlm {
     pub fn new(blobs: Arc<dyn BlobStore>) -> Self {
-        Self { blobs }
+        Self {
+            blobs,
+            tool_rounds_before_final: 1,
+        }
+    }
+
+    pub fn with_tool_rounds(mut self, tool_rounds_before_final: usize) -> Self {
+        self.tool_rounds_before_final = tool_rounds_before_final;
+        self
     }
 
     async fn tool_call_result(
@@ -113,7 +122,7 @@ impl CoreAgentLlm for FakeLlm {
         &self,
         request: LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        if request_has_tool_result(&request) {
+        if tool_result_count(&request) >= self.tool_rounds_before_final {
             return self.final_result(&request).await;
         }
         match invocable_fake_tool(&request) {
@@ -186,13 +195,14 @@ impl CoreAgentTools for FakeTools {
     }
 }
 
-fn request_has_tool_result(request: &LlmGenerationRequest) -> bool {
+fn tool_result_count(request: &LlmGenerationRequest) -> usize {
     request
         .request
         .context
         .entries
         .iter()
-        .any(|entry| matches!(entry.kind, ContextEntryKind::ToolResult { .. }))
+        .filter(|entry| matches!(entry.kind, ContextEntryKind::ToolResult { .. }))
+        .count()
 }
 
 /// Picks a tool the fake model can call from the planned request toolset,

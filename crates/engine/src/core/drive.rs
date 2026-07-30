@@ -85,6 +85,27 @@ impl CoreAgentDrive {
         observed_at_ms: u64,
         max_steps: usize,
     ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        self.next_action_with_limit(observed_at_ms, Some(max_steps))
+    }
+
+    /// Plan the next action without an orchestration-step ceiling.
+    ///
+    /// Hosted runtimes use this entry point because model, tool, compaction,
+    /// and append transitions are ordinary progress. Bounded runners can keep
+    /// using [`Self::next_action`] when a step budget is an explicit product
+    /// or test policy.
+    pub fn next_action_unbounded(
+        &mut self,
+        observed_at_ms: u64,
+    ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        self.next_action_with_limit(observed_at_ms, None)
+    }
+
+    fn next_action_with_limit(
+        &mut self,
+        observed_at_ms: u64,
+        max_steps: Option<usize>,
+    ) -> Result<CoreAgentAction, CoreAgentDriveError> {
         let proposals = crate::core::planning::plan_next(&self.state)?;
         if !proposals.is_empty() {
             if !self.increment_steps(max_steps) {
@@ -240,11 +261,11 @@ impl CoreAgentDrive {
         })
     }
 
-    fn increment_steps(&mut self, max_steps: usize) -> bool {
-        if self.steps_taken >= max_steps {
+    fn increment_steps(&mut self, max_steps: Option<usize>) -> bool {
+        if max_steps.is_some_and(|max_steps| self.steps_taken >= max_steps) {
             return false;
         }
-        self.steps_taken += 1;
+        self.steps_taken = self.steps_taken.saturating_add(1);
         true
     }
 }
@@ -3548,6 +3569,39 @@ mod tests {
             commit_action(&mut drive, action);
         }
         panic!("drive did not emit an LLM action");
+    }
+
+    #[test]
+    fn unbounded_drive_ignores_the_explicit_runner_step_counter() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let open = drive
+            .admit_command(CoreAgentCommand::OpenSession { config: config() }, 10)
+            .expect("open");
+        commit_action(&mut drive, open);
+        let request = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .expect("request run");
+        commit_action(&mut drive, request);
+
+        drive.steps_taken = 128;
+        assert_eq!(
+            drive.next_action(21, 128).expect("bounded next action"),
+            CoreAgentAction::StepLimitReached
+        );
+        assert!(matches!(
+            drive
+                .next_action_unbounded(21)
+                .expect("unbounded next action"),
+            CoreAgentAction::AppendEvents { .. }
+        ));
     }
 
     #[test]

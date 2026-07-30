@@ -18,4 +18,5 @@ temporalio-common = "0.4.0"
 temporalio-macros = "0.4.0"
 temporalio-sdk = "0.4.0"
 temporalio-sdk-core = "0.4.0"
+tracing = "0.1"
 uuid = { version = "1", features = ["serde"] }

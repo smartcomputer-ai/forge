@@ -4,7 +4,7 @@ pub(super) async fn process_admissions(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
     admissions: Vec<AgentAdmission>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DriveOutcome> {
     let mut drive = drive_from_state(ctx)?;
     for admission in admissions {
         let correlation_token = admission.correlation_token.clone();

@@ -61,7 +61,7 @@ pub(super) fn cancelling_watchdog_wake_ms(state: &AgentSessionWorkflow) -> Optio
 pub(super) async fn process_cancelling_watchdog(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<DriveOutcome> {
     let now = workflow_time_ms(ctx);
     let expired_run_id = ctx.state(|state| {
         state.cancelling_watchdog.and_then(|watchdog| {
@@ -77,7 +77,7 @@ pub(super) async fn process_cancelling_watchdog(
         })
     });
     let Some(run_id) = expired_run_id else {
-        return Ok(());
+        return Ok(DriveOutcome::Idle);
     };
     let mut drive = drive_from_state(ctx)?;
     let command = CoreAgentCommand::ForceCancelRun {
@@ -89,7 +89,7 @@ pub(super) async fn process_cancelling_watchdog(
             // Nothing left to force (session closed underneath us); record
             // and move on rather than failing the session loop.
             record_admission_failure(ctx, failure);
-            return Ok(());
+            return Ok(DriveOutcome::Idle);
         }
     }
     ctx.state_mut(|state| state.cancelling_watchdog = None);

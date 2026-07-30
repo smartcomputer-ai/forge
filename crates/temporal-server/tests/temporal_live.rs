@@ -24,9 +24,10 @@ use engine::{
     storage::{BlobStore, ListSessionLinks, SessionLinkDirection, SessionStore},
 };
 use support::live::{
-    LIVE_TEST_LOCK, fake_worker_activities, final_assistant_text, live_workflow_handle,
-    openai_live_model, require_openai_live_env, require_storage_live_env, run_with_live_worker,
-    wait_for_admission_failure, wait_for_session_status, wait_for_terminal_run,
+    LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_with_tool_rounds,
+    final_assistant_text, live_workflow_handle, openai_live_model, require_openai_live_env,
+    require_storage_live_env, run_with_live_worker, wait_for_admission_failure,
+    wait_for_session_status, wait_for_terminal_run,
 };
 use temporal_server::{
     DeploymentStores, UniverseRuntime, default_model_from_env,
@@ -43,7 +44,8 @@ use temporal_workflow::{
     DEFAULT_TEMPORAL_TARGET, connect_temporal,
 };
 use temporalio_client::{
-    Client, WorkflowQueryOptions, WorkflowSignalOptions, WorkflowTerminateOptions,
+    Client, WorkflowDescribeOptions, WorkflowQueryOptions, WorkflowSignalOptions,
+    WorkflowTerminateOptions,
 };
 use tools::{
     concurrency::AWAIT_TOOL_NAME,
@@ -99,6 +101,19 @@ async fn temporal_live_continue_as_new_completes_later_fake_run() -> anyhow::Res
 
     let activities = fake_worker_activities().await?;
     run_with_live_worker(activities, run_continue_as_new_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
+async fn temporal_live_hosted_run_exceeds_128_drive_transitions() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Thirty model/tool rounds reproduce the incident's transition count
+    // shape while remaining well below the default history rollover threshold.
+    let activities = fake_worker_activities_with_tool_rounds(30).await?;
+    run_with_live_worker(activities, run_unbounded_hosted_run_live_client).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -603,7 +618,6 @@ where
         GatewayAgentApi::builder(client.clone(), store.clone())
             .with_task_queue(task_queue.clone())
             .with_default_model(model.clone())
-            .with_max_steps_per_input(128)
             .build(),
     );
 
@@ -685,7 +699,6 @@ async fn run_fake_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     let initialized = api.initialize(InitializeParams::default()).await?;
@@ -926,7 +939,6 @@ async fn run_lifecycle_delete_live_client(
     let api = GatewayAgentApi::builder(client, store)
         .with_task_queue(task_queue)
         .with_default_model(model)
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {
@@ -1011,7 +1023,6 @@ async fn run_fleet_spawn_live_client(
         GatewayAgentApi::builder(client.clone(), store.clone())
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(128)
             .build(),
     );
 
@@ -1172,7 +1183,6 @@ async fn run_fleet_profile_spawn_live_client(
         GatewayAgentApi::builder(client.clone(), store.clone())
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(128)
             .build(),
     );
     let profile_id = ProfileId::new(format!(
@@ -1352,7 +1362,6 @@ async fn run_fleet_profile_tools_live_client(
         GatewayAgentApi::builder(client, store.clone())
             .with_task_queue(task_queue)
             .with_default_model(model.clone())
-            .with_max_steps_per_input(128)
             .build(),
     );
     let profile_id = ProfileId::new(format!(
@@ -1833,7 +1842,6 @@ async fn run_continue_as_new_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .with_continue_as_new_history_threshold(1)
         .build();
 
@@ -1848,7 +1856,13 @@ async fn run_continue_as_new_live_client(
     })
     .await?;
 
-    api.start_run(RunStartParams {
+    let initial_temporal_run_id = live_workflow_handle(&client, &session_id)?
+        .describe(WorkflowDescribeOptions::default())
+        .await?
+        .run_id()
+        .to_owned();
+
+    let first = api.start_run(RunStartParams {
         notify_on_terminal: None,
         submission_id: None,
         session_id: session_id.as_str().to_owned(),
@@ -1860,6 +1874,18 @@ async fn run_continue_as_new_live_client(
         config: None,
     })
     .await?;
+    let first_run_id = first.result.run.id.clone();
+    let first_run = wait_for_terminal_run(&api, &session_id, &first_run_id).await?;
+    assert_eq!(first_run.id, first_run_id);
+    let continued_temporal_run_id = live_workflow_handle(&client, &session_id)?
+        .describe(WorkflowDescribeOptions::default())
+        .await?
+        .run_id()
+        .to_owned();
+    assert_ne!(
+        continued_temporal_run_id, initial_temporal_run_id,
+        "the active Lightspeed run should cross a Temporal execution boundary"
+    );
 
     let second = api
         .start_run(RunStartParams {
@@ -1899,6 +1925,81 @@ async fn run_continue_as_new_live_client(
     Ok(())
 }
 
+async fn run_unbounded_hosted_run_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(api::FeaturesConfig {
+                vfs: Some(api::VfsFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    tools: None,
+                    prompts: None,
+                    skills: None,
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+    let initial_temporal_run_id = live_workflow_handle(&client, &session_id)?
+        .describe(WorkflowDescribeOptions::default())
+        .await?
+        .run_id()
+        .to_owned();
+
+    let started = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "complete thirty verification tool rounds".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let run = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+    assert!(
+        final_assistant_text(&run).is_some_and(|text| text.contains("Fake agent completed run"))
+    );
+    let final_temporal_run_id = live_workflow_handle(&client, &session_id)?
+        .describe(WorkflowDescribeOptions::default())
+        .await?
+        .run_id()
+        .to_owned();
+    assert_eq!(
+        final_temporal_run_id, initial_temporal_run_id,
+        "step count alone must not continue as new"
+    );
+
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("unbounded hosted run live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
 async fn run_missing_session_live_client(
     client: Client,
     task_queue: String,
@@ -1909,7 +2010,6 @@ async fn run_missing_session_live_client(
     let api = GatewayAgentApi::builder(client, store)
         .with_task_queue(task_queue)
         .with_default_model(model)
-        .with_max_steps_per_input(128)
         .build();
 
     let error = api
@@ -1940,7 +2040,6 @@ async fn run_context_append_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {
@@ -2127,7 +2226,6 @@ async fn run_admission_failure_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {
@@ -2232,7 +2330,6 @@ async fn run_mcp_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
     let server_id = format!("crm_{}", uuid::Uuid::new_v4().simple());
 
@@ -2414,7 +2511,6 @@ async fn run_profiles_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
     let profile_id = ProfileId::new(format!("live_profile_{}", uuid::Uuid::new_v4().simple()));
     let server_id = format!("profile_crm_{}", uuid::Uuid::new_v4().simple());
@@ -2668,7 +2764,6 @@ async fn run_openai_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {

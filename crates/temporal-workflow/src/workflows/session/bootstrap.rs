@@ -4,6 +4,14 @@ pub(super) async fn initialize(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     args: AgentSessionArgs,
 ) -> anyhow::Result<()> {
+    if let Some(continuation) = args.continuation_state.as_ref()
+        && continuation.version != AgentSessionContinuationState::VERSION
+    {
+        anyhow::bail!(
+            "unsupported agent session continuation state version: {}",
+            continuation.version
+        );
+    }
     let expected_workflow_id = compose_workflow_id(args.universe_id, &args.session_id);
     if ctx.workflow_id() != expected_workflow_id {
         anyhow::bail!(
@@ -48,6 +56,9 @@ pub(super) async fn initialize(
         state.core_state = core_state;
         state.head = head;
         state.run_submissions = run_submissions;
+        if let Some(continuation) = args.continuation_state.as_ref() {
+            state.admission_failures = continuation.admission_failures.clone();
+        }
         state.initialized = true;
         state.last_error = None;
     });

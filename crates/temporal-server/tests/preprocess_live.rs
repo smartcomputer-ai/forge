@@ -89,7 +89,6 @@ async fn run_audio_preprocess_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {
@@ -184,7 +183,6 @@ async fn run_transcodable_audio_preprocess_live_client(
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
-        .with_max_steps_per_input(128)
         .build();
 
     api.start_session(SessionStartParams {

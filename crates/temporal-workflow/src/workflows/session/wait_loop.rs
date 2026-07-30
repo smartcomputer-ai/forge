@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) const P105_ACTIVE_RUN_ROLLOVER_PATCH: &str = "p105_active_run_rollover_v1";
+
 pub(super) async fn wait_for_workflow_work(ctx: &mut WorkflowContext<AgentSessionWorkflow>) {
     let now = workflow_time_ms(ctx);
     if workflow_has_immediate_work(ctx, now) {
@@ -50,6 +52,18 @@ pub(super) fn workflow_state_has_immediate_work(state: &AgentSessionWorkflow) ->
         || awaits::has_satisfied_await(state)
         || promise_sources::has_immediate_work(state)
         || workflow_starts::has_immediate_work(state)
+        || workflow_state_needs_core_drive_for_state(state)
+}
+
+pub(super) fn workflow_state_needs_core_drive(ctx: &WorkflowContext<AgentSessionWorkflow>) -> bool {
+    ctx.state(workflow_state_needs_core_drive_for_state)
+}
+
+pub(super) fn workflow_state_needs_core_drive_for_state(state: &AgentSessionWorkflow) -> bool {
+    !state.core_state.runs.queued.is_empty()
+        || state.core_state.context.pending_compaction
+        || (state.core_state.runs.active.is_some()
+            && awaits::parked_await(&state.core_state).is_none())
 }
 
 fn nearest_workflow_wake_ms(ctx: &WorkflowContext<AgentSessionWorkflow>) -> Option<u64> {
@@ -76,12 +90,21 @@ fn nearest_workflow_wake_ms_for_state(state: &AgentSessionWorkflow) -> Option<u6
     .min()
 }
 
-pub(super) fn can_continue_as_new_at_idle(
+pub(super) fn can_continue_as_new(
     ctx: &WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
 ) -> bool {
     !workflow_state_should_complete(ctx)
         && ctx.state(workflow_state_allows_continue_as_new)
+        && history_rollover_due(ctx, args)
+}
+
+pub(super) fn history_rollover_due(
+    ctx: &WorkflowContext<AgentSessionWorkflow>,
+    args: &AgentSessionArgs,
+) -> bool {
+    let p105_enabled = ctx.patched(P105_ACTIVE_RUN_ROLLOVER_PATCH);
+    (!p105_enabled || ctx.state(|state| state.execution_has_rollover_checkpoint))
         && should_continue_as_new(
             ctx.continue_as_new_suggested(),
             ctx.history_length(),
@@ -89,16 +112,19 @@ pub(super) fn can_continue_as_new_at_idle(
         )
 }
 
-/// Continue-as-new needs quiescence of in-flight transport only: pending
-/// admissions, unresumed batches, and the outbound notify flush queue.
-/// Parked awaits and promise-source polls are log-derived and never block
-/// CAN.
+/// Continue-as-new needs quiescence of in-flight transport plus the two local
+/// clocks whose original deadlines are not log-derived. Parked awaits and
+/// promise-source polls are reconstructed from durable promise/run state.
+/// Confirmed starts and issued execution cancellations may be retried safely
+/// because their workflow execution identities are stable.
 pub(super) fn workflow_state_allows_continue_as_new(state: &AgentSessionWorkflow) -> bool {
     state.pending_admissions.is_empty()
         && state.pending_tool_batch_resumes.is_empty()
         && state.pending_emissions.is_empty()
         && state.pending_source_resolutions.is_empty()
         && state.pending_promise_cancellations.is_empty()
+        && state.workflow_start_backoffs.is_empty()
+        && state.cancelling_watchdog.is_none()
 }
 
 pub(super) fn workflow_state_should_complete(ctx: &WorkflowContext<AgentSessionWorkflow>) -> bool {
