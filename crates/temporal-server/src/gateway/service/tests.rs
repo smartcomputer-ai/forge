@@ -540,7 +540,6 @@ fn declared_mcp_link_materializes_remote_tool() {
         allowed_tools: Some(vec!["lookup_customer".to_owned()]),
         approval: Some(engine::RemoteMcpApprovalPolicy::Never),
         defer_loading: Some(true),
-        auth_grant_id: None,
     };
 
     let tool = mcp_api::mcp_tool_from_config_link(&link, &record, None)
@@ -585,20 +584,38 @@ fn test_auth_grant_record(
     .into_record()
 }
 
-fn mcp_config_link_with_grant(grant_id: &str) -> engine::McpServerLink {
+fn mcp_config_link() -> engine::McpServerLink {
     engine::McpServerLink {
         server_id: "crm".to_owned(),
         allowed_tools: None,
         approval: None,
         defer_loading: None,
-        auth_grant_id: Some(grant_id.to_owned()),
     }
+}
+
+#[test]
+fn mcp_server_put_enforces_required_and_optional_binding_states() {
+    let mut required = test_mcp_server_put("crm", mcp::McpServerStatus::Active);
+    required.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
+    let error = mcp_api::validate_mcp_server_credential(&required, None)
+        .expect_err("active required-auth server must have a binding");
+    assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
+
+    required.status = mcp::McpServerStatus::NeedsAuthConfig;
+    mcp_api::validate_mcp_server_credential(&required, None)
+        .expect("pre-login required-auth server may be unbound");
+
+    let mut optional = test_mcp_server_put("public", mcp::McpServerStatus::Active);
+    optional.auth_policy = mcp::McpServerAuthPolicy::OptionalBearer;
+    mcp_api::validate_mcp_server_credential(&optional, None)
+        .expect("optional-auth server may be active and unbound");
 }
 
 #[test]
 fn mcp_link_with_grant_materializes_auth_ref_for_bearer_server() {
     let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
     record.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
+    record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
     let grant = test_auth_grant_record(
         "authgrant_1",
         auth::AuthProviderKind::StaticBearer,
@@ -606,12 +623,8 @@ fn mcp_link_with_grant_materializes_auth_ref_for_bearer_server() {
         Some("https://crm.example.com"),
     );
 
-    let tool = mcp_api::mcp_tool_from_config_link(
-        &mcp_config_link_with_grant("authgrant_1"),
-        &record,
-        Some(&grant),
-    )
-    .expect("materialize MCP tool with grant");
+    let tool = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect("materialize MCP tool with grant");
 
     let engine::ToolKind::RemoteMcp(spec) = &tool.kind else {
         panic!("expected remote MCP tool");
@@ -619,8 +632,8 @@ fn mcp_link_with_grant_materializes_auth_ref_for_bearer_server() {
     assert_eq!(
         spec.auth_ref,
         Some(engine::SecretRef {
-            namespace: "auth_grant".to_owned(),
-            id: "authgrant_1".to_owned(),
+            namespace: "mcp_server".to_owned(),
+            id: "crm".to_owned(),
         })
     );
 }
@@ -629,6 +642,7 @@ fn mcp_link_with_grant_materializes_auth_ref_for_bearer_server() {
 fn mcp_link_rejects_revoked_grant() {
     let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
     record.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
+    record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
     let grant = test_auth_grant_record(
         "authgrant_1",
         auth::AuthProviderKind::StaticBearer,
@@ -636,12 +650,8 @@ fn mcp_link_rejects_revoked_grant() {
         None,
     );
 
-    let error = mcp_api::mcp_tool_from_config_link(
-        &mcp_config_link_with_grant("authgrant_1"),
-        &record,
-        Some(&grant),
-    )
-    .expect_err("revoked grant must be rejected");
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect_err("revoked grant must be rejected");
 
     assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
 }
@@ -655,6 +665,7 @@ fn mcp_link_rejects_grant_kind_incompatible_with_auth_policy() {
         protected_resource_metadata_url: None,
         authorization_server: None,
     };
+    record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
     let grant = test_auth_grant_record(
         "authgrant_1",
         auth::AuthProviderKind::StaticBearer,
@@ -662,12 +673,8 @@ fn mcp_link_rejects_grant_kind_incompatible_with_auth_policy() {
         None,
     );
 
-    let error = mcp_api::mcp_tool_from_config_link(
-        &mcp_config_link_with_grant("authgrant_1"),
-        &record,
-        Some(&grant),
-    )
-    .expect_err("bearer grant must not satisfy OAuth policy");
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect_err("bearer grant must not satisfy OAuth policy");
 
     assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
 }
@@ -676,6 +683,7 @@ fn mcp_link_rejects_grant_kind_incompatible_with_auth_policy() {
 fn mcp_link_rejects_grant_audience_that_does_not_cover_server() {
     let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
     record.auth_policy = mcp::McpServerAuthPolicy::OptionalBearer;
+    record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
     let grant = test_auth_grant_record(
         "authgrant_1",
         auth::AuthProviderKind::StaticBearer,
@@ -683,14 +691,81 @@ fn mcp_link_rejects_grant_audience_that_does_not_cover_server() {
         Some("https://other.example.com"),
     );
 
-    let error = mcp_api::mcp_tool_from_config_link(
-        &mcp_config_link_with_grant("authgrant_1"),
-        &record,
-        Some(&grant),
-    )
-    .expect_err("audience mismatch must be rejected");
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect_err("audience mismatch must be rejected");
 
     assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
+}
+
+#[test]
+fn mcp_server_rejects_grant_audience_that_does_not_cover_oauth_resource() {
+    let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
+    record.auth_policy = mcp::McpServerAuthPolicy::RequiredOAuth {
+        resource: "https://resource.example.com/mcp".to_owned(),
+        scopes_default: Vec::new(),
+        protected_resource_metadata_url: None,
+        authorization_server: None,
+    };
+    record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
+    let grant = test_auth_grant_record(
+        "authgrant_1",
+        auth::AuthProviderKind::McpOAuth,
+        auth::AuthGrantStatus::Active,
+        Some("https://crm.example.com"),
+    );
+
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect_err("grant audience must cover the OAuth resource as well as the server URL");
+
+    assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
+}
+
+#[test]
+fn two_server_ids_can_share_an_endpoint_with_distinct_credentials() {
+    let mut work = test_mcp_server_record("crm_work", mcp::McpServerStatus::Active);
+    work.server_url = "https://crm.example.com/mcp".to_owned();
+    work.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
+    work.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_work"));
+    let work_grant = test_auth_grant_record(
+        "authgrant_work",
+        auth::AuthProviderKind::StaticBearer,
+        auth::AuthGrantStatus::Active,
+        Some("https://crm.example.com"),
+    );
+
+    let mut personal = test_mcp_server_record("crm_personal", mcp::McpServerStatus::Active);
+    personal.server_url = work.server_url.clone();
+    personal.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
+    personal.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_personal"));
+    let personal_grant = test_auth_grant_record(
+        "authgrant_personal",
+        auth::AuthProviderKind::StaticBearer,
+        auth::AuthGrantStatus::Active,
+        Some("https://crm.example.com"),
+    );
+
+    let mut work_link = mcp_config_link();
+    work_link.server_id = "crm_work".to_owned();
+    let mut personal_link = mcp_config_link();
+    personal_link.server_id = "crm_personal".to_owned();
+    let work_tool =
+        mcp_api::mcp_tool_from_config_link(&work_link, &work, Some(&work_grant)).expect("work");
+    let personal_tool =
+        mcp_api::mcp_tool_from_config_link(&personal_link, &personal, Some(&personal_grant))
+            .expect("personal");
+    let desired = BTreeMap::from([
+        (work_tool.name.clone(), work_tool),
+        (personal_tool.name.clone(), personal_tool),
+    ]);
+
+    let tools = super::vfs_api::toolset_reconcile_patch(
+        &BTreeMap::new(),
+        empty_resolved_toolset(),
+        desired,
+    )
+    .apply_to(&BTreeMap::new())
+    .expect("both identities may coexist when their server labels differ");
+    assert_eq!(tools.len(), 2);
 }
 
 #[test]
@@ -703,12 +778,8 @@ fn mcp_link_rejects_grant_for_no_auth_server() {
         None,
     );
 
-    let error = mcp_api::mcp_tool_from_config_link(
-        &mcp_config_link_with_grant("authgrant_1"),
-        &record,
-        Some(&grant),
-    )
-    .expect_err("grant on no-auth server must be rejected");
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, Some(&grant))
+        .expect_err("grant on no-auth server must be rejected");
 
     assert_eq!(error.kind, api::AgentApiErrorKind::InvalidRequest);
 }
@@ -717,10 +788,8 @@ fn mcp_link_rejects_grant_for_no_auth_server() {
 fn mcp_link_requires_grant_for_required_auth_server() {
     let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
     record.auth_policy = mcp::McpServerAuthPolicy::RequiredBearer;
-    let mut link = mcp_config_link_with_grant("authgrant_1");
-    link.auth_grant_id = None;
 
-    let error = mcp_api::mcp_tool_from_config_link(&link, &record, None)
+    let error = mcp_api::mcp_tool_from_config_link(&mcp_config_link(), &record, None)
         .expect_err("missing grant must be rejected for required auth");
 
     assert_eq!(error.kind, api::AgentApiErrorKind::Rejected);
@@ -1847,6 +1916,10 @@ fn direct_activation(
 }
 
 fn test_mcp_server_record(server_id: &str, status: mcp::McpServerStatus) -> mcp::McpServerRecord {
+    test_mcp_server_put(server_id, status).into_record()
+}
+
+fn test_mcp_server_put(server_id: &str, status: mcp::McpServerStatus) -> mcp::PutMcpServerRecord {
     mcp::PutMcpServerRecord {
         server_id: mcp::McpServerId::new(server_id),
         display_name: Some(format!("{server_id} MCP")),
@@ -1858,10 +1931,10 @@ fn test_mcp_server_record(server_id: &str, status: mcp::McpServerStatus) -> mcp:
         approval_default: mcp::McpApprovalPolicy::ProviderDefault,
         defer_loading_default: None,
         auth_policy: mcp::McpServerAuthPolicy::None,
+        auth_grant_id: None,
         status,
         now_ms: 1,
     }
-    .into_record()
 }
 
 fn empty_resolved_toolset() -> ResolvedToolset {
@@ -1877,6 +1950,7 @@ fn test_remote_mcp_tool(tool_name: ToolName) -> engine::ToolSpec {
     engine::ToolSpec {
         name: tool_name,
         kind: engine::ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
+            server_id: "crm".to_owned(),
             server_label: "crm".to_owned(),
             server_url: "https://crm.example.com/mcp".to_owned(),
             description_ref: None,
@@ -1884,6 +1958,7 @@ fn test_remote_mcp_tool(tool_name: ToolName) -> engine::ToolSpec {
             approval: engine::RemoteMcpApprovalPolicy::ProviderDefault,
             defer_loading: None,
             auth_ref: None,
+            auth_required: false,
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
         target_requirement: engine::ToolTargetRequirement::None,

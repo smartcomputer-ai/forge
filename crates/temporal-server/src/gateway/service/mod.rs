@@ -2958,6 +2958,16 @@ impl AgentApiService for GatewayAgentApi {
         params: McpServerPutParams,
     ) -> Result<AgentApiOutcome<McpServerPutResponse>, AgentApiError> {
         let record = put_mcp_server_record(params.server, now_ms()?)?;
+        let grant = match record.auth_grant_id.as_ref() {
+            Some(grant_id) => Some(
+                self.store
+                    .read_grant(grant_id)
+                    .await
+                    .map_err(map_auth_error)?,
+            ),
+            None => None,
+        };
+        mcp_api::validate_mcp_server_credential(&record, grant.as_ref())?;
         let server = self
             .store
             .put_server(record, params.expected_revision)

@@ -17,6 +17,8 @@ pub struct McpServerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading_default: Option<bool>,
     pub auth_policy: McpServerAuthPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<McpServerCredential>,
     pub status: McpServerStatus,
     pub revision: u64,
     pub created_at_ms: i64,
@@ -68,6 +70,18 @@ pub enum McpServerAuthPolicy {
     },
 }
 
+/// Non-secret universe credential selected by this configured MCP server.
+/// Token material remains in the auth subsystem and is never returned.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum McpServerCredential {
+    AuthGrant { grant_id: String },
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum McpServerStatus {
@@ -99,6 +113,8 @@ pub struct McpServerInput {
     pub defer_loading_default: Option<bool>,
     #[serde(default)]
     pub auth_policy: McpServerAuthPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<McpServerCredential>,
     #[serde(default)]
     pub status: McpServerStatus,
 }
@@ -155,11 +171,4 @@ pub struct McpServerDeleteParams {
 #[serde(rename_all = "camelCase")]
 pub struct McpServerDeleteResponse {
     pub server: McpServerView,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct SecretRefView {
-    pub namespace: String,
-    pub id: String,
 }

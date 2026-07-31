@@ -386,9 +386,9 @@ api_methods! {
     METHOD_VFS_WORKSPACES_DELETE => delete_vfs_workspace(VfsWorkspaceDeleteParams) -> VfsWorkspaceDeleteResponse =>
         ["Delete a VFS workspace", "Deletes the mutable workspace record; immutable snapshots and blobs remain content-addressed resources."],
     METHOD_MCP_SERVERS_PUT => put_mcp_server(McpServerPutParams) -> McpServerPutResponse =>
-        ["Create or replace an MCP server record", "Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials."],
+        ["Create or replace an MCP server record", "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned."],
     METHOD_MCP_SERVERS_READ => read_mcp_server(McpServerReadParams) -> McpServerReadResponse =>
-        ["Read an MCP server record", "Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed."],
+        ["Read an MCP server record", "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed."],
     METHOD_MCP_SERVERS_LIST => list_mcp_servers(McpServerListParams) -> McpServerListResponse =>
         ["List MCP server records", "Lists universe catalog entries, optionally filtered by lifecycle/configuration status."],
     METHOD_MCP_SERVERS_DELETE => delete_mcp_server(McpServerDeleteParams) -> McpServerDeleteResponse =>

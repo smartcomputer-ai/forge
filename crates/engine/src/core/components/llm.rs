@@ -440,6 +440,7 @@ mod tests {
         ToolSpec {
             name: crate::ToolName::new("mcp_echo"),
             kind: ToolKind::RemoteMcp(crate::RemoteMcpToolSpec {
+                server_id: auth_ref_id.to_owned(),
                 server_label: "echo".to_owned(),
                 server_url: "https://echo.example.com/mcp".to_owned(),
                 description_ref: None,
@@ -447,9 +448,10 @@ mod tests {
                 approval: crate::RemoteMcpApprovalPolicy::Never,
                 defer_loading: Some(true),
                 auth_ref: Some(crate::SecretRef {
-                    namespace: "mcp_grant".to_owned(),
+                    namespace: "mcp_server".to_owned(),
                     id: auth_ref_id.to_owned(),
                 }),
+                auth_required: true,
             }),
             parallelism: crate::ToolParallelism::ParallelSafe,
             target_requirement: crate::ToolTargetRequirement::None,
@@ -495,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn remote_mcp_sanitized_auth_ref_participates_in_request_fingerprint() {
+    fn remote_mcp_server_credential_ref_participates_in_request_fingerprint() {
         let model = ModelSelection {
             api_kind: ProviderApiKind::OpenAiResponses,
             provider_id: "openai".to_owned(),
@@ -508,12 +510,12 @@ mod tests {
             token_estimate: None,
         };
 
-        let first_tools = vec![remote_mcp_tool("mcpgrant_123")];
-        let second_tools = vec![remote_mcp_tool("mcpgrant_456")];
+        let first_tools = vec![remote_mcp_tool("crm_work")];
+        let second_tools = vec![remote_mcp_tool("crm_personal")];
 
         let encoded = serde_json::to_string(&first_tools).expect("serialize tools");
-        assert!(encoded.contains("mcp_grant"));
-        assert!(encoded.contains("mcpgrant_123"));
+        assert!(encoded.contains("mcp_server"));
+        assert!(encoded.contains("crm_work"));
         assert!(!encoded.contains("runtime-token"));
 
         let generation = GenerationConfig::default();

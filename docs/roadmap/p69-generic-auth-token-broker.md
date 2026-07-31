@@ -1,5 +1,10 @@
 # P69: Generic Auth, Secret Store, And Token Broker
 
+> **P110 amendment:** MCP sessions now carry only an `mcp_server:<server_id>`
+> runtime reference. The universe MCP server owns its grant binding, and the
+> worker reads that binding at provider-send time. Direct `auth_grant` MCP refs
+> and link-time grant selection below are historical.
+
 **Status**
 - In progress; design review decisions folded in on 2026-06-10.
 - G1 implemented on 2026-06-10: `auth` crate (grant/secret records,

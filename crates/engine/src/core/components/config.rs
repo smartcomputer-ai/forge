@@ -363,12 +363,6 @@ pub struct McpServerLink {
     pub approval: Option<RemoteMcpApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
-    /// Universe-scoped auth grant to authenticate against the server. The
-    /// engine carries the reference opaquely; compatibility with the
-    /// server's auth policy is validated at the admission boundary against
-    /// the catalog, and the token broker resolves it at request time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_grant_id: Option<String>,
 }
 
 /// Fleet profile visibility policy for spawn/list/read.
@@ -741,16 +735,6 @@ fn validate_mcp_feature(mcp: &McpFeature) -> Result<(), DomainError> {
         if !seen.insert(link.server_id.as_str()) {
             return Err(DomainError::InvariantViolation(format!(
                 "mcp server {} is linked more than once",
-                link.server_id
-            )));
-        }
-        if link
-            .auth_grant_id
-            .as_ref()
-            .is_some_and(|grant_id| grant_id.trim().is_empty())
-        {
-            return Err(DomainError::InvariantViolation(format!(
-                "mcp server {} auth_grant_id must be non-empty when set",
                 link.server_id
             )));
         }
@@ -1164,7 +1148,6 @@ mod tests {
             allowed_tools: None,
             approval: None,
             defer_loading: None,
-            auth_grant_id: None,
         };
         let mut duplicated = config;
         duplicated.features.mcp = Some(McpFeature {

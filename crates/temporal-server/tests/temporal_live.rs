@@ -2409,6 +2409,7 @@ async fn run_mcp_live_client(
                 approval_default: RemoteMcpApprovalPolicy::Never,
                 defer_loading_default: Some(true),
                 auth_policy: api::McpServerAuthPolicy::None,
+                credential: None,
                 status: McpServerStatus::Active,
             },
             expected_revision: None,
@@ -2466,7 +2467,6 @@ async fn run_mcp_live_client(
             allowed_tools: Some(vec!["lookup_customer".to_owned()]),
             approval: Some(RemoteMcpApprovalPolicy::Never),
             defer_loading: Some(true),
-            auth_grant_id: None,
         }],
     });
     linked_config.features = Some(features);
@@ -2590,6 +2590,7 @@ async fn run_profiles_live_client(
             approval_default: RemoteMcpApprovalPolicy::Never,
             defer_loading_default: Some(true),
             auth_policy: api::McpServerAuthPolicy::None,
+            credential: None,
             status: McpServerStatus::Active,
         },
         expected_revision: None,
@@ -2612,7 +2613,6 @@ async fn run_profiles_live_client(
                                     allowed_tools: Some(vec!["lookup_customer".to_owned()]),
                                     approval: Some(RemoteMcpApprovalPolicy::Never),
                                     defer_loading: Some(true),
-                                    auth_grant_id: None,
                                 }],
                             }),
                             ..fleet_only_features()

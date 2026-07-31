@@ -1049,6 +1049,39 @@ fn mcp_server_put_params_default_approval_is_never_and_revision_optional() {
         RemoteMcpApprovalPolicy::Never
     );
     assert_eq!(params.expected_revision, None);
+    assert_eq!(params.server.credential, None);
+}
+
+#[test]
+fn mcp_server_put_decodes_universe_auth_grant_credential() {
+    let params: McpServerPutParams = serde_json::from_value(json!({
+        "server": {
+            "serverId": "echo",
+            "serverUrl": "https://echo.example.com/mcp",
+            "defaultServerLabel": "echo",
+            "authPolicy": { "type": "requiredBearer" },
+            "credential": { "type": "authGrant", "grantId": "authgrant_1" }
+        }
+    }))
+    .expect("params");
+
+    assert_eq!(
+        params.server.credential,
+        Some(McpServerCredential::AuthGrant {
+            grant_id: "authgrant_1".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn mcp_session_links_reject_the_removed_auth_grant_field() {
+    let error = serde_json::from_value::<McpServerLink>(json!({
+        "serverId": "echo",
+        "authGrantId": "authgrant_1"
+    }))
+    .expect_err("session MCP links must not accept credential selection");
+
+    assert!(error.to_string().contains("unknown field"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2647,6 +2680,7 @@ fn test_mcp_server(server_id: String) -> McpServerView {
         approval_default: RemoteMcpApprovalPolicy::ProviderDefault,
         defer_loading_default: None,
         auth_policy: McpServerAuthPolicy::None,
+        credential: None,
         status: McpServerStatus::Active,
         revision: 1,
         created_at_ms: 1,

@@ -1,5 +1,9 @@
 # P85: Agent Profiles
 
+> **P110 amendment:** profile MCP entries reference only `serverId`; the
+> universe MCP server record owns its auth-grant credential. Historical
+> `authGrantId` examples below describe the pre-P110 design.
+
 **Status**
 - Updated 2026-07-29: profile APIs remain core; bridge-specific provisioning
   described below is historical and now belongs to the external Channels
@@ -385,12 +389,13 @@ without committing to the taxonomy now.
 ## Secrets / Auth
 
 Profiles never store secrets or resolved credentials — same rule as P83 clone.
-`mcp` / `environments` entries reference `serverId` / `grantId` / `providerId` /
-`targetId`; tokens are minted at call time by the existing broker. A profile is
+`mcp` / `environments` entries reference `serverId` / `providerId` /
+`targetId`; MCP grant selection belongs to the universe server record, and
+tokens are minted at call time by the existing broker. A profile is
 safe to store in the registry and to pass inline (e.g. over the bridge config)
 because it is references-only.
 
-A profile naming an MCP server / environment / grant that does not exist (or the
+A profile naming an MCP server or environment that does not exist (or the
 caller cannot reach) fails **at apply time** with a clear per-entry error, not at
 profile-create time — the registry stores intent; reachability is a runtime
 property (mirrors P83 trusting a named source id, P84 `not_reachable`).
@@ -629,7 +634,7 @@ array of profile import documents. Each array element has its own optional
       "access": "readWrite"
     }
   ],
-  "mcp": [{ "serverId": "github", "authGrantId": "github-default" }],
+  "mcp": [{ "serverId": "github" }],
   "environments": [
     { "envId": "local", "providerId": "host-bridge", "targetId": "local", "activate": true }
   ],
@@ -682,8 +687,8 @@ current working directory for stdin/literal input).
   session:
   - **mounts**: `vfs/workspace/read` / `vfs/snapshot/read` for non-local mount
     sources; local `provision.vfs` paths checked for existence/readability on disk.
-  - **mcp**: `mcp/servers/read` per `serverId`; `auth/grants/read` per
-    `authGrantId`.
+  - **mcp**: `mcp/servers/read` per `serverId`; the configured server owns and
+    validates its credential binding.
   - **environments**: `environmentProviders/list` to confirm `providerId` exists
     and supports target attachment, and `environmentProviders/targets/list`
     (provider-scoped) to confirm `targetId` exists when the provider supports
@@ -710,7 +715,7 @@ existing store methods and reuse the existing `environment_provider_view` /
 TS client were regenerated. No store, schema, or migration changes.
 
 With this in place, environment references get online validation similar to MCP
-`serverId`/`authGrantId` and VFS mount sources — `check`/`import` fail early
+`serverId` and VFS mount sources — `check`/`import` fail early
 and per-entry on any missing provider, and on missing targets when the provider
 publishes a target list.
 

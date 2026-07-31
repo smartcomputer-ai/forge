@@ -36,7 +36,7 @@ pub use provider_keys::{
 };
 pub use result::{LlmGenerationExecution, failed_generation_result};
 pub use secrets::{
-    EnvSecretResolver, REDACTED_SECRET_PLACEHOLDER, ResolvedSecretValue,
-    SECRET_NAMESPACE_AUTH_GRANT, SECRET_NAMESPACE_ENV, SecretResolveError, SecretResolver,
-    StaticSecretResolver, UnconfiguredSecretResolver,
+    EnvSecretResolver, REDACTED_SECRET_PLACEHOLDER, ResolvedSecretValue, SECRET_NAMESPACE_ENV,
+    SECRET_NAMESPACE_MCP_SERVER, SecretResolveError, SecretResolver, StaticSecretResolver,
+    UnconfiguredSecretResolver,
 };

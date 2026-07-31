@@ -25,9 +25,10 @@ export type ToolKindView =
   | {
       allowedTools?: string[] | null;
       approval?: RemoteMcpApprovalPolicy & string;
-      authRef?: SecretRefView | null;
+      authRequired?: boolean;
       deferLoading?: boolean | null;
       descriptionRef?: string | null;
+      serverId: string;
       serverLabel: string;
       serverUrl: string;
       type: "remoteMcp";
@@ -902,6 +903,17 @@ export type McpServerAuthPolicy =
       type: "requiredOAuth";
     };
 /**
+ * Non-secret universe credential selected by this configured MCP server.
+ * Token material remains in the auth subsystem and is never returned.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpServerCredential".
+ */
+export type McpServerCredential = {
+  grantId: string;
+  type: "authGrant";
+};
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerStatus".
  */
@@ -1048,14 +1060,6 @@ export interface ToolView {
   parallelism?: ToolParallelismView & string;
   targetRequirement?: ToolTargetRequirementView;
   toolId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SecretRefView".
- */
-export interface SecretRefView {
-  id: string;
-  namespace: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1310,11 +1314,6 @@ export interface McpFeature {
 export interface McpServerLink {
   allowedTools?: string[] | null;
   approval?: RemoteMcpApprovalPolicy | null;
-  /**
-   * Universe-scoped auth grant used to authenticate against the server;
-   * compatibility with the server's auth policy is validated at put time.
-   */
-  authGrantId?: string | null;
   deferLoading?: boolean | null;
   serverId: string;
 }
@@ -2559,6 +2558,7 @@ export interface McpServerView {
   approvalDefault: RemoteMcpApprovalPolicy;
   authPolicy: McpServerAuthPolicy;
   createdAtMs: number;
+  credential?: McpServerCredential | null;
   defaultServerLabel: string;
   deferLoadingDefault?: boolean | null;
   description?: string | null;
@@ -3939,6 +3939,7 @@ export interface McpServerInput {
   allowedTools?: string[] | null;
   approvalDefault?: RemoteMcpApprovalPolicy & string;
   authPolicy?: McpServerAuthPolicy;
+  credential?: McpServerCredential | null;
   defaultServerLabel: string;
   deferLoadingDefault?: boolean | null;
   description?: string | null;

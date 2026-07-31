@@ -487,13 +487,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "authGrantId": {
-              "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "deferLoading": {
               "type": [
                 "boolean",
@@ -1443,13 +1436,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            },
-            "authGrantId": {
-              "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-              "type": [
-                "string",
-                "null"
               ]
             },
             "deferLoading": {
@@ -3118,13 +3104,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "authGrantId": {
-              "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "deferLoading": {
               "type": [
                 "boolean",
@@ -4483,13 +4462,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "authGrantId": {
-              "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "deferLoading": {
               "type": [
                 "boolean",
@@ -5438,13 +5410,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "authGrantId": {
-              "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "deferLoading": {
               "type": [
                 "boolean",
@@ -6154,7 +6119,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_mcp_servers_put",
     "method": "mcp/servers/put",
     "summary": "Create or replace an MCP server record",
-    "description": "Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.",
+    "description": "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.",
     "paramsType": "McpServerPutParams",
     "resultType": "AgentApiOutcome<McpServerPutResponse>",
     "inputSchema": {
@@ -6288,6 +6253,27 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
+        "McpServerCredential": {
+          "description": "Non-secret universe credential selected by this configured MCP server.\nToken material remains in the auth subsystem and is never returned.",
+          "oneOf": [
+            {
+              "properties": {
+                "grantId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authGrant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grantId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "McpServerInput": {
           "description": "Full MCP server document as submitted by clients.",
           "properties": {
@@ -6317,6 +6303,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": {
                 "type": "none"
               }
+            },
+            "credential": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/McpServerCredential"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "defaultServerLabel": {
               "type": "string"
@@ -6401,7 +6397,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_mcp_servers_read",
     "method": "mcp/servers/read",
     "summary": "Read an MCP server record",
-    "description": "Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.",
+    "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",
     "paramsType": "McpServerReadParams",
     "resultType": "AgentApiOutcome<McpServerReadResponse>",
     "inputSchema": {

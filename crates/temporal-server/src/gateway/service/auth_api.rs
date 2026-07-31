@@ -129,12 +129,12 @@ pub(super) fn map_auth_error(error: auth::AuthRegistryError) -> AgentApiError {
     }
 }
 
-/// MCP-specific grant compatibility for session linking (P68 G2): the grant
+/// MCP-specific grant compatibility for a universe server credential: the grant
 /// must be active, its provider-kind class must match the server auth policy,
-/// and its audience (when bound) must cover the server URL. Universe equality
-/// holds by construction: the gateway's grant and catalog stores are bound to
-/// the same universe.
-pub(super) fn validate_mcp_grant_for_link(
+/// and its audience (when bound) must cover the server URL and configured OAuth
+/// resource. Universe equality holds by construction: the gateway's grant and
+/// catalog stores are bound to the same universe.
+pub(super) fn validate_mcp_grant_for_server(
     record: &mcp::McpServerRecord,
     grant: &auth::AuthGrantRecord,
 ) -> Result<(), AgentApiError> {
@@ -167,6 +167,19 @@ pub(super) fn validate_mcp_grant_for_link(
             return Err(AgentApiError::rejected(format!(
                 "auth grant {} audience does not cover MCP server URL {}",
                 grant.grant_id, record.server_url
+            )));
+        }
+        let oauth_resource = match &record.auth_policy {
+            mcp::McpServerAuthPolicy::OptionalOAuth { resource, .. }
+            | mcp::McpServerAuthPolicy::RequiredOAuth { resource, .. } => Some(resource),
+            _ => None,
+        };
+        if let Some(resource) = oauth_resource
+            && !auth::audience_covers(audience, resource)
+        {
+            return Err(AgentApiError::rejected(format!(
+                "auth grant {} audience does not cover MCP OAuth resource {}",
+                grant.grant_id, resource
             )));
         }
     }

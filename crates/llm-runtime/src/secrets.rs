@@ -2,8 +2,9 @@
 //!
 //! `llm-runtime` owns this narrow boundary and stays free of auth-store
 //! dependencies. Hosting runtimes adapt their token broker to [`SecretResolver`]
-//! and dispatch on `SecretRef.namespace` (`auth_grant` -> broker, `env` ->
-//! environment lookup for development). Resolution happens immediately before
+//! and dispatch on `SecretRef.namespace` (`mcp_server` -> the configured
+//! universe server credential, `env` -> environment lookup for development).
+//! Resolution happens immediately before
 //! a provider request is sent; resolved values never enter persisted request
 //! blobs, which carry `<redacted>` placeholders instead.
 
@@ -15,7 +16,7 @@ use engine::SecretRef;
 use thiserror::Error;
 
 pub const SECRET_NAMESPACE_ENV: &str = "env";
-pub const SECRET_NAMESPACE_AUTH_GRANT: &str = "auth_grant";
+pub const SECRET_NAMESPACE_MCP_SERVER: &str = "mcp_server";
 
 /// Placeholder written into persisted provider request blobs where a resolved
 /// auth value was injected into the sent request.
@@ -44,6 +45,11 @@ impl fmt::Debug for ResolvedSecretValue {
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum SecretResolveError {
+    /// The referenced resource exists but has no credential configured. This
+    /// is the only absence an optional-auth caller may safely omit.
+    #[error("credential not configured: {namespace}:{id}")]
+    CredentialAbsent { namespace: String, id: String },
+
     #[error("secret not found: {namespace}:{id}")]
     NotFound { namespace: String, id: String },
 
@@ -60,9 +66,10 @@ pub enum SecretResolveError {
 
 /// Resolves a [`SecretRef`] to a secret value at provider-send time.
 ///
-/// A present `auth_ref` means auth is required for that spec, so this returns
-/// the value or a typed error; it never signals absence with an `Option`.
-/// Optional auth is expressed upstream by omitting `auth_ref` entirely.
+/// A present `auth_ref` identifies the resource whose live credential should
+/// be resolved. Optional-auth callers may omit authorization only for
+/// [`SecretResolveError::CredentialAbsent`]; missing resources and broken
+/// bindings remain errors.
 /// `audience` carries the resource the value will be sent to (for remote MCP,
 /// the server URL) so audience-enforcing resolvers can refuse mismatches.
 #[async_trait]
@@ -91,6 +98,26 @@ impl SecretResolver for UnconfiguredSecretResolver {
             namespace: secret_ref.namespace.clone(),
             id: secret_ref.id.clone(),
             message: "no secret resolver configured for this runtime".to_owned(),
+        })
+    }
+}
+
+/// Resolver that reports an existing resource with no configured credential.
+/// Useful for adapters and hosts that explicitly model an optional unbound
+/// credential; required-auth callers still treat this as a resolution error.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbsentSecretResolver;
+
+#[async_trait]
+impl SecretResolver for AbsentSecretResolver {
+    async fn resolve(
+        &self,
+        secret_ref: &SecretRef,
+        _audience: Option<&str>,
+    ) -> Result<ResolvedSecretValue, SecretResolveError> {
+        Err(SecretResolveError::CredentialAbsent {
+            namespace: secret_ref.namespace.clone(),
+            id: secret_ref.id.clone(),
         })
     }
 }
@@ -184,8 +211,8 @@ mod tests {
         let error = resolver
             .resolve(
                 &SecretRef {
-                    namespace: "auth_grant".to_owned(),
-                    id: "authgrant_1".to_owned(),
+                    namespace: "mcp_server".to_owned(),
+                    id: "crm".to_owned(),
                 },
                 None,
             )
@@ -197,13 +224,13 @@ mod tests {
 
     #[tokio::test]
     async fn static_resolver_resolves_known_refs() {
-        let resolver = StaticSecretResolver::new().with_secret("auth_grant", "g1", "token-123");
+        let resolver = StaticSecretResolver::new().with_secret("mcp_server", "crm", "token-123");
 
         let value = resolver
             .resolve(
                 &SecretRef {
-                    namespace: "auth_grant".to_owned(),
-                    id: "g1".to_owned(),
+                    namespace: "mcp_server".to_owned(),
+                    id: "crm".to_owned(),
                 },
                 Some("https://crm.example.com/mcp"),
             )
@@ -214,7 +241,7 @@ mod tests {
         let error = resolver
             .resolve(
                 &SecretRef {
-                    namespace: "auth_grant".to_owned(),
+                    namespace: "mcp_server".to_owned(),
                     id: "missing".to_owned(),
                 },
                 None,
@@ -231,8 +258,8 @@ mod tests {
         let error = resolver
             .resolve(
                 &SecretRef {
-                    namespace: "auth_grant".to_owned(),
-                    id: "g1".to_owned(),
+                    namespace: "mcp_server".to_owned(),
+                    id: "crm".to_owned(),
                 },
                 None,
             )

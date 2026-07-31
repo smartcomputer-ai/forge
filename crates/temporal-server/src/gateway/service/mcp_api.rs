@@ -1,11 +1,17 @@
 use super::*;
 
-pub(super) const AUTH_GRANT_SECRET_NAMESPACE: &str = "auth_grant";
+pub(super) const MCP_SERVER_SECRET_NAMESPACE: &str = "mcp_server";
 
 pub(super) fn put_mcp_server_record(
     server: McpServerInput,
     now_ms: i64,
 ) -> Result<mcp::PutMcpServerRecord, AgentApiError> {
+    let auth_grant_id = match server.credential {
+        Some(api::McpServerCredential::AuthGrant { grant_id }) => {
+            Some(parse_auth_grant_id(grant_id)?)
+        }
+        None => None,
+    };
     Ok(mcp::PutMcpServerRecord {
         server_id: parse_mcp_server_id(server.server_id)?,
         display_name: server.display_name,
@@ -17,6 +23,7 @@ pub(super) fn put_mcp_server_record(
         approval_default: registry_approval(server.approval_default),
         defer_loading_default: server.defer_loading_default,
         auth_policy: registry_auth_policy(server.auth_policy),
+        auth_grant_id,
         status: registry_status(server.status),
         now_ms,
     })
@@ -34,10 +41,40 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
         approval_default: api_approval(record.approval_default),
         defer_loading_default: record.defer_loading_default,
         auth_policy: api_auth_policy(record.auth_policy),
+        credential: record
+            .auth_grant_id
+            .map(|grant_id| api::McpServerCredential::AuthGrant {
+                grant_id: grant_id.as_str().to_owned(),
+            }),
         status: api_status(record.status),
         revision: record.revision,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+pub(super) fn validate_mcp_server_credential(
+    record: &mcp::PutMcpServerRecord,
+    grant: Option<&auth::AuthGrantRecord>,
+) -> Result<(), AgentApiError> {
+    match (&record.auth_policy, grant) {
+        (mcp::McpServerAuthPolicy::None, Some(_)) => Err(AgentApiError::invalid_request(
+            "MCP servers with auth policy none cannot bind a credential",
+        )),
+        (mcp::McpServerAuthPolicy::RequiredBearer, None)
+        | (mcp::McpServerAuthPolicy::RequiredOAuth { .. }, None)
+            if record.status != mcp::McpServerStatus::NeedsAuthConfig =>
+        {
+            Err(AgentApiError::rejected(format!(
+                "active MCP server requires an auth grant: {}",
+                record.server_id
+            )))
+        }
+        (_, Some(grant)) => {
+            let preview = record.clone().into_record();
+            auth_api::validate_mcp_grant_for_server(&preview, grant)
+        }
+        _ => Ok(()),
     }
 }
 
@@ -66,10 +103,11 @@ pub(super) fn mcp_tool_from_config_link(
     }
 
     let tool_name = default_mcp_tool_name(&record.server_id)?;
-    let auth_ref = auth_ref_for_link(record, grant)?;
+    let auth_ref = auth_ref_for_server(record, grant)?;
     Ok(engine::ToolSpec {
         name: tool_name,
         kind: engine::ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
+            server_id: record.server_id.as_str().to_owned(),
             server_label: record.default_server_label.clone(),
             server_url: record.server_url.clone(),
             description_ref: None,
@@ -83,6 +121,11 @@ pub(super) fn mcp_tool_from_config_link(
                 .unwrap_or_else(|| engine_approval(api_approval(record.approval_default))),
             defer_loading: link.defer_loading.or(record.defer_loading_default),
             auth_ref,
+            auth_required: matches!(
+                record.auth_policy,
+                mcp::McpServerAuthPolicy::RequiredBearer
+                    | mcp::McpServerAuthPolicy::RequiredOAuth { .. }
+            ),
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
         target_requirement: engine::ToolTargetRequirement::None,
@@ -108,16 +151,13 @@ impl GatewayAgentApi {
                 .read_server(&server_id)
                 .await
                 .map_err(map_mcp_error)?;
-            let grant = match link.auth_grant_id.clone() {
-                Some(grant_id) => {
-                    let grant_id = parse_auth_grant_id(grant_id)?;
-                    Some(
-                        self.store
-                            .read_grant(&grant_id)
-                            .await
-                            .map_err(map_auth_error)?,
-                    )
-                }
+            let grant = match record.auth_grant_id.as_ref() {
+                Some(grant_id) => Some(
+                    self.store
+                        .read_grant(grant_id)
+                        .await
+                        .map_err(map_auth_error)?,
+                ),
                 None => None,
             };
             let tool = mcp_tool_from_config_link(link, &record, grant.as_ref())?;
@@ -283,25 +323,30 @@ fn parse_mcp_tool_name(tool_id: String) -> Result<ToolName, AgentApiError> {
         .map_err(|error| AgentApiError::invalid_request(format!("invalid MCP tool id: {error}")))
 }
 
-fn auth_ref_for_link(
+fn auth_ref_for_server(
     record: &mcp::McpServerRecord,
     grant: Option<&auth::AuthGrantRecord>,
 ) -> Result<Option<engine::SecretRef>, AgentApiError> {
     match (&record.auth_policy, grant) {
         (mcp::McpServerAuthPolicy::None, Some(_)) => Err(AgentApiError::invalid_request(
-            "authGrantId is only valid for MCP servers with an auth policy",
+            "an MCP server credential is only valid with an auth policy",
         )),
         (mcp::McpServerAuthPolicy::RequiredBearer, None)
         | (mcp::McpServerAuthPolicy::RequiredOAuth { .. }, None) => Err(AgentApiError::rejected(
             format!("MCP server requires an auth grant: {}", record.server_id),
         )),
         (_, Some(grant)) => {
-            auth_api::validate_mcp_grant_for_link(record, grant)?;
+            auth_api::validate_mcp_grant_for_server(record, grant)?;
             Ok(Some(engine::SecretRef {
-                namespace: AUTH_GRANT_SECRET_NAMESPACE.to_owned(),
-                id: grant.grant_id.as_str().to_owned(),
+                namespace: MCP_SERVER_SECRET_NAMESPACE.to_owned(),
+                id: record.server_id.as_str().to_owned(),
             }))
         }
+        (mcp::McpServerAuthPolicy::OptionalBearer, None)
+        | (mcp::McpServerAuthPolicy::OptionalOAuth { .. }, None) => Ok(Some(engine::SecretRef {
+            namespace: MCP_SERVER_SECRET_NAMESPACE.to_owned(),
+            id: record.server_id.as_str().to_owned(),
+        })),
         (_, None) => Ok(None),
     }
 }

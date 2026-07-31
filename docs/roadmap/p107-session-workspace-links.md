@@ -28,8 +28,9 @@ This follows the declarative MCP split:
 - session config owns a stable link and its per-session policy; and
 - runtime state is derived from config plus the catalog.
 
-`McpServerLink` keeps the server id, optional auth-grant id, and overrides in
-config. `WorkspaceLink` likewise keeps a target identity, session path, and
+As revised by P110, `McpServerLink` keeps only the server id and behavioral
+overrides in config; the universe server owns its credential. `WorkspaceLink`
+likewise keeps a target identity, session path, and
 access policy in config. A link to a mutable workspace follows its current head;
 advancing that head changes catalog state, not session config revision.
 

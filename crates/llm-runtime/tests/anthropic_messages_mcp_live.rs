@@ -222,6 +222,7 @@ fn remote_mcp_echo_tools() -> BTreeMap<ToolName, ToolSpec> {
     let tool = ToolSpec {
         name: ToolName::new("mcp_echo"),
         kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+            server_id: "echo".to_string(),
             server_label: "echo".to_string(),
             server_url: MCP_ECHO_SERVER_URL.to_string(),
             description_ref: None,
@@ -229,6 +230,7 @@ fn remote_mcp_echo_tools() -> BTreeMap<ToolName, ToolSpec> {
             approval: RemoteMcpApprovalPolicy::Never,
             defer_loading: None,
             auth_ref: None,
+            auth_required: false,
         }),
         parallelism: ToolParallelism::ParallelSafe,
         target_requirement: ToolTargetRequirement::None,

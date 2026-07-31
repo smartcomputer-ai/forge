@@ -133,6 +133,11 @@
 - [ ] Design capability based model for agents
 
 ## MCP
+- [x] [P110](p110-universe-owned-mcp-auth.md) — make authentication part of
+  each universe-scoped MCP server configuration, remove grant selection and
+  grant references from sessions, and resolve the server's current credential
+  immediately before provider I/O; edit the greenfield tables in place and
+  reset infrastructure
 - [x] [P99](p99-configurator-mcp.md) — multi-universe Configurator MCP over
   stateless Streamable HTTP, generated from a configurable subset of the
   universe-scoped TypeScript client contract with request-scoped gateway
