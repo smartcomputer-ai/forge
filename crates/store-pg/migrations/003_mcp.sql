@@ -6,8 +6,8 @@
 --   belong to P69 and must not be stored here.
 -- - Session links are materialized into the event-sourced engine tool set;
 --   there is no separate session_mcp_links table in this migration.
--- - The catalog stores non-secret MCP server configuration and auth policy
---   hints only. Runtime auth is referenced later through generic auth handles.
+-- - The catalog owns the non-secret auth-grant binding for each configured
+--   server. The grant and token material remain owned by P69 auth tables.
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
     universe_id uuid NOT NULL
@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     defer_loading_default boolean,
     auth_policy text NOT NULL DEFAULT 'none',
     auth_metadata_json jsonb NOT NULL DEFAULT '{}',
+    auth_grant_id text,
     status text NOT NULL DEFAULT 'active',
     revision bigint NOT NULL,
     created_at_ms bigint NOT NULL,
@@ -72,6 +73,8 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
         ),
     CONSTRAINT mcp_servers_auth_metadata_is_object
         CHECK (jsonb_typeof(auth_metadata_json) = 'object'),
+    CONSTRAINT mcp_servers_no_auth_grant_without_policy
+        CHECK (auth_policy <> 'none' OR auth_grant_id IS NULL),
     CONSTRAINT mcp_servers_status_known
         CHECK (status IN ('active', 'needs_auth_config', 'unverified', 'disabled')),
     CONSTRAINT mcp_servers_revision_positive
@@ -107,3 +110,5 @@ COMMENT ON COLUMN mcp_servers.auth_policy IS
     'Non-secret MCP auth requirement hint. Generic credentials, grants, and token refresh are owned by P69.';
 COMMENT ON COLUMN mcp_servers.auth_metadata_json IS
     'Non-secret MCP auth metadata such as OAuth resource, scopes, protected resource metadata URL, or authorization server URL.';
+COMMENT ON COLUMN mcp_servers.auth_grant_id IS
+    'Universe auth grant selected by this configured MCP server; sessions never override this binding.';

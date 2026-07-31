@@ -440,7 +440,7 @@ Deletes the mutable workspace record; immutable snapshots and blobs remain conte
 
 **Create or replace an MCP server record**
 
-Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.
+Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.
 
 - Params: `McpServerPutParams`
 - Result: `AgentApiOutcome<McpServerPutResponse>`
@@ -449,7 +449,7 @@ Stores the complete universe catalog document. Use expectedRevision when replaci
 
 **Read an MCP server record**
 
-Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.
+Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.
 
 - Params: `McpServerReadParams`
 - Result: `AgentApiOutcome<McpServerReadResponse>`

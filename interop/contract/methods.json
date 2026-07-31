@@ -865,7 +865,7 @@
       "summary": "Delete a VFS workspace"
     },
     {
-      "description": "Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.",
+      "description": "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.",
       "method": "mcp/servers/put",
       "params": {
         "schema": {
@@ -883,7 +883,7 @@
       "summary": "Create or replace an MCP server record"
     },
     {
-      "description": "Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.",
+      "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",
       "method": "mcp/servers/read",
       "params": {
         "schema": {

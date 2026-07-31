@@ -330,12 +330,12 @@ export const METHOD_INFO = {
   "mcp/servers/put": {
     scope: "universe",
     summary: "Create or replace an MCP server record",
-    description: "Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.",
+    description: "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.",
   },
   "mcp/servers/read": {
     scope: "universe",
     summary: "Read an MCP server record",
-    description: "Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.",
+    description: "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",
   },
   "mcp/servers/list": {
     scope: "universe",
@@ -932,7 +932,7 @@ export interface MethodMap {
   /**
    * Create or replace an MCP server record
    *
-   * Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.
+   * Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.
    */
   "mcp/servers/put": {
     params: Api.McpServerPutParams;
@@ -941,7 +941,7 @@ export interface MethodMap {
   /**
    * Read an MCP server record
    *
-   * Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.
+   * Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.
    */
   "mcp/servers/read": {
     params: Api.McpServerReadParams;
@@ -1605,7 +1605,7 @@ export const rpc = {
   /**
    * Create or replace an MCP server record
    *
-   * Stores the complete universe catalog document. Use expectedRevision when replacing; authenticated policies reference grants but never embed credentials.
+   * Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.
    */
   mcpServersPut(client: RpcCaller, params: Api.McpServerPutParams): Promise<Api.AgentApiOutcomeOfMcpServerPutResponse> {
     return client.call("mcp/servers/put", params);
@@ -1613,7 +1613,7 @@ export const rpc = {
   /**
    * Read an MCP server record
    *
-   * Returns one catalog document with defaults, auth policy, status, and revision; no credential value is exposed.
+   * Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.
    */
   mcpServersRead(client: RpcCaller, params: Api.McpServerReadParams): Promise<Api.AgentApiOutcomeOfMcpServerReadResponse> {
     return client.call("mcp/servers/read", params);

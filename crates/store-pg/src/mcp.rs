@@ -80,6 +80,7 @@ impl McpRegistryStore for PgStore {
                 defer_loading_default,
                 auth_policy,
                 auth_metadata_json,
+                auth_grant_id,
                 status,
                 revision,
                 created_at_ms,
@@ -122,6 +123,7 @@ impl McpRegistryStore for PgStore {
                         defer_loading_default,
                         auth_policy,
                         auth_metadata_json,
+                        auth_grant_id,
                         status,
                         revision,
                         created_at_ms,
@@ -151,6 +153,7 @@ impl McpRegistryStore for PgStore {
                         defer_loading_default,
                         auth_policy,
                         auth_metadata_json,
+                        auth_grant_id,
                         status,
                         revision,
                         created_at_ms,
@@ -193,6 +196,7 @@ impl McpRegistryStore for PgStore {
                 defer_loading_default,
                 auth_policy,
                 auth_metadata_json,
+                auth_grant_id,
                 status,
                 revision,
                 created_at_ms,
@@ -239,12 +243,13 @@ impl PgStore {
                 defer_loading_default,
                 auth_policy,
                 auth_metadata_json,
+                auth_grant_id,
                 status,
                 revision,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
             ON CONFLICT (universe_id, server_id) DO NOTHING
             RETURNING
                 server_id,
@@ -258,6 +263,7 @@ impl PgStore {
                 defer_loading_default,
                 auth_policy,
                 auth_metadata_json,
+                auth_grant_id,
                 status,
                 revision,
                 created_at_ms,
@@ -276,6 +282,12 @@ impl PgStore {
         .bind(record.defer_loading_default)
         .bind(auth_policy)
         .bind(auth_metadata_json)
+        .bind(
+            record
+                .auth_grant_id
+                .as_ref()
+                .map(|grant_id| grant_id.as_str()),
+        )
         .bind(status_to_str(record.status))
         .bind(u64_to_i64(record.revision, "revision")?)
         .bind(record.created_at_ms)
@@ -313,10 +325,11 @@ impl PgStore {
                 defer_loading_default = $10,
                 auth_policy = $11,
                 auth_metadata_json = $12,
-                status = $13,
-                revision = $14,
-                updated_at_ms = $15
-            WHERE universe_id = $1 AND server_id = $2 AND revision = $16
+                auth_grant_id = $13,
+                status = $14,
+                revision = $15,
+                updated_at_ms = $16
+            WHERE universe_id = $1 AND server_id = $2 AND revision = $17
             RETURNING
                 server_id,
                 display_name,
@@ -329,6 +342,7 @@ impl PgStore {
                 defer_loading_default,
                 auth_policy,
                 auth_metadata_json,
+                auth_grant_id,
                 status,
                 revision,
                 created_at_ms,
@@ -347,6 +361,12 @@ impl PgStore {
         .bind(replaced.defer_loading_default)
         .bind(auth_policy)
         .bind(auth_metadata_json)
+        .bind(
+            replaced
+                .auth_grant_id
+                .as_ref()
+                .map(|grant_id| grant_id.as_str()),
+        )
         .bind(status_to_str(replaced.status))
         .bind(u64_to_i64(replaced.revision, "revision")?)
         .bind(replaced.updated_at_ms)
@@ -376,6 +396,9 @@ fn server_record_from_row(
     let auth_metadata_json: serde_json::Value = row
         .try_get("auth_metadata_json")
         .map_err(|error| mcp_sql_error("decode mcp auth metadata", error))?;
+    let auth_grant_id: Option<String> = row
+        .try_get("auth_grant_id")
+        .map_err(|error| mcp_sql_error("decode mcp auth grant id", error))?;
     let status: String = row
         .try_get("status")
         .map_err(|error| mcp_sql_error("decode mcp status", error))?;
@@ -408,6 +431,12 @@ fn server_record_from_row(
             .try_get("defer_loading_default")
             .map_err(|error| mcp_sql_error("decode mcp defer loading default", error))?,
         auth_policy: auth_policy_from_columns(&auth_policy, auth_metadata_json)?,
+        auth_grant_id: auth_grant_id
+            .map(auth::AuthGrantId::try_new)
+            .transpose()
+            .map_err(|error| McpRegistryError::Store {
+                message: format!("decode mcp auth grant id: {error}"),
+            })?,
         status: status_from_str(&status)?,
         revision: i64_to_u64(revision, "revision")?,
         created_at_ms: row

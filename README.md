@@ -40,7 +40,8 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Virtual file system**: the agent uses standard file tools (read, glob, patch) without an OS attached
 - [x] **Web access**: fetch, search, and extract tools
 - [x] **Skills**, hosted on the VFS or inside sandboxes
-- [x] **Hosted MCP**, with API-key and OAuth authentication
+- [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
+  shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
 - [x] **Agent profiles**: reusable session setups, shared across clients and fleets

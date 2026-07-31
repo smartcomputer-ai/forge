@@ -10,6 +10,7 @@ use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
+use auth::AuthGrantId;
 use engine::{StringIdError, validate_general_string_id};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
@@ -130,6 +131,9 @@ pub struct McpServerRecord {
     pub approval_default: McpApprovalPolicy,
     pub defer_loading_default: Option<bool>,
     pub auth_policy: McpServerAuthPolicy,
+    /// Universe-owned grant used to authenticate this configured server.
+    /// Sessions select only `server_id` and never override this binding.
+    pub auth_grant_id: Option<AuthGrantId>,
     pub status: McpServerStatus,
     pub revision: u64,
     pub created_at_ms: i64,
@@ -149,6 +153,11 @@ impl McpServerRecord {
         validate_nonempty_optional("description", self.description.as_deref())?;
         validate_allowed_tools(self.allowed_tools.as_deref())?;
         self.auth_policy.validate()?;
+        if matches!(self.auth_policy, McpServerAuthPolicy::None) && self.auth_grant_id.is_some() {
+            return Err(McpRegistryError::InvalidInput {
+                message: "MCP servers with auth policy none cannot bind an auth grant".to_owned(),
+            });
+        }
         validate_nonnegative_i64(self.created_at_ms, "created_at_ms")?;
         validate_nonnegative_i64(self.updated_at_ms, "updated_at_ms")?;
         if self.updated_at_ms < self.created_at_ms {
@@ -178,6 +187,7 @@ pub struct PutMcpServerRecord {
     pub approval_default: McpApprovalPolicy,
     pub defer_loading_default: Option<bool>,
     pub auth_policy: McpServerAuthPolicy,
+    pub auth_grant_id: Option<AuthGrantId>,
     pub status: McpServerStatus,
     pub now_ms: i64,
 }
@@ -196,6 +206,7 @@ impl PutMcpServerRecord {
             approval_default: self.approval_default,
             defer_loading_default: self.defer_loading_default,
             auth_policy: self.auth_policy,
+            auth_grant_id: self.auth_grant_id,
             status: self.status,
             revision: 1,
             created_at_ms: self.now_ms,
@@ -236,6 +247,7 @@ impl PutMcpServerRecord {
             approval_default: self.approval_default,
             defer_loading_default: self.defer_loading_default,
             auth_policy: self.auth_policy,
+            auth_grant_id: self.auth_grant_id,
             status: self.status,
             revision,
             created_at_ms: current.created_at_ms,
@@ -648,6 +660,7 @@ mod tests {
             approval_default: McpApprovalPolicy::Never,
             defer_loading_default: Some(true),
             auth_policy: McpServerAuthPolicy::None,
+            auth_grant_id: None,
             status,
             now_ms: 10,
         }
@@ -668,6 +681,18 @@ mod tests {
         let error = record
             .validate()
             .expect_err("URL credentials must be rejected");
+
+        assert!(matches!(error, McpRegistryError::InvalidInput { .. }));
+    }
+
+    #[test]
+    fn no_auth_servers_reject_grant_bindings() {
+        let mut record = put_request("echo", McpServerStatus::Active).into_record();
+        record.auth_grant_id = Some(auth::AuthGrantId::new("authgrant_1"));
+
+        let error = record
+            .validate()
+            .expect_err("no-auth server must reject a grant binding");
 
         assert!(matches!(error, McpRegistryError::InvalidInput { .. }));
     }

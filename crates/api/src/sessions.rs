@@ -495,10 +495,6 @@ pub struct McpServerLink {
     pub approval: Option<RemoteMcpApprovalPolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
-    /// Universe-scoped auth grant used to authenticate against the server;
-    /// compatibility with the server's auth policy is validated at put time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub auth_grant_id: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -571,6 +567,7 @@ pub enum ToolKindView {
         execution: ProviderNativeToolExecutionView,
     },
     RemoteMcp {
+        server_id: String,
         server_label: String,
         server_url: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -581,8 +578,8 @@ pub enum ToolKindView {
         approval: RemoteMcpApprovalPolicy,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         defer_loading: Option<bool>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        auth_ref: Option<SecretRefView>,
+        #[serde(default)]
+        auth_required: bool,
     },
 }
 

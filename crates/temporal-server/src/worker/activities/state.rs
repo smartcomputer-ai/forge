@@ -174,7 +174,9 @@ impl ActivityState {
     pub fn from_pg_store_with_default_runtime(store: Arc<PgStore>) -> anyhow::Result<Self> {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let broker = registry_token_broker(store.clone())?;
-        let secrets: Arc<dyn SecretResolver> = Arc::new(BrokerSecretResolver::new(broker.clone()));
+        let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
+        let secrets: Arc<dyn SecretResolver> =
+            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
         let provider_keys = stored_provider_key_resolver(store.clone(), broker);
         let transcriber = default_audio_transcriber(provider_keys.clone())?;
         let transcoder = default_audio_transcoder_from_env()?;
@@ -193,7 +195,9 @@ impl ActivityState {
     ) -> anyhow::Result<Self> {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let broker = registry_token_broker(store.clone())?;
-        let secrets: Arc<dyn SecretResolver> = Arc::new(BrokerSecretResolver::new(broker.clone()));
+        let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
+        let secrets: Arc<dyn SecretResolver> =
+            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
         let provider_keys = stored_provider_key_resolver(store.clone(), broker);
         let transcriber = default_audio_transcriber(provider_keys.clone())?;
         let transcoder = default_audio_transcoder_from_env()?;
@@ -221,7 +225,9 @@ impl ActivityState {
             clients.oauth_token.clone(),
             clients.github.clone(),
         );
-        let secrets: Arc<dyn SecretResolver> = Arc::new(BrokerSecretResolver::new(broker.clone()));
+        let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
+        let secrets: Arc<dyn SecretResolver> =
+            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
         let provider_keys = stored_provider_key_resolver(store.clone(), broker);
         let transcriber: Arc<dyn AudioTranscriber> = Arc::new(OpenAiAudioTranscriber::new(
             clients.openai_audio.clone(),

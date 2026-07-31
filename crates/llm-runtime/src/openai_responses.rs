@@ -22,7 +22,9 @@ use crate::{
     params::{openai_reasoning_from_effort, openai_responses_params},
     provider_keys::{NoStoredProviderKeys, ProviderKeyResolver, resolve_stored_provider_key},
     result::LlmGenerationExecution,
-    secrets::{REDACTED_SECRET_PLACEHOLDER, SecretResolver, UnconfiguredSecretResolver},
+    secrets::{
+        REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
+    },
 };
 
 const PROVIDER_KIND_MESSAGE: &str = "openai.responses.message";
@@ -597,13 +599,21 @@ async fn inject_remote_mcp_auth(
     let mut redacted_request = materialized;
     for (tool, remote_mcp) in auth_specs {
         let auth_ref = remote_mcp.auth_ref.as_ref().expect("auth_ref present");
-        let token = secrets
+        let token = match secrets
             .resolve(auth_ref, Some(remote_mcp.server_url.as_str()))
             .await
-            .map_err(|error| LlmAdapterError::SecretResolution {
-                tool: tool.name.to_string(),
-                message: error.to_string(),
-            })?;
+        {
+            Ok(token) => token,
+            Err(SecretResolveError::CredentialAbsent { .. }) if !remote_mcp.auth_required => {
+                continue;
+            }
+            Err(error) => {
+                return Err(LlmAdapterError::SecretResolution {
+                    tool: tool.name.to_string(),
+                    message: error.to_string(),
+                });
+            }
+        };
         set_remote_mcp_authorization(
             &mut send_request,
             &remote_mcp.server_label,
@@ -1523,6 +1533,7 @@ mod tests {
         request.tools = vec![ToolSpec {
             name: ToolName::new("mcp_echo"),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                server_id: "echo".to_string(),
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: Some(description_ref),
@@ -1530,6 +1541,7 @@ mod tests {
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: Some(true),
                 auth_ref: None,
+                auth_required: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
             target_requirement: Default::default(),
@@ -1561,6 +1573,7 @@ mod tests {
         ToolSpec {
             name: ToolName::new("mcp_echo"),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                server_id: "echo".to_string(),
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
@@ -1568,9 +1581,10 @@ mod tests {
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: None,
                 auth_ref: Some(engine::SecretRef {
-                    namespace: "auth_grant".to_string(),
-                    id: "grant_123".to_string(),
+                    namespace: "mcp_server".to_string(),
+                    id: "echo".to_string(),
                 }),
+                auth_required: true,
             }),
             parallelism: ToolParallelism::ParallelSafe,
             target_requirement: Default::default(),
@@ -1628,6 +1642,15 @@ mod tests {
         }
     }
 
+    fn optional_unbound_mcp_generation_request() -> LlmGenerationRequest {
+        let mut request = mcp_auth_generation_request();
+        let ToolKind::RemoteMcp(spec) = &mut request.request.tools[0].kind else {
+            panic!("expected remote MCP tool");
+        };
+        spec.auth_required = false;
+        request
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn materialize_create_request_omits_authorization_for_remote_mcp_auth_ref() {
         let blobs = InMemoryBlobStore::new();
@@ -1654,8 +1677,8 @@ mod tests {
         let adapter = OpenAiResponsesLlmAdapter::new(api.clone(), blobs.clone())
             .with_secret_resolver(Arc::new(
                 crate::secrets::StaticSecretResolver::new().with_secret(
-                    "auth_grant",
-                    "grant_123",
+                    "mcp_server",
+                    "echo",
                     "token-xyz",
                 ),
             ));
@@ -1679,6 +1702,38 @@ mod tests {
                 .contains("token-xyz"),
             "persisted provider request must not contain the resolved token"
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generate_omits_optional_unbound_remote_mcp_authorization() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let api = fake_api_with(completed_message_response());
+        let adapter = OpenAiResponsesLlmAdapter::new(api.clone(), blobs)
+            .with_secret_resolver(Arc::new(crate::secrets::AbsentSecretResolver));
+
+        LlmGenerationAdapter::generate(&adapter, optional_unbound_mcp_generation_request())
+            .await
+            .expect("optional unbound MCP auth should be omitted");
+
+        let sent = api.seen.lock().expect("lock").clone();
+        let sent_json = serde_json::to_value(&sent[0]).expect("sent json");
+        assert!(sent_json["tools"][0].get("authorization").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn generate_does_not_treat_a_missing_optional_mcp_server_as_unbound() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let api = fake_api_with(completed_message_response());
+        let adapter = OpenAiResponsesLlmAdapter::new(api.clone(), blobs)
+            .with_secret_resolver(Arc::new(crate::secrets::StaticSecretResolver::new()));
+
+        let error =
+            LlmGenerationAdapter::generate(&adapter, optional_unbound_mcp_generation_request())
+                .await
+                .expect_err("missing optional MCP server must not silently downgrade");
+
+        assert!(matches!(error, LlmAdapterError::SecretResolution { .. }));
+        assert!(api.seen.lock().expect("lock").is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -739,11 +739,46 @@ mod tests {
             "http://127.0.0.1:18080/rpc",
             "--session",
             "session_1",
-            "--tool-id",
-            "mcp_echo",
             "echo",
         ])
         .expect("parse mcp link");
+        assert!(matches!(cli.command, Command::Mcp(_)));
+    }
+
+    #[test]
+    fn mcp_server_auth_set_parse_accepts_server_and_grant() {
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "mcp",
+            "server",
+            "auth",
+            "set",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "crm",
+            "--grant",
+            "authgrant_1",
+        ])
+        .expect("parse MCP server auth set");
+        assert!(matches!(cli.command, Command::Mcp(_)));
+    }
+
+    #[test]
+    fn mcp_server_login_parse_accepts_server_and_oauth_overrides() {
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "mcp",
+            "server",
+            "login",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "crm",
+            "--scope",
+            "contacts.read",
+            "--audience",
+            "https://crm.example.com/mcp",
+        ])
+        .expect("parse MCP server login");
         assert!(matches!(cli.command, Command::Mcp(_)));
     }
 }

@@ -377,12 +377,10 @@ current `ToolingState`, and applies an internal engine `ToolPatch`.
 mechanism; they stop being an external API.
 
 - `features.mcp.servers` declares linked servers by registry id with optional
-  per-session overrides (`allowedTools`, `approval`, `deferLoading`) and an
-  optional `authGrantId` — a universe-scoped stable identity, so permitted in
-  config per §5; grant/policy compatibility is validated at put admission
-  against the catalog (today's `auth_ref_for_link` checks) and the token
-  broker resolves the grant at request time. This replaces imperative link
-  state. `session/mcp/link`/`unlink` either become sugar that
+  per-session overrides (`allowedTools`, `approval`, `deferLoading`). P110
+  supersedes the original per-link `authGrantId`: the universe server record
+  owns its grant binding and the runtime resolves it at request time. This
+  replaces imperative link state. `session/mcp/link`/`unlink` either become sugar that
   performs a config put or are dropped (recommend: drop; the CLI/clients edit
   config).
 - External `session/tools/update` is removed until a real use case for

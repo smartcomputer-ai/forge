@@ -116,6 +116,27 @@ CREATE INDEX IF NOT EXISTS auth_grants_status_idx
 CREATE INDEX IF NOT EXISTS auth_grants_provider_idx
     ON auth_grants (universe_id, provider_id, grant_id);
 
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'mcp_servers_auth_grant_fk'
+          AND conrelid = 'mcp_servers'::regclass
+    ) THEN
+        ALTER TABLE mcp_servers
+            ADD CONSTRAINT mcp_servers_auth_grant_fk
+            FOREIGN KEY (universe_id, auth_grant_id)
+            REFERENCES auth_grants (universe_id, grant_id)
+            ON DELETE RESTRICT;
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS mcp_servers_auth_grant_idx
+    ON mcp_servers (universe_id, auth_grant_id)
+    WHERE auth_grant_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS auth_clients (
     universe_id uuid NOT NULL
         REFERENCES universes (universe_id) ON DELETE CASCADE,

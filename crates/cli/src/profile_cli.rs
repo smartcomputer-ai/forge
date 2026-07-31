@@ -559,20 +559,6 @@ async fn validate_mcp(
                 api_error(error)
             ));
         }
-        if let Some(grant_id) = &link.auth_grant_id
-            && let Err(error) = api
-                .read_auth_grant(api::AuthGrantReadParams {
-                    grant_id: grant_id.clone(),
-                })
-                .await
-        {
-            report.error(format!(
-                "mcp server {} references missing auth grant {}: {}",
-                link.server_id,
-                grant_id,
-                api_error(error)
-            ));
-        }
     }
 }
 

@@ -1,5 +1,9 @@
 # P68: Remote MCP Registry And Session Linking
 
+> **Superseded in part by P110:** MCP auth grants are now bound to the
+> universe server record and are never selected by a session link. Historical
+> `auth-grant` link examples below describe the pre-P110 implementation.
+
 **Status**
 - In progress.
 - Split from the original P68 registry/auth plan.

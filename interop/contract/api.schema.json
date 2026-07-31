@@ -5160,6 +5160,27 @@
         }
       ]
     },
+    "McpServerCredential": {
+      "description": "Non-secret universe credential selected by this configured MCP server.\nToken material remains in the auth subsystem and is never returned.",
+      "oneOf": [
+        {
+          "properties": {
+            "grantId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "authGrant",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "grantId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "McpServerDeleteParams": {
       "properties": {
         "serverId": {
@@ -5211,6 +5232,16 @@
           "default": {
             "type": "none"
           }
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpServerCredential"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "defaultServerLabel": {
           "type": "string"
@@ -5284,13 +5315,6 @@
             {
               "type": "null"
             }
-          ]
-        },
-        "authGrantId": {
-          "description": "Universe-scoped auth grant used to authenticate against the server;\ncompatibility with the server's auth policy is validated at put time.",
-          "type": [
-            "string",
-            "null"
           ]
         },
         "deferLoading": {
@@ -5417,6 +5441,16 @@
         "createdAtMs": {
           "format": "int64",
           "type": "integer"
+        },
+        "credential": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpServerCredential"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "defaultServerLabel": {
           "type": "string"
@@ -6708,21 +6742,6 @@
           ]
         }
       },
-      "type": "object"
-    },
-    "SecretRefView": {
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "namespace": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "namespace",
-        "id"
-      ],
       "type": "object"
     },
     "ServerCapabilities": {
@@ -9614,15 +9633,9 @@
               ],
               "default": "never"
             },
-            "authRef": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/SecretRefView"
-                },
-                {
-                  "type": "null"
-                }
-              ]
+            "authRequired": {
+              "default": false,
+              "type": "boolean"
             },
             "deferLoading": {
               "type": [
@@ -9635,6 +9648,9 @@
                 "string",
                 "null"
               ]
+            },
+            "serverId": {
+              "type": "string"
             },
             "serverLabel": {
               "type": "string"
@@ -9649,6 +9665,7 @@
           },
           "required": [
             "type",
+            "serverId",
             "serverLabel",
             "serverUrl"
           ],

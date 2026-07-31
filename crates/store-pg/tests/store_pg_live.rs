@@ -933,11 +933,41 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
         .expect("list active MCP servers");
     assert_eq!(active, vec![created.clone()]);
 
+    left.put_secret(PutSecretRecord {
+        secret_id: SecretId::new("authsec_mcp_crm"),
+        secret_kind: SECRET_KIND_STATIC_BEARER.to_owned(),
+        value: SecretValue::new("crm-token"),
+        created_at_ms: 10,
+    })
+    .await
+    .expect("store MCP bearer secret");
+    left.create_grant(CreateAuthGrantRecord {
+        grant_id: AuthGrantId::new("authgrant_mcp_crm"),
+        provider_id: "static".to_owned(),
+        provider_kind: AuthProviderKind::StaticBearer,
+        principal: PrincipalRef::universe_default(),
+        display_name: Some("CRM MCP".to_owned()),
+        subject_hint: None,
+        scopes: Vec::new(),
+        audience: Some("https://crm2.example.com".to_owned()),
+        access_token_secret: Some(SecretId::new("authsec_mcp_crm")),
+        refresh_token_secret: None,
+        oauth_client: None,
+        expires_at_ms: None,
+        status: AuthGrantStatus::Active,
+        metadata: serde_json::Value::Object(Default::default()),
+        created_at_ms: 10,
+    })
+    .await
+    .expect("create MCP bearer grant");
+
     // Existing record: put replaces the whole document and bumps the revision.
     let mut replacement = put_mcp_server("crm", McpServerStatus::Disabled);
     replacement.server_url = "https://crm2.example.com/mcp".to_owned();
     replacement.description = None;
     replacement.approval_default = McpApprovalPolicy::Always;
+    replacement.auth_policy = McpServerAuthPolicy::OptionalBearer;
+    replacement.auth_grant_id = Some(AuthGrantId::new("authgrant_mcp_crm"));
     replacement.now_ms = created.updated_at_ms + 5;
     let replaced = left
         .put_server(replacement, Some(created.revision))
@@ -947,6 +977,10 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
     assert_eq!(replaced.server_url, "https://crm2.example.com/mcp");
     assert_eq!(replaced.description, None);
     assert_eq!(replaced.approval_default, McpApprovalPolicy::Always);
+    assert_eq!(
+        replaced.auth_grant_id,
+        Some(AuthGrantId::new("authgrant_mcp_crm"))
+    );
     assert_eq!(replaced.status, McpServerStatus::Disabled);
     assert_eq!(replaced.display_name, created.display_name);
     assert_eq!(replaced.created_at_ms, created.created_at_ms);
@@ -966,6 +1000,16 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
             ..
         })
     ));
+
+    // The composite FK prevents a server from selecting another universe's
+    // grant even when the grant id is otherwise valid.
+    let mut cross_universe = put_mcp_server("foreign", McpServerStatus::Active);
+    cross_universe.auth_policy = McpServerAuthPolicy::OptionalBearer;
+    cross_universe.auth_grant_id = Some(AuthGrantId::new("authgrant_mcp_crm"));
+    assert!(
+        right.put_server(cross_universe, None).await.is_err(),
+        "MCP grant bindings must remain in the server's universe"
+    );
 
     // Universe isolation: the sibling store creates its own record at
     // revision 1 instead of replacing the left store's document.
@@ -1764,6 +1808,7 @@ fn put_mcp_server(server_id: &str, status: McpServerStatus) -> PutMcpServerRecor
         approval_default: McpApprovalPolicy::Never,
         defer_loading_default: Some(true),
         auth_policy: McpServerAuthPolicy::None,
+        auth_grant_id: None,
         status,
         now_ms: 10,
     }

@@ -60,9 +60,10 @@ execution — never in the engine or the session log.
 
 ## How it works
 
-Sessions and the engine only ever record `SecretRef { namespace:
-"auth_grant", id }`. At LLM-call time the runtime's `SecretResolver` asks the
-broker for the token for a specific resource URL; the token is injected into
+For MCP, sessions and the engine record only `SecretRef { namespace:
+"mcp_server", id: server_id }`; the universe server record owns the current
+grant binding. At LLM-call time the runtime reads that binding and asks the
+broker for a token for the admitted resource URL. The token is injected into
 the outgoing provider request at the last moment, while the persisted request
 blob keeps `"authorization": "<redacted>"`. Plaintext tokens never enter
 engine events, CAS blobs, Temporal history, API responses, or logs. The
@@ -92,7 +93,7 @@ cargo run -p temporal-server
 # separate terminal, env.sh sourced
 # 1. register the authenticated MCP server
 source local/env.sh
-cargo run -q -p cli -- mcp server add https://mcpplaygroundonline.com/mcp-auth-server \
+cargo run -q -p cli -- mcp server put https://mcpplaygroundonline.com/mcp-auth-server \
   --id playground --label playground --auth-policy required-bearer
 
 # 2. import the bearer token as an encrypted grant
@@ -101,13 +102,16 @@ cargo run -q -p cli -- auth grant import --id playground \
   --token-env PLAYGROUND_TOKEN \
   --audience https://mcpplaygroundonline.com/mcp-auth-server
 
-# 3. create the session (one-shot message creates it and exits)
+# 3. bind the universe server credential
+cargo run -q -p cli -- mcp server auth set playground --grant playground
+
+# 4. create the session (one-shot message creates it and exits)
 cargo run -q -p cli -- chat --session mcp_test "hello"
 
-# 4. link the server into the session with the grant
-cargo run -q -p cli -- mcp link --session mcp_test --auth-grant-id playground playground
+# 5. link the configured server into the session
+cargo run -q -p cli -- mcp link --session mcp_test playground
 
-# 5. open the TUI on that session and ask it to use the tools
+# 6. open the TUI on that session and ask it to use the tools
 cargo run -q -p cli -- chat --session mcp_test
 ```
 
@@ -157,21 +161,20 @@ is needed — the gateway discovers and registers the client on first login:
 
 ```bash
 # 1. register the server with an OAuth policy (resource = canonical server URL)
-cargo run -q -p cli -- mcp server add https://crm.example.com/mcp \
+cargo run -q -p cli -- mcp server put https://crm.example.com/mcp \
   --id crm --label crm --auth-policy required-oauth \
   --oauth-resource https://crm.example.com/mcp
 
-# 2. login by server id: discovers PRM + AS metadata, registers a client
-#    (CIMD if supported and the gateway is public https, else DCR),
-#    then runs the normal browser flow
-cargo run -q -p cli -- auth login mcp:crm
+# 2. login by server id: discovers PRM + AS metadata, registers a client,
+#    runs the browser flow, and binds the resulting grant to the server
+cargo run -q -p cli -- mcp server login crm
 
 # 3. the discovered client and the audience-bound grant are inspectable
 cargo run -q -p cli -- auth client read mcp:crm
 cargo run -q -p cli -- auth grant list
 
-# 4. link with the grant id printed by login
-cargo run -q -p cli -- mcp link --session s1 --auth-grant-id <grant id> crm
+# 4. sessions link only the configured server id
+cargo run -q -p cli -- mcp link --session s1 crm
 ```
 
 To force re-discovery (for example after the server changes authorization
@@ -202,7 +205,7 @@ local/pg-migrate.sh
 cargo run -p temporal-server        # separate terminal, env.sh sourced
 
 # 1. register the MCP server under id gh
-cargo run -q -p cli -- mcp server add https://api.githubcopilot.com/mcp/ \
+cargo run -q -p cli -- mcp server put https://api.githubcopilot.com/mcp/ \
   --id gh --label github --auth-policy required-oauth
 
 # 2. register the GitHub app as the manual OAuth client for it.
@@ -216,13 +219,12 @@ cargo run -q -p cli -- auth client add --id mcp:gh \
   --client-id <GitHub app client id> \
   --client-secret-env GH_OAUTH_SECRET
 
-# 3. log in: prints the GitHub consent URL, polls until the callback lands
-cargo run -q -p cli -- auth login mcp:gh
-# -> "login complete" + grantId authgrant_...
+# 3. log in and bind the resulting grant to the universe server
+cargo run -q -p cli -- mcp server login gh
 
-# 4. create a session, link the server with the grant, open the TUI
+# 4. create a session, link the configured server, open the TUI
 cargo run -q -p cli -- chat --session gh_test "hello"
-cargo run -q -p cli -- mcp link --session gh_test --auth-grant-id <grantId> gh
+cargo run -q -p cli -- mcp link --session gh_test gh
 cargo run -q -p cli -- chat --session gh_test
 # then ask it to use the GitHub tools
 
@@ -232,9 +234,9 @@ cargo run -q -p cli -- auth client read mcp:gh   # endpoints, hasClientSecret tr
 cargo run -q -p cli -- auth grant list           # grant status, never token values
 ```
 
-The link passes validation because the grant's kind is `mcp_oauth`, its
-status is `active`, and its audience (`https://api.githubcopilot.com/mcp/`)
-covers the server URL. The broker refreshes the grant's access token
+The server binding passes validation because the grant's kind is `mcp_oauth`,
+its status is `active`, and its audience
+(`https://api.githubcopilot.com/mcp/`) covers the server URL. The broker refreshes the grant's access token
 automatically when it expires, as long as the authorization server issued a
 refresh token.
 

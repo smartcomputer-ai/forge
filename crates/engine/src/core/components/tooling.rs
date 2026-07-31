@@ -520,6 +520,7 @@ pub struct ProviderNativeToolSpec {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpToolSpec {
+    pub server_id: String,
     pub server_label: String,
     pub server_url: String,
     pub description_ref: Option<BlobRef>,
@@ -527,10 +528,12 @@ pub struct RemoteMcpToolSpec {
     pub approval: RemoteMcpApprovalPolicy,
     pub defer_loading: Option<bool>,
     pub auth_ref: Option<SecretRef>,
+    pub auth_required: bool,
 }
 
 impl RemoteMcpToolSpec {
     pub fn validate(&self) -> Result<(), DomainError> {
+        validate_secret_ref_component("remote MCP server id", &self.server_id)?;
         validate_remote_mcp_server_label(&self.server_label)?;
         validate_remote_mcp_server_url(&self.server_url)?;
         if let Some(allowed_tools) = &self.allowed_tools {
@@ -552,6 +555,15 @@ impl RemoteMcpToolSpec {
         }
         if let Some(auth_ref) = &self.auth_ref {
             auth_ref.validate()?;
+            if auth_ref.namespace != "mcp_server" || auth_ref.id != self.server_id {
+                return Err(DomainError::InvariantViolation(
+                    "remote MCP auth refs must identify the configured mcp_server".to_owned(),
+                ));
+            }
+        } else if self.auth_required {
+            return Err(DomainError::InvariantViolation(
+                "remote MCP required auth needs a server credential ref".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -1911,6 +1923,7 @@ mod tests {
 
     fn remote_mcp_spec(server_label: &str, server_url: &str) -> RemoteMcpToolSpec {
         RemoteMcpToolSpec {
+            server_id: server_label.to_owned(),
             server_label: server_label.to_owned(),
             server_url: server_url.to_owned(),
             description_ref: None,
@@ -1918,9 +1931,10 @@ mod tests {
             approval: RemoteMcpApprovalPolicy::Never,
             defer_loading: Some(true),
             auth_ref: Some(SecretRef {
-                namespace: "mcp_grant".to_owned(),
-                id: "mcpgrant_123".to_owned(),
+                namespace: "mcp_server".to_owned(),
+                id: server_label.to_owned(),
             }),
+            auth_required: true,
         }
     }
 

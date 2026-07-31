@@ -1470,7 +1470,6 @@ fn mcp_feature_to_api(mcp: &engine::McpFeature) -> api::McpFeature {
                 allowed_tools: link.allowed_tools.clone(),
                 approval: link.approval.as_ref().map(remote_mcp_approval_to_api),
                 defer_loading: link.defer_loading,
-                auth_grant_id: link.auth_grant_id.clone(),
             })
             .collect(),
     }
@@ -1551,6 +1550,7 @@ fn tool_kind_to_api(kind: &ToolKind) -> ToolKindView {
             },
         },
         ToolKind::RemoteMcp(remote_mcp) => ToolKindView::RemoteMcp {
+            server_id: remote_mcp.server_id.clone(),
             server_label: remote_mcp.server_label.clone(),
             server_url: remote_mcp.server_url.clone(),
             description_ref: remote_mcp
@@ -1560,13 +1560,7 @@ fn tool_kind_to_api(kind: &ToolKind) -> ToolKindView {
             allowed_tools: remote_mcp.allowed_tools.clone(),
             approval: remote_mcp_approval_to_api(&remote_mcp.approval),
             defer_loading: remote_mcp.defer_loading,
-            auth_ref: remote_mcp
-                .auth_ref
-                .as_ref()
-                .map(|auth_ref| api::SecretRefView {
-                    namespace: auth_ref.namespace.clone(),
-                    id: auth_ref.id.clone(),
-                }),
+            auth_required: remote_mcp.auth_required,
         },
     }
 }
@@ -2649,7 +2643,6 @@ mod tests {
                         allowed_tools: Some(vec!["search_issues".to_owned()]),
                         approval: Some(engine::RemoteMcpApprovalPolicy::Never),
                         defer_loading: Some(true),
-                        auth_grant_id: Some("grant_1".to_owned()),
                     }],
                 }),
             },
@@ -2736,7 +2729,6 @@ mod tests {
                             allowed_tools: Some(vec!["search_issues".to_owned()]),
                             approval: Some(api::RemoteMcpApprovalPolicy::Never),
                             defer_loading: Some(true),
-                            auth_grant_id: Some("grant_1".to_owned()),
                         }],
                     }),
                 }),

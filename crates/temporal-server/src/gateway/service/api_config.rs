@@ -163,7 +163,6 @@ fn features_from_api(
                     allowed_tools: link.allowed_tools,
                     approval: link.approval.map(engine_mcp_approval),
                     defer_loading: link.defer_loading,
-                    auth_grant_id: link.auth_grant_id,
                 })
                 .collect(),
         }),

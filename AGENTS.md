@@ -195,6 +195,10 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   pattern. The session toolset — including remote MCP tools declared under
   `features.mcp` — is derived from config and never written directly by
   clients. See `docs/roadmap/p95-config-redesign.md`.
+- MCP authentication belongs to the universe MCP server record. Sessions and
+  profiles select only `serverId`; they never select or retain an auth grant.
+  Resolve the server's current grant immediately before provider I/O. See
+  `docs/roadmap/p110-universe-owned-mcp-auth.md`.
 - VFS session topology is declared only by
   `features.vfs.workspaceLinks`. Snapshots and mutable workspace heads remain
   catalog resources; resolved links are transient, and no session-link or
