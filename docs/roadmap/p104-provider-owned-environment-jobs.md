@@ -43,6 +43,9 @@ already-admitted binding remains dormant if the grant is later disabled.
   than persisted forever in PostgreSQL.
 - Gate session workflow admission on the explicit jobs sub-grant and gate
   model-tool exposure on both that grant and live instance capabilities.
+- P108 subsequently made credentials universe-environment-owned. Resolve and
+  inject those bindings at provider start for both bare public creates and
+  session-supervised starts; session identity is not credential scope.
 
 ## Done When
 

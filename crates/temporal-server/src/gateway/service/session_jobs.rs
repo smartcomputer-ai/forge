@@ -99,10 +99,7 @@ impl GatewayAgentApi {
             request_fingerprint.as_str(),
         );
         let job_ids = request.jobs.iter().map(|job| job.job_id.clone()).collect();
-        let start_payload = temporal_workflow::EnvironmentJobStartPayload {
-            request,
-            credential_scope: None,
-        };
+        let start_payload = temporal_workflow::EnvironmentJobStartPayload { request };
         let request_ref = self
             .store
             .put_bytes(serde_json::to_vec(&start_payload).map_err(|error| {

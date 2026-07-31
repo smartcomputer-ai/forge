@@ -235,7 +235,7 @@ export const METHOD_INFO = {
   "environments/jobs/create": {
     scope: "universe",
     summary: "Create environment jobs",
-    description: "Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session.",
+    description: "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.",
   },
   "environments/jobs/read": {
     scope: "universe",
@@ -761,7 +761,7 @@ export interface MethodMap {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
    */
   "environments/jobs/create": {
     params: Api.EnvironmentJobCreateParams;
@@ -1453,7 +1453,7 @@ export const rpc = {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
    */
   environmentsJobsCreate(client: RpcCaller, params: Api.EnvironmentJobCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobCreateResponse> {
     return client.call("environments/jobs/create", params);

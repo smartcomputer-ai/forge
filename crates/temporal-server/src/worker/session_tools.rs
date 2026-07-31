@@ -1024,11 +1024,8 @@ impl SessionTools {
         }
         let (fs_context, mut environment_context) = connection.into_contexts(self.blobs.clone());
         if let Some(credentials) = &self.environment_credentials {
-            environment_context = credentials.wrap_context(
-                environment_context,
-                session_id.clone(),
-                resource.environment_id.clone(),
-            );
+            environment_context =
+                credentials.wrap_context(environment_context, resource.environment_id.clone());
         }
         let environment_context =
             environment_context.with_session_id(session_id.as_str().to_owned());

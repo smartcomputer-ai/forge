@@ -384,12 +384,6 @@ pub struct CancellingWatchdog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentJobCredentialScope {
-    pub session_id: SessionId,
-    pub environment_id: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartActivityRequest {
     pub universe_id: Uuid,
     pub environment_id: String,
@@ -400,8 +394,6 @@ pub struct EnvironmentJobStartActivityRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartPayload {
     pub request: host_protocol::data::jobs::StartJobsParams,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub credential_scope: Option<EnvironmentJobCredentialScope>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

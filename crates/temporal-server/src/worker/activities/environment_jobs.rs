@@ -171,13 +171,7 @@ pub(super) async fn prepare_workflow_tool(
         })
         .collect::<Result<Vec<_>, ActivityError>>()?;
     let job_ids = params.jobs.iter().map(|job| job.job_id.clone()).collect();
-    let payload = EnvironmentJobStartPayload {
-        request: params,
-        credential_scope: Some(temporal_workflow::EnvironmentJobCredentialScope {
-            session_id: start.invocation.session_id.clone(),
-            environment_id: environment_id.as_str().to_owned(),
-        }),
-    };
+    let payload = EnvironmentJobStartPayload { request: params };
     let request_ref = deps
         .blobs
         .put_bytes(serde_json::to_vec(&payload).map_err(activity_error)?)
@@ -241,22 +235,13 @@ pub(super) async fn start(
         )));
     }
 
-    if let Some(scope) = payload.credential_scope.take() {
-        let credential_environment_id =
-            EnvironmentId::try_new(scope.environment_id).map_err(activity_error)?;
-        if credential_environment_id != environment_id {
-            return Err(activity_error(anyhow::anyhow!(
-                "environment job credential scope does not match environment {environment_id}"
-            )));
-        }
-        for job in &mut payload.request.jobs {
-            let secret_env = deps
-                .credentials
-                .resolve_secret_env(&scope.session_id, &credential_environment_id, &job.env)
-                .await
-                .map_err(activity_error)?;
-            job.secret_env.extend(secret_env);
-        }
+    for job in &mut payload.request.jobs {
+        let secret_env = deps
+            .credentials
+            .resolve_secret_env(&environment_id, &job.env)
+            .await
+            .map_err(activity_error)?;
+        job.secret_env.extend(secret_env);
     }
 
     start_on_provider(deps.environments.as_ref(), &environment_id, &payload).await

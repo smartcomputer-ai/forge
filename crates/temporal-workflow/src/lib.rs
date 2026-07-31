@@ -32,7 +32,7 @@ pub use types::{
     AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
     AwaitOutcome, AwaitOutput, AwaitPromiseResult, CancellingWatchdog,
     ContextCompactActivityRequest, CreateOrLoadSessionRequest, CreateOrLoadSessionResult,
-    EnvironmentJobCancelActivityRequest, EnvironmentJobCancelSignal, EnvironmentJobCredentialScope,
+    EnvironmentJobCancelActivityRequest, EnvironmentJobCancelSignal,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobPrepareWorkflowToolRequest, EnvironmentJobStartActivityRequest,
     EnvironmentJobStartActivityResult, EnvironmentJobStartPayload, EnvironmentJobSubscription,

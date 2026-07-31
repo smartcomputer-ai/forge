@@ -192,9 +192,11 @@ EnvironmentCredentialBinding
 
 Move credential operations from `session/environments/credentials/*` to
 universe `environments/credentials/*` methods. At invocation time the runtime
-resolves the active environment and injects that environment's configured
-credentials for every session using it. Selecting an environment carries no
-credential ids. Deleting the environment deletes its credential bindings.
+resolves the target environment and injects that environment's configured
+credentials for every Lightspeed-started process or job, including bare
+`environments/jobs/create` calls and session tool calls. Selecting an
+environment carries no credential ids. Deleting the environment deletes its
+credential bindings.
 
 ## Tool Routing
 

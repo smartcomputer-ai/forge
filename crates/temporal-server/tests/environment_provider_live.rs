@@ -900,6 +900,38 @@ async fn run_host_bridge_credential_client(
         listed.result.credentials
     );
 
+    let created = api
+        .create_environment_jobs(EnvironmentJobCreateParams {
+            environment_id: environment_id.clone(),
+            request_id: "api_environment_credential_injection".to_owned(),
+            jobs: vec![api_shell_job(
+                "credential-injection",
+                format!(
+                    "test -n \"${{{BRIDGE_CREDENTIAL_ENV_NAME}:-}}\" && printf '%s' \"${BRIDGE_CREDENTIAL_ENV_NAME}\""
+                ),
+            )],
+        })
+        .await?;
+    let entries = wait_for_environment_jobs_terminal(
+        api.as_ref(),
+        &[created.result.jobs[0].handle.clone()],
+        Duration::from_secs(10),
+    )
+    .await?;
+    ensure_job_statuses(
+        &entries,
+        SessionJobStatusView::Succeeded,
+        "credential-injected raw environment job",
+    )?;
+    let output = entries[0]
+        .output_chunks
+        .iter()
+        .map(|chunk| BASE64_STANDARD.decode(&chunk.data_base64))
+        .collect::<Result<Vec<_>, _>>()?
+        .concat();
+    assert_eq!(output, b"<redacted>");
+    assert!(!String::from_utf8_lossy(&output).contains(&secret_value));
+
     let unbound = api
         .unbind_environment_credential(EnvironmentCredentialUnbindParams {
             environment_id,

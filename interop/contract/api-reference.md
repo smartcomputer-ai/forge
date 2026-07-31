@@ -269,7 +269,7 @@ Tears down the universe resource through its provider. Closing is rejected while
 
 **Create environment jobs**
 
-Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session.
+Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
 
 - Params: `EnvironmentJobCreateParams`
 - Result: `AgentApiOutcome<EnvironmentJobCreateResponse>`

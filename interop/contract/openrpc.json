@@ -11200,7 +11200,7 @@
       "summary": "Close an environment instance"
     },
     {
-      "description": "Starts a dependency-aware job group on one environment instance. requestId is the retry identity; jobs are owned by the instance rather than a session.",
+      "description": "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.",
       "name": "environments/jobs/create",
       "paramStructure": "by-name",
       "params": [

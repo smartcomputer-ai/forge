@@ -115,9 +115,10 @@ the currently active selection.
 
 Credential bindings are keyed by `(universe_id, environment_id, env_name)`.
 Their source may be an auth grant, auth-provider credential, or direct secret.
-Every session selecting the environment receives the same configured injection
-at execution time. Session state and activation events never carry credential
-ids or secret material.
+Every Lightspeed-started process or job targeting the environment receives the
+same configured injection at execution time, including bare
+`environments/jobs/create` calls and session tool calls. Session state and
+activation events never carry credential ids or secret material.
 
 Deleting an environment cascades to its credential bindings. Credential
 operations live under universe `environments/credentials/*` APIs.
@@ -147,8 +148,8 @@ routes.
 - Deterministic core owns explicit active-environment state and events.
 - Gateways and model tools share the internal live resolver and provider-filter
   rules.
-- Hosted tool execution resolves live connections and universe credentials at
-  invocation time.
+- Hosted tool execution and bare environment-job starts resolve live
+  connections and universe credentials at invocation time.
 - The VFS catalog remains the only environment-adjacent runtime context
   projection because it drives routing plus prompt, instruction, and skill
   discovery.
