@@ -26,7 +26,7 @@
   for cheap hours-to-days waits.
 - Boundary decision and internal adoption 2026-07-28: environments and jobs
   remain one core subsystem rather than a P102 plugin extraction. The
-  model-visible `job_start` path now uses P100b keyed Promises; the old
+  model-visible `job_submit` path now uses P100b keyed Promises; the old
   `PromiseSource::EnvJob`, subscription/poll routing, and direct session-worker
   start dispatch were deleted while job
   workflows, host integration, credentials, and create/read/cancel APIs remain
@@ -103,14 +103,14 @@ later calls remain exact even if the active environment changes.
 The model-visible surface is five tools:
 
 ```text
-job_start   start one or more jobs on an environment
+job_submit   start one or more jobs on an environment
 job_list    read the latest known jobs for a session
 job_read    read job status, output tail, and artifacts
 job_wait    join one or more jobs; may park the current tool batch
 job_cancel  cancel/terminate one or more jobs
 ```
 
-`job_start` defaults to the active `env` execution target, but may
+`job_submit` defaults to the active `env` execution target, but may
 also accept an explicit `env_id` to start work on any environment bound to the
 calling session. The other tools operate on job handles whose `env_id` may be
 explicit or defaulted, and should continue to work even after the environment is
@@ -137,7 +137,7 @@ environment process tools -> env:<active-env-id>
   write_process_stdin
 
 environment job tools     -> start/list/read/wait/cancel durable work on envs
-  job_start
+  job_submit
   job_list
   job_read
   job_wait
@@ -163,7 +163,7 @@ pub struct EnvironmentToolContext {
 }
 ```
 
-`job_start` follows the same defaulting model as `run_process`: when
+`job_submit` follows the same defaulting model as `run_process`: when
 no `env_id` is provided, the core-stamped active `env:<id>` target selects the
 session environment binding/provider. When `env_id` is provided, the runtime
 validates that the named environment is bound to the calling session and routes
@@ -177,11 +177,11 @@ environment. In v1, they resolve the handle through the runtime job handle
 registry, then call the provider/target recorded for that handle. This keeps
 long-running work inspectable even if the agent later switches or deactivates
 the active environment, provided the caller uses the canonical handle returned
-by `job_start`.
+by `job_submit`.
 
 ## Tool Surface
 
-### `job_start`
+### `job_submit`
 
 Starts one or more jobs on an environment and returns durable handles.
 
@@ -484,7 +484,7 @@ JobHandleStore
   delete_job_handle(session_id, env_id, job_id) -> record       optional/deferred
 ```
 
-This is an internal registry API. Model-visible `job_start`, and any future
+This is an internal registry API. Model-visible `job_submit`, and any future
 public `session/jobs/create` method, must mean "ask the provider to start or
 accept the job, then register the accepted handle." They must not merely create
 a local registry row.
@@ -494,7 +494,7 @@ a local registry row.
 handle with a different hash. That gives Lightspeed a local conflict check
 without becoming responsible for execution state.
 
-`job_start` should use two layers of idempotency:
+`job_submit` should use two layers of idempotency:
 
 1. Derive or accept stable `job_id`s and compute `start_request_hash` from the
    material job start input.
@@ -502,7 +502,7 @@ without becoming responsible for execution state.
    authority and must make same-id/same-spec retries idempotent.
 3. After provider acceptance, create/upsert the handle records. If the runtime
    crashes after provider acceptance but before the registry write, retrying
-   `job_start` calls the provider with the same ids, receives the existing
+   `job_submit` calls the provider with the same ids, receives the existing
    accepted handles, and then records them locally.
 
 Registering after provider acceptance avoids durable local rows for jobs the
@@ -625,7 +625,7 @@ accepted the target-local `job_id`.
 Extend `HostCapabilities` with job capabilities:
 
 ```text
-job_start
+job_submit
 job_list
 job_read
 job_cancel
@@ -909,7 +909,7 @@ multi-step job plans, long waits, or later inspection.
 
 ### Environment activation
 
-`job_start` defaults to the active environment selected by core tool
+`job_submit` defaults to the active environment selected by core tool
 routing, but an explicit `env_id` may target any environment bound to the
 session. `job_read`, `job_wait`, and
 `job_cancel` accept handles with optional `env_id`; omitted `env_id`
@@ -980,7 +980,7 @@ Job handle records must still avoid accidental leakage:
 
 ### G4. Tool Surface
 
-- Add `job_start/list/read/wait/cancel` tool contracts in `crates/tools`.
+- Add `job_submit/list/read/wait/cancel` tool contracts in `crates/tools`.
 - Add toolset config gate for environment jobs.
 - Start defaults through the active `env` target but supports explicit `env_id`;
   read/wait/cancel use job handles with optional `env_id` defaulting.
@@ -1035,7 +1035,7 @@ Job handle records must still avoid accidental leakage:
 ### G7. Live Coverage
 
 - Implemented 2026-06-25. The ignored host-bridge live round-trip covers:
-  - model-visible `job_start -> job_list -> job_wait -> job_read` against a
+  - model-visible `job_submit -> job_list -> job_wait -> job_read` against a
     real local `host-bridge`;
   - public API `session/jobs/create -> list -> read -> cancel`;
   - queue-keyed jobs preserving accepted order even when generated job ids do

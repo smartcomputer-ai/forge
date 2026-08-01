@@ -34,7 +34,7 @@ already-admitted binding remains dormant if the grant is later disabled.
   handle. P100b cancellation continues to target the owning workflow.
 - Build create responses from the workflow/provider result without rereading
   stored handles.
-- Require explicit job ids for model-visible `job_start`, since generated ids
+- Require explicit job ids for model-visible `job_submit`, since generated ids
   would no longer be discoverable while a Promise is pending. Public creates
   may still derive ids because their synchronous acceptance response returns
   the resolved handles.

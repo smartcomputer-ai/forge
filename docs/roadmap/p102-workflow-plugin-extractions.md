@@ -25,7 +25,7 @@
   bindings, credentials, host protocol, public API, and storage without
   inventing a much broader plugin framework. Environment jobs are therefore
   removed from the plugin-extraction candidate list. The model-visible
-  `job_start` path now uses P100b internally while the environment/job domain
+  `job_submit` path now uses P100b internally while the environment/job domain
   remains a core subsystem.
 
 ## Goal
@@ -116,7 +116,7 @@ plugin leaves those dependencies behind; moving all of them requires plugins
 to contribute API namespaces, schemas, credentials, resources, and lifecycle
 hooks, far beyond P100b's workflow-tool boundary.
 
-The model-visible `job_start` path was moved onto generic P100b start-on-call
+The model-visible `job_submit` path was moved onto generic P100b start-on-call
 and keyed Promise machinery on 2026-07-28. This is a core refactor, not a
 plugin extraction and not a separate ownership boundary. The job workflow's
 short, idempotent environment-adapter calls are local activities on the
@@ -138,14 +138,14 @@ Compatibility gates:
 - public `environments/jobs/*` create/list/read/cancel behavior.
 
 An internal adoption must not collapse per-job Promises into one group
-Promise. P100b's keyed promise set exists to make that unnecessary: one `job_start`
+Promise. P100b's keyed promise set exists to make that unnecessary: one `job_submit`
 invocation derives one completion key per validated job, the group workflow
 resolves each keyed Promise as its job completes, and every Promise remains
 individually awaitable, cancellable, and detachable under P92. If full
-`job_start` adoption cannot preserve the surface cleanly, Promise-source
+`job_submit` adoption cannot preserve the surface cleanly, Promise-source
 generalization and tool-dispatch cleanup become separate reviewed slices.
 
-The internal `job_start` binding uses
+The internal `job_submit` binding uses
 `ArrayIndices { pointer: "/jobs", prefix: "job-" }`. The job workflow maps those
 stable invocation-local keys to provider job ids after resolving the selected
 environment. Per-key cancellation uses the same map. The immediate tool
@@ -169,11 +169,11 @@ Internal-adoption deletion target:
 
 This deletion target was completed 2026-07-28. P104 subsequently deleted
 `job_list`; `job_read` remains an ordinary provider-direct query tool and only
-`job_start` uses the workflow binding.
+`job_submit` uses the workflow binding.
 
-Follow-up correction: the core `job_start` binding is not part of managed
+Follow-up correction: the core `job_submit` binding is not part of managed
 session creation. Ordinary sessions open without workflow-tool state. When a
-ready attached environment specifically supports `job_start`, the gateway
+ready attached environment specifically supports `job_submit`, the gateway
 idempotently admits one add-only system workflow binding and then materializes
 the tool. Detaching the environment removes the model-visible tool but keeps
 the durable binding for in-flight invocations. System bindings neither assign

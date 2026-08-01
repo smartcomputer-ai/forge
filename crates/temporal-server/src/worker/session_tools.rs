@@ -35,9 +35,10 @@ use tools::{
         is_environment_selection_tool,
     },
     environment::jobs::{
-        JOB_READ_TOOL_NAME, JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID,
-        JobHandle, JobHandleArg, JobReadArgs, JobStartExecutionContextV1, ModelJobResult,
-        ModelJobResultSet, is_environment_job_query_tool_name, normalize_job_result,
+        JOB_READ_TOOL_NAME, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
+        JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, JobHandleArg,
+        JobReadArgs, JobSubmitExecutionContextV1, ModelJobResult, ModelJobResultSet,
+        is_environment_job_query_tool_name, normalize_job_result,
     },
     fleet::is_fleet_tool,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
@@ -617,21 +618,31 @@ impl SessionTools {
             )
             .await;
         }
-        let execution_context_ref = if binding.definition.tool_id.as_str()
-            == JOB_START_WORKFLOW_TOOL_ID
-            && binding.definition.semantic_type == JOB_START_WORKFLOW_SEMANTIC_TYPE
-        {
+        let is_environment_job_workflow_tool = matches!(
+            (
+                binding.definition.tool_id.as_str(),
+                binding.definition.semantic_type.as_str()
+            ),
+            (
+                JOB_SUBMIT_WORKFLOW_TOOL_ID,
+                JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE
+            ) | (JOB_RUN_WORKFLOW_TOOL_ID, JOB_RUN_WORKFLOW_SEMANTIC_TYPE)
+        );
+        let execution_context_ref = if is_environment_job_workflow_tool {
             let Some(environment_id) = request.active_environment_id.as_ref() else {
                 return failed_result(
                     self.blobs.as_ref(),
                     call.call_id.clone(),
-                    "job_start requires an active environment",
+                    format!(
+                        "{} requires an active environment",
+                        binding.definition.tool.name
+                    ),
                 )
                 .await;
             };
             let allowed_provider_ids = supplied_environment_policy(request)?
                 .map(|providers| providers.into_iter().collect());
-            let context = JobStartExecutionContextV1::new(
+            let context = JobSubmitExecutionContextV1::new(
                 environment_id.as_str().to_owned(),
                 allowed_provider_ids,
             );
@@ -1927,7 +1938,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn job_start_pins_active_environment_and_provider_policy_in_opaque_context() {
+    async fn job_submit_pins_active_environment_and_provider_policy_in_opaque_context() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let schema_ref = blobs
@@ -1941,11 +1952,11 @@ mod tests {
         let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe);
         let recipe_ref = blobs.put_bytes(recipe).await.expect("put job recipe");
         let definition = WorkflowToolDefinition {
-            tool_id: WorkflowToolId::new(JOB_START_WORKFLOW_TOOL_ID),
+            tool_id: WorkflowToolId::new(JOB_SUBMIT_WORKFLOW_TOOL_ID),
             revision: 1,
-            semantic_type: JOB_START_WORKFLOW_SEMANTIC_TYPE.to_owned(),
+            semantic_type: JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE.to_owned(),
             tool: ToolSpec {
-                name: ToolName::new(tools::environment::jobs::JOB_START_TOOL_NAME),
+                name: ToolName::new(tools::environment::jobs::JOB_SUBMIT_TOOL_NAME),
                 kind: ToolKind::Function(FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: schema_ref,
@@ -2010,9 +2021,9 @@ mod tests {
         let first = tools
             .invoke_batch(request.clone())
             .await
-            .expect("invoke job_start")
+            .expect("invoke job_submit")
             .completed_result()
-            .expect("completed job_start");
+            .expect("completed job_submit");
         assert_eq!(first.results[0].status, ToolCallStatus::Succeeded);
         let effect = &first.results[0].effects[0];
         assert_eq!(
@@ -2027,7 +2038,7 @@ mod tests {
                 .clone(),
         )
         .expect("valid execution context ref");
-        let context: JobStartExecutionContextV1 = serde_json::from_slice(
+        let context: JobSubmitExecutionContextV1 = serde_json::from_slice(
             &blobs
                 .read_bytes(&context_ref)
                 .await
@@ -2042,7 +2053,7 @@ mod tests {
         let retried = tools
             .invoke_batch(request)
             .await
-            .expect("retry job_start")
+            .expect("retry job_submit")
             .completed_result()
             .expect("completed retry");
         assert_eq!(retried, first);
@@ -2060,7 +2071,7 @@ mod tests {
                 calls: vec![call],
             })
             .await
-            .expect("invoke job_start without active environment")
+            .expect("invoke job_submit without active environment")
             .completed_result()
             .expect("completed missing-active call");
         assert_eq!(missing_active.results[0].status, ToolCallStatus::Failed);

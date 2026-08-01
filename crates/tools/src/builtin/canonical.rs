@@ -4,9 +4,12 @@ use serde_json::{Value, json};
 
 use crate::{
     environment::{
-        jobs::{JOB_READ_TOOL_NAME, JOB_START_TOOL_NAME, visible_job_read_output},
+        jobs::{
+            JOB_READ_TOOL_NAME, JOB_RUN_MAX_TIMEOUT_MS, JOB_RUN_TOOL_NAME, JOB_SUBMIT_TOOL_NAME,
+            visible_job_read_output,
+        },
         tools::{
-            invoke_job_read, invoke_job_start, invoke_run_process, invoke_write_process_stdin,
+            invoke_job_read, invoke_job_submit, invoke_run_process, invoke_write_process_stdin,
         },
     },
     error::ToolResult,
@@ -52,8 +55,11 @@ pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -
             "Run a process through the configured process executor."
         }
         BuiltinToolOperation::WriteProcessStdin => "Write input to an existing process handle.",
-        BuiltinToolOperation::JobStart => {
-            "Start one or more durable jobs on an environment and return provider-backed handles."
+        BuiltinToolOperation::JobSubmit => {
+            "Start one or more durable environment jobs asynchronously. Returns one Promise per job; use await, cancel, or detach when appropriate."
+        }
+        BuiltinToolOperation::JobRun => {
+            "Run one durable environment job and wait for its terminal readable result. Use job_submit for dependency groups, longer work, or explicit Promise control."
         }
         BuiltinToolOperation::JobRead => {
             "Read durable environment job status and bounded output tails."
@@ -197,7 +203,8 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
             ],
             ["handle", "input"],
         ),
-        BuiltinToolOperation::JobStart => job_start_schema(),
+        BuiltinToolOperation::JobSubmit => job_submit_schema(),
+        BuiltinToolOperation::JobRun => job_run_schema(),
         BuiltinToolOperation::JobRead => job_read_schema(),
     }
 }
@@ -284,9 +291,9 @@ pub(super) async fn invoke_json(
             let visible = process_visible_output(&result);
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::JobStart => {
+        BuiltinToolOperation::JobSubmit => {
             let env_ctx = ctx.environment()?;
-            let result = invoke_job_start(env_ctx, decode_args(arguments)?).await?;
+            let result = invoke_job_submit(env_ctx, decode_args(arguments)?).await?;
             let visible = result
                 .jobs
                 .iter()
@@ -295,6 +302,9 @@ pub(super) async fn invoke_json(
                 .join("\n");
             encode_output(&result, visible)
         }
+        BuiltinToolOperation::JobRun => Err(crate::error::ToolError::UnsupportedCapability {
+            message: "job_run requires its joined workflow-tool binding".to_owned(),
+        }),
         BuiltinToolOperation::JobRead => {
             let env_ctx = ctx.environment()?;
             let result = invoke_job_read(env_ctx, decode_args(arguments)?).await?;
@@ -304,7 +314,7 @@ pub(super) async fn invoke_json(
     }
 }
 
-fn job_start_schema() -> Value {
+fn job_submit_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
@@ -341,7 +351,35 @@ fn job_start_schema() -> Value {
         },
         "required": ["jobs"],
         "additionalProperties": false,
-        "description": JOB_START_TOOL_NAME
+        "description": JOB_SUBMIT_TOOL_NAME
+    })
+}
+
+fn job_run_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "name": { "type": ["string", "null"] },
+            "argv": {
+                "type": "array",
+                "items": { "type": "string" },
+                "minItems": 1,
+                "description": "Process argv for the single durable job."
+            },
+            "cwd": { "type": ["string", "null"] },
+            "env": { "type": "object", "additionalProperties": { "type": "string" } },
+            "stdin": { "type": ["string", "null"] },
+            "timeout_ms": {
+                "type": ["integer", "null"],
+                "minimum": 0,
+                "maximum": JOB_RUN_MAX_TIMEOUT_MS,
+                "description": "Provider execution timeout. Defaults to 30 minutes; maximum 60 minutes."
+            },
+            "queue_key": { "type": ["string", "null"] }
+        },
+        "required": ["argv"],
+        "additionalProperties": false,
+        "description": JOB_RUN_TOOL_NAME
     })
 }
 

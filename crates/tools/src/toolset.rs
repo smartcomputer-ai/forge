@@ -101,7 +101,8 @@ impl BuiltinToolsetConfig {
             BuiltinToolOperation::ListDir => self.fs.list_dir = true,
             BuiltinToolOperation::RunProcess => self.process.run_process = true,
             BuiltinToolOperation::WriteProcessStdin => self.process.write_process_stdin = true,
-            BuiltinToolOperation::JobStart => self.process.job_start = true,
+            BuiltinToolOperation::JobSubmit => self.process.job_submit = true,
+            BuiltinToolOperation::JobRun => self.process.job_run = true,
             BuiltinToolOperation::JobRead => self.process.job_read = true,
         }
     }
@@ -218,7 +219,8 @@ impl FilesystemToolsetConfig {
 pub struct EnvironmentToolsetConfig {
     pub run_process: bool,
     pub write_process_stdin: bool,
-    pub job_start: bool,
+    pub job_submit: bool,
+    pub job_run: bool,
     pub job_read: bool,
 }
 
@@ -237,24 +239,28 @@ impl EnvironmentToolsetConfig {
 
     pub fn jobs() -> Self {
         Self {
-            job_start: true,
+            job_submit: true,
             job_read: true,
             ..Self::disabled()
         }
     }
 
     pub fn with_jobs(mut self) -> Self {
-        self.job_start = true;
+        self.job_submit = true;
         self.job_read = true;
         self
     }
 
     pub fn enabled(&self) -> bool {
-        self.run_process || self.write_process_stdin || self.job_start || self.job_read
+        self.run_process
+            || self.write_process_stdin
+            || self.job_submit
+            || self.job_run
+            || self.job_read
     }
 
     pub fn jobs_enabled(&self) -> bool {
-        self.job_start || self.job_read
+        self.job_submit || self.job_run || self.job_read
     }
 
     fn operations(&self) -> Vec<BuiltinToolOperation> {
@@ -265,8 +271,11 @@ impl EnvironmentToolsetConfig {
         if self.write_process_stdin {
             operations.push(BuiltinToolOperation::WriteProcessStdin);
         }
-        if self.job_start {
-            operations.push(BuiltinToolOperation::JobStart);
+        if self.job_submit {
+            operations.push(BuiltinToolOperation::JobSubmit);
+        }
+        if self.job_run {
+            operations.push(BuiltinToolOperation::JobRun);
         }
         if self.job_read {
             operations.push(BuiltinToolOperation::JobRead);
@@ -598,7 +607,7 @@ mod tests {
             resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
         let names = visible_names(&toolset);
 
-        assert!(names.contains(&"job_start".to_owned()));
+        assert!(names.contains(&"job_submit".to_owned()));
         assert!(names.contains(&"job_read".to_owned()));
         assert!(names.contains(&AWAIT_TOOL_NAME.to_owned()));
         assert!(names.contains(&CANCEL_TOOL_NAME.to_owned()));

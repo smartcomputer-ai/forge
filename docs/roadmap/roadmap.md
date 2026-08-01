@@ -64,6 +64,10 @@
   remove Promise-derived synthetic user messages, retain one root ref per
   Promise with structured child refs, and normalize environment-job byte
   chunks into readable text or typed CAS references before Promise resolution
+- [x] [P112](p112-joined-environment-job-run.md) — add `job_run` as the
+  single-job `Start + Joined` environment surface, returning P111's normalized
+  terminal result directly while retaining `job_submit` as the asynchronous
+  dependency-group and keyed-Promise form
 
 ## Core
 - [x] [P91](p91-core-agent-structure-cleanup.md) — cleanup of CoreAgent structures: delete the SDK-era open-kernel layer, commit to a closed event vocabulary and core FSM

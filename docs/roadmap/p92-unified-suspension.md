@@ -30,7 +30,7 @@
   state.
 - Follow-on 2026-07-28: P100b keyed `Workflow` Promises replaced the `EnvJob`
   source and its poll/subscribe/cancel activity paths for model-visible
-  `job_start`. References to `EnvJob` below document the original P92
+  `job_submit`. References to `EnvJob` below document the original P92
   implementation rather than the current source vocabulary.
 
 ## Goal

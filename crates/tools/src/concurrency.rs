@@ -496,7 +496,7 @@ fn await_input_schema() -> Value {
                 "maxItems": MAX_AWAIT_PROMISES,
                 "items": {
                     "type": "string",
-                    "description": "Promise id returned by a promise-creating tool such as agent_spawn, job_start, or sleep."
+                    "description": "Promise id returned by a promise-creating tool such as agent_spawn, job_submit, or sleep."
                 },
                 "description": "Promise ids to park on. May be empty when mailbox is true."
             },

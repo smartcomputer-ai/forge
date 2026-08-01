@@ -43,7 +43,9 @@ pub(super) fn description(
         BuiltinToolOperation::Grep => "Searches file contents with a regular expression.",
         BuiltinToolOperation::Glob => "Finds files by glob pattern.",
         BuiltinToolOperation::RunProcess => "Executes a shell command.",
-        BuiltinToolOperation::JobStart | BuiltinToolOperation::JobRead => {
+        BuiltinToolOperation::JobSubmit
+        | BuiltinToolOperation::JobRun
+        | BuiltinToolOperation::JobRead => {
             return Ok(canonical::description(operation, scoped_paths));
         }
         BuiltinToolOperation::ApplyPatch
@@ -205,7 +207,9 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["command"],
         ),
-        BuiltinToolOperation::JobStart | BuiltinToolOperation::JobRead => {
+        BuiltinToolOperation::JobSubmit
+        | BuiltinToolOperation::JobRun
+        | BuiltinToolOperation::JobRead => {
             return Ok(canonical::input_schema(operation));
         }
         BuiltinToolOperation::ApplyPatch
@@ -292,9 +296,9 @@ pub(super) async fn invoke_json(
             let visible = process_visible_output(&result);
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::JobStart | BuiltinToolOperation::JobRead => {
-            canonical::invoke_json(operation, ctx, arguments).await
-        }
+        BuiltinToolOperation::JobSubmit
+        | BuiltinToolOperation::JobRun
+        | BuiltinToolOperation::JobRead => canonical::invoke_json(operation, ctx, arguments).await,
         BuiltinToolOperation::ApplyPatch
         | BuiltinToolOperation::ListDir
         | BuiltinToolOperation::WriteProcessStdin => Err(unsupported(operation)),

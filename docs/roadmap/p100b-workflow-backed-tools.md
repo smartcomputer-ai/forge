@@ -52,7 +52,7 @@
     store an opaque controller reference. That locator is domain/runtime
     state, not a new P100b protocol or a public resource-handle field.
 - Core environment-job adoption implemented 2026-07-28 as a follow-on use of
-  the completed P100b primitives: model-visible `job_start` is an immutable
+  the completed P100b primitives: model-visible `job_submit` is an immutable
   core-owned start binding with `ArrayIndices { pointer: "/jobs", prefix:
   "job-" }`; `EnvironmentJobWorkflow` accepts the generic start envelope,
   resolves and recovers keyed Promises, and handles per-key and exact-execution
@@ -419,7 +419,7 @@ the same class of limit as P100's per-run/per-tool emission cap and is
 enforced the same way.
 
 **Why the set exists at all.** The one-invocation/one-promise draft could not
-express P86 environment jobs — one `job_start` call starts several jobs, each
+express P86 environment jobs — one `job_submit` call starts several jobs, each
 with its own promise, resolved over time by one group workflow. The bound
 launcher pattern cannot rescue that shape: receivers can only *resolve*
 promises, never create them in the session, so per-job promises simply could

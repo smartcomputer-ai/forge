@@ -6,7 +6,7 @@ use crate::{
     environment::{
         EnvironmentToolContext,
         jobs::{
-            JobError, JobReadArgs, JobStartArgs, JobStartResult, JobStarted, ModelJobResultSet,
+            JobError, JobReadArgs, JobSubmitArgs, JobSubmitResult, JobSubmitted, ModelJobResultSet,
             normalize_job_result, visible_job_read_output,
         },
     },
@@ -15,17 +15,17 @@ use crate::{
 
 use super::{invalid_request, unsupported_job_capability};
 
-pub async fn invoke_job_start(
+pub async fn invoke_job_submit(
     ctx: &EnvironmentToolContext,
-    args: JobStartArgs,
-) -> ToolResult<JobStartResult> {
+    args: JobSubmitArgs,
+) -> ToolResult<JobSubmitResult> {
     if args.jobs.is_empty() {
-        return Err(invalid_request("job_start requires at least one job"));
+        return Err(invalid_request("job_submit requires at least one job"));
     }
     let jobs = ctx.jobs.as_ref().ok_or_else(unsupported_job_capability)?;
-    let params = start_params_from_args(ctx, args)?;
+    let params = submit_params_from_args(ctx, args)?;
     let response = jobs.start_jobs(params).await?;
-    Ok(start_result_from_response(response))
+    Ok(submit_result_from_response(response))
 }
 
 pub async fn invoke_job_read(
@@ -69,9 +69,9 @@ pub fn job_read_visible(result: &ModelJobResultSet) -> String {
     visible_job_read_output(&result.jobs)
 }
 
-fn start_params_from_args(
+fn submit_params_from_args(
     ctx: &EnvironmentToolContext,
-    args: JobStartArgs,
+    args: JobSubmitArgs,
 ) -> ToolResult<StartJobsParams> {
     let mut specs = Vec::with_capacity(args.jobs.len());
     for spec in args.jobs {
@@ -98,12 +98,12 @@ fn job_namespace(
         .map_err(Into::into)
 }
 
-fn start_result_from_response(response: StartJobsResponse) -> JobStartResult {
-    JobStartResult {
+fn submit_result_from_response(response: StartJobsResponse) -> JobSubmitResult {
+    JobSubmitResult {
         jobs: response
             .jobs
             .into_iter()
-            .map(|summary| JobStarted {
+            .map(|summary| JobSubmitted {
                 name: summary.name,
                 job_id: summary.job_id,
                 handle: None,

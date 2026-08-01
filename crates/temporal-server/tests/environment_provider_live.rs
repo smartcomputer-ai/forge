@@ -95,6 +95,8 @@ const BRIDGE_JOB_FILE_NAME: &str = "job-live.txt";
 const BRIDGE_JOB_MARKER: &str = "LIGHTSPEED_BRIDGE_JOB_MARKER";
 const BRIDGE_JOB_SECOND_FILE_NAME: &str = "job-live-second.txt";
 const BRIDGE_JOB_SECOND_MARKER: &str = "LIGHTSPEED_BRIDGE_JOB_SECOND_MARKER";
+const BRIDGE_JOB_RUN_FILE_NAME: &str = "job-run-live.txt";
+const BRIDGE_JOB_RUN_MARKER: &str = "LIGHTSPEED_BRIDGE_JOB_RUN_MARKER";
 const BRIDGE_API_JOB_FILE_NAME: &str = "api-job-live.txt";
 const BRIDGE_API_JOB_MARKER: &str = "LIGHTSPEED_BRIDGE_API_JOB_MARKER";
 const BRIDGE_CREDENTIAL_ENV_NAME: &str = "P87_LIVE_TOKEN";
@@ -301,7 +303,7 @@ async fn run_host_bridge_client(
             .active_tools
             .tools
             .iter()
-            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME)
+            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_SUBMIT_TOOL_NAME)
     );
 
     let skill_snapshot = vfs::create_inline_snapshot(
@@ -349,7 +351,7 @@ async fn run_host_bridge_client(
         })
         .await?;
     for job_tool in [
-        tools::environment::jobs::JOB_START_TOOL_NAME,
+        tools::environment::jobs::JOB_SUBMIT_TOOL_NAME,
         tools::environment::jobs::JOB_READ_TOOL_NAME,
     ] {
         assert!(
@@ -425,7 +427,7 @@ async fn run_host_bridge_client(
             .active_tools
             .tools
             .iter()
-            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_START_TOOL_NAME)
+            .all(|tool| tool.tool_id != tools::environment::jobs::JOB_SUBMIT_TOOL_NAME)
     );
     let events = api
         .read_session_events(SessionEventsReadParams {
@@ -503,8 +505,18 @@ async fn run_host_bridge_jobs_client(
             .active_tools
             .tools
             .iter()
-            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_START_TOOL_NAME),
+            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_SUBMIT_TOOL_NAME),
         "environment job tools must be installed from the feature grant before activation"
+    );
+    assert!(
+        started
+            .result
+            .session
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_RUN_TOOL_NAME),
+        "joined environment job tool must be installed from the jobs grant"
     );
     let configured = api
         .read_session_events(SessionEventsReadParams {
@@ -540,7 +552,7 @@ async fn run_host_bridge_jobs_client(
             .active_tools
             .tools
             .iter()
-            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_START_TOOL_NAME)
+            .any(|tool| tool.tool_id == tools::environment::jobs::JOB_SUBMIT_TOOL_NAME)
     );
     let listed = api.list_sessions(SessionListParams::default()).await?;
     assert!(
@@ -585,9 +597,38 @@ async fn run_host_bridge_jobs_client(
         "final answer did not include marker from second job output: {text}"
     );
     assert!(
+        text.contains(BRIDGE_JOB_RUN_MARKER),
+        "final answer did not include marker from joined job output: {text}"
+    );
+    assert!(
         text.contains("\"outcome\":\"terminal\""),
         "final answer did not include a resolved await result: {text}"
     );
+    let job_run_calls = run
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == tools::environment::jobs::JOB_RUN_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(job_run_calls.len(), 1, "expected one joined job_run call");
+    let job_run_output = job_run_calls[0]
+        .output
+        .as_deref()
+        .expect("job_run must expose its terminal result directly");
+    let job_run_value: Value = serde_json::from_str(job_run_output)?;
+    assert_eq!(job_run_value["summary"]["status"], "succeeded");
+    assert!(job_run_value["handle"]["environment_id"].is_string());
+    assert!(job_run_value["handle"]["job_id"].is_string());
+    assert!(job_run_value["output"].as_array().is_some_and(|segments| {
+        segments.iter().any(|segment| {
+            segment
+                .get("text")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains(BRIDGE_JOB_RUN_MARKER))
+        })
+    }));
+    assert!(job_run_value.get("promises").is_none());
+    assert!(!job_run_output.contains("outputChunks"));
     let await_calls = run
         .tool_batches
         .iter()
@@ -659,6 +700,13 @@ async fn run_host_bridge_jobs_client(
         second_local_contents.contains(BRIDGE_JOB_SECOND_MARKER),
         "second bridge job did not write marker to local file {}: {second_local_contents}",
         second_local_file.display()
+    );
+    let joined_local_file = bridge_root.join(BRIDGE_JOB_RUN_FILE_NAME);
+    let joined_local_contents = tokio::fs::read_to_string(&joined_local_file).await?;
+    assert!(
+        joined_local_contents.contains(BRIDGE_JOB_RUN_MARKER),
+        "joined bridge job did not write marker to local file {}: {joined_local_contents}",
+        joined_local_file.display()
     );
 
     let api_command = format!(
@@ -2032,11 +2080,33 @@ impl BridgeJobsLlm {
         Self { blobs }
     }
 
-    async fn start_job_result(
+    async fn run_joined_job_result(
         &self,
         request: &LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        self.require_tool(request, "job_start")?;
+        self.require_tool(request, tools::environment::jobs::JOB_RUN_TOOL_NAME)?;
+        let command = format!(
+            "printf '{}\\n' > {} && printf '{}\\n'",
+            BRIDGE_JOB_RUN_MARKER, BRIDGE_JOB_RUN_FILE_NAME, BRIDGE_JOB_RUN_MARKER
+        );
+        self.tool_call_result(
+            request,
+            tools::environment::jobs::JOB_RUN_TOOL_NAME,
+            json!({
+                "name": "live-joined-job",
+                "argv": ["/bin/sh", "-c", command],
+                "timeout_ms": 10000
+            }),
+            "bridge_job_run",
+        )
+        .await
+    }
+
+    async fn submit_job_result(
+        &self,
+        request: &LlmGenerationRequest,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        self.require_tool(request, "job_submit")?;
         let command = format!(
             "printf '{}\\n' > {} && printf '{}\\n'",
             BRIDGE_JOB_MARKER, BRIDGE_JOB_FILE_NAME, BRIDGE_JOB_MARKER
@@ -2047,7 +2117,7 @@ impl BridgeJobsLlm {
         );
         self.tool_call_result(
             request,
-            "job_start",
+            "job_submit",
             json!({
                 "jobs": [{
                     "name": "live-job",
@@ -2061,7 +2131,7 @@ impl BridgeJobsLlm {
                     "timeout_ms": 10000
                 }]
             }),
-            "bridge_job_start",
+            "bridge_job_submit",
         )
         .await
     }
@@ -2199,7 +2269,7 @@ impl BridgeJobsLlm {
             Ok(handles)
         } else {
             Err(io_error(format!(
-                "job_start result included {} job handles, expected 2",
+                "job_submit result included {} job handles, expected 2",
                 handles.len()
             )))
         }
@@ -2221,7 +2291,7 @@ impl BridgeJobsLlm {
             }
         }
         Err(io_error(
-            "job_start result did not include two keyed promises",
+            "job_submit result did not include two keyed promises",
         ))
     }
 
@@ -2281,9 +2351,10 @@ impl CoreAgentLlm for BridgeJobsLlm {
         request: LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         match current_run_tool_results(&request).len() {
-            0 => self.start_job_result(&request).await,
-            1 => self.await_job_result(&request).await,
-            2 => self.read_job_result(&request).await,
+            0 => self.run_joined_job_result(&request).await,
+            1 => self.submit_job_result(&request).await,
+            2 => self.await_job_result(&request).await,
+            3 => self.read_job_result(&request).await,
             _ => self.final_result(&request).await,
         }
     }

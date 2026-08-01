@@ -21,10 +21,16 @@ use engine::{
 
 use crate::fs::FsPath;
 
-pub const JOB_START_TOOL_NAME: &str = "job_start";
+pub const JOB_SUBMIT_TOOL_NAME: &str = "job_submit";
+pub const JOB_RUN_TOOL_NAME: &str = "job_run";
 pub const JOB_READ_TOOL_NAME: &str = "job_read";
-pub const JOB_START_WORKFLOW_TOOL_ID: &str = "environment-job-start";
-pub const JOB_START_WORKFLOW_SEMANTIC_TYPE: &str = "lightspeed.environment.job.start.v1";
+pub const JOB_SUBMIT_WORKFLOW_TOOL_ID: &str = "environment-job-submit";
+pub const JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE: &str = "lightspeed.environment.job.submit.v1";
+pub const JOB_RUN_WORKFLOW_TOOL_ID: &str = "environment-job-run";
+pub const JOB_RUN_WORKFLOW_SEMANTIC_TYPE: &str = "lightspeed.environment.job.run.v1";
+pub const JOB_RUN_DEFAULT_TIMEOUT_MS: u64 = 30 * 60 * 1_000;
+pub const JOB_RUN_MAX_TIMEOUT_MS: u64 = 60 * 60 * 1_000;
+pub const JOB_RUN_DEADLINE_AFTER_MS: u64 = 65 * 60 * 1_000;
 
 pub type JobExecResult<T> = Result<T, JobError>;
 
@@ -63,22 +69,64 @@ pub struct JobHandle {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JobStartArgs {
-    pub jobs: Vec<JobStartSpecArgs>,
+pub struct JobSubmitArgs {
+    pub jobs: Vec<JobSubmitSpecArgs>,
 }
 
-/// Runtime-owned facts pinned when a durable `job_start` call is accepted.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobRunArgs {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub argv: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<FsPath>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stdin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_key: Option<String>,
+}
+
+impl JobRunArgs {
+    pub fn into_host_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
+        let timeout_ms = self.timeout_ms.unwrap_or(JOB_RUN_DEFAULT_TIMEOUT_MS);
+        if timeout_ms > JOB_RUN_MAX_TIMEOUT_MS {
+            return Err(JobError::InvalidRequest {
+                message: format!("job_run timeout_ms must be at most {JOB_RUN_MAX_TIMEOUT_MS}"),
+            });
+        }
+        JobSubmitSpecArgs {
+            name: self.name,
+            job_id: job_id.clone(),
+            argv: self.argv,
+            cwd: self.cwd,
+            env: self.env,
+            stdin: self.stdin,
+            timeout_ms: Some(timeout_ms),
+            depends_on: Vec::new(),
+            dependency_policy: JobDependencyPolicy::AllSucceeded,
+            queue_key: self.queue_key,
+        }
+        .into_host_spec(job_id)
+    }
+}
+
+/// Runtime-owned facts pinned when a durable `job_submit` call is accepted.
 /// The receiving workflow reads this through the generic invocation's opaque
 /// execution-context reference; it is not part of the model-facing schema.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct JobStartExecutionContextV1 {
+pub struct JobSubmitExecutionContextV1 {
     pub version: u32,
     pub environment_id: String,
     pub allowed_provider_ids: Option<Vec<String>>,
 }
 
-impl JobStartExecutionContextV1 {
+impl JobSubmitExecutionContextV1 {
     pub const VERSION: u32 = 1;
 
     pub fn new(environment_id: String, allowed_provider_ids: Option<Vec<String>>) -> Self {
@@ -91,7 +139,7 @@ impl JobStartExecutionContextV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobStartSpecArgs {
+pub struct JobSubmitSpecArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub job_id: JobId,
@@ -112,7 +160,7 @@ pub struct JobStartSpecArgs {
     pub queue_key: Option<String>,
 }
 
-impl JobStartSpecArgs {
+impl JobSubmitSpecArgs {
     pub fn into_host_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
         if self.argv.is_empty() {
             return Err(JobError::InvalidRequest {
@@ -156,12 +204,12 @@ pub struct JobCancelArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobStartResult {
-    pub jobs: Vec<JobStarted>,
+pub struct JobSubmitResult {
+    pub jobs: Vec<JobSubmitted>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JobStarted {
+pub struct JobSubmitted {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     pub job_id: JobId,
@@ -360,8 +408,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn job_start_arguments_do_not_accept_an_environment_override() {
-        let error = serde_json::from_value::<JobStartArgs>(json!({
+    fn job_submit_arguments_do_not_accept_an_environment_override() {
+        let error = serde_json::from_value::<JobSubmitArgs>(json!({
             "environment_id": "environment-other",
             "jobs": []
         }))
@@ -371,13 +419,52 @@ mod tests {
     }
 
     #[test]
-    fn job_start_execution_context_is_versioned_and_runtime_owned() {
-        let context = JobStartExecutionContextV1::new(
+    fn job_run_is_single_flat_work_with_a_runtime_job_id() {
+        let args = serde_json::from_value::<JobRunArgs>(json!({
+            "name": "tests",
+            "argv": ["cargo", "test"]
+        }))
+        .expect("decode job_run");
+        let spec = args
+            .into_host_spec(JobId::new("job-derived"))
+            .expect("materialize job_run");
+
+        assert_eq!(spec.job_id, JobId::new("job-derived"));
+        assert_eq!(spec.argv, vec!["cargo", "test"]);
+        assert_eq!(spec.timeout_ms, Some(JOB_RUN_DEFAULT_TIMEOUT_MS));
+        assert!(spec.depends_on.is_empty());
+    }
+
+    #[test]
+    fn job_run_rejects_group_fields_and_excessive_timeout() {
+        for arguments in [
+            json!({"job_id": "model-owned", "argv": ["true"]}),
+            json!({"argv": ["true"], "depends_on": []}),
+            json!({"jobs": [{"job_id": "one", "argv": ["true"]}]}),
+        ] {
+            serde_json::from_value::<JobRunArgs>(arguments)
+                .expect_err("job_run group fields must not decode");
+        }
+
+        let args = serde_json::from_value::<JobRunArgs>(json!({
+            "argv": ["true"],
+            "timeout_ms": JOB_RUN_MAX_TIMEOUT_MS + 1
+        }))
+        .expect("timeout range is a domain validation");
+        let error = args
+            .into_host_spec(JobId::new("job-derived"))
+            .expect_err("timeout above maximum must fail");
+        assert!(matches!(error, JobError::InvalidRequest { .. }));
+    }
+
+    #[test]
+    fn job_submit_execution_context_is_versioned_and_runtime_owned() {
+        let context = JobSubmitExecutionContextV1::new(
             "environment-active".to_owned(),
             Some(vec!["provider-a".to_owned()]),
         );
 
-        assert_eq!(context.version, JobStartExecutionContextV1::VERSION);
+        assert_eq!(context.version, JobSubmitExecutionContextV1::VERSION);
         assert_eq!(context.environment_id, "environment-active");
         assert_eq!(
             context.allowed_provider_ids,

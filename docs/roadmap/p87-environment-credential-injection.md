@@ -18,7 +18,7 @@
 ## Goal
 
 Let a session environment receive credentials it needs for work launched by
-Lightspeed without requiring `run_process`, `job_start`, public job APIs, or
+Lightspeed without requiring `run_process`, `job_submit`, public job APIs, or
 future wrappers to mention secrets.
 
 The model:
@@ -32,7 +32,7 @@ Every Lightspeed-started process on that session environment receives the
 resolved credentials automatically:
 
 - model-visible `run_process`;
-- model-visible `job_start`;
+- model-visible `job_submit`;
 - public `session/jobs/create`;
 - future environment wrappers that launch guest processes.
 
@@ -231,7 +231,7 @@ For a single durable job that runs many commands, injection happens once at job
 start. A job that executes 30 `git` commands receives one process environment
 snapshot unless the job itself launches new Lightspeed-managed child jobs.
 
-For bursts of separate `run_process` or `job_start` calls, the resolver should
+For bursts of separate `run_process` or `job_submit` calls, the resolver should
 be cache-aware:
 
 - `auth_grant` uses `AuthTokenBroker::bearer_token(...)`. The broker already
@@ -259,7 +259,7 @@ failing is clearer than silently shadowing caller input.
 
 ## Host Protocol And Bridge
 
-`run_process` and `job_start` have an internal resolved-secret-env path
+`run_process` and `job_submit` have an internal resolved-secret-env path
 between `temporal-server` and the active `JobExecutor`/`ProcessExecutor`. This
 path is not exposed in model-visible or public API DTOs.
 
@@ -365,7 +365,7 @@ records, not in the environment binding row.
 - [x] Runtime wiring covered by temporal-server and tools tests.
 - [x] Bridge tests that process/job starts receive hidden env vars and redacted
   output does not persist resolved values.
-- [ ] Runtime tests that `run_process` and `job_start` receive bound env vars
+- [ ] Runtime tests that `run_process` and `job_submit` receive bound env vars
   without mentioning credentials in tool args.
 - [x] Collision handling is implemented in resolver and bridge paths.
 - [x] Ignored live test for stored provider credential binding injected into a

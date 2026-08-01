@@ -20,7 +20,7 @@ mod codex;
 mod shared;
 
 pub use crate::environment::tools::{
-    RunProcessArgs, WriteProcessStdinArgs, invoke_job_read, invoke_job_start, invoke_run_process,
+    RunProcessArgs, WriteProcessStdinArgs, invoke_job_read, invoke_job_submit, invoke_run_process,
     invoke_write_process_stdin,
 };
 pub use crate::fs::tools::{
@@ -41,7 +41,8 @@ pub enum BuiltinToolOperation {
     ListDir,
     RunProcess,
     WriteProcessStdin,
-    JobStart,
+    JobSubmit,
+    JobRun,
     JobRead,
 }
 
@@ -88,7 +89,8 @@ impl BuiltinTool {
             (BuiltinToolSurface::Canonical, BuiltinToolOperation::WriteProcessStdin) => {
                 "env.write_process_stdin"
             }
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobStart) => "env.job_start",
+            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobSubmit) => "env.job_submit",
+            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobRun) => "env.job_run",
             (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobRead) => "env.job_read",
             (BuiltinToolSurface::CodexLike, BuiltinToolOperation::ReadFile) => "fs.codex.read_file",
             (BuiltinToolSurface::CodexLike, BuiltinToolOperation::WriteFile) => {
@@ -107,9 +109,10 @@ impl BuiltinTool {
             (BuiltinToolSurface::CodexLike, BuiltinToolOperation::WriteProcessStdin) => {
                 "env.codex.write_process_stdin"
             }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobStart) => {
-                "env.codex.job_start"
+            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobSubmit) => {
+                "env.codex.job_submit"
             }
+            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobRun) => "env.codex.job_run",
             (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobRead) => "env.codex.job_read",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile) => {
                 "fs.claude.read_file"
@@ -134,8 +137,11 @@ impl BuiltinTool {
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteProcessStdin) => {
                 "env.claude.write_process_stdin"
             }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobStart) => {
-                "env.claude.job_start"
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobSubmit) => {
+                "env.claude.job_submit"
+            }
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobRun) => {
+                "env.claude.job_run"
             }
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobRead) => {
                 "env.claude.job_read"
@@ -185,8 +191,14 @@ impl BuiltinTool {
                 BuiltinToolSurface::Canonical
                 | BuiltinToolSurface::CodexLike
                 | BuiltinToolSurface::ClaudeCodeLike,
-                BuiltinToolOperation::JobStart,
-            ) => crate::environment::jobs::JOB_START_TOOL_NAME,
+                BuiltinToolOperation::JobSubmit,
+            ) => crate::environment::jobs::JOB_SUBMIT_TOOL_NAME,
+            (
+                BuiltinToolSurface::Canonical
+                | BuiltinToolSurface::CodexLike
+                | BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolOperation::JobRun,
+            ) => crate::environment::jobs::JOB_RUN_TOOL_NAME,
             (
                 BuiltinToolSurface::Canonical
                 | BuiltinToolSurface::CodexLike
@@ -228,7 +240,10 @@ impl BuiltinTool {
             "env.write_process_stdin" | "host.write_process_stdin" => {
                 Self::canonical(BuiltinToolOperation::WriteProcessStdin)
             }
-            "env.job_start" | "host.job_start" => Self::canonical(BuiltinToolOperation::JobStart),
+            "env.job_submit" | "host.job_submit" => {
+                Self::canonical(BuiltinToolOperation::JobSubmit)
+            }
+            "env.job_run" | "host.job_run" => Self::canonical(BuiltinToolOperation::JobRun),
             "env.job_read" | "host.job_read" => Self::canonical(BuiltinToolOperation::JobRead),
             "fs.codex.read_file" | "host.codex.read_file" => Self::new(
                 BuiltinToolOperation::ReadFile,
@@ -263,10 +278,13 @@ impl BuiltinTool {
                 BuiltinToolOperation::WriteProcessStdin,
                 BuiltinToolSurface::CodexLike,
             ),
-            "env.codex.job_start" | "host.codex.job_start" => Self::new(
-                BuiltinToolOperation::JobStart,
+            "env.codex.job_submit" | "host.codex.job_submit" => Self::new(
+                BuiltinToolOperation::JobSubmit,
                 BuiltinToolSurface::CodexLike,
             ),
+            "env.codex.job_run" | "host.codex.job_run" => {
+                Self::new(BuiltinToolOperation::JobRun, BuiltinToolSurface::CodexLike)
+            }
             "env.codex.job_read" | "host.codex.job_read" => {
                 Self::new(BuiltinToolOperation::JobRead, BuiltinToolSurface::CodexLike)
             }
@@ -306,8 +324,12 @@ impl BuiltinTool {
                 BuiltinToolOperation::WriteProcessStdin,
                 BuiltinToolSurface::ClaudeCodeLike,
             ),
-            "env.claude.job_start" | "host.claude.job_start" => Self::new(
-                BuiltinToolOperation::JobStart,
+            "env.claude.job_submit" | "host.claude.job_submit" => Self::new(
+                BuiltinToolOperation::JobSubmit,
+                BuiltinToolSurface::ClaudeCodeLike,
+            ),
+            "env.claude.job_run" | "host.claude.job_run" => Self::new(
+                BuiltinToolOperation::JobRun,
                 BuiltinToolSurface::ClaudeCodeLike,
             ),
             "env.claude.job_read" | "host.claude.job_read" => Self::new(
@@ -337,7 +359,9 @@ impl BuiltinTool {
     pub const fn requires_jobs(self) -> bool {
         matches!(
             self.operation,
-            BuiltinToolOperation::JobStart | BuiltinToolOperation::JobRead
+            BuiltinToolOperation::JobSubmit
+                | BuiltinToolOperation::JobRun
+                | BuiltinToolOperation::JobRead
         )
     }
 
@@ -364,7 +388,8 @@ impl BuiltinTool {
             | BuiltinToolOperation::ApplyPatch
             | BuiltinToolOperation::RunProcess
             | BuiltinToolOperation::WriteProcessStdin
-            | BuiltinToolOperation::JobStart => ToolParallelism::Exclusive,
+            | BuiltinToolOperation::JobSubmit
+            | BuiltinToolOperation::JobRun => ToolParallelism::Exclusive,
             BuiltinToolOperation::JobRead => ToolParallelism::ParallelSafe,
         }
     }
@@ -463,7 +488,8 @@ impl BuiltinToolOperation {
             Self::ListDir => "list_dir",
             Self::RunProcess => "run_process",
             Self::WriteProcessStdin => "write_process_stdin",
-            Self::JobStart => "job_start",
+            Self::JobSubmit => "job_submit",
+            Self::JobRun => "job_run",
             Self::JobRead => "job_read",
         }
     }
@@ -493,9 +519,37 @@ mod tests {
             BuiltinTool::canonical(BuiltinToolOperation::ListDir),
             BuiltinTool::canonical(BuiltinToolOperation::RunProcess),
             BuiltinTool::canonical(BuiltinToolOperation::WriteProcessStdin),
+            BuiltinTool::canonical(BuiltinToolOperation::JobSubmit),
+            BuiltinTool::canonical(BuiltinToolOperation::JobRun),
         ] {
             assert_eq!(tool.name(&target()).as_str(), tool.name_str());
         }
+    }
+
+    #[test]
+    fn job_submit_replaces_job_start_without_an_alias() {
+        let tool = BuiltinTool::from_logical_id("env.job_submit").expect("job_submit logical id");
+
+        assert_eq!(tool.operation(), BuiltinToolOperation::JobSubmit);
+        assert_eq!(tool.name_str(), "job_submit");
+        assert!(BuiltinTool::from_logical_id("env.job_start").is_none());
+        assert!(BuiltinTool::from_logical_id("host.job_start").is_none());
+    }
+
+    #[test]
+    fn job_run_schema_is_flat_single_job_work() {
+        let schema = BuiltinTool::canonical(BuiltinToolOperation::JobRun)
+            .input_schema(&target())
+            .expect("job_run schema");
+
+        assert_eq!(schema["required"], json!(["argv"]));
+        assert!(schema["properties"].get("jobs").is_none());
+        assert!(schema["properties"].get("job_id").is_none());
+        assert!(schema["properties"].get("depends_on").is_none());
+        assert_eq!(
+            schema["properties"]["timeout_ms"]["maximum"],
+            crate::environment::jobs::JOB_RUN_MAX_TIMEOUT_MS
+        );
     }
 
     #[test]

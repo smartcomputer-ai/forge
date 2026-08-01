@@ -21,11 +21,29 @@ use temporal_workflow::{
 };
 use temporalio_common::error::ApplicationFailure;
 use temporalio_sdk::activities::ActivityError;
-use tools::environment::jobs::{normalize_job_result, store_model_job_result};
+use tools::environment::jobs::{
+    JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID, JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE,
+    JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, normalize_job_result, store_model_job_result,
+};
 
 use super::{common::activity_error, state::EnvironmentJobActivityDeps};
 
 const PROMISE_JOB_OUTPUT_BYTES: usize = 16 * 1024;
+
+#[derive(Clone, Copy)]
+enum WorkflowJobToolKind {
+    Submit,
+    Run,
+}
+
+impl WorkflowJobToolKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Submit => "job_submit",
+            Self::Run => "job_run",
+        }
+    }
+}
 
 pub(super) async fn prepare_workflow_tool(
     deps: Option<&EnvironmentJobActivityDeps>,
@@ -47,18 +65,27 @@ pub(super) async fn prepare_workflow_tool(
             "environment job workflow-tool start identity is invalid"
         )));
     }
+    let tool_kind = match (
+        start.invocation.tool_id.as_str(),
+        start.invocation.semantic_type.as_str(),
+    ) {
+        (JOB_SUBMIT_WORKFLOW_TOOL_ID, JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE) => {
+            WorkflowJobToolKind::Submit
+        }
+        (JOB_RUN_WORKFLOW_TOOL_ID, JOB_RUN_WORKFLOW_SEMANTIC_TYPE) => WorkflowJobToolKind::Run,
+        _ => {
+            return Err(activity_error(anyhow::anyhow!(
+                "unsupported environment job workflow tool {} ({})",
+                start.invocation.tool_id,
+                start.invocation.semantic_type
+            )));
+        }
+    };
     let arguments = deps
         .blobs
         .read_bytes(&start.invocation.arguments_ref)
         .await
         .map_err(activity_error)?;
-    let args: tools::environment::jobs::JobStartArgs =
-        serde_json::from_slice(&arguments).map_err(activity_error)?;
-    if args.jobs.is_empty() {
-        return Err(activity_error(anyhow::anyhow!(
-            "job_start requires at least one job"
-        )));
-    }
     let execution_context_ref =
         start
             .invocation
@@ -66,7 +93,8 @@ pub(super) async fn prepare_workflow_tool(
             .as_ref()
             .ok_or_else(|| {
                 activity_error(anyhow::anyhow!(
-                    "job_start invocation is missing its execution context"
+                    "{} invocation is missing its execution context",
+                    tool_kind.name()
                 ))
             })?;
     let execution_context = deps
@@ -74,11 +102,11 @@ pub(super) async fn prepare_workflow_tool(
         .read_bytes(execution_context_ref)
         .await
         .map_err(activity_error)?;
-    let execution_context: tools::environment::jobs::JobStartExecutionContextV1 =
+    let execution_context: tools::environment::jobs::JobSubmitExecutionContextV1 =
         serde_json::from_slice(&execution_context).map_err(activity_error)?;
-    if execution_context.version != tools::environment::jobs::JobStartExecutionContextV1::VERSION {
+    if execution_context.version != tools::environment::jobs::JobSubmitExecutionContextV1::VERSION {
         return Err(activity_error(anyhow::anyhow!(
-            "unsupported job_start execution context version {}",
+            "unsupported job_submit execution context version {}",
             execution_context.version
         )));
     }
@@ -116,15 +144,34 @@ pub(super) async fn prepare_workflow_tool(
         start.invocation.tool_batch_id.as_u64(),
         start.invocation.tool_call_id.as_str()
     );
-    let jobs = args
-        .jobs
-        .into_iter()
-        .map(|spec| {
-            let job_id = spec.job_id.clone();
-            spec.into_host_spec(job_id)
-                .map_err(|error| activity_error(anyhow::anyhow!(error.to_string())))
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let jobs = match tool_kind {
+        WorkflowJobToolKind::Submit => {
+            let args: tools::environment::jobs::JobSubmitArgs =
+                serde_json::from_slice(&arguments).map_err(activity_error)?;
+            if args.jobs.is_empty() {
+                return Err(activity_error(anyhow::anyhow!(
+                    "job_submit requires at least one job"
+                )));
+            }
+            args.jobs
+                .into_iter()
+                .map(|spec| {
+                    let job_id = spec.job_id.clone();
+                    spec.into_host_spec(job_id)
+                        .map_err(|error| activity_error(anyhow::anyhow!(error.to_string())))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        }
+        WorkflowJobToolKind::Run => {
+            let args: tools::environment::jobs::JobRunArgs =
+                serde_json::from_slice(&arguments).map_err(activity_error)?;
+            let job_id = derived_job_run_id(start.invocation.invocation_id.as_str());
+            vec![
+                args.into_host_spec(job_id)
+                    .map_err(|error| activity_error(anyhow::anyhow!(error.to_string())))?,
+            ]
+        }
+    };
     let params = host_protocol::data::jobs::StartJobsParams {
         namespace: environment_id.as_str().to_owned(),
         request_id,
@@ -143,34 +190,61 @@ pub(super) async fn prepare_workflow_tool(
         .as_ref()
         .ok_or_else(|| {
             activity_error(anyhow::anyhow!(
-                "job_start workflow invocation is missing completion promises"
+                "{} workflow invocation is missing completion promises",
+                tool_kind.name()
             ))
         })?;
-    if completion_promises.len() != params.jobs.len() {
-        return Err(activity_error(anyhow::anyhow!(
-            "job_start completion promise count does not match job count"
-        )));
-    }
-    let subscriptions = params
-        .jobs
-        .iter()
-        .enumerate()
-        .map(|(index, job)| {
-            let completion_key = format!("job-{index}");
-            let promise_id = completion_promises.get(&completion_key).ok_or_else(|| {
-                activity_error(anyhow::anyhow!(
-                    "job_start is missing completion key {completion_key}"
-                ))
-            })?;
-            Ok(EnvironmentJobSubscription {
+    let subscriptions = match tool_kind {
+        WorkflowJobToolKind::Submit => {
+            if completion_promises.len() != params.jobs.len() {
+                return Err(activity_error(anyhow::anyhow!(
+                    "job_submit completion promise count does not match job count"
+                )));
+            }
+            params
+                .jobs
+                .iter()
+                .enumerate()
+                .map(|(index, job)| {
+                    let completion_key = format!("job-{index}");
+                    let promise_id = completion_promises.get(&completion_key).ok_or_else(|| {
+                        activity_error(anyhow::anyhow!(
+                            "job_submit is missing completion key {completion_key}"
+                        ))
+                    })?;
+                    Ok(EnvironmentJobSubscription {
+                        holder_workflow_id: start.holder_workflow_id.clone(),
+                        promise_id: promise_id.as_str().to_owned(),
+                        completion_key,
+                        job_id: job.job_id.clone(),
+                        notified: false,
+                    })
+                })
+                .collect::<Result<Vec<_>, ActivityError>>()?
+        }
+        WorkflowJobToolKind::Run => {
+            if completion_promises.len() != 1 {
+                return Err(activity_error(anyhow::anyhow!(
+                    "job_run requires exactly one completion promise"
+                )));
+            }
+            let promise_id = completion_promises
+                .get(engine::REPLY_COMPLETION_KEY)
+                .ok_or_else(|| {
+                    activity_error(anyhow::anyhow!(
+                        "job_run is missing completion key {}",
+                        engine::REPLY_COMPLETION_KEY
+                    ))
+                })?;
+            vec![EnvironmentJobSubscription {
                 holder_workflow_id: start.holder_workflow_id.clone(),
                 promise_id: promise_id.as_str().to_owned(),
-                completion_key,
-                job_id: job.job_id.clone(),
+                completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
+                job_id: params.jobs[0].job_id.clone(),
                 notified: false,
-            })
-        })
-        .collect::<Result<Vec<_>, ActivityError>>()?;
+            }]
+        }
+    };
     let job_ids = params.jobs.iter().map(|job| job.job_id.clone()).collect();
     let payload = EnvironmentJobStartPayload { request: params };
     let request_ref = deps
@@ -198,6 +272,11 @@ pub(super) async fn prepare_workflow_tool(
             invocation_id: start.invocation.invocation_id,
         }),
     })
+}
+
+fn derived_job_run_id(invocation_id: &str) -> host_protocol::shared::JobId {
+    let hash = BlobRef::from_bytes(invocation_id.as_bytes());
+    host_protocol::shared::JobId::new(format!("job-{}", &hash.as_str()[7..31]))
 }
 
 fn derived_workflow_tool_job_group_id(
@@ -343,7 +422,7 @@ pub(super) async fn poll(
             jobs: request.job_ids,
             after_seq: None,
             max_bytes: Some(PROMISE_JOB_OUTPUT_BYTES),
-            include_artifacts: false,
+            include_artifacts: true,
             wait_ms: None,
         })
         .await
@@ -353,43 +432,43 @@ pub(super) async fn poll(
     for result in response.jobs {
         let summary = result.summary.clone();
         if summary.status.is_terminal() {
-            let resolution = if summary.status == JobStatus::Succeeded {
-                let normalized = normalize_job_result(
-                    deps.blobs.as_ref(),
-                    None,
-                    Some(result.summary),
-                    result.output_chunks,
-                    result.output_next_seq,
-                    result.artifacts,
-                    None,
-                    Some(PROMISE_JOB_OUTPUT_BYTES),
-                )
-                .await
-                .map_err(activity_error)?;
-                let payload_ref = store_model_job_result(
-                    deps.blobs.as_ref(),
-                    deps.blob_graph.as_deref(),
-                    &normalized,
-                )
-                .await
-                .map_err(activity_error)?;
-                PromiseSourceCheckResult::Resolved {
-                    payload_ref: Some(payload_ref),
-                }
-            } else {
-                let message = summary.failure.clone().unwrap_or_else(|| {
+            let error = (summary.status != JobStatus::Succeeded).then(|| {
+                summary.failure.clone().unwrap_or_else(|| {
                     format!(
                         "environment job {} ended as {:?}",
                         summary.job_id, summary.status
                     )
-                });
-                let error_ref = deps
-                    .blobs
-                    .put_bytes(message.into_bytes())
-                    .await
-                    .map_err(activity_error)?;
+                })
+            });
+            let normalized = normalize_job_result(
+                deps.blobs.as_ref(),
+                Some(JobHandle {
+                    environment_id: environment_id.as_str().to_owned(),
+                    job_id: summary.job_id.clone(),
+                }),
+                Some(result.summary),
+                result.output_chunks,
+                result.output_next_seq,
+                result.artifacts,
+                error,
+                Some(PROMISE_JOB_OUTPUT_BYTES),
+            )
+            .await
+            .map_err(activity_error)?;
+            let result_ref = store_model_job_result(
+                deps.blobs.as_ref(),
+                deps.blob_graph.as_deref(),
+                &normalized,
+            )
+            .await
+            .map_err(activity_error)?;
+            let resolution = if summary.status == JobStatus::Succeeded {
+                PromiseSourceCheckResult::Resolved {
+                    payload_ref: Some(result_ref),
+                }
+            } else {
                 PromiseSourceCheckResult::Failed {
-                    error_ref: Some(error_ref),
+                    error_ref: Some(result_ref),
                 }
             };
             resolutions.insert(summary.job_id.as_str().to_owned(), resolution);

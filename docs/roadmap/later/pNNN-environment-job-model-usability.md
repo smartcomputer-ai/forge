@@ -6,8 +6,9 @@
 - The readable-job-output work in Issue 1 was completed by
   [P111](../p111-promise-result-materialization.md), together with generic
   Promise-result materialization through `await`. This document retains Issue
-  2 (a Joined job-start surface) and Issue 3 (non-secret environment-level
-  variables).
+  3 (non-secret environment-level variables). Issue 2 was adopted by
+  [P112](../p112-joined-environment-job-run.md) as the single-job `job_run`
+  Joined surface.
 - Written 2026-07-31 after inspecting
   `session_91992f6a60524ee9ace5c50369326af8`, where a successful environment job
   returned Base64-encoded output chunks to the model through an awaited
@@ -149,11 +150,11 @@ model-facing tools  -> compact readable text segments
 raw diagnostics     -> byte chunks on demand
 ```
 
-## Issue 2: Starting Joined Jobs
+## Issue 2: Starting Joined Jobs (Adopted By P112)
 
 ### Current behavior
 
-The built-in hosted `job_start` binding uses `Start + Promises`, with one keyed
+The built-in hosted `job_submit` binding uses `Start + Promises`, with one keyed
 Promise per submitted job. This is the right form when the model wants to:
 
 - start several jobs and overlap them with other work;
@@ -166,7 +167,7 @@ It is ceremony in the common case where the model starts a job and immediately
 needs its result. That path currently requires:
 
 ```text
-job_start
+job_submit
   -> Promise acknowledgement
   -> another model step
   -> await
@@ -202,25 +203,20 @@ The current Promise form must remain available. Joined completion is an
 ergonomic option for work the caller needs immediately, not a replacement for
 asynchronous jobs.
 
-### Tool-surface question
+### Tool-surface decision
 
 P106 makes completion mode part of the immutable trusted binding rather than a
-model-selected argument. Reusing that rule suggests two explicit tool
-surfaces, for example:
+model-selected argument. P112 adopts two explicit tool surfaces:
 
-- `job_start`: asynchronous, returns keyed Promises as today;
-- `job_run` or `job_start_joined`: joined, returns terminal results directly.
+- `job_submit`: asynchronous, returns keyed Promises as today;
+- `job_run`: joined, returns one terminal result directly.
 
-This is preferable to a `join: true` argument if that argument would make one
-binding dynamically switch its durable completion semantics. The final name
-is a product/tool-design choice, but the distinction should be obvious in the
-tool descriptions.
+This is preferable to a `join: true` argument that would make one binding
+dynamically switch its durable completion semantics. The names make submission
+versus joined execution explicit in the tool descriptions.
 
-The first joined form could accept exactly one job, matching P106's
-single-semantic-reply model. Alternatively, it could accept a job group and
-produce one aggregate reply after all jobs are terminal. That choice needs an
-explicit result and cancellation contract; it should not fall out accidentally
-from the current per-array-index Promise implementation.
+The joined form accepts exactly one flat job, matching P106's
+single-semantic-reply model. Dependency groups remain on `job_submit`.
 
 Other design questions:
 
@@ -323,15 +319,11 @@ credential resolution does not.
 
 P111 owns the shared job-result normalizer, the text-first output-segment
 shape, binary CAS references, direct `job_read` normalization, and normalized
-terminal Promise payloads. The remaining implementation direction here is:
-
-1. Decide the joined tool name and whether its unit is one job or one job
-   group.
-2. Declare the joined tool through the existing P106 `Start + Joined`
-   machinery and extend `EnvironmentJobWorkflow` to produce its one completion
-   reply.
-3. Reuse existing environment-job cancellation handling for joined-call
-   cancellation.
+terminal Promise payloads. P112 owns and implements the joined-job decision:
+`job_run` is one flat single job through P106 `Start + Joined`, while
+`job_submit` retains asynchronous groups and keyed Promises. The remaining
+design work in this document is Issue 3, environment-level non-secret
+variables.
 
 If environment-level variables are adopted:
 
@@ -367,7 +359,7 @@ Joined starts:
 - cancellation of the calling run reaches the correct provider job scope;
 - timeout and provider failure produce deterministic terminal behavior;
 - retry/recovery does not start the provider job twice;
-- ordinary asynchronous `job_start` still returns keyed Promises and supports
+- ordinary asynchronous `job_submit` still returns keyed Promises and supports
   selective await/cancel unchanged.
 
 Environment-level variables:

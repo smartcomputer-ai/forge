@@ -227,11 +227,11 @@ mod tests {
         let mut state = CoreAgentState::new();
         state.lifecycle.config = Some(config());
         let tool = crate::WorkflowToolDefinition {
-            tool_id: crate::WorkflowToolId::new("core-job-start"),
+            tool_id: crate::WorkflowToolId::new("core-job-submit"),
             revision: 1,
-            semantic_type: "lightspeed.environment.job.start.v1".to_owned(),
+            semantic_type: "lightspeed.environment.job.submit.v1".to_owned(),
             tool: crate::ToolSpec {
-                name: crate::ToolName::new("job_start"),
+                name: crate::ToolName::new("job_submit"),
                 kind: crate::ToolKind::Function(crate::FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: crate::BlobRef::from_bytes(b"schema"),

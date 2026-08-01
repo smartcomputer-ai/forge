@@ -22,7 +22,7 @@
 - Issue 3 implemented 2026-07-30: admitted environment-provider policy and
   active selection are supplied on tool batches; environment control and
   active process/filesystem setup no longer replay the owning session.
-- Issue 4 implemented 2026-07-30: `job_start` always targets the environment
+- Issue 4 implemented 2026-07-30: `job_submit` always targets the environment
   active for its original tool batch; that id and provider policy are pinned
   in a durable opaque execution-context ref, and workflow preparation no
   longer replays the holder session.
@@ -341,7 +341,7 @@ usable without giving ordinary `SessionTools` a `SessionStore`.
 
 ## 4. Environment-Job Workflow Starts
 
-**Implemented 2026-07-30.** `job_start` is active-environment-only. The model
+**Implemented 2026-07-30.** `job_submit` is active-environment-only. The model
 cannot override its target; the runtime pins the original batch's active id
 and admitted provider policy in a CAS-backed execution context carried by the
 durable workflow-tool invocation.
@@ -360,7 +360,7 @@ provider request.
 
 At the original tool-batch boundary, require
 `ToolInvocationBatchRequest.active_environment_id` and fail the original call
-clearly when it is absent. `JobStartArgs` and the canonical model-facing schema
+clearly when it is absent. `JobSubmitArgs` and the canonical model-facing schema
 do not expose an environment override.
 
 Keep the model-authored `arguments_ref` unchanged so generic workflow-tool
@@ -545,7 +545,7 @@ P109 does not:
 - move live VFS, environment, credential, or provider observations into the
   deterministic engine;
 - change public tool schemas or client-facing session APIs apart from removing
-  the `job_start` environment override; or
+  the `job_submit` environment override; or
 - address the separate P107 audit item where mutable-workspace skill/prompt
   scanning should read the pre-run pinned head rather than reopen a live head.
 

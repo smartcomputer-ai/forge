@@ -3312,7 +3312,7 @@ mod tests {
     fn system_workflow_tool_admission_is_add_only_and_does_not_manage_session() {
         let universe_id = Uuid::from_u128(9);
         let declaration = WorkflowToolDeclaration::new(
-            definition("core-job-start", "job_start"),
+            definition("core-job-submit", "job_submit"),
             WorkflowToolTarget::Start { start: start_ref() },
             reply_completion(),
         );

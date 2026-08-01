@@ -3,6 +3,7 @@
 mod api_config;
 mod auth_api;
 mod blobs;
+mod common;
 mod environment_credentials;
 mod environment_lifecycle;
 mod environment_projection;
@@ -20,6 +21,7 @@ mod parse;
 mod profiles;
 mod prompts;
 mod session_jobs;
+mod session_toolset;
 mod skills;
 mod vfs_api;
 mod workflow;
@@ -32,6 +34,7 @@ use auth_api::{
     parse_auth_grant_id, registry_auth_grant_status_for_filter,
 };
 use blobs::{has_blobs, put_blobs, read_blob};
+use common::now_ms;
 use environment_lifecycle::parse_registry_environment_id;
 use environment_providers::{map_environments_error, parse_environment_provider_id};
 use environments::{activate_environment_command, deactivate_environment_command};
@@ -50,21 +53,20 @@ use oauth_api::{
     parse_oauth_client_id,
 };
 use parse::*;
+use session_toolset::store_tool_documents;
 use skills::{
     active_skill_catalog_ref, active_skill_ids, active_skill_ids_after_remove,
     active_skill_ids_after_upsert, skill_activation_context_input,
 };
 #[cfg(test)]
 use skills::{skill_active_response, skill_list_response};
-use vfs_api::{
-    commit_vfs_snapshot, now_ms, read_vfs_snapshot, store_tool_documents, vfs_workspace_view,
-};
+use vfs_api::{commit_vfs_snapshot, read_vfs_snapshot, vfs_workspace_view};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
     env,
     sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 use api::*;
@@ -107,7 +109,10 @@ use temporalio_client::{
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus;
 use tools::{
     builtin::{BuiltinTool, BuiltinToolOperation},
-    environment::jobs::{JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID},
+    environment::jobs::{
+        JOB_RUN_DEADLINE_AFTER_MS, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
+        JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID,
+    },
     runtime::{ToolDocument, ToolTarget},
     skills::{
         SkillCatalogSnapshot, SkillMetadata, configured_vfs_skill_root_specs,
@@ -1135,25 +1140,18 @@ impl GatewayAgentApi {
         Ok(AgentApiOutcome::new(SessionStartResponse { session }))
     }
 
-    async fn core_environment_job_workflow_tool_declaration(
+    async fn core_environment_job_workflow_tool_declarations(
         &self,
-    ) -> Result<WorkflowToolDeclaration, AgentApiError> {
+    ) -> Result<Vec<WorkflowToolDeclaration>, AgentApiError> {
         let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
-        let bundle = BuiltinTool::canonical(BuiltinToolOperation::JobStart)
-            .spec_bundle(&target, false)
-            .map_err(|error| {
-                AgentApiError::internal(format!("build core job_start tool: {error}"))
-            })?;
-        store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
-        let mut tool = bundle.spec;
-        tool.target_requirement = engine::ToolTargetRequirement::None;
-
         let recipe_bytes = serde_json::to_vec(&temporal_workflow::WorkflowToolRecipeV1 {
             workflow_type: "EnvironmentJobWorkflow".to_owned(),
             task_queue: self.task_queue.clone(),
         })
         .map_err(|error| {
-            AgentApiError::internal(format!("encode core job_start workflow recipe: {error}"))
+            AgentApiError::internal(format!(
+                "encode core environment-job workflow recipe: {error}"
+            ))
         })?;
         let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe_bytes);
         let recipe_ref = self
@@ -1161,44 +1159,69 @@ impl GatewayAgentApi {
             .put_bytes(recipe_bytes)
             .await
             .map_err(map_blob_store_error)?;
-        Ok(WorkflowToolDeclaration::new(
-            WorkflowToolDefinition {
-                tool_id: WorkflowToolId::new(JOB_START_WORKFLOW_TOOL_ID),
-                revision: 1,
-                semantic_type: JOB_START_WORKFLOW_SEMANTIC_TYPE.to_owned(),
-                tool,
-            },
-            WorkflowToolTarget::Start {
-                start: WorkflowStartRef {
-                    recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+
+        let definitions = [
+            (
+                BuiltinToolOperation::JobSubmit,
+                JOB_SUBMIT_WORKFLOW_TOOL_ID,
+                JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE,
+                WorkflowToolCompletion::Promises {
+                    reply_schema_ref: None,
+                    deadline_after_ms: None,
+                    max_promises: engine::MAX_COMPLETION_PROMISES,
+                    key_source: WorkflowToolCompletionKeySource::ArrayIndices {
+                        pointer: "/jobs".to_owned(),
+                        prefix: "job-".to_owned(),
+                    },
+                },
+            ),
+            (
+                BuiltinToolOperation::JobRun,
+                JOB_RUN_WORKFLOW_TOOL_ID,
+                JOB_RUN_WORKFLOW_SEMANTIC_TYPE,
+                WorkflowToolCompletion::Joined {
+                    reply_schema_ref: None,
+                    deadline_after_ms: JOB_RUN_DEADLINE_AFTER_MS,
+                },
+            ),
+        ];
+        let mut declarations = Vec::with_capacity(definitions.len());
+        for (operation, tool_id, semantic_type, completion) in definitions {
+            let bundle = BuiltinTool::canonical(operation)
+                .spec_bundle(&target, false)
+                .map_err(|error| {
+                    AgentApiError::internal(format!("build core {tool_id} tool: {error}"))
+                })?;
+            store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
+            let mut tool = bundle.spec;
+            tool.target_requirement = engine::ToolTargetRequirement::None;
+            declarations.push(WorkflowToolDeclaration::new(
+                WorkflowToolDefinition {
+                    tool_id: WorkflowToolId::new(tool_id),
                     revision: 1,
-                    recipe_ref,
-                    recipe_fingerprint,
+                    semantic_type: semantic_type.to_owned(),
+                    tool,
                 },
-            },
-            WorkflowToolCompletion::Promises {
-                reply_schema_ref: None,
-                deadline_after_ms: None,
-                max_promises: engine::MAX_COMPLETION_PROMISES,
-                key_source: WorkflowToolCompletionKeySource::ArrayIndices {
-                    pointer: "/jobs".to_owned(),
-                    prefix: "job-".to_owned(),
+                WorkflowToolTarget::Start {
+                    start: WorkflowStartRef {
+                        recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                        revision: 1,
+                        recipe_ref: recipe_ref.clone(),
+                        recipe_fingerprint: recipe_fingerprint.clone(),
+                    },
                 },
-            },
-        ))
+                completion,
+            ));
+        }
+        Ok(declarations)
     }
 
-    async fn ensure_core_environment_job_workflow_tool(
+    async fn ensure_core_environment_job_workflow_tools(
         &self,
         session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<(), AgentApiError> {
-        if state
-            .workflow_tools
-            .bindings
-            .values()
-            .any(is_core_environment_job_start_binding)
-        {
+        if has_all_core_environment_job_bindings(state) {
             return Ok(());
         }
         let baseline_failures = self
@@ -1206,22 +1229,31 @@ impl GatewayAgentApi {
             .await?
             .map(|status| status.admission_failures.len())
             .unwrap_or(0);
-        let declaration = self
-            .core_environment_job_workflow_tool_declaration()
+        let declarations = self
+            .core_environment_job_workflow_tool_declarations()
             .await?;
-        self.submit_core_command(
-            session_id,
-            CoreAgentCommand::AdmitSystemWorkflowTool {
-                session_universe_id: self.universe_id(),
-                declaration,
-            },
-        )
-        .await?;
+        for declaration in declarations {
+            if state
+                .workflow_tools
+                .bindings
+                .contains_key(&declaration.definition.tool_id)
+            {
+                continue;
+            }
+            self.submit_core_command(
+                session_id,
+                CoreAgentCommand::AdmitSystemWorkflowTool {
+                    session_universe_id: self.universe_id(),
+                    declaration,
+                },
+            )
+            .await?;
+        }
         let started = Instant::now();
         loop {
             if started.elapsed() > self.operation_timeout {
                 return Err(AgentApiError::internal(format!(
-                    "timed out waiting for core job_start workflow tool admission: {session_id}"
+                    "timed out waiting for core environment-job workflow tool admission: {session_id}"
                 )));
             }
             if let Some(status) = self.query_status_optional(session_id).await? {
@@ -1237,13 +1269,7 @@ impl GatewayAgentApi {
                 }
             }
             let loaded = self.load_session_state(session_id).await?;
-            if loaded
-                .state
-                .workflow_tools
-                .bindings
-                .values()
-                .any(is_core_environment_job_start_binding)
-            {
+            if has_all_core_environment_job_bindings(&loaded.state) {
                 return Ok(());
             }
             tokio::time::sleep(self.poll_interval).await;
@@ -1308,7 +1334,7 @@ impl GatewayAgentApi {
         let materialized_bindings = admitted
             .bindings
             .iter()
-            .filter(|binding| !is_core_environment_job_start_binding(binding))
+            .filter(|binding| !is_core_environment_job_binding(binding))
             .collect::<Vec<_>>();
 
         let target = ToolTarget::from(&session_config.model);
@@ -1474,7 +1500,7 @@ fn managed_workflow_tools_from_api(
                 WorkflowToolId::try_new(declaration.definition.tool_id).map_err(|error| {
                     AgentApiError::invalid_request(format!("invalid workflow tool id: {error}"))
                 })?;
-            if tool_id.as_str() == JOB_START_WORKFLOW_TOOL_ID {
+            if is_core_environment_job_tool_id(tool_id.as_str()) {
                 return Err(AgentApiError::invalid_request(format!(
                     "workflow tool id {tool_id} is reserved"
                 )));
@@ -1744,8 +1770,26 @@ fn managed_workflow_tools_from_state(
     }))
 }
 
-fn is_core_environment_job_start_binding(binding: &engine::WorkflowToolBinding) -> bool {
-    binding.definition.tool_id.as_str() == JOB_START_WORKFLOW_TOOL_ID
+fn is_core_environment_job_tool_id(tool_id: &str) -> bool {
+    matches!(
+        tool_id,
+        JOB_SUBMIT_WORKFLOW_TOOL_ID | JOB_RUN_WORKFLOW_TOOL_ID
+    )
+}
+
+fn is_core_environment_job_binding(binding: &engine::WorkflowToolBinding) -> bool {
+    is_core_environment_job_tool_id(binding.definition.tool_id.as_str())
+}
+
+fn has_all_core_environment_job_bindings(state: &engine::CoreAgentState) -> bool {
+    [JOB_SUBMIT_WORKFLOW_TOOL_ID, JOB_RUN_WORKFLOW_TOOL_ID]
+        .into_iter()
+        .all(|tool_id| {
+            state
+                .workflow_tools
+                .bindings
+                .contains_key(&WorkflowToolId::new(tool_id))
+        })
 }
 
 #[async_trait]

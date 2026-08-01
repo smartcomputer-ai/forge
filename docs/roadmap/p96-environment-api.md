@@ -14,7 +14,7 @@
   boundaries without introducing a general plugin system or separately
   deployed environment service.
 - Follow-on 2026-07-28: the environment/job ownership boundary above remains,
-  but P100b now supervises model-visible `job_start`. The `EnvJob` Promise
+  but P100b now supervises model-visible `job_submit`. The `EnvJob` Promise
   source and the subscription/check/cancel transport described later in this
   historical implementation plan were deleted; keyed `Workflow` Promises now
   address the same core `EnvironmentJobWorkflow`.
@@ -252,7 +252,7 @@ job itself.
 
 A job handle is `(instance_id, job_id)`. Lightspeed stores no job record or
 group record. Bare workflows use a canonical group-derived Temporal identity;
-session-supervised `job_start` uses its generic P100b execution identity. The
+session-supervised `job_submit` uses its generic P100b execution identity. The
 logical group exists only inside workflow/API identity, not as a database
 resource.
 

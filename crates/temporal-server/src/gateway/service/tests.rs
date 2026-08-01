@@ -545,7 +545,8 @@ fn declared_mcp_link_materializes_remote_tool() {
     let tool = mcp_api::mcp_tool_from_config_link(&link, &record, None)
         .expect("materialize MCP tool from config link");
     let desired = BTreeMap::from([(tool.name.clone(), tool)]);
-    let patch = super::vfs_api::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired);
+    let patch =
+        super::session_toolset::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired);
     let tools = patch.apply_to(&active).expect("apply MCP patch");
 
     let tool = tools.get(&tool_name).expect("MCP tool");
@@ -758,7 +759,7 @@ fn two_server_ids_can_share_an_endpoint_with_distinct_credentials() {
         (personal_tool.name.clone(), personal_tool),
     ]);
 
-    let tools = super::vfs_api::toolset_reconcile_patch(
+    let tools = super::session_toolset::toolset_reconcile_patch(
         &BTreeMap::new(),
         empty_resolved_toolset(),
         desired,
@@ -824,7 +825,7 @@ fn toolset_reconcile_patch_preserves_declared_remote_mcp_tools() {
         test_remote_mcp_tool(remote_tool_name.clone()),
     )]);
 
-    let patch = super::vfs_api::toolset_reconcile_patch(&active, toolset, desired_mcp);
+    let patch = super::session_toolset::toolset_reconcile_patch(&active, toolset, desired_mcp);
     let tools = patch.apply_to(&active).expect("apply reconcile patch");
 
     assert!(tools.contains_key(&remote_tool_name));
@@ -840,8 +841,11 @@ fn toolset_reconcile_patch_removes_undeclared_remote_mcp_tools() {
         test_remote_mcp_tool(remote_tool_name.clone()),
     )]);
 
-    let patch =
-        super::vfs_api::toolset_reconcile_patch(&active, empty_resolved_toolset(), BTreeMap::new());
+    let patch = super::session_toolset::toolset_reconcile_patch(
+        &active,
+        empty_resolved_toolset(),
+        BTreeMap::new(),
+    );
     let tools = patch.apply_to(&active).expect("apply reconcile patch");
 
     assert!(!tools.contains_key(&remote_tool_name));
