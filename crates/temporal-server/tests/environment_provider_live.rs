@@ -13,7 +13,7 @@ use std::{
 
 use api::{
     AgentApiErrorKind, AgentApiService, AgentProfileInput, AuthProviderConfigInput,
-    AuthProviderCreateParams, ContextEntryKindView, EnvironmentCloseParams,
+    AuthProviderCreateParams, ContextEntryKindView, ContextMessageRoleView, EnvironmentCloseParams,
     EnvironmentCreateParams, EnvironmentCredentialBindParams, EnvironmentCredentialListParams,
     EnvironmentCredentialSourceView, EnvironmentCredentialUnbindParams, EnvironmentJobCancelParams,
     EnvironmentJobCreateParams, EnvironmentJobReadParams, EnvironmentListParams,
@@ -585,8 +585,65 @@ async fn run_host_bridge_jobs_client(
         "final answer did not include marker from second job output: {text}"
     );
     assert!(
-        text.contains("await resolved"),
+        text.contains("\"outcome\":\"terminal\""),
         "final answer did not include a resolved await result: {text}"
+    );
+    let await_calls = run
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == AWAIT_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(await_calls.len(), 1, "expected one explicit await call");
+    let await_call = await_calls[0];
+    let await_output = await_call
+        .output
+        .as_deref()
+        .expect("await call must expose its materialized output");
+    let await_value: Value = serde_json::from_str(await_output)?;
+    assert_eq!(await_value["outcome"], "terminal");
+    let results = await_value["results"]
+        .as_array()
+        .expect("await results array");
+    assert_eq!(results.len(), 2, "await must materialize both job Promises");
+    assert!(results.iter().all(|result| result["status"] == "resolved"));
+    assert!(results.iter().all(|result| {
+        result["output"]["output"]
+            .as_array()
+            .is_some_and(|segments| {
+                segments
+                    .iter()
+                    .any(|segment| segment.get("text").and_then(Value::as_str).is_some())
+            })
+    }));
+    assert!(
+        !await_output.contains("outputChunks"),
+        "await must expose semantic job output rather than host transport chunks: {await_output}"
+    );
+    assert_eq!(
+        run.entries
+            .iter()
+            .filter(|entry| matches!(
+                &entry.kind,
+                ContextEntryKindView::ToolResult { call_id, .. }
+                    if call_id == &await_call.call_id
+            ))
+            .count(),
+        1,
+        "await must project one ToolResult even when it materializes two Promises"
+    );
+    assert_eq!(
+        run.entries
+            .iter()
+            .filter(|entry| matches!(
+                entry.kind,
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User
+                }
+            ))
+            .count(),
+        1,
+        "job Promise results must not be inserted as user messages"
     );
 
     let local_file = bridge_root.join(BRIDGE_JOB_FILE_NAME);
@@ -2126,22 +2183,15 @@ impl BridgeJobsLlm {
                 }
             }
         }
-        // Once `await` resolves, its model-visible Promise payload carries the
-        // stable provider handle.
-        for entry in request.request.context.entries.iter().rev() {
-            if !entry
-                .preview
-                .as_deref()
-                .is_some_and(|preview| preview.starts_with("Promise "))
-            {
-                continue;
-            }
+        // Once `await` resolves, its aggregate tool result carries each
+        // Promise's semantic job result and stable provider handle.
+        for entry in current_run_tool_results(request).into_iter().rev() {
             let output = self
                 .blobs
                 .read_text(&entry.content_ref)
                 .await
                 .map_err(io_error)?;
-            if let Some(handle) = BridgeJobHandle::parse_promise_payload(&output) {
+            for handle in BridgeJobHandle::parse_await_payload(&output) {
                 push_unique_job_handle(&mut handles, handle);
             }
         }
@@ -2274,13 +2324,23 @@ impl BridgeJobHandle {
         })
     }
 
-    fn parse_promise_payload(text: &str) -> Option<Self> {
-        let value: Value = serde_json::from_str(text).ok()?;
-        let summary = value.get("summary")?;
-        Some(Self {
-            environment_id: summary.get("namespace")?.as_str()?.to_owned(),
-            job_id: summary.get("jobId")?.as_str()?.to_owned(),
-        })
+    fn parse_await_payload(text: &str) -> Vec<Self> {
+        let Ok(value) = serde_json::from_str::<Value>(text) else {
+            return Vec::new();
+        };
+        value
+            .get("results")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|result| {
+                let summary = result.get("output")?.get("summary")?;
+                Some(Self {
+                    environment_id: summary.get("namespace")?.as_str()?.to_owned(),
+                    job_id: summary.get("jobId")?.as_str()?.to_owned(),
+                })
+            })
+            .collect()
     }
 }
 

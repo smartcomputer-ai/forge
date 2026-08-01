@@ -16,8 +16,8 @@ mod support;
 use std::{sync::Arc, time::Duration};
 
 use api::{
-    AgentApiService, InputItem, RunStartParams, RunStartSource, RunTerminalNotificationInput,
-    SessionReadParams,
+    AgentApiService, ContextEntryKindView, ContextMessageRoleView, InputItem, RunStartParams,
+    RunStartSource, RunTerminalNotificationInput, SessionReadParams,
 };
 use async_trait::async_trait;
 use engine::{
@@ -634,9 +634,8 @@ impl CoreAgentLlm for WorkflowToolScriptedLlm {
             .unwrap_or_default();
         // Scan newest-first for the entry that decides this turn: a tool
         // result answers the pending exchange; a `CALL`/`CALL_NOWAIT` user
-        // message starts one. Await-resume payload messages (plain user
-        // messages without the CALL marker) and older runs' entries are
-        // skipped rather than misread as fresh input.
+        // message starts one. Older runs' entries are skipped rather than
+        // misread as fresh input.
         for entry in request.request.context.entries.iter().rev() {
             match &entry.kind {
                 ContextEntryKind::ToolResult { .. } => {
@@ -982,6 +981,47 @@ async fn workflow_tool_bound_request_reply_resolves_via_plugin_worker() -> anyho
         assert!(
             output.contains("resolved"),
             "await must observe the plugin's keyed resolution: {output}"
+        );
+        let await_calls = run
+            .tool_batches
+            .iter()
+            .flat_map(|batch| &batch.calls)
+            .filter(|call| call.tool_name == AWAIT_TOOL_NAME)
+            .collect::<Vec<_>>();
+        assert_eq!(await_calls.len(), 1, "expected one explicit await call");
+        let await_call = await_calls[0];
+        let await_value: serde_json::Value = serde_json::from_str(
+            await_call
+                .output
+                .as_deref()
+                .expect("await call must expose its materialized output"),
+        )?;
+        assert_eq!(await_value["outcome"], "terminal");
+        assert_eq!(await_value["results"][0]["status"], "resolved");
+        assert_eq!(
+            run.entries
+                .iter()
+                .filter(|entry| matches!(
+                    &entry.kind,
+                    ContextEntryKindView::ToolResult { call_id, .. }
+                        if call_id == &await_call.call_id
+                ))
+                .count(),
+            1,
+            "workflow Promise await must project exactly one ToolResult"
+        );
+        assert_eq!(
+            run.entries
+                .iter()
+                .filter(|entry| matches!(
+                    entry.kind,
+                    ContextEntryKindView::Message {
+                        role: ContextMessageRoleView::User
+                    }
+                ))
+                .count(),
+            1,
+            "workflow Promise output must not be inserted as a user message"
         );
 
         let handle = client.get_workflow_handle::<TestBoundPluginWorkflow>(receiver_id);

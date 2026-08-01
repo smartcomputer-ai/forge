@@ -1,7 +1,7 @@
 use engine::{
     BlobRef, RunId, SessionId, SessionPosition, WorkflowEndpointRef, WorkflowToolInvocation,
     storage::{
-        AppendSessionEvents, AppendSessionEventsResult, CreateSession, ReadSessionEvents,
+        AppendSessionEvents, AppendSessionEventsResult, BlobEdge, CreateSession, ReadSessionEvents,
         SessionStore, SessionStoreError, StoredSessionEntry, UncommittedStoredEvent,
     },
 };
@@ -113,6 +113,87 @@ pub(super) async fn put_blob(
         .put_bytes(request.bytes)
         .await
         .map_err(activity_error)
+}
+
+pub(super) async fn materialize_await_result(
+    deps: &StorageActivityDeps,
+    request: temporal_workflow::AwaitMaterializationRequest,
+) -> Result<BlobRef, ActivityError> {
+    if request.results.len() > 32 {
+        return Err(activity_error(anyhow::anyhow!(
+            "await materialization exceeds the 32-Promise limit"
+        )));
+    }
+
+    let mut results = Vec::with_capacity(request.results.len());
+    let mut opaque_children = Vec::new();
+    for result in request.results {
+        let root = match result.status.as_str() {
+            "resolved" => result.payload_ref.map(|blob_ref| ("output", blob_ref)),
+            "failed" => result.error_ref.map(|blob_ref| ("error", blob_ref)),
+            _ => None,
+        };
+        let materialized = if let Some((field, blob_ref)) = root {
+            let bytes = deps
+                .blobs
+                .read_bytes(&blob_ref)
+                .await
+                .map_err(activity_error)?;
+            let value = match serde_json::from_slice::<serde_json::Value>(&bytes) {
+                Ok(json) => json,
+                Err(_) => match String::from_utf8(bytes) {
+                    Ok(text) => serde_json::Value::String(text),
+                    Err(error) => {
+                        let byte_len = error.as_bytes().len();
+                        opaque_children.push(blob_ref.clone());
+                        serde_json::json!({
+                            "blob_ref": blob_ref,
+                            "media_type": "application/octet-stream",
+                            "byte_len": byte_len,
+                        })
+                    }
+                },
+            };
+            Some((field, value))
+        } else {
+            None
+        };
+        let (output, error) = match materialized {
+            Some(("output", value)) => (Some(value), None),
+            Some(("error", value)) => (None, Some(value)),
+            _ => (None, None),
+        };
+        results.push(temporal_workflow::MaterializedAwaitPromiseResult {
+            promise_id: result.promise_id,
+            status: result.status,
+            output,
+            error,
+        });
+    }
+
+    let aggregate = temporal_workflow::MaterializedAwaitResult {
+        outcome: request.outcome,
+        results,
+    };
+    let aggregate_ref = deps
+        .blobs
+        .put_bytes(serde_json::to_vec(&aggregate).map_err(activity_error)?)
+        .await
+        .map_err(activity_error)?;
+    if !opaque_children.is_empty()
+        && let Some(blob_graph) = &deps.blob_graph
+    {
+        blob_graph
+            .record_blob_edges(
+                opaque_children
+                    .into_iter()
+                    .map(|child| BlobEdge::contains(aggregate_ref.clone(), child))
+                    .collect(),
+            )
+            .await
+            .map_err(activity_error)?;
+    }
+    Ok(aggregate_ref)
 }
 
 /// Bounded CAS load + JSON Schema check of one keyed reply payload against
@@ -653,7 +734,86 @@ mod tests {
     fn storage_deps(store: Arc<InMemorySessionStore>) -> StorageActivityDeps {
         let sessions: Arc<dyn SessionStore> = store;
         let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
-        StorageActivityDeps { sessions, blobs }
+        StorageActivityDeps {
+            sessions,
+            blobs,
+            blob_graph: None,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn await_materialization_embeds_json_text_and_opaque_roots_in_order() {
+        let sessions = Arc::new(InMemorySessionStore::new());
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let json_ref = blobs
+            .put_bytes(br#"{"answer":42}"#.to_vec())
+            .await
+            .expect("json root");
+        let text_ref = blobs
+            .put_bytes(b"delegated answer".to_vec())
+            .await
+            .expect("text root");
+        let opaque_ref = blobs
+            .put_bytes(vec![0xff, 0x00])
+            .await
+            .expect("opaque root");
+        let deps = StorageActivityDeps {
+            sessions,
+            blobs: blobs.clone(),
+            blob_graph: None,
+        };
+
+        let result_ref = materialize_await_result(
+            &deps,
+            temporal_workflow::AwaitMaterializationRequest {
+                outcome: temporal_workflow::AwaitOutcome::Timeout,
+                results: vec![
+                    temporal_workflow::AwaitPromiseResult {
+                        promise_id: "json".to_owned(),
+                        status: "resolved".to_owned(),
+                        payload_ref: Some(json_ref),
+                        error_ref: None,
+                    },
+                    temporal_workflow::AwaitPromiseResult {
+                        promise_id: "text".to_owned(),
+                        status: "failed".to_owned(),
+                        payload_ref: None,
+                        error_ref: Some(text_ref),
+                    },
+                    temporal_workflow::AwaitPromiseResult {
+                        promise_id: "opaque".to_owned(),
+                        status: "resolved".to_owned(),
+                        payload_ref: Some(opaque_ref.clone()),
+                        error_ref: None,
+                    },
+                    temporal_workflow::AwaitPromiseResult {
+                        promise_id: "pending".to_owned(),
+                        status: "pending".to_owned(),
+                        payload_ref: None,
+                        error_ref: None,
+                    },
+                ],
+            },
+        )
+        .await
+        .expect("materialize await");
+        let value: serde_json::Value = serde_json::from_slice(
+            &blobs
+                .read_bytes(&result_ref)
+                .await
+                .expect("aggregate bytes"),
+        )
+        .expect("aggregate JSON");
+
+        assert_eq!(value["outcome"], "timeout");
+        assert_eq!(value["results"][0]["output"], json!({"answer": 42}));
+        assert_eq!(value["results"][1]["error"], "delegated answer");
+        assert_eq!(
+            value["results"][2]["output"]["blob_ref"],
+            opaque_ref.as_str()
+        );
+        assert_eq!(value["results"][2]["output"]["byte_len"], 2);
+        assert!(value["results"][3].get("output").is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -8,7 +8,7 @@ use engine::{
     BlobRef, CoreAgentIoError, CoreAgentTools, PromiseId, PromiseSource, ProviderApiKind,
     SessionId, ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest,
     ToolInvocationBatchResult, ToolInvocationResult, promise_create_effect,
-    storage::{BlobStore, BlobStoreError, SessionStore},
+    storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, SessionStore},
 };
 use environments::{EnvironmentId, EnvironmentRecord, EnvironmentRegistryError, EnvironmentStore};
 use host_client::{HostClientError, HostDataClient, WebSocketConnectOptions};
@@ -36,8 +36,8 @@ use tools::{
     },
     environment::jobs::{
         JOB_READ_TOOL_NAME, JOB_START_WORKFLOW_SEMANTIC_TYPE, JOB_START_WORKFLOW_TOOL_ID,
-        JobHandle, JobHandleArg, JobReadArgs, JobReadResultEntry, JobReadResultSet,
-        JobStartExecutionContextV1, is_environment_job_query_tool_name, visible_job_read_output,
+        JobHandle, JobHandleArg, JobReadArgs, JobStartExecutionContextV1, ModelJobResult,
+        ModelJobResultSet, is_environment_job_query_tool_name, normalize_job_result,
     },
     fleet::is_fleet_tool,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
@@ -60,6 +60,7 @@ use crate::{
 #[derive(Clone)]
 pub struct SessionTools {
     blobs: Arc<dyn BlobStore>,
+    blob_graph: Option<Arc<dyn BlobGraphStore>>,
     workspace_store: Arc<dyn VfsWorkspaceStore>,
     environments: SessionEnvironmentManager,
     environment_store: Option<Arc<dyn EnvironmentStore>>,
@@ -73,6 +74,7 @@ impl SessionTools {
         let environments = SessionEnvironmentManager::new(blobs.clone());
         Self {
             blobs,
+            blob_graph: None,
             workspace_store,
             environments,
             environment_store: None,
@@ -121,15 +123,22 @@ impl SessionTools {
 
     pub fn from_pg_store(store: Arc<PgStore>) -> Self {
         let blobs: Arc<dyn BlobStore> = store.clone();
+        let blob_graph: Arc<dyn BlobGraphStore> = store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let environments: Arc<dyn EnvironmentStore> = store.clone();
         let credentials = EnvironmentCredentialResolver::from_pg_store(store.clone());
         let resolver =
             crate::environment_resolver::EnvironmentResolver::from_pg_store(store.clone());
         Self::new(blobs, workspace_store)
+            .with_blob_graph(blob_graph)
             .with_environment_store(environments)
             .with_environment_resolver(resolver)
             .with_environment_credentials(credentials)
+    }
+
+    fn with_blob_graph(mut self, blob_graph: Arc<dyn BlobGraphStore>) -> Self {
+        self.blob_graph = Some(blob_graph);
+        self
     }
 
     pub fn from_pg_store_with_fleet_runtime(
@@ -466,14 +475,7 @@ impl SessionTools {
                         args.include_artifacts,
                     )
                     .await?;
-                self.succeeded_tool_result(
-                    call,
-                    &JobReadResultSet {
-                        jobs: result.entries.clone(),
-                    },
-                    visible_job_read_output(&result.entries),
-                )
-                .await
+                self.succeeded_job_read_result(call, result.entries).await
             }
             _ => {
                 failed_result(
@@ -502,28 +504,17 @@ impl SessionTools {
             {
                 Ok(handle) => handle,
                 Err(error) => {
-                    entries.push(JobReadResultEntry {
-                        handle: None,
-                        summary: None,
-                        output_chunks: Vec::new(),
-                        output_next_seq: 0,
-                        artifacts: Vec::new(),
-                        error: Some(error),
-                    });
+                    entries.push(model_job_error(None, error));
                     continue;
                 }
             };
             let environment_id = match EnvironmentId::try_new(resolved.environment_id.clone()) {
                 Ok(environment_id) => environment_id,
                 Err(error) => {
-                    entries.push(JobReadResultEntry {
-                        handle: Some(resolved),
-                        summary: None,
-                        output_chunks: Vec::new(),
-                        output_next_seq: 0,
-                        artifacts: Vec::new(),
-                        error: Some(format!("invalid job handle environment_id: {error}")),
-                    });
+                    entries.push(model_job_error(
+                        Some(resolved),
+                        format!("invalid job handle environment_id: {error}"),
+                    ));
                     continue;
                 }
             };
@@ -547,28 +538,18 @@ impl SessionTools {
             let environment = match environment {
                 Ok(environment) => environment,
                 Err(error) => {
-                    entries.push(JobReadResultEntry {
-                        handle: Some(resolved),
-                        summary: None,
-                        output_chunks: Vec::new(),
-                        output_next_seq: 0,
-                        artifacts: Vec::new(),
-                        error: Some(format!("environment instance is not reachable: {error}")),
-                    });
+                    entries.push(model_job_error(
+                        Some(resolved),
+                        format!("environment instance is not reachable: {error}"),
+                    ));
                     continue;
                 }
             };
             let Some(jobs) = environment.tool_context().jobs.as_ref() else {
-                entries.push(JobReadResultEntry {
-                    handle: Some(resolved),
-                    summary: None,
-                    output_chunks: Vec::new(),
-                    output_next_seq: 0,
-                    artifacts: Vec::new(),
-                    error: Some(format!(
-                        "environment does not support durable jobs: {environment_id}"
-                    )),
-                });
+                entries.push(model_job_error(
+                    Some(resolved),
+                    format!("environment does not support durable jobs: {environment_id}"),
+                ));
                 continue;
             };
             match jobs
@@ -583,20 +564,18 @@ impl SessionTools {
                 .await
             {
                 Ok(response) => {
-                    entries.push(job_read_entry_from_response(
-                        resolved,
-                        response.jobs.into_iter().next(),
-                    ));
+                    entries.push(
+                        job_read_entry_from_response(
+                            self.blobs.as_ref(),
+                            resolved,
+                            response.jobs.into_iter().next(),
+                            output_bytes,
+                        )
+                        .await?,
+                    );
                 }
                 Err(error) => {
-                    entries.push(JobReadResultEntry {
-                        handle: Some(resolved),
-                        summary: None,
-                        output_chunks: Vec::new(),
-                        output_next_seq: 0,
-                        artifacts: Vec::new(),
-                        error: Some(error.to_string()),
-                    });
+                    entries.push(model_job_error(Some(resolved), error.to_string()));
                 }
             }
         }
@@ -748,6 +727,50 @@ impl SessionTools {
                 &call.call_id,
                 ToolCallStatus::Succeeded,
                 visible_ref,
+            )],
+            error_ref: None,
+            effects: Vec::new(),
+        })
+    }
+
+    async fn succeeded_job_read_result(
+        &self,
+        call: &engine::ToolInvocationRequest,
+        jobs: Vec<ModelJobResult>,
+    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
+        let output = ModelJobResultSet { jobs };
+        let output_ref = self
+            .blobs
+            .put_bytes(serde_json::to_vec(&output).map_err(io_error)?)
+            .await
+            .map_err(map_blob_error)?;
+        let edges = output
+            .jobs
+            .iter()
+            .flat_map(|job| &job.output)
+            .filter_map(|segment| {
+                segment
+                    .blob_ref
+                    .clone()
+                    .map(|child| BlobEdge::contains(output_ref.clone(), child))
+            })
+            .collect::<Vec<_>>();
+        if !edges.is_empty()
+            && let Some(blob_graph) = &self.blob_graph
+        {
+            blob_graph
+                .record_blob_edges(edges)
+                .await
+                .map_err(map_blob_error)?;
+        }
+        Ok(ToolInvocationResult {
+            call_id: call.call_id.clone(),
+            status: ToolCallStatus::Succeeded,
+            output_ref: Some(output_ref.clone()),
+            model_visible_context_entries: vec![ToolInvocationResult::tool_result_context_entry(
+                &call.call_id,
+                ToolCallStatus::Succeeded,
+                output_ref,
             )],
             error_ref: None,
             effects: Vec::new(),
@@ -1065,7 +1088,7 @@ impl SessionTools {
 }
 
 struct EnvironmentJobRead {
-    entries: Vec<JobReadResultEntry>,
+    entries: Vec<ModelJobResult>,
 }
 
 fn environment_model_view(
@@ -1140,27 +1163,41 @@ fn timer_promise_id(
     format!("promise_timer_{suffix}")
 }
 
-fn job_read_entry_from_response(
+async fn job_read_entry_from_response(
+    blobs: &dyn BlobStore,
     handle: JobHandle,
     response: Option<HostJobReadResult>,
-) -> JobReadResultEntry {
+    output_bytes: Option<usize>,
+) -> Result<ModelJobResult, CoreAgentIoError> {
     match response {
-        Some(response) => JobReadResultEntry {
-            handle: Some(handle),
-            summary: Some(response.summary),
-            output_chunks: response.output_chunks,
-            output_next_seq: response.output_next_seq,
-            artifacts: response.artifacts,
-            error: None,
-        },
-        None => JobReadResultEntry {
-            handle: Some(handle),
-            summary: None,
-            output_chunks: Vec::new(),
-            output_next_seq: 0,
-            artifacts: Vec::new(),
-            error: Some("provider returned no job result".to_owned()),
-        },
+        Some(response) => normalize_job_result(
+            blobs,
+            Some(handle),
+            Some(response.summary),
+            response.output_chunks,
+            response.output_next_seq,
+            response.artifacts,
+            None,
+            output_bytes,
+        )
+        .await
+        .map_err(map_blob_error),
+        None => Ok(model_job_error(
+            Some(handle),
+            "provider returned no job result".to_owned(),
+        )),
+    }
+}
+
+fn model_job_error(handle: Option<JobHandle>, error: String) -> ModelJobResult {
+    ModelJobResult {
+        handle,
+        summary: None,
+        output: Vec::new(),
+        output_next_seq: 0,
+        truncated: false,
+        artifacts: Vec::new(),
+        error: Some(error),
     }
 }
 

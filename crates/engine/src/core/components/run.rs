@@ -237,12 +237,6 @@ pub enum WakeReason {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AwaitOutputRefs {
-    pub output_ref: BlobRef,
-    pub summary_ref: BlobRef,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResumeToolBatchCommand {
     pub run_id: RunId,
     pub batch_id: ToolBatchId,
@@ -254,7 +248,7 @@ pub struct ResumeToolBatchCommand {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolBatchResumeOutput {
-    AwaitTool { output: AwaitOutputRefs },
+    AwaitTool { result_ref: BlobRef },
     JoinedWorkflowCalls,
 }
 

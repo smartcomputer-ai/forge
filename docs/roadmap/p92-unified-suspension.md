@@ -279,6 +279,11 @@ pending`, plus `timeout` and `mailbox_message` outcomes. Timeout is a
 successful return with partial results; remaining promises stay pending and
 re-awaitable (today's `agent_wait` timeout semantics, which are right).
 
+**P111 refinement:** the total snapshot is one ordinary `await` ToolResult.
+Resolved/error root JSON is embedded as JSON, UTF-8 roots as strings, and
+opaque roots as CAS-ref descriptors. Promise values are never appended as
+synthetic user messages.
+
 And one revocation tool, its dual:
 
 ```

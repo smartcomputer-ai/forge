@@ -434,7 +434,8 @@ The exact Rust names may differ, but the invariants may not:
 - every joined call maps one original call ID to one internal Promise;
 - wake claims are reconstructed and validated from engine state;
 - the runtime cannot supply arbitrary tool results on resume;
-- explicit await keeps its current output and summary behavior;
+- explicit await uses P111's one ordered aggregate ToolResult, distinct from
+  Joined's one-to-one original-call result mapping;
 - joined resume constructs results directly from validated Promise terminal
   values and binds them to the original workflow-tool call IDs.
 

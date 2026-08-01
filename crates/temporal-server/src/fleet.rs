@@ -10,11 +10,10 @@ use api::{
 };
 use async_trait::async_trait;
 use engine::{
-    BlobRef, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentAction,
-    CoreAgentCommand, CoreAgentDrive, CoreAgentIoError, EventSeq, PromiseId, PromiseSource, RunId,
-    RunTerminalNotifyIntent, SessionId, SubmissionId, ToolBatchId, ToolBatchOutcome, ToolCallId,
-    ToolCallStatus, ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnId,
-    core_agent_clone_opening_events, promise_create_effect,
+    BlobRef, CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentIoError, EventSeq,
+    PromiseId, PromiseSource, RunId, RunTerminalNotifyIntent, SessionId, SubmissionId, ToolBatchId,
+    ToolBatchOutcome, ToolCallId, ToolCallStatus, ToolInvocationBatchResult, ToolInvocationRequest,
+    ToolInvocationResult, TurnId, core_agent_clone_opening_events, promise_create_effect,
     storage::{
         AppendSessionEvents, BlobStore, BlobStoreError, CreateClonedSession, CreateForkedSession,
         ListSessionLinks, SessionLinkDirection, SessionRecord, SessionStore, SessionStoreError,
@@ -50,8 +49,6 @@ const DEFAULT_RECENT_EVENT_LIMIT: u32 = 20;
 const DEFAULT_RECENT_TRANSCRIPT_EVENT_LIMIT: u32 = 20;
 const MAX_RECENT_EVENT_LIMIT: u32 = 100;
 const MAX_DIRECT_LINKS: usize = 100;
-const MAX_AGENT_READ_VISIBLE_CHARS: usize = 20_000;
-const MAX_AGENT_READ_VISIBLE_RUNS: usize = 2;
 
 #[derive(Clone)]
 pub struct FleetService {
@@ -1290,10 +1287,7 @@ impl FleetToolExecutor {
         let args: AgentReadArgs = self.decode_args(call).await?;
         match self.service.read(args).await {
             Ok(output) => {
-                let visible =
-                    read_model_visible_context_entries(self.blobs.as_ref(), &call.call_id, &output)
-                        .await?;
-                self.succeeded_with_entries(call.call_id.clone(), &output, visible)
+                self.succeeded_structured(call.call_id.clone(), &output)
                     .await
             }
             Err(error) => {
@@ -1373,11 +1367,10 @@ impl FleetToolExecutor {
         })
     }
 
-    async fn succeeded_with_entries<T>(
+    async fn succeeded_structured<T>(
         &self,
         call_id: ToolCallId,
         output: &T,
-        model_visible_context_entries: Vec<ContextEntryInput>,
     ) -> Result<ToolInvocationResult, CoreAgentIoError>
     where
         T: Serialize,
@@ -1387,6 +1380,11 @@ impl FleetToolExecutor {
             .put_bytes(serde_json::to_vec(output).map_err(io_error)?)
             .await
             .map_err(map_blob_error)?;
+        let model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
+            &call_id,
+            ToolCallStatus::Succeeded,
+            output_ref.clone(),
+        )];
         Ok(ToolInvocationResult {
             call_id,
             status: ToolCallStatus::Succeeded,
@@ -2014,34 +2012,6 @@ fn request_model_visible_text(output: &AgentRequestOutput) -> String {
     )
 }
 
-fn fleet_user_message(content_ref: BlobRef, preview: Option<&str>) -> ContextEntryInput {
-    ContextEntryInput {
-        kind: ContextEntryKind::Message {
-            role: ContextMessageRole::User,
-        },
-        content_ref,
-        media_type: None,
-        preview: preview.map(|value| value.chars().take(160).collect()),
-        provider_kind: None,
-        provider_item_id: None,
-        token_estimate: None,
-    }
-}
-
-async fn append_fleet_text_message(
-    blobs: &dyn BlobStore,
-    entries: &mut Vec<ContextEntryInput>,
-    text: impl Into<String>,
-    preview: Option<String>,
-) -> Result<(), CoreAgentIoError> {
-    let content_ref = blobs
-        .put_bytes(text.into().into_bytes())
-        .await
-        .map_err(map_blob_error)?;
-    entries.push(fleet_user_message(content_ref, preview.as_deref()));
-    Ok(())
-}
-
 fn list_model_visible_text(output: &AgentListOutput) -> String {
     format!(
         "Found {} {} agent(s) for {}.",
@@ -2052,127 +2022,6 @@ fn list_model_visible_text(output: &AgentListOutput) -> String {
         },
         output.target_session_id
     )
-}
-
-fn read_model_visible_text(output: &AgentReadOutput) -> String {
-    let status = output
-        .session
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    format!(
-        "Read agent {}: status {}, {} link(s), {} recent event(s).",
-        output.session_id,
-        status,
-        output.links.len(),
-        output.recent_events.len()
-    )
-}
-
-async fn read_model_visible_context_entries(
-    blobs: &dyn BlobStore,
-    call_id: &ToolCallId,
-    output: &AgentReadOutput,
-) -> Result<Vec<ContextEntryInput>, CoreAgentIoError> {
-    let summary_ref = blobs
-        .put_bytes(read_model_visible_text(output).into_bytes())
-        .await
-        .map_err(map_blob_error)?;
-    let mut entries = vec![ToolInvocationResult::tool_result_context_entry(
-        call_id,
-        ToolCallStatus::Succeeded,
-        summary_ref,
-    )];
-    if let Some(transcript) = agent_read_visible_run_transcripts(output) {
-        append_fleet_text_message(
-            blobs,
-            &mut entries,
-            transcript,
-            Some(format!("Agent run transcript from {}", output.session_id)),
-        )
-        .await?;
-    }
-    Ok(entries)
-}
-
-fn agent_read_visible_run_transcripts(output: &AgentReadOutput) -> Option<String> {
-    let runs = output.session.get("runs")?.as_array()?;
-    let mut sections = Vec::new();
-    let mut remaining = MAX_AGENT_READ_VISIBLE_CHARS;
-    for run in runs.iter().rev() {
-        if sections.len() >= MAX_AGENT_READ_VISIBLE_RUNS || remaining == 0 {
-            break;
-        }
-        let Some(section) = agent_read_visible_run_section(&output.session_id, run) else {
-            continue;
-        };
-        let section = truncate_chars(&section, remaining);
-        remaining = remaining.saturating_sub(section.chars().count());
-        sections.push(section);
-    }
-    (!sections.is_empty()).then(|| sections.join("\n\n---\n\n"))
-}
-
-fn agent_read_visible_run_section(session_id: &str, run: &Value) -> Option<String> {
-    let run_id = run.get("id").and_then(Value::as_str).unwrap_or("unknown");
-    let status = run
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
-    let entries = run.get("entries").and_then(Value::as_array)?;
-    let mut lines = Vec::new();
-    for entry in entries {
-        let kind = entry.get("kind");
-        let text = entry.get("text").and_then(Value::as_str);
-        match kind
-            .and_then(|kind| kind.get("type"))
-            .and_then(Value::as_str)
-        {
-            Some("message")
-                if kind
-                    .and_then(|kind| kind.get("role"))
-                    .and_then(Value::as_str)
-                    == Some("assistant") =>
-            {
-                if let Some(text) = text
-                    && !text.trim().is_empty()
-                {
-                    lines.push(format!("Assistant message:\n{}", text.trim()));
-                }
-            }
-            Some("toolResult") => {
-                if let Some(output) = text
-                    && !output.trim().is_empty()
-                {
-                    lines.push(format!("Tool result:\n{}", output.trim()));
-                }
-            }
-            _ => {}
-        }
-    }
-    if lines.is_empty() {
-        return None;
-    }
-    let mut text = format!(
-        "Agent run transcript\ntarget_session_id: {session_id}\nrun_id: {run_id}\nstatus: {status}"
-    );
-    text.push_str("\n\n");
-    text.push_str(&lines.join("\n\n"));
-    Some(text)
-}
-
-fn truncate_chars(value: &str, max_chars: usize) -> String {
-    const TRUNCATED: &str = "\n[truncated]";
-    if value.chars().count() <= max_chars {
-        return value.to_owned();
-    }
-    if max_chars <= TRUNCATED.chars().count() {
-        return value.chars().take(max_chars).collect();
-    }
-    let keep = max_chars - TRUNCATED.chars().count();
-    let mut truncated = value.chars().take(keep).collect::<String>();
-    truncated.push_str(TRUNCATED);
-    truncated
 }
 
 fn profile_list_model_visible_text(output: &ProfileListOutput) -> String {
@@ -2273,10 +2122,10 @@ mod tests {
 
     use async_trait::async_trait;
     use engine::{
-        ContextConfig, FeaturesConfig, FleetFeature, FleetProfilesConfig, FleetSpawnBase,
-        FleetSpawnConfig, GenerationConfig, LimitsConfig, ModelSelection, ProviderApiKind,
-        RunConfig, SessionConfig, ToolBatchOutcome, ToolCallId, ToolInvocationRequest, ToolName,
-        WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
+        ContextConfig, ContextEntryKind, FeaturesConfig, FleetFeature, FleetProfilesConfig,
+        FleetSpawnBase, FleetSpawnConfig, GenerationConfig, LimitsConfig, ModelSelection,
+        ProviderApiKind, RunConfig, SessionConfig, ToolBatchOutcome, ToolCallId,
+        ToolInvocationRequest, ToolName, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
     };
     use vfs::{CompareAndSetVfsWorkspaceHead, VfsWorkspaceRecord};
@@ -3750,24 +3599,22 @@ mod tests {
                 .expect("decode output");
         assert_eq!(output.session_id, "parent");
         let visible_ref = visible_tool_result_ref(&result);
-        let visible = blobs.read_text(&visible_ref).await.expect("read visible");
-        assert!(visible.contains("Read agent parent"));
-        let visible_messages = result
-            .model_visible_context_entries
-            .iter()
-            .filter(|entry| matches!(entry.kind, ContextEntryKind::Message { .. }))
-            .collect::<Vec<_>>();
-        assert_eq!(visible_messages.len(), 1);
-        let transcript = blobs
-            .read_text(&visible_messages[0].content_ref)
-            .await
-            .expect("read transcript");
-        assert!(transcript.contains("Agent run transcript"));
-        assert!(transcript.contains("target_session_id: parent"));
-        assert!(transcript.contains("run_id: run_1"));
-        assert!(transcript.contains("status: completed"));
-        assert!(transcript.contains("Tool result:\n/opt"));
-        assert!(transcript.contains("Assistant message:\nCommand completed."));
+        assert_eq!(&visible_ref, output_ref);
+        assert_eq!(result.model_visible_context_entries.len(), 1);
+        assert!(matches!(
+            result.model_visible_context_entries[0].kind,
+            ContextEntryKind::ToolResult { .. }
+        ));
+        assert_eq!(output.session["runs"][0]["id"], "run_1");
+        assert_eq!(output.session["runs"][0]["status"], "completed");
+        assert_eq!(
+            output.session["runs"][0]["entries"][0]["text"],
+            "/opt\n## main...origin/main"
+        );
+        assert_eq!(
+            output.session["runs"][0]["entries"][1]["text"],
+            "Command completed."
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

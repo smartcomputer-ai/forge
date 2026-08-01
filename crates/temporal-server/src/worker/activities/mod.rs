@@ -16,12 +16,12 @@ use crate::worker::{
     ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CONTEXT_COMPACT,
     ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
     ACTIVITY_ENVIRONMENT_JOB_POLL, ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL,
-    ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_PREPROCESS_RUN_INPUT,
-    ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB, ACTIVITY_RUNTIME_PROJECTION_REFRESH,
-    ACTIVITY_START_WORKFLOW_TOOL_EXECUTION, ACTIVITY_TOOL_INVOKE_BATCH,
-    ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS, ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY,
-    AppendEventsRequest, ContextCompactActivityRequest, CreateOrLoadSessionRequest,
-    CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
+    ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
+    ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
+    ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
+    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest, ContextCompactActivityRequest,
+    CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobStartActivityRequest, EnvironmentJobStartActivityResult,
     LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
@@ -206,6 +206,10 @@ mod tests {
         assert_eq!(
             WorkerActivities::read_blob.name(),
             temporal_workflow::WorkflowActivities::read_blob.name()
+        );
+        assert_eq!(
+            WorkerActivities::materialize_await_result.name(),
+            temporal_workflow::WorkflowActivities::materialize_await_result.name()
         );
         assert_eq!(
             WorkerActivities::append_events.name(),
@@ -397,6 +401,16 @@ impl WorkerActivities {
     ) -> Result<ReadBlobResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
         storage::read_blob(state.storage(), request).await
+    }
+
+    #[activity(name = ACTIVITY_MATERIALIZE_AWAIT_RESULT)]
+    pub async fn materialize_await_result(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: temporal_workflow::AwaitMaterializationRequest,
+    ) -> Result<BlobRef, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        storage::materialize_await_result(state.storage(), request).await
     }
 
     #[activity(name = ACTIVITY_APPEND_EVENTS)]

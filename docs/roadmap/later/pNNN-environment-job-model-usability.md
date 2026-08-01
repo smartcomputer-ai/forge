@@ -3,7 +3,7 @@
 **Status**
 
 - Later / agent-usability follow-up.
-- The readable-job-output work in Issue 1 is adopted by
+- The readable-job-output work in Issue 1 was completed by
   [P111](../p111-promise-result-materialization.md), together with generic
   Promise-result materialization through `await`. This document retains Issue
   2 (a Joined job-start surface) and Issue 3 (non-secret environment-level

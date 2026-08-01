@@ -6,8 +6,8 @@ use crate::{
     environment::{
         EnvironmentToolContext,
         jobs::{
-            JobError, JobReadArgs, JobReadResultEntry, JobReadResultSet, JobStartArgs,
-            JobStartResult, JobStarted, visible_job_read_output,
+            JobError, JobReadArgs, JobStartArgs, JobStartResult, JobStarted, ModelJobResultSet,
+            normalize_job_result, visible_job_read_output,
         },
     },
     error::ToolResult,
@@ -31,7 +31,7 @@ pub async fn invoke_job_start(
 pub async fn invoke_job_read(
     ctx: &EnvironmentToolContext,
     args: JobReadArgs,
-) -> ToolResult<JobReadResultSet> {
+) -> ToolResult<ModelJobResultSet> {
     if args.jobs.is_empty() {
         return Err(invalid_request("job_read requires at least one job"));
     }
@@ -46,23 +46,26 @@ pub async fn invoke_job_read(
             wait_ms: None,
         })
         .await?;
-    Ok(JobReadResultSet {
-        jobs: response
-            .jobs
-            .into_iter()
-            .map(|job| JobReadResultEntry {
-                handle: None,
-                summary: Some(job.summary),
-                output_chunks: job.output_chunks,
-                output_next_seq: job.output_next_seq,
-                artifacts: job.artifacts,
-                error: None,
-            })
-            .collect(),
-    })
+    let mut normalized = Vec::with_capacity(response.jobs.len());
+    for job in response.jobs {
+        normalized.push(
+            normalize_job_result(
+                ctx.blobs.as_ref(),
+                None,
+                Some(job.summary),
+                job.output_chunks,
+                job.output_next_seq,
+                job.artifacts,
+                None,
+                args.output_bytes,
+            )
+            .await?,
+        );
+    }
+    Ok(ModelJobResultSet { jobs: normalized })
 }
 
-pub fn job_read_visible(result: &JobReadResultSet) -> String {
+pub fn job_read_visible(result: &ModelJobResultSet) -> String {
     visible_job_read_output(&result.jobs)
 }
 

@@ -50,8 +50,9 @@ use temporalio_client::{
 use tools::{
     concurrency::AWAIT_TOOL_NAME,
     fleet::{
-        AGENT_SEND_TOOL_NAME, AGENT_SPAWN_TOOL_NAME, AgentSendOutput, AgentSpawnOutput,
-        PROFILE_LIST_TOOL_NAME, PROFILE_READ_TOOL_NAME, ProfileListOutput, ProfileReadOutput,
+        AGENT_READ_TOOL_NAME, AGENT_SEND_TOOL_NAME, AGENT_SPAWN_TOOL_NAME, AgentSendOutput,
+        AgentSpawnOutput, PROFILE_LIST_TOOL_NAME, PROFILE_READ_TOOL_NAME, ProfileListOutput,
+        ProfileReadOutput,
     },
 };
 
@@ -386,6 +387,65 @@ impl FleetWaitScriptedLlm {
         })
     }
 
+    async fn read_agent_tool_call_result(
+        &self,
+        request: &LlmGenerationRequest,
+        target_session_id: &str,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        if !request
+            .request
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_str() == AGENT_READ_TOOL_NAME)
+        {
+            return Err(CoreAgentIoError::Failed {
+                message: "scripted agent_read test expected agent_read to be available".to_owned(),
+            });
+        }
+
+        let arguments = serde_json::json!({
+            "target_session_id": target_session_id
+        });
+        let arguments_ref = self
+            .blobs
+            .put_bytes(serde_json::to_vec(&arguments).map_err(io_error)?)
+            .await
+            .map_err(io_error)?;
+        let call_id = ToolCallId::new(format!("agent_read_call_{}", request.turn_id.as_u64()));
+        let tool_name = ToolName::new(AGENT_READ_TOOL_NAME);
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::ToolCall {
+                    call_id: call_id.clone(),
+                    name: tool_name.clone(),
+                },
+                content_ref: arguments_ref.clone(),
+                media_type: Some("application/json".to_owned()),
+                preview: Some(format!("{tool_name}({arguments})")),
+                provider_kind: Some("fleet-wait-script".to_owned()),
+                provider_item_id: Some(call_id.as_str().to_owned()),
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: Some(format!("fleet-read-tool-{}", request.turn_id.as_u64())),
+                finish: LlmFinish::ToolCalls,
+                usage: None,
+                tool_calls: vec![ObservedToolCall {
+                    call_id,
+                    tool_name,
+                    provider_kind: Some("fleet-wait-script".to_owned()),
+                    arguments_ref,
+                    native_call_ref: None,
+                }],
+                context_token_estimate: None,
+            },
+        })
+    }
+
     async fn send_parent_tool_call_result(
         &self,
         request: &LlmGenerationRequest,
@@ -493,30 +553,40 @@ impl CoreAgentLlm for FleetWaitScriptedLlm {
         &self,
         request: LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let user_text = self
+            .latest_text_for_kind(&request, |kind| {
+                matches!(
+                    kind,
+                    ContextEntryKind::Message {
+                        role: ContextMessageRole::User
+                    }
+                )
+            })
+            .await?
+            .unwrap_or_default();
+
         if let Some(tool_result) = self
             .latest_text_for_kind(&request, |kind| {
                 matches!(kind, ContextEntryKind::ToolResult { .. })
             })
             .await?
         {
-            if tool_result.contains("await resolved") {
-                let final_output = self
-                    .latest_text_for_kind(&request, |kind| {
-                        matches!(
-                            kind,
-                            ContextEntryKind::Message {
-                                role: ContextMessageRole::User
-                            }
-                        )
-                    })
-                    .await?
-                    .unwrap_or_default();
+            if user_text.starts_with("READ_CHILD ") && tool_result.contains("\"recent_transcript\"")
+            {
+                return self
+                    .final_result(&request, format!("agent read completed: {tool_result}"))
+                    .await;
+            }
+            if let Some(target_session_id) = user_text.strip_prefix("READ_CHILD ") {
+                return self
+                    .read_agent_tool_call_result(&request, target_session_id.trim())
+                    .await;
+            }
+            if tool_result.contains("\"outcome\":\"terminal\"") {
                 return self
                     .final_result(
                         &request,
-                        format!(
-                            "wait completed after await: {tool_result}\n\nagent final output: {final_output}"
-                        ),
+                        format!("wait completed after await: {tool_result}"),
                     )
                     .await;
             }
@@ -536,18 +606,6 @@ impl CoreAgentLlm for FleetWaitScriptedLlm {
                 .await;
         }
 
-        let user_text = self
-            .latest_text_for_kind(&request, |kind| {
-                matches!(
-                    kind,
-                    ContextEntryKind::Message {
-                        role: ContextMessageRole::User
-                    }
-                )
-            })
-            .await?
-            .unwrap_or_default();
-
         if user_text.starts_with("SLOW_CHILD") {
             tokio::time::sleep(Duration::from_secs(12)).await;
             return self
@@ -557,6 +615,12 @@ impl CoreAgentLlm for FleetWaitScriptedLlm {
 
         if user_text.contains("SPAWN_AND_AWAIT_SLOW_CHILD") {
             return self.spawn_slow_child_tool_call_result(&request).await;
+        }
+
+        if let Some(target_session_id) = user_text.strip_prefix("READ_CHILD ") {
+            return self
+                .read_agent_tool_call_result(&request, target_session_id.trim())
+                .await;
         }
 
         if user_text.contains("REPORT_TO_PARENT") {
@@ -1609,12 +1673,125 @@ async fn run_fleet_wait_live_client(
         "expected parent to observe await result, got: {parent_output}"
     );
     assert!(
-        parent_output.contains("outcome terminal"),
+        parent_output.contains("\"outcome\":\"terminal\""),
         "expected terminal wait result in parent output, got: {parent_output}"
     );
     assert!(
         parent_output.contains("slow child completed"),
         "expected child final output in parent output, got: {parent_output}"
+    );
+    let await_calls = parent_run
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == AWAIT_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(await_calls.len(), 1, "expected one explicit await call");
+    let await_call = await_calls[0];
+    let await_value: serde_json::Value = serde_json::from_str(
+        await_call
+            .output
+            .as_deref()
+            .expect("await call must expose its materialized output"),
+    )?;
+    assert_eq!(await_value["outcome"], "terminal");
+    assert_eq!(
+        await_value["results"]
+            .as_array()
+            .expect("await results array")
+            .len(),
+        1
+    );
+    assert_eq!(
+        parent_run
+            .entries
+            .iter()
+            .filter(|entry| matches!(
+                &entry.kind,
+                ContextEntryKindView::ToolResult { call_id, .. }
+                    if call_id == &await_call.call_id
+            ))
+            .count(),
+        1,
+        "await must project exactly one ToolResult for its call id"
+    );
+    assert_eq!(
+        parent_run
+            .entries
+            .iter()
+            .filter(|entry| matches!(
+                entry.kind,
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User
+                }
+            ))
+            .count(),
+        1,
+        "the Promise payload must not be inserted as a second user message"
+    );
+
+    let read_run = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: format!("READ_CHILD {child_session_id}"),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let read_run =
+        wait_for_terminal_run(api.as_ref(), &session_id, &read_run.result.run.id).await?;
+    let read_output = final_assistant_text(&read_run).expect("agent_read assistant output");
+    assert!(
+        read_output.contains("agent read completed"),
+        "expected the model to observe agent_read's structured result: {read_output}"
+    );
+    let read_calls = read_run
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == AGENT_READ_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(read_calls.len(), 1, "expected one agent_read call");
+    let read_call = read_calls[0];
+    let read_value: serde_json::Value = serde_json::from_str(
+        read_call
+            .output
+            .as_deref()
+            .expect("agent_read call must expose its structured output"),
+    )?;
+    assert_eq!(read_value["session_id"], child_session_id.as_str());
+    assert!(read_value.get("recent_transcript").is_some());
+    assert_eq!(
+        read_run
+            .entries
+            .iter()
+            .filter(|entry| matches!(
+                &entry.kind,
+                ContextEntryKindView::ToolResult { call_id, .. }
+                    if call_id == &read_call.call_id
+            ))
+            .count(),
+        1,
+        "agent_read must project exactly one ToolResult for its call id"
+    );
+    assert_eq!(
+        read_run
+            .entries
+            .iter()
+            .filter(|entry| matches!(
+                entry.kind,
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User
+                }
+            ))
+            .count(),
+        1,
+        "agent_read must not insert its result as a user message"
     );
 
     let parent_handle = live_workflow_handle(&client, &session_id)?;

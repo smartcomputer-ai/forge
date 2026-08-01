@@ -6,8 +6,8 @@ use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
 use crate::{
-    AppendEventsRequest, ContextCompactActivityRequest, CreateOrLoadSessionRequest,
-    CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
+    AppendEventsRequest, AwaitMaterializationRequest, ContextCompactActivityRequest,
+    CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobPrepareWorkflowToolRequest, EnvironmentJobStartActivityRequest,
     EnvironmentJobStartActivityResult, LlmGenerateActivityRequest,
@@ -23,6 +23,7 @@ use crate::{
 pub const ACTIVITY_CREATE_OR_LOAD_SESSION: &str = "WorkflowActivities::create_or_load_session";
 pub const ACTIVITY_PUT_BLOB: &str = "WorkflowActivities::put_blob";
 pub const ACTIVITY_READ_BLOB: &str = "WorkflowActivities::read_blob";
+pub const ACTIVITY_MATERIALIZE_AWAIT_RESULT: &str = "WorkflowActivities::materialize_await_result";
 pub const ACTIVITY_APPEND_EVENTS: &str = "WorkflowActivities::append_events";
 pub const ACTIVITY_LLM_GENERATE: &str = "WorkflowActivities::llm_generate";
 pub const ACTIVITY_PREPROCESS_RUN_INPUT: &str = "WorkflowActivities::preprocess_run_input";
@@ -71,6 +72,16 @@ impl WorkflowActivities {
         _ctx: ActivityContext,
         _request: ReadBlobRequest,
     ) -> Result<ReadBlobResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Load the bounded Promise root refs directly from CAS and write one
+    /// canonical aggregate result, returning only its content ref to history.
+    #[activity(name = ACTIVITY_MATERIALIZE_AWAIT_RESULT)]
+    pub async fn materialize_await_result(
+        _ctx: ActivityContext,
+        _request: AwaitMaterializationRequest,
+    ) -> Result<BlobRef, ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 

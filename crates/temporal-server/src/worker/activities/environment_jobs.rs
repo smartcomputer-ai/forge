@@ -21,6 +21,7 @@ use temporal_workflow::{
 };
 use temporalio_common::error::ApplicationFailure;
 use temporalio_sdk::activities::ActivityError;
+use tools::environment::jobs::{normalize_job_result, store_model_job_result};
 
 use super::{common::activity_error, state::EnvironmentJobActivityDeps};
 
@@ -353,11 +354,25 @@ pub(super) async fn poll(
         let summary = result.summary.clone();
         if summary.status.is_terminal() {
             let resolution = if summary.status == JobStatus::Succeeded {
-                let payload_ref = deps
-                    .blobs
-                    .put_bytes(serde_json::to_vec(&result).map_err(activity_error)?)
-                    .await
-                    .map_err(activity_error)?;
+                let normalized = normalize_job_result(
+                    deps.blobs.as_ref(),
+                    None,
+                    Some(result.summary),
+                    result.output_chunks,
+                    result.output_next_seq,
+                    result.artifacts,
+                    None,
+                    Some(PROMISE_JOB_OUTPUT_BYTES),
+                )
+                .await
+                .map_err(activity_error)?;
+                let payload_ref = store_model_job_result(
+                    deps.blobs.as_ref(),
+                    deps.blob_graph.as_deref(),
+                    &normalized,
+                )
+                .await
+                .map_err(activity_error)?;
                 PromiseSourceCheckResult::Resolved {
                     payload_ref: Some(payload_ref),
                 }

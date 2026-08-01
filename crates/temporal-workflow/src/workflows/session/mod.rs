@@ -37,14 +37,14 @@ use crate::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,
     AgentCompletedRunSummary, AgentMessageSubmissionConsumptionSummary, AgentQueuedRunSummary,
     AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
-    AwaitOutcome, AwaitOutput, AwaitPromiseResult, CancellingWatchdog, CreateOrLoadSessionRequest,
-    DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD, LlmGenerateActivityRequest, PendingEmission,
-    PendingPromiseCancellation, PendingSourceResolution, PendingToolBatchResume,
-    PreprocessRunInputActivityRequest, PreprocessRunInputFailure, PreprocessRunInputFailureKind,
-    PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
-    RuntimeProjectionRefreshActivityRequest, ToolInvokeBatchActivityRequest,
-    ToolPreparePromiseControlsActivityRequest, WorkflowActivities, activity_options,
-    compose_workflow_id, default_instructions, split_workflow_id,
+    AwaitMaterializationRequest, AwaitOutcome, AwaitPromiseResult, CancellingWatchdog,
+    CreateOrLoadSessionRequest, DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD,
+    LlmGenerateActivityRequest, PendingEmission, PendingPromiseCancellation,
+    PendingSourceResolution, PendingToolBatchResume, PreprocessRunInputActivityRequest,
+    PreprocessRunInputFailure, PreprocessRunInputFailureKind, PreprocessRunInputOutcome,
+    PromiseSourcePoll, PutBlobRequest, RuntimeProjectionRefreshActivityRequest,
+    ToolInvokeBatchActivityRequest, ToolPreparePromiseControlsActivityRequest, WorkflowActivities,
+    activity_options, compose_workflow_id, default_instructions, split_workflow_id,
 };
 
 use activity_calls::{

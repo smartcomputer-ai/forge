@@ -194,11 +194,11 @@ The resume command is renamed to what it already is, and its contract
 inverts from "trust these results" to "validate this claim":
 
 ```rust
-CoreAgentCommand::ResumeAwait(ResumeAwaitCommand {
+CoreAgentCommand::ResumeToolBatch(ResumeToolBatchCommand {
     run_id,
     batch_id,
     claim: WakeReason,
-    output: AwaitOutputRefs,   // output + summary blobs, pre-written by the runtime
+    output: AwaitTool { result_ref }, // one materialized aggregate, pre-written by the runtime
 })
 ```
 
@@ -210,21 +210,22 @@ cancelling watchdog still backstops the whole region). Duplicate resumes
 stay idempotent no-ops. On acceptance the engine emits everything semantic
 itself:
 
-- the batch-resumed transition and the per-promise snapshot, derived from
-  its own promise state (it holds the `payload_ref`s/`error_ref`s);
+- the batch-resumed transition, after validating the claim against its own
+  promise state (which holds the `payload_ref`s/`error_ref`s);
 - for a `MailboxMessage` wake, the `ConsumedByAwait` transitions and the
   woken run's context entries, built from the buffered messages' input —
   whose content refs were written at `SubmitMessage` submission, so no new
   I/O is needed at wake time;
-- the await tool-call completion referencing the runtime-supplied output
-  blobs.
+- the await tool-call completion referencing the runtime-supplied aggregate
+  result blob.
 
-The runtime's one irreducible contribution is blob I/O: the machine-readable
-`AwaitOutput` and the human-readable summary must exist in CAS before the
-append that references them, and the engine does no I/O. Those blobs are
-model-visible sugar; the engine validates the *semantic* claim, not the
-prose. A stale blob after a claim mismatch is wasted CAS bytes, not a
-correctness problem.
+The runtime's one irreducible contribution is blob I/O: P111's storage-backed
+materializer must read the Promise roots and write one total aggregate in CAS
+before the append that references it, because the engine does no I/O. The
+same ref is both structured call output and the single model-visible
+ToolResult; Promise-derived user messages no longer exist. The engine validates
+the *semantic* wake claim, not the aggregate bytes. A stale blob after a claim
+mismatch is wasted CAS bytes, not a correctness problem.
 
 What this closes: today a resume asserting `Terminal` against pending
 promises would be accepted. After P94 it is a rejected admission — the

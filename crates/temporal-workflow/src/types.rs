@@ -337,16 +337,32 @@ pub struct PromiseSourcePoll {
     pub poll_attempt: u32,
 }
 
-/// Total await outcome: every requested promise reports its state; timeout
-/// is a successful return with partial results and the remaining promises
-/// stay pending and re-awaitable.
+/// Bounded, ref-only snapshot passed to the storage-backed await materializer.
+/// The activity replaces root refs with their JSON/text values without moving
+/// the root bytes through workflow history.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AwaitOutput {
+pub struct AwaitMaterializationRequest {
     pub outcome: AwaitOutcome,
     #[serde(default)]
     pub results: Vec<AwaitPromiseResult>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub mailbox_messages: Vec<ContextEntryInput>,
+}
+
+/// Canonical model-visible value written by the await materializer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializedAwaitResult {
+    pub outcome: AwaitOutcome,
+    #[serde(default)]
+    pub results: Vec<MaterializedAwaitPromiseResult>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MaterializedAwaitPromiseResult {
+    pub promise_id: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

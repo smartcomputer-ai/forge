@@ -73,33 +73,25 @@ pub(super) async fn process_satisfied_await(
             engine::WakeReason::Timeout => AwaitOutcome::Timeout,
             engine::WakeReason::Terminal => AwaitOutcome::Terminal,
         };
-        let mailbox_messages = if claim == engine::WakeReason::MailboxMessage {
-            buffered_mailbox_messages(&state.core_state)
-        } else {
-            Vec::new()
-        };
         let results = promise_snapshot(parked.spec(), &state.core_state);
-        Some((parked, claim, outcome, results, mailbox_messages))
+        Some((parked, claim, outcome, results))
     });
-    let Some((parked, claim, outcome, results, mailbox_messages)) = resolved else {
+    let Some((parked, claim, outcome, results)) = resolved else {
         return Ok(());
     };
 
     let resume_output = match &parked.suspension {
         engine::ToolBatchSuspension::AwaitTool { .. } => {
-            let output = AwaitOutput {
-                outcome,
-                results,
-                mailbox_messages,
-            };
-            let output_ref = put_await_blob(ctx, serde_json::to_vec(&output)?).await?;
-            let summary_ref = put_await_blob(ctx, await_summary(&output).into_bytes()).await?;
-            engine::ToolBatchResumeOutput::AwaitTool {
-                output: engine::AwaitOutputRefs {
-                    output_ref,
-                    summary_ref,
-                },
-            }
+            let request = AwaitMaterializationRequest { outcome, results };
+            let result_ref = ctx
+                .start_activity(
+                    WorkflowActivities::materialize_await_result,
+                    request,
+                    activity_options(),
+                )
+                .await
+                .map_err(|error| anyhow::anyhow!("{error}"))?;
+            engine::ToolBatchResumeOutput::AwaitTool { result_ref }
         }
         engine::ToolBatchSuspension::JoinedWorkflowCalls { .. } => {
             engine::ToolBatchResumeOutput::JoinedWorkflowCalls
@@ -121,16 +113,6 @@ pub(super) async fn process_satisfied_await(
             });
     });
     Ok(())
-}
-
-fn buffered_mailbox_messages(core_state: &CoreAgentState) -> Vec<ContextEntryInput> {
-    core_state
-        .runs
-        .messages
-        .iter()
-        .filter(|message| message.status == engine::MessageStatus::Buffered)
-        .flat_map(|message| message.input.iter().cloned())
-        .collect()
 }
 
 pub(super) fn promise_snapshot(
@@ -165,41 +147,4 @@ pub(super) fn promise_status_name(status: engine::PromiseStatus) -> &'static str
         engine::PromiseStatus::Failed => "failed",
         engine::PromiseStatus::Cancelled => "cancelled",
     }
-}
-
-fn await_summary(output: &AwaitOutput) -> String {
-    let terminal = output
-        .results
-        .iter()
-        .filter(|result| result.status != "pending")
-        .count();
-    let pending = output.results.len() - terminal;
-    let outcome = match output.outcome {
-        AwaitOutcome::Terminal => "terminal",
-        AwaitOutcome::Timeout => "timeout",
-        AwaitOutcome::Cancelled => "cancelled",
-        AwaitOutcome::MailboxMessage => "mailbox_message",
-    };
-    let detail = output
-        .results
-        .iter()
-        .map(|result| format!("{}: {}", result.promise_id, result.status))
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!(
-        "await resolved with outcome {outcome} (terminal: {terminal}, pending: {pending}). {detail}"
-    )
-}
-
-async fn put_await_blob(
-    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
-    bytes: Vec<u8>,
-) -> anyhow::Result<BlobRef> {
-    ctx.start_activity(
-        WorkflowActivities::put_blob,
-        PutBlobRequest { bytes },
-        activity_options(),
-    )
-    .await
-    .map_err(|error| anyhow::anyhow!("{error}"))
 }

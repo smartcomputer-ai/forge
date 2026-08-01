@@ -14,17 +14,16 @@ use thiserror::Error;
 const AWAIT_TOOL_NAME: &str = "await";
 
 use crate::{
-    AwaitMode, AwaitOutputRefs, AwaitSpec, BlobRef, CodecError, CommandError,
-    ContextCompactionRequest, ContextCompactionResult, ContextEntryInput, ContextEntryKind,
-    ContextEntrySource, ContextEvent, ContextMessageRole, CoreAgentCodec, CoreAgentEntry,
-    CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState, CoreAgentStatus,
-    DomainError, LlmFinish, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus,
-    LlmRequest, MessageStatus, PlanningError, PromiseEvent, PromiseId, PromiseOwnership,
-    PromiseStatus, ResumeToolBatchCommand, RunEvent, RunOrigin, RunSource, SessionId,
-    SessionPosition, ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension,
-    ToolCallId, ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
-    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
-    TurnOutcome, WakeReason,
+    AwaitMode, AwaitSpec, BlobRef, CodecError, CommandError, ContextCompactionRequest,
+    ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
+    ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
+    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
+    LlmGenerationResult, LlmGenerationStatus, LlmRequest, MessageStatus, PlanningError,
+    PromiseEvent, PromiseId, PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent,
+    RunOrigin, RunSource, SessionId, SessionPosition, ToolBatchId, ToolBatchOutcome,
+    ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult, ToolCallStatus,
+    ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationRequest,
+    ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -1059,9 +1058,14 @@ pub fn resume_tool_batch_proposals(
         )));
     }
     let result = match (&parked.suspension, command.output) {
-        (ToolBatchSuspension::AwaitTool { .. }, ToolBatchResumeOutput::AwaitTool { output }) => {
-            await_resume_result(state, output)?
-        }
+        (
+            ToolBatchSuspension::AwaitTool { .. },
+            ToolBatchResumeOutput::AwaitTool { result_ref },
+        ) => await_resume_result(
+            state,
+            result_ref,
+            command.claim == WakeReason::MailboxMessage,
+        )?,
         (
             ToolBatchSuspension::JoinedWorkflowCalls { .. },
             ToolBatchResumeOutput::JoinedWorkflowCalls,
@@ -1200,7 +1204,8 @@ fn validate_await_spec_for_active_run(
 
 fn await_resume_result(
     state: &CoreAgentState,
-    output: AwaitOutputRefs,
+    result_ref: BlobRef,
+    include_mailbox_messages: bool,
 ) -> Result<ToolInvocationBatchResult, DomainError> {
     let active_run = state
         .runs
@@ -1210,7 +1215,7 @@ fn await_resume_result(
     let parked = active_run.parked_tool_batch.as_ref().ok_or_else(|| {
         DomainError::InvariantViolation("await resume requires a parked tool batch".to_owned())
     })?;
-    let ToolBatchSuspension::AwaitTool { call_id, spec } = &parked.suspension else {
+    let ToolBatchSuspension::AwaitTool { call_id, .. } = &parked.suspension else {
         return Err(DomainError::InvariantViolation(
             "await resume requires an await-tool suspension".to_owned(),
         ));
@@ -1224,26 +1229,12 @@ fn await_resume_result(
     let mut model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
         call_id,
         ToolCallStatus::Succeeded,
-        output.summary_ref,
+        result_ref.clone(),
     )];
-    for promise_id in &spec.promise_ids {
-        let Some(promise) = state.promises.promises.get(promise_id) else {
-            continue;
-        };
-        if let Some(payload_ref) = promise.payload_ref.clone() {
-            model_visible_context_entries.push(await_user_message(
-                payload_ref,
-                Some(format!("Promise {} resolved output", promise_id)),
-            ));
-        } else if let Some(error_ref) = promise.error_ref.clone() {
-            model_visible_context_entries.push(await_user_message(
-                error_ref,
-                Some(format!("Promise {} failure detail", promise_id)),
-            ));
+    if include_mailbox_messages {
+        for message in buffered_mailbox_messages(state) {
+            model_visible_context_entries.extend(message.input.iter().cloned());
         }
-    }
-    for message in buffered_mailbox_messages(state) {
-        model_visible_context_entries.extend(message.input.iter().cloned());
     }
     Ok(ToolInvocationBatchResult {
         run_id: active_run.run_id,
@@ -1252,7 +1243,7 @@ fn await_resume_result(
         results: vec![ToolInvocationResult {
             call_id: call_id.clone(),
             status: ToolCallStatus::Succeeded,
-            output_ref: Some(output.output_ref),
+            output_ref: Some(result_ref),
             model_visible_context_entries,
             error_ref: None,
             effects: Vec::new(),
@@ -1364,20 +1355,6 @@ fn joined_workflow_resume_result(
         batch_id: batch.batch_id,
         results,
     })
-}
-
-fn await_user_message(content_ref: BlobRef, preview: Option<String>) -> ContextEntryInput {
-    ContextEntryInput {
-        kind: ContextEntryKind::Message {
-            role: ContextMessageRole::User,
-        },
-        content_ref,
-        media_type: None,
-        preview: preview.map(|value| value.chars().take(160).collect()),
-        provider_kind: None,
-        provider_item_id: None,
-        token_estimate: None,
-    }
 }
 
 fn buffered_mailbox_messages(state: &CoreAgentState) -> Vec<&crate::BufferedMessage> {
@@ -2260,10 +2237,7 @@ mod tests {
             claim,
             claim_observed_at_ms: 91,
             output: ToolBatchResumeOutput::AwaitTool {
-                output: AwaitOutputRefs {
-                    output_ref: BlobRef::from_bytes(b"await output"),
-                    summary_ref: BlobRef::from_bytes(b"await summary"),
-                },
+                result_ref: BlobRef::from_bytes(b"await output"),
             },
         })
     }
@@ -4306,6 +4280,24 @@ mod tests {
             entry.event,
             CoreAgentEvent::Tool(ToolEvent::BatchResumed { .. })
         )));
+        let result_ref = BlobRef::from_bytes(b"await output");
+        let result = entries
+            .iter()
+            .find_map(|entry| match &entry.event {
+                CoreAgentEvent::Tool(ToolEvent::CallCompleted { result, .. }) => Some(result),
+                _ => None,
+            })
+            .expect("await call completion");
+        assert_eq!(result.output_ref.as_ref(), Some(&result_ref));
+        assert_eq!(result.model_visible_context_entries.len(), 1);
+        assert!(matches!(
+            result.model_visible_context_entries[0].kind,
+            ContextEntryKind::ToolResult { .. }
+        ));
+        assert_eq!(
+            result.model_visible_context_entries[0].content_ref,
+            result_ref
+        );
         assert!(
             drive
                 .state()
@@ -4315,6 +4307,76 @@ mod tests {
                 .expect("active run")
                 .parked_tool_batch
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn mailbox_await_keeps_inbound_message_as_user_context() {
+        let session_id = SessionId::new("session-mailbox");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        let deferred = drive
+            .resume_tool_batch_outcome(
+                deferred_await_outcome_with_spec(
+                    &request,
+                    AwaitSpec {
+                        promise_ids: Vec::new(),
+                        mode: AwaitMode::All,
+                        deadline_at_ms: None,
+                        mailbox: true,
+                    },
+                ),
+                90,
+            )
+            .expect("defer mailbox await");
+        commit_action(&mut drive, deferred);
+
+        let message_ref = BlobRef::from_bytes(b"inbound mailbox message");
+        let input = vec![message_input(ContextMessageRole::User, message_ref.clone())];
+        drive.state.runs.messages.push(crate::BufferedMessage {
+            message_id: crate::MessageId::new(1),
+            submission_id: Some(crate::SubmissionId::new("mailbox-1")),
+            submission_digest: crate::message_submission_digest(&input),
+            input,
+            run_config: run_config(),
+            config_revision: 0,
+            status: MessageStatus::Buffered,
+            consumed_by_run_id: None,
+            promoted_to_run_id: None,
+        });
+
+        let resumed = drive
+            .admit_command(
+                resume_tool_batch_command_with_claim(&request, WakeReason::MailboxMessage),
+                91,
+            )
+            .expect("resume mailbox await");
+        let entries = commit_action(&mut drive, resumed);
+        assert!(entries.iter().any(|entry| matches!(
+            entry.event,
+            CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait { .. })
+        )));
+        let result = entries
+            .iter()
+            .find_map(|entry| match &entry.event {
+                CoreAgentEvent::Tool(ToolEvent::CallCompleted { result, .. }) => Some(result),
+                _ => None,
+            })
+            .expect("await call completion");
+        assert_eq!(result.model_visible_context_entries.len(), 2);
+        assert!(matches!(
+            result.model_visible_context_entries[0].kind,
+            ContextEntryKind::ToolResult { .. }
+        ));
+        assert!(matches!(
+            result.model_visible_context_entries[1].kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::User
+            }
+        ));
+        assert_eq!(
+            result.model_visible_context_entries[1].content_ref,
+            message_ref
         );
     }
 

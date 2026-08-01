@@ -59,8 +59,8 @@
   2026-07-30 through the greenfield v4 dispatch foundation, pushed Accepted,
   engine-native Joined, shared declaration readback, durable event diagnostics,
   generated contracts, and passing serial live proofs
-- [ ] [P111](p111-promise-result-materialization.md) — make explicit `await`
-  return one structured tool result containing every observed Promise value,
+- [x] [P111](p111-promise-result-materialization.md) — completed 2026-08-01:
+  make explicit `await` return one structured tool result containing every observed Promise value,
   remove Promise-derived synthetic user messages, retain one root ref per
   Promise with structured child refs, and normalize environment-job byte
   chunks into readable text or typed CAS references before Promise resolution

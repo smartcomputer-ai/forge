@@ -533,10 +533,7 @@ fn pending_resume(batch_id: u64) -> PendingToolBatchResume {
             claim: engine::WakeReason::Timeout,
             claim_observed_at_ms: 1_000,
             output: engine::ToolBatchResumeOutput::AwaitTool {
-                output: engine::AwaitOutputRefs {
-                    output_ref: engine::BlobRef::from_bytes(b"await output"),
-                    summary_ref: engine::BlobRef::from_bytes(b"await summary"),
-                },
+                result_ref: engine::BlobRef::from_bytes(b"await output"),
             },
         },
     }

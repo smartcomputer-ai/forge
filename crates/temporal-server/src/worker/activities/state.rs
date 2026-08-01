@@ -7,7 +7,7 @@ use auth::{
 };
 use engine::{
     CoreAgentLlm, CoreAgentTools, ProviderApiKind,
-    storage::{BlobStore, SessionStore},
+    storage::{BlobGraphStore, BlobStore, SessionStore},
 };
 use environments::EnvironmentStore;
 use llm_clients::{anthropic::messages as am, openai::responses as oai};
@@ -35,6 +35,7 @@ use crate::universe::DeploymentClients;
 pub struct StorageActivityDeps {
     pub(super) sessions: Arc<dyn SessionStore>,
     pub(super) blobs: Arc<dyn BlobStore>,
+    pub(super) blob_graph: Option<Arc<dyn BlobGraphStore>>,
 }
 
 #[derive(Clone)]
@@ -69,6 +70,7 @@ pub struct PreprocessActivityDeps {
 #[derive(Clone)]
 pub struct EnvironmentJobActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
+    pub(super) blob_graph: Option<Arc<dyn BlobGraphStore>>,
     pub(super) environments: Arc<dyn EnvironmentStore>,
     pub(super) credentials: EnvironmentCredentialResolver,
 }
@@ -103,6 +105,7 @@ impl ActivityState {
             storage: StorageActivityDeps {
                 sessions,
                 blobs: blobs.clone(),
+                blob_graph: None,
             },
             llm: LlmActivityDeps {
                 llm,
@@ -156,6 +159,7 @@ impl ActivityState {
     ) -> Self {
         let sessions: Arc<dyn SessionStore> = store.clone();
         let blobs: Arc<dyn BlobStore> = store.clone();
+        let blob_graph: Arc<dyn BlobGraphStore> = store.clone();
         let environment_job_blobs = blobs.clone();
         let environment_job_environments: Arc<dyn EnvironmentStore> = store.clone();
         let environment_job_credentials =
@@ -163,8 +167,10 @@ impl ActivityState {
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let mut state =
             Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(workspace_store);
+        state.storage.blob_graph = Some(blob_graph.clone());
         state.environment_jobs = Some(EnvironmentJobActivityDeps {
             blobs: environment_job_blobs,
+            blob_graph: Some(blob_graph),
             environments: environment_job_environments,
             credentials: environment_job_credentials,
         });

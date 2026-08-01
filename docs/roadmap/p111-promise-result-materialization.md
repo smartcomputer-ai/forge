@@ -2,7 +2,7 @@
 
 **Status**
 
-- Proposed 2026-08-01.
+- Completed 2026-08-01.
 - Greenfield breaking change. Do not preserve the current synthetic-user-message
   transcript shape, add a compatibility branch, or version running Temporal
   histories solely for this change.
@@ -20,7 +20,7 @@
 
 ## Problem
 
-An explicit `await` currently completes with two different model-visible
+Before P111, an explicit `await` completed with two different model-visible
 shapes:
 
 1. the `await` call receives a short tool result such as `await resolved with
@@ -260,6 +260,27 @@ call. Do not emit several provider tool results for the same `await` call id
 and do not retroactively revise the already-completed calls that created the
 Promises.
 
+## Implementation Notes
+
+- `WorkflowActivities::materialize_await_result` performs the bounded CAS
+  reads and one aggregate write; workflow history receives only the aggregate
+  ref.
+- `ToolBatchResumeOutput::AwaitTool` now carries only `result_ref`, which is
+  used for both `ToolCallResult.output_ref` and the single ToolResult context
+  entry.
+- `tools::environment::jobs::normalize_job_result` is shared by direct
+  `job_read` and terminal environment-job Promise production. Binary output
+  segments are stored in CAS, and production roots record containment edges.
+- Because the raw host DTO intentionally has no truncation flag, the semantic
+  `truncated` field is derived at the model-facing boundary when the returned
+  byte count reaches the requested cap.
+- Fleet `agent_read` received the adjacent provenance cleanup immediately
+  after P111: its structured output ref is now its sole ToolResult content ref.
+- Live Temporal coverage verifies explicit Fleet and workflow-tool awaits,
+  `agent_read`, a two-job environment await, readable host-bridge output,
+  failed workflow Promises, and both Bound and Start Joined completion without
+  Promise-derived user entries.
+
 ## Readable Environment Job Results
 
 Promise aggregation must not contain feature-specific decoding. Environment
@@ -361,11 +382,11 @@ shape, transcript rewrite, or API compatibility alias.
 
 ## Adjacent Cleanup
 
-Fleet `agent_read` currently places retrieved child transcripts into extra
-user-role entries behind its tool summary. It has the same provenance problem
-but is not a Promise or suspension path. Fold those transcripts into the
-`agent_read` tool result in a small adjacent cleanup or a separately reviewable
-follow-up; do not expand P111's generic await activity with Fleet knowledge.
+Completed alongside P111's follow-up: Fleet `agent_read` now makes its bounded
+structured `AgentReadOutput` both the call output and sole ToolResult. Retrieved
+child transcripts remain inspection data under that result and no longer
+create user-role entries. This stays independent from P111's generic await
+activity, which has no Fleet knowledge.
 
 ## Non-Goals
 

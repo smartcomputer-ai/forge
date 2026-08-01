@@ -280,6 +280,11 @@ The default `agent_read` should include a small recent activity window when it i
 cheap and bounded, enough to answer "what is going on?" without requiring a
 separate transcript read. Larger history reads remain explicit and paged.
 
+**P111 follow-up:** the structured `AgentReadOutput` is both the durable call
+output and the sole model-visible ToolResult. Transcript content is inspection
+data produced by `agent_read`; it is never appended as a synthetic user
+message.
+
 ### `agent_cancel`
 
 Cancels an active run or closes a child agent, depending on scope and policy.
