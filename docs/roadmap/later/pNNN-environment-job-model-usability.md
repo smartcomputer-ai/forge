@@ -3,6 +3,11 @@
 **Status**
 
 - Later / agent-usability follow-up.
+- The readable-job-output work in Issue 1 is adopted by
+  [P111](../p111-promise-result-materialization.md), together with generic
+  Promise-result materialization through `await`. This document retains Issue
+  2 (a Joined job-start surface) and Issue 3 (non-secret environment-level
+  variables).
 - Written 2026-07-31 after inspecting
   `session_91992f6a60524ee9ace5c50369326af8`, where a successful environment job
   returned Base64-encoded output chunks to the model through an awaited
@@ -30,7 +35,7 @@ Make the common environment-job path feel like an ordinary model tool:
 These are model-interface changes. They must not weaken the byte-safe host
 protocol or replace durable workflow suspension with a blocking RPC.
 
-## Issue 1: Transport Chunks Leak Into Model Context
+## Issue 1: Transport Chunks Leak Into Model Context (Adopted By P111)
 
 ### Observed behavior
 
@@ -316,19 +321,16 @@ credential resolution does not.
 
 ## Implementation Direction
 
-1. Introduce one shared job-result normalizer used by `job_read`, environment
-   Promise resolution, and future joined completion.
-2. Keep raw `JobOutputChunk` and `ByteChunk` types below that boundary.
-3. Define a stable model-facing output-segment type with text-first and
-   explicit binary-fallback variants.
-4. Ensure the Promise payload stored by environment-job polling is the
-   normalized semantic result, not serialized host-protocol output.
-5. Decide the joined tool name and whether its unit is one job or one job
+P111 owns the shared job-result normalizer, the text-first output-segment
+shape, binary CAS references, direct `job_read` normalization, and normalized
+terminal Promise payloads. The remaining implementation direction here is:
+
+1. Decide the joined tool name and whether its unit is one job or one job
    group.
-6. Declare the joined tool through the existing P106 `Start + Joined`
+2. Declare the joined tool through the existing P106 `Start + Joined`
    machinery and extend `EnvironmentJobWorkflow` to produce its one completion
    reply.
-7. Reuse existing environment-job cancellation handling for joined-call
+3. Reuse existing environment-job cancellation handling for joined-call
    cancellation.
 
 If environment-level variables are adopted:
