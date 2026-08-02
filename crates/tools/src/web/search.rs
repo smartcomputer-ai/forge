@@ -2,7 +2,7 @@
 
 use engine::{
     ProviderApiKind, ProviderNativeToolExecution, ProviderNativeToolSpec, ToolKind, ToolName,
-    ToolParallelism, ToolSpec, ToolTargetRequirement,
+    ToolParallelism, ToolSpec,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -200,7 +200,6 @@ pub fn openai_responses_web_search_tool_bundle(
                 execution: ProviderNativeToolExecution::ProviderHosted,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         },
         documents: vec![native_tool],
     }))
@@ -305,7 +304,6 @@ mod tests {
 
         assert_eq!(bundle.spec.name.as_str(), WEB_SEARCH_TOOL_NAME);
         assert_eq!(bundle.spec.parallelism, ToolParallelism::ParallelSafe);
-        assert_eq!(bundle.spec.target_requirement, ToolTargetRequirement::None);
         let ToolKind::ProviderNative(native) = &bundle.spec.kind else {
             panic!("expected provider-native tool");
         };

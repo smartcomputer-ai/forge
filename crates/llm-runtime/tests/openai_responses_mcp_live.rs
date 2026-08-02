@@ -4,7 +4,6 @@ use engine::{
     ContextConfig, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
     CoreAgentEvent, ModelSelection, ProviderApiKind, RemoteMcpApprovalPolicy, RemoteMcpToolSpec,
     RunConfig, RunStatus, SessionConfig, SessionId, ToolKind, ToolName, ToolParallelism, ToolSpec,
-    ToolTargetRequirement,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
 use llm_clients::openai::responses::{Client, Config};
@@ -228,7 +227,6 @@ fn remote_mcp_echo_tools() -> BTreeMap<ToolName, ToolSpec> {
             auth_required: false,
         }),
         parallelism: ToolParallelism::ParallelSafe,
-        target_requirement: ToolTargetRequirement::None,
     };
     BTreeMap::from([(tool.name.clone(), tool)])
 }

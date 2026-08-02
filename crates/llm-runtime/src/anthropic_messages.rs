@@ -488,7 +488,7 @@ async fn materialize_block(
                 am::ContentBlockParam::text(crate::skill_prompts::skill_catalog_text(&catalog)),
             ))
         }
-        ContextEntryKind::SkillActivation { skill_id } => {
+        ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
@@ -1334,7 +1334,6 @@ mod tests {
                 provider_options_ref: Some(provider_options_ref),
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }];
         request.tool_choice = Some(ToolChoice::Specific {
             tool_name: ToolName::new("read_file"),
@@ -1604,7 +1603,6 @@ mod tests {
                 auth_required: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }];
 
         let materialized = materialize_create_request(&blobs, &request)
@@ -1642,7 +1640,6 @@ mod tests {
                 auth_required: true,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }
     }
 
@@ -1918,7 +1915,6 @@ mod tests {
                 auth_required: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }];
         let error = materialize_create_request(&blobs, &mcp_approval)
             .await
@@ -2275,6 +2271,7 @@ mod tests {
             key: None,
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::SkillActivation {
+                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
                 skill_id: engine::SkillId::new("skill:deploy-review"),
             },
             source: ContextEntrySource::Runtime {

@@ -873,7 +873,7 @@ fn map_vfs_catalog_error(error: ::vfs::VfsCatalogError) -> FsError {
             actual_revision,
         } => FsError::Failed {
             message: format!(
-                "vfs workspace revision conflict for {workspace_id}: expected {expected_revision}, actual {actual_revision}"
+                "vfs_workspace_revision_conflict: workspace {workspace_id}, expected revision {expected_revision}, actual revision {actual_revision}"
             ),
         },
         ::vfs::VfsCatalogError::InvalidInput { message } => FsError::InvalidInput { message },
@@ -903,7 +903,6 @@ mod tests {
     };
     use crate::runtime::InlineToolRuntime;
     use crate::runtime::ToolTarget;
-    use crate::targets::ToolTargets;
     use crate::toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset};
 
     #[derive(Debug, Default)]
@@ -1395,7 +1394,7 @@ mod tests {
             .await
             .expect_err("write should conflict");
         assert!(
-            matches!(error, FsError::Failed { message } if message.contains("revision conflict"))
+            matches!(error, FsError::Failed { message } if message.contains("vfs_workspace_revision_conflict"))
         );
     }
 
@@ -1443,7 +1442,7 @@ mod tests {
             &ToolsetConfig::workspace(),
         )
         .expect("toolset");
-        let runtime = InlineToolRuntime::with_session_filesystem(ctx, toolset.catalog);
+        let runtime = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
         let args_ref = blobs
             .put_bytes(br#"{"path":"/README.md","content":"updated\n"}"#.to_vec())
             .await
@@ -1462,9 +1461,8 @@ mod tests {
                 workspace_links: Vec::new(),
                 calls: vec![ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
-                    tool_name: ToolName::new("write_file"),
+                    tool_name: ToolName::new("vfs_write_file"),
                     arguments_ref: args_ref,
-                    execution_target: Some(ToolTargets::session_fs_execution_target()),
                     workflow_tool: None,
                     promise_control: None,
                 }],

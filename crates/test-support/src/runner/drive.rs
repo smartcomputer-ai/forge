@@ -407,7 +407,6 @@ impl SessionRunner {
         let publication = prepare_skill_catalog_publication_with_warnings(
             self.stores.blobs.as_ref(),
             state,
-            None,
             &inputs,
             resolved.warnings().to_vec(),
         )
@@ -835,7 +834,7 @@ mod tests {
         ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentEvent, FunctionToolSpec,
         LlmFinish, ModelSelection, ObservedToolCall, ProviderApiKind, RunConfig, RunStatus,
         SessionConfig, SessionId, ToolCallResult, ToolKind, ToolName, ToolParallelism, ToolSpec,
-        ToolTargetRequirement, TurnEvent, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
+        TurnEvent, WorkspaceLink, WorkspaceLinkAccess, WorkspaceLinkTarget,
         storage::{
             BlobStore, CreateForkedSession, CreateSession, InMemoryBlobStore, InMemorySessionStore,
             SessionStore,
@@ -1286,7 +1285,6 @@ mod tests {
                     provider_options_ref: None,
                 }),
                 parallelism: ToolParallelism::ParallelSafe,
-                target_requirement: ToolTargetRequirement::None,
             },
         )])
     }
@@ -1896,7 +1894,7 @@ mod tests {
         )
         .expect("toolset");
         let tool_set = toolset.tools.clone();
-        let tools = InlineToolRuntime::with_session_filesystem(ctx, toolset.catalog);
+        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
         let runner = SessionRunner::new(
             stores,
             Arc::new(ReadFileThenFinalLlm {
@@ -2025,7 +2023,7 @@ mod tests {
         )
         .expect("toolset");
         let tool_set = toolset.tools.clone();
-        let tools = InlineToolRuntime::with_session_filesystem(ctx, toolset.catalog);
+        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
         let runner = SessionRunner::new(
             stores,
             Arc::new(ReadFileThenFinalLlm {

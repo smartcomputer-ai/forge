@@ -19,14 +19,14 @@ pub(crate) async fn read_skill_catalog(
 }
 
 pub(crate) fn skill_catalog_text(catalog: &SkillCatalogSnapshot) -> String {
-    let mut text = String::from("Lightspeed skill catalog:\n\n");
+    let mut text = String::from("VFS skill catalog:\n\n");
     if catalog.skills.is_empty() {
         text.push_str("No Lightspeed skills are currently available.");
         return text;
     }
 
     text.push_str(
-        "When a skill is relevant, read its SKILL.md through the available file tool before following it.\n\n",
+        "When a skill is relevant, read its SKILL.md through the appropriate VFS file tool before following it. VFS skill paths are not environment paths.\n\n",
     );
     for skill in &catalog.skills {
         text.push_str(&skill_catalog_entry(skill));
@@ -42,9 +42,6 @@ fn skill_catalog_entry(skill: &SkillMetadata) -> String {
         skill.description,
         skill_doc_path(&skill.location)
     );
-    if let Some(target) = &skill.target {
-        entry.push_str(&format!("\n  target: {}:{}", target.namespace, target.id));
-    }
     if let Some(short_description) = &skill.short_description {
         entry.push_str(&format!("\n  short_description: {short_description}"));
     }
@@ -56,7 +53,6 @@ fn skill_doc_path(location: &SkillLocation) -> &str {
     match location {
         SkillLocation::LinkedSnapshot { skill_doc_path, .. }
         | SkillLocation::LinkedWorkspace { skill_doc_path, .. } => skill_doc_path.as_str(),
-        SkillLocation::HostFilesystem { skill_doc_path, .. } => skill_doc_path,
     }
 }
 

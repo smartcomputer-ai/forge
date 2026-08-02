@@ -21,8 +21,7 @@ use crate::{
     AwaitSpec, BlobRef, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
     ContextEntryKind, EnvironmentId, LlmGenerationFacts, LlmGenerationStatus, LlmRequest,
     PromiseId, PromiseOwnership, PromiseScope, PromiseStatus, RunId, SessionId, ToolBatchId,
-    ToolCallId, ToolCallStatus, ToolExecutionTarget, ToolName, TurnId, WorkflowToolBinding,
-    WorkspaceLink,
+    ToolCallId, ToolCallStatus, ToolName, TurnId, WorkflowToolBinding, WorkspaceLink,
 };
 
 #[async_trait]
@@ -123,7 +122,6 @@ pub struct ToolInvocationRequest {
     pub call_id: ToolCallId,
     pub tool_name: ToolName,
     pub arguments_ref: BlobRef,
-    pub execution_target: Option<ToolExecutionTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_tool: Option<WorkflowToolCallRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -25,9 +25,9 @@ use engine::{
     CoreAgentLlm, CoreAgentTools, EmissionBody, EmissionEnvelope, EmissionProducer,
     FunctionToolSpec, LlmFinish, LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult,
     LlmGenerationStatus, ObservedToolCall, PromiseResolution, SessionId, ToolCallId, ToolKind,
-    ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, WorkflowEndpointRef,
-    WorkflowStartRef, WorkflowToolCompletion, WorkflowToolDeclaration, WorkflowToolDefinition,
-    WorkflowToolTarget, storage::BlobStore,
+    ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef, WorkflowStartRef,
+    WorkflowToolCompletion, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolTarget,
+    storage::BlobStore,
 };
 use support::live::{
     LIVE_TEST_LOCK, final_assistant_text, live_universe_id, live_workflow_handle,
@@ -734,7 +734,6 @@ async fn tool_definition(
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         },
     })
 }

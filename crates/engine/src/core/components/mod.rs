@@ -38,9 +38,8 @@ pub use context::{
     skill_activation_context_key, validate_external_context_key,
 };
 pub use environment::{
-    ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND,
-    ENVIRONMENT_TARGET_NAMESPACE, EnvironmentEvent, EnvironmentState, environment_activate_effect,
-    environment_deactivate_effect,
+    ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND, EnvironmentEvent,
+    EnvironmentState, environment_activate_effect, environment_deactivate_effect,
 };
 pub use error::*;
 pub use event::*;
@@ -67,9 +66,9 @@ pub use tooling::{
     ActiveToolBatch, CompletedToolBatch, FunctionToolSpec, ObservedToolCall,
     ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
     RemoteMcpToolSpec, SecretRef, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
-    ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionTarget, ToolKind,
-    ToolParallelism, ToolPatch, ToolSpec, ToolTargetRequirement, ToolingState,
-    UNAVAILABLE_TOOL_RESULT_CONTENT, unavailable_tool_result_ref, validate_tool_map,
+    ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolKind, ToolParallelism, ToolPatch,
+    ToolSpec, ToolingState, UNAVAILABLE_TOOL_RESULT_CONTENT, unavailable_tool_result_ref,
+    validate_tool_map,
 };
 pub use turn::{
     LlmFinish, LlmGenerationFacts, LlmGenerationStatus, LlmUsage, PlannedRequestState, TurnEvent,

@@ -88,7 +88,7 @@ use tools::concurrency::AWAIT_TOOL_NAME;
 const ATTACH_TARGET_ID: &str = "attach-target";
 const CREATED_TARGET_ID: &str = "created-target";
 const PROCESS_STDOUT: &str = "fake provider stdout\n";
-const BRIDGE_FILE_NAME: &str = "bridge-agent.txt";
+const BRIDGE_FILE_NAME: &str = "skills/SKILL.md";
 const BRIDGE_FILE_MARKER: &str = "LIGHTSPEED_BRIDGE_AGENT_MARKER";
 const BRIDGE_VFS_SKILL_MARKER: &str = "LIGHTSPEED_BRIDGE_VFS_SKILL_MARKER";
 const BRIDGE_JOB_FILE_NAME: &str = "job-live.txt";
@@ -164,7 +164,7 @@ async fn temporal_live_profile_selects_universe_environment() -> anyhow::Result<
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env and target/debug/host-bridge"]
-async fn temporal_live_host_bridge_agent_reads_local_filesystem() -> anyhow::Result<()> {
+async fn temporal_live_host_bridge_vfs_environment_isolation() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
@@ -373,7 +373,7 @@ async fn run_host_bridge_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
-                    text: "write a file through the host bridge, then read it back".to_owned(),
+                    text: "read the same path from the environment and VFS domains".to_owned(),
                 }],
             },
             config: None,
@@ -383,10 +383,10 @@ async fn run_host_bridge_client(
     assert_eq!(
         run.status,
         RunStatus::Completed,
-        "host bridge run did not complete: {run:#?}"
+        "host bridge filesystem isolation run did not complete: {run:#?}"
     );
     let Some(text) = final_assistant_text(&run) else {
-        anyhow::bail!("host bridge run missing final assistant message: {run:#?}");
+        anyhow::bail!("host bridge isolation run missing final assistant message: {run:#?}");
     };
     assert!(
         text.contains(BRIDGE_FILE_MARKER),
@@ -1896,7 +1896,7 @@ impl BridgeFileLlm {
             return Err(io_error("planned request did not expose exec_command"));
         }
         let command = format!(
-            "printf '{} from exec_command\\n' > {} && printf 'wrote {}\\n'",
+            "mkdir -p skills && printf '{} from exec_command\\n' > {} && printf 'wrote {}\\n'",
             BRIDGE_FILE_MARKER, BRIDGE_FILE_NAME, BRIDGE_FILE_NAME
         );
         self.tool_call_result(
@@ -1928,7 +1928,7 @@ impl BridgeFileLlm {
             request,
             "read_file",
             json!({
-                "path": format!("/{BRIDGE_FILE_NAME}"),
+                "path": BRIDGE_FILE_NAME,
                 "offset": 1,
                 "limit": 20
             }),
@@ -1945,15 +1945,15 @@ impl BridgeFileLlm {
             .request
             .tools
             .iter()
-            .any(|tool| tool.name.as_str() == "read_file")
+            .any(|tool| tool.name.as_str() == "vfs_read_file")
         {
-            return Err(io_error("planned request did not expose read_file"));
+            return Err(io_error("planned request did not expose vfs_read_file"));
         }
         self.tool_call_result(
             request,
-            "read_file",
+            "vfs_read_file",
             json!({
-                "path": "/skills/SKILL.md",
+                "path": BRIDGE_FILE_NAME,
                 "offset": 1,
                 "limit": 20
             }),
@@ -2013,7 +2013,7 @@ impl BridgeFileLlm {
         &self,
         request: &LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        let mut text = String::from("Host bridge local filesystem test completed.\n");
+        let mut text = String::from("Host bridge filesystem isolation test completed.\n");
         for entry in current_run_tool_results(request) {
             let output = self
                 .blobs

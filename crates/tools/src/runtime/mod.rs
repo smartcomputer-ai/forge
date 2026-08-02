@@ -78,6 +78,9 @@ impl ToolCatalog {
 pub struct ToolBinding {
     pub tool_name: ToolName,
     pub logical_id: String,
+    /// Runtime-only schema adapter identity. The logical id remains stable
+    /// across provider-native presentations.
+    pub adapter_id: Option<String>,
     pub dispatch: ToolDispatchMode,
     pub parallelism: ToolParallelism,
 }
@@ -92,9 +95,15 @@ impl ToolBinding {
         Self {
             tool_name,
             logical_id: logical_id.into(),
+            adapter_id: None,
             dispatch,
             parallelism,
         }
+    }
+
+    pub fn with_adapter_id(mut self, adapter_id: impl Into<String>) -> Self {
+        self.adapter_id = Some(adapter_id.into());
+        self
     }
 }
 

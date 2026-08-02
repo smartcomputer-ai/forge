@@ -152,7 +152,6 @@ pub(super) async fn refresh_runtime_projection(
     let publication = prepare_skill_catalog_publication_with_warnings(
         deps.blobs.as_ref(),
         &state,
-        None,
         &inputs,
         resolved.warnings().to_vec(),
     )
@@ -230,7 +229,7 @@ fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
         kind: ContextEntryKind::SkillCatalog,
         source: ContextEntrySource::Runtime {
-            label: "skills.catalog".to_owned(),
+            label: "skills.catalog.vfs".to_owned(),
         },
         content_ref: input.content_ref,
         media_type: input.media_type,

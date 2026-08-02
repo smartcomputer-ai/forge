@@ -1,0 +1,27 @@
+{
+  "id": "environment-absolute-path",
+  "description": "Resolve an absolute environment path without prefixing the environment cwd twice.",
+  "prompt": "The active environment cwd is /workspaces. Use the ordinary environment read tool to read the absolute path /workspaces/marker.txt. Then answer exactly ABSOLUTE=env-absolute-7042.",
+  "setup": {
+    "environment_cwd": "/workspaces",
+    "environment_files": [
+      {
+        "path": "workspaces/marker.txt",
+        "content": "env-absolute-7042\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_called": ["env.read_file"],
+    "assistant_contains": ["ABSOLUTE=env-absolute-7042"],
+    "tool_output_contains": ["env-absolute-7042"]
+  },
+  "eval": {
+    "runs": 1,
+    "min_pass_rate": 1.0
+  },
+  "run": {
+    "max_tokens": 768,
+    "allowed_tools": ["env.read_file"]
+  }
+}

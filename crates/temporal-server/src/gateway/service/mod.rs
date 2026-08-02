@@ -92,10 +92,9 @@ use engine::{
     FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig,
     RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
     SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
-    ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, WorkflowEndpointRef,
-    WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
-    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
-    skill_activation_context_key,
+    ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef, WorkflowStartRef,
+    WorkflowToolCompletion, WorkflowToolCompletionKeySource, WorkflowToolDeclaration,
+    WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget, skill_activation_context_key,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
 use llm_clients::{anthropic::messages as anthropic, openai::responses as openai};
@@ -716,7 +715,7 @@ impl GatewayAgentApi {
     fn session_toolset_config(
         &self,
         session_config: &SessionConfig,
-        include_process_tools: bool,
+        include_environment_tools: bool,
         include_job_read_tool: bool,
     ) -> ToolsetConfig {
         let features = &session_config.features;
@@ -729,7 +728,7 @@ impl GatewayAgentApi {
         config.builtin = match features.vfs.as_ref().and_then(|vfs| vfs.tools) {
             None => tools::toolset::BuiltinToolsetConfig::disabled(),
             Some(engine::VfsToolSurface::ReadOnly) => tools::toolset::BuiltinToolsetConfig {
-                fs: tools::toolset::FilesystemToolsetConfig::read_only(),
+                vfs: tools::toolset::FilesystemToolsetConfig::read_only(),
                 ..tools::toolset::BuiltinToolsetConfig::disabled()
             },
             Some(engine::VfsToolSurface::Edit) => tools::toolset::BuiltinToolsetConfig::workspace(),
@@ -753,11 +752,11 @@ impl GatewayAgentApi {
             // today beyond the same surface.
             config.concurrency = tools::concurrency::ConcurrencyToolsetConfig::timer();
         }
-        if include_process_tools {
-            config.builtin.process = tools::toolset::EnvironmentToolsetConfig::basic();
+        if include_environment_tools {
+            config.builtin.environment = tools::toolset::EnvironmentToolsetConfig::basic();
         }
         if include_job_read_tool {
-            config.builtin.process.job_read = true;
+            config.builtin.environment.job_read = true;
         }
         config
     }
@@ -1187,14 +1186,13 @@ impl GatewayAgentApi {
         ];
         let mut declarations = Vec::with_capacity(definitions.len());
         for (operation, tool_id, semantic_type, completion) in definitions {
-            let bundle = BuiltinTool::canonical(operation)
+            let bundle = BuiltinTool::environment_canonical(operation)
                 .spec_bundle(&target, false)
                 .map_err(|error| {
                     AgentApiError::internal(format!("build core {tool_id} tool: {error}"))
                 })?;
             store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
-            let mut tool = bundle.spec;
-            tool.target_requirement = engine::ToolTargetRequirement::None;
+            let tool = bundle.spec;
             declarations.push(WorkflowToolDeclaration::new(
                 WorkflowToolDefinition {
                     tool_id: WorkflowToolId::new(tool_id),
@@ -1617,7 +1615,6 @@ fn managed_workflow_tools_from_api(
                         name: tool_name,
                         kind,
                         parallelism,
-                        target_requirement: ToolTargetRequirement::None,
                     },
                 },
                 target,
@@ -2621,6 +2618,7 @@ impl AgentApiService for GatewayAgentApi {
             .await
             .map_err(map_blob_store_error)?;
         let entry = skill_activation_context_input(
+            catalog.catalog_id.clone(),
             skill_id.clone(),
             catalog_ref.clone(),
             context_ref.clone(),
@@ -2637,7 +2635,7 @@ impl AgentApiService for GatewayAgentApi {
             &session_id,
             CoreAgentCommand::UpsertContext {
                 expected_revision: None,
-                key: skill_activation_context_key(&skill_id),
+                key: skill_activation_context_key(&catalog.catalog_id, &skill_id),
                 entry,
             },
         )
@@ -2652,6 +2650,7 @@ impl AgentApiService for GatewayAgentApi {
             .find(|active| active.skill_id == skill_id.as_str())
             .cloned()
             .unwrap_or_else(|| SkillActivationView {
+                catalog_id: catalog.catalog_id.clone(),
                 skill_id: skill_id.as_str().to_owned(),
                 name: Some(skill.name.clone()),
                 description: Some(skill.description.clone()),
@@ -2697,7 +2696,7 @@ impl AgentApiService for GatewayAgentApi {
             &session_id,
             CoreAgentCommand::RemoveContext {
                 expected_revision: None,
-                key: skill_activation_context_key(&skill_id),
+                key: skill_activation_context_key(tools::skills::VFS_SKILL_CATALOG_ID, &skill_id),
             },
         )
         .await?;

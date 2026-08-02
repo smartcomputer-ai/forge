@@ -16,11 +16,10 @@ use crate::{
         },
     },
     runtime::{ToolInvocationOutput, decode_args, encode_output},
-    targets::ResolvedToolContext,
 };
 
 use super::{
-    BuiltinToolOperation, canonical,
+    BuiltinToolContext, BuiltinToolOperation, canonical,
     shared::{
         invalid_request, nullable_integer, nullable_string, object, optional_boolean,
         optional_enum, process_visible_output, string, visible_with_truncation,
@@ -43,14 +42,15 @@ pub(super) fn description(
         BuiltinToolOperation::Grep => "Searches file contents with a regular expression.",
         BuiltinToolOperation::Glob => "Finds files by glob pattern.",
         BuiltinToolOperation::RunProcess => "Executes a shell command.",
-        BuiltinToolOperation::JobSubmit
+        BuiltinToolOperation::ListDir
+        | BuiltinToolOperation::JobSubmit
         | BuiltinToolOperation::JobRun
         | BuiltinToolOperation::JobRead => {
             return Ok(canonical::description(operation, scoped_paths));
         }
-        BuiltinToolOperation::ApplyPatch
-        | BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::WriteProcessStdin => return Err(unsupported(operation)),
+        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
+            return Err(unsupported(operation));
+        }
     };
     Ok(format!("{text}{path_guidance}"))
 }
@@ -207,21 +207,22 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["command"],
         ),
-        BuiltinToolOperation::JobSubmit
+        BuiltinToolOperation::ListDir
+        | BuiltinToolOperation::JobSubmit
         | BuiltinToolOperation::JobRun
         | BuiltinToolOperation::JobRead => {
             return Ok(canonical::input_schema(operation));
         }
-        BuiltinToolOperation::ApplyPatch
-        | BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::WriteProcessStdin => return Err(unsupported(operation)),
+        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
+            return Err(unsupported(operation));
+        }
     };
     Ok(schema)
 }
 
 pub(super) async fn invoke_json(
     operation: BuiltinToolOperation,
-    ctx: ResolvedToolContext<'_>,
+    ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
     match operation {
@@ -296,12 +297,13 @@ pub(super) async fn invoke_json(
             let visible = process_visible_output(&result);
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::JobSubmit
+        BuiltinToolOperation::ListDir
+        | BuiltinToolOperation::JobSubmit
         | BuiltinToolOperation::JobRun
         | BuiltinToolOperation::JobRead => canonical::invoke_json(operation, ctx, arguments).await,
-        BuiltinToolOperation::ApplyPatch
-        | BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::WriteProcessStdin => Err(unsupported(operation)),
+        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
+            Err(unsupported(operation))
+        }
     }
 }
 

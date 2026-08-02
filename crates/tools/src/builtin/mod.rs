@@ -1,17 +1,16 @@
 //! Built-in filesystem and environment action tool definitions.
 
-use engine::{
-    FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
-};
+use engine::{FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
 use serde_json::Value;
 
 use crate::{
+    environment::EnvironmentToolContext,
     error::{ToolError, ToolResult},
+    fs::FsToolContext,
     runtime::{
         ToolBinding, ToolDispatchMode, ToolDocument, ToolInvocationOutput, ToolSpecBundle,
         ToolTarget,
     },
-    targets::{ENV_TARGET_NAMESPACE, FS_TARGET_NAMESPACE, ResolvedToolContext},
 };
 
 mod canonical;
@@ -54,18 +53,101 @@ pub enum BuiltinToolSurface {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum BuiltinToolDomain {
+    Vfs,
+    Environment,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BuiltinTool {
+    domain: BuiltinToolDomain,
     operation: BuiltinToolOperation,
     surface: BuiltinToolSurface,
 }
 
-impl BuiltinTool {
-    pub const fn new(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
-        Self { operation, surface }
+#[derive(Clone, Copy)]
+pub enum BuiltinToolContext<'a> {
+    Vfs(&'a FsToolContext),
+    Environment(&'a EnvironmentToolContext),
+}
+
+impl<'a> BuiltinToolContext<'a> {
+    pub fn filesystem(self) -> ToolResult<&'a FsToolContext> {
+        match self {
+            Self::Vfs(ctx) => Ok(ctx),
+            Self::Environment(ctx) => {
+                ctx.filesystem
+                    .as_ref()
+                    .ok_or_else(|| ToolError::UnsupportedCapability {
+                        message: "environment_filesystem_unavailable".to_owned(),
+                    })
+            }
+        }
     }
 
-    pub const fn canonical(operation: BuiltinToolOperation) -> Self {
-        Self::new(operation, BuiltinToolSurface::Canonical)
+    pub fn environment(self) -> ToolResult<&'a EnvironmentToolContext> {
+        match self {
+            Self::Environment(ctx) => Ok(ctx),
+            Self::Vfs(_) => Err(ToolError::InvalidRequest {
+                message: "environment tool cannot use a VFS context".to_owned(),
+            }),
+        }
+    }
+
+    pub fn blobs(self) -> &'a std::sync::Arc<dyn engine::storage::BlobStore> {
+        match self {
+            Self::Vfs(ctx) => &ctx.blobs,
+            Self::Environment(ctx) => &ctx.blobs,
+        }
+    }
+
+    pub fn limits(self) -> crate::limits::ToolLimits {
+        match self {
+            Self::Vfs(ctx) => ctx.limits,
+            Self::Environment(ctx) => ctx.limits,
+        }
+    }
+
+    pub fn drain_tool_effects(self) -> Vec<engine::ToolEffect> {
+        match self {
+            Self::Vfs(ctx) => ctx.fs.drain_tool_effects(),
+            Self::Environment(ctx) => ctx
+                .filesystem
+                .as_ref()
+                .map_or_else(Vec::new, |ctx| ctx.fs.drain_tool_effects()),
+        }
+    }
+}
+
+impl BuiltinTool {
+    pub const fn environment(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
+        Self {
+            domain: BuiltinToolDomain::Environment,
+            operation,
+            surface,
+        }
+    }
+
+    pub const fn environment_canonical(operation: BuiltinToolOperation) -> Self {
+        Self::environment(operation, BuiltinToolSurface::Canonical)
+    }
+
+    pub const fn vfs(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
+        assert!(matches!(
+            operation,
+            BuiltinToolOperation::ReadFile
+                | BuiltinToolOperation::WriteFile
+                | BuiltinToolOperation::EditFile
+                | BuiltinToolOperation::ApplyPatch
+                | BuiltinToolOperation::Grep
+                | BuiltinToolOperation::Glob
+                | BuiltinToolOperation::ListDir
+        ));
+        Self {
+            domain: BuiltinToolDomain::Vfs,
+            operation,
+            surface,
+        }
     }
 
     pub const fn operation(self) -> BuiltinToolOperation {
@@ -76,80 +158,94 @@ impl BuiltinTool {
         self.surface
     }
 
+    pub const fn domain(self) -> BuiltinToolDomain {
+        self.domain
+    }
+
     pub const fn logical_id(self) -> &'static str {
-        match (self.surface, self.operation) {
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::ReadFile) => "fs.read_file",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::WriteFile) => "fs.write_file",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::EditFile) => "fs.edit_file",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::ApplyPatch) => "fs.apply_patch",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::Grep) => "fs.grep",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::Glob) => "fs.glob",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::ListDir) => "fs.list_dir",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::RunProcess) => "env.run_process",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::WriteProcessStdin) => {
+        match (self.domain, self.operation) {
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::ReadFile) => "vfs.read_file",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::WriteFile) => "vfs.write_file",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::EditFile) => "vfs.edit_file",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::ApplyPatch) => "vfs.apply_patch",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::Grep) => "vfs.grep",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::Glob) => "vfs.glob",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::ListDir) => "vfs.list_dir",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::ReadFile) => "env.read_file",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::WriteFile) => "env.write_file",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::EditFile) => "env.edit_file",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::ApplyPatch) => "env.apply_patch",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::Grep) => "env.grep",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::Glob) => "env.glob",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::ListDir) => "env.list_dir",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::RunProcess) => "env.run_process",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::WriteProcessStdin) => {
                 "env.write_process_stdin"
             }
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobSubmit) => "env.job_submit",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobRun) => "env.job_run",
-            (BuiltinToolSurface::Canonical, BuiltinToolOperation::JobRead) => "env.job_read",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::ReadFile) => "fs.codex.read_file",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::WriteFile) => {
-                "fs.codex.write_file"
-            }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::EditFile) => "fs.codex.edit_file",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::ApplyPatch) => {
-                "fs.codex.apply_patch"
-            }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::Grep) => "fs.codex.grep",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::Glob) => "fs.codex.glob",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::ListDir) => "fs.codex.list_dir",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::RunProcess) => {
-                "env.codex.run_process"
-            }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::WriteProcessStdin) => {
-                "env.codex.write_process_stdin"
-            }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobSubmit) => {
-                "env.codex.job_submit"
-            }
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobRun) => "env.codex.job_run",
-            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::JobRead) => "env.codex.job_read",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile) => {
-                "fs.claude.read_file"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteFile) => {
-                "fs.claude.write_file"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::EditFile) => {
-                "fs.claude.edit_file"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch) => {
-                "fs.claude.apply_patch"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Grep) => "fs.claude.grep",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "fs.claude.glob",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => {
-                "fs.claude.list_dir"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::RunProcess) => {
-                "env.claude.run_process"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteProcessStdin) => {
-                "env.claude.write_process_stdin"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobSubmit) => {
-                "env.claude.job_submit"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobRun) => {
-                "env.claude.job_run"
-            }
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::JobRead) => {
-                "env.claude.job_read"
-            }
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::JobSubmit) => "env.job_submit",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::JobRun) => "env.job_run",
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::JobRead) => "env.job_read",
+            (
+                BuiltinToolDomain::Vfs,
+                BuiltinToolOperation::RunProcess
+                | BuiltinToolOperation::WriteProcessStdin
+                | BuiltinToolOperation::JobSubmit
+                | BuiltinToolOperation::JobRun
+                | BuiltinToolOperation::JobRead,
+            ) => unreachable!(),
         }
     }
 
-    pub const fn name_str(self) -> &'static str {
+    pub fn name_str(self) -> &'static str {
+        if self.domain == BuiltinToolDomain::Vfs {
+            return match (self.surface, self.operation) {
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::ReadFile,
+                ) => "vfs_read_file",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::WriteFile,
+                ) => "vfs_write_file",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::EditFile,
+                ) => "vfs_edit_file",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::ApplyPatch,
+                ) => "vfs_apply_patch",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::Grep,
+                ) => "vfs_grep",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::Glob,
+                ) => "vfs_glob",
+                (
+                    BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
+                    BuiltinToolOperation::ListDir,
+                ) => "vfs_list_dir",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile) => "VfsRead",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteFile) => "VfsWrite",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::EditFile) => "VfsEdit",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch) => {
+                    "VfsApplyPatch"
+                }
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Grep) => "VfsGrep",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "VfsGlob",
+                (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "VfsListDir",
+                (
+                    _,
+                    BuiltinToolOperation::RunProcess
+                    | BuiltinToolOperation::WriteProcessStdin
+                    | BuiltinToolOperation::JobSubmit
+                    | BuiltinToolOperation::JobRun
+                    | BuiltinToolOperation::JobRead,
+                ) => unreachable!(),
+            };
+        }
         match (self.surface, self.operation) {
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
@@ -212,7 +308,7 @@ impl BuiltinTool {
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "Glob",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::RunProcess) => "Bash",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch) => "apply_patch",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "list_dir",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "ListDir",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteProcessStdin) => {
                 "write_stdin"
             }
@@ -225,119 +321,83 @@ impl BuiltinTool {
 
     pub fn from_logical_id(logical_id: &str) -> Option<Self> {
         Some(match logical_id {
-            "fs.read_file" | "host.read_file" => Self::canonical(BuiltinToolOperation::ReadFile),
-            "fs.write_file" | "host.write_file" => Self::canonical(BuiltinToolOperation::WriteFile),
-            "fs.edit_file" | "host.edit_file" => Self::canonical(BuiltinToolOperation::EditFile),
-            "fs.apply_patch" | "host.apply_patch" => {
-                Self::canonical(BuiltinToolOperation::ApplyPatch)
-            }
-            "fs.grep" | "host.grep" => Self::canonical(BuiltinToolOperation::Grep),
-            "fs.glob" | "host.glob" => Self::canonical(BuiltinToolOperation::Glob),
-            "fs.list_dir" | "host.list_dir" => Self::canonical(BuiltinToolOperation::ListDir),
-            "env.run_process" | "host.run_process" => {
-                Self::canonical(BuiltinToolOperation::RunProcess)
-            }
-            "env.write_process_stdin" | "host.write_process_stdin" => {
-                Self::canonical(BuiltinToolOperation::WriteProcessStdin)
-            }
-            "env.job_submit" | "host.job_submit" => {
-                Self::canonical(BuiltinToolOperation::JobSubmit)
-            }
-            "env.job_run" | "host.job_run" => Self::canonical(BuiltinToolOperation::JobRun),
-            "env.job_read" | "host.job_read" => Self::canonical(BuiltinToolOperation::JobRead),
-            "fs.codex.read_file" | "host.codex.read_file" => Self::new(
+            "vfs.read_file" => Self::vfs(
                 BuiltinToolOperation::ReadFile,
-                BuiltinToolSurface::CodexLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.codex.write_file" | "host.codex.write_file" => Self::new(
+            "vfs.write_file" => Self::vfs(
                 BuiltinToolOperation::WriteFile,
-                BuiltinToolSurface::CodexLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.codex.edit_file" | "host.codex.edit_file" => Self::new(
+            "vfs.edit_file" => Self::vfs(
                 BuiltinToolOperation::EditFile,
-                BuiltinToolSurface::CodexLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.codex.apply_patch" | "host.codex.apply_patch" => Self::new(
+            "vfs.apply_patch" => Self::vfs(
                 BuiltinToolOperation::ApplyPatch,
-                BuiltinToolSurface::CodexLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.codex.grep" | "host.codex.grep" => {
-                Self::new(BuiltinToolOperation::Grep, BuiltinToolSurface::CodexLike)
+            "vfs.grep" => Self::vfs(BuiltinToolOperation::Grep, BuiltinToolSurface::Canonical),
+            "vfs.glob" => Self::vfs(BuiltinToolOperation::Glob, BuiltinToolSurface::Canonical),
+            "vfs.list_dir" => {
+                Self::vfs(BuiltinToolOperation::ListDir, BuiltinToolSurface::Canonical)
             }
-            "fs.codex.glob" | "host.codex.glob" => {
-                Self::new(BuiltinToolOperation::Glob, BuiltinToolSurface::CodexLike)
-            }
-            "fs.codex.list_dir" | "host.codex.list_dir" => {
-                Self::new(BuiltinToolOperation::ListDir, BuiltinToolSurface::CodexLike)
-            }
-            "env.codex.run_process" | "host.codex.run_process" => Self::new(
-                BuiltinToolOperation::RunProcess,
-                BuiltinToolSurface::CodexLike,
-            ),
-            "env.codex.write_process_stdin" | "host.codex.write_process_stdin" => Self::new(
-                BuiltinToolOperation::WriteProcessStdin,
-                BuiltinToolSurface::CodexLike,
-            ),
-            "env.codex.job_submit" | "host.codex.job_submit" => Self::new(
-                BuiltinToolOperation::JobSubmit,
-                BuiltinToolSurface::CodexLike,
-            ),
-            "env.codex.job_run" | "host.codex.job_run" => {
-                Self::new(BuiltinToolOperation::JobRun, BuiltinToolSurface::CodexLike)
-            }
-            "env.codex.job_read" | "host.codex.job_read" => {
-                Self::new(BuiltinToolOperation::JobRead, BuiltinToolSurface::CodexLike)
-            }
-            "fs.claude.read_file" | "host.claude.read_file" => Self::new(
+            "env.read_file" => Self::environment(
                 BuiltinToolOperation::ReadFile,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.claude.write_file" | "host.claude.write_file" => Self::new(
+            "env.write_file" => Self::environment(
                 BuiltinToolOperation::WriteFile,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.claude.edit_file" | "host.claude.edit_file" => Self::new(
+            "env.edit_file" => Self::environment(
                 BuiltinToolOperation::EditFile,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.claude.apply_patch" | "host.claude.apply_patch" => Self::new(
+            "env.apply_patch" => Self::environment(
                 BuiltinToolOperation::ApplyPatch,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "fs.claude.grep" | "host.claude.grep" => Self::new(
-                BuiltinToolOperation::Grep,
-                BuiltinToolSurface::ClaudeCodeLike,
-            ),
-            "fs.claude.glob" | "host.claude.glob" => Self::new(
-                BuiltinToolOperation::Glob,
-                BuiltinToolSurface::ClaudeCodeLike,
-            ),
-            "fs.claude.list_dir" | "host.claude.list_dir" => Self::new(
-                BuiltinToolOperation::ListDir,
-                BuiltinToolSurface::ClaudeCodeLike,
-            ),
-            "env.claude.run_process" | "host.claude.run_process" => Self::new(
+            "env.grep" => {
+                Self::environment(BuiltinToolOperation::Grep, BuiltinToolSurface::Canonical)
+            }
+            "env.glob" => {
+                Self::environment(BuiltinToolOperation::Glob, BuiltinToolSurface::Canonical)
+            }
+            "env.list_dir" => {
+                Self::environment(BuiltinToolOperation::ListDir, BuiltinToolSurface::Canonical)
+            }
+            "env.run_process" => Self::environment(
                 BuiltinToolOperation::RunProcess,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "env.claude.write_process_stdin" | "host.claude.write_process_stdin" => Self::new(
+            "env.write_process_stdin" => Self::environment(
                 BuiltinToolOperation::WriteProcessStdin,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "env.claude.job_submit" | "host.claude.job_submit" => Self::new(
+            "env.job_submit" => Self::environment(
                 BuiltinToolOperation::JobSubmit,
-                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolSurface::Canonical,
             ),
-            "env.claude.job_run" | "host.claude.job_run" => Self::new(
-                BuiltinToolOperation::JobRun,
-                BuiltinToolSurface::ClaudeCodeLike,
-            ),
-            "env.claude.job_read" | "host.claude.job_read" => Self::new(
-                BuiltinToolOperation::JobRead,
-                BuiltinToolSurface::ClaudeCodeLike,
-            ),
+            "env.job_run" => {
+                Self::environment(BuiltinToolOperation::JobRun, BuiltinToolSurface::Canonical)
+            }
+            "env.job_read" => {
+                Self::environment(BuiltinToolOperation::JobRead, BuiltinToolSurface::Canonical)
+            }
             _ => return None,
         })
+    }
+
+    pub fn from_binding(logical_id: &str, adapter_id: Option<&str>) -> Option<Self> {
+        let mut tool = Self::from_logical_id(logical_id)?;
+        tool.surface = match adapter_id.unwrap_or("canonical") {
+            "canonical" => BuiltinToolSurface::Canonical,
+            "codex" => BuiltinToolSurface::CodexLike,
+            "claude" => BuiltinToolSurface::ClaudeCodeLike,
+            _ => return None,
+        };
+        Some(tool)
     }
 
     pub const fn requires_write(self) -> bool {
@@ -369,14 +429,6 @@ impl BuiltinTool {
         !self.requires_process() && !self.requires_jobs()
     }
 
-    pub const fn target_namespace(self) -> &'static str {
-        if self.is_filesystem_operation() {
-            FS_TARGET_NAMESPACE
-        } else {
-            ENV_TARGET_NAMESPACE
-        }
-    }
-
     pub const fn parallelism(self) -> ToolParallelism {
         match self.operation {
             BuiltinToolOperation::ReadFile
@@ -401,6 +453,11 @@ impl BuiltinTool {
             dispatch,
             self.parallelism(),
         )
+        .with_adapter_id(match self.surface {
+            BuiltinToolSurface::Canonical => "canonical",
+            BuiltinToolSurface::CodexLike => "codex",
+            BuiltinToolSurface::ClaudeCodeLike => "claude",
+        })
     }
 
     pub fn spec_bundle(
@@ -429,24 +486,31 @@ impl BuiltinTool {
                     provider_options_ref: None,
                 }),
                 parallelism: self.parallelism(),
-                target_requirement: match self.target_namespace() {
-                    "fs" => ToolTargetRequirement::SessionFilesystem,
-                    "env" => ToolTargetRequirement::ActiveEnvironment,
-                    _ => unreachable!("built-in tool target namespaces are fixed"),
-                },
             },
             documents: vec![description, input_schema],
         })
     }
 
     fn description(self, scoped_paths: bool) -> ToolResult<String> {
-        match self.surface {
+        let description = match self.surface {
             BuiltinToolSurface::Canonical => {
                 Ok(canonical::description(self.operation, scoped_paths))
             }
             BuiltinToolSurface::CodexLike => Ok(codex::description(self.operation, scoped_paths)),
             BuiltinToolSurface::ClaudeCodeLike => claude::description(self.operation, scoped_paths),
-        }
+        }?;
+        let boundary = match self.domain {
+            BuiltinToolDomain::Vfs => {
+                " Accesses only session-linked VFS workspaces and snapshots; these files are not visible to environment commands."
+            }
+            BuiltinToolDomain::Environment if self.is_filesystem_operation() => {
+                " Accesses only the active environment filesystem; it does not read or modify linked VFS files."
+            }
+            BuiltinToolDomain::Environment => {
+                " Operates only in the active environment; linked VFS files are not implicitly available."
+            }
+        };
+        Ok(format!("{description}{boundary}"))
     }
 
     fn input_schema(self, _target: &ToolTarget) -> ToolResult<Value> {
@@ -459,7 +523,7 @@ impl BuiltinTool {
 
     pub async fn invoke_json(
         self,
-        ctx: ResolvedToolContext<'_>,
+        ctx: BuiltinToolContext<'_>,
         arguments: Value,
     ) -> ToolResult<ToolInvocationOutput> {
         match self.surface {
@@ -510,17 +574,17 @@ mod tests {
     #[test]
     fn built_in_tool_names_are_valid_tool_names() {
         for tool in [
-            BuiltinTool::canonical(BuiltinToolOperation::ReadFile),
-            BuiltinTool::canonical(BuiltinToolOperation::WriteFile),
-            BuiltinTool::canonical(BuiltinToolOperation::EditFile),
-            BuiltinTool::canonical(BuiltinToolOperation::ApplyPatch),
-            BuiltinTool::canonical(BuiltinToolOperation::Grep),
-            BuiltinTool::canonical(BuiltinToolOperation::Glob),
-            BuiltinTool::canonical(BuiltinToolOperation::ListDir),
-            BuiltinTool::canonical(BuiltinToolOperation::RunProcess),
-            BuiltinTool::canonical(BuiltinToolOperation::WriteProcessStdin),
-            BuiltinTool::canonical(BuiltinToolOperation::JobSubmit),
-            BuiltinTool::canonical(BuiltinToolOperation::JobRun),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::ReadFile),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::WriteFile),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::EditFile),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::ApplyPatch),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::Grep),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::Glob),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::ListDir),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::RunProcess),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::WriteProcessStdin),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::JobSubmit),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::JobRun),
         ] {
             assert_eq!(tool.name(&target()).as_str(), tool.name_str());
         }
@@ -538,7 +602,7 @@ mod tests {
 
     #[test]
     fn job_run_schema_is_flat_single_job_work() {
-        let schema = BuiltinTool::canonical(BuiltinToolOperation::JobRun)
+        let schema = BuiltinTool::environment_canonical(BuiltinToolOperation::JobRun)
             .input_schema(&target())
             .expect("job_run schema");
 
@@ -554,17 +618,13 @@ mod tests {
 
     #[test]
     fn spec_bundle_uses_content_addressed_documents() {
-        let bundle = BuiltinTool::canonical(BuiltinToolOperation::ReadFile)
+        let bundle = BuiltinTool::environment_canonical(BuiltinToolOperation::ReadFile)
             .spec_bundle(&target(), true)
             .expect("spec bundle");
 
         let ToolKind::Function(function) = bundle.spec.kind else {
             panic!("expected function tool");
         };
-        assert_eq!(
-            bundle.spec.target_requirement,
-            ToolTargetRequirement::SessionFilesystem
-        );
         assert_eq!(bundle.documents.len(), 2);
         assert_eq!(
             function.description_ref,
@@ -580,20 +640,15 @@ mod tests {
     }
 
     #[test]
-    fn spec_bundle_routes_process_tools_to_environment_namespace() {
-        let bundle = BuiltinTool::canonical(BuiltinToolOperation::RunProcess)
-            .spec_bundle(&target(), true)
-            .expect("spec bundle");
-
-        assert_eq!(
-            bundle.spec.target_requirement,
-            ToolTargetRequirement::ActiveEnvironment
-        );
+    fn process_tools_use_stable_environment_logical_ids() {
+        let tool = BuiltinTool::environment_canonical(BuiltinToolOperation::RunProcess);
+        assert_eq!(tool.domain(), BuiltinToolDomain::Environment);
+        assert_eq!(tool.logical_id(), "env.run_process");
     }
 
     #[test]
     fn claude_code_like_surface_generates_claude_style_schema() {
-        let tool = BuiltinTool::new(
+        let tool = BuiltinTool::environment(
             BuiltinToolOperation::ReadFile,
             BuiltinToolSurface::ClaudeCodeLike,
         );
@@ -604,8 +659,27 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_like_surface_supports_list_dir_in_both_domains() {
+        let vfs_tool = BuiltinTool::vfs(
+            BuiltinToolOperation::ListDir,
+            BuiltinToolSurface::ClaudeCodeLike,
+        );
+        let environment_tool = BuiltinTool::environment(
+            BuiltinToolOperation::ListDir,
+            BuiltinToolSurface::ClaudeCodeLike,
+        );
+
+        assert_eq!(vfs_tool.name_str(), "VfsListDir");
+        assert_eq!(environment_tool.name_str(), "ListDir");
+        for tool in [vfs_tool, environment_tool] {
+            let bundle = tool.spec_bundle(&target(), false).expect("spec bundle");
+            assert!(bundle.documents[1].text_lossy().contains("\"path\""));
+        }
+    }
+
+    #[test]
     fn claude_code_like_surface_rejects_unmapped_operations() {
-        let tool = BuiltinTool::new(
+        let tool = BuiltinTool::environment(
             BuiltinToolOperation::ApplyPatch,
             BuiltinToolSurface::ClaudeCodeLike,
         );

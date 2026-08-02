@@ -12,6 +12,8 @@ pub struct EvalCase {
     pub source_file: String,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
+    pub providers: Vec<String>,
     pub prompt: String,
     #[serde(default)]
     pub setup: SetupSpec,
@@ -27,6 +29,10 @@ pub struct EvalCase {
 pub struct SetupSpec {
     #[serde(default)]
     pub files: Vec<SetupFile>,
+    #[serde(default)]
+    pub environment_files: Vec<SetupFile>,
+    #[serde(default)]
+    pub environment_cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -45,6 +51,8 @@ pub struct ExpectSpec {
     pub tool_output_contains: Vec<String>,
     #[serde(default)]
     pub files: Vec<FileExpectation>,
+    #[serde(default)]
+    pub environment_files: Vec<FileExpectation>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,6 +119,15 @@ pub fn load_cases(cases_dir: &Path) -> Result<Vec<EvalCase>> {
     for case in &out {
         if !seen.insert(case.id.clone()) {
             bail!("duplicate case id '{}'", case.id);
+        }
+        for provider in &case.providers {
+            if !matches!(provider.as_str(), "openai" | "anthropic") {
+                bail!(
+                    "case '{}' references unsupported provider '{}'",
+                    case.id,
+                    provider
+                );
+            }
         }
     }
 

@@ -442,7 +442,7 @@ async fn materialize_input_item(
                 extra: Default::default(),
             }))
         }
-        ContextEntryKind::SkillActivation { skill_id } => {
+        ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &item.content_ref).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {
                 role: oai::MessageRole::Developer,
@@ -1141,7 +1141,7 @@ mod tests {
     use engine::{
         ContextCompactionTask, ContextEntryId, ContextEntrySource, ContextSnapshot, CoreAgentLlm,
         FunctionToolSpec, LlmGenerationRequest, LlmRequest, ModelSelection, ProviderParams, RunId,
-        SessionId, ToolExecutionTarget, ToolParallelism, TurnId, storage::InMemoryBlobStore,
+        SessionId, ToolParallelism, TurnId, storage::InMemoryBlobStore,
     };
     use llm_clients::HeaderSnapshot;
     use serde_json::json;
@@ -1401,7 +1401,6 @@ mod tests {
                 provider_options_ref: Some(provider_options_ref),
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }];
         request.tool_choice = Some(ToolChoice::Specific {
             tool_name: ToolName::new("read_file"),
@@ -1544,7 +1543,6 @@ mod tests {
                 auth_required: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }];
         request.tool_choice = Some(ToolChoice::Auto);
         request.output_limit = Some(1024);
@@ -1587,7 +1585,6 @@ mod tests {
                 auth_required: true,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: Default::default(),
         }
     }
 
@@ -1860,33 +1857,34 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn materialize_create_request_maps_skill_context_as_developer_messages() {
         let blobs = InMemoryBlobStore::new();
-        let target = ToolExecutionTarget::new("host", "vm-1");
         let skill_id = SkillId::new("skill:deploy-review");
+        let snapshot_ref = engine::BlobRef::from_bytes(b"skills-snapshot");
         let catalog_ref = crate::blob_io::put_json(
             &blobs,
             &SkillCatalogSnapshot {
                 schema_version: SKILL_CATALOG_SCHEMA_VERSION.to_string(),
-                target: Some(target.clone()),
+                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
+                source: tools::skills::SkillCatalogSource::Vfs,
                 skills: vec![SkillMetadata {
                     skill_id: skill_id.clone(),
                     name: "deploy-review".to_string(),
                     description: "Review deployment risk.".to_string(),
                     short_description: None,
-                    source: SkillSource::HostPath {
-                        root_id: "host".to_string(),
-                        target: target.clone(),
+                    source: SkillSource::Snapshot {
+                        root_id: "vfs".to_string(),
+                        snapshot_ref: snapshot_ref.clone(),
                     },
-                    scope: SkillScope::Target,
-                    target: Some(target.clone()),
+                    scope: SkillScope::Global,
                     enabled: true,
-                    trust: SkillTrustLevel::Host,
+                    trust: SkillTrustLevel::User,
                     interface: None,
                     dependencies: SkillDependencies::default(),
-                    location: SkillLocation::HostFilesystem {
-                        target,
-                        root_path: "/skills".to_string(),
-                        skill_dir_path: "/skills/deploy-review".to_string(),
-                        skill_doc_path: "/skills/deploy-review/SKILL.md".to_string(),
+                    location: SkillLocation::LinkedSnapshot {
+                        source_snapshot_ref: snapshot_ref,
+                        source_link_path: vfs::VfsPath::parse("/skills").unwrap(),
+                        skill_dir_path: vfs::VfsPath::parse("/skills/deploy-review").unwrap(),
+                        skill_doc_path: vfs::VfsPath::parse("/skills/deploy-review/SKILL.md")
+                            .unwrap(),
                     },
                     skill_doc_ref: None,
                 }],
@@ -1907,7 +1905,7 @@ mod tests {
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::SkillCatalog,
             source: ContextEntrySource::Runtime {
-                label: "skills.catalog".to_string(),
+                label: "skills.catalog.vfs".to_string(),
             },
             content_ref: catalog_ref,
             media_type: None,
@@ -1937,6 +1935,7 @@ mod tests {
             key: None,
             entry_id: ContextEntryId::new(3),
             kind: ContextEntryKind::SkillActivation {
+                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
                 skill_id: skill_id.clone(),
             },
             source: ContextEntrySource::Runtime {
@@ -1961,7 +1960,7 @@ mod tests {
             json!([
                 {
                     "role": "developer",
-                    "content": "Lightspeed skill catalog:\n\nWhen a skill is relevant, read its SKILL.md through the available file tool before following it.\n\n- deploy-review (skill:deploy-review)\n  description: Review deployment risk.\n  skill_doc_path: /skills/deploy-review/SKILL.md\n  target: host:vm-1\n"
+                    "content": "VFS skill catalog:\n\nWhen a skill is relevant, read its SKILL.md through the appropriate VFS file tool before following it. VFS skill paths are not environment paths.\n\n- deploy-review (skill:deploy-review)\n  description: Review deployment risk.\n  skill_doc_path: /skills/deploy-review/SKILL.md\n"
                 },
                 { "role": "user", "content": "Review this rollout." },
                 {

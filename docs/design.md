@@ -111,10 +111,21 @@ authoritative. `session/delete` only removes closed sessions and rejects a
 session while a fork still inherits its history, so fork trees are deleted
 leaf-first.
 
-Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, workspace links, and environment selection. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, fleet, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. Model-driven environment discovery/selection and advanced jobs are separate, default-off `features.environments.selectionTools` and `features.environments.jobs` sub-grants; an environment may still be selected externally when selection tools are hidden. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. MCP server ids select universe-configured connections whose current auth grants resolve only at provider-send time; sessions and profiles never select a grant. Universe environments remain live provider-backed resources; deterministic session state records only the active environment id. The hosted runtime resolves and applies profiles outside the deterministic core.
+Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, workspace links, and environment selection. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, fleet, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. `features.vfs.tools` grants dedicated `vfs_*` operations over linked snapshots/workspaces. `features.environments` grants ordinary file/process operations over the selected live environment; model-driven selection and advanced jobs remain separate, default-off sub-grants. The two filesystems are never fused or synchronized. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. MCP server ids select universe-configured connections whose current auth grants resolve only at provider-send time; sessions and profiles never select a grant. Universe environments remain live provider-backed resources; deterministic session state records only the active environment id. The hosted runtime resolves and applies profiles outside the deterministic core.
 
 ## Tools, Environments & Sub-agents
-Tool intents are executed by tool packages outside the core. The important ones for the harness-without-an-OS story: a CAS-backed virtual file system gives the agent standard file tools (read, glob, patch) with no operating system attached; web fetch/search/extract tools work the same way. When a task genuinely needs a machine, the agent borrows one; dedicated VMs connect through a bridge daemon, and durable jobs run long tasks (downloads, delegated coding agents) on that borrowed compute while the harness stays outside.
+Tool intents are executed by tool packages outside the core. A CAS-backed
+virtual filesystem gives the agent dedicated `vfs_*` read/edit tools with no
+operating system attached. Ordinary file tools, commands, and new jobs instead
+consume the active environment id captured on the tool batch and operate only
+inside that environment. Trusted logical bindings select the runtime domain;
+there is no generic execution-target field and no shared filesystem router.
+VFS prompts and the `skills.catalog.vfs` catalog refresh from linked workspace
+heads before runs, while environment files never participate in automatic
+prompt or skill discovery. Web fetch/search/extract tools remain independent.
+When a task genuinely needs a machine, the agent borrows one; dedicated VMs
+connect through a bridge daemon, and durable jobs run long tasks on that
+borrowed compute while the harness stays outside.
 
 Sub-agents are not a separate concept: a fleet is just more sessions. The fleet control plane clones or forks a session and starts an additional session workflow for it. Callbacks flow back as ordinary Temporal signals.
 

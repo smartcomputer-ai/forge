@@ -16,12 +16,12 @@ pub(crate) fn unsupported_capability(message: impl Into<String>) -> ToolError {
 
 pub(crate) fn unsupported_process_capability() -> ToolError {
     unsupported_capability(
-        "process execution is not available in the active environment; file tools may still work through fs:session, but process tools require an active env target with process capability",
+        "environment_process_unavailable: the active environment does not expose process execution",
     )
 }
 
 pub(crate) fn unsupported_job_capability() -> ToolError {
     unsupported_capability(
-        "durable jobs are not available in the active environment; job tools require an active env target with job capability",
+        "environment_jobs_unavailable: the active environment does not expose durable jobs",
     )
 }

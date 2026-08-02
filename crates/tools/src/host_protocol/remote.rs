@@ -135,6 +135,7 @@ where
             fs_ctx = fs_ctx.with_cwd(cwd.clone());
             env_ctx = env_ctx.with_process_cwd(cwd);
         }
+        env_ctx = env_ctx.with_filesystem(fs_ctx.clone());
         (fs_ctx, env_ctx)
     }
 }

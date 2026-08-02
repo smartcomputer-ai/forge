@@ -1,6 +1,7 @@
 {
   "id": "apply-patch",
   "description": "Patch an existing file in place.",
+  "providers": ["openai"],
   "prompt": "Call apply_patch with a patch that updates docs/status.txt from 'status: TODO' to 'status: DONE' using *** Begin Patch / *** End Patch format. Then answer exactly PATCH=DONE.",
   "setup": {
     "files": [
@@ -11,7 +12,7 @@
     ]
   },
   "expect": {
-    "tool_called": ["fs.apply_patch"],
+    "tool_called": ["vfs.apply_patch"],
     "assistant_contains": ["PATCH=DONE"],
     "tool_output_contains": ["updated"],
     "files": [
@@ -27,6 +28,6 @@
   },
   "run": {
     "max_tokens": 1024,
-    "allowed_tools": ["fs.read_file", "fs.apply_patch"]
+    "allowed_tools": ["vfs.read_file", "vfs.apply_patch"]
   }
 }

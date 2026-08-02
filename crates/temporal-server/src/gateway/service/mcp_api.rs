@@ -128,7 +128,6 @@ pub(super) fn mcp_tool_from_config_link(
             ),
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
-        target_requirement: engine::ToolTargetRequirement::None,
     })
 }
 

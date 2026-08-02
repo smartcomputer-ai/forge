@@ -3054,6 +3054,9 @@
         },
         {
           "properties": {
+            "catalogId": {
+              "type": "string"
+            },
             "skillId": {
               "type": "string"
             },
@@ -3064,6 +3067,7 @@
           },
           "required": [
             "type",
+            "catalogId",
             "skillId"
           ],
           "type": "object"
@@ -9089,6 +9093,9 @@
     },
     "SkillActivationView": {
       "properties": {
+        "catalogId": {
+          "type": "string"
+        },
         "catalogRef": {
           "type": "string"
         },
@@ -9121,6 +9128,7 @@
         }
       },
       "required": [
+        "catalogId",
         "skillId",
         "catalogRef",
         "scope",
@@ -9523,21 +9531,6 @@
       ],
       "type": "object"
     },
-    "ToolExecutionTargetView": {
-      "properties": {
-        "id": {
-          "type": "string"
-        },
-        "namespace": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "namespace",
-        "id"
-      ],
-      "type": "object"
-    },
     "ToolItemStatus": {
       "enum": [
         "requested",
@@ -9680,62 +9673,6 @@
       ],
       "type": "string"
     },
-    "ToolTargetRequirementView": {
-      "oneOf": [
-        {
-          "properties": {
-            "type": {
-              "const": "none",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "sessionFilesystem",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "type": {
-              "const": "activeEnvironment",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "target": {
-              "$ref": "#/definitions/ToolExecutionTargetView"
-            },
-            "type": {
-              "const": "fixed",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "target"
-          ],
-          "type": "object"
-        }
-      ]
-    },
     "ToolView": {
       "properties": {
         "kind": {
@@ -9748,16 +9685,6 @@
             }
           ],
           "default": "parallelSafe"
-        },
-        "targetRequirement": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/ToolTargetRequirementView"
-            }
-          ],
-          "default": {
-            "type": "none"
-          }
         },
         "toolId": {
           "type": "string"

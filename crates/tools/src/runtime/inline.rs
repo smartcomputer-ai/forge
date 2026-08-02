@@ -11,62 +11,59 @@ use engine::{
 use serde_json::Value;
 
 use crate::{
-    builtin::BuiltinTool,
+    builtin::{BuiltinTool, BuiltinToolContext, BuiltinToolDomain},
+    environment::EnvironmentToolContext,
     error::{ToolError, ToolResult},
     fs::FsToolContext,
     limits::ToolLimits,
     runtime::{ToolBinding, ToolCatalog, ToolDispatchMode, ToolInvocationOutput, ToolRuntime},
-    targets::{ResolvedToolContext, SESSION_FS_TARGET_ID, ToolTargets},
     web::fetch::{WEB_FETCH_LOGICAL_ID, invoke_web_fetch},
 };
 
 #[derive(Clone)]
 pub struct InlineToolRuntime {
-    targets: ToolTargets,
+    vfs: Option<FsToolContext>,
+    environment: Option<EnvironmentToolContext>,
     catalog: ToolCatalog,
     blobs: Arc<dyn BlobStore>,
     limits: ToolLimits,
 }
 
 impl InlineToolRuntime {
-    pub fn with_session_filesystem(ctx: FsToolContext, catalog: ToolCatalog) -> Self {
+    pub fn with_vfs_filesystem(ctx: FsToolContext, catalog: ToolCatalog) -> Self {
         let blobs = ctx.blobs.clone();
         let limits = ctx.limits;
-        let mut targets = ToolTargets::new();
-        targets.insert_fs_context(SESSION_FS_TARGET_ID, ctx);
-        Self::with_targets_and_blob_store(targets, blobs, limits, catalog)
+        Self::with_contexts_and_blob_store(Some(ctx), None, blobs, limits, catalog)
     }
 
-    pub fn with_targets(targets: ToolTargets, catalog: ToolCatalog) -> Self {
-        let blobs = targets
-            .blob_store()
-            .expect("InlineToolRuntime::with_targets requires at least one target");
-        let limits = targets
-            .limits()
-            .expect("InlineToolRuntime::with_targets requires at least one target");
-        Self::with_targets_and_blob_store(targets.clone(), blobs, limits, catalog)
+    pub fn with_environment(ctx: EnvironmentToolContext, catalog: ToolCatalog) -> Self {
+        let blobs = ctx.blobs.clone();
+        let limits = ctx.limits;
+        Self::with_contexts_and_blob_store(None, Some(ctx), blobs, limits, catalog)
     }
 
-    pub fn with_targets_and_blob_store(
-        targets: ToolTargets,
+    pub fn with_contexts_and_blob_store(
+        vfs: Option<FsToolContext>,
+        environment: Option<EnvironmentToolContext>,
         blobs: Arc<dyn BlobStore>,
         limits: ToolLimits,
         catalog: ToolCatalog,
     ) -> Self {
         Self {
-            targets,
+            vfs,
+            environment,
             catalog,
             blobs,
             limits,
         }
     }
 
-    pub fn session_fs_context(&self) -> Option<&crate::fs::FsToolContext> {
-        self.targets.get(SESSION_FS_TARGET_ID)
+    pub fn vfs_context(&self) -> Option<&crate::fs::FsToolContext> {
+        self.vfs.as_ref()
     }
 
-    pub fn targets(&self) -> &ToolTargets {
-        &self.targets
+    pub fn environment_context(&self) -> Option<&EnvironmentToolContext> {
+        self.environment.as_ref()
     }
 
     pub fn catalog(&self) -> &ToolCatalog {
@@ -95,7 +92,7 @@ impl InlineToolRuntime {
             };
         }
 
-        let ctx = match self.resolve_call_context(call, &binding) {
+        let ctx = match self.resolve_call_context(&binding) {
             Ok(ctx) => ctx,
             Err(error) => return self.target_error_result(call, error).await,
         };
@@ -123,33 +120,46 @@ impl InlineToolRuntime {
             })
     }
 
-    fn resolve_call_context(
-        &self,
-        call: &ToolInvocationRequest,
-        binding: &ToolBinding,
-    ) -> ToolResult<ResolvedToolContext<'_>> {
-        let Some(target) = call.execution_target.as_ref() else {
-            return Err(ToolError::InvalidRequest {
-                message: "tool invocation requires an execution target".to_owned(),
-            });
-        };
-        if let Some(builtin_tool) = BuiltinTool::from_logical_id(&binding.logical_id) {
-            let expected_namespace = builtin_tool.target_namespace();
-            if target.namespace != expected_namespace {
-                return Err(ToolError::InvalidRequest {
-                    message: format!(
-                        "tool {} requires execution target namespace {}, got {}",
-                        call.tool_name, expected_namespace, target.namespace
-                    ),
-                });
+    fn resolve_call_context(&self, binding: &ToolBinding) -> ToolResult<BuiltinToolContext<'_>> {
+        let tool = BuiltinTool::from_binding(&binding.logical_id, binding.adapter_id.as_deref())
+            .ok_or_else(|| ToolError::UnsupportedCapability {
+                message: format!("unsupported tool binding: {}", binding.logical_id),
+            })?;
+        match tool.domain() {
+            BuiltinToolDomain::Vfs => {
+                self.vfs
+                    .as_ref()
+                    .map(BuiltinToolContext::Vfs)
+                    .ok_or_else(|| ToolError::InvalidRequest {
+                        message: "no_vfs_workspace_links".to_owned(),
+                    })
+            }
+            BuiltinToolDomain::Environment => {
+                let ctx = self
+                    .environment
+                    .as_ref()
+                    .ok_or_else(|| ToolError::InvalidRequest {
+                        message: "no_active_environment".to_owned(),
+                    })?;
+                if tool.is_filesystem_operation()
+                    && tool.requires_write()
+                    && ctx
+                        .filesystem
+                        .as_ref()
+                        .is_some_and(|filesystem| filesystem.fs.access_policy().is_read_only())
+                {
+                    return Err(ToolError::UnsupportedCapability {
+                        message: "environment_filesystem_read_only".to_owned(),
+                    });
+                }
+                Ok(BuiltinToolContext::Environment(ctx))
             }
         }
-        self.targets.resolve(target)
     }
 
     async fn read_arguments(
         &self,
-        ctx: ResolvedToolContext<'_>,
+        ctx: BuiltinToolContext<'_>,
         call: &ToolInvocationRequest,
     ) -> ToolResult<Value> {
         let bytes = ctx.blobs().read_bytes(&call.arguments_ref).await?;
@@ -167,7 +177,7 @@ impl InlineToolRuntime {
 
     async fn succeeded_result(
         &self,
-        ctx: ResolvedToolContext<'_>,
+        ctx: BuiltinToolContext<'_>,
         call: &ToolInvocationRequest,
         output: ToolInvocationOutput,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
@@ -203,7 +213,7 @@ impl InlineToolRuntime {
 
     async fn failed_result(
         &self,
-        ctx: ResolvedToolContext<'_>,
+        ctx: BuiltinToolContext<'_>,
         call: &ToolInvocationRequest,
         error: ToolError,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
@@ -297,7 +307,7 @@ impl InlineToolRuntime {
 
     async fn put_blob(
         &self,
-        ctx: ResolvedToolContext<'_>,
+        ctx: BuiltinToolContext<'_>,
         bytes: Vec<u8>,
     ) -> Result<engine::BlobRef, CoreAgentIoError> {
         ctx.blobs()
@@ -315,7 +325,7 @@ impl InlineToolRuntime {
 
     async fn invoke_json_with_binding(
         &self,
-        ctx: Option<ResolvedToolContext<'_>>,
+        ctx: Option<BuiltinToolContext<'_>>,
         binding: &ToolBinding,
         tool_name: &ToolName,
         arguments: Value,
@@ -328,13 +338,13 @@ impl InlineToolRuntime {
         if binding.logical_id == WEB_FETCH_LOGICAL_ID {
             return invoke_web_fetch(arguments).await;
         }
-        let builtin_tool = BuiltinTool::from_logical_id(&binding.logical_id).ok_or_else(|| {
-            ToolError::UnsupportedCapability {
-                message: format!("unsupported tool binding: {}", binding.logical_id),
-            }
-        })?;
+        let builtin_tool =
+            BuiltinTool::from_binding(&binding.logical_id, binding.adapter_id.as_deref())
+                .ok_or_else(|| ToolError::UnsupportedCapability {
+                    message: format!("unsupported tool binding: {}", binding.logical_id),
+                })?;
         let ctx = ctx.ok_or_else(|| ToolError::InvalidRequest {
-            message: format!("tool {tool_name} requires an execution target"),
+            message: format!("tool {tool_name} requires its filesystem domain context"),
         })?;
         builtin_tool.invoke_json(ctx, arguments).await
     }
@@ -358,14 +368,7 @@ impl ToolRuntime for InlineToolRuntime {
                 .invoke_json_with_binding(None, binding, tool_name, arguments)
                 .await;
         }
-        let builtin_tool = BuiltinTool::from_logical_id(&binding.logical_id).ok_or_else(|| {
-            ToolError::UnsupportedCapability {
-                message: format!("unsupported tool binding: {}", binding.logical_id),
-            }
-        })?;
-        let ctx = self
-            .targets
-            .default_for_namespace(builtin_tool.target_namespace())?;
+        let ctx = self.resolve_call_context(binding)?;
         ctx.drain_tool_effects();
         let mut output = self
             .invoke_json_with_binding(Some(ctx), binding, tool_name, arguments)
@@ -435,7 +438,8 @@ mod tests {
     use crate::fs::{FileSystem, FsPath, InMemoryFileSystem};
     use crate::runtime::{ToolCatalog, ToolTarget};
     use crate::toolset::{
-        BuiltinToolPresentation, ToolsetConfig, ToolsetEnvironment, resolve_toolset,
+        BuiltinToolPresentation, BuiltinToolsetConfig, FilesystemToolsetConfig, ToolsetConfig,
+        ToolsetEnvironment, resolve_toolset,
     };
     use crate::web::fetch::WebFetchToolConfig;
 
@@ -471,23 +475,10 @@ mod tests {
     }
 
     fn call(arguments_ref: BlobRef, tool_name: &str) -> ToolInvocationRequest {
-        call_with_target(
-            arguments_ref,
-            tool_name,
-            Some(ToolTargets::session_fs_execution_target()),
-        )
-    }
-
-    fn call_with_target(
-        arguments_ref: BlobRef,
-        tool_name: &str,
-        execution_target: Option<engine::ToolExecutionTarget>,
-    ) -> ToolInvocationRequest {
         ToolInvocationRequest {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new(tool_name),
             arguments_ref,
-            execution_target,
             workflow_tool: None,
             promise_control: None,
         }
@@ -535,12 +526,12 @@ mod tests {
         FsToolContext::new(Arc::new(fs), blobs)
     }
 
-    fn runtime_with_session_fs(
+    fn runtime_with_vfs(
         fs: impl FileSystem + 'static,
         blobs: Arc<dyn BlobStore>,
         catalog: ToolCatalog,
     ) -> InlineToolRuntime {
-        InlineToolRuntime::with_session_filesystem(fs_context(fs, blobs), catalog)
+        InlineToolRuntime::with_vfs_filesystem(fs_context(fs, blobs), catalog)
     }
 
     fn web_fetch_catalog() -> ToolCatalog {
@@ -571,11 +562,11 @@ mod tests {
             .await
             .expect("write file");
         let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = runtime_with_session_fs(fs, blobs.clone(), catalog);
+        let runtime = runtime_with_vfs(fs, blobs.clone(), catalog);
 
         let output = runtime
             .invoke_json(
-                &ToolName::new("read_file"),
+                &ToolName::new("vfs_read_file"),
                 json!({ "path": "/file.txt", "offset": null, "limit": null }),
             )
             .await
@@ -592,16 +583,24 @@ mod tests {
         fs.write_file(&FsPath::new("/file.txt").expect("path"), b"hello".to_vec())
             .await
             .expect("write file");
-        let catalog = catalog_for_operations_with_presentation(
-            engine::ProviderApiKind::AnthropicMessages,
-            BuiltinToolPresentation::ClaudeCodeLike,
-            [BuiltinToolOperation::ReadFile],
-        );
-        let runtime = runtime_with_session_fs(fs, blobs, catalog);
+        let target = ToolTarget::api_kind(engine::ProviderApiKind::AnthropicMessages);
+        let mut config = ToolsetConfig::empty();
+        config.builtin = BuiltinToolsetConfig {
+            presentation: BuiltinToolPresentation::ClaudeCodeLike,
+            vfs: FilesystemToolsetConfig {
+                read_file: true,
+                ..FilesystemToolsetConfig::disabled()
+            },
+            ..BuiltinToolsetConfig::disabled()
+        };
+        let catalog = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+            .expect("toolset")
+            .catalog;
+        let runtime = runtime_with_vfs(fs, blobs, catalog);
 
         let output = runtime
             .invoke_json(
-                &ToolName::new("Read"),
+                &ToolName::new("VfsRead"),
                 json!({ "file_path": "/file.txt", "offset": null, "limit": null }),
             )
             .await
@@ -612,6 +611,96 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn vfs_and_environment_file_tools_are_isolated() {
+        let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+        let vfs = InMemoryFileSystem::full_access();
+        let environment = InMemoryFileSystem::full_access();
+        let path = FsPath::new("/same.txt").expect("path");
+        vfs.write_file(&path, b"vfs".to_vec())
+            .await
+            .expect("vfs write");
+        environment
+            .write_file(&path, b"environment".to_vec())
+            .await
+            .expect("environment write");
+
+        let target = ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
+        let mut config = ToolsetConfig::workspace();
+        config.builtin.environment = crate::toolset::EnvironmentToolsetConfig::basic();
+        let catalog = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+            .expect("toolset")
+            .catalog;
+        let environment = EnvironmentToolContext::new(None, blobs.clone())
+            .with_environment_id("environment-a")
+            .with_filesystem(fs_context(environment, blobs.clone()));
+        let runtime = InlineToolRuntime::with_contexts_and_blob_store(
+            Some(fs_context(vfs, blobs.clone())),
+            Some(environment),
+            blobs,
+            ToolLimits::default(),
+            catalog,
+        );
+
+        let vfs_output = runtime
+            .invoke_json(
+                &ToolName::new("vfs_read_file"),
+                json!({ "path": "/same.txt", "offset": null, "limit": null }),
+            )
+            .await
+            .expect("read VFS");
+        let environment_output = runtime
+            .invoke_json(
+                &ToolName::new("read_file"),
+                json!({ "path": "/same.txt", "offset": null, "limit": null }),
+            )
+            .await
+            .expect("read environment");
+
+        assert_eq!(vfs_output.output_json["text"], "vfs");
+        assert_eq!(environment_output.output_json["text"], "environment");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn environment_filesystem_failures_distinguish_missing_and_read_only() {
+        let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+        let catalog = catalog_for_operations_with_presentation(
+            engine::ProviderApiKind::OpenAiResponses,
+            BuiltinToolPresentation::Canonical,
+            [BuiltinToolOperation::WriteFile],
+        );
+        let arguments = json!({ "path": "/file.txt", "content": "new" });
+
+        let unavailable = InlineToolRuntime::with_environment(
+            EnvironmentToolContext::new(None, blobs.clone()).with_environment_id("environment-a"),
+            catalog.clone(),
+        )
+        .invoke_json(&ToolName::new("write_file"), arguments.clone())
+        .await
+        .expect_err("missing filesystem");
+        assert!(
+            unavailable
+                .to_string()
+                .contains("environment_filesystem_unavailable")
+        );
+
+        let read_only = InMemoryFileSystem::new(crate::fs::FileAccessPolicy::FullReadOnly);
+        let read_only = InlineToolRuntime::with_environment(
+            EnvironmentToolContext::new(None, blobs.clone())
+                .with_environment_id("environment-a")
+                .with_filesystem(fs_context(read_only, blobs)),
+            catalog,
+        )
+        .invoke_json(&ToolName::new("write_file"), arguments)
+        .await
+        .expect_err("read-only filesystem");
+        assert!(
+            read_only
+                .to_string()
+                .contains("environment_filesystem_read_only")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn core_tools_reads_arguments_and_writes_result_blobs() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let fs = InMemoryFileSystem::full_access();
@@ -619,14 +708,14 @@ mod tests {
             .await
             .expect("write file");
         let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = runtime_with_session_fs(fs, blobs.clone(), catalog);
+        let runtime = runtime_with_vfs(fs, blobs.clone(), catalog);
         let args_ref = blobs
             .put_bytes(br#"{"path":"/file.txt","offset":null,"limit":null}"#.to_vec())
             .await
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call(args_ref, "read_file")))
+            .invoke_batch(batch_request(call(args_ref, "vfs_read_file")))
             .await
             .expect("invoke batch")
             .completed_result()
@@ -648,7 +737,7 @@ mod tests {
             .await
             .expect("write file");
         let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = runtime_with_session_fs(fs, blobs.clone(), catalog);
+        let runtime = runtime_with_vfs(fs, blobs.clone(), catalog);
         let args_ref = blobs
             .put_bytes(br#"{"path":"/file.txt","offset":null,"limit":null}"#.to_vec())
             .await
@@ -667,9 +756,8 @@ mod tests {
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call-1"),
-                    tool_name: ToolName::new("read_file"),
+                    tool_name: ToolName::new("vfs_read_file"),
                     arguments_ref: args_ref,
-                    execution_target: Some(ToolTargets::session_fs_execution_target()),
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -688,10 +776,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn targetless_web_fetch_does_not_require_host_target() {
+    async fn web_fetch_does_not_require_a_filesystem_domain() {
         let blobs = Arc::new(InMemoryBlobStore::new());
-        let runtime = InlineToolRuntime::with_targets_and_blob_store(
-            ToolTargets::new(),
+        let runtime = InlineToolRuntime::with_contexts_and_blob_store(
+            None,
+            None,
             blobs.clone(),
             ToolLimits::default(),
             web_fetch_catalog(),
@@ -702,7 +791,7 @@ mod tests {
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call_with_target(args_ref, "web_fetch", None)))
+            .invoke_batch(batch_request(call(args_ref, "web_fetch")))
             .await
             .expect("invoke batch")
             .completed_result()
@@ -717,81 +806,24 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn core_tools_resolves_fs_target_id_to_context() {
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let fs_one = InMemoryFileSystem::full_access();
-        fs_one
-            .write_file(&FsPath::new("/file.txt").expect("path"), b"one".to_vec())
-            .await
-            .expect("write first file");
-        let fs_two = InMemoryFileSystem::full_access();
-        fs_two
-            .write_file(&FsPath::new("/file.txt").expect("path"), b"two".to_vec())
-            .await
-            .expect("write second file");
-        let ctx_one = fs_context(fs_one, blobs.clone());
-        let ctx_two = fs_context(fs_two, blobs.clone());
-        let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = InlineToolRuntime::with_targets(
-            ToolTargets::new()
-                .with_fs_context("one", ctx_one)
-                .with_fs_context("two", ctx_two),
-            catalog,
-        );
-        let args_ref = blobs
-            .put_bytes(br#"{"path":"/file.txt","offset":null,"limit":null}"#.to_vec())
-            .await
-            .expect("write args");
-
-        let result = runtime
-            .invoke_batch(batch_request(call_with_target(
-                args_ref,
-                "read_file",
-                Some(ToolTargets::fs_execution_target("two")),
-            )))
-            .await
-            .expect("invoke batch")
-            .completed_result()
-            .expect("completed batch")
-            .single_result()
-            .expect("single result");
-
-        assert_eq!(result.status, ToolCallStatus::Succeeded);
-        let visible_ref = visible_tool_result_ref(&result);
-        let visible = blobs.read_text(&visible_ref).await.expect("visible text");
-        assert!(visible.contains("two"));
-        assert!(!visible.contains("one"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn core_tools_routes_process_tools_to_local_environment_target() {
+    async fn core_tools_routes_process_tools_to_active_environment() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let process = Arc::new(RecordingProcessExecutor::default());
         let process_ctx: Arc<dyn ProcessExecutor> = process.clone();
-        let fs_ctx = fs_context(InMemoryFileSystem::full_access(), blobs.clone());
         let env_ctx = EnvironmentToolContext::new(Some(process_ctx), blobs.clone());
         let catalog = catalog_for_operations_with_presentation(
             engine::ProviderApiKind::OpenAiResponses,
             BuiltinToolPresentation::Canonical,
             [BuiltinToolOperation::RunProcess],
         );
-        let runtime = InlineToolRuntime::with_targets(
-            ToolTargets::new()
-                .with_session_fs_context(fs_ctx)
-                .with_local_environment_context(env_ctx),
-            catalog,
-        );
+        let runtime = InlineToolRuntime::with_environment(env_ctx, catalog);
         let args_ref = blobs
             .put_bytes(br#"{"argv":["echo","hello"]}"#.to_vec())
             .await
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call_with_target(
-                args_ref,
-                "exec_command",
-                Some(ToolTargets::local_environment_execution_target()),
-            )))
+            .invoke_batch(batch_request(call(args_ref, "exec_command")))
             .await
             .expect("invoke batch")
             .completed_result()
@@ -809,16 +841,18 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn core_tools_fail_process_tools_without_environment_target() {
+    async fn core_tools_fail_process_tools_without_active_environment() {
         let blobs = Arc::new(InMemoryBlobStore::new());
-        let fs_ctx = fs_context(InMemoryFileSystem::full_access(), blobs.clone());
         let catalog = catalog_for_operations_with_presentation(
             engine::ProviderApiKind::OpenAiResponses,
             BuiltinToolPresentation::Canonical,
             [BuiltinToolOperation::RunProcess],
         );
-        let runtime = InlineToolRuntime::with_targets(
-            ToolTargets::new().with_session_fs_context(fs_ctx),
+        let runtime = InlineToolRuntime::with_contexts_and_blob_store(
+            None,
+            None,
+            blobs.clone(),
+            ToolLimits::default(),
             catalog,
         );
         let args_ref = blobs
@@ -827,11 +861,7 @@ mod tests {
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call_with_target(
-                args_ref,
-                "exec_command",
-                Some(ToolTargets::local_environment_execution_target()),
-            )))
+            .invoke_batch(batch_request(call(args_ref, "exec_command")))
             .await
             .expect("invoke batch")
             .completed_result()
@@ -842,75 +872,6 @@ mod tests {
         assert_eq!(result.status, ToolCallStatus::Failed);
         let error_ref = result.error_ref.expect("error ref");
         let error = blobs.read_text(&error_ref).await.expect("error text");
-        assert!(error.contains("no active execution environment target is configured"));
-        assert!(error.contains("process tools require an active env target"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn core_tools_requires_execution_target() {
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let fs = InMemoryFileSystem::full_access();
-        let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = runtime_with_session_fs(fs, blobs.clone(), catalog);
-
-        let result = runtime
-            .invoke_batch(batch_request(call_with_target(
-                BlobRef::from_bytes(b"unused"),
-                "read_file",
-                None,
-            )))
-            .await
-            .expect("invoke batch")
-            .completed_result()
-            .expect("completed batch")
-            .single_result()
-            .expect("single result");
-
-        assert_eq!(result.status, ToolCallStatus::Failed);
-        let error_ref = result.error_ref.expect("error ref");
-        let error = blobs.read_text(&error_ref).await.expect("error text");
-        assert!(error.contains("requires an execution target"));
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn core_tools_rejects_wrong_namespace_and_unknown_targets() {
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let fs = InMemoryFileSystem::full_access();
-        let catalog = workspace_catalog(engine::ProviderApiKind::OpenAiResponses);
-        let runtime = runtime_with_session_fs(fs, blobs.clone(), catalog);
-
-        let cases = [
-            (
-                ToolTargets::local_environment_execution_target(),
-                "requires execution target namespace fs",
-            ),
-            (
-                ToolTargets::fs_execution_target("missing"),
-                "unknown filesystem tool execution target id missing",
-            ),
-        ];
-
-        for (target, expected) in cases {
-            let result = runtime
-                .invoke_batch(batch_request(call_with_target(
-                    BlobRef::from_bytes(b"unused"),
-                    "read_file",
-                    Some(target),
-                )))
-                .await
-                .expect("invoke batch")
-                .completed_result()
-                .expect("completed batch")
-                .single_result()
-                .expect("single result");
-
-            assert_eq!(result.status, ToolCallStatus::Failed);
-            let error_ref = result.error_ref.expect("error ref");
-            let error = blobs.read_text(&error_ref).await.expect("error text");
-            assert!(
-                error.contains(expected),
-                "{error:?} did not contain {expected:?}"
-            );
-        }
+        assert!(error.contains("no_active_environment"));
     }
 }

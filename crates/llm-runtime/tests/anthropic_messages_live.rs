@@ -181,7 +181,6 @@ fn weather_tool_spec(schema_ref: BlobRef, description_ref: BlobRef) -> engine::T
             provider_options_ref: None,
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
-        target_requirement: engine::ToolTargetRequirement::None,
     }
 }
 

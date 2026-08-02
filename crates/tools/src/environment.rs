@@ -6,7 +6,7 @@ use engine::storage::BlobStore;
 
 use crate::{
     environment::{jobs::JobExecutor, process::ProcessExecutor},
-    fs::FsPath,
+    fs::{FsPath, FsToolContext},
     limits::ToolLimits,
 };
 
@@ -18,6 +18,8 @@ pub mod tools;
 
 #[derive(Clone)]
 pub struct EnvironmentToolContext {
+    pub environment_id: Option<String>,
+    pub filesystem: Option<FsToolContext>,
     pub process: Option<Arc<dyn ProcessExecutor>>,
     pub jobs: Option<Arc<dyn JobExecutor>>,
     pub blobs: Arc<dyn BlobStore>,
@@ -29,6 +31,8 @@ pub struct EnvironmentToolContext {
 impl EnvironmentToolContext {
     pub fn new(process: Option<Arc<dyn ProcessExecutor>>, blobs: Arc<dyn BlobStore>) -> Self {
         Self {
+            environment_id: None,
+            filesystem: None,
             process,
             jobs: None,
             blobs,
@@ -36,6 +40,16 @@ impl EnvironmentToolContext {
             process_cwd: None,
             session_id: None,
         }
+    }
+
+    pub fn with_environment_id(mut self, environment_id: impl Into<String>) -> Self {
+        self.environment_id = Some(environment_id.into());
+        self
+    }
+
+    pub fn with_filesystem(mut self, filesystem: FsToolContext) -> Self {
+        self.filesystem = Some(filesystem);
+        self
     }
 
     pub fn with_jobs(mut self, jobs: Arc<dyn JobExecutor>) -> Self {

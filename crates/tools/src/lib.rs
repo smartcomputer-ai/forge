@@ -15,7 +15,6 @@ pub mod limits;
 pub mod prompts;
 pub mod runtime;
 pub mod skills;
-pub mod targets;
 pub mod toolset;
 pub mod web;
 pub mod workflow_tool;

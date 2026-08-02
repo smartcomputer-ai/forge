@@ -1,7 +1,7 @@
 {
   "id": "list-dir",
   "description": "List directory entries with list_dir.",
-  "prompt": "Call list_dir with path tree. Then answer exactly LIST=OK.",
+  "prompt": "Use the directory-listing tool with path tree. Then answer exactly LIST=OK.",
   "setup": {
     "files": [
       {
@@ -15,7 +15,7 @@
     ]
   },
   "expect": {
-    "tool_called": ["fs.list_dir"],
+    "tool_called": ["vfs.list_dir"],
     "assistant_contains": ["LIST=OK"],
     "tool_output_contains": ["a.txt", "b/"]
   },
@@ -25,6 +25,6 @@
   },
   "run": {
     "max_tokens": 768,
-    "allowed_tools": ["fs.list_dir"]
+    "allowed_tools": ["vfs.list_dir"]
   }
 }

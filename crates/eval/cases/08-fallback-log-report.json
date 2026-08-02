@@ -1,7 +1,7 @@
 {
   "id": "fallback-log-report",
   "description": "Resolve a task file, read a fallback log, and write a derived report.",
-  "prompt": "Call list_dir with path jobs to find the task file, then read jobs/task-418.json. It contains fallback_log, needle, and report_path. Read fallback_log with read_file, extract the token from the line containing \"acquired\", then write report_path with exact text RESULT=<token>\\n. Do not write the report until the task file and log read have both succeeded. Then answer exactly CHAIN=OK.",
+  "prompt": "Use the directory-listing tool with path jobs to find the task file, then read jobs/task-418.json. It contains fallback_log, needle, and report_path. Read fallback_log with the file-reading tool, extract the token from the line containing \"acquired\", then write report_path with exact text RESULT=<token>\\n. Do not write the report until the task file and log read have both succeeded. Then answer exactly CHAIN=OK.",
   "setup": {
     "files": [
       {
@@ -15,7 +15,7 @@
     ]
   },
   "expect": {
-    "tool_called": ["fs.list_dir", "fs.read_file", "fs.write_file"],
+    "tool_called": ["vfs.list_dir", "vfs.read_file", "vfs.write_file"],
     "assistant_contains": ["CHAIN=OK"],
     "tool_output_contains": ["task-418.json", "INFO token-8831 acquired", "Wrote"],
     "files": [
@@ -33,6 +33,6 @@
     "max_tokens": 1024,
     "max_turns": 12,
     "max_tool_rounds": 8,
-    "allowed_tools": ["fs.list_dir", "fs.read_file", "fs.write_file"]
+    "allowed_tools": ["vfs.list_dir", "vfs.read_file", "vfs.write_file"]
   }
 }

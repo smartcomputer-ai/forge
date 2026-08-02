@@ -12,7 +12,7 @@ use crate::{
 const RESERVED_RUN_CONTEXT_KEY_PREFIX: &str = "run";
 const INSTRUCTIONS_KEY_PREFIX: &str = "instructions.";
 pub const VFS_CATALOG_CONTEXT_KEY: &str = "environment.vfs_catalog";
-pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog";
+pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
 pub const SKILL_ACTIVATION_CONTEXT_KEY_PREFIX: &str = "skills.activation.";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_RUN: &str = "lightspeed.skill.activation.run";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activation.session";
@@ -202,13 +202,24 @@ impl ContextEntryInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ContextEntryKind {
-    Message { role: ContextMessageRole },
+    Message {
+        role: ContextMessageRole,
+    },
     Instructions,
     VfsCatalog,
     SkillCatalog,
-    SkillActivation { skill_id: SkillId },
-    ToolCall { call_id: ToolCallId, name: ToolName },
-    ToolResult { call_id: ToolCallId, is_error: bool },
+    SkillActivation {
+        catalog_id: String,
+        skill_id: SkillId,
+    },
+    ToolCall {
+        call_id: ToolCallId,
+        name: ToolName,
+    },
+    ToolResult {
+        call_id: ToolCallId,
+        is_error: bool,
+    },
     ReasoningState,
     ProviderOpaque,
 }
@@ -662,20 +673,22 @@ fn validate_external_context_edit_entry(
         };
     }
 
-    if let Some(skill_id) = key
+    if key
         .as_str()
-        .strip_prefix(SKILL_ACTIVATION_CONTEXT_KEY_PREFIX)
+        .starts_with(SKILL_ACTIVATION_CONTEXT_KEY_PREFIX)
     {
         return match &entry.kind {
             ContextEntryKind::SkillActivation {
-                skill_id: entry_skill_id,
-            } if entry_skill_id.as_str() == skill_id => Ok(()),
-            ContextEntryKind::SkillActivation { skill_id } => {
-                Err(DomainError::InvariantViolation(format!(
-                    "skill activation context key {} does not match entry skill id {}",
-                    key, skill_id
-                )))
-            }
+                catalog_id,
+                skill_id,
+            } if &skill_activation_context_key(catalog_id, skill_id) == key => Ok(()),
+            ContextEntryKind::SkillActivation {
+                catalog_id,
+                skill_id,
+            } => Err(DomainError::InvariantViolation(format!(
+                "skill activation context key {} does not match catalog {} and skill {}",
+                key, catalog_id, skill_id
+            ))),
             _ => Err(DomainError::InvariantViolation(format!(
                 "skill activation context key {} cannot supply context entry kind {:?}",
                 key, entry.kind
@@ -1020,9 +1033,9 @@ fn vfs_catalog_key() -> ContextEntryKey {
     ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)
 }
 
-pub fn skill_activation_context_key(skill_id: &SkillId) -> ContextEntryKey {
+pub fn skill_activation_context_key(catalog_id: &str, skill_id: &SkillId) -> ContextEntryKey {
     ContextEntryKey::new(format!(
-        "{SKILL_ACTIVATION_CONTEXT_KEY_PREFIX}{}",
+        "{SKILL_ACTIVATION_CONTEXT_KEY_PREFIX}{catalog_id}.{}",
         skill_id.as_str()
     ))
 }

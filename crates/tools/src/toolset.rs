@@ -60,8 +60,8 @@ impl Default for ToolsetConfig {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BuiltinToolsetConfig {
     pub presentation: BuiltinToolPresentation,
-    pub fs: FilesystemToolsetConfig,
-    pub process: EnvironmentToolsetConfig,
+    pub vfs: FilesystemToolsetConfig,
+    pub environment: EnvironmentToolsetConfig,
     pub dispatch: ToolDispatchMode,
 }
 
@@ -69,15 +69,15 @@ impl BuiltinToolsetConfig {
     pub fn disabled() -> Self {
         Self {
             presentation: BuiltinToolPresentation::ProviderDefault,
-            fs: FilesystemToolsetConfig::disabled(),
-            process: EnvironmentToolsetConfig::disabled(),
+            vfs: FilesystemToolsetConfig::disabled(),
+            environment: EnvironmentToolsetConfig::disabled(),
             dispatch: ToolDispatchMode::Local,
         }
     }
 
     pub fn workspace() -> Self {
         Self {
-            fs: FilesystemToolsetConfig::workspace_edit(),
+            vfs: FilesystemToolsetConfig::workspace_edit(),
             ..Self::disabled()
         }
     }
@@ -90,25 +90,53 @@ impl BuiltinToolsetConfig {
         config
     }
 
+    pub fn vfs_from_operations(
+        operations: impl IntoIterator<Item = BuiltinToolOperation>,
+    ) -> ToolResult<Self> {
+        let mut config = Self::disabled();
+        for operation in operations {
+            match operation {
+                BuiltinToolOperation::ReadFile => config.vfs.read_file = true,
+                BuiltinToolOperation::WriteFile => config.vfs.write_file = true,
+                BuiltinToolOperation::EditFile => config.vfs.edit_file = true,
+                BuiltinToolOperation::ApplyPatch => config.vfs.apply_patch = true,
+                BuiltinToolOperation::Grep => config.vfs.grep = true,
+                BuiltinToolOperation::Glob => config.vfs.glob = true,
+                BuiltinToolOperation::ListDir => config.vfs.list_dir = true,
+                BuiltinToolOperation::RunProcess
+                | BuiltinToolOperation::WriteProcessStdin
+                | BuiltinToolOperation::JobSubmit
+                | BuiltinToolOperation::JobRun
+                | BuiltinToolOperation::JobRead => {
+                    return Err(ToolError::InvalidRequest {
+                        message: "non-filesystem operation cannot be enabled in the VFS domain"
+                            .to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(config)
+    }
+
     pub fn enable_operation(&mut self, operation: BuiltinToolOperation) {
         match operation {
-            BuiltinToolOperation::ReadFile => self.fs.read_file = true,
-            BuiltinToolOperation::WriteFile => self.fs.write_file = true,
-            BuiltinToolOperation::EditFile => self.fs.edit_file = true,
-            BuiltinToolOperation::ApplyPatch => self.fs.apply_patch = true,
-            BuiltinToolOperation::Grep => self.fs.grep = true,
-            BuiltinToolOperation::Glob => self.fs.glob = true,
-            BuiltinToolOperation::ListDir => self.fs.list_dir = true,
-            BuiltinToolOperation::RunProcess => self.process.run_process = true,
-            BuiltinToolOperation::WriteProcessStdin => self.process.write_process_stdin = true,
-            BuiltinToolOperation::JobSubmit => self.process.job_submit = true,
-            BuiltinToolOperation::JobRun => self.process.job_run = true,
-            BuiltinToolOperation::JobRead => self.process.job_read = true,
+            BuiltinToolOperation::ReadFile => self.environment.filesystem.read_file = true,
+            BuiltinToolOperation::WriteFile => self.environment.filesystem.write_file = true,
+            BuiltinToolOperation::EditFile => self.environment.filesystem.edit_file = true,
+            BuiltinToolOperation::ApplyPatch => self.environment.filesystem.apply_patch = true,
+            BuiltinToolOperation::Grep => self.environment.filesystem.grep = true,
+            BuiltinToolOperation::Glob => self.environment.filesystem.glob = true,
+            BuiltinToolOperation::ListDir => self.environment.filesystem.list_dir = true,
+            BuiltinToolOperation::RunProcess => self.environment.run_process = true,
+            BuiltinToolOperation::WriteProcessStdin => self.environment.write_process_stdin = true,
+            BuiltinToolOperation::JobSubmit => self.environment.job_submit = true,
+            BuiltinToolOperation::JobRun => self.environment.job_run = true,
+            BuiltinToolOperation::JobRead => self.environment.job_read = true,
         }
     }
 
     pub fn enabled(&self) -> bool {
-        self.fs.enabled() || self.process.enabled()
+        self.vfs.enabled() || self.environment.enabled()
     }
 }
 
@@ -217,6 +245,7 @@ impl FilesystemToolsetConfig {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EnvironmentToolsetConfig {
+    pub filesystem: FilesystemToolsetConfig,
     pub run_process: bool,
     pub write_process_stdin: bool,
     pub job_submit: bool,
@@ -231,6 +260,7 @@ impl EnvironmentToolsetConfig {
 
     pub fn basic() -> Self {
         Self {
+            filesystem: FilesystemToolsetConfig::workspace_edit(),
             run_process: true,
             write_process_stdin: true,
             ..Self::disabled()
@@ -252,7 +282,8 @@ impl EnvironmentToolsetConfig {
     }
 
     pub fn enabled(&self) -> bool {
-        self.run_process
+        self.filesystem.enabled()
+            || self.run_process
             || self.write_process_stdin
             || self.job_submit
             || self.job_run
@@ -264,7 +295,7 @@ impl EnvironmentToolsetConfig {
     }
 
     fn operations(&self) -> Vec<BuiltinToolOperation> {
-        let mut operations = Vec::new();
+        let mut operations = self.filesystem.operations();
         if self.run_process {
             operations.push(BuiltinToolOperation::RunProcess);
         }
@@ -422,7 +453,7 @@ pub fn resolve_toolset(
     }
 
     let mut concurrency = config.concurrency.clone();
-    if config.fleet.enabled || config.builtin.process.jobs_enabled() {
+    if config.fleet.enabled || config.builtin.environment.jobs_enabled() {
         concurrency.enabled = true;
     }
     if concurrency.enabled_or_timer() {
@@ -464,13 +495,19 @@ impl ToolsetBuilder {
     ) -> ToolResult<()> {
         let surface = config.presentation.surface(target);
         let omit_unsupported = config.presentation == BuiltinToolPresentation::ProviderDefault;
-        for operation in config
-            .fs
-            .operations()
-            .into_iter()
-            .chain(config.process.operations())
-        {
-            let tool = BuiltinTool::new(operation, surface);
+        for operation in config.vfs.operations() {
+            let tool = BuiltinTool::vfs(operation, surface);
+            let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
+                Ok(bundle) => bundle,
+                Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
+                Err(error) => return Err(error),
+            };
+            let binding = tool.binding(target, config.dispatch.clone());
+            self.add_bundle(bundle);
+            self.catalog.insert(binding);
+        }
+        for operation in config.environment.operations() {
+            let tool = BuiltinTool::environment(operation, surface);
             let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
                 Ok(bundle) => bundle,
                 Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
@@ -550,7 +587,6 @@ const STATIC_SCOPED_FS_PATHS: bool = true;
 
 #[cfg(test)]
 mod tests {
-    use engine::ToolTargetRequirement;
     use serde_json::{Value, json};
 
     use super::*;
@@ -584,24 +620,78 @@ mod tests {
         assert_eq!(
             visible_names(&toolset),
             vec![
-                "apply_patch",
-                "edit_file",
-                "glob",
-                "grep",
-                "list_dir",
-                "read_file",
-                "write_file"
+                "vfs_apply_patch",
+                "vfs_edit_file",
+                "vfs_glob",
+                "vfs_grep",
+                "vfs_list_dir",
+                "vfs_read_file",
+                "vfs_write_file"
             ]
         );
-        assert!(toolset.catalog.get(&ToolName::new("read_file")).is_some());
+        assert!(
+            toolset
+                .catalog
+                .get(&ToolName::new("vfs_read_file"))
+                .is_some()
+        );
         assert!(toolset.provider_params_patch.is_empty());
+    }
+
+    #[test]
+    fn read_only_vfs_toolset_exposes_only_four_vfs_tools() {
+        let target = target(ProviderApiKind::OpenAiResponses);
+        let mut config = ToolsetConfig::empty();
+        config.builtin.vfs = FilesystemToolsetConfig::read_only();
+
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+
+        assert_eq!(
+            visible_names(&toolset),
+            vec!["vfs_glob", "vfs_grep", "vfs_list_dir", "vfs_read_file"]
+        );
+        assert!(
+            toolset
+                .catalog
+                .bindings()
+                .all(|binding| binding.logical_id.starts_with("vfs."))
+        );
+    }
+
+    #[test]
+    fn environment_and_vfs_toolsets_are_non_colliding() {
+        let target = target(ProviderApiKind::OpenAiResponses);
+        let mut config = ToolsetConfig::workspace();
+        config.builtin.environment = EnvironmentToolsetConfig::basic();
+
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let names = visible_names(&toolset);
+
+        assert!(names.contains(&"vfs_read_file".to_owned()));
+        assert!(names.contains(&"read_file".to_owned()));
+        assert!(names.contains(&"exec_command".to_owned()));
+        assert_eq!(names.len(), 16);
+        assert!(
+            toolset
+                .catalog
+                .bindings()
+                .any(|binding| binding.logical_id == "vfs.read_file")
+        );
+        assert!(
+            toolset
+                .catalog
+                .bindings()
+                .any(|binding| binding.logical_id == "env.read_file")
+        );
     }
 
     #[test]
     fn job_toolset_adds_suspension_tools_without_fleet_tools() {
         let target = target(ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
-        config.builtin.process = EnvironmentToolsetConfig::jobs();
+        config.builtin.environment = EnvironmentToolsetConfig::jobs();
 
         let toolset =
             resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
@@ -682,7 +772,7 @@ mod tests {
         let target = target(ProviderApiKind::AnthropicMessages);
         let mut config = ToolsetConfig::empty();
         config.builtin = BuiltinToolsetConfig {
-            fs: FilesystemToolsetConfig {
+            vfs: FilesystemToolsetConfig {
                 read_file: true,
                 ..FilesystemToolsetConfig::disabled()
             },
@@ -692,7 +782,7 @@ mod tests {
         let toolset =
             resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
 
-        assert_eq!(visible_names(&toolset), vec!["Read"]);
+        assert_eq!(visible_names(&toolset), vec!["VfsRead"]);
         assert!(
             toolset
                 .documents
@@ -713,7 +803,43 @@ mod tests {
 
         assert_eq!(
             visible_names(&toolset),
-            vec!["Edit", "Glob", "Grep", "Read", "Write"]
+            vec![
+                "VfsEdit",
+                "VfsGlob",
+                "VfsGrep",
+                "VfsListDir",
+                "VfsRead",
+                "VfsWrite"
+            ]
+        );
+    }
+
+    #[test]
+    fn anthropic_list_dir_names_preserve_vfs_and_environment_domains() {
+        let target = target(ProviderApiKind::AnthropicMessages);
+        let mut config = ToolsetConfig::empty();
+        config.builtin.vfs.list_dir = true;
+        config.builtin.environment.filesystem.list_dir = true;
+
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+
+        assert_eq!(visible_names(&toolset), vec!["ListDir", "VfsListDir"]);
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("ListDir"))
+                .expect("environment list binding")
+                .logical_id,
+            "env.list_dir"
+        );
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("VfsListDir"))
+                .expect("VFS list binding")
+                .logical_id,
+            "vfs.list_dir"
         );
     }
 
@@ -781,10 +907,9 @@ mod tests {
                 .get(&ToolName::new(WEB_FETCH_TOOL_NAME))
                 .is_some()
         );
-        let spec = toolset
+        let _spec = toolset
             .tools
             .get(&ToolName::new(WEB_FETCH_TOOL_NAME))
             .expect("web_fetch spec");
-        assert_eq!(spec.target_requirement, ToolTargetRequirement::None);
     }
 }

@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{CoreAgentState, DomainError, EnvironmentId, ToolEffect, ToolExecutionTarget};
+use crate::{CoreAgentState, DomainError, EnvironmentId, ToolEffect};
 
-pub const ENVIRONMENT_TARGET_NAMESPACE: &str = "env";
 pub const ENVIRONMENT_ACTIVATE_EFFECT_KIND: &str = "lightspeed.environment.activate";
 pub const ENVIRONMENT_DEACTIVATE_EFFECT_KIND: &str = "lightspeed.environment.deactivate";
 const ENVIRONMENT_ID_EFFECT_KEY: &str = "environment_id";
@@ -11,14 +10,6 @@ const ENVIRONMENT_ID_EFFECT_KEY: &str = "environment_id";
 pub struct EnvironmentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_environment_id: Option<EnvironmentId>,
-}
-
-impl EnvironmentState {
-    pub fn active_execution_target(&self) -> Option<ToolExecutionTarget> {
-        self.active_environment_id.as_ref().map(|environment_id| {
-            ToolExecutionTarget::new(ENVIRONMENT_TARGET_NAMESPACE, environment_id.as_str())
-        })
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

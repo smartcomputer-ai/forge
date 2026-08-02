@@ -18,11 +18,10 @@ use crate::{
         invoke_read_file, invoke_write_file,
     },
     runtime::{ToolInvocationOutput, decode_args, encode_output},
-    targets::ResolvedToolContext,
 };
 
 use super::{
-    BuiltinToolOperation,
+    BuiltinToolContext, BuiltinToolOperation,
     shared::{
         array_of_strings, boolean, nullable_integer, nullable_string, object,
         process_visible_output, string, string_map, visible_with_truncation,
@@ -211,7 +210,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
 
 pub(super) async fn invoke_json(
     operation: BuiltinToolOperation,
-    ctx: ResolvedToolContext<'_>,
+    ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
     match operation {

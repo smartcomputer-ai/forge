@@ -2,8 +2,7 @@
 
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    CoreAgentState, ToolExecutionTarget, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess,
-    WorkspaceLinkTarget,
+    CoreAgentState, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess, WorkspaceLinkTarget,
     storage::{BlobStore, BlobStoreError},
 };
 use serde::{Deserialize, Serialize};
@@ -33,62 +32,6 @@ impl VfsCatalog {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentRecord {
-    pub environment_id: String,
-    pub kind: EnvironmentKind,
-    pub capabilities: EnvironmentCapabilities,
-    pub exec_target: Option<ToolExecutionTarget>,
-    pub cwd: Option<FsPath>,
-    pub status: EnvironmentStatus,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentKind {
-    Sandbox,
-    AttachedHost,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnvironmentCapabilities {
-    #[serde(default)]
-    pub fs_read: bool,
-    #[serde(default)]
-    pub fs_write: bool,
-    #[serde(default)]
-    pub process_exec: bool,
-    #[serde(default)]
-    pub process_stdin: bool,
-    #[serde(default)]
-    pub job_start: bool,
-    #[serde(default)]
-    pub job_list: bool,
-    #[serde(default)]
-    pub job_read: bool,
-    #[serde(default)]
-    pub job_cancel: bool,
-    #[serde(default)]
-    pub job_wait_hint: bool,
-    #[serde(default)]
-    pub job_dependencies: bool,
-    #[serde(default)]
-    pub job_queue_keys: bool,
-    #[serde(default)]
-    pub network: bool,
-    #[serde(default)]
-    pub persistent: bool,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnvironmentStatus {
-    Attaching,
-    Ready,
-    Degraded,
-    Detached,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FsRoute {
     pub path: FsPath,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -96,7 +39,6 @@ pub struct FsRoute {
     pub access: FsRouteAccess,
     pub source: FsRouteSource,
     pub availability: FsRouteAvailability,
-    pub same_state_as_active_env: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -127,8 +69,6 @@ impl From<WorkspaceLinkAccess> for FsRouteAccess {
 pub enum FsRouteSource {
     VfsSnapshot { snapshot_ref: BlobRef },
     VfsWorkspace { workspace_id: String },
-    HostFilesystem { target: ToolExecutionTarget },
-    FusedWorkspace { environment_id: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -268,7 +208,6 @@ fn fs_route_from_workspace_link(
         access: link.access.into(),
         source,
         availability,
-        same_state_as_active_env: None,
     })
 }
 
@@ -389,7 +328,6 @@ mod tests {
         assert_eq!(catalog.routes.len(), 1);
         assert_eq!(catalog.routes[0].path.as_str(), "/workspace");
         assert_eq!(catalog.routes[0].access, FsRouteAccess::ReadWrite);
-        assert_eq!(catalog.routes[0].same_state_as_active_env, None);
         assert!(matches!(
             catalog.routes[0].source,
             FsRouteSource::VfsWorkspace { .. }

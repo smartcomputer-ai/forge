@@ -1,0 +1,34 @@
+{
+  "id": "domain-read-isolation",
+  "description": "Read the same logical path from VFS and the active environment without crossing domains.",
+  "prompt": "The VFS and active environment each contain shared/identity.txt with different contents. Read the file once with the VFS read tool and once with the ordinary environment read tool. Then answer exactly VFS=vfs-9137 ENV=env-2468.",
+  "setup": {
+    "files": [
+      {
+        "path": "shared/identity.txt",
+        "content": "vfs-9137\n"
+      }
+    ],
+    "environment_files": [
+      {
+        "path": "shared/identity.txt",
+        "content": "env-2468\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_called": ["vfs.read_file", "env.read_file"],
+    "assistant_contains": ["VFS=vfs-9137 ENV=env-2468"],
+    "tool_output_contains": ["vfs-9137", "env-2468"]
+  },
+  "eval": {
+    "runs": 1,
+    "min_pass_rate": 1.0
+  },
+  "run": {
+    "max_tokens": 1024,
+    "max_turns": 8,
+    "max_tool_rounds": 4,
+    "allowed_tools": ["vfs.read_file", "env.read_file"]
+  }
+}

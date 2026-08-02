@@ -360,12 +360,6 @@ impl WorkflowToolDefinition {
                 self.tool_id
             )));
         }
-        if self.tool.target_requirement != crate::ToolTargetRequirement::None {
-            return Err(DomainError::InvariantViolation(format!(
-                "workflow tool {} must not declare an execution target",
-                self.tool_id
-            )));
-        }
         Ok(())
     }
 }
@@ -2207,13 +2201,7 @@ fn update_definition_fingerprint(
             crate::ToolParallelism::ParallelSafe => b"parallel_safe",
         },
     );
-    if definition.tool.target_requirement != crate::ToolTargetRequirement::None {
-        return Err(DomainError::InvariantViolation(format!(
-            "workflow tool {} fingerprint does not support an execution target requirement",
-            definition.tool_id
-        )));
-    }
-    update_digest_part(hasher, b"target_none");
+    update_digest_part(hasher, b"target_free");
     Ok(())
 }
 
@@ -2281,7 +2269,7 @@ mod tests {
         ObservedToolCall, ProviderApiKind, RunConfig, RunRequestCommand, RunRequestSource,
         SessionConfig, SessionPosition, ToolCallStatus, ToolInvocationBatchRequest,
         ToolInvocationBatchResult, ToolInvocationResult, ToolName, ToolParallelism,
-        ToolTargetRequirement, storage::StoredSessionEntry,
+        storage::StoredSessionEntry,
     };
 
     fn endpoint(workflow_id: &str) -> WorkflowEndpointRef {
@@ -2306,7 +2294,6 @@ mod tests {
                     provider_options_ref: None,
                 }),
                 parallelism: ToolParallelism::ParallelSafe,
-                target_requirement: ToolTargetRequirement::None,
             },
         }
     }
@@ -2610,11 +2597,11 @@ mod tests {
         .expect("start Joined binding");
         assert_eq!(
             pushed.binding_fingerprint.as_str(),
-            "wtb:sha256:3c55e41daada8143c065da53c64c117c41183fe988c9d2902e43d63d21eebe30"
+            "wtb:sha256:4667d89301ad5afc1070b2cf7e830529466e99c42caff74706f8e5ffa995e312"
         );
         assert_eq!(
             started.binding_fingerprint.as_str(),
-            "wtb:sha256:ffc405f383f4ce121255910991ecc5cbe54dd7f667066c923196282c346ec5f1"
+            "wtb:sha256:231342b0e047d5fec28a87c154fc8750fdcf8b641c5912b5bb19e97ad4814055"
         );
     }
 
@@ -3085,11 +3072,11 @@ mod tests {
         // and JSON formatting must never participate in these identities.
         assert_eq!(
             left.bindings[0].binding_fingerprint,
-            "wtb:sha256:6ad3ad9ad868730cb7b96175e0e4107c370f4b722c4d05dcc556eb85555c0413"
+            "wtb:sha256:de1b1562ce30f9016f2a8aed258acb0fbb22a80bcd55124809ad7f8e9c0171db"
         );
         assert_eq!(
             left.creation_fingerprint,
-            "msc:sha256:cb2dd0c577f95b171e9631f1ecb7bd2f3166d191b6e1f9f3039381ebe9aa407b"
+            "msc:sha256:f925b85a1c60556a15dd8fdb513673bc1aaf4efc001ad9572c00b577175e9950"
         );
     }
 

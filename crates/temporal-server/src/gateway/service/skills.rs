@@ -101,7 +101,6 @@ impl GatewayAgentApi {
         let publication = tools::skills::prepare_skill_catalog_publication_with_warnings(
             self.store.as_ref(),
             &state,
-            None,
             &inputs,
             resolved.warnings().to_vec(),
         )
@@ -282,7 +281,7 @@ pub(super) fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
         kind: ContextEntryKind::SkillCatalog,
         source: engine::ContextEntrySource::Runtime {
-            label: "skills.catalog".to_owned(),
+            label: "skills.catalog.vfs".to_owned(),
         },
         content_ref: input.content_ref,
         media_type: input.media_type,
@@ -321,7 +320,7 @@ pub(super) fn active_skill_ids(state: &engine::CoreAgentState) -> Vec<SkillId> {
     active_skill_context_entries(state)
         .into_iter()
         .filter_map(|entry| match &entry.kind {
-            ContextEntryKind::SkillActivation { skill_id } => Some(skill_id.clone()),
+            ContextEntryKind::SkillActivation { skill_id, .. } => Some(skill_id.clone()),
             _ => None,
         })
         .collect()
@@ -347,6 +346,7 @@ pub(super) fn active_skill_ids_after_remove(
 }
 
 pub(super) fn skill_activation_context_input(
+    catalog_id: String,
     skill_id: SkillId,
     catalog_ref: BlobRef,
     context_ref: BlobRef,
@@ -354,7 +354,10 @@ pub(super) fn skill_activation_context_input(
     skill: Option<&SkillMetadata>,
 ) -> ContextEntryInput {
     ContextEntryInput {
-        kind: ContextEntryKind::SkillActivation { skill_id },
+        kind: ContextEntryKind::SkillActivation {
+            catalog_id,
+            skill_id,
+        },
         content_ref: context_ref,
         media_type: Some("text/markdown".to_owned()),
         preview: skill.map(|skill| format!("skill activated: {}", skill.name)),
@@ -385,7 +388,9 @@ pub(super) fn skill_list_response(
     let active_ids = activations
         .iter()
         .filter_map(|entry| match &entry.kind {
-            ContextEntryKind::SkillActivation { skill_id } => Some(skill_id.as_str().to_owned()),
+            ContextEntryKind::SkillActivation { skill_id, .. } => {
+                Some(skill_id.as_str().to_owned())
+            }
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -432,7 +437,11 @@ pub(super) fn skill_activation_view(
     active_catalog_ref: Option<&BlobRef>,
     catalog: Option<&SkillCatalogSnapshot>,
 ) -> Option<SkillActivationView> {
-    let ContextEntryKind::SkillActivation { skill_id } = &activation.kind else {
+    let ContextEntryKind::SkillActivation {
+        catalog_id,
+        skill_id,
+    } = &activation.kind
+    else {
         return None;
     };
     let metadata = catalog.and_then(|catalog| {
@@ -446,6 +455,7 @@ pub(super) fn skill_activation_view(
         .as_deref()
         .or_else(|| active_catalog_ref.map(BlobRef::as_str))?;
     Some(SkillActivationView {
+        catalog_id: catalog_id.clone(),
         skill_id: skill_id.as_str().to_owned(),
         name: metadata.map(|skill| skill.name.clone()),
         description: metadata.map(|skill| skill.description.clone()),
