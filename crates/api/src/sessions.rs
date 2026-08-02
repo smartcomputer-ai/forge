@@ -539,8 +539,6 @@ pub struct ToolView {
     pub kind: ToolKindView,
     #[serde(default)]
     pub parallelism: ToolParallelismView,
-    #[serde(default)]
-    pub target_requirement: ToolTargetRequirementView,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -597,22 +595,6 @@ pub enum ToolParallelismView {
     Exclusive,
     #[default]
     ParallelSafe,
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "type",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase"
-)]
-pub enum ToolTargetRequirementView {
-    #[default]
-    None,
-    SessionFilesystem,
-    ActiveEnvironment,
-    Fixed {
-        target: ToolExecutionTargetView,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1157,13 +1139,6 @@ pub enum SessionEventKindView {
 pub enum RunAcceptedSourceView {
     Input { entries: Vec<ContextEntryInputView> },
     Context { keys: Vec<String> },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct ToolExecutionTargetView {
-    pub namespace: String,
-    pub id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

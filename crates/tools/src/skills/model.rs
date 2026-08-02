@@ -1,29 +1,34 @@
-use engine::{BlobRef, SkillId, ToolExecutionTarget};
+use engine::{BlobRef, SkillId};
 use serde::{Deserialize, Serialize};
 use vfs::{VfsPath, VfsWorkspaceId};
 
 use crate::fs::FsPath;
 
-pub const SKILL_CATALOG_SCHEMA_VERSION: &str = "lightspeed.skills.catalog.v1";
+pub const SKILL_CATALOG_SCHEMA_VERSION: &str = "lightspeed.skills.catalog.v2";
 pub const SKILL_CATALOG_BUILD_SCHEMA_VERSION: &str = "lightspeed.skills.catalog.build.v1";
+pub const VFS_SKILL_CATALOG_ID: &str = "vfs";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SkillCatalogSource {
+    Vfs,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SkillCatalogSnapshot {
     pub schema_version: String,
-    pub target: Option<ToolExecutionTarget>,
+    pub catalog_id: String,
+    pub source: SkillCatalogSource,
     pub skills: Vec<SkillMetadata>,
     pub warnings: Vec<SkillLoadWarning>,
 }
 
 impl SkillCatalogSnapshot {
-    pub fn new(
-        target: Option<ToolExecutionTarget>,
-        skills: Vec<SkillMetadata>,
-        warnings: Vec<SkillLoadWarning>,
-    ) -> Self {
+    pub fn new(skills: Vec<SkillMetadata>, warnings: Vec<SkillLoadWarning>) -> Self {
         Self {
             schema_version: SKILL_CATALOG_SCHEMA_VERSION.to_owned(),
-            target,
+            catalog_id: VFS_SKILL_CATALOG_ID.to_owned(),
+            source: SkillCatalogSource::Vfs,
             skills,
             warnings,
         }
@@ -78,12 +83,6 @@ pub enum SkillCatalogSourceInput {
         workspace_head_ref: BlobRef,
         root_path: VfsPath,
     },
-    HostRoot {
-        root_id: String,
-        target: ToolExecutionTarget,
-        root_path: String,
-        root_fingerprint: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,7 +93,6 @@ pub struct SkillMetadata {
     pub short_description: Option<String>,
     pub source: SkillSource,
     pub scope: SkillScope,
-    pub target: Option<ToolExecutionTarget>,
     pub enabled: bool,
     pub trust: SkillTrustLevel,
     pub interface: Option<SkillInterface>,
@@ -113,10 +111,6 @@ pub enum SkillSource {
     Workspace {
         root_id: String,
         workspace_id: VfsWorkspaceId,
-    },
-    HostPath {
-        root_id: String,
-        target: ToolExecutionTarget,
     },
 }
 
@@ -166,12 +160,6 @@ pub enum SkillLocation {
         source_link_path: VfsPath,
         skill_dir_path: VfsPath,
         skill_doc_path: VfsPath,
-    },
-    HostFilesystem {
-        target: ToolExecutionTarget,
-        root_path: String,
-        skill_dir_path: String,
-        skill_doc_path: String,
     },
 }
 
@@ -224,8 +212,5 @@ pub enum SkillCatalogRootSource {
         workspace_id: VfsWorkspaceId,
         workspace_head_ref: BlobRef,
         link_path: VfsPath,
-    },
-    HostFilesystem {
-        target: ToolExecutionTarget,
     },
 }

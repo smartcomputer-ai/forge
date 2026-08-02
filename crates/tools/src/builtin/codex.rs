@@ -5,9 +5,9 @@
 
 use serde_json::Value;
 
-use crate::{error::ToolResult, runtime::ToolInvocationOutput, targets::ResolvedToolContext};
+use crate::{error::ToolResult, runtime::ToolInvocationOutput};
 
-use super::{BuiltinToolOperation, canonical};
+use super::{BuiltinToolContext, BuiltinToolOperation, canonical};
 
 pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -> String {
     canonical::description(operation, scoped_paths)
@@ -19,7 +19,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
 
 pub(super) async fn invoke_json(
     operation: BuiltinToolOperation,
-    ctx: ResolvedToolContext<'_>,
+    ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
     canonical::invoke_json(operation, ctx, arguments).await

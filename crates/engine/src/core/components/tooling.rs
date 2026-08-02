@@ -41,7 +41,6 @@ pub enum Event {
         call_id: ToolCallId,
         tool_name: ToolName,
         arguments_ref: BlobRef,
-        execution_target: Option<ToolExecutionTarget>,
     },
     CallCompleted {
         run_id: RunId,
@@ -297,24 +296,13 @@ pub struct ToolSpec {
     pub name: ToolName,
     pub kind: ToolKind,
     pub parallelism: ToolParallelism,
-    #[serde(default)]
-    pub target_requirement: ToolTargetRequirement,
 }
 
 impl ToolSpec {
     pub fn validate(&self) -> Result<(), DomainError> {
-        self.target_requirement.validate()?;
         match &self.kind {
             ToolKind::Function(_) | ToolKind::ProviderNative(_) => Ok(()),
-            ToolKind::RemoteMcp(remote_mcp) => {
-                if self.target_requirement != ToolTargetRequirement::None {
-                    return Err(DomainError::InvariantViolation(format!(
-                        "remote MCP tool {} must not declare an execution target requirement",
-                        self.name
-                    )));
-                }
-                remote_mcp.validate()
-            }
+            ToolKind::RemoteMcp(remote_mcp) => remote_mcp.validate(),
         }
     }
 
@@ -329,100 +317,6 @@ impl ToolSpec {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ToolExecutionTarget {
-    pub namespace: String,
-    pub id: String,
-}
-
-impl ToolExecutionTarget {
-    pub fn new(namespace: impl Into<String>, id: impl Into<String>) -> Self {
-        Self {
-            namespace: namespace.into(),
-            id: id.into(),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), DomainError> {
-        validate_target_namespace(&self.namespace)?;
-        validate_target_id(&self.id)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolTargetRequirement {
-    #[default]
-    None,
-    SessionFilesystem,
-    ActiveEnvironment,
-    Fixed {
-        target: ToolExecutionTarget,
-    },
-}
-
-impl ToolTargetRequirement {
-    pub fn validate(&self) -> Result<(), DomainError> {
-        if let Self::Fixed { target } = self {
-            target.validate()?;
-        }
-        Ok(())
-    }
-}
-
-pub(crate) fn validate_tool_execution_target_for_requirement(
-    requirement: &ToolTargetRequirement,
-    target: Option<&ToolExecutionTarget>,
-) -> Result<(), DomainError> {
-    requirement.validate()?;
-    if let Some(target) = target {
-        target.validate()?;
-    }
-    match (requirement, target) {
-        (ToolTargetRequirement::None, None) => Ok(()),
-        (ToolTargetRequirement::None, Some(_)) => Err(DomainError::InvariantViolation(
-            "tool invocation target is not allowed for this tool".into(),
-        )),
-        (ToolTargetRequirement::SessionFilesystem, Some(target)) => {
-            if target == &ToolExecutionTarget::new("fs", "session") {
-                Ok(())
-            } else {
-                Err(DomainError::InvariantViolation(format!(
-                    "tool invocation target {}:{} is not the session filesystem",
-                    target.namespace, target.id
-                )))
-            }
-        }
-        (ToolTargetRequirement::ActiveEnvironment, Some(target)) => {
-            if target.namespace == crate::ENVIRONMENT_TARGET_NAMESPACE {
-                Ok(())
-            } else {
-                Err(DomainError::InvariantViolation(format!(
-                    "tool invocation target namespace {} is not the environment namespace",
-                    target.namespace
-                )))
-            }
-        }
-        (ToolTargetRequirement::Fixed { target: required }, Some(target)) => {
-            if required == target {
-                Ok(())
-            } else {
-                Err(DomainError::InvariantViolation(
-                    "tool invocation target does not match its fixed target".to_owned(),
-                ))
-            }
-        }
-        (
-            ToolTargetRequirement::SessionFilesystem
-            | ToolTargetRequirement::ActiveEnvironment
-            | ToolTargetRequirement::Fixed { .. },
-            None,
-        ) => Err(DomainError::InvariantViolation(
-            "tool invocation requires an execution target".to_owned(),
-        )),
-    }
-}
-
 pub(crate) fn validate_unique_tool_call_ids(calls: &[ObservedToolCall]) -> Result<(), DomainError> {
     let mut seen = BTreeSet::new();
     for call in calls {
@@ -430,64 +324,6 @@ pub(crate) fn validate_unique_tool_call_ids(calls: &[ObservedToolCall]) -> Resul
             return Err(DomainError::InvariantViolation(format!(
                 "duplicate tool call id {}",
                 call.call_id
-            )));
-        }
-    }
-    Ok(())
-}
-
-const TARGET_COMPONENT_MAX_LEN: usize = 128;
-
-fn validate_target_namespace(namespace: &str) -> Result<(), DomainError> {
-    validate_target_component(
-        "tool execution target namespace",
-        namespace,
-        "ASCII letters, digits, '_', '-', '.'",
-        |ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'),
-    )
-}
-
-fn validate_target_id(id: &str) -> Result<(), DomainError> {
-    validate_target_component(
-        "tool execution target id",
-        id,
-        "ASCII letters, digits, '_', '-', '.', ':'",
-        |ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | ':'),
-    )
-}
-
-fn validate_target_component(
-    kind: &'static str,
-    value: &str,
-    allowed: &'static str,
-    allowed_char: impl Fn(char) -> bool,
-) -> Result<(), DomainError> {
-    if value.is_empty() {
-        return Err(DomainError::InvariantViolation(format!(
-            "{kind} must not be empty"
-        )));
-    }
-    if value.len() > TARGET_COMPONENT_MAX_LEN {
-        return Err(DomainError::InvariantViolation(format!(
-            "{kind} is too long: {} bytes, max {}",
-            value.len(),
-            TARGET_COMPONENT_MAX_LEN
-        )));
-    }
-    let Some(first) = value.chars().next() else {
-        return Err(DomainError::InvariantViolation(format!(
-            "{kind} must not be empty"
-        )));
-    };
-    if !first.is_ascii_alphanumeric() {
-        return Err(DomainError::InvariantViolation(format!(
-            "{kind} must start with an ASCII letter or digit"
-        )));
-    }
-    for (index, ch) in value.char_indices() {
-        if !allowed_char(ch) {
-            return Err(DomainError::InvariantViolation(format!(
-                "{kind} contains invalid character {ch:?} at byte {index}; allowed: {allowed}"
             )));
         }
     }
@@ -594,12 +430,24 @@ const REMOTE_MCP_URL_MAX_LEN: usize = 2048;
 const REMOTE_MCP_ALLOWED_TOOL_MAX_LEN: usize = 128;
 
 fn validate_remote_mcp_server_label(value: &str) -> Result<(), DomainError> {
-    validate_target_component(
-        "remote MCP server label",
-        value,
-        "ASCII letters, digits, '_', '-'",
-        |ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'),
-    )
+    if value.is_empty() || value.len() > REMOTE_MCP_ALLOWED_TOOL_MAX_LEN {
+        return Err(DomainError::InvariantViolation(
+            "remote MCP server label must contain 1 to 128 bytes".to_owned(),
+        ));
+    }
+    if !value
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+    {
+        return Err(DomainError::InvariantViolation(
+            "remote MCP server label must start with an ASCII letter or digit and contain only ASCII letters, digits, '_' or '-'".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_remote_mcp_server_url(value: &str) -> Result<(), DomainError> {
@@ -764,14 +612,12 @@ pub struct ToolCallState {
     pub call: ObservedToolCall,
     pub status: ToolCallStatus,
     pub execution_policy: Option<ToolCallExecutionPolicy>,
-    pub execution_target: Option<ToolExecutionTarget>,
     pub result: Option<ToolCallResult>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallExecutionPolicy {
     pub invokes_client_effect: bool,
-    pub target_requirement: ToolTargetRequirement,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -924,7 +770,7 @@ fn validate_model_visible_tool_entries(
 }
 
 fn decide_active_tool_batch_invocations(
-    state: &CoreAgentState,
+    _state: &CoreAgentState,
     active_run: &ActiveRun,
     batch_id: ToolBatchId,
 ) -> Result<Vec<CoreAgentEventProposal>, PlanningError> {
@@ -965,9 +811,6 @@ fn decide_active_tool_batch_invocations(
             ))
             .into());
         }
-        let execution_target =
-            resolve_tool_execution_target(state, &call_state.call.tool_name, policy)?;
-
         let joins = CoreAgentJoins {
             run_id: Some(batch.run_id),
             turn_id: Some(batch.turn_id),
@@ -984,7 +827,6 @@ fn decide_active_tool_batch_invocations(
                 call_id: call_state.call.call_id.clone(),
                 tool_name: call_state.call.tool_name.clone(),
                 arguments_ref: call_state.call.arguments_ref.clone(),
-                execution_target,
             }),
         ));
     }
@@ -1078,32 +920,6 @@ fn tool_result_context_entries(
         }
     }
     context_entries_from_inputs(state, inputs).map_err(Into::into)
-}
-
-fn resolve_tool_execution_target(
-    state: &CoreAgentState,
-    tool_name: &ToolName,
-    policy: &ToolCallExecutionPolicy,
-) -> Result<Option<ToolExecutionTarget>, PlanningError> {
-    policy.target_requirement.validate()?;
-    match &policy.target_requirement {
-        ToolTargetRequirement::None => Ok(None),
-        ToolTargetRequirement::SessionFilesystem => {
-            Ok(Some(ToolExecutionTarget::new("fs", "session")))
-        }
-        ToolTargetRequirement::Fixed { target } => Ok(Some(target.clone())),
-        ToolTargetRequirement::ActiveEnvironment => state
-            .environment
-            .active_execution_target()
-            .map(Some)
-            .ok_or_else(|| {
-                DomainError::InvariantViolation(format!(
-                    "tool {} requires an active environment",
-                    tool_name
-                ))
-                .into()
-            }),
-    }
 }
 
 pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(), DomainError> {
@@ -1234,7 +1050,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             call_id,
             tool_name,
             arguments_ref,
-            execution_target,
         } => start_tool_call(
             state,
             *run_id,
@@ -1243,7 +1058,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             call_id,
             tool_name,
             arguments_ref,
-            execution_target.as_ref(),
         ),
         Event::CallCompleted {
             run_id,
@@ -1346,7 +1160,6 @@ fn initial_tool_call_state(
         call: call.clone(),
         status,
         execution_policy,
-        execution_target: None,
         result,
     }
 }
@@ -1362,17 +1175,8 @@ fn initial_tool_call_execution_policy(
     if !tool.invokes_client_effect() {
         return None;
     }
-    if tool.target_requirement.validate().is_err() {
-        return None;
-    }
-    if tool.target_requirement == ToolTargetRequirement::ActiveEnvironment
-        && state.environment.active_environment_id.is_none()
-    {
-        return None;
-    }
     Some(ToolCallExecutionPolicy {
         invokes_client_effect: true,
-        target_requirement: tool.target_requirement,
     })
 }
 
@@ -1717,7 +1521,6 @@ fn start_tool_call(
     call_id: &ToolCallId,
     tool_name: &ToolName,
     arguments_ref: &BlobRef,
-    execution_target: Option<&ToolExecutionTarget>,
 ) -> Result<(), DomainError> {
     let policy = {
         let active_run = crate::core::components::run::active_run_ref(state, run_id)?;
@@ -1735,8 +1538,6 @@ fn start_tool_call(
             "tool call start requires a client-effect tool".into(),
         ));
     }
-    validate_tool_execution_target_for_requirement(&policy.target_requirement, execution_target)?;
-
     let active_run = crate::core::components::run::active_run_mut(state, run_id)?;
     if active_run.status != RunStatus::Active {
         return Err(DomainError::InvariantViolation(
@@ -1796,7 +1597,6 @@ fn start_tool_call(
         ));
     }
     call_state.status = ToolCallStatus::Pending;
-    call_state.execution_target = execution_target.cloned();
     Ok(())
 }
 
@@ -1946,7 +1746,6 @@ mod tests {
                 "https://echo.example.com/mcp",
             )),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         }
     }
 
@@ -1956,20 +1755,6 @@ mod tests {
 
         tool.validate().expect("valid remote MCP tool");
         assert!(!tool.invokes_client_effect());
-    }
-
-    #[test]
-    fn remote_mcp_tool_rejects_execution_target_requirement() {
-        let mut tool = remote_mcp_tool("mcp_echo", "echo");
-        tool.target_requirement = ToolTargetRequirement::Fixed {
-            target: ToolExecutionTarget::new("host", "test"),
-        };
-
-        let error = tool
-            .validate()
-            .expect_err("remote MCP must not declare an execution target");
-
-        assert!(matches!(error, DomainError::InvariantViolation(_)));
     }
 
     #[test]

@@ -847,8 +847,8 @@ mod tests {
         use engine::{
             ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
             FunctionToolSpec, ManagedSessionWorkflowTools, RunConfig, RunRequestCommand,
-            RunRequestSource, ToolKind, ToolParallelism, ToolSpec, ToolTargetRequirement,
-            WorkflowEndpointRef, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId,
+            RunRequestSource, ToolKind, ToolParallelism, ToolSpec, WorkflowEndpointRef,
+            WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId,
         };
         use test_support::{DriveCommand, RunnerStores, SessionRunner};
         use uuid::Uuid;
@@ -882,7 +882,6 @@ mod tests {
                                 provider_options_ref: None,
                             }),
                             parallelism: ToolParallelism::ParallelSafe,
-                            target_requirement: ToolTargetRequirement::None,
                         },
                     },
                     controller_receiver.clone(),
@@ -902,7 +901,6 @@ mod tests {
                                 provider_options_ref: None,
                             }),
                             parallelism: ToolParallelism::ParallelSafe,
-                            target_requirement: ToolTargetRequirement::None,
                         },
                     },
                     approval_receiver.clone(),

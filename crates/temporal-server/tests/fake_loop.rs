@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
     FunctionToolSpec, ModelSelection, ProviderApiKind, SessionId, SubmissionId, ToolChoice,
-    ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
+    ToolKind, ToolName, ToolParallelism, ToolSpec,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
 use temporal_server::worker::{
@@ -123,7 +123,6 @@ fn fake_tool_set(input_schema_ref: BlobRef) -> BTreeMap<ToolName, ToolSpec> {
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         },
     )])
 }

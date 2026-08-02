@@ -108,16 +108,19 @@
    - test with self-hosted model
 - [ ] incremental tool discovery support (at least OAI)
 
-## Environmnets & Sandboxes
-- [ ] [P108](p108-universe-environments.md) — make environments and their
+## Environments & Sandboxes
+- [x] [P113](p113-explicit-vfs-and-environment-tool-domains.md) — separate
+  dedicated VFS tools from ordinary active-environment file/process tools,
+  remove generic execution targets and the fused filesystem, and make prompts
+  and the existing skill catalog explicitly VFS-owned
+- [x] [P108](p108-universe-environments.md) — make environments and their
   credentials universe resources, replace session attachment/catalog state
   with one event-sourced active environment, add focused model discovery and
   selection tools, and remove generic default-target routing
 - [ ] [P96](p96-environment-api.md) — environment API review: machines as universe resources vs session bindings, real presence leases, machine-keyed durable jobs, occupancy-checked teardown
-- [ ] Fix host-bridge fs routing doubled path: absolute guest paths get
-      re-prefixed with the bridge root, so file-tool reads of shell-written
-      absolute paths fail (`environment_provider_live` host-bridge agent
-      test; pre-dates P90)
+- [x] Stop externally re-scoping the host-bridge filesystem by its `fsRoot`;
+      ordinary environment file tools now pass environment-native absolute
+      paths directly to the bridge, which enforces its own root boundary
 - [ ] Finalize sandbox protocol (look at Codex's protocol)
 - [ ] Write first sandbox integration
 - [ ] Allow agent to request new sandbox/env

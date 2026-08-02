@@ -50,24 +50,6 @@ export type RemoteMcpApprovalPolicy = "providerDefault" | "always" | "never";
 export type ToolParallelismView = "exclusive" | "parallelSafe";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolTargetRequirementView".
- */
-export type ToolTargetRequirementView =
-  | {
-      type: "none";
-    }
-  | {
-      type: "sessionFilesystem";
-    }
-  | {
-      type: "activeEnvironment";
-    }
-  | {
-      target: ToolExecutionTargetView;
-      type: "fixed";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiErrorKind".
  */
 export type AgentApiErrorKind =
@@ -159,6 +141,7 @@ export type ContextEntryKindView =
       type: "skillCatalog";
     }
   | {
+      catalogId: string;
       skillId: string;
       type: "skillActivation";
     }
@@ -1058,16 +1041,7 @@ export interface ActiveToolsView {
 export interface ToolView {
   kind: ToolKindView;
   parallelism?: ToolParallelismView & string;
-  targetRequirement?: ToolTargetRequirementView;
   toolId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolExecutionTargetView".
- */
-export interface ToolExecutionTargetView {
-  id: string;
-  namespace: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3214,6 +3188,7 @@ export interface SkillActivateResponse {
  * via the `definition` "SkillActivationView".
  */
 export interface SkillActivationView {
+  catalogId: string;
   catalogRef: string;
   description?: string | null;
   name?: string | null;

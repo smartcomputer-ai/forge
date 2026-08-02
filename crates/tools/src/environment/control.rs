@@ -1,8 +1,6 @@
 //! Live universe-environment discovery and session selection tool contracts.
 
-use engine::{
-    FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
-};
+use engine::{FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -151,7 +149,6 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism,
-            target_requirement: ToolTargetRequirement::None,
         },
         documents: vec![description, input_schema],
     })
@@ -215,11 +212,6 @@ mod tests {
                 ENVIRONMENT_ACTIVATE_TOOL_NAME,
                 ENVIRONMENT_DEACTIVATE_TOOL_NAME,
             ]
-        );
-        assert!(
-            bundles
-                .iter()
-                .all(|bundle| bundle.spec.target_requirement == ToolTargetRequirement::None)
         );
         assert_eq!(bundles[0].spec.parallelism, ToolParallelism::ParallelSafe);
         assert_eq!(bundles[1].spec.parallelism, ToolParallelism::ParallelSafe);

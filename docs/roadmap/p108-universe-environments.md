@@ -2,6 +2,9 @@
 
 **Status**
 
+- Environment ownership/selection remains current, but P113 supersedes its
+  generic target and fused filesystem routing; see
+  [P113](p113-explicit-vfs-and-environment-tool-domains.md).
 - Implemented 2026-07-30 as a greenfield replacement for the P76-P80/P96
   session-binding and environment-context model.
 - Amended 2026-07-30 so model-driven environment discovery and selection is an

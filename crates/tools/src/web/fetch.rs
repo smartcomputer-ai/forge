@@ -2,9 +2,7 @@
 
 use std::time::Duration;
 
-use engine::{
-    BlobRef, FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
-};
+use engine::{BlobRef, FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
 use futures_util::StreamExt;
 use reqwest::{
     StatusCode, Url,
@@ -137,7 +135,6 @@ pub fn web_fetch_tool_bundle(config: &WebFetchToolConfig) -> ToolResult<Option<T
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         },
         documents: vec![description, input_schema],
     }))
@@ -354,7 +351,6 @@ mod tests {
 
         assert_eq!(bundle.spec.name.as_str(), WEB_FETCH_TOOL_NAME);
         assert_eq!(bundle.spec.parallelism, ToolParallelism::ParallelSafe);
-        assert_eq!(bundle.spec.target_requirement, ToolTargetRequirement::None);
         let ToolKind::Function(function) = &bundle.spec.kind else {
             panic!("expected function tool");
         };

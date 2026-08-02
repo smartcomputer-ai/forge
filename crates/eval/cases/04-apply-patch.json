@@ -11,7 +11,7 @@
     ]
   },
   "expect": {
-    "tool_called": ["fs.apply_patch"],
+    "tool_called": ["vfs.apply_patch"],
     "assistant_contains": ["PATCH=DONE"],
     "tool_output_contains": ["updated"],
     "files": [
@@ -27,6 +27,6 @@
   },
   "run": {
     "max_tokens": 1024,
-    "allowed_tools": ["fs.read_file", "fs.apply_patch"]
+    "allowed_tools": ["vfs.read_file", "vfs.apply_patch"]
   }
 }

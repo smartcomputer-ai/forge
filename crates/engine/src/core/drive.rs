@@ -694,7 +694,6 @@ pub fn next_tool_batch_request(
                 call_id: call_state.call.call_id.clone(),
                 tool_name: call_state.call.tool_name.clone(),
                 arguments_ref: call_state.call.arguments_ref.clone(),
-                execution_target: call_state.execution_target.clone(),
                 workflow_tool,
                 promise_control: None,
             }
@@ -1814,8 +1813,8 @@ mod tests {
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
         SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
         ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
-        ToolSpec, ToolTargetRequirement, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition,
-        WorkflowToolId, WorkflowToolInvocation, skill_activation_context_key,
+        ToolSpec, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        WorkflowToolInvocation, skill_activation_context_key,
     };
 
     fn config() -> SessionConfig {
@@ -2031,7 +2030,10 @@ mod tests {
         provider_kind: Option<&str>,
     ) -> ContextEntryInput {
         ContextEntryInput {
-            kind: ContextEntryKind::SkillActivation { skill_id },
+            kind: ContextEntryKind::SkillActivation {
+                catalog_id: "vfs".to_owned(),
+                skill_id,
+            },
             content_ref,
             media_type: Some("text/markdown".to_owned()),
             preview: None,
@@ -2056,7 +2058,6 @@ mod tests {
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::ParallelSafe,
-            target_requirement: ToolTargetRequirement::None,
         }
     }
 
@@ -3828,7 +3829,7 @@ mod tests {
             .admit_command(
                 CoreAgentCommand::UpsertContext {
                     expected_revision: None,
-                    key: skill_activation_context_key(&skill_id),
+                    key: skill_activation_context_key("vfs", &skill_id),
                     entry: skill_activation_input(skill_id.clone(), context_ref.clone(), None),
                 },
                 20,
@@ -3839,7 +3840,7 @@ mod tests {
         assert_eq!(drive.state().context.entries.len(), 1);
         assert!(matches!(
             &drive.state().context.entries[0].kind,
-            ContextEntryKind::SkillActivation { skill_id: planned } if planned == &skill_id
+            ContextEntryKind::SkillActivation { skill_id: planned, .. } if planned == &skill_id
         ));
         assert_eq!(drive.state().context.entries[0].content_ref, context_ref);
         assert!(drive.state().runs.active.is_none());
@@ -3863,7 +3864,7 @@ mod tests {
             .admit_command(
                 CoreAgentCommand::UpsertContext {
                     expected_revision: None,
-                    key: skill_activation_context_key(&SkillId::new("skill-1")),
+                    key: skill_activation_context_key("vfs", &SkillId::new("skill-1")),
                     entry: skill_activation_input(
                         SkillId::new("skill-2"),
                         BlobRef::from_bytes(b"skill body"),
@@ -3906,7 +3907,7 @@ mod tests {
             .admit_command(
                 CoreAgentCommand::UpsertContext {
                     expected_revision: None,
-                    key: skill_activation_context_key(&skill_id),
+                    key: skill_activation_context_key("vfs", &skill_id),
                     entry: skill_activation_input(skill_id.clone(), activation_ref.clone(), None),
                 },
                 21,
@@ -3925,7 +3926,7 @@ mod tests {
         assert_eq!(items[0].content_ref, catalog_ref);
         assert!(matches!(
             &items[1].kind,
-            ContextEntryKind::SkillActivation { skill_id: planned } if planned == &skill_id
+            ContextEntryKind::SkillActivation { skill_id: planned, .. } if planned == &skill_id
         ));
         assert_eq!(items[1].content_ref, activation_ref);
         assert!(matches!(
@@ -3948,7 +3949,7 @@ mod tests {
             .admit_command(
                 CoreAgentCommand::UpsertContext {
                     expected_revision: None,
-                    key: skill_activation_context_key(&skill_id),
+                    key: skill_activation_context_key("vfs", &skill_id),
                     entry: skill_activation_input(
                         skill_id,
                         BlobRef::from_bytes(b"skill body"),
@@ -6347,7 +6348,6 @@ mod tests {
                     call_id: crate::ToolCallId::new("cancel"),
                     tool_name: ToolName::new("cancel"),
                     arguments_ref: BlobRef::from_bytes(b"cancel"),
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 },
@@ -6355,7 +6355,6 @@ mod tests {
                     call_id: crate::ToolCallId::new("detach-invalid"),
                     tool_name: ToolName::new("detach"),
                     arguments_ref: BlobRef::from_bytes(b"detach"),
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 },

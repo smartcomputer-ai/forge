@@ -161,10 +161,6 @@ fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
             dispatch: BoundWorkflowToolDispatch::Push,
         }
     );
-    assert_eq!(
-        tool.definition.tool.target_requirement,
-        ToolTargetRequirement::None
-    );
     assert_eq!(tool.definition.tool.name.as_str(), "accept_order");
     let ToolKind::Function(function) = &tool.definition.tool.kind else {
         panic!("API workflow tool must map to a function tool");
@@ -1852,7 +1848,7 @@ fn test_user_message_input(content_ref: BlobRef) -> ContextEntryInput {
 }
 
 fn test_skill_catalog(_catalog_ref: &BlobRef, skills: Vec<SkillMetadata>) -> SkillCatalogSnapshot {
-    SkillCatalogSnapshot::new(None, skills, Vec::new())
+    SkillCatalogSnapshot::new(skills, Vec::new())
 }
 
 fn test_skill_metadata(skill_id: &str, name: &str, enabled: bool) -> SkillMetadata {
@@ -1876,7 +1872,6 @@ fn test_skill_metadata_with_snapshot(
             snapshot_ref: snapshot_ref.clone(),
         },
         scope: tools::skills::SkillScope::Global,
-        target: None,
         enabled,
         trust: tools::skills::SkillTrustLevel::System,
         interface: None,
@@ -1899,6 +1894,7 @@ fn direct_activation(
 ) -> ContextEntry {
     let skill_id = SkillId::new(skill_id);
     let input = skill_activation_context_input(
+        tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
         skill_id.clone(),
         catalog_ref.clone(),
         context_ref.clone(),
@@ -1907,7 +1903,10 @@ fn direct_activation(
     );
     ContextEntry {
         entry_id: engine::ContextEntryId::new(1),
-        key: Some(skill_activation_context_key(&skill_id)),
+        key: Some(skill_activation_context_key(
+            tools::skills::VFS_SKILL_CATALOG_ID,
+            &skill_id,
+        )),
         kind: input.kind,
         source: engine::ContextEntrySource::ContextEdit,
         content_ref: input.content_ref,
@@ -1965,7 +1964,6 @@ fn test_remote_mcp_tool(tool_name: ToolName) -> engine::ToolSpec {
             auth_required: false,
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
-        target_requirement: engine::ToolTargetRequirement::None,
     }
 }
 
@@ -1980,7 +1978,6 @@ fn test_function_tool(tool_name: ToolName) -> engine::ToolSpec {
             provider_options_ref: None,
         }),
         parallelism: engine::ToolParallelism::Exclusive,
-        target_requirement: engine::ToolTargetRequirement::None,
     }
 }
 

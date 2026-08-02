@@ -1,9 +1,7 @@
 //! Fleet subagent control-plane tool contracts.
 
 use api::{AgentProfile, AgentProfileSummary, ProfileSource};
-use engine::{
-    FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement,
-};
+use engine::{FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -465,7 +463,6 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::Exclusive,
-            target_requirement: ToolTargetRequirement::None,
         },
         documents: vec![description, input_schema],
     })

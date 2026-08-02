@@ -215,13 +215,24 @@ pub struct ContextEntryInputView {
     rename_all_fields = "camelCase"
 )]
 pub enum ContextEntryKindView {
-    Message { role: ContextMessageRoleView },
+    Message {
+        role: ContextMessageRoleView,
+    },
     Instructions,
     VfsCatalog,
     SkillCatalog,
-    SkillActivation { skill_id: SkillId },
-    ToolCall { call_id: String, name: String },
-    ToolResult { call_id: String, is_error: bool },
+    SkillActivation {
+        catalog_id: String,
+        skill_id: SkillId,
+    },
+    ToolCall {
+        call_id: String,
+        name: String,
+    },
+    ToolResult {
+        call_id: String,
+        is_error: bool,
+    },
     ReasoningState,
     ProviderOpaque,
 }

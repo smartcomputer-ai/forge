@@ -3,7 +3,7 @@
 use engine::{
     FunctionToolSpec, PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseOwnership,
     PromiseScope, PromiseStatus, RunId, ToolEffect, ToolKind, ToolName, ToolParallelism, ToolSpec,
-    ToolTargetRequirement, promise_cancel_effect, promise_detach_effect,
+    promise_cancel_effect, promise_detach_effect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -481,7 +481,6 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::Exclusive,
-            target_requirement: ToolTargetRequirement::None,
         },
         documents: vec![description, input_schema],
     })

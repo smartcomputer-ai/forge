@@ -279,7 +279,7 @@ async fn openai_responses_live_selects_and_activates_the_matching_skill() {
     )
     .expect("toolset");
     store_tool_documents(blobs.as_ref(), &toolset.documents).await;
-    let tools = Arc::new(InlineToolRuntime::with_session_filesystem(
+    let tools = Arc::new(InlineToolRuntime::with_vfs_filesystem(
         fs_ctx,
         toolset.catalog.clone(),
     ));

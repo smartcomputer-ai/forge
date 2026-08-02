@@ -421,7 +421,6 @@ mod tests {
                     execution: crate::ProviderNativeToolExecution::ProviderHosted,
                 }),
                 parallelism: crate::ToolParallelism::ParallelSafe,
-                target_requirement: crate::ToolTargetRequirement::None,
             },
         );
 
@@ -454,7 +453,6 @@ mod tests {
                 auth_required: true,
             }),
             parallelism: crate::ToolParallelism::ParallelSafe,
-            target_requirement: crate::ToolTargetRequirement::None,
         }
     }
 

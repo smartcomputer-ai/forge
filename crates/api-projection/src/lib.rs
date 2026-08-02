@@ -14,14 +14,12 @@ use api::{
     RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView, SessionEventView,
     SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
     TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
-    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolExecutionTargetView,
-    ToolItemStatus, ToolKindView, ToolParallelismView, ToolTargetRequirementView, ToolView,
-    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
-    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
-    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
-    WorkflowToolTargetInput,
+    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
+    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
+    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
+    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
+    WorkflowToolSpecInput, WorkflowToolTargetInput,
 };
-use engine::ToolExecutionTarget;
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
     ContextEntryId, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
@@ -30,7 +28,7 @@ use engine::{
     EventSeq, LlmGenerationStatus, ModelSelection, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunId, RunSource, RunStatus,
     SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice, ToolConfigEvent,
-    ToolEvent, ToolKind, ToolParallelism, ToolSpec, ToolTargetRequirement, TurnEvent, TurnId,
+    ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
     storage::{
         BlobStore, BlobStoreError, ReadSessionEvents, SessionRecord, SessionStore,
         SessionStoreError, StoredSessionEntry,
@@ -1515,7 +1513,6 @@ fn tool_to_api(tool: &ToolSpec) -> ToolView {
         tool_id: tool.name.as_str().to_owned(),
         kind: tool_kind_to_api(&tool.kind),
         parallelism: tool_parallelism_to_api(tool.parallelism),
-        target_requirement: tool_target_requirement_to_api(&tool.target_requirement),
     }
 }
 
@@ -1569,19 +1566,6 @@ fn tool_parallelism_to_api(parallelism: ToolParallelism) -> ToolParallelismView 
     match parallelism {
         ToolParallelism::Exclusive => ToolParallelismView::Exclusive,
         ToolParallelism::ParallelSafe => ToolParallelismView::ParallelSafe,
-    }
-}
-
-fn tool_target_requirement_to_api(
-    requirement: &ToolTargetRequirement,
-) -> ToolTargetRequirementView {
-    match requirement {
-        ToolTargetRequirement::None => ToolTargetRequirementView::None,
-        ToolTargetRequirement::SessionFilesystem => ToolTargetRequirementView::SessionFilesystem,
-        ToolTargetRequirement::ActiveEnvironment => ToolTargetRequirementView::ActiveEnvironment,
-        ToolTargetRequirement::Fixed { target } => ToolTargetRequirementView::Fixed {
-            target: tool_execution_target_to_api(target),
-        },
     }
 }
 
@@ -1652,7 +1636,11 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
-        ContextEntryKind::SkillActivation { skill_id } => ContextEntryKindView::SkillActivation {
+        ContextEntryKind::SkillActivation {
+            catalog_id,
+            skill_id,
+        } => ContextEntryKindView::SkillActivation {
+            catalog_id: catalog_id.clone(),
             skill_id: skill_id.as_str().to_owned(),
         },
         ContextEntryKind::ToolCall { call_id, name } => ContextEntryKindView::ToolCall {
@@ -1764,13 +1752,6 @@ fn llm_generation_status_to_api(status: &LlmGenerationStatus) -> &'static str {
         LlmGenerationStatus::Succeeded => "succeeded",
         LlmGenerationStatus::Failed => "failed",
         LlmGenerationStatus::Cancelled => "cancelled",
-    }
-}
-
-fn tool_execution_target_to_api(target: &ToolExecutionTarget) -> ToolExecutionTargetView {
-    ToolExecutionTargetView {
-        namespace: target.namespace.clone(),
-        id: target.id.clone(),
     }
 }
 
@@ -2087,7 +2068,6 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
-                    target_requirement: ToolTargetRequirement::None,
                 },
             },
             engine::WorkflowToolTarget::Bound {

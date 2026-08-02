@@ -45,6 +45,7 @@ pub struct SkillActiveResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillActivationView {
+    pub catalog_id: String,
     pub skill_id: SkillId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

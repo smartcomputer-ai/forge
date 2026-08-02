@@ -1,6 +1,6 @@
 //! Provider-neutral prompt text for the VFS catalog context entry.
 
-use engine::{BlobRef, ToolExecutionTarget, storage::BlobStore};
+use engine::{BlobRef, storage::BlobStore};
 use tools::environment::projection::{FsRoute, FsRouteAccess, FsRouteSource, VfsCatalog};
 
 use crate::error::{LlmAdapterError, LlmAdapterResult};
@@ -13,8 +13,7 @@ pub(crate) async fn read_vfs_catalog(
 }
 
 pub(crate) fn vfs_catalog_text(catalog: &VfsCatalog) -> String {
-    let mut text =
-        String::from("Filesystem (virtual: file tools only, no shell; wins on path collisions):\n");
+    let mut text = String::from("Virtual filesystem (VFS):\n");
     if catalog.routes.is_empty() {
         text.push_str("  No VFS routes are currently mounted.\n");
     } else {
@@ -22,7 +21,9 @@ pub(crate) fn vfs_catalog_text(catalog: &VfsCatalog) -> String {
             text.push_str(&format!("  {}\n", route_line(route)));
         }
     }
-    text.push_str("\nThe VFS is not an execution environment. Commands cannot run in VFS paths.");
+    text.push_str(
+        "\nUse vfs_* tools for these paths. VFS files are not visible to environment file tools or commands. Ordinary file and command tools operate only on the active environment.",
+    );
     text
 }
 
@@ -38,18 +39,11 @@ where
 }
 
 fn route_line(route: &FsRoute) -> String {
-    let same_state = match &route.same_state_as_active_env {
-        Some(environment_id) => {
-            format!("; same files as shell in {environment_id} for paths resolved here")
-        }
-        None => "; no shell access".to_owned(),
-    };
     format!(
-        "{:<12} {} - {}{}",
+        "{:<12} {} - {}",
         route.path,
         route_access(route.access),
-        route_source(&route.source),
-        same_state
+        route_source(&route.source)
     )
 }
 
@@ -68,17 +62,7 @@ fn route_source(source: &FsRouteSource) -> String {
         FsRouteSource::VfsWorkspace { workspace_id } => {
             format!("VFS workspace {workspace_id}")
         }
-        FsRouteSource::HostFilesystem { target } => {
-            format!("environment filesystem {}", target_text(target))
-        }
-        FsRouteSource::FusedWorkspace { environment_id } => {
-            format!("fused workspace for {environment_id}")
-        }
     }
-}
-
-fn target_text(target: &ToolExecutionTarget) -> String {
-    format!("{}:{}", target.namespace, target.id)
 }
 
 #[cfg(test)]
@@ -100,7 +84,6 @@ mod tests {
                 source: FsRouteSource::VfsWorkspace {
                     workspace_id: "workspace_1".to_owned(),
                 },
-                same_state_as_active_env: None,
                 availability: FsRouteAvailability::Available,
             }],
         );
@@ -108,7 +91,7 @@ mod tests {
         let text = vfs_catalog_text(&catalog);
 
         assert!(text.contains("/workspace"));
-        assert!(text.contains("no shell"));
-        assert!(text.contains("Commands cannot run in VFS paths"));
+        assert!(text.contains("Use vfs_* tools"));
+        assert!(text.contains("not visible to environment file tools"));
     }
 }

@@ -663,9 +663,9 @@ async fn build_runtime(
             .with_context(|| format!("open eval workspace '{}'", workdir.display()))?,
     );
     let fs_ctx = FsToolContext::new(fs, blobs.clone()).with_cwd(FsPath::root());
-    let host_profile = resolve_eval_toolset(&model, case)?;
-    store_tool_documents(blobs.as_ref(), &host_profile.documents).await?;
-    let tool_id_by_name = host_profile
+    let toolset = resolve_eval_toolset(&model, case)?;
+    store_tool_documents(blobs.as_ref(), &toolset.documents).await?;
+    let tool_id_by_name = toolset
         .catalog
         .bindings()
         .map(|binding| {
@@ -675,9 +675,9 @@ async fn build_runtime(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let tool_executor = Arc::new(InlineToolRuntime::with_session_filesystem(
+    let tool_executor = Arc::new(InlineToolRuntime::with_vfs_filesystem(
         fs_ctx,
-        host_profile.catalog.clone(),
+        toolset.catalog.clone(),
     ));
     let stores = RunnerStores::new(sessions.clone(), blobs.clone());
     let runner = SessionRunner::new(stores, llm_executor).with_tools(tool_executor);
@@ -687,7 +687,7 @@ async fn build_runtime(
         blobs,
         config: default_config,
         instructions_ref,
-        tool_set: host_profile.tools,
+        tool_set: toolset.tools,
         tool_id_by_name,
         diagnostics,
     })
@@ -706,7 +706,7 @@ fn resolve_eval_toolset(model: &ModelSelection, case: &EvalCase) -> Result<Resol
                     .ok_or_else(|| anyhow!("case '{}' references unknown tool '{id}'", case.id))
             })
             .collect::<Result<Vec<_>>>()?;
-        config.builtin = BuiltinToolsetConfig::from_operations(operations);
+        config.builtin = BuiltinToolsetConfig::vfs_from_operations(operations)?;
     }
     resolve_toolset(
         ToolsetEnvironment {
@@ -909,13 +909,13 @@ fn safe_case_path(root: &Path, path: &str) -> Result<PathBuf> {
 fn builtin_operation_for_id(id: &str) -> Option<BuiltinToolOperation> {
     let id = canonical_tool_id(id);
     Some(match id.as_str() {
-        "fs.read_file" => BuiltinToolOperation::ReadFile,
-        "fs.write_file" => BuiltinToolOperation::WriteFile,
-        "fs.edit_file" => BuiltinToolOperation::EditFile,
-        "fs.apply_patch" => BuiltinToolOperation::ApplyPatch,
-        "fs.grep" => BuiltinToolOperation::Grep,
-        "fs.glob" => BuiltinToolOperation::Glob,
-        "fs.list_dir" => BuiltinToolOperation::ListDir,
+        "vfs.read_file" => BuiltinToolOperation::ReadFile,
+        "vfs.write_file" => BuiltinToolOperation::WriteFile,
+        "vfs.edit_file" => BuiltinToolOperation::EditFile,
+        "vfs.apply_patch" => BuiltinToolOperation::ApplyPatch,
+        "vfs.grep" => BuiltinToolOperation::Grep,
+        "vfs.glob" => BuiltinToolOperation::Glob,
+        "vfs.list_dir" => BuiltinToolOperation::ListDir,
         "env.run_process" => BuiltinToolOperation::RunProcess,
         "env.write_process_stdin" => BuiltinToolOperation::WriteProcessStdin,
         _ => return None,
@@ -923,26 +923,7 @@ fn builtin_operation_for_id(id: &str) -> Option<BuiltinToolOperation> {
 }
 
 fn canonical_tool_id(value: &str) -> String {
-    let trimmed = value.trim();
-    if let Some(name) = trimmed.strip_prefix("host.fs.") {
-        format!("fs.{name}")
-    } else if let Some(name) = trimmed.strip_prefix("host.env.") {
-        format!("env.{name}")
-    } else if trimmed == "host.exec" || trimmed == "shell" || trimmed == "exec_command" {
-        "env.run_process".to_string()
-    } else if let Some(name) = trimmed.strip_prefix("host.") {
-        if matches!(name, "run_process" | "write_process_stdin") {
-            format!("env.{name}")
-        } else {
-            format!("fs.{name}")
-        }
-    } else if trimmed.starts_with("fs.") || trimmed.starts_with("env.") {
-        trimmed.to_string()
-    } else if matches!(trimmed, "run_process" | "write_process_stdin") {
-        format!("env.{trimmed}")
-    } else {
-        format!("fs.{trimmed}")
-    }
+    value.trim().to_owned()
 }
 
 fn openai_config(provider: &ProviderRuntime) -> oai::Config {
@@ -1110,25 +1091,22 @@ mod tests {
     }
 
     #[test]
-    fn canonical_tool_id_accepts_lightspeed_names_and_legacy_aos_fs_names() {
-        assert_eq!(canonical_tool_id("read_file"), "fs.read_file");
-        assert_eq!(canonical_tool_id("fs.read_file"), "fs.read_file");
-        assert_eq!(canonical_tool_id("host.read_file"), "fs.read_file");
-        assert_eq!(canonical_tool_id("host.fs.read_file"), "fs.read_file");
-        assert_eq!(canonical_tool_id("host.exec"), "env.run_process");
+    fn canonical_tool_id_preserves_explicit_domain_ids_without_aliases() {
+        assert_eq!(canonical_tool_id(" vfs.read_file "), "vfs.read_file");
+        assert_eq!(canonical_tool_id("env.run_process"), "env.run_process");
     }
 
     #[test]
     fn collect_observations_maps_tool_names_to_logical_ids() {
         let mut tool_ids = BTreeMap::new();
-        tool_ids.insert("read_file".to_string(), "fs.read_file".to_string());
+        tool_ids.insert("vfs_read_file".to_string(), "vfs.read_file".to_string());
         let observations = collect_observations(
             &[
                 test_entry(
                     "item_1",
                     ContextEntryKindView::ToolCall {
                         call_id: "call_1".into(),
-                        name: "read_file".into(),
+                        name: "vfs_read_file".into(),
                     },
                     Some(r#"{"path":"notes/fruit.txt"}"#),
                 ),
@@ -1151,7 +1129,7 @@ mod tests {
             &tool_ids,
         );
 
-        assert!(observations.used_tools.contains("fs.read_file"));
+        assert!(observations.used_tools.contains("vfs.read_file"));
         assert!(
             observations
                 .tool_arguments
@@ -1184,7 +1162,7 @@ mod tests {
 
     #[test]
     fn builtin_operation_for_id_resolves_supported_tools() {
-        let operation = builtin_operation_for_id("host.fs.grep").expect("tool");
+        let operation = builtin_operation_for_id("vfs.grep").expect("tool");
         assert_eq!(operation, BuiltinToolOperation::Grep);
     }
 }

@@ -6,7 +6,7 @@ use engine::{
     CoreAgentTools, LlmFinish, LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult,
     LlmGenerationStatus, ObservedToolCall, ToolBatchOutcome, ToolCallId, ToolCallStatus,
     ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationResult, ToolKind,
-    ToolName, ToolTargetRequirement, storage::BlobStore,
+    ToolName, storage::BlobStore,
 };
 use serde_json::Value;
 
@@ -219,10 +219,7 @@ fn invocable_fake_tool(request: &LlmGenerationRequest) -> Option<ToolName> {
     }
     tools
         .iter()
-        .find(|tool| {
-            matches!(tool.kind, ToolKind::Function(_))
-                && matches!(tool.target_requirement, ToolTargetRequirement::None)
-        })
+        .find(|tool| matches!(tool.kind, ToolKind::Function(_)))
         .map(|tool| tool.name.clone())
 }
 

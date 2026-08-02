@@ -240,7 +240,6 @@ mod tests {
                     provider_options_ref: None,
                 }),
                 parallelism: crate::ToolParallelism::ParallelSafe,
-                target_requirement: crate::ToolTargetRequirement::None,
             },
         };
         let binding = crate::WorkflowToolBinding::admit(

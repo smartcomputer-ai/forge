@@ -122,8 +122,8 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   profile applier, and combined local/small-deployment mode.
 - `crates/test-support/` — fast in-process runner harness for tests/evals. It
   is not a production runtime and must not expose an `AgentApiService`.
-- `crates/tools/` — optional tool packages for session filesystems,
-  environment actions, web, prompts, and skills.
+- `crates/tools/` — optional tool packages for explicit VFS and environment
+  filesystem domains, environment actions, web, prompts, and skills.
 - `crates/vfs/` — virtual filesystem models, validation, snapshots, mutable
   workspaces, transient workspace-link resolution, and store traits.
 - `crates/host-protocol/`, `crates/host-client/`, and `crates/host-bridge/` —
@@ -204,10 +204,13 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   catalog resources; resolved links are transient, and no session-link or
   mount table is authoritative. See `docs/roadmap/p107-session-workspace-links.md`.
 - Enabling `features.environments` permits externally selected active
-  environments and their process/filesystem capabilities. Only
+  environments and grants ordinary file/process tools against that active
+  environment. `features.vfs.tools` separately grants dedicated `vfs_*` tools
+  against linked VFS snapshots/workspaces. Never fuse, overlay, implicitly
+  synchronize, or target-route these filesystems. Only
   `features.environments.selectionTools` exposes model discovery/selection;
-  jobs remain an independent sub-grant. See
-  `docs/roadmap/p108-universe-environments.md`.
+  jobs remain an independent sub-grant. Prompts and `skills.catalog.vfs` are
+  VFS-only. See `docs/roadmap/p113-explicit-vfs-and-environment-tool-domains.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

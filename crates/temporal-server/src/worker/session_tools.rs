@@ -459,16 +459,6 @@ impl SessionTools {
                 let result = self
                     .read_environment_jobs(
                         &request.session_id,
-                        request
-                            .active_environment_id
-                            .as_ref()
-                            .map(|id| {
-                                engine::ToolExecutionTarget::new(
-                                    tools::targets::ENV_TARGET_NAMESPACE,
-                                    id.as_str(),
-                                )
-                            })
-                            .as_ref(),
                         environments,
                         args.jobs,
                         args.output_bytes,
@@ -492,7 +482,6 @@ impl SessionTools {
     async fn read_environment_jobs(
         &self,
         session_id: &SessionId,
-        active_env_target: Option<&engine::ToolExecutionTarget>,
         environments: &SessionEnvironmentManager,
         handles: Vec<JobHandleArg>,
         output_bytes: Option<usize>,
@@ -501,8 +490,7 @@ impl SessionTools {
     ) -> Result<EnvironmentJobRead, CoreAgentIoError> {
         let mut entries = Vec::with_capacity(handles.len());
         for handle in handles {
-            let resolved = match self.resolve_job_handle_arg(session_id, active_env_target, handle)
-            {
+            let resolved = match self.resolve_job_handle_arg(session_id, handle) {
                 Ok(handle) => handle,
                 Err(error) => {
                     entries.push(model_job_error(None, error));
@@ -953,7 +941,6 @@ impl SessionTools {
     fn resolve_job_handle_arg(
         &self,
         _current_session_id: &SessionId,
-        _active_env_target: Option<&engine::ToolExecutionTarget>,
         handle: JobHandleArg,
     ) -> Result<JobHandle, String> {
         let environment_id = EnvironmentId::try_new(handle.environment_id)
@@ -1063,18 +1050,21 @@ impl SessionTools {
         }
         let environment_context =
             environment_context.with_session_id(session_id.as_str().to_owned());
-        RuntimeEnvironment::from_resource(resource, environment_context, fs_context)
-            .map_err(io_error)
+        Ok(RuntimeEnvironment::from_resource(
+            resource,
+            environment_context,
+            fs_context,
+        ))
     }
 
-    fn runtime_for_workspace_links(
+    fn runtime_for_domains(
         &self,
         links: Vec<ResolvedWorkspaceLink>,
         environments: &SessionEnvironmentManager,
-        active_env_target: Option<&engine::ToolExecutionTarget>,
+        active_environment_id: Option<&EnvironmentId>,
     ) -> Result<InlineToolRuntime, CoreAgentIoError> {
-        let catalog = workspace_catalog(true, true)?;
-        let session_fs = if links.is_empty() {
+        let catalog = runtime_catalog(true, true)?;
+        let vfs = if links.is_empty() {
             None
         } else {
             let fs = LinkedVfsFileSystem::new(
@@ -1086,11 +1076,11 @@ impl SessionTools {
             let cwd = linked_vfs_cwd(fs.links())?;
             Some(FsToolContext::new(Arc::new(fs), self.blobs.clone()).with_cwd(cwd))
         };
-        let targets = environments
-            .tool_targets(session_fs, &links, active_env_target)
-            .map_err(io_error)?;
-        Ok(InlineToolRuntime::with_targets_and_blob_store(
-            targets,
+        let environment =
+            active_environment_id.and_then(|id| environments.active_tool_context(id.as_str()));
+        Ok(InlineToolRuntime::with_contexts_and_blob_store(
+            vfs,
+            environment,
             self.blobs.clone(),
             ToolLimits::default(),
             catalog,
@@ -1240,21 +1230,8 @@ fn unsupported_host_data_transport(transport: impl std::fmt::Display) -> CoreAge
     ))
 }
 
-fn has_active_environment_fs(
-    environments: &SessionEnvironmentManager,
-    active_env_target: Option<&engine::ToolExecutionTarget>,
-) -> bool {
-    let Some(target) = active_env_target else {
-        return false;
-    };
-    target.namespace == tools::targets::ENV_TARGET_NAMESPACE
-        && environments
-            .environment(&target.id)
-            .is_some_and(|environment| environment.fs_context().is_some())
-}
-
-fn workspace_catalog(
-    include_process_tools: bool,
+fn runtime_catalog(
+    include_environment_tools: bool,
     include_job_tools: bool,
 ) -> Result<ToolCatalog, CoreAgentIoError> {
     let mut catalog = ToolCatalog::new();
@@ -1265,11 +1242,11 @@ fn workspace_catalog(
     ] {
         let target = ToolTarget::api_kind(api_kind);
         let mut config = ToolsetConfig::workspace();
-        if include_process_tools {
-            config.builtin.process = EnvironmentToolsetConfig::basic();
+        if include_environment_tools {
+            config.builtin.environment = EnvironmentToolsetConfig::basic();
         }
         if include_job_tools {
-            config.builtin.process.job_read = true;
+            config.builtin.environment.job_read = true;
         }
         config.web_fetch = WebFetchToolConfig::enabled();
         let toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
@@ -1287,6 +1264,7 @@ impl CoreAgentTools for SessionTools {
         &self,
         request: ToolInvocationBatchRequest,
     ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
+        let routing_catalog = runtime_catalog(true, true)?;
         let selection_calls = request
             .calls
             .iter()
@@ -1295,9 +1273,9 @@ impl CoreAgentTools for SessionTools {
         let mixes_environment_dependency = selection_calls > 0
             && request.calls.iter().any(|call| {
                 !is_environment_selection_tool(&call.tool_name)
-                    && call.execution_target.as_ref().is_some_and(|target| {
-                        target.namespace == tools::targets::ENV_TARGET_NAMESPACE
-                            || target.namespace == tools::targets::FS_TARGET_NAMESPACE
+                    && routing_catalog.get(&call.tool_name).is_some_and(|binding| {
+                        binding.logical_id.starts_with("env.")
+                            && binding.logical_id != "env.job_read"
                     })
             });
         if selection_calls > 1 || mixes_environment_dependency {
@@ -1376,21 +1354,35 @@ impl CoreAgentTools for SessionTools {
             }));
         }
 
-        let links = vfs::resolve_workspace_links(
-            self.blobs.clone(),
-            self.workspace_store.clone(),
-            &request.workspace_links,
-        )
-        .await
-        .map_err(map_catalog_error)?;
-        let active_env_target = request.active_environment_id.as_ref().map(|id| {
-            engine::ToolExecutionTarget::new(tools::targets::ENV_TARGET_NAMESPACE, id.as_str())
+        let has_vfs_call = request.calls.iter().any(|call| {
+            routing_catalog
+                .get(&call.tool_name)
+                .is_some_and(|binding| binding.logical_id.starts_with("vfs."))
         });
-        let environments = self.environment_manager_for_session(&request).await?;
-        let has_session_fs = !links.is_empty()
-            || has_active_environment_fs(&environments, active_env_target.as_ref());
+        let has_environment_call = request.calls.iter().any(|call| {
+            routing_catalog
+                .get(&call.tool_name)
+                .is_some_and(|binding| binding.logical_id.starts_with("env."))
+                || is_environment_job_query_tool_name(call.tool_name.as_str())
+        });
+        let links = if has_vfs_call {
+            vfs::resolve_workspace_links(
+                self.blobs.clone(),
+                self.workspace_store.clone(),
+                &request.workspace_links,
+            )
+            .await
+            .map_err(map_catalog_error)?
+        } else {
+            Vec::new()
+        };
+        let environments = if has_environment_call {
+            self.environment_manager_for_session(&request).await?
+        } else {
+            SessionEnvironmentManager::new(self.blobs.clone())
+        };
         let runtime =
-            self.runtime_for_workspace_links(links, &environments, active_env_target.as_ref())?;
+            self.runtime_for_domains(links, &environments, request.active_environment_id.as_ref())?;
 
         let mut results = Vec::with_capacity(request.calls.len());
         for call in &request.calls {
@@ -1422,20 +1414,6 @@ impl CoreAgentTools for SessionTools {
                 results.push(
                     self.invoke_environment_job_call(&request, call, &environments)
                         .await?,
-                );
-            } else if !has_session_fs
-                && call
-                    .execution_target
-                    .as_ref()
-                    .is_some_and(|target| target.namespace == tools::targets::FS_TARGET_NAMESPACE)
-            {
-                results.push(
-                    failed_result(
-                        self.blobs.as_ref(),
-                        call.call_id.clone(),
-                        "session has no VFS mounts configured",
-                    )
-                    .await?,
                 );
             } else {
                 results.push(runtime.invoke_call(call).await?);
@@ -1572,9 +1550,9 @@ mod tests {
     use crate::environment::RuntimeEnvironment;
     use engine::{
         BlobRef, ContextEntryKind, FunctionToolSpec, RunId, SessionId, ToolBatchId, ToolCallId,
-        ToolKind, ToolName, ToolParallelism, ToolSpec, ToolTargetRequirement, TurnId,
-        WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId, WorkspaceLink,
-        WorkspaceLinkAccess, WorkspaceLinkTarget,
+        ToolKind, ToolName, ToolParallelism, ToolSpec, TurnId, WorkflowEndpointRef,
+        WorkflowToolDefinition, WorkflowToolId, WorkspaceLink, WorkspaceLinkAccess,
+        WorkspaceLinkTarget,
         storage::{
             AppendSessionEvents, CreateSession, InMemoryBlobStore, InMemorySessionStore,
             SessionStore,
@@ -1692,7 +1670,6 @@ mod tests {
                     provider_options_ref: None,
                 }),
                 parallelism: ToolParallelism::ParallelSafe,
-                target_requirement: ToolTargetRequirement::None,
             },
         };
         let receiver = WorkflowEndpointRef {
@@ -1778,7 +1755,6 @@ mod tests {
             call_id: ToolCallId::new("call-invalid-schema"),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: invalid_arguments,
-            execution_target: None,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
                 binding.clone(),
                 prior_emission_count,
@@ -1789,7 +1765,6 @@ mod tests {
             call_id: ToolCallId::new("call-name-mismatch"),
             tool_name: ToolName::new("other_tool"),
             arguments_ref: valid_arguments.clone(),
-            execution_target: None,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
                 binding.clone(),
                 prior_emission_count,
@@ -1800,7 +1775,6 @@ mod tests {
             call_id: ToolCallId::new("call-fingerprint-mismatch"),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments.clone(),
-            execution_target: None,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
                 corrupt_binding,
                 prior_emission_count,
@@ -1811,7 +1785,6 @@ mod tests {
             call_id: ToolCallId::new("call-missing-runtime"),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments.clone(),
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         });
@@ -1821,7 +1794,6 @@ mod tests {
                     call_id: ToolCallId::new(format!("call-{index}")),
                     tool_name: binding.definition.tool.name.clone(),
                     arguments_ref: valid_arguments.clone(),
-                    execution_target: None,
                     workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
                         binding.clone(),
                         prior_emission_count,
@@ -1834,7 +1806,6 @@ mod tests {
             call_id: ToolCallId::new("call-over-cap"),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments,
-            execution_target: None,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
                 binding.clone(),
                 prior_emission_count,
@@ -1965,7 +1936,6 @@ mod tests {
                     provider_options_ref: None,
                 }),
                 parallelism: ToolParallelism::ParallelSafe,
-                target_requirement: ToolTargetRequirement::None,
             },
         };
         let binding = engine::WorkflowToolBinding::admit(
@@ -1998,7 +1968,6 @@ mod tests {
             call_id: ToolCallId::new("call-job-start"),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: arguments_ref.clone(),
-            execution_target: None,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
             promise_control: None,
         };
@@ -2415,7 +2384,6 @@ mod tests {
             blobs,
         );
         RuntimeEnvironment::from_resource(resource, tool_context, fs_context)
-            .expect("runtime environment")
     }
 
     async fn register_test_environment_provider(
@@ -2514,7 +2482,6 @@ mod tests {
                 call_id: ToolCallId::new("call-environment-list"),
                 tool_name: ToolName::new(ENVIRONMENT_LIST_TOOL_NAME),
                 arguments_ref,
-                execution_target: None,
                 workflow_tool: None,
                 promise_control: None,
             }],
@@ -2572,7 +2539,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn session_tools_read_session_workspace_mount() {
+    async fn session_tools_read_vfs_workspace_link() {
         let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let arguments_ref = blobs
             .put_bytes(br#"{"path":"README.md","offset":1,"limit":10}"#.to_vec())
@@ -2591,9 +2558,8 @@ mod tests {
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
-                    tool_name: ToolName::new("read_file"),
+                    tool_name: ToolName::new("vfs_read_file"),
                     arguments_ref,
-                    execution_target: Some(tools::targets::session_fs_target()),
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -2612,7 +2578,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn session_tools_accept_claude_style_read_tool() {
+    async fn session_tools_accept_claude_style_vfs_read_tool() {
         let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let arguments_ref = blobs
             .put_bytes(br#"{"file_path":"README.md","offset":1,"limit":10}"#.to_vec())
@@ -2631,9 +2597,8 @@ mod tests {
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
-                    tool_name: ToolName::new("Read"),
+                    tool_name: ToolName::new("VfsRead"),
                     arguments_ref,
-                    execution_target: Some(tools::targets::session_fs_target()),
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -2652,7 +2617,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn session_tools_route_file_tools_to_vfs_and_process_tools_to_environment() {
+    async fn session_tools_route_vfs_file_tools_and_environment_process_tools_separately() {
         let (blobs, tools, session_id, workspace_links) = session_tools_with_readme_link().await;
         let process = Arc::new(RecordingProcessExecutor::default());
         let tools = tools.with_environment(test_environment(blobs.clone(), process.clone()));
@@ -2671,16 +2636,15 @@ mod tests {
                 run_id: RunId::new(1),
                 turn_id: TurnId::new(1),
                 batch_id: ToolBatchId::new(1),
-                active_environment_id: None,
-                environment_policy: None,
+                active_environment_id: Some(EnvironmentId::new("test")),
+                environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
                 fleet_policy: None,
                 workspace_links,
                 calls: vec![
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_read"),
-                        tool_name: ToolName::new("read_file"),
+                        tool_name: ToolName::new("vfs_read_file"),
                         arguments_ref: read_args,
-                        execution_target: Some(tools::targets::session_fs_target()),
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -2688,7 +2652,6 @@ mod tests {
                         call_id: ToolCallId::new("call_process"),
                         tool_name: ToolName::new("exec_command"),
                         arguments_ref: process_args,
-                        execution_target: Some(tools::targets::environment_target("test")),
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -2785,7 +2748,6 @@ mod tests {
                     call_id: ToolCallId::new("call_spawn"),
                     tool_name: ToolName::new(::tools::fleet::AGENT_SPAWN_TOOL_NAME),
                     arguments_ref,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -2866,7 +2828,6 @@ mod tests {
                         call_id: ToolCallId::new("call_send_1"),
                         tool_name: ToolName::new(::tools::fleet::AGENT_SEND_TOOL_NAME),
                         arguments_ref: arguments_ref.clone(),
-                        execution_target: None,
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -2874,7 +2835,6 @@ mod tests {
                         call_id: ToolCallId::new("call_send_2"),
                         tool_name: ToolName::new(::tools::fleet::AGENT_SEND_TOOL_NAME),
                         arguments_ref,
-                        execution_target: None,
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -2981,7 +2941,6 @@ mod tests {
                         call_id: ToolCallId::new("call_wait"),
                         tool_name: ToolName::new(::tools::concurrency::AWAIT_TOOL_NAME),
                         arguments_ref: wait_args,
-                        execution_target: None,
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -2989,7 +2948,6 @@ mod tests {
                         call_id: ToolCallId::new("call_read"),
                         tool_name: ToolName::new("read_file"),
                         arguments_ref: read_args,
-                        execution_target: Some(tools::targets::session_fs_target()),
                         workflow_tool: None,
                         promise_control: None,
                     },
@@ -3076,7 +3034,6 @@ mod tests {
                     call_id: ToolCallId::new("call_wait"),
                     tool_name: ToolName::new(::tools::concurrency::AWAIT_TOOL_NAME),
                     arguments_ref: wait_args,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -3123,7 +3080,6 @@ mod tests {
                     call_id: ToolCallId::new("call_cancel"),
                     tool_name: ToolName::new(::tools::concurrency::CANCEL_TOOL_NAME),
                     arguments_ref: cancel_args,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: Some(engine::PromiseControlCallRuntime::v1(vec![
                         engine::PromiseControlRuntime {
@@ -3175,7 +3131,6 @@ mod tests {
                     call_id: ToolCallId::new("call_detach"),
                     tool_name: ToolName::new(::tools::concurrency::DETACH_TOOL_NAME),
                     arguments_ref: detach_args,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: Some(engine::PromiseControlCallRuntime::v1(vec![
                         engine::PromiseControlRuntime {
@@ -3235,7 +3190,6 @@ mod tests {
                     call_id: ToolCallId::new("call_sleep"),
                     tool_name: ToolName::new(::tools::concurrency::SLEEP_TOOL_NAME),
                     arguments_ref: sleep_args,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -3254,7 +3208,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn session_tools_fail_host_tool_without_mounts() {
+    async fn session_tools_fail_vfs_tool_without_workspace_links() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let tools = SessionTools::new(blobs.clone(), catalog);
@@ -3272,9 +3226,8 @@ mod tests {
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
-                    tool_name: ToolName::new("read_file"),
+                    tool_name: ToolName::new("vfs_read_file"),
                     arguments_ref,
-                    execution_target: Some(tools::targets::session_fs_target()),
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -3289,11 +3242,11 @@ mod tests {
             .read_text(result.results[0].error_ref.as_ref().expect("error ref"))
             .await
             .expect("error");
-        assert!(error.contains("no VFS mounts"));
+        assert!(error.contains("no_vfs_workspace_links"));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn targetless_web_fetch_runs_without_mounts() {
+    async fn web_fetch_runs_without_filesystem_domains() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let tools = SessionTools::new(blobs.clone(), catalog);
@@ -3316,7 +3269,6 @@ mod tests {
                     call_id: ToolCallId::new("call_1"),
                     tool_name: ToolName::new("web_fetch"),
                     arguments_ref,
-                    execution_target: None,
                     workflow_tool: None,
                     promise_control: None,
                 }],
@@ -3332,6 +3284,6 @@ mod tests {
             .await
             .expect("error");
         assert!(error.contains("non-public"));
-        assert!(!error.contains("no VFS mounts"));
+        assert!(!error.contains("no_vfs_workspace_links"));
     }
 }

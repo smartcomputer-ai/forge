@@ -1,6 +1,9 @@
 # P75: Environment-Ready Tools Refactor
 
 **Status**
+- Historical. P113 removes the generic target registry and fused
+  `SessionFileSystem` introduced here; see
+  [P113](p113-explicit-vfs-and-environment-tool-domains.md).
 - Proposed 2026-06-17.
 - G1-G3 implemented 2026-06-17.
 - G4-G6 implemented 2026-06-17.

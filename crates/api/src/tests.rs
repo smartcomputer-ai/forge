@@ -2656,6 +2656,7 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
 
 fn test_skill_activation(scope: SkillActivationScope) -> SkillActivationView {
     SkillActivationView {
+        catalog_id: "vfs".to_owned(),
         skill_id: "skill:one".to_owned(),
         name: Some("one".to_owned()),
         description: Some("Use when testing skills.".to_owned()),

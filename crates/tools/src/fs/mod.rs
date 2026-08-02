@@ -12,7 +12,6 @@ pub mod path;
 pub mod read_only;
 pub mod scoped;
 pub mod scoped_local;
-pub mod session;
 pub mod tools;
 pub mod vfs;
 
@@ -25,10 +24,6 @@ pub use read_only::ReadOnlyFileSystem;
 pub use scoped::ScopedFileSystem;
 pub use scoped_local::ScopedLocalFileSystem;
 use serde::{Deserialize, Serialize};
-pub use session::{
-    SessionFileSystem, SessionFileSystemRoute, SessionFileSystemRouteMetadata,
-    SessionFileSystemRouteSource,
-};
 use thiserror::Error;
 pub use vfs::{LinkedVfsFileSystem, VfsSnapshotFileSystem, VfsWorkspaceFileSystem};
 

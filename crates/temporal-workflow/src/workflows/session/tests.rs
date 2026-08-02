@@ -579,7 +579,6 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
                 },
                 status: engine::ToolCallStatus::Pending,
                 execution_policy: None,
-                execution_target: None,
                 result: None,
             }],
         },
@@ -740,7 +739,6 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
                     provider_options_ref: None,
                 }),
                 parallelism: engine::ToolParallelism::ParallelSafe,
-                target_requirement: engine::ToolTargetRequirement::None,
             },
         },
         engine::WorkflowToolTarget::Bound {
@@ -1000,7 +998,6 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
                     provider_options_ref: None,
                 }),
                 parallelism: engine::ToolParallelism::ParallelSafe,
-                target_requirement: engine::ToolTargetRequirement::None,
             },
         },
         engine::WorkflowToolTarget::Start {

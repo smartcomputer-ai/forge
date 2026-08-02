@@ -16,11 +16,10 @@ use crate::{
         },
     },
     runtime::{ToolInvocationOutput, decode_args, encode_output},
-    targets::ResolvedToolContext,
 };
 
 use super::{
-    BuiltinToolOperation, canonical,
+    BuiltinToolContext, BuiltinToolOperation, canonical,
     shared::{
         invalid_request, nullable_integer, nullable_string, object, optional_boolean,
         optional_enum, process_visible_output, string, visible_with_truncation,
@@ -221,7 +220,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
 
 pub(super) async fn invoke_json(
     operation: BuiltinToolOperation,
-    ctx: ResolvedToolContext<'_>,
+    ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
     match operation {

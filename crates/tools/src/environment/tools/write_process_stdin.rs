@@ -140,7 +140,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("process tools require an active env target")
+                .contains("environment_process_unavailable")
         );
     }
 }

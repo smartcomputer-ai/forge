@@ -425,7 +425,7 @@ mod tests {
         ));
 
         let inputs = resolved.inputs();
-        let build = build_skill_catalog(blobs.as_ref(), None, &inputs)
+        let build = build_skill_catalog(blobs.as_ref(), &inputs)
             .await
             .expect("build catalog");
 
@@ -502,7 +502,7 @@ mod tests {
         ));
 
         let inputs = resolved.inputs();
-        let build = build_skill_catalog(blobs.as_ref(), None, &inputs)
+        let build = build_skill_catalog(blobs.as_ref(), &inputs)
             .await
             .expect("build catalog");
 

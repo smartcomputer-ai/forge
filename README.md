@@ -37,9 +37,10 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [ ] **Other providers** via the "Completions API" standard
 
 **Agent capabilities**
-- [x] **Virtual file system**: the agent uses standard file tools (read, glob, patch) without an OS attached
+- [x] **Virtual file system**: dedicated `vfs_*` tools read and edit linked
+  snapshots/workspaces without an OS attached
 - [x] **Web access**: fetch, search, and extract tools
-- [x] **Skills**, hosted on the VFS or inside sandboxes
+- [x] **Skills**, automatically cataloged and loaded from linked VFS roots
 - [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
   shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
@@ -59,7 +60,9 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 **Borrowed compute**
 - [x] **Dedicated VMs**, connected as universe environment instances that
   sessions use through event-sourced active environment state; model discovery
-  and selection is a separate, default-off `selectionTools` grant
+  and selection is a separate, default-off `selectionTools` grant. Ordinary
+  file and process tools always operate on the selected environment and never
+  on linked VFS content
 - [x] **Provider-owned jobs** for long-running work: downloads, experiments,
   and delegated coding-agent runs with optional session/run supervision. Jobs
   are an advanced, default-off environment grant and appear as model tools

@@ -4,7 +4,8 @@ Lightspeed environments are universe-owned live resources backed by external
 providers. Sessions neither own nor attach copies of them. A session records
 only an optional active universe environment id.
 
-P108 is the current design. Lightspeed is greenfield, so it replaces the old
+P108 defines ownership and selection; P113 defines the current filesystem/tool
+routing. Lightspeed is greenfield, so these replace the old
 session-binding, environment-catalog, and generic default-target designs rather
 than preserving compatibility with them.
 
@@ -80,32 +81,36 @@ environment provisioning tools require a separate grant rather than inheriting
 selection authority. No environment details are injected into instructions or
 model context because the model can query them on demand.
 
-A selection tool cannot share a batch with another selection or with a tool
-whose target depends on the selection. Those calls would already have been
-planned against the previous active id, so the runtime rejects the batch and
-lets the model continue in a later turn.
+A selection tool cannot share a batch with another selection or with an
+environment file/process/new-job tool. Those calls consume the active id
+captured for the batch, so the runtime rejects the ambiguous combination and
+lets the model continue in a later turn. VFS tools do not depend on environment
+selection and may share the batch.
 
 ## Routing and replay safety
 
-File tools always target the session filesystem. At invocation time the hosted
-runtime composes:
+There are two disjoint filesystem domains:
 
-1. VFS workspace links declared in session config; and
-2. the current filesystem of the active environment, when available.
+- dedicated `vfs_*` tools operate only on VFS workspace links declared in
+  session config; and
+- ordinary file tools and process tools operate only on the active
+  environment's real filesystem.
 
-VFS links win on path collisions. The shell sees only the environment's real
-filesystem; VFS-only paths are available only through file tools. Prompt,
-instruction, and skill extraction therefore remains based on VFS workspace
-links and its VFS catalog.
+The runtime never mounts, overlays, or synchronizes one domain into the other.
+The same path may contain unrelated bytes in each domain. VFS prompt,
+instruction, and skill extraction remains based only on workspace links; the
+catalog is explicitly `skills.catalog.vfs`.
 
-Process tools require the active environment. Missing, closed, stale,
-disallowed, or unreachable environments produce structured tool failures. They
-do not prevent unrelated VFS tools from operating.
+Environment tools require an active environment and the corresponding live
+capability. Missing, closed, stale, disallowed, unreachable, filesystem-less,
+or read-only environments produce distinct tool failures. They do not prevent
+VFS tools from operating, and environment-only batches do not resolve VFS
+workspace links.
 
-The engine resolves target requirements while planning and copies the concrete
-`ToolExecutionTarget` onto every invocation. Changing the active environment
-later cannot redirect an already-planned call. The old generic durable
-default-target map and its commands/events no longer exist.
+The deterministic engine has no generic execution-target model. It copies the
+active environment id onto each tool-batch request; retries consume that bounded
+id even if session selection changes later. Trusted runtime bindings identify
+whether a call is `vfs.*` or `env.*`.
 
 Job handles contain their originating universe environment id. Reads and other
 handle-based operations resolve that environment rather than rerouting through
@@ -150,9 +155,8 @@ routes.
   rules.
 - Hosted tool execution and bare environment-job starts resolve live
   connections and universe credentials at invocation time.
-- The VFS catalog remains the only environment-adjacent runtime context
-  projection because it drives routing plus prompt, instruction, and skill
-  discovery.
+- The VFS catalog remains independent of environment projection and drives
+  only VFS path framing plus prompt, instruction, and skill discovery.
 - Provider-owned durable jobs remain outside a Lightspeed job registry.
 
 ## Deferred work

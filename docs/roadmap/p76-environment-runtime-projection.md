@@ -1,6 +1,9 @@
 # P76: Environment Runtime Projection
 
 **Status**
+- Historical. P113 removes the fused/session-filesystem projection and makes
+  VFS and environment tool domains explicit; see
+  [P113](p113-explicit-vfs-and-environment-tool-domains.md).
 - Proposed 2026-06-17.
 - Implemented 2026-06-17.
 - Builds on P75 and `docs/spec/04-environments.md`.

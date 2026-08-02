@@ -2,7 +2,24 @@
 
 **Status**
 
-- Proposed 2026-08-02.
+- Completed 2026-08-02.
+- Tranche 1 complete: the deterministic engine/API target model has been
+  removed, environment calls are no longer made unavailable by the engine
+  when no environment is selected, and batch requests retain the bounded
+  `active_environment_id` fact.
+- Tranche 2 complete in the runtime model: built-ins now have explicit VFS or
+  environment domains, stable `vfs.*`/`env.*` logical ids, provider adapter
+  identity separate from logical routing, and direct VFS/environment runtime
+  contexts. The generic target registry and fused hosted filesystem path are
+  no longer used.
+- Tranche 3 complete: the catalog is VFS-owned (`skills.catalog.vfs`, catalog
+  id/source `vfs`), activation state retains catalog identity, prompt and
+  instruction discovery remain VFS-only, and legacy aliases/fused-router code
+  have been removed.
+- Tranche 4 complete: generated contracts and TypeScript consumers are
+  current, the full offline verification matrix is green, current architecture
+  documentation has been updated, and the legacy-target/fused-filesystem
+  removal audit is clean.
 - Greenfield breaking refactor. Do not preserve compatibility aliases, dual
   routing, legacy target fields, or the fused session-filesystem behavior.
 - Supersedes the fused-filesystem decisions in
@@ -13,6 +30,53 @@
   environment capability resolution, and VFS workspace-link topology.
 - No workspace materialization, checkout, check-in, or synchronization is part
   of this milestone.
+
+## Implementation Result
+
+P113 is implemented end to end. The shipped shape is:
+
+- `vfs.*` bindings and provider-visible `vfs_*`/`Vfs*` tools operate only on
+  resolved session workspace links;
+- `env.*` file, process, and new-job bindings operate only on the active
+  environment captured on the tool batch;
+- provider adapter identity is separate from the stable logical binding id;
+- the generic execution-target model and runtime target registry are gone;
+- the fused session filesystem and its host/fused route metadata are gone;
+- environment filesystem adapters preserve the environment-native path and cwd
+  contract while applying the environment record's read-only restriction;
+- prompt/instruction discovery remains VFS-only; and
+- the skill catalog is explicitly identified as `skills.catalog.vfs`, with
+  catalog identity retained on activation context for future independent
+  catalogs.
+
+Offline verification completed on 2026-08-02:
+
+```bash
+cargo fmt --all -- --check
+cargo check --workspace
+cargo test -p engine -p tools -p llm-runtime -p temporal-workflow -p temporal-server -p api --no-fail-fast
+cargo test -p eval
+cargo run -p api --bin export-schema
+cd interop/ts-client && npm run typecheck && npm run test && npm run build
+cd ../configurator-mcp && npm run check
+git diff --check
+```
+
+Relevant live verification was subsequently completed against the running
+local Temporal/PostgreSQL/host-bridge stack:
+
+```bash
+source local/env.sh
+cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1 --nocapture
+cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --test-threads=1 --nocapture
+```
+
+The environment-provider suite includes a focused P113 case that writes and
+reads `skills/SKILL.md` through the active environment while reading different
+bytes at that same path through `vfs_read_file`. All five environment-provider
+tests and the focused session/config reconciliation test passed. Remaining
+opt-in live suites require unrelated external services or paid provider calls
+and were not run.
 
 ## Summary
 

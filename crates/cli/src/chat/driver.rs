@@ -1974,6 +1974,7 @@ mod tests {
         let response = api::SkillActiveResponse {
             catalog_ref: Some("sha256:catalog".into()),
             activations: vec![api::SkillActivationView {
+                catalog_id: "vfs".into(),
                 skill_id: "lightspeed:review".into(),
                 name: Some("Review".into()),
                 description: Some("Review repository changes.".into()),

@@ -135,14 +135,6 @@ pub async fn invoke_workflow_tool(
             ),
         });
     }
-    if call.execution_target.is_some() {
-        return Err(ToolError::InvalidRequest {
-            message: format!(
-                "workflow tool {} must not have an execution target",
-                binding.definition.tool_id
-            ),
-        });
-    }
     let arguments = validate_workflow_tool_arguments(blobs, binding, &call.arguments_ref).await?;
 
     let invocation_id = WorkflowToolInvocationId::for_call(
@@ -351,7 +343,7 @@ mod tests {
 
     use engine::{
         FunctionToolSpec, ToolCallId, ToolKind, ToolName, ToolParallelism, ToolSpec,
-        ToolTargetRequirement, WorkflowEndpointRef, WorkflowToolId,
+        WorkflowEndpointRef, WorkflowToolId,
         storage::{BlobStore, InMemoryBlobStore},
     };
     use serde_json::json;
@@ -391,7 +383,6 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
-                    target_requirement: ToolTargetRequirement::None,
                 },
             },
             WorkflowEndpointRef {
@@ -414,7 +405,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("work_report"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
@@ -478,7 +468,6 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
-                    target_requirement: ToolTargetRequirement::None,
                 },
             },
             WorkflowToolTarget::Bound {
@@ -515,7 +504,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
@@ -584,7 +572,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
@@ -632,7 +619,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
@@ -721,7 +707,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
@@ -771,7 +756,6 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
-                    target_requirement: ToolTargetRequirement::None,
                 },
             },
             WorkflowToolTarget::Start {
@@ -798,7 +782,6 @@ mod tests {
             call_id: ToolCallId::new("call-1"),
             tool_name: ToolName::new("launch_job"),
             arguments_ref,
-            execution_target: None,
             workflow_tool: None,
             promise_control: None,
         };
