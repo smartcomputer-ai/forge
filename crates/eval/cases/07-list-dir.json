@@ -1,7 +1,7 @@
 {
   "id": "list-dir",
   "description": "List directory entries with list_dir.",
-  "prompt": "Call list_dir with path tree. Then answer exactly LIST=OK.",
+  "prompt": "Use the directory-listing tool with path tree. Then answer exactly LIST=OK.",
   "setup": {
     "files": [
       {

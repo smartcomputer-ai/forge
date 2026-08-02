@@ -308,7 +308,7 @@ impl BuiltinTool {
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "Glob",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::RunProcess) => "Bash",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch) => "apply_patch",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "list_dir",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "ListDir",
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteProcessStdin) => {
                 "write_stdin"
             }
@@ -670,7 +670,7 @@ mod tests {
         );
 
         assert_eq!(vfs_tool.name_str(), "VfsListDir");
-        assert_eq!(environment_tool.name_str(), "list_dir");
+        assert_eq!(environment_tool.name_str(), "ListDir");
         for tool in [vfs_tool, environment_tool] {
             let bundle = tool.spec_bundle(&target(), false).expect("spec bundle");
             assert!(bundle.documents[1].text_lossy().contains("\"path\""));

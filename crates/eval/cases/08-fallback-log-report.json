@@ -1,7 +1,7 @@
 {
   "id": "fallback-log-report",
   "description": "Resolve a task file, read a fallback log, and write a derived report.",
-  "prompt": "Call list_dir with path jobs to find the task file, then read jobs/task-418.json. It contains fallback_log, needle, and report_path. Read fallback_log with read_file, extract the token from the line containing \"acquired\", then write report_path with exact text RESULT=<token>\\n. Do not write the report until the task file and log read have both succeeded. Then answer exactly CHAIN=OK.",
+  "prompt": "Use the directory-listing tool with path jobs to find the task file, then read jobs/task-418.json. It contains fallback_log, needle, and report_path. Read fallback_log with the file-reading tool, extract the token from the line containing \"acquired\", then write report_path with exact text RESULT=<token>\\n. Do not write the report until the task file and log read have both succeeded. Then answer exactly CHAIN=OK.",
   "setup": {
     "files": [
       {

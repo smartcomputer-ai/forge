@@ -74,9 +74,8 @@ cargo test -p temporal-server --test temporal_live temporal_live_session_start_t
 The environment-provider suite includes a focused P113 case that writes and
 reads `skills/SKILL.md` through the active environment while reading different
 bytes at that same path through `vfs_read_file`. All five environment-provider
-tests and the focused session/config reconciliation test passed. Remaining
-opt-in live suites require unrelated external services or paid provider calls
-and were not run.
+tests and the focused session/config reconciliation test passed. Other opt-in
+live suites outside the P113 filesystem scope were not run.
 
 The prompt-level eval harness was also extended with independent VFS and active
 environment roots, Anthropic Messages support, provider-specific case
@@ -85,8 +84,14 @@ cwd regression cases. Live provider results were green:
 
 ```bash
 cargo run -p eval -- --provider openai all     # 12/12 passed
-cargo run -p eval -- --provider anthropic all  # 8/8 passed, 4 unsupported-surface cases skipped
+cargo run -p eval -- --provider anthropic all  # 11/11 passed, apply-patch skipped
 ```
+
+The Anthropic Claude-like surface includes `VfsListDir` and the ordinary
+environment `ListDir`, both backed by the same domain-isolated canonical
+listing operation. This keeps directory inspection available without requiring
+an environment shell and covers the absolute `/workspaces` path regression on
+both providers.
 
 ## Summary
 

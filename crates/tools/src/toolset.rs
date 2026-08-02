@@ -815,6 +815,35 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_list_dir_names_preserve_vfs_and_environment_domains() {
+        let target = target(ProviderApiKind::AnthropicMessages);
+        let mut config = ToolsetConfig::empty();
+        config.builtin.vfs.list_dir = true;
+        config.builtin.environment.filesystem.list_dir = true;
+
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+
+        assert_eq!(visible_names(&toolset), vec!["ListDir", "VfsListDir"]);
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("ListDir"))
+                .expect("environment list binding")
+                .logical_id,
+            "env.list_dir"
+        );
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("VfsListDir"))
+                .expect("VFS list binding")
+                .logical_id,
+            "vfs.list_dir"
+        );
+    }
+
+    #[test]
     fn web_search_adds_provider_native_tool_and_defaults_patch() {
         let target = target(ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
