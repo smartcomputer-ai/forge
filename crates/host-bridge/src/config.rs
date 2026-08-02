@@ -1,6 +1,6 @@
 use std::{
     net::SocketAddr,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -46,6 +46,9 @@ pub struct BridgeArgs {
     #[arg(long, env = "LIGHTSPEED_HOST_BRIDGE_FS_ROOT")]
     pub fs_root: Option<PathBuf>,
 
+    #[arg(long, env = "LIGHTSPEED_HOST_BRIDGE_STATE_DIR")]
+    pub state_dir: Option<PathBuf>,
+
     #[arg(long, default_value_t = 10_000)]
     pub heartbeat_interval_ms: u64,
 
@@ -66,6 +69,7 @@ pub struct BridgeConfig {
     pub advertise_url: Option<String>,
     pub cwd: PathBuf,
     pub fs_root: PathBuf,
+    pub state_dir: PathBuf,
     pub heartbeat_interval: Duration,
     pub lease_ttl: Duration,
     pub read_only_fs: bool,
@@ -91,7 +95,10 @@ impl BridgeArgs {
             None => std::env::current_dir().context("read current directory")?,
         };
         let cwd = canonical_dir(cwd, "cwd")?;
-        let fs_root = canonical_dir(self.fs_root.unwrap_or_else(|| cwd.clone()), "fs root")?;
+        let fs_root = canonical_dir(
+            self.fs_root.unwrap_or_else(|| native_filesystem_root(&cwd)),
+            "fs root",
+        )?;
         if !cwd.starts_with(&fs_root) {
             bail!(
                 "cwd must be inside fs root: cwd={}, fs_root={}",
@@ -99,6 +106,14 @@ impl BridgeArgs {
                 fs_root.display()
             );
         }
+        let state_dir = match self.state_dir {
+            Some(state_dir) if state_dir.as_os_str().is_empty() => {
+                bail!("--state-dir must not be empty");
+            }
+            Some(state_dir) if state_dir.is_absolute() => state_dir,
+            Some(state_dir) => cwd.join(state_dir),
+            None => cwd.join(".lightspeed"),
+        };
 
         Ok(BridgeConfig {
             gateway_url: self.gateway_url,
@@ -109,11 +124,19 @@ impl BridgeArgs {
             advertise_url: self.advertise_url,
             cwd,
             fs_root,
+            state_dir,
             heartbeat_interval: Duration::from_millis(self.heartbeat_interval_ms),
             lease_ttl: Duration::from_millis(self.lease_ttl_ms),
             read_only_fs: self.read_only_fs,
         })
     }
+}
+
+fn native_filesystem_root(path: &Path) -> PathBuf {
+    path.ancestors()
+        .last()
+        .expect("an absolute canonical path has a filesystem root")
+        .to_path_buf()
 }
 
 impl BridgeConfig {
@@ -150,4 +173,49 @@ fn ephemeral_provider_id() -> String {
         .map(|duration| duration.as_millis())
         .unwrap_or_default();
     format!("host-bridge-{}-{millis}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(cwd: PathBuf) -> BridgeArgs {
+        BridgeArgs {
+            gateway_url: "http://127.0.0.1:18080/rpc".to_owned(),
+            provider_id: Some("test-provider".to_owned()),
+            provider_token: None,
+            target_id: "local".to_owned(),
+            listen: "127.0.0.1:0".parse().expect("listen address"),
+            advertise_url: None,
+            cwd: Some(cwd),
+            fs_root: None,
+            state_dir: None,
+            heartbeat_interval_ms: 10_000,
+            lease_ttl_ms: 30_000,
+            read_only_fs: false,
+        }
+    }
+
+    #[test]
+    fn defaults_fs_root_to_native_root_and_state_dir_to_cwd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().canonicalize().expect("canonical cwd");
+
+        let config = args(cwd.clone()).into_config().expect("config");
+
+        assert_eq!(config.fs_root, native_filesystem_root(&cwd));
+        assert_eq!(config.state_dir, cwd.join(".lightspeed"));
+    }
+
+    #[test]
+    fn resolves_relative_state_dir_from_cwd() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().canonicalize().expect("canonical cwd");
+        let mut args = args(cwd.clone());
+        args.state_dir = Some(PathBuf::from("bridge-state"));
+
+        let config = args.into_config().expect("config");
+
+        assert_eq!(config.state_dir, cwd.join("bridge-state"));
+    }
 }

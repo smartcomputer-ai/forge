@@ -97,10 +97,10 @@ enum FinishKind {
 }
 
 impl JobManager {
-    pub fn new(cwd: PathBuf, fs_root: PathBuf) -> anyhow::Result<Self> {
+    pub fn new(cwd: PathBuf, fs_root: PathBuf, state_dir: PathBuf) -> anyhow::Result<Self> {
         let cwd = normalize_path(cwd);
         let fs_root = normalize_path(fs_root);
-        let jobs_root = fs_root.join(".lightspeed").join("jobs");
+        let jobs_root = normalize_path(state_dir).join("jobs");
         std::fs::create_dir_all(&jobs_root)?;
         let mut state = JobManagerState {
             accepting: true,
@@ -1388,7 +1388,8 @@ mod tests {
     async fn job_manager_runs_parallel_jobs_and_retains_output() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let response = manager
             .start_jobs(StartJobsParams {
@@ -1423,7 +1424,8 @@ mod tests {
     async fn job_manager_injects_secret_env_without_persisting_values() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root.clone()).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
         let mut spec = job("secret-job", "printf \"$SECRET_TOKEN\"");
         spec.secret_env.insert(
             "SECRET_TOKEN".to_owned(),
@@ -1463,7 +1465,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
         let marker = root.join("order.txt");
-        let manager = JobManager::new(root.clone(), root.clone()).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let mut first = job("queued-z", "printf 1 >> order.txt");
         let mut second = job("queued-a", "printf 2 >> order.txt");
@@ -1494,7 +1497,8 @@ mod tests {
     async fn job_manager_honors_explicit_dependencies_and_dependency_failure() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let mut dependent = job("dependent", "printf should-not-run");
         dependent.depends_on = vec![JobDependency::name("setup")];
@@ -1518,7 +1522,8 @@ mod tests {
     async fn job_manager_all_terminal_dependencies_run_after_failed_dependency() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let mut cleanup = job("cleanup", "printf cleanup");
         cleanup.depends_on = vec![JobDependency::job_id("fails")];
@@ -1544,7 +1549,8 @@ mod tests {
     async fn job_manager_cancels_running_jobs_and_queued_dependents() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let mut dependent = job("after", "printf after");
         dependent.depends_on = vec![JobDependency::job_id("sleep")];
@@ -1576,7 +1582,8 @@ mod tests {
     async fn job_manager_interrupts_jobs_and_rejects_starts_after_close() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         let mut dependent = job("after-close", "printf should-not-run");
         dependent.depends_on = vec![JobDependency::job_id("active-at-close")];
@@ -1616,7 +1623,8 @@ mod tests {
     async fn job_manager_times_out_jobs() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
         let mut spec = job("timeout", "sleep 5");
         spec.timeout_ms = Some(50);
 
@@ -1637,7 +1645,8 @@ mod tests {
     async fn job_manager_retries_same_start_idempotently_and_rejects_conflict() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
         let params = StartJobsParams {
             namespace: TEST_NAMESPACE.to_owned(),
             request_id: "retry".to_owned(),
@@ -1661,7 +1670,8 @@ mod tests {
     async fn job_manager_lists_latest_jobs_with_limit() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
-        let manager = JobManager::new(root.clone(), root).expect("manager");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
 
         manager
             .start_jobs(StartJobsParams {
@@ -1729,7 +1739,8 @@ mod tests {
         )
         .expect("persist seed");
 
-        let recovered = JobManager::new(root.clone(), root).expect("recovered manager");
+        let recovered = JobManager::new(root.clone(), root.clone(), root.join(".lightspeed"))
+            .expect("recovered manager");
         let read = recovered
             .read_jobs(ReadJobsParams {
                 namespace: TEST_NAMESPACE.to_owned(),

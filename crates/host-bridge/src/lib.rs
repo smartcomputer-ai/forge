@@ -52,7 +52,11 @@ impl BridgeRuntime {
             !config.read_only_fs,
         );
         let processes = ProcessManager::new(config.cwd.clone(), config.fs_root.clone());
-        let jobs = JobManager::new(config.cwd.clone(), config.fs_root.clone())?;
+        let jobs = JobManager::new(
+            config.cwd.clone(),
+            config.fs_root.clone(),
+            config.state_dir.clone(),
+        )?;
         Ok(Self {
             config: Arc::new(config),
             advertise_base_url: Arc::new(advertise_base_url),

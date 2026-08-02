@@ -254,7 +254,8 @@ Minimum flags/env:
 --listen / LIGHTSPEED_HOST_BRIDGE_LISTEN               default 127.0.0.1:0
 --advertise-url / LIGHTSPEED_HOST_BRIDGE_ADVERTISE_URL
 --cwd / LIGHTSPEED_HOST_BRIDGE_CWD                     default current dir
---fs-root / LIGHTSPEED_HOST_BRIDGE_FS_ROOT             default cwd
+--fs-root / LIGHTSPEED_HOST_BRIDGE_FS_ROOT             default native filesystem root
+--state-dir / LIGHTSPEED_HOST_BRIDGE_STATE_DIR         default <cwd>/.lightspeed
 --heartbeat-interval-ms                                default 10_000
 --lease-ttl-ms                                         default 30_000
 --read-only-fs                                         default false

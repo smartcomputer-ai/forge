@@ -15,13 +15,14 @@ async fn main() -> anyhow::Result<()> {
     let gateway = GatewayClient::new(config.gateway_url.clone(), config.provider_token.clone());
 
     eprintln!(
-        "host-bridge listening={} advertise={} provider_id={} target_id={} cwd={} fs_root={} read_only_fs={}",
+        "host-bridge listening={} advertise={} provider_id={} target_id={} cwd={} fs_root={} state_dir={} read_only_fs={}",
         local_addr,
         runtime.controller_endpoint(),
         config.provider_id,
         config.target_id,
         config.cwd.display(),
         config.fs_root.display(),
+        config.state_dir.display(),
         config.read_only_fs,
     );
 
