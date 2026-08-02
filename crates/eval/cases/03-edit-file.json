@@ -1,7 +1,7 @@
 {
   "id": "edit-file",
-  "description": "Edit an existing file with edit_file.",
-  "prompt": "Call edit_file with path docs/plan.txt, old_string draft, new_string final. You may omit replace_all. Then answer exactly EDIT=final.",
+  "description": "Edit an existing file through the provider-native VFS edit tool.",
+  "prompt": "Use the available VFS exact-edit tool on docs/plan.txt with old text draft and new text final. Replace only the single occurrence. Then answer exactly EDIT=final.",
   "setup": {
     "files": [
       {

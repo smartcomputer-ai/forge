@@ -1,0 +1,46 @@
+{
+  "id": "domain-edit-isolation",
+  "description": "Edit the same logical path independently in VFS and the active environment.",
+  "prompt": "The VFS and active environment each contain shared/state.txt. Use the VFS exact-edit tool to replace vfs-old with vfs-new only in VFS. Use the ordinary environment exact-edit tool to replace env-old with env-new only in the environment. Then answer exactly EDITED=BOTH.",
+  "setup": {
+    "files": [
+      {
+        "path": "shared/state.txt",
+        "content": "owner=vfs-old\n"
+      }
+    ],
+    "environment_files": [
+      {
+        "path": "shared/state.txt",
+        "content": "owner=env-old\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_called": ["vfs.edit_file", "env.edit_file"],
+    "assistant_contains": ["EDITED=BOTH"],
+    "tool_output_contains": ["Replaced 1 match"],
+    "files": [
+      {
+        "path": "shared/state.txt",
+        "equals": "owner=vfs-new\n"
+      }
+    ],
+    "environment_files": [
+      {
+        "path": "shared/state.txt",
+        "equals": "owner=env-new\n"
+      }
+    ]
+  },
+  "eval": {
+    "runs": 1,
+    "min_pass_rate": 1.0
+  },
+  "run": {
+    "max_tokens": 1024,
+    "max_turns": 8,
+    "max_tool_rounds": 4,
+    "allowed_tools": ["vfs.edit_file", "env.edit_file"]
+  }
+}

@@ -12,7 +12,7 @@ use api_projection::{
     started_run_id,
 };
 use async_trait::async_trait;
-use casefile::{EvalCase, FileExpectation, load_cases};
+use casefile::{EvalCase, FileExpectation, SetupFile, load_cases};
 use clap::{Parser, Subcommand};
 use engine::{
     ContextConfig, ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole,
@@ -20,16 +20,21 @@ use engine::{
     SessionConfig, SessionId, ToolName, ToolSpec,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
-use llm_clients::ApiResponse;
 use llm_clients::openai::responses as oai;
-use llm_runtime::{LlmAdapterRegistry, LlmRuntime, OpenAiResponsesApi, OpenAiResponsesLlmAdapter};
+use llm_clients::{ApiResponse, anthropic::messages as anthropic};
+use llm_runtime::{
+    AnthropicMessagesApi, AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime,
+    OpenAiResponsesApi, OpenAiResponsesLlmAdapter,
+};
 use tempfile::TempDir;
 use test_support::{
     DriveCommand, DriveOutcome, DriveSession, RunnerQuiescence, RunnerStores, SessionRunner,
 };
 use tools::{
     builtin::BuiltinToolOperation,
+    environment::EnvironmentToolContext,
     fs::{FsPath, FsToolContext, ScopedLocalFileSystem},
+    limits::ToolLimits,
     runtime::InlineToolRuntime,
     runtime::ToolDocument,
     toolset::{
@@ -38,7 +43,8 @@ use tools::{
 };
 
 const CASES_ROOT: &str = "crates/eval/cases";
-const DEFAULT_MODEL: &str = "gpt-5.5";
+const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
 const DEFAULT_PROVIDER_ID: &str = "openai";
 const EVAL_INSTRUCTIONS: &str = "\
 You are running inside the Lightspeed agent eval harness.
@@ -59,8 +65,8 @@ struct Cli {
     #[arg(long, global = true, default_value = DEFAULT_PROVIDER_ID)]
     provider: String,
 
-    #[arg(long, global = true, default_value = DEFAULT_MODEL)]
-    model: String,
+    #[arg(long, global = true, help = "Override the provider's default model")]
+    model: Option<String>,
 
     #[arg(long, global = true, help = "Override number of runs per case")]
     runs: Option<u32>,
@@ -82,6 +88,7 @@ enum Commands {
 #[derive(Debug, Clone)]
 struct ProviderRuntime {
     provider_id: String,
+    api_kind: ProviderApiKind,
     model: String,
     api_key: String,
     base_url: Option<String>,
@@ -131,6 +138,39 @@ struct LlmCallDiagnostic {
 struct DiagnosticOpenAiResponsesApi {
     inner: oai::Client,
     diagnostics: Arc<LlmDiagnostics>,
+}
+
+struct DiagnosticAnthropicMessagesApi {
+    inner: anthropic::Client,
+    diagnostics: Arc<LlmDiagnostics>,
+}
+
+#[async_trait]
+impl AnthropicMessagesApi for DiagnosticAnthropicMessagesApi {
+    async fn create(
+        &self,
+        request: anthropic::CreateMessageRequest,
+        auth: Option<llm_clients::RequestAuth<'_>>,
+    ) -> Result<ApiResponse<anthropic::Message>, llm_clients::LlmApiError> {
+        let request_text = serde_json::to_string(&request)
+            .unwrap_or_else(|error| format!("failed to encode request: {error}"));
+        let result = self.inner.create_with_auth(request, auth).await;
+        let outcome = match &result {
+            Ok(response) => format!(
+                "http_status={} response_id={} stop_reason={:?} raw={}",
+                response.status,
+                response.parsed.id,
+                response.parsed.stop_reason,
+                serde_json::to_string(&response.raw_json).unwrap_or_default()
+            ),
+            Err(error) => format!("api_error={error}"),
+        };
+        self.diagnostics.record(LlmCallDiagnostic {
+            request: request_text,
+            outcome,
+        });
+        result
+    }
 }
 
 #[async_trait]
@@ -189,6 +229,13 @@ struct EvalInvocation {
     next_attempt: u64,
 }
 
+#[derive(Debug, Clone)]
+struct AttemptWorkspace {
+    root: PathBuf,
+    vfs: PathBuf,
+    environment: PathBuf,
+}
+
 impl EvalInvocation {
     fn new() -> Result<Self> {
         let temp = TempDir::new().context("create eval tempdir")?;
@@ -202,22 +249,41 @@ impl EvalInvocation {
         })
     }
 
-    fn allocate_attempt(&mut self, case_id: &str, attempt_index: u32) -> Result<(String, PathBuf)> {
+    fn allocate_attempt(
+        &mut self,
+        case_id: &str,
+        attempt_index: u32,
+    ) -> Result<(String, AttemptWorkspace)> {
         self.next_attempt = self.next_attempt.saturating_add(1);
         let session_id = format!(
             "session_{}_{}",
             sanitize_case_id(case_id),
             self.next_attempt
         );
-        let workdir = self.workspaces_root.join(format!(
+        let root = self.workspaces_root.join(format!(
             "{}-run-{}-{}",
             sanitize_case_id(case_id),
             attempt_index,
             self.next_attempt
         ));
-        fs::create_dir_all(&workdir)
-            .with_context(|| format!("create attempt workspace {}", workdir.display()))?;
-        Ok((session_id, workdir))
+        let vfs = root.join("vfs");
+        let environment = root.join("environment");
+        fs::create_dir_all(&vfs)
+            .with_context(|| format!("create VFS eval workspace {}", vfs.display()))?;
+        fs::create_dir_all(&environment).with_context(|| {
+            format!(
+                "create environment eval workspace {}",
+                environment.display()
+            )
+        })?;
+        Ok((
+            session_id,
+            AttemptWorkspace {
+                root,
+                vfs,
+                environment,
+            },
+        ))
     }
 }
 
@@ -262,7 +328,12 @@ async fn run_cli() -> Result<()> {
     match cli.command {
         Commands::List => {
             for case in &cases {
-                println!("{:<24} {}", case.id, case.description);
+                let providers = if case.providers.is_empty() {
+                    "openai,anthropic".to_owned()
+                } else {
+                    case.providers.join(",")
+                };
+                println!("{:<28} [{providers}] {}", case.id, case.description);
             }
             Ok(())
         }
@@ -272,6 +343,13 @@ async fn run_cli() -> Result<()> {
                 .into_iter()
                 .find(|case| case.id == id)
                 .ok_or_else(|| anyhow!("unknown case '{id}'"))?;
+            if !supports_provider(&case, &provider.provider_id) {
+                bail!(
+                    "case '{}' does not support provider '{}'",
+                    case.id,
+                    provider.provider_id
+                );
+            }
             let mut invocation = EvalInvocation::new()?;
             let summary = run_case(&mut invocation, &case, &provider, cli.runs).await?;
             print_case_summary(&summary);
@@ -283,6 +361,10 @@ async fn run_cli() -> Result<()> {
             let mut failures = Vec::new();
             let mut summaries = Vec::new();
             for case in &cases {
+                if !supports_provider(case, &provider.provider_id) {
+                    println!("\nCase {}: SKIP provider={}", case.id, provider.provider_id);
+                    continue;
+                }
                 let summary = run_case(&mut invocation, case, &provider, cli.runs).await?;
                 print_case_summary(&summary);
                 if summary_pass_rate(&summary) + f64::EPSILON < summary.min_pass_rate {
@@ -360,10 +442,11 @@ async fn run_attempt(
     provider: &ProviderRuntime,
     attempt_index: u32,
 ) -> Result<AttemptOutcome> {
-    let (session_id, workdir) = invocation.allocate_attempt(&case.id, attempt_index)?;
-    seed_files(case, &workdir)?;
+    let (session_id, workspace) = invocation.allocate_attempt(&case.id, attempt_index)?;
+    seed_files(&case.setup.files, &workspace.vfs)?;
+    seed_files(&case.setup.environment_files, &workspace.environment)?;
 
-    let runtime = build_runtime(case, provider, &workdir).await?;
+    let runtime = build_runtime(case, provider, &workspace).await?;
     let session_id = SessionId::try_new(session_id)
         .map_err(|error| anyhow!("invalid generated session id: {error}"))?;
     runtime.start_session(&session_id).await?;
@@ -422,7 +505,10 @@ async fn run_attempt(
     }
 
     for file in &case.expect.files {
-        validate_file_expectation(&workdir, file, &mut failures)?;
+        validate_file_expectation(&workspace.vfs, file, &mut failures)?;
+    }
+    for file in &case.expect.environment_files {
+        validate_file_expectation(&workspace.environment, file, &mut failures)?;
     }
 
     Ok(AttemptOutcome {
@@ -432,7 +518,7 @@ async fn run_attempt(
         tool_arguments: observations.tool_arguments,
         assistant_text: observations.assistant_text,
         tool_outputs_text,
-        workdir,
+        workdir: workspace.root,
     })
 }
 
@@ -629,7 +715,7 @@ impl EvalRuntime {
 async fn build_runtime(
     case: &EvalCase,
     provider: &ProviderRuntime,
-    workdir: &Path,
+    workspace: &AttemptWorkspace,
 ) -> Result<EvalRuntime> {
     let blobs = Arc::new(InMemoryBlobStore::new());
     let sessions = Arc::new(InMemorySessionStore::new());
@@ -638,31 +724,70 @@ async fn build_runtime(
         .await
         .context("store eval instructions")?;
     let model = ModelSelection {
-        api_kind: ProviderApiKind::OpenAiResponses,
+        api_kind: provider.api_kind.clone(),
         provider_id: provider.provider_id.clone(),
         model: provider.model.clone(),
     };
     let default_config = session_config(case, model.clone());
     let diagnostics = Arc::new(LlmDiagnostics::default());
-    let openai = DiagnosticOpenAiResponsesApi {
-        inner: oai::Client::new(openai_config(provider))?,
-        diagnostics: Arc::clone(&diagnostics),
+    let registry = match provider.api_kind {
+        ProviderApiKind::OpenAiResponses => {
+            let openai = DiagnosticOpenAiResponsesApi {
+                inner: oai::Client::new(openai_config(provider))?,
+                diagnostics: Arc::clone(&diagnostics),
+            };
+            LlmAdapterRegistry::new().with_generation_adapter(
+                ProviderApiKind::OpenAiResponses,
+                Arc::new(OpenAiResponsesLlmAdapter::new(
+                    Arc::new(openai),
+                    blobs.clone(),
+                )),
+            )
+        }
+        ProviderApiKind::AnthropicMessages => {
+            let anthropic = DiagnosticAnthropicMessagesApi {
+                inner: anthropic::Client::new(anthropic_config(provider))?,
+                diagnostics: Arc::clone(&diagnostics),
+            };
+            LlmAdapterRegistry::new().with_generation_adapter(
+                ProviderApiKind::AnthropicMessages,
+                Arc::new(AnthropicMessagesLlmAdapter::new(
+                    Arc::new(anthropic),
+                    blobs.clone(),
+                )),
+            )
+        }
+        ref api_kind => bail!("eval does not support API kind {api_kind:?}"),
     };
-    let llm_executor = Arc::new(LlmRuntime::new(
-        LlmAdapterRegistry::new().with_generation_adapter(
-            ProviderApiKind::OpenAiResponses,
-            Arc::new(OpenAiResponsesLlmAdapter::new(
-                Arc::new(openai),
-                blobs.clone(),
-            )),
-        ),
-    ));
+    let llm_executor = Arc::new(LlmRuntime::new(registry));
 
-    let fs = Arc::new(
-        ScopedLocalFileSystem::read_write(workdir)
-            .with_context(|| format!("open eval workspace '{}'", workdir.display()))?,
+    let vfs = Arc::new(
+        ScopedLocalFileSystem::read_write(&workspace.vfs)
+            .with_context(|| format!("open VFS eval workspace '{}'", workspace.vfs.display()))?,
     );
-    let fs_ctx = FsToolContext::new(fs, blobs.clone()).with_cwd(FsPath::root());
+    let vfs_ctx = FsToolContext::new(vfs, blobs.clone()).with_cwd(FsPath::root());
+    let environment_fs = Arc::new(
+        ScopedLocalFileSystem::read_write(&workspace.environment).with_context(|| {
+            format!(
+                "open environment eval workspace '{}'",
+                workspace.environment.display()
+            )
+        })?,
+    );
+    let environment_cwd = case
+        .setup
+        .environment_cwd
+        .as_deref()
+        .map(FsPath::new)
+        .transpose()
+        .context("parse setup.environment_cwd")?
+        .unwrap_or_else(FsPath::root);
+    let environment_fs_ctx =
+        FsToolContext::new(environment_fs, blobs.clone()).with_cwd(environment_cwd.clone());
+    let environment_ctx = EnvironmentToolContext::new(None, blobs.clone())
+        .with_environment_id("eval-environment")
+        .with_filesystem(environment_fs_ctx)
+        .with_process_cwd(environment_cwd);
     let toolset = resolve_eval_toolset(&model, case)?;
     store_tool_documents(blobs.as_ref(), &toolset.documents).await?;
     let tool_id_by_name = toolset
@@ -675,8 +800,11 @@ async fn build_runtime(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    let tool_executor = Arc::new(InlineToolRuntime::with_vfs_filesystem(
-        fs_ctx,
+    let tool_executor = Arc::new(InlineToolRuntime::with_contexts_and_blob_store(
+        Some(vfs_ctx),
+        Some(environment_ctx),
+        blobs.clone(),
+        ToolLimits::default(),
         toolset.catalog.clone(),
     ));
     let stores = RunnerStores::new(sessions.clone(), blobs.clone());
@@ -699,14 +827,21 @@ fn resolve_eval_toolset(model: &ModelSelection, case: &EvalCase) -> Result<Resol
         if allowed.is_empty() {
             bail!("case '{}' has empty run.allowed_tools", case.id);
         }
-        let operations = allowed
-            .iter()
-            .map(|id| {
-                builtin_operation_for_id(id)
-                    .ok_or_else(|| anyhow!("case '{}' references unknown tool '{id}'", case.id))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        config.builtin = BuiltinToolsetConfig::vfs_from_operations(operations)?;
+        let mut vfs_operations = Vec::new();
+        let mut environment_operations = Vec::new();
+        for id in allowed {
+            let operation = builtin_operation_for_id(id)
+                .ok_or_else(|| anyhow!("case '{}' references unknown tool '{id}'", case.id))?;
+            if canonical_tool_id(id).starts_with("vfs.") {
+                vfs_operations.push(operation);
+            } else {
+                environment_operations.push(operation);
+            }
+        }
+        let mut builtin = BuiltinToolsetConfig::vfs_from_operations(vfs_operations)?;
+        builtin.environment =
+            BuiltinToolsetConfig::from_operations(environment_operations).environment;
+        config.builtin = builtin;
     }
     resolve_toolset(
         ToolsetEnvironment {
@@ -826,9 +961,9 @@ fn collect_observations(
     observations
 }
 
-fn seed_files(case: &EvalCase, workdir: &Path) -> Result<()> {
-    for file in &case.setup.files {
-        let path = safe_case_path(workdir, &file.path)?;
+fn seed_files(files: &[SetupFile], root: &Path) -> Result<()> {
+    for file in files {
+        let path = safe_case_path(root, &file.path)?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .with_context(|| format!("create parent dirs for {}", path.display()))?;
@@ -916,6 +1051,13 @@ fn builtin_operation_for_id(id: &str) -> Option<BuiltinToolOperation> {
         "vfs.grep" => BuiltinToolOperation::Grep,
         "vfs.glob" => BuiltinToolOperation::Glob,
         "vfs.list_dir" => BuiltinToolOperation::ListDir,
+        "env.read_file" => BuiltinToolOperation::ReadFile,
+        "env.write_file" => BuiltinToolOperation::WriteFile,
+        "env.edit_file" => BuiltinToolOperation::EditFile,
+        "env.apply_patch" => BuiltinToolOperation::ApplyPatch,
+        "env.grep" => BuiltinToolOperation::Grep,
+        "env.glob" => BuiltinToolOperation::Glob,
+        "env.list_dir" => BuiltinToolOperation::ListDir,
         "env.run_process" => BuiltinToolOperation::RunProcess,
         "env.write_process_stdin" => BuiltinToolOperation::WriteProcessStdin,
         _ => return None,
@@ -936,20 +1078,58 @@ fn openai_config(provider: &ProviderRuntime) -> oai::Config {
     config
 }
 
-fn resolve_provider(provider_id: String, model: String) -> Result<ProviderRuntime> {
-    if provider_id != DEFAULT_PROVIDER_ID {
-        bail!("eval currently supports only --provider openai");
+fn anthropic_config(provider: &ProviderRuntime) -> anthropic::Config {
+    let mut config = anthropic::Config::new(provider.api_key.clone());
+    if let Some(base_url) = provider.base_url.clone() {
+        config.base_url = base_url;
     }
-    let api_key =
-        env_var("OPENAI_API_KEY").ok_or_else(|| anyhow!("missing OPENAI_API_KEY (env or .env)"))?;
-    Ok(ProviderRuntime {
-        provider_id,
-        model,
-        api_key,
-        base_url: env_var("OPENAI_BASE_URL"),
-        organization: env_var("OPENAI_ORG_ID"),
-        project: env_var("OPENAI_PROJECT_ID"),
-    })
+    config
+}
+
+fn resolve_provider(provider_id: String, model: Option<String>) -> Result<ProviderRuntime> {
+    match provider_id.as_str() {
+        "openai" => {
+            let api_key = env_var("OPENAI_API_KEY")
+                .ok_or_else(|| anyhow!("missing OPENAI_API_KEY (env or .env)"))?;
+            Ok(ProviderRuntime {
+                provider_id,
+                api_kind: ProviderApiKind::OpenAiResponses,
+                model: model
+                    .or_else(|| env_var("OPENAI_RESPONSES_MODEL"))
+                    .or_else(|| env_var("OPENAI_LIVE_MODEL"))
+                    .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_owned()),
+                api_key,
+                base_url: env_var("OPENAI_BASE_URL"),
+                organization: env_var("OPENAI_ORG_ID"),
+                project: env_var("OPENAI_PROJECT_ID"),
+            })
+        }
+        "anthropic" => {
+            let api_key = env_var("ANTHROPIC_API_KEY")
+                .ok_or_else(|| anyhow!("missing ANTHROPIC_API_KEY (env or .env)"))?;
+            Ok(ProviderRuntime {
+                provider_id,
+                api_kind: ProviderApiKind::AnthropicMessages,
+                model: model
+                    .or_else(|| env_var("ANTHROPIC_MESSAGES_MODEL"))
+                    .or_else(|| env_var("ANTHROPIC_LIVE_MODEL"))
+                    .unwrap_or_else(|| DEFAULT_ANTHROPIC_MODEL.to_owned()),
+                api_key,
+                base_url: env_var("ANTHROPIC_BASE_URL"),
+                organization: None,
+                project: None,
+            })
+        }
+        _ => bail!("eval supports --provider openai or --provider anthropic"),
+    }
+}
+
+fn supports_provider(case: &EvalCase, provider_id: &str) -> bool {
+    case.providers.is_empty()
+        || case
+            .providers
+            .iter()
+            .any(|provider| provider == provider_id)
 }
 
 fn load_dotenvs() {
@@ -1162,7 +1342,29 @@ mod tests {
 
     #[test]
     fn builtin_operation_for_id_resolves_supported_tools() {
-        let operation = builtin_operation_for_id("vfs.grep").expect("tool");
-        assert_eq!(operation, BuiltinToolOperation::Grep);
+        assert_eq!(
+            builtin_operation_for_id("vfs.grep"),
+            Some(BuiltinToolOperation::Grep)
+        );
+        assert_eq!(
+            builtin_operation_for_id("env.list_dir"),
+            Some(BuiltinToolOperation::ListDir)
+        );
+        assert!(builtin_operation_for_id("fs.read_file").is_none());
+    }
+
+    #[test]
+    fn provider_allowlist_defaults_to_both_and_can_narrow() {
+        let mut case: EvalCase = serde_json::from_value(serde_json::json!({
+            "id": "provider-test",
+            "prompt": "test"
+        }))
+        .expect("case");
+        assert!(supports_provider(&case, "openai"));
+        assert!(supports_provider(&case, "anthropic"));
+
+        case.providers = vec!["openai".to_owned()];
+        assert!(supports_provider(&case, "openai"));
+        assert!(!supports_provider(&case, "anthropic"));
     }
 }

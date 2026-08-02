@@ -1,0 +1,31 @@
+{
+  "id": "environment-absolute-list",
+  "description": "List the absolute environment cwd without producing /workspaces/workspaces.",
+  "prompt": "The active environment cwd is /workspaces. Use the ordinary environment directory-listing tool to list the absolute path /workspaces. Then answer exactly ABSOLUTE_LIST=OK.",
+  "setup": {
+    "environment_cwd": "/workspaces",
+    "environment_files": [
+      {
+        "path": "workspaces/alpha.txt",
+        "content": "alpha\n"
+      },
+      {
+        "path": "workspaces/nested/beta.txt",
+        "content": "beta\n"
+      }
+    ]
+  },
+  "expect": {
+    "tool_called": ["env.list_dir"],
+    "assistant_contains": ["ABSOLUTE_LIST=OK"],
+    "tool_output_contains": ["alpha.txt", "nested/"]
+  },
+  "eval": {
+    "runs": 1,
+    "min_pass_rate": 1.0
+  },
+  "run": {
+    "max_tokens": 768,
+    "allowed_tools": ["env.list_dir"]
+  }
+}

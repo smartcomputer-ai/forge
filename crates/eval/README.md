@@ -7,11 +7,16 @@ Prompt-level eval harness for Lightspeed agent workflows.
 - `cargo run -p eval -- list`
 - `cargo run -p eval -- case read-file`
 - `cargo run -p eval -- all --runs 3`
+- `cargo run -p eval -- --provider anthropic all`
 
-`case` and `all` execute live OpenAI Responses API calls and require
-`OPENAI_API_KEY`. `OPENAI_BASE_URL`, `OPENAI_ORG_ID`, and `OPENAI_PROJECT_ID`
-are also honored when present.
+`case` and `all` execute live provider calls. OpenAI Responses runs require
+`OPENAI_API_KEY`; Anthropic Messages runs require `ANTHROPIC_API_KEY`.
+Provider base-URL overrides and the existing provider-specific live-model
+environment variables are honored. Cases may declare a `providers` allowlist
+when a tool is intentionally absent from one provider-native surface.
 
-Each attempt gets a fresh temporary workspace, seeded files, the `test-support`
-runner harness, and an inline builtin tool executor. Assertions cover tool calls,
-tool output text, final assistant text, and workspace file state.
+Each attempt gets separate temporary VFS and active-environment filesystem
+roots, the `test-support` runner harness, and an inline builtin tool executor.
+Case setup and expectations use `files` for VFS and `environment_files` for the
+environment domain. Assertions cover logical tool calls, tool output text,
+final assistant text, and the file state of both domains.

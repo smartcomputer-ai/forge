@@ -1,7 +1,7 @@
 {
   "id": "glob-configs",
   "description": "Match config files with glob.",
-  "prompt": "Call glob with pattern configs/*.toml and path /. Then answer exactly GLOB=OK.",
+  "prompt": "Use the available VFS glob tool with pattern configs/*.toml and search root /. Then answer exactly GLOB=OK.",
   "setup": {
     "files": [
       {

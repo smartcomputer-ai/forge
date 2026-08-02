@@ -1,7 +1,7 @@
 {
   "id": "grep-token",
   "description": "Find a token with grep.",
-  "prompt": "Call grep with pattern needle-7711 and path logs. You may omit case_sensitive. Then answer exactly GREP=needle-7711.",
+  "prompt": "Use the available VFS content-search tool with regex needle-7711 in logs. If the tool supports an output mode, request matching content. Then answer exactly GREP=needle-7711.",
   "setup": {
     "files": [
       {

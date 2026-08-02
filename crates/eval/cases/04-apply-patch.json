@@ -1,6 +1,7 @@
 {
   "id": "apply-patch",
   "description": "Patch an existing file in place.",
+  "providers": ["openai"],
   "prompt": "Call apply_patch with a patch that updates docs/status.txt from 'status: TODO' to 'status: DONE' using *** Begin Patch / *** End Patch format. Then answer exactly PATCH=DONE.",
   "setup": {
     "files": [

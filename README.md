@@ -110,8 +110,8 @@ The full design walk-through is in [docs/design.md](docs/design.md).
 Prerequisites:
 - Rust toolchain with edition 2024 support (e.g. [rustup](https://rustup.rs/))
 - Docker with Compose for the local Postgres, MinIO, and Temporal stack
-- `OPENAI_API_KEY` for live OpenAI-backed chat and eval runs
-- `ANTHROPIC_API_KEY` for live Anthropic client tests
+- `OPENAI_API_KEY` for live OpenAI-backed chat, tests, and eval runs
+- `ANTHROPIC_API_KEY` for live Anthropic tests and eval runs
 
 Easiest is to copy `.env_example` to `.env` and set provider keys there. The
 hosted server worker mode registers real provider adapters and session-mounted

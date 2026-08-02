@@ -659,6 +659,25 @@ mod tests {
     }
 
     #[test]
+    fn claude_code_like_surface_supports_list_dir_in_both_domains() {
+        let vfs_tool = BuiltinTool::vfs(
+            BuiltinToolOperation::ListDir,
+            BuiltinToolSurface::ClaudeCodeLike,
+        );
+        let environment_tool = BuiltinTool::environment(
+            BuiltinToolOperation::ListDir,
+            BuiltinToolSurface::ClaudeCodeLike,
+        );
+
+        assert_eq!(vfs_tool.name_str(), "VfsListDir");
+        assert_eq!(environment_tool.name_str(), "list_dir");
+        for tool in [vfs_tool, environment_tool] {
+            let bundle = tool.spec_bundle(&target(), false).expect("spec bundle");
+            assert!(bundle.documents[1].text_lossy().contains("\"path\""));
+        }
+    }
+
+    #[test]
     fn claude_code_like_surface_rejects_unmapped_operations() {
         let tool = BuiltinTool::environment(
             BuiltinToolOperation::ApplyPatch,

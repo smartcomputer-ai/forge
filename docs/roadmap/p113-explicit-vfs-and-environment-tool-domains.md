@@ -78,6 +78,16 @@ tests and the focused session/config reconciliation test passed. Remaining
 opt-in live suites require unrelated external services or paid provider calls
 and were not run.
 
+The prompt-level eval harness was also extended with independent VFS and active
+environment roots, Anthropic Messages support, provider-specific case
+applicability, same-path read/edit isolation cases, and absolute environment
+cwd regression cases. Live provider results were green:
+
+```bash
+cargo run -p eval -- --provider openai all     # 12/12 passed
+cargo run -p eval -- --provider anthropic all  # 8/8 passed, 4 unsupported-surface cases skipped
+```
+
 ## Summary
 
 VFS and environment filesystems are different products with different

@@ -803,7 +803,14 @@ mod tests {
 
         assert_eq!(
             visible_names(&toolset),
-            vec!["VfsEdit", "VfsGlob", "VfsGrep", "VfsRead", "VfsWrite"]
+            vec![
+                "VfsEdit",
+                "VfsGlob",
+                "VfsGrep",
+                "VfsListDir",
+                "VfsRead",
+                "VfsWrite"
+            ]
         );
     }
 
