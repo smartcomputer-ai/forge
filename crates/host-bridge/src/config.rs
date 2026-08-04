@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     net::SocketAddr,
     path::{Path, PathBuf},
     time::{Duration, SystemTime, UNIX_EPOCH},
@@ -49,6 +50,15 @@ pub struct BridgeArgs {
     #[arg(long, env = "LIGHTSPEED_HOST_BRIDGE_STATE_DIR")]
     pub state_dir: Option<PathBuf>,
 
+    /// Extra target metadata advertised to the environment registry, as
+    /// `key=value` entries. Repeat the flag or comma-separate values.
+    #[arg(
+        long = "metadata",
+        env = "LIGHTSPEED_HOST_BRIDGE_METADATA",
+        value_delimiter = ','
+    )]
+    pub metadata: Vec<String>,
+
     #[arg(long, default_value_t = 10_000)]
     pub heartbeat_interval_ms: u64,
 
@@ -70,6 +80,7 @@ pub struct BridgeConfig {
     pub cwd: PathBuf,
     pub fs_root: PathBuf,
     pub state_dir: PathBuf,
+    pub metadata: BTreeMap<String, String>,
     pub heartbeat_interval: Duration,
     pub lease_ttl: Duration,
     pub read_only_fs: bool,
@@ -125,11 +136,41 @@ impl BridgeArgs {
             cwd,
             fs_root,
             state_dir,
+            metadata: parse_metadata(&self.metadata)?,
             heartbeat_interval: Duration::from_millis(self.heartbeat_interval_ms),
             lease_ttl: Duration::from_millis(self.lease_ttl_ms),
             read_only_fs: self.read_only_fs,
         })
     }
+}
+
+/// Keys the bridge itself stamps on the advertised target; configured
+/// metadata must not shadow them.
+const RESERVED_METADATA_KEYS: &[&str] = &["kind", "fsRoot"];
+
+fn parse_metadata(entries: &[String]) -> Result<BTreeMap<String, String>> {
+    let mut metadata = BTreeMap::new();
+    for entry in entries {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = entry.split_once('=') else {
+            bail!("--metadata entries must be key=value, got: {entry}");
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() {
+            bail!("--metadata keys and values must not be empty, got: {entry}");
+        }
+        if RESERVED_METADATA_KEYS.contains(&key) {
+            bail!("--metadata key is reserved by the bridge: {key}");
+        }
+        if metadata.insert(key.to_owned(), value.to_owned()).is_some() {
+            bail!("--metadata key given more than once: {key}");
+        }
+    }
+    Ok(metadata)
 }
 
 fn native_filesystem_root(path: &Path) -> PathBuf {
@@ -190,6 +231,7 @@ mod tests {
             cwd: Some(cwd),
             fs_root: None,
             state_dir: None,
+            metadata: Vec::new(),
             heartbeat_interval_ms: 10_000,
             lease_ttl_ms: 30_000,
             read_only_fs: false,
@@ -217,5 +259,49 @@ mod tests {
         let config = args.into_config().expect("config");
 
         assert_eq!(config.state_dir, cwd.join("bridge-state"));
+    }
+
+    #[test]
+    fn parses_metadata_entries() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().canonicalize().expect("canonical cwd");
+        let mut args = args(cwd);
+        args.metadata = vec![
+            "lsbot.role=pack-dev".to_owned(),
+            " lsbot.pack = hello ".to_owned(),
+        ];
+
+        let config = args.into_config().expect("config");
+
+        assert_eq!(
+            config.metadata,
+            BTreeMap::from([
+                ("lsbot.role".to_owned(), "pack-dev".to_owned()),
+                ("lsbot.pack".to_owned(), "hello".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_reserved_and_duplicate_metadata() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let cwd = temp.path().canonicalize().expect("canonical cwd");
+
+        for (entries, message) in [
+            (vec!["no-equals".to_owned()], "must be key=value"),
+            (vec!["=value".to_owned()], "must not be empty"),
+            (vec!["key=".to_owned()], "must not be empty"),
+            (vec!["kind=other".to_owned()], "reserved"),
+            (vec!["fsRoot=/tmp".to_owned()], "reserved"),
+            (vec!["a=1".to_owned(), "a=2".to_owned()], "more than once"),
+        ] {
+            let mut args = args(cwd.clone());
+            args.metadata = entries;
+            let error = args.into_config().expect_err("invalid metadata");
+            assert!(
+                error.to_string().contains(message),
+                "expected {message:?} in {error}"
+            );
+        }
     }
 }

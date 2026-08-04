@@ -38,6 +38,7 @@ async fn bridge_serves_controller_attach_and_process_data_plane() {
         cwd: root.clone(),
         fs_root: root.clone(),
         state_dir: root.join(".lightspeed"),
+        metadata: Default::default(),
         heartbeat_interval: Duration::from_millis(10_000),
         lease_ttl: Duration::from_millis(30_000),
         read_only_fs: false,

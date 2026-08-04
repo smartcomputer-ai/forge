@@ -121,13 +121,16 @@ impl BridgeRuntime {
             scope: HostScope::Default,
             capabilities: self.capabilities(),
             default_cwd: Some(self.host_cwd()?),
-            metadata: BTreeMap::from([
-                ("kind".to_owned(), "attached_host".to_owned()),
-                (
+            metadata: {
+                // Configured entries first; the bridge's own keys win.
+                let mut metadata = self.config.metadata.clone();
+                metadata.insert("kind".to_owned(), "attached_host".to_owned());
+                metadata.insert(
                     "fsRoot".to_owned(),
                     self.config.fs_root.to_string_lossy().into_owned(),
-                ),
-            ]),
+                );
+                metadata
+            },
         })
     }
 
