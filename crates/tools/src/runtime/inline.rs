@@ -461,6 +461,7 @@ mod tests {
                     truncated: false,
                 },
                 stderr: StreamOutput::default(),
+                orphaned_descendants: false,
             })
         }
 

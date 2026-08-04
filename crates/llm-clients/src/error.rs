@@ -110,10 +110,13 @@ pub enum ProviderFailureKind {
 }
 
 impl ProviderFailureKind {
+    /// Whether the same provider call may be retried by default. Terminal is
+    /// the safe default: `Other` carries no transient evidence, so it must
+    /// not inherit a retry budget merely because its kind is unknown.
     pub fn default_retryable(self) -> bool {
         matches!(
             self,
-            Self::RateLimit | Self::Server | Self::Timeout | Self::Network | Self::Other
+            Self::RateLimit | Self::Server | Self::Timeout | Self::Network
         )
     }
 }
@@ -202,6 +205,28 @@ pub enum LlmApiError {
     Stream(#[from] StreamError),
     #[error(transparent)]
     Unsupported(#[from] UnsupportedOperation),
+}
+
+impl LlmApiError {
+    /// Whether the exact same provider call may be retried. Configuration,
+    /// decode, and unsupported-operation errors are terminal; transport,
+    /// stream, and HTTP failures carry their own classification.
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::Transport(error) => error.retryable,
+            Self::HttpStatus(error) => error.retryable,
+            Self::Stream(error) => error.retryable,
+            Self::Configuration(_) | Self::Decode(_) | Self::Unsupported(_) => false,
+        }
+    }
+
+    /// Provider-suggested delay before retrying, when advertised.
+    pub fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::HttpStatus(error) => error.retry_after,
+            _ => None,
+        }
+    }
 }
 
 pub fn classify_status(
@@ -307,5 +332,68 @@ mod tests {
             classify_status(400, Some("content_filter"), None, None),
             ProviderFailureKind::ContentFilter
         );
+    }
+
+    #[test]
+    fn temporary_rate_limit_is_retryable_but_quota_429_is_terminal() {
+        let temporary = classify_status(429, Some("rate_limit_exceeded"), None, None);
+        assert_eq!(temporary, ProviderFailureKind::RateLimit);
+        assert!(temporary.default_retryable());
+
+        let quota = classify_status(429, Some("insufficient_quota"), None, None);
+        assert_eq!(quota, ProviderFailureKind::QuotaExceeded);
+        assert!(!quota.default_retryable());
+    }
+
+    #[test]
+    fn unknown_failure_kind_is_terminal_by_default() {
+        assert!(!ProviderFailureKind::Other.default_retryable());
+        assert!(!classify_status(302, None, None, None).default_retryable());
+    }
+
+    #[test]
+    fn retry_disposition_follows_variant_classification() {
+        let overloaded = LlmApiError::from(
+            ProviderHttpError::new(
+                "openai:responses",
+                reqwest::StatusCode::SERVICE_UNAVAILABLE,
+                "Our servers are currently overloaded.",
+                HeaderSnapshot::default(),
+            )
+            .with_provider_details(None, None, None, None, None),
+        );
+        assert!(overloaded.retryable());
+
+        let auth = LlmApiError::from(ProviderHttpError::new(
+            "openai:responses",
+            reqwest::StatusCode::UNAUTHORIZED,
+            "bad key",
+            HeaderSnapshot::default(),
+        ));
+        assert!(!auth.retryable());
+        assert_eq!(auth.retry_after(), None);
+
+        assert!(LlmApiError::from(TransportError::new("connect reset", true)).retryable());
+        assert!(!LlmApiError::from(TransportError::new("tls misconfigured", false)).retryable());
+        assert!(LlmApiError::from(StreamError::new("stream cut", true)).retryable());
+        assert!(!LlmApiError::from(ConfigurationError::new("no base url")).retryable());
+        assert!(!LlmApiError::from(DecodeError::new("bad json")).retryable());
+        assert!(
+            !LlmApiError::from(UnsupportedOperation::new("openai:responses", "images")).retryable()
+        );
+    }
+
+    #[test]
+    fn retry_after_is_surfaced_only_from_http_failures() {
+        let mut error = ProviderHttpError::new(
+            "anthropic:messages",
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            "slow down",
+            HeaderSnapshot::default(),
+        );
+        error.retry_after = Some(Duration::from_secs(7));
+        let error = LlmApiError::from(error);
+        assert!(error.retryable());
+        assert_eq!(error.retry_after(), Some(Duration::from_secs(7)));
     }
 }

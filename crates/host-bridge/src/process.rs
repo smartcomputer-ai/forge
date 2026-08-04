@@ -19,13 +19,24 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::{Child, ChildStdin, Command},
     sync::{Mutex, Notify},
+    task::JoinHandle,
     time::Instant,
 };
+
+use crate::process_group;
 
 #[cfg(not(test))]
 const TERMINAL_PROCESS_RETENTION: Duration = Duration::from_secs(60);
 #[cfg(test)]
 const TERMINAL_PROCESS_RETENTION: Duration = Duration::from_millis(10);
+
+/// How often the exit watcher polls a running child. Readers only notify on
+/// pipe events, and descendants holding the pipes can suppress EOF, so exit
+/// observation must not depend on them.
+#[cfg(not(test))]
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);
+#[cfg(test)]
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Clone)]
 pub struct ProcessManager {
@@ -37,16 +48,19 @@ pub struct ProcessManager {
 struct ProcessEntry {
     state: Mutex<ProcessState>,
     notify: Notify,
+    readers: Mutex<Vec<JoinHandle<()>>>,
 }
 
 struct ProcessState {
     child: Child,
+    pgid: Option<u32>,
     stdin: Option<ChildStdin>,
     redactions: Vec<Vec<u8>>,
     chunks: Vec<ProcessOutputChunk>,
     next_seq: u64,
     exited: bool,
     exit_code: Option<i32>,
+    orphaned_descendants: bool,
     failure: Option<String>,
     cleanup_scheduled: bool,
 }
@@ -106,6 +120,7 @@ impl ProcessManager {
         } else {
             command.stdin(Stdio::null());
         }
+        process_group::spawn_in_own_group(&mut command);
 
         let mut child = command.spawn().map_err(|error| {
             HostError::new(
@@ -113,6 +128,7 @@ impl ProcessManager {
                 format!("spawn process {:?}: {error}", params.argv),
             )
         })?;
+        let pgid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let mut stdin = child.stdin.take();
@@ -142,16 +158,19 @@ impl ProcessManager {
         let entry = Arc::new(ProcessEntry {
             state: Mutex::new(ProcessState {
                 child,
+                pgid,
                 stdin,
                 redactions,
                 chunks: Vec::new(),
                 next_seq: 0,
                 exited: false,
                 exit_code: None,
+                orphaned_descendants: false,
                 failure: None,
                 cleanup_scheduled: false,
             }),
             notify: Notify::new(),
+            readers: Mutex::new(Vec::new()),
         });
 
         {
@@ -165,19 +184,22 @@ impl ProcessManager {
             processes.insert(process_id.to_string(), entry.clone());
         }
 
-        if let Some(stdout) = stdout {
-            tokio::spawn(read_stream(
-                entry.clone(),
-                stdout,
-                ProcessOutputStream::Stdout,
-            ));
-        }
-        if let Some(stderr) = stderr {
-            tokio::spawn(read_stream(
-                entry.clone(),
-                stderr,
-                ProcessOutputStream::Stderr,
-            ));
+        {
+            let mut readers = entry.readers.lock().await;
+            if let Some(stdout) = stdout {
+                readers.push(tokio::spawn(read_stream(
+                    entry.clone(),
+                    stdout,
+                    ProcessOutputStream::Stdout,
+                )));
+            }
+            if let Some(stderr) = stderr {
+                readers.push(tokio::spawn(read_stream(
+                    entry.clone(),
+                    stderr,
+                    ProcessOutputStream::Stderr,
+                )));
+            }
         }
         if let Some(timeout_ms) = params.timeout_ms {
             tokio::spawn(timeout_process(
@@ -185,6 +207,7 @@ impl ProcessManager {
                 Duration::from_millis(timeout_ms),
             ));
         }
+        tokio::spawn(watch_exit(entry.clone()));
 
         Ok(StartProcessResponse { process_id })
     }
@@ -207,7 +230,9 @@ impl ProcessManager {
         loop {
             let (response, schedule_cleanup) = {
                 let mut state = entry.state.lock().await;
-                update_exit_status(&mut state)?;
+                if let Some(pgid) = update_exit_status(&mut state)? {
+                    spawn_group_sweep(entry.clone(), pgid);
+                }
                 let response = response_from_state(&state, after_seq, params.max_bytes);
                 let has_chunks = !response.chunks.is_empty();
                 let done = response.exited || response.closed;
@@ -256,7 +281,9 @@ impl ProcessManager {
             });
         };
         let mut state = entry.state.lock().await;
-        update_exit_status(&mut state)?;
+        if let Some(pgid) = update_exit_status(&mut state)? {
+            spawn_group_sweep(entry.clone(), pgid);
+        }
         if state.exited {
             return Ok(WriteProcessResponse {
                 status: WriteProcessStatus::StdinClosed,
@@ -289,9 +316,14 @@ impl ProcessManager {
             return Ok(TerminateProcessResponse { running: false });
         };
         let mut state = entry.state.lock().await;
-        update_exit_status(&mut state)?;
+        if let Some(pgid) = update_exit_status(&mut state)? {
+            spawn_group_sweep(entry.clone(), pgid);
+        }
         if state.exited {
             return Ok(TerminateProcessResponse { running: false });
+        }
+        if let Some(pgid) = state.pgid {
+            process_group::kill_group(pgid);
         }
         state
             .child
@@ -301,6 +333,7 @@ impl ProcessManager {
         state.exited = true;
         state.exit_code = None;
         state.failure = Some("process terminated".to_owned());
+        spawn_reader_drain(entry.clone());
         entry.notify.notify_waiters();
         Ok(TerminateProcessResponse { running: true })
     }
@@ -339,12 +372,24 @@ impl ProcessManager {
         let processes = self.processes.clone();
         tokio::spawn(async move {
             tokio::time::sleep(TERMINAL_PROCESS_RETENTION).await;
-            let mut processes = processes.lock().await;
-            if processes
-                .get(process_id.as_str())
-                .is_some_and(|current| Arc::ptr_eq(current, &entry))
-            {
-                processes.remove(process_id.as_str());
+            let removed = {
+                let mut processes = processes.lock().await;
+                if processes
+                    .get(process_id.as_str())
+                    .is_some_and(|current| Arc::ptr_eq(current, &entry))
+                {
+                    processes.remove(process_id.as_str());
+                    true
+                } else {
+                    false
+                }
+            };
+            if removed {
+                // Readers stuck on pipes held by escaped descendants must not
+                // keep accumulating output for a pruned process.
+                for reader in entry.readers.lock().await.drain(..) {
+                    reader.abort();
+                }
             }
         });
     }
@@ -384,37 +429,107 @@ where
     }
 }
 
+/// Observes the child's exit independently of pipe events so a silent child
+/// whose descendants hold the pipes open still completes promptly.
+async fn watch_exit(entry: Arc<ProcessEntry>) {
+    loop {
+        tokio::time::sleep(EXIT_POLL_INTERVAL).await;
+        let (done, sweep) = {
+            let mut state = entry.state.lock().await;
+            if state.exited {
+                (true, None)
+            } else {
+                match update_exit_status(&mut state) {
+                    Ok(sweep) => (state.exited, sweep),
+                    Err(_) => (true, None),
+                }
+            }
+        };
+        if let Some(pgid) = sweep {
+            spawn_group_sweep(entry.clone(), pgid);
+        }
+        if done {
+            entry.notify.notify_waiters();
+            return;
+        }
+    }
+}
+
 async fn timeout_process(entry: Arc<ProcessEntry>, timeout: Duration) {
     tokio::time::sleep(timeout).await;
-    let mut state = entry.state.lock().await;
-    if state.exited {
-        return;
+    {
+        let mut state = entry.state.lock().await;
+        if state.exited {
+            return;
+        }
+        if let Some(pgid) = state.pgid {
+            process_group::kill_group(pgid);
+        }
+        let _ = state.child.kill().await;
+        state.exited = true;
+        state.exit_code = None;
+        state.failure = Some("process timed out".to_owned());
     }
-    let _ = state.child.kill().await;
-    state.exited = true;
-    state.exit_code = None;
-    state.failure = Some("process timed out".to_owned());
+    drain_or_abort_readers(&entry).await;
     entry.notify.notify_waiters();
 }
 
-fn update_exit_status(state: &mut ProcessState) -> Result<(), HostError> {
+/// Polls the child for exit. When the exit is newly observed while
+/// descendants are still alive in the process group, returns the group id so
+/// the caller can spawn a sweep.
+fn update_exit_status(state: &mut ProcessState) -> Result<Option<u32>, HostError> {
     if state.exited {
-        return Ok(());
+        return Ok(None);
     }
     match state.child.try_wait() {
         Ok(Some(status)) => {
             state.exited = true;
             state.exit_code = status.code();
             state.stdin.take();
-            Ok(())
+            let sweep = state.pgid.filter(|pgid| process_group::group_alive(*pgid));
+            if sweep.is_some() {
+                state.orphaned_descendants = true;
+            }
+            Ok(sweep)
         }
-        Ok(None) => Ok(()),
+        Ok(None) => Ok(None),
         Err(error) => {
             state.failure = Some(error.to_string());
             Err(HostError::new(
                 HostErrorCode::ProcessFailed,
                 format!("poll process exit: {error}"),
             ))
+        }
+    }
+}
+
+/// Sweeps descendants left in the group after the root process exited, then
+/// drains or abandons the output readers so late orphan output cannot
+/// accumulate unread.
+fn spawn_group_sweep(entry: Arc<ProcessEntry>, pgid: u32) {
+    tokio::spawn(async move {
+        process_group::sweep_group(pgid).await;
+        drain_or_abort_readers(&entry).await;
+        entry.notify.notify_waiters();
+    });
+}
+
+fn spawn_reader_drain(entry: Arc<ProcessEntry>) {
+    tokio::spawn(async move {
+        drain_or_abort_readers(&entry).await;
+        entry.notify.notify_waiters();
+    });
+}
+
+async fn drain_or_abort_readers(entry: &ProcessEntry) {
+    let mut readers = std::mem::take(&mut *entry.readers.lock().await);
+    let deadline = Instant::now() + process_group::OUTPUT_DRAIN_GRACE;
+    for reader in &mut readers {
+        if tokio::time::timeout_at(deadline, &mut *reader)
+            .await
+            .is_err()
+        {
+            reader.abort();
         }
     }
 }
@@ -461,6 +576,7 @@ fn response_from_state(
         exit_code: state.exit_code,
         closed: state.exited,
         failure: state.failure.clone(),
+        orphaned_descendants: state.orphaned_descendants,
     }
 }
 
@@ -646,6 +762,117 @@ mod tests {
             .flat_map(|chunk| chunk.chunk.as_slice().to_vec())
             .collect::<Vec<_>>();
         assert_eq!(stdout, b"hello");
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_pid_file(path: &std::path::Path) -> i32 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(content) = std::fs::read_to_string(path)
+                && let Ok(pid) = content.trim().parse()
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "pid file was not written"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_process_gone(pid: i32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "orphaned descendant {pid} was not terminated"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_terminate_kills_descendants_in_group() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager = ProcessManager::new(root.clone(), root.clone());
+        let process_id = ProcessId::new("proc-group");
+        manager
+            .start_process(StartProcessParams {
+                process_id: process_id.clone(),
+                argv: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "sleep 30 & echo $! > orphan.pid; sleep 30".to_owned(),
+                ],
+                cwd: None,
+                env: BTreeMap::new(),
+                secret_env: BTreeMap::new(),
+                stdin: None,
+                timeout_ms: Some(30_000),
+                tty: false,
+                pipe_stdin: false,
+            })
+            .await
+            .expect("start");
+
+        let pid = wait_for_pid_file(&root.join("orphan.pid")).await;
+        let terminated = manager
+            .terminate_process(TerminateProcessParams {
+                process_id: process_id.clone(),
+            })
+            .await
+            .expect("terminate");
+        assert!(terminated.running);
+        wait_for_process_gone(pid).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_exit_sweeps_orphaned_descendants() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager = ProcessManager::new(root.clone(), root.clone());
+        let process_id = ProcessId::new("proc-orphan");
+        manager
+            .start_process(StartProcessParams {
+                process_id: process_id.clone(),
+                argv: vec![
+                    "/bin/sh".to_owned(),
+                    "-c".to_owned(),
+                    "sleep 30 & echo $! > orphan.pid; exit 0".to_owned(),
+                ],
+                cwd: None,
+                env: BTreeMap::new(),
+                secret_env: BTreeMap::new(),
+                stdin: None,
+                timeout_ms: Some(30_000),
+                tty: false,
+                pipe_stdin: false,
+            })
+            .await
+            .expect("start");
+
+        let output = manager
+            .read_process(ReadProcessParams {
+                process_id,
+                after_seq: None,
+                max_bytes: None,
+                wait_ms: None,
+            })
+            .await
+            .expect("read");
+        assert!(output.exited);
+        assert_eq!(output.exit_code, Some(0));
+        assert!(output.orphaned_descendants);
+
+        wait_for_process_gone(wait_for_pid_file(&root.join("orphan.pid")).await).await;
     }
 
     #[tokio::test(flavor = "current_thread")]

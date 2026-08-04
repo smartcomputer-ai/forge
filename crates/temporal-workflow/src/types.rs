@@ -584,6 +584,26 @@ impl std::fmt::Display for SessionBootstrapPayloadTooLarge {
 
 impl std::error::Error for SessionBootstrapPayloadTooLarge {}
 
+/// Application-failure type name for a transient LLM provider error (P116).
+/// The worker attaches it to a retryable `ApplicationFailure`; the session
+/// workflow recognizes it in an exhausted activity failure's cause chain and
+/// converts it into a terminal failed generation/compaction result.
+pub const LLM_PROVIDER_TRANSIENT_ERROR_TYPE: &str = "llm_provider_transient";
+
+/// Compact versioned detail payload carried by the `llm_provider_transient`
+/// application failure. Session, run, turn, provider, and request identity
+/// are not duplicated here — the workflow retains the original request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmTransientFailureDetails {
+    pub version: u32,
+    pub message: String,
+    pub attempt: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
+}
+
+pub const LLM_TRANSIENT_FAILURE_DETAILS_VERSION: u32 = 1;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PutBlobRequest {
     pub bytes: Vec<u8>,
@@ -655,6 +675,11 @@ pub struct ContextCompactActivityRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvokeBatchActivityRequest {
     pub request: engine::ToolInvocationBatchRequest,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolInvokeCallActivityRequest {
+    pub request: engine::ToolInvocationCallRequest,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

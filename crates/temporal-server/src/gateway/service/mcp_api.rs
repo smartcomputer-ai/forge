@@ -106,6 +106,7 @@ pub(super) fn mcp_tool_from_config_link(
     let auth_ref = auth_ref_for_server(record, grant)?;
     Ok(engine::ToolSpec {
         name: tool_name,
+        execution: engine::ToolExecutionSpec::default(),
         kind: engine::ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
             server_id: record.server_id.as_str().to_owned(),
             server_label: record.default_server_label.clone(),

@@ -35,7 +35,9 @@ use crate::{
     },
     fs::{
         CopyOptions, CreateDirectoryOptions, FileAccessPolicy, FileMetadata, FileSystem, FsError,
-        FsPath, FsResult, FsToolContext, ReadDirectoryEntry, RemoveOptions,
+        FsGlobRequest, FsGlobResponse, FsPath, FsRangedRead, FsResult, FsSearchStop,
+        FsTextSearchMatch, FsTextSearchRequest, FsTextSearchResponse, FsToolContext,
+        ReadDirectoryEntry, RemoveOptions, ranged_read_from_full,
     },
 };
 
@@ -85,6 +87,9 @@ where
         RemoteHostFileSystem {
             client: self.client.clone(),
             access_policy: access_policy_for_capabilities(&self.capabilities),
+            filesystem_search: self.capabilities.filesystem_search,
+            filesystem_glob: self.capabilities.filesystem_glob,
+            filesystem_ranged_read: self.capabilities.filesystem_ranged_read,
         }
     }
 
@@ -144,6 +149,9 @@ where
 pub struct RemoteHostFileSystem<T> {
     client: Arc<AsyncMutex<HostDataClient<T>>>,
     access_policy: FileAccessPolicy,
+    filesystem_search: bool,
+    filesystem_glob: bool,
+    filesystem_ranged_read: bool,
 }
 
 #[async_trait]
@@ -162,10 +170,44 @@ where
             .await
             .read_file(&remote_fs::ReadFileParams {
                 path: host_path(path)?,
+                offset: None,
+                max_bytes: None,
             })
             .await
             .map_err(|error| map_fs_error(error, path))?;
         Ok(response.data.into_inner())
+    }
+
+    async fn read_file_range(
+        &self,
+        path: &FsPath,
+        offset: u64,
+        max_bytes: Option<u64>,
+    ) -> FsResult<FsRangedRead> {
+        if !self.filesystem_ranged_read {
+            let bytes = self.read_file(path).await?;
+            return Ok(ranged_read_from_full(bytes, offset, max_bytes));
+        }
+        let response = self
+            .client
+            .lock()
+            .await
+            .read_file(&remote_fs::ReadFileParams {
+                path: host_path(path)?,
+                offset: Some(offset),
+                max_bytes,
+            })
+            .await
+            .map_err(|error| map_fs_error(error, path))?;
+        let bytes = response.data.into_inner();
+        let file_size = response
+            .file_size
+            .unwrap_or_else(|| offset.saturating_add(bytes.len() as u64));
+        Ok(FsRangedRead {
+            file_size,
+            truncated: response.truncated,
+            bytes,
+        })
     }
 
     async fn write_file(&self, path: &FsPath, contents: Vec<u8>) -> FsResult<()> {
@@ -269,6 +311,98 @@ where
             .await
             .map_err(|error| map_fs_error(error, destination_path))?;
         Ok(())
+    }
+
+    async fn search_text(
+        &self,
+        request: &FsTextSearchRequest,
+    ) -> FsResult<Option<FsTextSearchResponse>> {
+        if !self.filesystem_search {
+            return Ok(None);
+        }
+        let params = remote_fs::SearchTextParams {
+            root: host_path(&request.root)?,
+            pattern: request.pattern.clone(),
+            include: request.include.clone(),
+            case_sensitive: request.case_sensitive,
+            max_depth: request
+                .max_depth
+                .map(|depth| u32::try_from(depth).unwrap_or(u32::MAX)),
+            limits: remote_fs::SearchTextLimits {
+                max_matches: request.limits.max_matches,
+                max_files: request.limits.max_files,
+                max_bytes: request.limits.max_bytes,
+                max_duration_ms: request.limits.max_duration_ms,
+            },
+        };
+        let response = self
+            .client
+            .lock()
+            .await
+            .search_text(&params)
+            .await
+            .map_err(|error| map_fs_error(error, &request.root))?;
+        let matches = response
+            .matches
+            .into_iter()
+            .map(|item| {
+                Ok(FsTextSearchMatch {
+                    path: FsPath::new(item.path.as_str()).map_err(FsError::from)?,
+                    line_number: item.line_number,
+                    line: item.line,
+                })
+            })
+            .collect::<FsResult<Vec<_>>>()?;
+        Ok(Some(FsTextSearchResponse {
+            matches,
+            files_searched: response.files_searched,
+            bytes_searched: response.bytes_searched,
+            stopped: response.stopped.map(|stop| match stop {
+                remote_fs::SearchTextStop::MatchLimit => FsSearchStop::MatchLimit,
+                remote_fs::SearchTextStop::FileLimit => FsSearchStop::FileLimit,
+                remote_fs::SearchTextStop::ByteLimit => FsSearchStop::ByteLimit,
+                remote_fs::SearchTextStop::TimeLimit => FsSearchStop::TimeLimit,
+            }),
+        }))
+    }
+
+    async fn glob_files(&self, request: &FsGlobRequest) -> FsResult<Option<FsGlobResponse>> {
+        if !self.filesystem_glob {
+            return Ok(None);
+        }
+        let params = remote_fs::GlobFilesParams {
+            root: host_path(&request.root)?,
+            pattern: request.pattern.clone(),
+            max_depth: request
+                .max_depth
+                .map(|depth| u32::try_from(depth).unwrap_or(u32::MAX)),
+            limits: remote_fs::GlobFilesLimits {
+                max_matches: request.limits.max_matches,
+                max_entries: request.limits.max_entries,
+                max_duration_ms: request.limits.max_duration_ms,
+            },
+        };
+        let response = self
+            .client
+            .lock()
+            .await
+            .glob_files(&params)
+            .await
+            .map_err(|error| map_fs_error(error, &request.root))?;
+        let matches = response
+            .matches
+            .into_iter()
+            .map(|path| FsPath::new(path.as_str()).map_err(FsError::from))
+            .collect::<FsResult<Vec<_>>>()?;
+        Ok(Some(FsGlobResponse {
+            matches,
+            entries_visited: response.entries_visited,
+            stopped: response.stopped.map(|stop| match stop {
+                remote_fs::GlobFilesStop::MatchLimit => FsSearchStop::MatchLimit,
+                remote_fs::GlobFilesStop::EntryLimit => FsSearchStop::FileLimit,
+                remote_fs::GlobFilesStop::TimeLimit => FsSearchStop::TimeLimit,
+            }),
+        }))
     }
 }
 
@@ -408,6 +542,7 @@ impl<T> RemoteProcessExecutor<T> {
             exit_code: response.exit_code,
             stdout,
             stderr,
+            orphaned_descendants: response.orphaned_descendants,
         }
     }
 

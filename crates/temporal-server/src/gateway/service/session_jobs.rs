@@ -659,6 +659,7 @@ fn api_job_summary(summary: HostJobSummary) -> SessionJobSummaryView {
         started_at_ms: summary.started_at_ms,
         finished_at_ms: summary.finished_at_ms,
         exit_code: summary.exit_code,
+        orphaned_descendants: summary.orphaned_descendants,
         failure: summary.failure,
         queue_key: summary.queue_key,
     }

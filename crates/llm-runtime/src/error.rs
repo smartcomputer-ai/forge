@@ -32,8 +32,14 @@ pub enum LlmAdapterError {
     #[error("failed to resolve provider API key: {message}")]
     ProviderKeyResolution { message: String },
 
-    #[error("provider call failed: {message}")]
-    Provider { message: String },
+    /// A provider client call failed. The typed client error is retained so
+    /// the runtime can preserve its retry disposition instead of flattening
+    /// classification into a string.
+    #[error("provider call failed: {source}")]
+    Provider {
+        #[source]
+        source: llm_clients::LlmApiError,
+    },
 }
 
 impl From<engine::storage::BlobStoreError> for LlmAdapterError {
@@ -46,8 +52,6 @@ impl From<engine::storage::BlobStoreError> for LlmAdapterError {
 
 impl From<llm_clients::LlmApiError> for LlmAdapterError {
     fn from(error: llm_clients::LlmApiError) -> Self {
-        Self::Provider {
-            message: error.to_string(),
-        }
+        Self::Provider { source: error }
     }
 }

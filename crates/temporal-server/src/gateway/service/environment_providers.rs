@@ -427,6 +427,12 @@ fn registry_host_capabilities(value: HostCapabilitiesView) -> HostCapabilities {
     HostCapabilities {
         filesystem_read: value.filesystem_read,
         filesystem_write: value.filesystem_write,
+        // Not part of the registry view: native search/glob/ranged-read
+        // support is advertised live by the host at data-plane handshake,
+        // which is what the runtime trusts.
+        filesystem_search: false,
+        filesystem_glob: false,
+        filesystem_ranged_read: false,
         process_start: value.process_start,
         process_stdin: value.process_stdin,
         process_terminate: value.process_terminate,

@@ -61,11 +61,16 @@ pub fn is_environment_selection_tool(tool_name: &ToolName) -> bool {
 }
 
 pub fn environment_control_tool_bundles(selection_tools: bool) -> ToolResult<Vec<ToolSpecBundle>> {
+    let read_execution =
+        engine::ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, true);
+    let selection_execution =
+        engine::ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, false);
     let mut tools = vec![(
         ENVIRONMENT_READ_TOOL_NAME,
         "Read live details for an environment. Omit environment_id to inspect this session's active environment; provide a known id to inspect another environment allowed by the session.",
         optional_environment_id_schema(),
         ToolParallelism::ParallelSafe,
+        read_execution,
     )];
     if selection_tools {
         tools.extend([
@@ -74,25 +79,28 @@ pub fn environment_control_tool_bundles(selection_tools: bool) -> ToolResult<Vec
                 "List the live universe environments allowed by this session. Use this before activation when you do not know the environment id.",
                 list_schema(),
                 ToolParallelism::ParallelSafe,
+                read_execution,
             ),
             (
                 ENVIRONMENT_ACTIVATE_TOOL_NAME,
                 "Select one allowed, ready universe environment as this session's active environment. Environment-dependent tools must be called in a later turn.",
                 required_environment_id_schema(),
                 ToolParallelism::Exclusive,
+                selection_execution,
             ),
             (
                 ENVIRONMENT_DEACTIVATE_TOOL_NAME,
                 "Clear this session's active environment without closing or changing the universe environment.",
                 empty_schema(),
                 ToolParallelism::Exclusive,
+                selection_execution,
             ),
         ]);
     }
     tools
         .into_iter()
-        .map(|(name, description, schema, parallelism)| {
-            function_bundle(name, description, schema, parallelism)
+        .map(|(name, description, schema, parallelism, execution)| {
+            function_bundle(name, description, schema, parallelism, execution)
         })
         .collect()
 }
@@ -130,6 +138,7 @@ fn function_bundle(
     description: &'static str,
     schema: Value,
     parallelism: ToolParallelism,
+    execution: engine::ToolExecutionSpec,
 ) -> ToolResult<ToolSpecBundle> {
     let description = ToolDocument::text("text/plain; charset=utf-8", description);
     let input_schema = ToolDocument::text(
@@ -149,6 +158,7 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism,
+            execution,
         },
         documents: vec![description, input_schema],
     })

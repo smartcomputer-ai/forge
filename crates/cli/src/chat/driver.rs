@@ -1305,6 +1305,7 @@ fn tool_status(status: ToolItemStatus) -> ChatProgressStatus {
     match status {
         ToolItemStatus::Requested | ToolItemStatus::Running => ChatProgressStatus::Running,
         ToolItemStatus::Succeeded => ChatProgressStatus::Succeeded,
+        ToolItemStatus::Cancelled => ChatProgressStatus::Cancelled,
         ToolItemStatus::Failed | ToolItemStatus::Unavailable => ChatProgressStatus::Failed,
     }
 }
@@ -1761,6 +1762,14 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn cancelled_tool_status_is_rendered_neutrally() {
+        assert_eq!(
+            tool_status(ToolItemStatus::Cancelled),
+            ChatProgressStatus::Cancelled
+        );
+    }
 
     #[test]
     fn project_tool_chains_preserves_lightspeed_tool_call_details() {

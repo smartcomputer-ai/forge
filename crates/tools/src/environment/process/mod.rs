@@ -89,6 +89,10 @@ pub struct ProcessOutput {
     pub exit_code: Option<i32>,
     pub stdout: StreamOutput,
     pub stderr: StreamOutput,
+    /// True when the process exited while descendants it spawned were still
+    /// running; the host terminated them best-effort.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphaned_descendants: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

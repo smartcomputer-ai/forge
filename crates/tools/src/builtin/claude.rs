@@ -22,7 +22,7 @@ use super::{
     BuiltinToolContext, BuiltinToolOperation, canonical,
     shared::{
         invalid_request, nullable_integer, nullable_string, object, optional_boolean,
-        optional_enum, process_visible_output, string, visible_with_truncation,
+        optional_enum, process_visible_output, string, visible_with_search_stop,
     },
 };
 
@@ -276,7 +276,7 @@ pub(super) async fn invoke_json(
                 offset,
                 head_limit,
             );
-            encode_output(&result, visible_with_truncation(visible, result.truncated))
+            encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
         BuiltinToolOperation::Glob => {
             let args: ClaudeCodeGlobArgs = decode_args(arguments)?;
@@ -288,7 +288,7 @@ pub(super) async fn invoke_json(
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n");
-            encode_output(&result, visible_with_truncation(visible, result.truncated))
+            encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
         BuiltinToolOperation::RunProcess => {
             let args: ClaudeCodeBashArgs = decode_args(arguments)?;

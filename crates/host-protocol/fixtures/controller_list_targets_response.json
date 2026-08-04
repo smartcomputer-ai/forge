@@ -3,6 +3,9 @@
     {
       "capabilities": {
         "filesystemRead": true,
+        "filesystemSearch": true,
+        "filesystemGlob": true,
+        "filesystemRangedRead": true,
         "filesystemWrite": true,
         "jobCancel": true,
         "jobDependencies": true,

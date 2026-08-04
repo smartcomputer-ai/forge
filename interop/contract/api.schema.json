@@ -8683,6 +8683,10 @@
         "namespace": {
           "type": "string"
         },
+        "orphanedDescendants": {
+          "description": "True when the job's root process exited while descendants it spawned\nwere still running; the host terminated them best-effort at job\ncompletion.",
+          "type": "boolean"
+        },
         "queueKey": {
           "type": [
             "string",
@@ -9537,6 +9541,7 @@
         "running",
         "succeeded",
         "failed",
+        "cancelled",
         "unavailable"
       ],
       "type": "string"

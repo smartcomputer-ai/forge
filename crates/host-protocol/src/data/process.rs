@@ -64,6 +64,11 @@ pub struct ReadProcessResponse {
     pub closed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
+    /// True when the process exited while descendants it spawned were still
+    /// running. The host terminates them best-effort once the exit is
+    /// observed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphaned_descendants: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

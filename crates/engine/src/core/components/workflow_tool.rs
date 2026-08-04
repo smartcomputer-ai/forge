@@ -2286,6 +2286,7 @@ mod tests {
             semantic_type: "lightspeed.work.report.v1".to_owned(),
             tool: ToolSpec {
                 name: ToolName::new(tool_name),
+                execution: Default::default(),
                 kind: ToolKind::Function(FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: BlobRef::from_bytes(b"input schema"),

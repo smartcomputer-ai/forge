@@ -135,6 +135,10 @@ pub fn web_fetch_tool_bundle(config: &WebFetchToolConfig) -> ToolResult<Option<T
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::ParallelSafe,
+            execution: engine::ToolExecutionSpec::new(
+                engine::ToolExecutionClass::RemoteInteractive,
+                true,
+            ),
         },
         documents: vec![description, input_schema],
     }))

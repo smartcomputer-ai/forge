@@ -173,6 +173,7 @@ fn retained_context_entry(index: usize, item: &ContextEntryInput) -> ContextEntr
 fn weather_tool_spec(schema_ref: BlobRef, description_ref: BlobRef) -> engine::ToolSpec {
     engine::ToolSpec {
         name: ToolName::new("get_weather"),
+        execution: Default::default(),
         kind: engine::ToolKind::Function(engine::FunctionToolSpec {
             description_ref: Some(description_ref),
             input_schema_ref: schema_ref,

@@ -51,7 +51,8 @@ pub async fn invoke_run_process(
             stdin: args.stdin.map(String::into_bytes),
             timeout_ms: Some(
                 args.timeout_ms
-                    .unwrap_or(ctx.limits.default_process_timeout_ms),
+                    .unwrap_or(ctx.limits.default_process_timeout_ms)
+                    .min(ctx.limits.max_process_timeout_ms),
             ),
             yield_time_ms: args.yield_time_ms,
             max_output_bytes: Some(
@@ -114,6 +115,7 @@ mod tests {
                     truncated: false,
                 },
                 stderr: StreamOutput::default(),
+                orphaned_descendants: false,
             })
         }
 

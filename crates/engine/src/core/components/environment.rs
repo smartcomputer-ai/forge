@@ -53,6 +53,13 @@ pub fn environment_deactivate_effect() -> ToolEffect {
     }
 }
 
+pub(crate) fn is_environment_selection_effect(effect: &ToolEffect) -> bool {
+    matches!(
+        effect.kind.as_str(),
+        ENVIRONMENT_ACTIVATE_EFFECT_KIND | ENVIRONMENT_DEACTIVATE_EFFECT_KIND
+    )
+}
+
 pub(crate) fn environment_event_from_effect(
     effect: &ToolEffect,
 ) -> Result<Option<EnvironmentEvent>, DomainError> {

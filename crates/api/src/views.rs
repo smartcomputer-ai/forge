@@ -296,5 +296,6 @@ pub enum ToolItemStatus {
     Running,
     Succeeded,
     Failed,
+    Cancelled,
     Unavailable,
 }

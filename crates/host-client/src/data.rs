@@ -3,9 +3,9 @@
 use host_protocol::data::{
     fs::{
         CopyParams, CopyResponse, CreateDirectoryParams, CreateDirectoryResponse,
-        GetMetadataParams, GetMetadataResponse, ReadDirectoryParams, ReadDirectoryResponse,
-        ReadFileParams, ReadFileResponse, RemoveParams, RemoveResponse, WriteFileParams,
-        WriteFileResponse,
+        GetMetadataParams, GetMetadataResponse, GlobFilesParams, GlobFilesResponse,
+        ReadDirectoryParams, ReadDirectoryResponse, ReadFileParams, ReadFileResponse, RemoveParams,
+        RemoveResponse, SearchTextParams, SearchTextResponse, WriteFileParams, WriteFileResponse,
     },
     handshake::{InitializeParams, InitializeResponse, InitializedParams},
     jobs::{
@@ -13,11 +13,12 @@ use host_protocol::data::{
         ReadJobsResponse, StartJobsParams, StartJobsResponse,
     },
     methods::{
-        FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD,
-        FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD, FS_WRITE_FILE_METHOD,
-        INITIALIZE_METHOD, INITIALIZED_METHOD, JOB_CANCEL_METHOD, JOB_LIST_METHOD, JOB_READ_METHOD,
-        JOB_START_METHOD, PROCESS_READ_METHOD, PROCESS_RESIZE_METHOD, PROCESS_START_METHOD,
-        PROCESS_TERMINATE_METHOD, PROCESS_WRITE_METHOD,
+        FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD, FS_GLOB_FILES_METHOD,
+        FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD, FS_SEARCH_TEXT_METHOD,
+        FS_WRITE_FILE_METHOD, INITIALIZE_METHOD, INITIALIZED_METHOD, JOB_CANCEL_METHOD,
+        JOB_LIST_METHOD, JOB_READ_METHOD, JOB_START_METHOD, PROCESS_READ_METHOD,
+        PROCESS_RESIZE_METHOD, PROCESS_START_METHOD, PROCESS_TERMINATE_METHOD,
+        PROCESS_WRITE_METHOD,
     },
     process::{
         ReadProcessParams, ReadProcessResponse, ResizeProcessParams, ResizeProcessResponse,
@@ -106,6 +107,20 @@ where
 
     pub async fn copy(&mut self, params: &CopyParams) -> HostClientResult<CopyResponse> {
         self.rpc.request(FS_COPY_METHOD, params).await
+    }
+
+    pub async fn search_text(
+        &mut self,
+        params: &SearchTextParams,
+    ) -> HostClientResult<SearchTextResponse> {
+        self.rpc.request(FS_SEARCH_TEXT_METHOD, params).await
+    }
+
+    pub async fn glob_files(
+        &mut self,
+        params: &GlobFilesParams,
+    ) -> HostClientResult<GlobFilesResponse> {
+        self.rpc.request(FS_GLOB_FILES_METHOD, params).await
     }
 
     pub async fn start_process(

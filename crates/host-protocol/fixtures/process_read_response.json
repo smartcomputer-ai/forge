@@ -14,5 +14,6 @@
   "closed": true,
   "exited": true,
   "exitCode": 0,
-  "nextSeq": 3
+  "nextSeq": 3,
+  "orphanedDescendants": true
 }

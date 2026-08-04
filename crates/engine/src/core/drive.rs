@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-const AWAIT_TOOL_NAME: &str = "await";
+pub const AWAIT_TOOL_NAME: &str = "await";
 
 use crate::{
     AwaitMode, AwaitSpec, BlobRef, CodecError, CommandError, ContextCompactionRequest,
@@ -186,6 +186,39 @@ impl CoreAgentDrive {
         let proposals =
             tool_batch_result_proposals_for_session(&self.session_id, &self.state, result)?;
         self.append_action(proposals, observed_at_ms)
+    }
+
+    /// Accept one terminal call result of the active tool batch.
+    ///
+    /// Per-call completion is the engine contract for progressive batches:
+    /// each terminal result appends durably on its own, a failed call never
+    /// re-runs a completed sibling, and the batch completes when its last
+    /// call turns terminal.
+    pub fn resume_tool_call(
+        &mut self,
+        batch_id: ToolBatchId,
+        result: ToolInvocationResult,
+        observed_at_ms: u64,
+    ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        let active_run = self.state.runs.active.as_ref().ok_or_else(|| {
+            DomainError::InvariantViolation("tool call result requires an active run".into())
+        })?;
+        if active_run.active_tool_batch_id != Some(batch_id) {
+            return Err(DomainError::InvariantViolation(
+                "tool call result does not match active tool batch".into(),
+            )
+            .into());
+        }
+        let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
+            DomainError::InvariantViolation(format!("tool batch {} is missing", batch_id))
+        })?;
+        let result = ToolInvocationBatchResult {
+            run_id: batch.run_id,
+            turn_id: batch.turn_id,
+            batch_id: batch.batch_id,
+            results: vec![result],
+        };
+        self.resume_tool_batch(result, observed_at_ms)
     }
 
     pub fn resume_tool_batch_outcome(
@@ -1413,7 +1446,12 @@ fn tool_call_completed_proposals(
             if let Some(event) =
                 crate::core::components::environment::environment_event_from_effect(effect)?
             {
-                if saw_environment_selection_effect {
+                // A sibling call completed earlier (per-call resumes) may
+                // already have selected an environment; the exclusivity
+                // invariant spans the whole batch, not one result set.
+                if saw_environment_selection_effect
+                    || batch_has_terminal_environment_selection(state, result.batch_id)
+                {
                     return Err(DomainError::InvariantViolation(
                         "tool batch produced more than one environment selection effect".to_owned(),
                     ));
@@ -1700,6 +1738,24 @@ fn tool_call_completed_proposals(
         proposals.extend(joined_tool_proposals);
     }
     Ok(proposals)
+}
+
+fn batch_has_terminal_environment_selection(state: &CoreAgentState, batch_id: ToolBatchId) -> bool {
+    state
+        .runs
+        .active
+        .as_ref()
+        .and_then(|active_run| active_run.tool_batches.get(&batch_id))
+        .is_some_and(|batch| {
+            batch.calls.iter().any(|call_state| {
+                call_state.result.as_ref().is_some_and(|result| {
+                    result
+                        .effects
+                        .iter()
+                        .any(crate::core::components::environment::is_environment_selection_effect)
+                })
+            })
+        })
 }
 
 fn validate_tool_batch_result(result: &ToolInvocationBatchResult) -> Result<(), DomainError> {
@@ -2050,6 +2106,7 @@ mod tests {
     fn test_tool_spec(tool_name: &str) -> ToolSpec {
         ToolSpec {
             name: ToolName::new(tool_name),
+            execution: Default::default(),
             kind: ToolKind::Function(FunctionToolSpec {
                 description_ref: None,
                 input_schema_ref: BlobRef::from_bytes(br#"{"type":"object"}"#),
@@ -6475,5 +6532,199 @@ mod tests {
             panic!("expected command rejection, got: {unknown:?}");
         };
         assert_eq!(rejection.kind, CommandRejectionKind::UnknownReference);
+    }
+
+    fn install_test_tools(drive: &mut CoreAgentDrive, tool_names: &[&str]) {
+        let tools = tool_names
+            .iter()
+            .map(|tool_name| {
+                let spec = test_tool_spec(tool_name);
+                (spec.name.clone(), spec)
+            })
+            .collect();
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::ReplaceTools {
+                    expected_revision: Some(drive.state().tooling.revision),
+                    tools,
+                },
+                15,
+            )
+            .expect("replace tools");
+        commit_action(drive, action);
+    }
+
+    fn two_call_tool_batch(
+        drive: &mut CoreAgentDrive,
+        session_config: SessionConfig,
+    ) -> ToolInvocationBatchRequest {
+        open_session_with_config(drive, session_config);
+        install_test_tools(drive, &["tool_a", "tool_b"]);
+        request_run(drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(drive);
+        drive_until_tool_batch_request_with_calls(
+            drive,
+            generation,
+            vec![
+                ObservedToolCall {
+                    call_id: crate::ToolCallId::new("call_a"),
+                    tool_name: ToolName::new("tool_a"),
+                    provider_kind: None,
+                    arguments_ref: BlobRef::from_bytes(br#"{"a":true}"#),
+                    native_call_ref: None,
+                },
+                ObservedToolCall {
+                    call_id: crate::ToolCallId::new("call_b"),
+                    tool_name: ToolName::new("tool_b"),
+                    provider_kind: None,
+                    arguments_ref: BlobRef::from_bytes(br#"{"b":true}"#),
+                    native_call_ref: None,
+                },
+            ],
+        )
+    }
+
+    fn per_call_result(
+        call_id: &crate::ToolCallId,
+        status: ToolCallStatus,
+        effects: Vec<ToolEffect>,
+    ) -> ToolInvocationResult {
+        let content_ref = BlobRef::from_bytes(call_id.as_str().as_bytes());
+        ToolInvocationResult {
+            call_id: call_id.clone(),
+            status,
+            output_ref: (status == ToolCallStatus::Succeeded).then(|| content_ref.clone()),
+            model_visible_context_entries: vec![ToolInvocationResult::tool_result_context_entry(
+                call_id,
+                status,
+                content_ref.clone(),
+            )],
+            error_ref: (status != ToolCallStatus::Succeeded).then_some(content_ref),
+            effects,
+        }
+    }
+
+    #[test]
+    fn per_call_resumes_complete_a_batch_progressively() {
+        let session_id = SessionId::new("session-per-call");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = two_call_tool_batch(&mut drive, config());
+        assert_eq!(request.calls.len(), 2);
+
+        // First call completes on its own; its sibling stays pending and the
+        // batch stays active.
+        let first = drive
+            .resume_tool_call(
+                request.batch_id,
+                per_call_result(
+                    &request.calls[0].call_id,
+                    ToolCallStatus::Succeeded,
+                    Vec::new(),
+                ),
+                121,
+            )
+            .expect("resume first call");
+        commit_action(&mut drive, first);
+        let active_run = drive.state().runs.active.as_ref().expect("active run");
+        let batch = active_run
+            .tool_batches
+            .get(&request.batch_id)
+            .expect("active batch");
+        assert_eq!(batch.calls[0].status, ToolCallStatus::Succeeded);
+        assert_eq!(batch.calls[1].status, ToolCallStatus::Pending);
+        assert_eq!(active_run.active_tool_batch_id, Some(request.batch_id));
+
+        // A duplicate completion for the first call is rejected without
+        // touching the sibling.
+        drive
+            .resume_tool_call(
+                request.batch_id,
+                per_call_result(
+                    &request.calls[0].call_id,
+                    ToolCallStatus::Succeeded,
+                    Vec::new(),
+                ),
+                122,
+            )
+            .expect_err("completed call cannot complete again");
+
+        // The second call fails terminally; the completed sibling result is
+        // untouched and the batch completes once every call is terminal.
+        let second = drive
+            .resume_tool_call(
+                request.batch_id,
+                per_call_result(
+                    &request.calls[1].call_id,
+                    ToolCallStatus::Failed,
+                    Vec::new(),
+                ),
+                123,
+            )
+            .expect("resume second call");
+        commit_action(&mut drive, second);
+        for observed_at_ms in 124..140 {
+            let action = drive.next_action(observed_at_ms, 64).expect("next action");
+            if matches!(
+                action,
+                CoreAgentAction::GenerateLlm { .. } | CoreAgentAction::Idle
+            ) {
+                break;
+            }
+            commit_action(&mut drive, action);
+        }
+        let active_run = drive.state().runs.active.as_ref().expect("active run");
+        let completed = active_run
+            .completed_tool_batches
+            .get(&request.batch_id)
+            .expect("completed batch");
+        assert_eq!(completed.results.len(), 2);
+        assert_eq!(completed.results[0].status, ToolCallStatus::Succeeded);
+        assert_eq!(completed.results[1].status, ToolCallStatus::Failed);
+        assert_ne!(active_run.active_tool_batch_id, Some(request.batch_id));
+    }
+
+    #[test]
+    fn per_call_environment_selection_stays_exclusive_across_resumes() {
+        let session_id = SessionId::new("session-per-call-environment");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let mut session_config = config();
+        session_config.features.environments = Some(crate::EnvironmentsFeature {
+            selection_tools: true,
+            ..crate::EnvironmentsFeature::default()
+        });
+        let request = two_call_tool_batch(&mut drive, session_config);
+        let activate_effect =
+            crate::environment_activate_effect(&crate::EnvironmentId::new("environment-a"));
+
+        let first = drive
+            .resume_tool_call(
+                request.batch_id,
+                per_call_result(
+                    &request.calls[0].call_id,
+                    ToolCallStatus::Succeeded,
+                    vec![activate_effect.clone()],
+                ),
+                121,
+            )
+            .expect("first selection effect is admitted");
+        commit_action(&mut drive, first);
+
+        // The exclusivity invariant spans the whole batch: a second selection
+        // effect arriving through a later per-call resume must be rejected.
+        let error = drive
+            .resume_tool_call(
+                request.batch_id,
+                per_call_result(
+                    &request.calls[1].call_id,
+                    ToolCallStatus::Succeeded,
+                    vec![activate_effect],
+                ),
+                122,
+            )
+            .expect_err("second selection effect in the same batch is rejected");
+        assert!(matches!(
+            error,
+            CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
+        ));
     }
 }

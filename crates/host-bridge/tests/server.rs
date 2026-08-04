@@ -16,10 +16,18 @@ use host_protocol::{
     },
     shared::{CURRENT_PROTOCOL_VERSION, HostScope, JobId, ProcessId},
 };
+use std::sync::Arc;
+
+use engine::storage::{BlobStore, InMemoryBlobStore};
 use tokio::net::TcpListener;
 use tools::{
-    fs::FsPath,
-    host_protocol::{HostDataConformanceOptions, assert_host_data_conformance},
+    fs::{
+        FsPath,
+        tools::{GlobArgs, GrepArgs, invoke_glob, invoke_grep},
+    },
+    host_protocol::{
+        HostDataConformanceOptions, RemoteHostConnection, assert_host_data_conformance,
+    },
 };
 
 #[tokio::test(flavor = "current_thread")]
@@ -166,6 +174,74 @@ async fn bridge_serves_controller_attach_and_process_data_plane() {
         .collect::<Vec<_>>();
     assert_eq!(stdout, b"hello");
     assert_eq!(output.exit_code, Some(0));
+
+    // Native text search end to end: the handshake advertises
+    // filesystem_search, and the real grep tool routes through the host's
+    // fs/searchText operation instead of per-file transfer.
+    std::fs::write(
+        root.join("needle.rs"),
+        "fn needle_target() {}\nfn other() {}\n",
+    )
+    .expect("write needle");
+    let mut search_data = HostDataClient::connect(
+        &attached.connection.endpoint,
+        WebSocketConnectOptions::default(),
+    )
+    .await
+    .expect("connect search data");
+    let search_init = search_data
+        .initialize(&InitializeParams {
+            protocol_version: CURRENT_PROTOCOL_VERSION,
+            client_name: "host-bridge-search".to_owned(),
+            scope: HostScope::Default,
+            resume_connection_id: None,
+        })
+        .await
+        .expect("search initialize");
+    assert!(search_init.capabilities.filesystem_search);
+    search_data
+        .initialized(&InitializedParams {})
+        .await
+        .expect("search initialized");
+    let connection = RemoteHostConnection::new(search_data, search_init.capabilities)
+        .with_cwd(FsPath::new(root.to_string_lossy()).expect("search cwd"));
+    let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+    let (fs_ctx, _env_ctx) = connection.into_contexts(blobs);
+    let grep = invoke_grep(
+        &fs_ctx,
+        GrepArgs {
+            pattern: "needle_target".to_owned(),
+            path: None,
+            include: Some("*.rs".to_owned()),
+            case_sensitive: true,
+            max_depth: None,
+            limit: None,
+        },
+    )
+    .await
+    .expect("grep over bridge");
+    assert_eq!(grep.matches.len(), 1);
+    assert!(grep.matches[0].path.as_str().ends_with("needle.rs"));
+    assert_eq!(grep.matches[0].line_number, 1);
+    assert!(grep.stopped.is_none());
+    assert!(!grep.truncated);
+
+    // Native enumeration end to end: the real glob tool routes through the
+    // host's fs/globFiles operation instead of per-directory transfer.
+    let glob = invoke_glob(
+        &fs_ctx,
+        GlobArgs {
+            pattern: "*.rs".to_owned(),
+            path: None,
+            max_depth: None,
+            limit: None,
+        },
+    )
+    .await
+    .expect("glob over bridge");
+    assert_eq!(glob.matches.len(), 1);
+    assert!(glob.matches[0].as_str().ends_with("needle.rs"));
+    assert!(glob.stopped.is_none());
 
     data.start_jobs(&StartJobsParams {
         namespace: "session_1".to_owned(),

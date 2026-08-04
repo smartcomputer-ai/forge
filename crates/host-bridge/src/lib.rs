@@ -3,11 +3,11 @@ pub mod filesystem;
 pub mod gateway;
 pub mod jobs;
 pub mod process;
+mod process_group;
 pub mod rpc;
 pub mod server;
 
 use std::{
-    collections::BTreeMap,
     net::SocketAddr,
     sync::{
         Arc,
@@ -176,6 +176,9 @@ fn host_capabilities(config: &BridgeConfig) -> HostCapabilities {
     HostCapabilities {
         filesystem_read: true,
         filesystem_write: !config.read_only_fs,
+        filesystem_search: true,
+        filesystem_glob: true,
+        filesystem_ranged_read: true,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

@@ -24,7 +24,8 @@ use engine::{
     storage::{BlobStore, ListSessionLinks, SessionLinkDirection, SessionStore},
 };
 use support::live::{
-    LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_with_tool_rounds,
+    LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_with_parallel_tool_calls,
+    fake_worker_activities_with_tool_rounds, fake_worker_activities_with_transient_llm_failures,
     final_assistant_text, live_workflow_handle, openai_live_model, require_openai_live_env,
     require_storage_live_env, run_with_live_worker, wait_for_admission_failure,
     wait_for_session_status, wait_for_terminal_run,
@@ -41,7 +42,7 @@ use temporal_server::{
 };
 use temporal_workflow::{
     AgentAdmission, AgentAdmissionFailureKind, AgentSessionWorkflow, DEFAULT_TEMPORAL_NAMESPACE,
-    DEFAULT_TEMPORAL_TARGET, connect_temporal,
+    DEFAULT_TEMPORAL_TARGET, LLM_RETRY_MAX_ATTEMPTS, connect_temporal,
 };
 use temporalio_client::{
     Client, WorkflowDescribeOptions, WorkflowQueryOptions, WorkflowSignalOptions,
@@ -203,6 +204,57 @@ async fn temporal_live_fleet_executor_lists_and_reads_profiles() -> anyhow::Resu
 
     let activities = fake_worker_activities().await?;
     run_with_live_worker(activities, run_fleet_profile_tools_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
+async fn temporal_live_parallel_tool_batch_completes_per_call() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Three parallel-safe calls in one batch exercise the per-call activity
+    // path: concurrent scheduling, completion-order resumes, and progressive
+    // engine appends. One call fails terminally while its siblings succeed,
+    // proving per-call independence. The terminal-run polling issues status
+    // queries while the batch is in flight, which regresses the
+    // workflow-waker class of bug (TMPRL1100) that batch-level activities
+    // never hit.
+    let activities = fake_worker_activities_with_parallel_tool_calls(3, Some(1)).await?;
+    run_with_live_worker(activities, run_parallel_tool_batch_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
+async fn temporal_live_transient_llm_failures_retry_within_the_turn() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Two scripted transient provider failures precede a normal generation
+    // (P116): the typed retryable activity failure makes Temporal retry the
+    // pending `llm_generate` activity with durable backoff, honoring the
+    // scripted suggested delay. The run must complete with one successful
+    // generation and no transcript trace of the retried attempts.
+    let activities = fake_worker_activities_with_transient_llm_failures(2).await?;
+    run_with_live_worker(activities, run_transient_llm_retry_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
+async fn temporal_live_exhausted_llm_retries_fail_the_run_not_the_session() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Exactly the bounded attempt budget of transient failures (P116): the
+    // first run exhausts `llm_generate`'s retry policy and fails at the
+    // workflow boundary. The scripted budget is then consumed, so a second
+    // run on the same session succeeds — proving exhaustion fails the run
+    // while the session workflow survives for later runs.
+    let attempts = usize::try_from(LLM_RETRY_MAX_ATTEMPTS).expect("attempt budget fits usize");
+    let activities = fake_worker_activities_with_transient_llm_failures(attempts).await?;
+    run_with_live_worker(activities, run_llm_retry_exhaustion_live_client).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2152,6 +2204,247 @@ async fn run_continue_as_new_live_client(
         .terminate(
             WorkflowTerminateOptions::builder()
                 .reason("agent continue-as-new live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
+async fn run_parallel_tool_batch_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+
+    // The VFS tool surface derives parallel-safe function tools (vfs reads),
+    // so the fake model's three calls form one concurrent per-call group.
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(api::FeaturesConfig {
+                vfs: Some(api::VfsFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    workspace_links: Vec::new(),
+                    tools: Some(api::VfsToolSurface::ReadOnly),
+                    prompts: None,
+                    skills: None,
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+
+    let started = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "run a parallel tool batch".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let run = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+    assert_eq!(run.status, api::RunStatus::Completed);
+    assert!(
+        final_assistant_text(&run).is_some_and(|text| text.contains("Fake agent completed run"))
+    );
+
+    let mut results = run
+        .entries
+        .iter()
+        .filter_map(|entry| match &entry.kind {
+            ContextEntryKindView::ToolResult { call_id, is_error } => {
+                Some((call_id.clone(), *is_error))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    results.sort();
+    assert_eq!(
+        results,
+        vec![
+            ("agent_call_1_0".to_owned(), false),
+            ("agent_call_1_1".to_owned(), true),
+            ("agent_call_1_2".to_owned(), false),
+        ],
+        "every call of the parallel batch must reach its own terminal result: \
+         the scripted failure fails alone and its siblings succeed"
+    );
+
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("parallel tool batch live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
+async fn run_transient_llm_retry_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model)
+        .build();
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: None,
+        profile: None,
+    })
+    .await?;
+
+    let started = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "retry through transient provider failures".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let run = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+    assert_eq!(
+        run.status,
+        api::RunStatus::Completed,
+        "transient provider failures within the retry budget must not fail the run"
+    );
+    assert!(
+        final_assistant_text(&run).is_some_and(|text| text.contains("Fake agent completed run"))
+    );
+    // Intermediate transient attempts are runtime facts, not session events:
+    // the transcript holds exactly one successful assistant generation.
+    let assistant_messages = run
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind,
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::Assistant
+                }
+            )
+        })
+        .count();
+    assert_eq!(assistant_messages, 1);
+    assert!(
+        run.entries.iter().all(|entry| !entry
+            .text
+            .as_deref()
+            .unwrap_or_default()
+            .contains("scripted transient provider failure")),
+        "transient attempts must not leak into model context"
+    );
+
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("transient llm retry live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
+async fn run_llm_retry_exhaustion_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model)
+        .build();
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: None,
+        profile: None,
+    })
+    .await?;
+
+    let first = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "exhaust the provider retry budget".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let first_run = wait_for_terminal_run(&api, &session_id, &first.result.run.id).await?;
+    assert_eq!(
+        first_run.status,
+        api::RunStatus::Failed,
+        "exhausted provider retries must fail the run with a terminal generation result"
+    );
+
+    // The session workflow survived exhaustion, and the scripted transient
+    // budget is consumed, so the next run on the same session succeeds.
+    let second = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "recover after the provider outage".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let second_run = wait_for_terminal_run(&api, &session_id, &second.result.run.id).await?;
+    assert_eq!(
+        second_run.status,
+        api::RunStatus::Completed,
+        "a run after provider recovery must succeed on the surviving session workflow"
+    );
+    assert!(
+        final_assistant_text(&second_run)
+            .is_some_and(|text| text.contains("Fake agent completed run"))
+    );
+
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("llm retry exhaustion live test cleanup")
                 .build(),
         )
         .await;

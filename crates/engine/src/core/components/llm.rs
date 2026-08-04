@@ -350,6 +350,19 @@ fn request_fingerprint(
     Ok(format!("sha256:{}", hex::encode(digest)))
 }
 
+/// Fallback failure content for LLM generation or compaction that failed at
+/// the runtime boundary (for example after exhausting provider retries) when
+/// the specific error text could not be materialized. Like
+/// [`crate::TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT`], every runtime must
+/// guarantee the matching blob exists via
+/// [`crate::storage::ensure_engine_blobs`].
+pub const LLM_RUNTIME_BOUNDARY_FAILURE_CONTENT: &str =
+    "LLM call failed at the runtime boundary before its result could be recorded\n";
+
+pub fn llm_runtime_boundary_failure_ref() -> crate::BlobRef {
+    crate::BlobRef::from_bytes(LLM_RUNTIME_BOUNDARY_FAILURE_CONTENT.as_bytes())
+}
+
 fn compaction_request_fingerprint(
     model: &ModelSelection,
     context: &ContextSnapshot,
@@ -413,6 +426,7 @@ mod tests {
             tool_name.clone(),
             ToolSpec {
                 name: tool_name.clone(),
+                execution: Default::default(),
                 kind: ToolKind::ProviderNative(crate::ProviderNativeToolSpec {
                     api_kind: ProviderApiKind::OpenAiResponses,
                     native_tool_ref: crate::BlobRef::from_bytes(
@@ -438,6 +452,7 @@ mod tests {
     fn remote_mcp_tool(auth_ref_id: &str) -> ToolSpec {
         ToolSpec {
             name: crate::ToolName::new("mcp_echo"),
+            execution: Default::default(),
             kind: ToolKind::RemoteMcp(crate::RemoteMcpToolSpec {
                 server_id: auth_ref_id.to_owned(),
                 server_label: "echo".to_owned(),

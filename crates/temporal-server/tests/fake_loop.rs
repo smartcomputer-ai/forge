@@ -115,6 +115,7 @@ fn fake_tool_set(input_schema_ref: BlobRef) -> BTreeMap<ToolName, ToolSpec> {
         tool_name.clone(),
         ToolSpec {
             name: tool_name.clone(),
+            execution: Default::default(),
             kind: ToolKind::Function(FunctionToolSpec {
                 description_ref: None,
                 input_schema_ref,

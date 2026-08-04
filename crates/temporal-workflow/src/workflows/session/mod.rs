@@ -10,6 +10,7 @@ mod promise_sources;
 mod session_state;
 #[cfg(test)]
 mod tests;
+mod tool_batches;
 mod wait_loop;
 mod watchdog;
 mod workflow_starts;

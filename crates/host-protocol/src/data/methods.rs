@@ -10,18 +10,19 @@ pub const FS_GET_METADATA_METHOD: &str = "fs/getMetadata";
 pub const FS_READ_DIRECTORY_METHOD: &str = "fs/readDirectory";
 pub const FS_REMOVE_METHOD: &str = "fs/remove";
 pub const FS_COPY_METHOD: &str = "fs/copy";
+pub const FS_SEARCH_TEXT_METHOD: &str = "fs/searchText";
+pub const FS_GLOB_FILES_METHOD: &str = "fs/globFiles";
 
 pub const PROCESS_START_METHOD: &str = "process/start";
 pub const PROCESS_READ_METHOD: &str = "process/read";
 pub const PROCESS_WRITE_METHOD: &str = "process/write";
 pub const PROCESS_TERMINATE_METHOD: &str = "process/terminate";
 pub const PROCESS_RESIZE_METHOD: &str = "process/resize";
+pub const PROCESS_OUTPUT_METHOD: &str = "process/output";
+pub const PROCESS_EXITED_METHOD: &str = "process/exited";
+pub const PROCESS_CLOSED_METHOD: &str = "process/closed";
 
 pub const JOB_START_METHOD: &str = "job/start";
 pub const JOB_LIST_METHOD: &str = "job/list";
 pub const JOB_READ_METHOD: &str = "job/read";
 pub const JOB_CANCEL_METHOD: &str = "job/cancel";
-
-pub const PROCESS_OUTPUT_METHOD: &str = "process/output";
-pub const PROCESS_EXITED_METHOD: &str = "process/exited";
-pub const PROCESS_CLOSED_METHOD: &str = "process/closed";

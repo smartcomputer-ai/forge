@@ -463,9 +463,21 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::Exclusive,
+            execution: fleet_execution_spec(tool_name),
         },
         documents: vec![description, input_schema],
     })
+}
+
+fn fleet_execution_spec(tool_name: &str) -> engine::ToolExecutionSpec {
+    let retry_safe = matches!(
+        tool_name,
+        AGENT_LIST_TOOL_NAME
+            | AGENT_READ_TOOL_NAME
+            | PROFILE_LIST_TOOL_NAME
+            | PROFILE_READ_TOOL_NAME
+    );
+    engine::ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, retry_safe)
 }
 
 fn spawn_base_schema() -> Value {

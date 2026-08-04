@@ -18,4 +18,6 @@ pub use list_dir::{ListDirArgs, ListDirEntry, ListDirResult, invoke_list_dir};
 pub use read_file::{ReadFileArgs, ReadFileResult, invoke_read_file};
 pub use write_file::{WriteFileArgs, WriteFileResult, invoke_write_file};
 
-pub(crate) use shared::{collect_file_paths, invalid_request, relative_path_string, resolve_path};
+pub(crate) use shared::{
+    collect_file_paths_bounded, invalid_request, relative_path_string, resolve_path,
+};

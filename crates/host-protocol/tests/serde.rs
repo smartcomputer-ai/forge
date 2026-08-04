@@ -114,6 +114,8 @@ fn read_file_response_uses_base64_byte_chunk() {
     assert_round_trip(
         ReadFileResponse {
             data: ByteChunk::from(b"hello\n".as_slice()),
+            file_size: None,
+            truncated: false,
         },
         fixture("fs_read_file_response"),
     );
@@ -158,6 +160,7 @@ fn process_read_response_preserves_ordered_output_chunks() {
             exit_code: Some(0),
             closed: true,
             failure: None,
+            orphaned_descendants: true,
         },
         fixture("process_read_response"),
     );
@@ -203,6 +206,7 @@ fn job_read_response_matches_fixture() {
                     started_at_ms: Some(3),
                     finished_at_ms: Some(4),
                     exit_code: Some(0),
+                    orphaned_descendants: true,
                     failure: None,
                     queue_key: Some("repo".to_owned()),
                 },
@@ -333,6 +337,9 @@ fn remote_host_capabilities() -> HostCapabilities {
     HostCapabilities {
         filesystem_read: true,
         filesystem_write: true,
+        filesystem_search: true,
+        filesystem_glob: true,
+        filesystem_ranged_read: true,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

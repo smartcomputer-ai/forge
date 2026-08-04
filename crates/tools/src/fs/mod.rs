@@ -142,6 +142,91 @@ pub struct ReadDirectoryEntry {
     pub is_file: bool,
 }
 
+/// Bounded recursive text search request for backends with a native search
+/// implementation (e.g. a remote host that searches locally instead of
+/// serving per-file reads).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsTextSearchRequest {
+    pub root: FsPath,
+    /// Regular expression in the Rust `regex` dialect — the same dialect the
+    /// generic fallback compiles, so a pattern cannot succeed on one path and
+    /// fail on the other.
+    pub pattern: String,
+    /// Optional glob matched against the root-relative path or file name.
+    pub include: Option<String>,
+    pub case_sensitive: bool,
+    pub max_depth: Option<usize>,
+    pub limits: FsSearchLimits,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FsSearchLimits {
+    pub max_matches: u64,
+    pub max_files: u64,
+    pub max_bytes: u64,
+    pub max_duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsTextSearchMatch {
+    pub path: FsPath,
+    pub line_number: u64,
+    pub line: String,
+}
+
+/// Why a bounded search stopped before exhausting the tree.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FsSearchStop {
+    MatchLimit,
+    FileLimit,
+    ByteLimit,
+    TimeLimit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsTextSearchResponse {
+    pub matches: Vec<FsTextSearchMatch>,
+    pub files_searched: u64,
+    pub bytes_searched: u64,
+    pub stopped: Option<FsSearchStop>,
+}
+
+/// Bounded recursive enumeration request for backends with a native glob
+/// implementation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsGlobRequest {
+    pub root: FsPath,
+    pub pattern: String,
+    pub max_depth: Option<usize>,
+    pub limits: FsGlobLimits,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FsGlobLimits {
+    pub max_matches: u64,
+    /// Maximum directory entries visited by the traversal.
+    pub max_entries: u64,
+    pub max_duration_ms: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsGlobResponse {
+    pub matches: Vec<FsPath>,
+    pub entries_visited: u64,
+    pub stopped: Option<FsSearchStop>,
+}
+
+/// One bounded read range of a file, with the true total size so callers can
+/// reject oversized files without transferring them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FsRangedRead {
+    pub bytes: Vec<u8>,
+    pub file_size: u64,
+    /// True when `bytes` is a strict prefix range of the file.
+    pub truncated: bool,
+}
+
 #[async_trait]
 pub trait FileSystem: Send + Sync {
     fn access_policy(&self) -> FileAccessPolicy;
@@ -174,8 +259,56 @@ pub trait FileSystem: Send + Sync {
         options: CopyOptions,
     ) -> FsResult<()>;
 
+    /// Execute a bounded text search natively when the backend supports it.
+    ///
+    /// `Ok(None)` means the backend has no native search; callers fall back
+    /// to the bounded generic traversal. Backends that do implement it must
+    /// honor every limit in the request and report why they stopped.
+    async fn search_text(
+        &self,
+        request: &FsTextSearchRequest,
+    ) -> FsResult<Option<FsTextSearchResponse>> {
+        let _ = request;
+        Ok(None)
+    }
+
+    /// Execute a bounded recursive enumeration natively when the backend
+    /// supports it; `Ok(None)` falls back to the bounded generic traversal.
+    async fn glob_files(&self, request: &FsGlobRequest) -> FsResult<Option<FsGlobResponse>> {
+        let _ = request;
+        Ok(None)
+    }
+
+    /// Read at most `max_bytes` starting at `offset`, reporting the true file
+    /// size. The default transfers the whole file and slices locally;
+    /// backends with native range support truncate at the source.
+    async fn read_file_range(
+        &self,
+        path: &FsPath,
+        offset: u64,
+        max_bytes: Option<u64>,
+    ) -> FsResult<FsRangedRead> {
+        let bytes = self.read_file(path).await?;
+        Ok(ranged_read_from_full(bytes, offset, max_bytes))
+    }
+
     fn drain_tool_effects(&self) -> Vec<ToolEffect> {
         Vec::new()
+    }
+}
+
+/// Slice a fully transferred file into the requested range. Shared by the
+/// trait default and backends that fall back to full transfer.
+pub fn ranged_read_from_full(bytes: Vec<u8>, offset: u64, max_bytes: Option<u64>) -> FsRangedRead {
+    let file_size = bytes.len() as u64;
+    let start = offset.min(file_size);
+    let end = max_bytes.map_or(file_size, |max| start.saturating_add(max).min(file_size));
+    let slice = bytes[start as usize..end as usize].to_vec();
+    let truncated = start.saturating_add(slice.len() as u64) < file_size;
+    FsRangedRead {
+        bytes: slice,
+        file_size,
+        truncated,
     }
 }
 

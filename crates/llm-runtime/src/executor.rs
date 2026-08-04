@@ -6,7 +6,10 @@ use engine::{
     LlmGenerationRequest, LlmGenerationResult, ProviderApiKind,
 };
 
-use crate::{error::LlmAdapterResult, result::LlmGenerationExecution};
+use crate::{
+    error::{LlmAdapterError, LlmAdapterResult},
+    result::LlmGenerationExecution,
+};
 
 #[async_trait]
 pub trait LlmGenerationAdapter: Send + Sync {
@@ -114,9 +117,7 @@ impl LlmRuntime {
             .generate(request)
             .await
             .map(|execution| execution.result)
-            .map_err(|error| CoreAgentIoError::Failed {
-                message: error.to_string(),
-            })
+            .map_err(io_error_from_adapter_error)
     }
 
     async fn compact_context_request(
@@ -138,9 +139,22 @@ impl LlmRuntime {
         adapter
             .compact_context(request)
             .await
-            .map_err(|error| CoreAgentIoError::Failed {
-                message: error.to_string(),
-            })
+            .map_err(io_error_from_adapter_error)
+    }
+}
+
+/// Preserves the client-derived retry disposition across the generic I/O
+/// boundary. Only provider errors with explicit transient evidence become
+/// `Retryable`; every other adapter error stays terminal.
+fn io_error_from_adapter_error(error: LlmAdapterError) -> CoreAgentIoError {
+    match &error {
+        LlmAdapterError::Provider { source } if source.retryable() => CoreAgentIoError::Retryable {
+            retry_after: source.retry_after(),
+            message: error.to_string(),
+        },
+        _ => CoreAgentIoError::Failed {
+            message: error.to_string(),
+        },
     }
 }
 
@@ -167,7 +181,9 @@ mod tests {
     use crate::error::LlmAdapterError;
     use engine::{ContextSnapshot, LlmRequest, ModelSelection, RunId, SessionId, TurnId};
 
-    struct FailingAdapter;
+    struct FailingAdapter {
+        error: llm_clients::LlmApiError,
+    }
 
     #[async_trait]
     impl LlmGenerationAdapter for FailingAdapter {
@@ -176,22 +192,44 @@ mod tests {
             _request: LlmGenerationRequest,
         ) -> LlmAdapterResult<LlmGenerationExecution> {
             Err(LlmAdapterError::Provider {
-                message: "boom".to_owned(),
+                source: self.error.clone(),
             })
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn adapter_errors_are_returned_to_the_worker() {
-        let registry = LlmAdapterRegistry::new()
-            .with_generation_adapter(ProviderApiKind::OpenAiResponses, Arc::new(FailingAdapter));
+    async fn failing_generate(error: llm_clients::LlmApiError) -> CoreAgentIoError {
+        let registry = LlmAdapterRegistry::new().with_generation_adapter(
+            ProviderApiKind::OpenAiResponses,
+            Arc::new(FailingAdapter { error }),
+        );
         let runtime = LlmRuntime::new(registry);
-
-        let error = CoreAgentLlm::generate(&runtime, request())
+        CoreAgentLlm::generate(&runtime, request())
             .await
-            .expect_err("adapter errors must not become anonymous failed generations");
+            .expect_err("adapter errors must not become anonymous failed generations")
+    }
 
-        assert!(error.to_string().contains("provider call failed: boom"));
+    #[tokio::test(flavor = "current_thread")]
+    async fn terminal_adapter_errors_stay_terminal() {
+        let error = failing_generate(llm_clients::TransportError::new("boom", false).into()).await;
+        assert!(matches!(&error, CoreAgentIoError::Failed { .. }));
+        assert!(error.to_string().contains("provider call failed"));
+        assert!(error.to_string().contains("boom"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retryable_provider_errors_preserve_the_retry_disposition() {
+        let error =
+            failing_generate(llm_clients::TransportError::new("connection reset", true).into())
+                .await;
+        let CoreAgentIoError::Retryable {
+            message,
+            retry_after,
+        } = error
+        else {
+            panic!("retryable client errors must map to CoreAgentIoError::Retryable");
+        };
+        assert!(message.contains("connection reset"));
+        assert_eq!(retry_after, None);
     }
 
     fn request() -> LlmGenerationRequest {

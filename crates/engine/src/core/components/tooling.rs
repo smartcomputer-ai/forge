@@ -296,6 +296,46 @@ pub struct ToolSpec {
     pub name: ToolName,
     pub kind: ToolKind,
     pub parallelism: ToolParallelism,
+    /// Runtime-owned execution policy facts admitted with the toolset. The
+    /// hosted substrate selects activity deadlines and retry bounds from this
+    /// admitted binding, never from model-controlled input.
+    #[serde(default)]
+    pub execution: ToolExecutionSpec,
+}
+
+/// Execution class for scheduling one tool call at the runtime boundary.
+///
+/// The class follows the logical tool domain, not the transport: environment
+/// filesystem calls against a remote host share `Interactive` with local
+/// calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExecutionClass {
+    /// Bounded interactive operation (filesystem, control, concurrency).
+    #[default]
+    Interactive,
+    /// Bounded network-shaped call (web, environment jobs, fleet messaging).
+    RemoteInteractive,
+    /// Environment process execution; its deadline derives from the validated
+    /// process timeout clamped to the deployment-owned ceiling.
+    Process,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExecutionSpec {
+    #[serde(default)]
+    pub class: ToolExecutionClass,
+    /// Whether re-dispatching the call after an infrastructure failure is
+    /// safe (read-only operations). Mutations and process starts stay at one
+    /// attempt until downstream idempotency exists.
+    #[serde(default)]
+    pub retry_safe: bool,
+}
+
+impl ToolExecutionSpec {
+    pub fn new(class: ToolExecutionClass, retry_safe: bool) -> Self {
+        Self { class, retry_safe }
+    }
 }
 
 impl ToolSpec {
@@ -1226,6 +1266,18 @@ pub fn unavailable_tool_result_ref() -> BlobRef {
     BlobRef::from_bytes(UNAVAILABLE_TOOL_RESULT_CONTENT.as_bytes())
 }
 
+/// Model-visible fallback content for tool calls that failed or were
+/// cancelled at the runtime boundary when the specific error text could not
+/// be materialized (e.g. the blob store itself is unavailable). Like
+/// [`UNAVAILABLE_TOOL_RESULT_CONTENT`], every runtime must guarantee the
+/// matching blob exists via [`crate::storage::ensure_engine_blobs`].
+pub const TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT: &str =
+    "tool call failed at the runtime boundary before its result could be recorded\n";
+
+pub fn tool_runtime_boundary_failure_ref() -> BlobRef {
+    BlobRef::from_bytes(TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT.as_bytes())
+}
+
 fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
     let error_ref = unavailable_tool_result_ref();
     let status = ToolCallStatus::Unavailable;
@@ -1741,6 +1793,7 @@ mod tests {
     fn remote_mcp_tool(name: &str, server_label: &str) -> ToolSpec {
         ToolSpec {
             name: ToolName::new(name),
+            execution: Default::default(),
             kind: ToolKind::RemoteMcp(remote_mcp_spec(
                 server_label,
                 "https://echo.example.com/mcp",

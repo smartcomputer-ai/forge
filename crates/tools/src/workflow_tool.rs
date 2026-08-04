@@ -383,6 +383,7 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
+                    execution: Default::default(),
                 },
             },
             WorkflowEndpointRef {
@@ -468,6 +469,7 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
+                    execution: Default::default(),
                 },
             },
             WorkflowToolTarget::Bound {
@@ -756,6 +758,7 @@ mod tests {
                         provider_options_ref: None,
                     }),
                     parallelism: ToolParallelism::ParallelSafe,
+                    execution: Default::default(),
                 },
             },
             WorkflowToolTarget::Start {

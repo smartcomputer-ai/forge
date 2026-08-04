@@ -24,7 +24,7 @@ use super::{
     BuiltinToolContext, BuiltinToolOperation,
     shared::{
         array_of_strings, boolean, nullable_integer, nullable_string, object,
-        process_visible_output, string, string_map, visible_with_truncation,
+        process_visible_output, string, string_map, visible_with_search_stop,
     },
 };
 
@@ -170,7 +170,9 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
                 ("stdin", nullable_string("Optional standard input.")),
                 (
                     "timeout_ms",
-                    nullable_integer("Optional timeout in milliseconds."),
+                    nullable_integer(
+                        "Optional timeout in milliseconds. Defaults to 60 seconds; requests above the deployment ceiling (default 30 minutes) are clamped.",
+                    ),
                 ),
                 (
                     "yield_time_ms",
@@ -251,7 +253,7 @@ pub(super) async fn invoke_json(
                 .map(|m| format!("{}:{}:{}", m.path, m.line_number, m.line))
                 .collect::<Vec<_>>()
                 .join("\n");
-            encode_output(&result, visible_with_truncation(visible, result.truncated))
+            encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
         BuiltinToolOperation::Glob => {
             let fs_ctx = ctx.filesystem()?;
@@ -262,7 +264,7 @@ pub(super) async fn invoke_json(
                 .map(ToString::to_string)
                 .collect::<Vec<_>>()
                 .join("\n");
-            encode_output(&result, visible_with_truncation(visible, result.truncated))
+            encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
         BuiltinToolOperation::ListDir => {
             let fs_ctx = ctx.filesystem()?;

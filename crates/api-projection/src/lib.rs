@@ -1287,7 +1287,8 @@ pub fn core_tool_status_to_api_status(status: ToolCallStatus) -> ToolItemStatus 
         ToolCallStatus::Observed | ToolCallStatus::Accepted => ToolItemStatus::Requested,
         ToolCallStatus::Pending => ToolItemStatus::Running,
         ToolCallStatus::Succeeded => ToolItemStatus::Succeeded,
-        ToolCallStatus::Failed | ToolCallStatus::Cancelled => ToolItemStatus::Failed,
+        ToolCallStatus::Failed => ToolItemStatus::Failed,
+        ToolCallStatus::Cancelled => ToolItemStatus::Cancelled,
         ToolCallStatus::Unavailable => ToolItemStatus::Unavailable,
     }
 }
@@ -1744,6 +1745,12 @@ fn aggregate_api_tool_status(calls: &[ToolCallView]) -> ToolItemStatus {
     {
         return ToolItemStatus::Succeeded;
     }
+    if calls
+        .iter()
+        .any(|call| matches!(call.status, ToolItemStatus::Cancelled))
+    {
+        return ToolItemStatus::Cancelled;
+    }
     ToolItemStatus::Unavailable
 }
 
@@ -2017,6 +2024,49 @@ mod tests {
 
     use super::*;
 
+    fn tool_call_with_status(status: ToolItemStatus) -> ToolCallView {
+        ToolCallView {
+            call_id: "call-1".to_owned(),
+            tool_name: "read_file".to_owned(),
+            arguments_ref: "sha256:args".to_owned(),
+            arguments: None,
+            output: None,
+            is_error: false,
+            status,
+            effects: Vec::new(),
+            display: None,
+        }
+    }
+
+    #[test]
+    fn cancelled_tool_status_is_preserved_and_aggregated_neutrally() {
+        assert_eq!(
+            core_tool_status_to_api_status(ToolCallStatus::Cancelled),
+            ToolItemStatus::Cancelled
+        );
+        assert_eq!(
+            aggregate_api_tool_status(&[
+                tool_call_with_status(ToolItemStatus::Succeeded),
+                tool_call_with_status(ToolItemStatus::Cancelled),
+            ]),
+            ToolItemStatus::Cancelled
+        );
+        assert_eq!(
+            aggregate_api_tool_status(&[
+                tool_call_with_status(ToolItemStatus::Cancelled),
+                tool_call_with_status(ToolItemStatus::Running),
+            ]),
+            ToolItemStatus::Running
+        );
+        assert_eq!(
+            aggregate_api_tool_status(&[
+                tool_call_with_status(ToolItemStatus::Cancelled),
+                tool_call_with_status(ToolItemStatus::Failed),
+            ]),
+            ToolItemStatus::Failed
+        );
+    }
+
     #[test]
     fn managed_session_projection_exposes_controller_ownership() {
         let mut state = CoreAgentState::new();
@@ -2060,6 +2110,7 @@ mod tests {
                 semantic_type: "channels.message.send.v1".to_owned(),
                 tool: ToolSpec {
                     name: engine::ToolName::new("message_send"),
+                    execution: Default::default(),
                     kind: ToolKind::Function(engine::FunctionToolSpec {
                         description_ref: None,
                         input_schema_ref,

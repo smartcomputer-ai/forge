@@ -1,4 +1,10 @@
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use engine::{
@@ -12,10 +18,22 @@ use serde_json::Value;
 
 use crate::worker::FAKE_TOOL_NAME;
 
+/// Marker in fake tool arguments that makes [`FakeTools`] return a terminal
+/// failed result for that call instead of an echo.
+pub const FAKE_TOOL_FAILURE_MARKER: &str = "fail this call";
+
+/// The tiny provider-suggested delay scripted transient failures carry, so
+/// retry-heavy live tests run in seconds without touching the production
+/// retry policy constants.
+pub const FAKE_TRANSIENT_RETRY_AFTER: Duration = Duration::from_millis(50);
+
 #[derive(Clone)]
 pub struct FakeLlm {
     blobs: Arc<dyn BlobStore>,
     tool_rounds_before_final: usize,
+    parallel_tool_calls: usize,
+    failing_parallel_call: Option<usize>,
+    transient_failures_remaining: Arc<AtomicUsize>,
 }
 
 impl FakeLlm {
@@ -23,6 +41,9 @@ impl FakeLlm {
         Self {
             blobs,
             tool_rounds_before_final: 1,
+            parallel_tool_calls: 1,
+            failing_parallel_call: None,
+            transient_failures_remaining: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -31,27 +52,68 @@ impl FakeLlm {
         self
     }
 
+    /// Emit this many tool calls in one tool-call turn, so hosted runs
+    /// exercise a multi-call batch instead of one call per turn.
+    pub fn with_parallel_tool_calls(mut self, parallel_tool_calls: usize) -> Self {
+        self.parallel_tool_calls = parallel_tool_calls.max(1);
+        self
+    }
+
+    /// Mark one of the parallel calls with [`FAKE_TOOL_FAILURE_MARKER`] so
+    /// its execution fails terminally while its siblings succeed.
+    pub fn with_failing_parallel_call(mut self, index: usize) -> Self {
+        self.failing_parallel_call = Some(index);
+        self
+    }
+
+    /// Fail the next `count` generate calls with a transient
+    /// [`CoreAgentIoError::Retryable`] carrying
+    /// [`FAKE_TRANSIENT_RETRY_AFTER`], then behave normally. The counter is
+    /// shared across clones, so successive Temporal activity attempts consume
+    /// it in order. Use `usize::MAX` to stay transient past any bounded
+    /// attempt budget.
+    pub fn with_transient_failures(self, count: usize) -> Self {
+        self.transient_failures_remaining
+            .store(count, Ordering::SeqCst);
+        self
+    }
+
+    fn take_scripted_transient_failure(&self) -> bool {
+        self.transient_failures_remaining
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+
     async fn tool_call_result(
         &self,
         request: &LlmGenerationRequest,
         tool_name: ToolName,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        let arguments = serde_json::json!({
-            "text": format!("echo from run {} turn {}", request.run_id, request.turn_id)
-        });
-        let argument_bytes = serde_json::to_vec(&arguments).map_err(io_error)?;
-        let arguments_ref = self
-            .blobs
-            .put_bytes(argument_bytes)
-            .await
-            .map_err(io_error)?;
-        let call_id = ToolCallId::new(format!("agent_call_{}", request.turn_id.as_u64()));
-        Ok(LlmGenerationResult {
-            run_id: request.run_id,
-            turn_id: request.turn_id,
-            status: LlmGenerationStatus::Succeeded,
-            failure_ref: None,
-            context_entries: vec![ContextEntryInput {
+        let mut context_entries = Vec::with_capacity(self.parallel_tool_calls);
+        let mut tool_calls = Vec::with_capacity(self.parallel_tool_calls);
+        for index in 0..self.parallel_tool_calls {
+            let marker = if self.failing_parallel_call == Some(index) {
+                format!(" {FAKE_TOOL_FAILURE_MARKER}")
+            } else {
+                String::new()
+            };
+            let arguments = serde_json::json!({
+                "text": format!(
+                    "echo from run {} turn {} call {index}{marker}",
+                    request.run_id, request.turn_id
+                )
+            });
+            let argument_bytes = serde_json::to_vec(&arguments).map_err(io_error)?;
+            let arguments_ref = self
+                .blobs
+                .put_bytes(argument_bytes)
+                .await
+                .map_err(io_error)?;
+            let call_id =
+                ToolCallId::new(format!("agent_call_{}_{index}", request.turn_id.as_u64()));
+            context_entries.push(ContextEntryInput {
                 kind: ContextEntryKind::ToolCall {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
@@ -62,18 +124,26 @@ impl FakeLlm {
                 provider_kind: Some("fake".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
-            }],
+            });
+            tool_calls.push(ObservedToolCall {
+                call_id,
+                tool_name: tool_name.clone(),
+                provider_kind: Some("fake".to_owned()),
+                arguments_ref,
+                native_call_ref: None,
+            });
+        }
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries,
             facts: LlmGenerationFacts {
                 provider_response_id: Some(format!("fake-tool-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
-                tool_calls: vec![ObservedToolCall {
-                    call_id,
-                    tool_name,
-                    provider_kind: Some("fake".to_owned()),
-                    arguments_ref,
-                    native_call_ref: None,
-                }],
+                tool_calls,
                 context_token_estimate: None,
             },
         })
@@ -122,6 +192,12 @@ impl CoreAgentLlm for FakeLlm {
         &self,
         request: LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        if self.take_scripted_transient_failure() {
+            return Err(CoreAgentIoError::Retryable {
+                message: "scripted transient provider failure".to_owned(),
+                retry_after: Some(FAKE_TRANSIENT_RETRY_AFTER),
+            });
+        }
         if tool_result_count(&request) >= self.tool_rounds_before_final {
             return self.final_result(&request).await;
         }
@@ -165,6 +241,28 @@ impl CoreAgentTools for FakeTools {
                         .map(ToOwned::to_owned)
                 })
                 .unwrap_or(args);
+            if text.contains(FAKE_TOOL_FAILURE_MARKER) {
+                let error_ref = self
+                    .blobs
+                    .put_bytes(format!("{}: scripted failure", call.tool_name).into_bytes())
+                    .await
+                    .map_err(io_error)?;
+                results.push(ToolInvocationResult {
+                    call_id: call.call_id.clone(),
+                    status: ToolCallStatus::Failed,
+                    output_ref: None,
+                    model_visible_context_entries: vec![
+                        ToolInvocationResult::tool_result_context_entry(
+                            &call.call_id,
+                            ToolCallStatus::Failed,
+                            error_ref.clone(),
+                        ),
+                    ],
+                    error_ref: Some(error_ref),
+                    effects: Vec::new(),
+                });
+                continue;
+            }
             let output = format!("{}: {text}", call.tool_name);
             let output_ref = self
                 .blobs

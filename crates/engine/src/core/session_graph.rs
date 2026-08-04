@@ -232,6 +232,7 @@ mod tests {
             semantic_type: "lightspeed.environment.job.submit.v1".to_owned(),
             tool: crate::ToolSpec {
                 name: crate::ToolName::new("job_submit"),
+                execution: Default::default(),
                 kind: crate::ToolKind::Function(crate::FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: crate::BlobRef::from_bytes(b"schema"),

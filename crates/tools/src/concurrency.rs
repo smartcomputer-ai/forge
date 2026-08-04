@@ -481,6 +481,7 @@ fn function_bundle(
                 provider_options_ref: None,
             }),
             parallelism: ToolParallelism::Exclusive,
+            execution: engine::ToolExecutionSpec::default(),
         },
         documents: vec![description, input_schema],
     })

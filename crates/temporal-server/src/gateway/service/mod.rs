@@ -1615,6 +1615,7 @@ fn managed_workflow_tools_from_api(
                         name: tool_name,
                         kind,
                         parallelism,
+                        execution: engine::ToolExecutionSpec::default(),
                     },
                 },
                 target,

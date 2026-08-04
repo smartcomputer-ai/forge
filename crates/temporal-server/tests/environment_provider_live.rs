@@ -2854,6 +2854,7 @@ async fn handle_request(
             exit_code: Some(0),
             closed: true,
             failure: None,
+            orphaned_descendants: false,
         }),
         other => Err(format!("unsupported fake host method: {other}")),
     }
@@ -2933,6 +2934,9 @@ fn host_capabilities() -> HostCapabilities {
     HostCapabilities {
         filesystem_read: true,
         filesystem_write: true,
+        filesystem_search: false,
+        filesystem_glob: false,
+        filesystem_ranged_read: false,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

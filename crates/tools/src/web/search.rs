@@ -200,6 +200,7 @@ pub fn openai_responses_web_search_tool_bundle(
                 execution: ProviderNativeToolExecution::ProviderHosted,
             }),
             parallelism: ToolParallelism::ParallelSafe,
+            execution: engine::ToolExecutionSpec::default(),
         },
         documents: vec![native_tool],
     }))

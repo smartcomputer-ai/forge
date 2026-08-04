@@ -2,7 +2,71 @@
 
 **Status**
 
-- Proposed.
+- Delivery steps 1–3 implemented (2026-08-05): per-call engine completion via
+  `CoreAgentDrive::resume_tool_call` with the cross-call environment-selection
+  invariant; `ToolExecutionSpec` on the admitted `ToolSpec` with bounded
+  per-class Temporal options (`tool_call_activity_options`,
+  `tool_batch_activity_options` — no tool activity retries unbounded); the
+  `tool_invoke_call` activity with a worker-enforced operation deadline;
+  workflow-boundary conversion of activity failures into terminal failed call
+  results; and the deployment-owned `run_process` timeout ceiling
+  (`ToolLimits::max_process_timeout_ms`, asserted equal to
+  `PROCESS_TIMEOUT_CEILING` by a temporal-server test). Await batches and
+  workflow-tool batches still execute as one bounded batch-unit activity, as
+  designed. One deliberate reshape: the environment-selection batch rule now
+  fails only the participating calls, not unrelated siblings.
+- Review hardening (2026-08-05): per-call results are validated against the
+  scheduled call id; cancelled activities record terminal cancelled results;
+  parallel-safe groups execute as a topped-up window bounded by
+  `MAX_CONCURRENT_TOOL_CALLS_PER_BATCH`; and boundary-failure materialization
+  uses bounded attempts with a well-known fallback blob, so the failure path
+  itself can never retry unbounded.
+- Live-validated 2026-08-05 against the local stack (temporal_live 18/18,
+  workflow_tool_plugins_live 14/14, environment_provider_live 5/5,
+  preprocess_live 2/2), including the new
+  `temporal_live_parallel_tool_batch_completes_per_call` regression test: a
+  three-call parallel-safe batch scheduled as concurrent per-call activities
+  while `session/read` polling issues mid-batch status queries.
+- Step 4 implemented (2026-08-05): `host-protocol` gained the
+  `filesystem_search` capability and the bounded `fs/searchText` operation
+  (root, regex, include glob, case sensitivity, max depth, and mandatory
+  match/file/byte/time limits; the response reports scan statistics and a
+  typed stop reason). The bridge implements it in-process with the ripgrep
+  engine crates (`grep-searcher`, `grep-regex`, `ignore`) — no external `rg`
+  binary — under its filesystem-root confinement, advertising the capability
+  at the data-plane handshake. `RemoteHostFileSystem` prefers the native
+  operation for environment grep; every other backend falls through to the
+  now-bounded generic traversal (`ToolLimits::max_search_{matches,files,
+  bytes,duration_ms}`: 1000 matches / 5000 files / 64 MiB / 30 s defaults —
+  callers may lower the match limit but can raise nothing). `GrepResult`
+  carries the typed stop reason and the model-visible output names the
+  exhausted budget with a narrowing hint. Covered by bridge search unit
+  tests, bounded-fallback and native-preference grep tests, and an
+  end-to-end grep-over-WebSocket assertion in the bridge server test.
+- Step 5 implemented (2026-08-05): `fs/globFiles` (capability
+  `filesystem_glob`) executes bounded recursive enumeration at the host with
+  the generic tool's pattern semantics and mandatory match/entry/time limits;
+  the glob tool prefers it and its generic fallback now shares the bounded
+  traversal (previously still unbounded for glob). `fs/readFile` gained
+  optional `offset`/`maxBytes` with `fileSize`/`truncated` on the response
+  (capability `filesystem_ranged_read`), and `FileSystem::read_file_range`
+  lets the read and grep tools bound every transfer: an oversized file is
+  truncated at the source and rejected with its true size instead of shipping
+  up to the 512 MiB worker cap before the check, and the grep fallback caps
+  each per-file transfer by the remaining byte budget. Covered by bridge
+  glob/ranged-read unit tests, tool fallback and native-preference tests, and
+  glob-over-WebSocket in the bridge server test.
+- Step 6 (downstream idempotency for side-effect retries) is deliberately
+  parked (2026-08-05). One attempt plus a terminal boundary failure is a safe,
+  model-recoverable outcome, and durable jobs already cover long-running work
+  across worker restarts. Revisit when deploy-time terminal tool failures
+  become noisy in real sessions or when invisible worker deploys become a
+  product requirement — not before, since the hard part is `run_process`
+  start-or-attach semantics with output replay, which should not be built
+  without a demanding workload. P114 is otherwise complete.
+- Client reporting follow-up implemented (2026-08-05): public tool call and
+  batch views preserve cancellation as `cancelled`, and the CLI renders it as
+  cancelled rather than failed. Exact activity dispatch state remains deferred.
 - Greenfield runtime change; compatibility with the batch activity shape is not
   required.
 - Addresses the production failure recorded in
@@ -71,11 +135,13 @@ not from model-controlled input. Initial classes are:
   filesystem calls against a remote host use this same class, since a single
   bounded operation fits comfortably once recursive scans are bounded or
   pushed host-side;
-- **process** — derived from the validated process timeout plus bounded
-  transport/completion grace. The requested timeout is clamped to a
-  deployment-owned maximum before derivation; today `run_process` forwards a
-  model-supplied `timeout_ms` with no upper bound, so that ceiling is a
-  prerequisite for this class (environment jobs already validate one);
+- **process** — a fixed class deadline of the deployment-owned process
+  timeout ceiling plus bounded transport/completion grace. The per-request
+  validated timeout (model-supplied `timeout_ms` clamped to the same ceiling)
+  is enforced worker-side by the process executor; the class deadline is only
+  the backstop against a hung transport. The scheduling workflow cannot
+  derive per-request deadlines because tool arguments live behind CAS refs it
+  never reads;
 - **remote interactive** — bounded network, MCP, and environment-control
   calls; and
 - **long-running** — return a process handle, Promise, or job instead of
@@ -151,12 +217,13 @@ abstraction only after additional operations demonstrate the same need.
 ## Delivery Order
 
 1. Replace the monolithic batch-outcome resume with per-call engine
-   completion events, and schedule one activity per executable call.
+   completion events, and schedule one activity per executable call. — Done.
 2. Introduce tool execution classes and bounded Temporal policies, including
-   the deployment-owned process timeout ceiling.
-3. Convert activity deadline/failure into terminal call results.
-4. Add bounded host-side text search and the generic bounded fallback.
-5. Add host-side recursive glob and capped/ranged reads where justified.
+   the deployment-owned process timeout ceiling. — Done.
+3. Convert activity deadline/failure into terminal call results. — Done.
+4. Add bounded host-side text search and the generic bounded fallback. — Done.
+5. Add host-side recursive glob and capped/ranged reads where justified. —
+   Done.
 6. Add downstream idempotency for side-effecting calls before enabling their
    retries.
 
@@ -180,3 +247,18 @@ abstraction only after additional operations demonstrate the same need.
 - Making every tool call parallel.
 - Retrying side effects without downstream idempotency.
 - Raising the existing batch timeout as a substitute for decomposition.
+
+## Appendix: Client Reporting Follow-Up
+
+Implemented 2026-08-05: cancellation is preserved through the public API
+instead of projected as a failure. `Cancelled` was added to `ToolItemStatus`,
+`ToolCallStatus::Cancelled` is mapped to it in `api-projection`, and the API
+contract and TypeScript consumers were regenerated. A canceled call is
+terminal, but clients should render it neutrally rather than as a failed call.
+
+Do not add exact queued-versus-executing activity reporting as part of P114.
+`ToolCallStarted` currently represents a call entering the invocable batch,
+not necessarily the moment its per-call Temporal activity is dispatched.
+Clients should therefore describe any nonterminal call generically as “in
+progress.” If exact dispatch state becomes product-relevant later, introduce a
+separate durable reporting event with explicit replay and recovery semantics.

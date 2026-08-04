@@ -220,6 +220,7 @@ async fn anthropic_messages_live_core_session_uses_no_auth_remote_mcp_echo() {
 fn remote_mcp_echo_tools() -> BTreeMap<ToolName, ToolSpec> {
     let tool = ToolSpec {
         name: ToolName::new("mcp_echo"),
+        execution: Default::default(),
         kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
             server_id: "echo".to_string(),
             server_label: "echo".to_string(),

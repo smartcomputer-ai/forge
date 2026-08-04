@@ -1326,6 +1326,7 @@ mod tests {
         let mut request = intent_request(vec![instructions_item, user_entry(2, input_ref)]);
         request.tools = vec![ToolSpec {
             name: ToolName::new("read_file"),
+            execution: Default::default(),
             kind: ToolKind::Function(FunctionToolSpec {
                 description_ref: Some(description_ref),
                 input_schema_ref: schema_ref,
@@ -1591,6 +1592,7 @@ mod tests {
         let mut request = intent_request(Vec::new());
         request.tools = vec![ToolSpec {
             name: ToolName::new("mcp_echo"),
+            execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
                 server_label: "echo".to_string(),
@@ -1625,6 +1627,7 @@ mod tests {
     fn auth_remote_mcp_tool() -> ToolSpec {
         ToolSpec {
             name: ToolName::new("mcp_echo"),
+            execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
                 server_label: "echo".to_string(),
@@ -1903,6 +1906,7 @@ mod tests {
         let mut mcp_approval = intent_request(Vec::new());
         mcp_approval.tools = vec![ToolSpec {
             name: ToolName::new("mcp_echo"),
+            execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
                 server_label: "echo".to_string(),

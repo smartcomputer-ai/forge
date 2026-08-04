@@ -28,6 +28,7 @@
         "jobId": "tests",
         "name": "tests",
         "namespace": "session_1",
+        "orphanedDescendants": true,
         "queuedAtMs": 2,
         "queueKey": "repo",
         "startedAtMs": 3,

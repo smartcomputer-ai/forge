@@ -124,6 +124,42 @@ pub async fn fake_worker_activities_with_tool_rounds(
     ))
 }
 
+pub async fn fake_worker_activities_with_parallel_tool_calls(
+    parallel_tool_calls: usize,
+    failing_call: Option<usize>,
+) -> anyhow::Result<WorkerActivities> {
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let mut llm = FakeLlm::new(blobs.clone()).with_parallel_tool_calls(parallel_tool_calls);
+    if let Some(index) = failing_call {
+        llm = llm.with_failing_parallel_call(index);
+    }
+    let llm = Arc::new(llm) as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    Ok(WorkerActivities::for_universe(
+        live_universe_id()?,
+        ActivityState::from_pg_store(store, llm, tools),
+    ))
+}
+
+/// Worker whose fake LLM fails its next `transient_failures` generate calls
+/// with a transient retryable error (tiny suggested delay), then behaves
+/// normally. Pass exactly the retry budget to exercise exhaustion followed by
+/// recovery on the next run.
+pub async fn fake_worker_activities_with_transient_llm_failures(
+    transient_failures: usize,
+) -> anyhow::Result<WorkerActivities> {
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let llm = Arc::new(FakeLlm::new(blobs.clone()).with_transient_failures(transient_failures))
+        as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    Ok(WorkerActivities::for_universe(
+        live_universe_id()?,
+        ActivityState::from_pg_store(store, llm, tools),
+    ))
+}
+
 pub async fn fake_worker_activities_with_audio_transcriber(
     transcriber: Arc<dyn AudioTranscriber>,
 ) -> anyhow::Result<WorkerActivities> {

@@ -1426,6 +1426,126 @@ impl CoreAgentTools for SessionTools {
             results,
         }))
     }
+
+    async fn invoke_call(
+        &self,
+        request: engine::ToolInvocationCallRequest,
+    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
+        let call = request.call.clone();
+        // Batch-unit tools never arrive here: the workflow routes batches
+        // containing them through the batch activity.
+        if call.workflow_tool.is_some() || call.tool_name.as_str() == AWAIT_TOOL_NAME {
+            return failed_result(
+                self.blobs.as_ref(),
+                call.call_id,
+                "this tool call requires batch-unit execution",
+            )
+            .await;
+        }
+        let routing_catalog = runtime_catalog(true, true)?;
+        if let Some(message) = per_call_batch_rule_violation(&routing_catalog, &request) {
+            return failed_result(self.blobs.as_ref(), call.call_id, message).await;
+        }
+        let batch_request = request.into_batch_request();
+        if is_fleet_tool(&call.tool_name) {
+            return self.invoke_fleet_call(&batch_request, &call).await;
+        }
+        if is_concurrency_tool(&call.tool_name) {
+            return self.invoke_concurrency_call(&batch_request, &call).await;
+        }
+        if is_environment_control_tool(&call.tool_name) {
+            return self
+                .invoke_environment_control_call(&batch_request, &call)
+                .await;
+        }
+        if is_environment_job_query_tool_name(call.tool_name.as_str()) {
+            let environments = self.environment_manager_for_session(&batch_request).await?;
+            return self
+                .invoke_environment_job_call(&batch_request, &call, &environments)
+                .await;
+        }
+        let is_vfs_call = routing_catalog
+            .get(&call.tool_name)
+            .is_some_and(|binding| binding.logical_id.starts_with("vfs."));
+        let is_environment_call = routing_catalog
+            .get(&call.tool_name)
+            .is_some_and(|binding| binding.logical_id.starts_with("env."));
+        let links = if is_vfs_call {
+            vfs::resolve_workspace_links(
+                self.blobs.clone(),
+                self.workspace_store.clone(),
+                &batch_request.workspace_links,
+            )
+            .await
+            .map_err(map_catalog_error)?
+        } else {
+            Vec::new()
+        };
+        let environments = if is_environment_call {
+            self.environment_manager_for_session(&batch_request).await?
+        } else {
+            SessionEnvironmentManager::new(self.blobs.clone())
+        };
+        let runtime = self.runtime_for_domains(
+            links,
+            &environments,
+            batch_request.active_environment_id.as_ref(),
+        )?;
+        runtime.invoke_call(&call).await
+    }
+}
+
+/// Cross-call batch rules evaluated from bounded sibling summaries. Only the
+/// calls participating in a violation fail; unrelated siblings execute
+/// normally.
+fn per_call_batch_rule_violation(
+    routing_catalog: &ToolCatalog,
+    request: &engine::ToolInvocationCallRequest,
+) -> Option<&'static str> {
+    let call = &request.call;
+    let is_env_dependent = |tool_name: &engine::ToolName| {
+        routing_catalog.get(tool_name).is_some_and(|binding| {
+            binding.logical_id.starts_with("env.") && binding.logical_id != "env.job_read"
+        })
+    };
+    let sibling_selection = request
+        .sibling_calls
+        .iter()
+        .any(|sibling| is_environment_selection_tool(&sibling.tool_name));
+    if is_environment_selection_tool(&call.tool_name)
+        && (sibling_selection
+            || request
+                .sibling_calls
+                .iter()
+                .any(|sibling| is_env_dependent(&sibling.tool_name)))
+    {
+        return Some(
+            "environment activation/deactivation cannot share a batch with another selection or an environment-dependent tool",
+        );
+    }
+    if is_env_dependent(&call.tool_name) && sibling_selection {
+        return Some(
+            "environment activation/deactivation cannot share a batch with another selection or an environment-dependent tool",
+        );
+    }
+    let is_fleet_message = |tool_name: &engine::ToolName| {
+        matches!(
+            tool_name.as_str(),
+            tools::fleet::AGENT_SEND_TOOL_NAME | tools::fleet::AGENT_REQUEST_TOOL_NAME
+        )
+    };
+    // Argument refs are content-addressed, so ref equality is content
+    // equality; this matches the batch path's byte comparison.
+    if is_fleet_message(&call.tool_name)
+        && request.sibling_calls.iter().any(|sibling| {
+            is_fleet_message(&sibling.tool_name) && sibling.arguments_ref == call.arguments_ref
+        })
+    {
+        return Some(
+            "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
+        );
+    }
+    None
 }
 
 impl SessionTools {
@@ -1592,6 +1712,117 @@ mod tests {
             .expect("visible ref")
     }
 
+    fn per_call_request(
+        tool_name: &str,
+        arguments: &[u8],
+        siblings: &[(&str, &[u8])],
+    ) -> engine::ToolInvocationCallRequest {
+        engine::ToolInvocationCallRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: ToolBatchId::new(1),
+            workspace_links: Vec::new(),
+            active_environment_id: None,
+            environment_policy: None,
+            fleet_policy: None,
+            call: engine::ToolInvocationRequest {
+                call_id: ToolCallId::new("call_self"),
+                tool_name: ToolName::new(tool_name),
+                arguments_ref: BlobRef::from_bytes(arguments),
+                workflow_tool: None,
+                promise_control: None,
+            },
+            sibling_calls: siblings
+                .iter()
+                .enumerate()
+                .map(|(index, (name, arguments))| engine::ToolCallSummary {
+                    call_id: ToolCallId::new(format!("call_sibling_{index}")),
+                    tool_name: ToolName::new(*name),
+                    arguments_ref: BlobRef::from_bytes(arguments),
+                })
+                .collect(),
+            execution: engine::ToolExecutionSpec::default(),
+        }
+    }
+
+    #[test]
+    fn per_call_batch_rules_flag_only_participating_calls() {
+        let catalog = runtime_catalog(true, true).expect("routing catalog");
+
+        // A selection call with an environment-dependent sibling fails, and
+        // an environment-dependent call with a selection sibling fails.
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request("environment_activate", b"{}", &[("read_file", b"{}")]),
+            )
+            .is_some()
+        );
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request("read_file", b"{}", &[("environment_activate", b"{}")]),
+            )
+            .is_some()
+        );
+        // Two selection calls in one batch both fail.
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request(
+                    "environment_activate",
+                    b"{}",
+                    &[("environment_deactivate", b"{}")],
+                ),
+            )
+            .is_some()
+        );
+        // An unrelated sibling in the same violating batch is untouched.
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request(
+                    "web_fetch",
+                    b"{}",
+                    &[("environment_activate", b"{}"), ("read_file", b"{}")],
+                ),
+            )
+            .is_none()
+        );
+        // A lone selection call is allowed.
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request("environment_activate", b"{}", &[("web_fetch", b"{}")]),
+            )
+            .is_none()
+        );
+        // Duplicate fleet messages are content-addressed duplicates.
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request(
+                    "agent_send",
+                    b"{\"to\":\"a\"}",
+                    &[("agent_request", b"{\"to\":\"a\"}")]
+                ),
+            )
+            .is_some()
+        );
+        assert!(
+            per_call_batch_rule_violation(
+                &catalog,
+                &per_call_request(
+                    "agent_send",
+                    b"{\"to\":\"a\"}",
+                    &[("agent_send", b"{\"to\":\"b\"}")]
+                ),
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn environment_read_defaults_to_active_and_accepts_an_explicit_id() {
         let active = EnvironmentId::new("environment_active");
@@ -1662,6 +1893,7 @@ mod tests {
             semantic_type: "lightspeed.work.report.v1".to_owned(),
             tool: ToolSpec {
                 name: ToolName::new("work_report"),
+                execution: Default::default(),
                 kind: ToolKind::Function(FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: schema_ref,
@@ -1928,6 +2160,7 @@ mod tests {
             semantic_type: JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE.to_owned(),
             tool: ToolSpec {
                 name: ToolName::new(tools::environment::jobs::JOB_SUBMIT_TOOL_NAME),
+                execution: Default::default(),
                 kind: ToolKind::Function(FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: schema_ref,
@@ -2201,6 +2434,7 @@ mod tests {
                     truncated: false,
                 },
                 stderr: StreamOutput::default(),
+                orphaned_descendants: false,
             })
         }
 
@@ -2447,6 +2681,98 @@ mod tests {
             })
             .await
             .expect("observe environment");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_call_executes_one_environment_control_call() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let catalog = Arc::new(TestCatalog::default());
+        let registry = Arc::new(InMemoryEnvironmentRegistryStore::new());
+        register_test_environment_provider(registry.as_ref(), "allowed").await;
+        observe_test_environment(registry.as_ref(), "environment-allowed-1", "allowed", 10).await;
+        let resolver = crate::environment_resolver::EnvironmentResolver::new(
+            registry.clone(),
+            registry.clone(),
+        );
+        let tools = SessionTools::new(blobs.clone(), catalog).with_environment_resolver(resolver);
+        let arguments_ref = blobs
+            .put_bytes(br#"{}"#.to_vec())
+            .await
+            .expect("list arguments");
+        let request = engine::ToolInvocationCallRequest {
+            session_id: SessionId::new("session-per-call-list"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: ToolBatchId::new(1),
+            workspace_links: Vec::new(),
+            active_environment_id: Some(EnvironmentId::new("environment-allowed-1")),
+            environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
+                "allowed".to_owned(),
+            ]))),
+            fleet_policy: None,
+            call: engine::ToolInvocationRequest {
+                call_id: ToolCallId::new("call-environment-list"),
+                tool_name: ToolName::new(ENVIRONMENT_LIST_TOOL_NAME),
+                arguments_ref,
+                workflow_tool: None,
+                promise_control: None,
+            },
+            sibling_calls: Vec::new(),
+            execution: engine::ToolExecutionSpec::default(),
+        };
+
+        let result = tools.invoke_call(request).await.expect("invoke call");
+
+        assert_eq!(result.status, ToolCallStatus::Succeeded);
+        let output: serde_json::Value = serde_json::from_slice(
+            &blobs
+                .read_bytes(result.output_ref.as_ref().expect("output"))
+                .await
+                .expect("read output"),
+        )
+        .expect("decode output");
+        assert_eq!(
+            output["environments"][0]["environment_id"],
+            "environment-allowed-1"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_call_rejects_batch_unit_tools() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let tools = SessionTools::new(blobs.clone(), Arc::new(TestCatalog::default()));
+        let arguments_ref = blobs
+            .put_bytes(br#"{}"#.to_vec())
+            .await
+            .expect("await arguments");
+        let request = engine::ToolInvocationCallRequest {
+            session_id: SessionId::new("session-per-call-await"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: ToolBatchId::new(1),
+            workspace_links: Vec::new(),
+            active_environment_id: None,
+            environment_policy: None,
+            fleet_policy: None,
+            call: engine::ToolInvocationRequest {
+                call_id: ToolCallId::new("call-await"),
+                tool_name: ToolName::new(AWAIT_TOOL_NAME),
+                arguments_ref,
+                workflow_tool: None,
+                promise_control: None,
+            },
+            sibling_calls: Vec::new(),
+            execution: engine::ToolExecutionSpec::default(),
+        };
+
+        let result = tools.invoke_call(request).await.expect("invoke call");
+
+        assert_eq!(result.status, ToolCallStatus::Failed);
+        let error = blobs
+            .read_text(result.error_ref.as_ref().expect("error ref"))
+            .await
+            .expect("error text");
+        assert!(error.contains("batch-unit execution"));
     }
 
     #[tokio::test(flavor = "current_thread")]

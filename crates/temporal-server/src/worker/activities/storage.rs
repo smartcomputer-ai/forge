@@ -874,6 +874,7 @@ mod tests {
                         semantic_type: "lightspeed.work.report.v1".to_owned(),
                         tool: ToolSpec {
                             name: ToolName::new("work_report"),
+                            execution: Default::default(),
                             kind: ToolKind::Function(FunctionToolSpec {
                                 description_ref: None,
                                 input_schema_ref: BlobRef::from_bytes(b"work-report-schema"),
@@ -893,6 +894,7 @@ mod tests {
                         semantic_type: "lightspeed.approval.request.v1".to_owned(),
                         tool: ToolSpec {
                             name: ToolName::new("request_approval"),
+                            execution: Default::default(),
                             kind: ToolKind::Function(FunctionToolSpec {
                                 description_ref: None,
                                 input_schema_ref: BlobRef::from_bytes(b"approval-schema"),

@@ -19,7 +19,7 @@ use crate::worker::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
-    ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
+    ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
     ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest, ContextCompactActivityRequest,
     CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
@@ -27,7 +27,8 @@ use crate::worker::{
     LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
     PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
-    ToolInvokeBatchActivityRequest, ToolPreparePromiseControlsActivityRequest,
+    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest,
+    ToolPreparePromiseControlsActivityRequest,
 };
 
 mod common;
@@ -232,6 +233,10 @@ mod tests {
             temporal_workflow::WorkflowActivities::tool_invoke_batch.name()
         );
         assert_eq!(
+            WorkerActivities::tool_invoke_call.name(),
+            temporal_workflow::WorkflowActivities::tool_invoke_call.name()
+        );
+        assert_eq!(
             WorkerActivities::tool_prepare_promise_controls.name(),
             temporal_workflow::WorkflowActivities::tool_prepare_promise_controls.name()
         );
@@ -273,6 +278,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn process_timeout_ceiling_matches_worker_tool_limits() {
+        // The workflow derives the process activity deadline from
+        // PROCESS_TIMEOUT_CEILING while the worker clamps requested process
+        // timeouts to ToolLimits::max_process_timeout_ms; the two bounds must
+        // stay identical.
+        assert_eq!(
+            ::tools::limits::ToolLimits::default().max_process_timeout_ms,
+            temporal_workflow::PROCESS_TIMEOUT_CEILING.as_millis() as u64
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn injected_fake_state_runs_llm_and_tools_without_env() {
         let sessions = Arc::new(InMemorySessionStore::new());
@@ -285,6 +302,7 @@ mod tests {
 
         let generated = llm::generate(
             state.llm(),
+            1,
             LlmGenerateActivityRequest {
                 request: fake_llm_request(),
             },
@@ -326,6 +344,52 @@ mod tests {
         assert!(output.contains(FAKE_TOOL_NAME));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn transient_llm_errors_become_typed_retryable_activity_failures() {
+        let sessions = Arc::new(InMemorySessionStore::new());
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let session_store: Arc<dyn SessionStore> = sessions;
+        let blob_store: Arc<dyn BlobStore> = blobs.clone();
+        let llm = Arc::new(FakeLlm::new(blob_store.clone()).with_transient_failures(1))
+            as Arc<dyn CoreAgentLlm>;
+        let tools = Arc::new(FakeTools::new(blob_store.clone())) as Arc<dyn CoreAgentTools>;
+        let state = ActivityState::new(session_store, blob_store, llm, tools);
+
+        let error = llm::generate(
+            state.llm(),
+            3,
+            LlmGenerateActivityRequest {
+                request: fake_llm_request(),
+            },
+        )
+        .await
+        .expect_err("transient provider errors must fail the activity so Temporal retries it");
+        let ActivityError::Application(failure) = error else {
+            panic!("transient provider errors must surface as application failures");
+        };
+        assert_eq!(
+            failure.type_name(),
+            Some(temporal_workflow::LLM_PROVIDER_TRANSIENT_ERROR_TYPE)
+        );
+        assert!(!failure.is_non_retryable());
+        assert_eq!(
+            failure.next_retry_delay(),
+            Some(crate::worker::FAKE_TRANSIENT_RETRY_AFTER)
+        );
+
+        // The scripted budget is consumed: the next attempt succeeds.
+        let generated = llm::generate(
+            state.llm(),
+            4,
+            LlmGenerateActivityRequest {
+                request: fake_llm_request(),
+            },
+        )
+        .await
+        .expect("post-transient attempt succeeds");
+        assert!(generated.facts.tool_calls.first().is_some());
+    }
+
     fn fake_llm_request() -> LlmGenerationRequest {
         LlmGenerationRequest {
             session_id: SessionId::new("session-test"),
@@ -346,6 +410,7 @@ mod tests {
                 },
                 tools: vec![engine::ToolSpec {
                     name: engine::ToolName::new(FAKE_TOOL_NAME),
+                    execution: Default::default(),
                     kind: engine::ToolKind::Function(engine::FunctionToolSpec {
                         description_ref: None,
                         input_schema_ref: engine::BlobRef::from_bytes(
@@ -428,7 +493,7 @@ impl WorkerActivities {
         request: LlmGenerateActivityRequest,
     ) -> Result<LlmGenerationResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        llm::generate(state.llm(), request).await
+        llm::generate(state.llm(), ctx.info().attempt, request).await
     }
 
     #[activity(name = ACTIVITY_PREPROCESS_RUN_INPUT)]
@@ -448,7 +513,7 @@ impl WorkerActivities {
         request: ContextCompactActivityRequest,
     ) -> Result<ContextCompactionResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        compaction::compact_context(state.llm(), request).await
+        compaction::compact_context(state.llm(), ctx.info().attempt, request).await
     }
 
     #[activity(name = ACTIVITY_TOOL_INVOKE_BATCH)]
@@ -459,6 +524,16 @@ impl WorkerActivities {
     ) -> Result<ToolBatchOutcome, ActivityError> {
         let state = self.state_for(&ctx).await?;
         tools::invoke_batch(state.tools(), request).await
+    }
+
+    #[activity(name = ACTIVITY_TOOL_INVOKE_CALL)]
+    pub async fn tool_invoke_call(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: ToolInvokeCallActivityRequest,
+    ) -> Result<engine::ToolInvocationResult, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        tools::invoke_call(state.tools(), request).await
     }
 
     #[activity(name = ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS)]

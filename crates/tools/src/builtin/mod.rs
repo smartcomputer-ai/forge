@@ -1,6 +1,9 @@
 //! Built-in filesystem and environment action tool definitions.
 
-use engine::{FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
+use engine::{
+    FunctionToolSpec, ToolExecutionClass, ToolExecutionSpec, ToolKind, ToolName, ToolParallelism,
+    ToolSpec,
+};
 use serde_json::Value;
 
 use crate::{
@@ -446,6 +449,38 @@ impl BuiltinTool {
         }
     }
 
+    pub const fn execution_spec(self) -> ToolExecutionSpec {
+        match self.operation {
+            BuiltinToolOperation::ReadFile
+            | BuiltinToolOperation::Grep
+            | BuiltinToolOperation::Glob
+            | BuiltinToolOperation::ListDir => ToolExecutionSpec {
+                class: ToolExecutionClass::Interactive,
+                retry_safe: true,
+            },
+            BuiltinToolOperation::WriteFile
+            | BuiltinToolOperation::EditFile
+            | BuiltinToolOperation::ApplyPatch => ToolExecutionSpec {
+                class: ToolExecutionClass::Interactive,
+                retry_safe: false,
+            },
+            BuiltinToolOperation::RunProcess | BuiltinToolOperation::WriteProcessStdin => {
+                ToolExecutionSpec {
+                    class: ToolExecutionClass::Process,
+                    retry_safe: false,
+                }
+            }
+            BuiltinToolOperation::JobSubmit | BuiltinToolOperation::JobRun => ToolExecutionSpec {
+                class: ToolExecutionClass::RemoteInteractive,
+                retry_safe: false,
+            },
+            BuiltinToolOperation::JobRead => ToolExecutionSpec {
+                class: ToolExecutionClass::RemoteInteractive,
+                retry_safe: true,
+            },
+        }
+    }
+
     pub fn binding(self, target: &ToolTarget, dispatch: ToolDispatchMode) -> ToolBinding {
         ToolBinding::new(
             self.name(target),
@@ -486,6 +521,7 @@ impl BuiltinTool {
                     provider_options_ref: None,
                 }),
                 parallelism: self.parallelism(),
+                execution: self.execution_spec(),
             },
             documents: vec![description, input_schema],
         })

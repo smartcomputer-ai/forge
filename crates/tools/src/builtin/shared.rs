@@ -4,25 +4,52 @@ use serde_json::{Value, json};
 
 use crate::{environment::process::ProcessOutput, error::ToolError};
 
-pub(super) fn visible_with_truncation(mut visible: String, truncated: bool) -> String {
-    if truncated {
-        if !visible.is_empty() {
-            visible.push('\n');
+/// Model-visible marker for a search that stopped at one of its bounds,
+/// naming the bound and how to narrow the search.
+pub(super) fn visible_with_search_stop(
+    mut visible: String,
+    stopped: Option<crate::fs::FsSearchStop>,
+) -> String {
+    let Some(stopped) = stopped else {
+        return visible;
+    };
+    let note = match stopped {
+        crate::fs::FsSearchStop::MatchLimit => {
+            "[truncated: match limit reached — narrow the pattern or lower the limit]"
         }
-        visible.push_str("[truncated]");
+        crate::fs::FsSearchStop::FileLimit => {
+            "[truncated: file budget exhausted — narrow the path or add an include filter]"
+        }
+        crate::fs::FsSearchStop::ByteLimit => {
+            "[truncated: byte budget exhausted — narrow the path or add an include filter]"
+        }
+        crate::fs::FsSearchStop::TimeLimit => {
+            "[truncated: time budget exhausted — narrow the path or add an include filter]"
+        }
+    };
+    if !visible.is_empty() {
+        visible.push('\n');
     }
+    visible.push_str(note);
     visible
 }
 
 pub(super) fn process_visible_output(output: &ProcessOutput) -> String {
     let stdout = output.stdout.text_lossy();
     let stderr = output.stderr.text_lossy();
-    match (stdout.is_empty(), stderr.is_empty()) {
+    let mut visible = match (stdout.is_empty(), stderr.is_empty()) {
         (false, false) => format!("{stdout}\n{stderr}"),
         (false, true) => stdout,
         (true, false) => stderr,
         (true, true) => format!("process status: {:?}", output.status),
+    };
+    if output.orphaned_descendants {
+        visible.push_str(
+            "\n[note: the command left background processes running after it exited; \
+             the host terminated them — make the command wait for or stop its children]",
+        );
     }
+    visible
 }
 
 pub(super) fn object<const N: usize, const M: usize>(

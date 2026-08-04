@@ -19,14 +19,15 @@ use host_protocol::{
     },
     data::{
         fs::{
-            CopyParams, CreateDirectoryParams, GetMetadataParams, ReadDirectoryParams,
-            ReadFileParams, RemoveParams, WriteFileParams,
+            CopyParams, CreateDirectoryParams, GetMetadataParams, GlobFilesParams,
+            ReadDirectoryParams, ReadFileParams, RemoveParams, SearchTextParams, WriteFileParams,
         },
         handshake::{InitializeParams, InitializeResponse, InitializedParams},
         jobs::{CancelJobsParams, ListJobsParams, ReadJobsParams, StartJobsParams},
         methods::{
             FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD,
-            FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD, FS_WRITE_FILE_METHOD,
+            FS_GLOB_FILES_METHOD, FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD,
+            FS_SEARCH_TEXT_METHOD, FS_WRITE_FILE_METHOD,
             INITIALIZE_METHOD as DATA_INITIALIZE_METHOD, INITIALIZED_METHOD, JOB_CANCEL_METHOD,
             JOB_LIST_METHOD, JOB_READ_METHOD, JOB_START_METHOD, PROCESS_READ_METHOD,
             PROCESS_START_METHOD, PROCESS_TERMINATE_METHOD, PROCESS_WRITE_METHOD,
@@ -324,6 +325,14 @@ async fn handle_data(
         FS_COPY_METHOD => {
             let params = decode_params::<CopyParams>(params)?;
             encode_result(runtime.filesystem().copy(params).await?)
+        }
+        FS_SEARCH_TEXT_METHOD => {
+            let params = decode_params::<SearchTextParams>(params)?;
+            encode_result(runtime.filesystem().search_text(params).await?)
+        }
+        FS_GLOB_FILES_METHOD => {
+            let params = decode_params::<GlobFilesParams>(params)?;
+            encode_result(runtime.filesystem().glob_files(params).await?)
         }
         PROCESS_START_METHOD => {
             let params = decode_params::<StartProcessParams>(params)?;

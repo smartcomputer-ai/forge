@@ -93,6 +93,19 @@ pub struct HostCapabilities {
     pub filesystem_read: bool,
     #[serde(default)]
     pub filesystem_write: bool,
+    /// The host implements the bounded `fs/searchText` operation natively, so
+    /// callers can avoid per-file transfer for recursive text search.
+    #[serde(default)]
+    pub filesystem_search: bool,
+    /// The host implements the bounded `fs/globFiles` operation natively, so
+    /// callers can avoid per-directory transfer for recursive enumeration.
+    #[serde(default)]
+    pub filesystem_glob: bool,
+    /// The host honors `offset`/`maxBytes` on `fs/readFile` and reports the
+    /// true file size, so oversized files are truncated at the source instead
+    /// of transferred in full.
+    #[serde(default)]
+    pub filesystem_ranged_read: bool,
     #[serde(default)]
     pub process_start: bool,
     #[serde(default)]
@@ -128,6 +141,11 @@ impl HostCapabilities {
             filesystem_write: write,
             ..Self::default()
         }
+    }
+
+    pub fn with_filesystem_search(mut self) -> Self {
+        self.filesystem_search = true;
+        self
     }
 
     pub fn with_process(mut self) -> Self {

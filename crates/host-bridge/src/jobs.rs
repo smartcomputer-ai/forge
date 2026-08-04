@@ -23,7 +23,10 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::Command,
     sync::{Mutex, Notify},
+    task::JoinHandle,
 };
+
+use crate::process_group;
 
 #[derive(Clone)]
 pub struct JobManager {
@@ -75,6 +78,8 @@ struct JobRecord {
     started_at_ms: Option<u64>,
     finished_at_ms: Option<u64>,
     exit_code: Option<i32>,
+    #[serde(default)]
+    orphaned_descendants: bool,
     failure: Option<String>,
     output_chunks: Vec<JobOutputChunk>,
     output_next_seq: u64,
@@ -94,6 +99,12 @@ enum FinishKind {
     Cancelled,
     Interrupted,
     TimedOut,
+}
+
+struct SpawnOutcome {
+    finish: FinishKind,
+    exit_code: Option<i32>,
+    orphaned_descendants: bool,
 }
 
 impl JobManager {
@@ -188,6 +199,7 @@ impl JobManager {
                     started_at_ms: None,
                     finished_at_ms: None,
                     exit_code: None,
+                    orphaned_descendants: false,
                     failure: None,
                     output_chunks: Vec::new(),
                     output_next_seq: 0,
@@ -552,37 +564,39 @@ impl JobManager {
         let result = self
             .spawn_and_wait(record.clone(), running.clone(), secret_env)
             .await;
-        let (status, exit_code, failure) = match result {
-            Ok((FinishKind::Exit, exit_code)) => {
-                if exit_code == Some(0) {
-                    (JobStatus::Succeeded, exit_code, None)
-                } else {
-                    (
-                        JobStatus::Failed,
-                        exit_code,
-                        Some(match exit_code {
-                            Some(code) => format!("job exited with status {code}"),
-                            None => "job exited without a status code".to_owned(),
-                        }),
-                    )
-                }
+        let (status, exit_code, orphaned_descendants, failure) = match result {
+            Ok(outcome) => {
+                let (status, failure) = match outcome.finish {
+                    FinishKind::Exit => {
+                        if outcome.exit_code == Some(0) {
+                            (JobStatus::Succeeded, None)
+                        } else {
+                            (
+                                JobStatus::Failed,
+                                Some(match outcome.exit_code {
+                                    Some(code) => format!("job exited with status {code}"),
+                                    None => "job exited without a status code".to_owned(),
+                                }),
+                            )
+                        }
+                    }
+                    FinishKind::Cancelled => {
+                        (JobStatus::Cancelled, Some("job cancelled".to_owned()))
+                    }
+                    FinishKind::Interrupted => (
+                        JobStatus::Interrupted,
+                        Some("job interrupted because the environment closed".to_owned()),
+                    ),
+                    FinishKind::TimedOut => (JobStatus::TimedOut, Some("job timed out".to_owned())),
+                };
+                (
+                    status,
+                    outcome.exit_code,
+                    outcome.orphaned_descendants,
+                    failure,
+                )
             }
-            Ok((FinishKind::Cancelled, exit_code)) => (
-                JobStatus::Cancelled,
-                exit_code,
-                Some("job cancelled".to_owned()),
-            ),
-            Ok((FinishKind::Interrupted, exit_code)) => (
-                JobStatus::Interrupted,
-                exit_code,
-                Some("job interrupted because the environment closed".to_owned()),
-            ),
-            Ok((FinishKind::TimedOut, exit_code)) => (
-                JobStatus::TimedOut,
-                exit_code,
-                Some("job timed out".to_owned()),
-            ),
-            Err(error) => (JobStatus::Failed, None, Some(error.message)),
+            Err(error) => (JobStatus::Failed, None, false, Some(error.message)),
         };
 
         {
@@ -593,6 +607,7 @@ impl JobManager {
             if let Some(record) = state.jobs.get_mut(&key) {
                 record.status = status;
                 record.exit_code = exit_code;
+                record.orphaned_descendants = orphaned_descendants;
                 record.failure = failure;
                 record.finished_at_ms = Some(now_ms());
                 if let Err(error) = self.persist_record(record) {
@@ -619,7 +634,7 @@ impl JobManager {
         record: JobRecord,
         running: Arc<RunningJob>,
         secret_env: BTreeMap<String, SecretString>,
-    ) -> Result<(FinishKind, Option<i32>), HostError> {
+    ) -> Result<SpawnOutcome, HostError> {
         if record.argv.is_empty() {
             return Err(HostError::new(
                 HostErrorCode::InvalidRequest,
@@ -656,6 +671,7 @@ impl JobManager {
         for (name, value) in &secret_env {
             command.env(name, value.expose());
         }
+        process_group::spawn_in_own_group(&mut command);
 
         let mut child = command.spawn().map_err(|error| {
             HostError::new(
@@ -663,6 +679,7 @@ impl JobManager {
                 format!("spawn job {:?}: {error}", record.argv),
             )
         })?;
+        let pgid = child.id();
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         if let Some(input) = record.stdin.as_ref() {
@@ -700,12 +717,18 @@ impl JobManager {
             ))
         });
 
+        let kill_job_group = || {
+            if let Some(pgid) = pgid {
+                process_group::kill_group(pgid);
+            }
+        };
         let (finish, status) = if let Some(timeout_ms) = record.timeout_ms {
             tokio::select! {
                 status = child.wait() => {
                     (FinishKind::Exit, status)
                 }
                 _ = running.cancel.notified() => {
+                    kill_job_group();
                     let _ = child.start_kill();
                     let finish = if running.interrupted.load(Ordering::Acquire) {
                         FinishKind::Interrupted
@@ -715,6 +738,7 @@ impl JobManager {
                     (finish, child.wait().await)
                 }
                 _ = tokio::time::sleep(Duration::from_millis(timeout_ms)) => {
+                    kill_job_group();
                     let _ = child.start_kill();
                     (FinishKind::TimedOut, child.wait().await)
                 }
@@ -725,6 +749,7 @@ impl JobManager {
                     (FinishKind::Exit, status)
                 }
                 _ = running.cancel.notified() => {
+                    kill_job_group();
                     let _ = child.start_kill();
                     let finish = if running.interrupted.load(Ordering::Acquire) {
                         FinishKind::Interrupted
@@ -736,16 +761,37 @@ impl JobManager {
             }
         };
 
-        if let Some(task) = stdout_task {
-            let _ = task.await;
+        // The root process's exit is ground truth for the job outcome.
+        // Descendants may still hold the output pipes open, so drain them for
+        // a bounded grace period, sweep whatever the script left running, and
+        // abandon the pipes rather than letting completion depend on EOF.
+        let mut stream_tasks = [stdout_task, stderr_task];
+        // Probe for survivors only on a natural exit; on cancel/timeout the
+        // group was killed deliberately and not-yet-reaped children would
+        // read as false positives.
+        let mut orphaned_descendants =
+            matches!(finish, FinishKind::Exit) && pgid.is_some_and(process_group::group_alive);
+        let drained =
+            drain_stream_tasks(&mut stream_tasks, process_group::OUTPUT_DRAIN_GRACE).await;
+        orphaned_descendants |= !drained;
+        if orphaned_descendants && let Some(pgid) = pgid {
+            process_group::sweep_group(pgid).await;
         }
-        if let Some(task) = stderr_task {
-            let _ = task.await;
+        if !drained
+            && !drain_stream_tasks(&mut stream_tasks, process_group::OUTPUT_DRAIN_GRACE).await
+        {
+            for task in stream_tasks.iter().flatten() {
+                task.abort();
+            }
         }
 
         let status = status
             .map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))?;
-        Ok((finish, status.code()))
+        Ok(SpawnOutcome {
+            finish,
+            exit_code: status.code(),
+            orphaned_descendants,
+        })
     }
 
     fn resolve_cwd(&self, path: &HostPath) -> Result<PathBuf, HostError> {
@@ -780,6 +826,24 @@ impl JobManager {
     }
 }
 
+/// Joins the output-reader tasks against one shared deadline. Returns true
+/// when every reader finished; unfinished readers stay in their slot.
+async fn drain_stream_tasks(tasks: &mut [Option<JoinHandle<()>>; 2], grace: Duration) -> bool {
+    let deadline = tokio::time::Instant::now() + grace;
+    let mut drained = true;
+    for slot in tasks.iter_mut() {
+        let Some(task) = slot.as_mut() else {
+            continue;
+        };
+        if tokio::time::timeout_at(deadline, task).await.is_ok() {
+            *slot = None;
+        } else {
+            drained = false;
+        }
+    }
+    drained
+}
+
 fn require_accepting(state: &JobManagerState) -> Result<(), HostError> {
     if state.accepting {
         Ok(())
@@ -811,7 +875,9 @@ async fn read_job_stream<R>(
             Ok(read) => read,
             Err(error) => {
                 let mut state = manager.state.lock().await;
-                if let Some(record) = state.jobs.get_mut(&job_key(&namespace, &job_id)) {
+                if let Some(record) = state.jobs.get_mut(&job_key(&namespace, &job_id))
+                    && !record.status.is_terminal()
+                {
                     record.failure = Some(error.to_string());
                     if let Err(error) = manager.persist_record(record) {
                         eprintln!(
@@ -825,6 +891,12 @@ async fn read_job_stream<R>(
         };
         let mut state = manager.state.lock().await;
         if let Some(record) = state.jobs.get_mut(&job_key(&namespace, &job_id)) {
+            if record.status.is_terminal() {
+                // The job completed without waiting for pipe EOF; late output
+                // from orphaned descendants must not mutate the terminal
+                // record.
+                return;
+            }
             let seq = record.output_next_seq;
             record.output_next_seq += 1;
             record.output_chunks.push(JobOutputChunk {
@@ -1257,6 +1329,7 @@ impl JobRecord {
             started_at_ms: self.started_at_ms,
             finished_at_ms: self.finished_at_ms,
             exit_code: self.exit_code,
+            orphaned_descendants: self.orphaned_descendants,
             failure: self.failure.clone(),
             queue_key: self.queue_key.clone(),
         }
@@ -1275,6 +1348,7 @@ fn lost_summary(namespace: &str, job_id: &JobId) -> JobSummary {
         started_at_ms: None,
         finished_at_ms: Some(now_ms()),
         exit_code: None,
+        orphaned_descendants: false,
         failure: Some("unknown job id".to_owned()),
         queue_key: None,
     }
@@ -1406,6 +1480,11 @@ mod tests {
             read.jobs
                 .iter()
                 .all(|job| job.summary.status == JobStatus::Succeeded)
+        );
+        assert!(
+            read.jobs
+                .iter()
+                .all(|job| !job.summary.orphaned_descendants)
         );
         let output = read
             .jobs
@@ -1619,6 +1698,161 @@ mod tests {
         assert_eq!(error.code, HostErrorCode::Conflict);
     }
 
+    #[cfg(unix)]
+    async fn wait_for_process_gone(pid: i32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "orphaned descendant {pid} was not terminated"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    #[cfg(unix)]
+    fn read_pid_file(path: &std::path::Path) -> i32 {
+        std::fs::read_to_string(path)
+            .expect("orphan pid file")
+            .trim()
+            .parse()
+            .expect("orphan pid")
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn job_manager_completes_when_orphaned_descendants_hold_pipes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
+
+        manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "orphan".to_owned(),
+                jobs: vec![job(
+                    "orphan",
+                    "sleep 30 & echo $! > orphan.pid; printf started; exit 3",
+                )],
+            })
+            .await
+            .expect("start");
+
+        let read = wait_for_jobs(&manager, ["orphan"]).await;
+        let result = result(&read, "orphan");
+        assert_eq!(result.summary.status, JobStatus::Failed);
+        assert_eq!(result.summary.exit_code, Some(3));
+        assert!(result.summary.orphaned_descendants);
+        let output = result
+            .output_chunks
+            .iter()
+            .flat_map(|chunk| chunk.chunk.as_slice().to_vec())
+            .collect::<Vec<_>>();
+        assert_eq!(output, b"started");
+
+        wait_for_process_gone(read_pid_file(&root.join("orphan.pid"))).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn job_manager_completes_when_escaped_descendants_hold_pipes() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
+
+        // `set -m` puts the background child in its own process group, so the
+        // group sweep cannot reach it and completion must abandon the pipes.
+        manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "escapee".to_owned(),
+                jobs: vec![job(
+                    "escapee",
+                    "set -m; sleep 30 & echo $! > escapee.pid; printf started; exit 7",
+                )],
+            })
+            .await
+            .expect("start");
+
+        let read = wait_for_jobs(&manager, ["escapee"]).await;
+        let result = result(&read, "escapee");
+        assert_eq!(result.summary.status, JobStatus::Failed);
+        assert_eq!(result.summary.exit_code, Some(7));
+        assert!(result.summary.orphaned_descendants);
+
+        // The escapee is outside the job's process group; clean it up so it
+        // does not outlive the test.
+        let pid = read_pid_file(&root.join("escapee.pid"));
+        unsafe {
+            libc::kill(pid, libc::SIGKILL);
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn job_manager_cancel_terminates_process_group() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
+
+        manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "cancel-group".to_owned(),
+                jobs: vec![job("group", "sleep 30 & sleep 30")],
+            })
+            .await
+            .expect("start");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        manager
+            .cancel_jobs(CancelJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                jobs: vec![JobId::new("group")],
+                scope: JobCancelScope::Job,
+                force: false,
+            })
+            .await
+            .expect("cancel");
+
+        // The backgrounded child holds the job's pipes; without group
+        // termination the drain would wedge until the read wait expires.
+        let read = wait_for_jobs(&manager, ["group"]).await;
+        let result = result(&read, "group");
+        assert_eq!(result.summary.status, JobStatus::Cancelled);
+        assert!(!result.summary.orphaned_descendants);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn job_manager_timeout_terminates_process_group() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().canonicalize().expect("canonical root");
+        let manager =
+            JobManager::new(root.clone(), root.clone(), root.join(".lightspeed")).expect("manager");
+        let mut spec = job("timeout-group", "sleep 30 & sleep 30");
+        spec.timeout_ms = Some(50);
+
+        manager
+            .start_jobs(StartJobsParams {
+                namespace: TEST_NAMESPACE.to_owned(),
+                request_id: "timeout-group".to_owned(),
+                jobs: vec![spec],
+            })
+            .await
+            .expect("start");
+
+        let read = wait_for_jobs(&manager, ["timeout-group"]).await;
+        assert_eq!(
+            result(&read, "timeout-group").summary.status,
+            JobStatus::TimedOut
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn job_manager_times_out_jobs() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1732,6 +1966,7 @@ mod tests {
                 started_at_ms: Some(now_ms()),
                 finished_at_ms: None,
                 exit_code: None,
+                orphaned_descendants: false,
                 failure: None,
                 output_chunks: Vec::new(),
                 output_next_seq: 0,

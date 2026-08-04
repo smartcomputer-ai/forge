@@ -1952,6 +1952,7 @@ fn empty_resolved_toolset() -> ResolvedToolset {
 fn test_remote_mcp_tool(tool_name: ToolName) -> engine::ToolSpec {
     engine::ToolSpec {
         name: tool_name,
+        execution: Default::default(),
         kind: engine::ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
             server_id: "crm".to_owned(),
             server_label: "crm".to_owned(),
@@ -1970,6 +1971,7 @@ fn test_remote_mcp_tool(tool_name: ToolName) -> engine::ToolSpec {
 fn test_function_tool(tool_name: ToolName) -> engine::ToolSpec {
     engine::ToolSpec {
         name: tool_name,
+        execution: Default::default(),
         kind: engine::ToolKind::Function(engine::FunctionToolSpec {
             description_ref: None,
             input_schema_ref: BlobRef::from_bytes(b"schema"),

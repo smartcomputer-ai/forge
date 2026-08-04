@@ -22,7 +22,7 @@ pub use activities::{
     RuntimeProjectionActivityDeps, StorageActivityDeps, ToolActivityDeps, WorkerActivities,
     default_audio_transcoder_from_env,
 };
-pub use fake::{FakeLlm, FakeTools};
+pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeTools};
 pub use reaper::{PromiseReaper, ReaperStats};
 pub use secrets::{BrokerSecretResolver, StoredProviderKeyResolver};
 pub use session_tools::SessionTools;
@@ -34,7 +34,7 @@ pub use temporal_workflow::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
-    ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
+    ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
     ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AgentSessionWorkflow, AppendEventsRequest,
     ContextCompactActivityRequest, CreateOrLoadSessionRequest, CreateOrLoadSessionResult,
     DEFAULT_TASK_QUEUE, DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET,
@@ -44,8 +44,9 @@ pub use temporal_workflow::{
     FAKE_TOOL_NAME, LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
     PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
-    ToolInvokeBatchActivityRequest, ToolPreparePromiseControlsActivityRequest, connect_temporal,
-    default_run_config, default_session_config,
+    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest,
+    ToolPreparePromiseControlsActivityRequest, connect_temporal, default_run_config,
+    default_session_config,
 };
 
 #[derive(Clone, Debug)]

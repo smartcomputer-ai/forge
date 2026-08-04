@@ -57,6 +57,8 @@ async fn data_client_sends_typed_request_and_decodes_response() {
     let response = client
         .read_file(&ReadFileParams {
             path: HostPath::new("README.md").expect("path"),
+            offset: None,
+            max_bytes: None,
         })
         .await
         .expect("response");
@@ -188,6 +190,8 @@ async fn data_client_stashes_notifications_seen_while_waiting_for_response() {
     client
         .read_file(&ReadFileParams {
             path: HostPath::new("README.md").expect("path"),
+            offset: None,
+            max_bytes: None,
         })
         .await
         .expect("response");
@@ -216,6 +220,8 @@ async fn data_client_maps_protocol_error_payloads() {
     let error = client
         .read_file(&ReadFileParams {
             path: HostPath::new("missing.txt").expect("path"),
+            offset: None,
+            max_bytes: None,
         })
         .await
         .expect_err("host error");

@@ -133,8 +133,7 @@ pub(super) async fn drive_until_idle(
                     }
                     None => request,
                 };
-                let outcome = call_tool_invoke_batch(ctx, request).await?;
-                action = drive.resume_tool_batch_outcome(outcome, workflow_time_ms(ctx))?;
+                action = tool_batches::invoke_tool_batch(ctx, drive, request).await?;
             }
             CoreAgentAction::Idle | CoreAgentAction::Closed => {
                 maybe_close_on_terminal(ctx, args, drive).await?;
@@ -211,7 +210,7 @@ pub(super) fn should_close_on_terminal(args: &AgentSessionArgs, state: &CoreAgen
             .any(|promise| promise.scope == engine::PromiseScope::Session)
 }
 
-async fn append_events(
+pub(super) async fn append_events(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     drive: &mut CoreAgentDrive,
     expected_head: Option<SessionPosition>,

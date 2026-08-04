@@ -21,7 +21,8 @@ use crate::{
     AwaitSpec, BlobRef, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
     ContextEntryKind, EnvironmentId, LlmGenerationFacts, LlmGenerationStatus, LlmRequest,
     PromiseId, PromiseOwnership, PromiseScope, PromiseStatus, RunId, SessionId, ToolBatchId,
-    ToolCallId, ToolCallStatus, ToolName, TurnId, WorkflowToolBinding, WorkspaceLink,
+    ToolCallId, ToolCallStatus, ToolExecutionSpec, ToolName, TurnId, WorkflowToolBinding,
+    WorkspaceLink,
 };
 
 #[async_trait]
@@ -48,6 +49,19 @@ pub trait CoreAgentTools: Send + Sync {
         &self,
         request: ToolInvocationBatchRequest,
     ) -> Result<ToolBatchOutcome, CoreAgentIoError>;
+
+    /// Execute one call of an admitted tool batch.
+    ///
+    /// The default adapts through [`Self::invoke_batch`] for runtimes that
+    /// execute batches as one unit; hosted runtimes override it with a real
+    /// per-call path.
+    async fn invoke_call(
+        &self,
+        request: ToolInvocationCallRequest,
+    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
+        let outcome = self.invoke_batch(request.into_batch_request()).await?;
+        outcome.completed_result()?.single_result()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +262,96 @@ impl ToolInvocationBatchRequest {
     }
 }
 
+/// Bounded runtime facts needed to execute one call of an admitted tool batch
+/// as its own activity.
+///
+/// The record carries the stable session/run/turn/batch/call identity plus the
+/// batch-scoped runtime facts the call needs. Sibling summaries let the
+/// execution boundary enforce cross-call batch rules (environment-selection
+/// exclusivity, duplicate fleet messages) without a batch-level activity.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolInvocationCallRequest {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub turn_id: TurnId,
+    pub batch_id: ToolBatchId,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_links: Vec<WorkspaceLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<EnvironmentId>,
+    pub environment_policy: Option<EnvironmentPolicyRuntime>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fleet_policy: Option<crate::FleetFeature>,
+    pub call: ToolInvocationRequest,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sibling_calls: Vec<ToolCallSummary>,
+    /// Execution policy facts selected from the admitted tool binding.
+    #[serde(default)]
+    pub execution: ToolExecutionSpec,
+}
+
+/// Bounded summary of one sibling call in the same tool batch.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCallSummary {
+    pub call_id: ToolCallId,
+    pub tool_name: ToolName,
+    pub arguments_ref: BlobRef,
+}
+
+impl ToolInvocationCallRequest {
+    /// Rebuild an equivalent single-call batch request for runtimes and
+    /// helpers that operate on the batch shape.
+    pub fn into_batch_request(self) -> ToolInvocationBatchRequest {
+        ToolInvocationBatchRequest {
+            session_id: self.session_id,
+            run_id: self.run_id,
+            turn_id: self.turn_id,
+            batch_id: self.batch_id,
+            workspace_links: self.workspace_links,
+            active_environment_id: self.active_environment_id,
+            environment_policy: self.environment_policy,
+            fleet_policy: self.fleet_policy,
+            calls: vec![self.call],
+        }
+    }
+}
+
+impl ToolInvocationBatchRequest {
+    /// Split one call out of this batch request, carrying batch-scoped runtime
+    /// facts and bounded sibling summaries.
+    pub fn call_request(
+        &self,
+        index: usize,
+        execution: ToolExecutionSpec,
+    ) -> Option<ToolInvocationCallRequest> {
+        let call = self.calls.get(index)?.clone();
+        let sibling_calls = self
+            .calls
+            .iter()
+            .enumerate()
+            .filter(|(sibling_index, _)| *sibling_index != index)
+            .map(|(_, sibling)| ToolCallSummary {
+                call_id: sibling.call_id.clone(),
+                tool_name: sibling.tool_name.clone(),
+                arguments_ref: sibling.arguments_ref.clone(),
+            })
+            .collect();
+        Some(ToolInvocationCallRequest {
+            session_id: self.session_id.clone(),
+            run_id: self.run_id,
+            turn_id: self.turn_id,
+            batch_id: self.batch_id,
+            workspace_links: self.workspace_links.clone(),
+            active_environment_id: self.active_environment_id.clone(),
+            environment_policy: self.environment_policy.clone(),
+            fleet_policy: self.fleet_policy.clone(),
+            call,
+            sibling_calls,
+            execution,
+        })
+    }
+}
+
 /// Bounded session-owned facts needed to execute one admitted workflow-tool call.
 ///
 /// This is transient runtime input, not durable session vocabulary. Carrying it
@@ -370,6 +474,15 @@ impl ToolInvocationResult {
 pub enum CoreAgentIoError {
     #[error("core agent I/O failed: {message}")]
     Failed { message: String },
+    /// The exact same operation may be retried by the runtime substrate.
+    /// Carries only the behavioral decision — provider taxonomy stays in the
+    /// client layer. Terminal `Failed` remains the safe default for errors
+    /// without explicit transient evidence.
+    #[error("core agent I/O failed (retryable): {message}")]
+    Retryable {
+        message: String,
+        retry_after: Option<std::time::Duration>,
+    },
 }
 
 #[cfg(test)]
@@ -385,5 +498,104 @@ mod tests {
             results: Vec::new(),
         };
         assert!(empty.single_result().is_err());
+    }
+
+    fn batch_request_with_calls(call_ids: &[&str]) -> ToolInvocationBatchRequest {
+        ToolInvocationBatchRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(2),
+            batch_id: ToolBatchId::new(3),
+            workspace_links: Vec::new(),
+            active_environment_id: Some(EnvironmentId::new("environment-a")),
+            environment_policy: Some(EnvironmentPolicyRuntime::v1(None)),
+            fleet_policy: None,
+            calls: call_ids
+                .iter()
+                .map(|call_id| ToolInvocationRequest {
+                    call_id: ToolCallId::new(*call_id),
+                    tool_name: ToolName::new("tool"),
+                    arguments_ref: BlobRef::from_bytes(call_id.as_bytes()),
+                    workflow_tool: None,
+                    promise_control: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn call_request_splits_one_call_with_sibling_summaries_and_batch_facts() {
+        let batch = batch_request_with_calls(&["call_a", "call_b", "call_c"]);
+
+        let request = batch
+            .call_request(1, ToolExecutionSpec::default())
+            .expect("call request");
+
+        assert_eq!(request.call.call_id, ToolCallId::new("call_b"));
+        assert_eq!(request.batch_id, batch.batch_id);
+        assert_eq!(request.active_environment_id, batch.active_environment_id);
+        assert_eq!(
+            request
+                .sibling_calls
+                .iter()
+                .map(|sibling| sibling.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call_a", "call_c"]
+        );
+        assert!(
+            batch
+                .call_request(3, ToolExecutionSpec::default())
+                .is_none()
+        );
+
+        let rebuilt = request.into_batch_request();
+        assert_eq!(rebuilt.batch_id, batch.batch_id);
+        assert_eq!(rebuilt.calls.len(), 1);
+        assert_eq!(rebuilt.calls[0].call_id, ToolCallId::new("call_b"));
+    }
+
+    struct BatchOnlyTools;
+
+    #[async_trait]
+    impl CoreAgentTools for BatchOnlyTools {
+        async fn invoke_batch(
+            &self,
+            request: ToolInvocationBatchRequest,
+        ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
+            let results = request
+                .calls
+                .iter()
+                .map(|call| ToolInvocationResult {
+                    call_id: call.call_id.clone(),
+                    status: ToolCallStatus::Succeeded,
+                    output_ref: Some(call.arguments_ref.clone()),
+                    model_visible_context_entries: Vec::new(),
+                    error_ref: None,
+                    effects: Vec::new(),
+                })
+                .collect();
+            Ok(ToolBatchOutcome::completed(ToolInvocationBatchResult {
+                run_id: request.run_id,
+                turn_id: request.turn_id,
+                batch_id: request.batch_id,
+                results,
+            }))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_invoke_call_adapts_through_batch_execution() {
+        let batch = batch_request_with_calls(&["call_a", "call_b"]);
+        let request = batch
+            .call_request(0, ToolExecutionSpec::default())
+            .expect("call request");
+
+        let result = BatchOnlyTools
+            .invoke_call(request)
+            .await
+            .expect("invoke call");
+
+        assert_eq!(result.call_id, ToolCallId::new("call_a"));
+        assert_eq!(result.status, ToolCallStatus::Succeeded);
     }
 }

@@ -1539,6 +1539,10 @@ fn tool_call_status_can_represent_requested_calls() {
         serde_json::to_value(ToolItemStatus::Requested).expect("serialize status"),
         json!("requested")
     );
+    assert_eq!(
+        serde_json::to_value(ToolItemStatus::Cancelled).expect("serialize status"),
+        json!("cancelled")
+    );
 }
 
 #[test]

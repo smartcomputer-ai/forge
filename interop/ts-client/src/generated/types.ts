@@ -116,7 +116,13 @@ export type AgentNotification =
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolItemStatus".
  */
-export type ToolItemStatus = "requested" | "running" | "succeeded" | "failed" | "unavailable";
+export type ToolItemStatus =
+  | "requested"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "unavailable";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolCallDisplayGroup".
@@ -2256,6 +2262,12 @@ export interface SessionJobSummaryView {
   jobId: string;
   name?: string | null;
   namespace: string;
+  /**
+   * True when the job's root process exited while descendants it spawned
+   * were still running; the host terminated them best-effort at job
+   * completion.
+   */
+  orphanedDescendants?: boolean;
   queueKey?: string | null;
   queuedAtMs?: number | null;
   startedAtMs?: number | null;

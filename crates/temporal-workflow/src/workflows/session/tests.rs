@@ -731,6 +731,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
             semantic_type: "lightspeed.approval.request.v1".to_owned(),
             tool: engine::ToolSpec {
                 name: engine::ToolName::new("request_approval"),
+                execution: Default::default(),
                 kind: engine::ToolKind::Function(engine::FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: engine::BlobRef::from_bytes(b"{}"),
@@ -990,6 +991,7 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
             semantic_type: "lightspeed.job.launch.v1".to_owned(),
             tool: engine::ToolSpec {
                 name: engine::ToolName::new("launch_job"),
+                execution: Default::default(),
                 kind: engine::ToolKind::Function(engine::FunctionToolSpec {
                     description_ref: None,
                     input_schema_ref: engine::BlobRef::from_bytes(b"{}"),

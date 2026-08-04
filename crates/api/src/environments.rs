@@ -309,6 +309,11 @@ pub struct SessionJobSummaryView {
     pub finished_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exit_code: Option<i32>,
+    /// True when the job's root process exited while descendants it spawned
+    /// were still running; the host terminated them best-effort at job
+    /// completion.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub orphaned_descendants: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

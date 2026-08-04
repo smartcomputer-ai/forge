@@ -603,6 +603,7 @@ mod tests {
             started_at_ms: Some(2),
             finished_at_ms: Some(3),
             exit_code: Some(0),
+            orphaned_descendants: false,
             failure: None,
             queue_key: None,
         }
