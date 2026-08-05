@@ -92,6 +92,10 @@ Relevant code:
 
 ## Areas for a Later Fix
 
+The fix is now planned in
+[P114: Per-Call Tool Activities And Host-Side Search](../p114-per-call-tool-activities-and-host-search.md);
+the list below is the incident-time assessment, kept for the record.
+
 The eventual fix should address both halves of the failure rather than merely
 raising the activity timeout:
 
