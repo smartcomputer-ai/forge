@@ -5,9 +5,10 @@ use std::collections::BTreeMap;
 use async_trait::async_trait;
 use host_protocol::{
     data::jobs::{
-        CancelJobsParams, CancelJobsResponse, JobArtifact, JobCancelScope, JobDependency,
-        JobDependencyPolicy, JobOutputChunk, JobStartSpec, JobStatus, JobSummary, ReadJobsParams,
-        ReadJobsResponse, StartJobsParams, StartJobsResponse,
+        CancelJobsParams, CancelJobsResponse, JobArtifact, JobCancelScope,
+        JobDependency as HostJobDependency, JobDependencyPolicy, JobOutputChunk, JobStartSpec,
+        JobStatus, JobSummary, ReadJobsParams, ReadJobsResponse, StartJobsParams,
+        StartJobsResponse,
     },
     shared::{ByteChunk, HostPath, JobId},
 };
@@ -139,6 +140,36 @@ impl JobSubmitExecutionContextV1 {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JobDependencyArg {
+    #[serde(default, alias = "jobId", skip_serializing_if = "Option::is_none")]
+    pub job_id: Option<JobId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+impl JobDependencyArg {
+    fn into_host_dependency(self) -> JobExecResult<HostJobDependency> {
+        match (self.job_id, self.name) {
+            (Some(job_id), None) => Ok(HostJobDependency {
+                job_id: Some(job_id),
+                name: None,
+            }),
+            (None, Some(name)) if !name.is_empty() => Ok(HostJobDependency {
+                job_id: None,
+                name: Some(name),
+            }),
+            (Some(_), Some(_)) => Err(JobError::InvalidRequest {
+                message: "job dependency must specify job_id or name, not both".to_owned(),
+            }),
+            _ => Err(JobError::InvalidRequest {
+                message: "job dependency must specify job_id or name".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobSubmitSpecArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -153,7 +184,7 @@ pub struct JobSubmitSpecArgs {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub depends_on: Vec<JobDependency>,
+    pub depends_on: Vec<JobDependencyArg>,
     #[serde(default)]
     pub dependency_policy: JobDependencyPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +198,11 @@ impl JobSubmitSpecArgs {
                 message: "job argv must not be empty".to_owned(),
             });
         }
+        let depends_on = self
+            .depends_on
+            .into_iter()
+            .map(JobDependencyArg::into_host_dependency)
+            .collect::<JobExecResult<Vec<_>>>()?;
         Ok(JobStartSpec {
             job_id,
             name: self.name,
@@ -176,7 +212,7 @@ impl JobSubmitSpecArgs {
             secret_env: BTreeMap::new(),
             stdin: self.stdin.map(|value| ByteChunk::from(value.into_bytes())),
             timeout_ms: self.timeout_ms,
-            depends_on: self.depends_on,
+            depends_on,
             dependency_policy: self.dependency_policy,
             queue_key: self.queue_key,
         })
@@ -433,6 +469,77 @@ mod tests {
         assert_eq!(spec.argv, vec!["cargo", "test"]);
         assert_eq!(spec.timeout_ms, Some(JOB_RUN_DEFAULT_TIMEOUT_MS));
         assert!(spec.depends_on.is_empty());
+    }
+
+    #[test]
+    fn job_submit_accepts_snake_case_job_id_dependencies() {
+        let args = serde_json::from_value::<JobSubmitArgs>(json!({
+            "jobs": [{
+                "job_id": "build",
+                "argv": ["true"]
+            }, {
+                "job_id": "test",
+                "argv": ["true"],
+                "depends_on": [{"job_id": "build"}]
+            }]
+        }))
+        .expect("decode job_submit with snake_case dependency id");
+
+        let specs = args
+            .jobs
+            .into_iter()
+            .map(|spec| {
+                let job_id = spec.job_id.clone();
+                spec.into_host_spec(job_id)
+            })
+            .collect::<JobExecResult<Vec<_>>>()
+            .expect("materialize host specs");
+
+        assert_eq!(
+            specs[1].depends_on,
+            vec![HostJobDependency::job_id("build")]
+        );
+    }
+
+    #[test]
+    fn job_submit_accepts_camel_case_dependency_alias_for_compatibility() {
+        let args = serde_json::from_value::<JobSubmitArgs>(json!({
+            "jobs": [{
+                "job_id": "build",
+                "argv": ["true"]
+            }, {
+                "job_id": "test",
+                "argv": ["true"],
+                "depends_on": [{"jobId": "build"}]
+            }]
+        }))
+        .expect("decode job_submit with camelCase dependency id alias");
+
+        let spec = args.jobs.into_iter().nth(1).expect("dependent job");
+        let job_id = spec.job_id.clone();
+        let spec = spec.into_host_spec(job_id).expect("materialize host spec");
+
+        assert_eq!(spec.depends_on, vec![HostJobDependency::job_id("build")]);
+    }
+
+    #[test]
+    fn job_submit_rejects_empty_dependencies_before_host_submission() {
+        let args = serde_json::from_value::<JobSubmitArgs>(json!({
+            "jobs": [{
+                "job_id": "test",
+                "argv": ["true"],
+                "depends_on": [{}]
+            }]
+        }))
+        .expect("decode job_submit with empty dependency object");
+
+        let spec = args.jobs.into_iter().next().expect("job");
+        let job_id = spec.job_id.clone();
+        let error = spec
+            .into_host_spec(job_id)
+            .expect_err("empty dependency must be rejected locally");
+
+        assert!(matches!(error, JobError::InvalidRequest { .. }));
     }
 
     #[test]
