@@ -72,7 +72,7 @@ source local/env.sh
 cargo test -p temporal-server --test temporal_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
-cargo test -p temporal-server --test environment_provider_live temporal_live_host_bridge_environment_jobs_round_trip -- --ignored --test-threads=1 --nocapture
+cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
 
 After changing `api` wire types, regenerate the committed contract artifacts
@@ -126,9 +126,16 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   filesystem domains, environment actions, web, prompts, and skills.
 - `crates/vfs/` — virtual filesystem models, validation, snapshots, mutable
   workspaces, transient workspace-link resolution, and store traits.
-- `crates/host-protocol/`, `crates/host-client/`, and `crates/host-bridge/` —
-  environment host wire protocol, client, and bridge daemon used for borrowed
-  compute.
+- `crates/host-protocol/`, `crates/host-client/`, and
+  `crates/environment-daemon/` — environment host wire protocol, gateway
+  client, and passive `lightspeed-envd` execution daemon. Lightspeed reaches
+  external daemons directly and provider-managed daemons through the provider,
+  opening both routes on demand.
+- `crates/environment-provider-incus/` — standalone stateless Incus controller
+  and passive on-demand data endpoint. It depends only on the host protocol
+  boundary and reconstructs target state from Incus inventory and deployment
+  configuration; it must not depend on Lightspeed stores, API internals,
+  engine, or Temporal runtime.
 - `crates/store-fs/` — filesystem-backed session log and content-addressed blob
   store adapters.
 - `crates/store-pg/` — PostgreSQL-backed session store, CAS catalog, MCP server
@@ -144,11 +151,12 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   and GitHub App drivers, store traits, typed broker errors, the runtime
   token broker with single-flight refresh and on-demand minting (P69), and
   deployment-scoped inbound API keys for gateway authentication (P90).
-- `crates/environments/` — environment provider presence, universe environment
-  resources, universe-scoped credential bindings, validation, errors, and store
-  traits. Sessions retain only an active environment id in event-sourced core
-  state. Provider job DTOs live in `host-protocol`; no Lightspeed job registry
-  is persisted.
+- `crates/environments/` — operator provider records, universe-scoped routing
+  bindings, environment lifecycle intents, minimal incarnation identities,
+  universe-scoped credential bindings, validation, errors, and store traits.
+  Sessions retain only an active environment id in event-sourced core state.
+  Provider job DTOs live in `host-protocol`; no Lightspeed job registry is
+  persisted.
 - `crates/eval/` — eval harness for agent/tool workflows.
 - `crates/llm-runtime/` — CoreAgent LLM runtime from planned requests to
   provider-native client calls.
@@ -234,6 +242,8 @@ live commands.
 | `LIGHTSPEED_API_KEY` | Client-side (CLI/bridge): bearer key sent to an `api-key`-mode gateway |
 | `LIGHTSPEED_UNIVERSE` | Client-side (CLI/bridge): universe header sent to a `trusted-header`-mode gateway |
 | `LIGHTSPEED_BLOB_CACHE_BYTES` | CAS blob cache budget per process (`0` disables; default 256MiB) |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | Stable gateway base URL used by separate Temporal workers for environment routes |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | Shared deployment bearer token for worker-to-environment-gateway routing; required for split gateway/worker deployments |
 
 ## Test Rules
 

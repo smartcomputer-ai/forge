@@ -34,6 +34,12 @@ export const METHODS = [
   "environments/read",
   "environments/list",
   "environments/close",
+  "environments/external/create",
+  "environments/ingress/put",
+  "environments/provider-bindings/list",
+  "environments/provider-bindings/read",
+  "environments/templates/list",
+  "environments/templates/read",
   "environments/jobs/create",
   "environments/jobs/read",
   "environments/jobs/cancel",
@@ -57,10 +63,6 @@ export const METHODS = [
   "mcp/servers/read",
   "mcp/servers/list",
   "mcp/servers/delete",
-  "environments/providers/register",
-  "environments/providers/heartbeat",
-  "environments/providers/unregister",
-  "environments/providers/list",
   "auth/grants/import",
   "auth/grants/read",
   "auth/grants/list",
@@ -84,6 +86,13 @@ export const METHODS = [
   "operator/api-keys/create",
   "operator/api-keys/list",
   "operator/api-keys/revoke",
+  "operator/environment-providers/put",
+  "operator/environment-providers/list",
+  "operator/environment-providers/read",
+  "operator/environment-providers/delete",
+  "operator/environment-providers/bindings/put",
+  "operator/environment-providers/bindings/delete",
+  "operator/environments/adopt",
 ] as const;
 
 export const METHOD_INFO = {
@@ -214,23 +223,53 @@ export const METHOD_INFO = {
   },
   "environments/create": {
     scope: "universe",
-    summary: "Provision an environment instance",
-    description: "Asks a live provider with create capability to create a universe-owned environment instance. This does not attach the instance to any session.",
+    summary: "Create an environment",
+    description: "Records an idempotent provisioning intent against an enabled universe binding. The provider validates its provider-wide template and provisions through its backend asynchronously.",
   },
   "environments/read": {
     scope: "universe",
-    summary: "Read an environment instance",
-    description: "Returns the universe resource with its provider identity, current observed lifecycle, connection, scope, and capabilities.",
+    summary: "Read an environment",
+    description: "Returns the durable universe resource, source binding, logical lifecycle state, and minimal current-incarnation identity.",
   },
   "environments/list": {
     scope: "universe",
-    summary: "List environment instances",
-    description: "Lists universe-owned instances, optionally filtered by provider or observed target status.",
+    summary: "List environments",
+    description: "Lists universe-owned environment resources, optionally filtered by provider, binding, or logical lifecycle state.",
   },
   "environments/close": {
     scope: "universe",
-    summary: "Close an environment instance",
-    description: "Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.",
+    summary: "Close an environment",
+    description: "Records an asynchronous idempotent close intent. Provider cleanup is resumed by lifecycle reconciliation; quota is released only after Closed.",
+  },
+  "environments/external/create": {
+    scope: "universe",
+    summary: "Register an external environment",
+    description: "Creates an environment backed by a Lightspeed-reachable envd WebSocket endpoint. Reachability is checked on demand.",
+  },
+  "environments/ingress/put": {
+    scope: "universe",
+    summary: "Configure environment public ingress",
+    description: "Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health.",
+  },
+  "environments/provider-bindings/list": {
+    scope: "universe",
+    summary: "List environment provider bindings",
+    description: "Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers.",
+  },
+  "environments/provider-bindings/read": {
+    scope: "universe",
+    summary: "Read an environment provider binding",
+    description: "Returns one universe routing and admission binding. Provider-wide templates and physical resource, network, and ingress policy remain provider-owned.",
+  },
+  "environments/templates/list": {
+    scope: "universe",
+    summary: "List environment templates",
+    description: "Reads immutable templates directly from the selected bound provider controller.",
+  },
+  "environments/templates/read": {
+    scope: "universe",
+    summary: "Read an environment template",
+    description: "Returns one immutable template version from the selected bound provider controller.",
   },
   "environments/jobs/create": {
     scope: "universe",
@@ -347,26 +386,6 @@ export const METHOD_INFO = {
     summary: "Delete an MCP server record",
     description: "Deletes the catalog document. Existing session configs that reference it are not silently rewritten and may need explicit reconfiguration.",
   },
-  "environments/providers/register": {
-    scope: "universe",
-    summary: "Register environment provider presence",
-    description: "Publishes a controller endpoint, capabilities, implementation identity, and liveness lease. Intended for trusted provider/bridge infrastructure, not ordinary configuration clients.",
-  },
-  "environments/providers/heartbeat": {
-    scope: "universe",
-    summary: "Refresh environment provider presence",
-    description: "Renews a provider lease and records its complete observed target descriptors. Omitted provided targets may become unknown; intended for provider infrastructure.",
-  },
-  "environments/providers/unregister": {
-    scope: "universe",
-    summary: "Unregister environment provider presence",
-    description: "Marks provider presence offline without deleting its durable environment instance records.",
-  },
-  "environments/providers/list": {
-    scope: "universe",
-    summary: "List environment providers",
-    description: "Lists current provider presence with lease-derived online/stale/offline status, optionally filtered by status or kind.",
-  },
   "auth/grants/import": {
     scope: "universe",
     summary: "Import a static bearer grant",
@@ -481,6 +500,41 @@ export const METHOD_INFO = {
     scope: "operator",
     summary: "Revoke a universe API key",
     description: "Immediately and idempotently revokes the matching key only when it belongs to the requested universe. Unknown and foreign-universe prefixes return not found.",
+  },
+  "operator/environment-providers/put": {
+    scope: "operator",
+    summary: "Put an environment provider",
+    description: "Registers or replaces one deployment provider and its controller connection. The provider does not call this API or require access to Lightspeed.",
+  },
+  "operator/environment-providers/list": {
+    scope: "operator",
+    summary: "List environment providers",
+    description: "Returns every operator-registered deployment provider and its controller connection.",
+  },
+  "operator/environment-providers/read": {
+    scope: "operator",
+    summary: "Read an environment provider",
+    description: "Returns one operator-registered deployment provider and its controller connection.",
+  },
+  "operator/environment-providers/delete": {
+    scope: "operator",
+    summary: "Delete an environment provider",
+    description: "Deletes a deployment provider only when no universe binding references it.",
+  },
+  "operator/environment-providers/bindings/put": {
+    scope: "operator",
+    summary: "Put an environment provider binding",
+    description: "Creates or replaces one universe's complete revisioned routing and admission binding. A deployment provider may have at most one binding in a universe.",
+  },
+  "operator/environment-providers/bindings/delete": {
+    scope: "operator",
+    summary: "Delete an environment provider binding",
+    description: "Deletes a universe provider binding only after every referencing environment has reached Closed.",
+  },
+  "operator/environments/adopt": {
+    scope: "operator",
+    summary: "Adopt a provider environment",
+    description: "Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer.",
   },
 } as const;
 
@@ -723,40 +777,94 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfEnvironmentCredentialUnbindResponse;
   };
   /**
-   * Provision an environment instance
+   * Create an environment
    *
-   * Asks a live provider with create capability to create a universe-owned environment instance. This does not attach the instance to any session.
+   * Records an idempotent provisioning intent against an enabled universe binding. The provider validates its provider-wide template and provisions through its backend asynchronously.
    */
   "environments/create": {
     params: Api.EnvironmentCreateParams;
     result: Api.AgentApiOutcomeOfEnvironmentCreateResponse;
   };
   /**
-   * Read an environment instance
+   * Read an environment
    *
-   * Returns the universe resource with its provider identity, current observed lifecycle, connection, scope, and capabilities.
+   * Returns the durable universe resource, source binding, logical lifecycle state, and minimal current-incarnation identity.
    */
   "environments/read": {
     params: Api.EnvironmentReadParams;
     result: Api.AgentApiOutcomeOfEnvironmentReadResponse;
   };
   /**
-   * List environment instances
+   * List environments
    *
-   * Lists universe-owned instances, optionally filtered by provider or observed target status.
+   * Lists universe-owned environment resources, optionally filtered by provider, binding, or logical lifecycle state.
    */
   "environments/list": {
     params: Api.EnvironmentListParams;
     result: Api.AgentApiOutcomeOfEnvironmentListResponse;
   };
   /**
-   * Close an environment instance
+   * Close an environment
    *
-   * Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
+   * Records an asynchronous idempotent close intent. Provider cleanup is resumed by lifecycle reconciliation; quota is released only after Closed.
    */
   "environments/close": {
     params: Api.EnvironmentCloseParams;
     result: Api.AgentApiOutcomeOfEnvironmentCloseResponse;
+  };
+  /**
+   * Register an external environment
+   *
+   * Creates an environment backed by a Lightspeed-reachable envd WebSocket endpoint. Reachability is checked on demand.
+   */
+  "environments/external/create": {
+    params: Api.EnvironmentExternalCreateParams;
+    result: Api.AgentApiOutcomeOfEnvironmentExternalCreateResponse;
+  };
+  /**
+   * Configure environment public ingress
+   *
+   * Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health.
+   */
+  "environments/ingress/put": {
+    params: Api.EnvironmentIngressPutParams;
+    result: Api.AgentApiOutcomeOfEnvironmentIngressPutResponse;
+  };
+  /**
+   * List environment provider bindings
+   *
+   * Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers.
+   */
+  "environments/provider-bindings/list": {
+    params: Api.EnvironmentProviderBindingListParams;
+    result: Api.AgentApiOutcomeOfEnvironmentProviderBindingListResponse;
+  };
+  /**
+   * Read an environment provider binding
+   *
+   * Returns one universe routing and admission binding. Provider-wide templates and physical resource, network, and ingress policy remain provider-owned.
+   */
+  "environments/provider-bindings/read": {
+    params: Api.EnvironmentProviderBindingReadParams;
+    result: Api.AgentApiOutcomeOfEnvironmentProviderBindingReadResponse;
+  };
+  /**
+   * List environment templates
+   *
+   * Reads immutable templates directly from the selected bound provider controller.
+   */
+  "environments/templates/list": {
+    params: Api.EnvironmentTemplateListParams;
+    result: Api.AgentApiOutcomeOfEnvironmentTemplateListResponse;
+  };
+  /**
+   * Read an environment template
+   *
+   * Returns one immutable template version from the selected bound provider controller.
+   */
+  "environments/templates/read": {
+    params: Api.EnvironmentTemplateReadParams;
+    result: Api.AgentApiOutcomeOfEnvironmentTemplateReadResponse;
   };
   /**
    * Create environment jobs
@@ -966,42 +1074,6 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfMcpServerDeleteResponse;
   };
   /**
-   * Register environment provider presence
-   *
-   * Publishes a controller endpoint, capabilities, implementation identity, and liveness lease. Intended for trusted provider/bridge infrastructure, not ordinary configuration clients.
-   */
-  "environments/providers/register": {
-    params: Api.EnvironmentProviderRegisterParams;
-    result: Api.AgentApiOutcomeOfEnvironmentProviderRegisterResponse;
-  };
-  /**
-   * Refresh environment provider presence
-   *
-   * Renews a provider lease and records its complete observed target descriptors. Omitted provided targets may become unknown; intended for provider infrastructure.
-   */
-  "environments/providers/heartbeat": {
-    params: Api.EnvironmentProviderHeartbeatParams;
-    result: Api.AgentApiOutcomeOfEnvironmentProviderHeartbeatResponse;
-  };
-  /**
-   * Unregister environment provider presence
-   *
-   * Marks provider presence offline without deleting its durable environment instance records.
-   */
-  "environments/providers/unregister": {
-    params: Api.EnvironmentProviderUnregisterParams;
-    result: Api.AgentApiOutcomeOfEnvironmentProviderUnregisterResponse;
-  };
-  /**
-   * List environment providers
-   *
-   * Lists current provider presence with lease-derived online/stale/offline status, optionally filtered by status or kind.
-   */
-  "environments/providers/list": {
-    params: Api.EnvironmentProviderListParams;
-    result: Api.AgentApiOutcomeOfEnvironmentProviderListResponse;
-  };
-  /**
    * Import a static bearer grant
    *
    * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.
@@ -1207,6 +1279,69 @@ export interface MethodMap {
   "operator/api-keys/revoke": {
     params: Api.OperatorApiKeyRevokeParams;
     result: Api.AgentApiOutcomeOfOperatorApiKeyRevokeResponse;
+  };
+  /**
+   * Put an environment provider
+   *
+   * Registers or replaces one deployment provider and its controller connection. The provider does not call this API or require access to Lightspeed.
+   */
+  "operator/environment-providers/put": {
+    params: Api.OperatorEnvironmentProviderPutParams;
+    result: Api.AgentApiOutcomeOfOperatorEnvironmentProviderPutResponse;
+  };
+  /**
+   * List environment providers
+   *
+   * Returns every operator-registered deployment provider and its controller connection.
+   */
+  "operator/environment-providers/list": {
+    params: Api.OperatorEnvironmentProviderListParams;
+    result: Api.AgentApiOutcomeOfOperatorEnvironmentProviderListResponse;
+  };
+  /**
+   * Read an environment provider
+   *
+   * Returns one operator-registered deployment provider and its controller connection.
+   */
+  "operator/environment-providers/read": {
+    params: Api.OperatorEnvironmentProviderReadParams;
+    result: Api.AgentApiOutcomeOfOperatorEnvironmentProviderReadResponse;
+  };
+  /**
+   * Delete an environment provider
+   *
+   * Deletes a deployment provider only when no universe binding references it.
+   */
+  "operator/environment-providers/delete": {
+    params: Api.OperatorEnvironmentProviderDeleteParams;
+    result: Api.AgentApiOutcomeOfOperatorEnvironmentProviderDeleteResponse;
+  };
+  /**
+   * Put an environment provider binding
+   *
+   * Creates or replaces one universe's complete revisioned routing and admission binding. A deployment provider may have at most one binding in a universe.
+   */
+  "operator/environment-providers/bindings/put": {
+    params: Api.OperatorProviderBindingPutParams;
+    result: Api.AgentApiOutcomeOfOperatorProviderBindingPutResponse;
+  };
+  /**
+   * Delete an environment provider binding
+   *
+   * Deletes a universe provider binding only after every referencing environment has reached Closed.
+   */
+  "operator/environment-providers/bindings/delete": {
+    params: Api.OperatorProviderBindingDeleteParams;
+    result: Api.AgentApiOutcomeOfOperatorProviderBindingDeleteResponse;
+  };
+  /**
+   * Adopt a provider environment
+   *
+   * Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer.
+   */
+  "operator/environments/adopt": {
+    params: Api.OperatorEnvironmentAdoptParams;
+    result: Api.AgentApiOutcomeOfOperatorEnvironmentAdoptResponse;
   };
 }
 
@@ -1419,36 +1554,84 @@ export const rpc = {
     return client.call("environments/credentials/unbind", params);
   },
   /**
-   * Provision an environment instance
+   * Create an environment
    *
-   * Asks a live provider with create capability to create a universe-owned environment instance. This does not attach the instance to any session.
+   * Records an idempotent provisioning intent against an enabled universe binding. The provider validates its provider-wide template and provisions through its backend asynchronously.
    */
   environmentsCreate(client: RpcCaller, params: Api.EnvironmentCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentCreateResponse> {
     return client.call("environments/create", params);
   },
   /**
-   * Read an environment instance
+   * Read an environment
    *
-   * Returns the universe resource with its provider identity, current observed lifecycle, connection, scope, and capabilities.
+   * Returns the durable universe resource, source binding, logical lifecycle state, and minimal current-incarnation identity.
    */
   environmentsRead(client: RpcCaller, params: Api.EnvironmentReadParams): Promise<Api.AgentApiOutcomeOfEnvironmentReadResponse> {
     return client.call("environments/read", params);
   },
   /**
-   * List environment instances
+   * List environments
    *
-   * Lists universe-owned instances, optionally filtered by provider or observed target status.
+   * Lists universe-owned environment resources, optionally filtered by provider, binding, or logical lifecycle state.
    */
   environmentsList(client: RpcCaller, params: Api.EnvironmentListParams): Promise<Api.AgentApiOutcomeOfEnvironmentListResponse> {
     return client.call("environments/list", params);
   },
   /**
-   * Close an environment instance
+   * Close an environment
    *
-   * Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
+   * Records an asynchronous idempotent close intent. Provider cleanup is resumed by lifecycle reconciliation; quota is released only after Closed.
    */
   environmentsClose(client: RpcCaller, params: Api.EnvironmentCloseParams): Promise<Api.AgentApiOutcomeOfEnvironmentCloseResponse> {
     return client.call("environments/close", params);
+  },
+  /**
+   * Register an external environment
+   *
+   * Creates an environment backed by a Lightspeed-reachable envd WebSocket endpoint. Reachability is checked on demand.
+   */
+  environmentsExternalCreate(client: RpcCaller, params: Api.EnvironmentExternalCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentExternalCreateResponse> {
+    return client.call("environments/external/create", params);
+  },
+  /**
+   * Configure environment public ingress
+   *
+   * Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health.
+   */
+  environmentsIngressPut(client: RpcCaller, params: Api.EnvironmentIngressPutParams): Promise<Api.AgentApiOutcomeOfEnvironmentIngressPutResponse> {
+    return client.call("environments/ingress/put", params);
+  },
+  /**
+   * List environment provider bindings
+   *
+   * Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers.
+   */
+  environmentsProviderBindingsList(client: RpcCaller, params: Api.EnvironmentProviderBindingListParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderBindingListResponse> {
+    return client.call("environments/provider-bindings/list", params);
+  },
+  /**
+   * Read an environment provider binding
+   *
+   * Returns one universe routing and admission binding. Provider-wide templates and physical resource, network, and ingress policy remain provider-owned.
+   */
+  environmentsProviderBindingsRead(client: RpcCaller, params: Api.EnvironmentProviderBindingReadParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderBindingReadResponse> {
+    return client.call("environments/provider-bindings/read", params);
+  },
+  /**
+   * List environment templates
+   *
+   * Reads immutable templates directly from the selected bound provider controller.
+   */
+  environmentsTemplatesList(client: RpcCaller, params: Api.EnvironmentTemplateListParams): Promise<Api.AgentApiOutcomeOfEnvironmentTemplateListResponse> {
+    return client.call("environments/templates/list", params);
+  },
+  /**
+   * Read an environment template
+   *
+   * Returns one immutable template version from the selected bound provider controller.
+   */
+  environmentsTemplatesRead(client: RpcCaller, params: Api.EnvironmentTemplateReadParams): Promise<Api.AgentApiOutcomeOfEnvironmentTemplateReadResponse> {
+    return client.call("environments/templates/read", params);
   },
   /**
    * Create environment jobs
@@ -1635,38 +1818,6 @@ export const rpc = {
     return client.call("mcp/servers/delete", params);
   },
   /**
-   * Register environment provider presence
-   *
-   * Publishes a controller endpoint, capabilities, implementation identity, and liveness lease. Intended for trusted provider/bridge infrastructure, not ordinary configuration clients.
-   */
-  environmentsProvidersRegister(client: RpcCaller, params: Api.EnvironmentProviderRegisterParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderRegisterResponse> {
-    return client.call("environments/providers/register", params);
-  },
-  /**
-   * Refresh environment provider presence
-   *
-   * Renews a provider lease and records its complete observed target descriptors. Omitted provided targets may become unknown; intended for provider infrastructure.
-   */
-  environmentsProvidersHeartbeat(client: RpcCaller, params: Api.EnvironmentProviderHeartbeatParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderHeartbeatResponse> {
-    return client.call("environments/providers/heartbeat", params);
-  },
-  /**
-   * Unregister environment provider presence
-   *
-   * Marks provider presence offline without deleting its durable environment instance records.
-   */
-  environmentsProvidersUnregister(client: RpcCaller, params: Api.EnvironmentProviderUnregisterParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderUnregisterResponse> {
-    return client.call("environments/providers/unregister", params);
-  },
-  /**
-   * List environment providers
-   *
-   * Lists current provider presence with lease-derived online/stale/offline status, optionally filtered by status or kind.
-   */
-  environmentsProvidersList(client: RpcCaller, params: Api.EnvironmentProviderListParams): Promise<Api.AgentApiOutcomeOfEnvironmentProviderListResponse> {
-    return client.call("environments/providers/list", params);
-  },
-  /**
    * Import a static bearer grant
    *
    * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.
@@ -1849,5 +2000,61 @@ export const rpc = {
    */
   operatorApiKeysRevoke(client: RpcCaller, params: Api.OperatorApiKeyRevokeParams): Promise<Api.AgentApiOutcomeOfOperatorApiKeyRevokeResponse> {
     return client.call("operator/api-keys/revoke", params);
+  },
+  /**
+   * Put an environment provider
+   *
+   * Registers or replaces one deployment provider and its controller connection. The provider does not call this API or require access to Lightspeed.
+   */
+  operatorEnvironmentProvidersPut(client: RpcCaller, params: Api.OperatorEnvironmentProviderPutParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentProviderPutResponse> {
+    return client.call("operator/environment-providers/put", params);
+  },
+  /**
+   * List environment providers
+   *
+   * Returns every operator-registered deployment provider and its controller connection.
+   */
+  operatorEnvironmentProvidersList(client: RpcCaller, params: Api.OperatorEnvironmentProviderListParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentProviderListResponse> {
+    return client.call("operator/environment-providers/list", params);
+  },
+  /**
+   * Read an environment provider
+   *
+   * Returns one operator-registered deployment provider and its controller connection.
+   */
+  operatorEnvironmentProvidersRead(client: RpcCaller, params: Api.OperatorEnvironmentProviderReadParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentProviderReadResponse> {
+    return client.call("operator/environment-providers/read", params);
+  },
+  /**
+   * Delete an environment provider
+   *
+   * Deletes a deployment provider only when no universe binding references it.
+   */
+  operatorEnvironmentProvidersDelete(client: RpcCaller, params: Api.OperatorEnvironmentProviderDeleteParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentProviderDeleteResponse> {
+    return client.call("operator/environment-providers/delete", params);
+  },
+  /**
+   * Put an environment provider binding
+   *
+   * Creates or replaces one universe's complete revisioned routing and admission binding. A deployment provider may have at most one binding in a universe.
+   */
+  operatorEnvironmentProvidersBindingsPut(client: RpcCaller, params: Api.OperatorProviderBindingPutParams): Promise<Api.AgentApiOutcomeOfOperatorProviderBindingPutResponse> {
+    return client.call("operator/environment-providers/bindings/put", params);
+  },
+  /**
+   * Delete an environment provider binding
+   *
+   * Deletes a universe provider binding only after every referencing environment has reached Closed.
+   */
+  operatorEnvironmentProvidersBindingsDelete(client: RpcCaller, params: Api.OperatorProviderBindingDeleteParams): Promise<Api.AgentApiOutcomeOfOperatorProviderBindingDeleteResponse> {
+    return client.call("operator/environment-providers/bindings/delete", params);
+  },
+  /**
+   * Adopt a provider environment
+   *
+   * Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer.
+   */
+  operatorEnvironmentsAdopt(client: RpcCaller, params: Api.OperatorEnvironmentAdoptParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentAdoptResponse> {
+    return client.call("operator/environments/adopt", params);
   },
 } as const;

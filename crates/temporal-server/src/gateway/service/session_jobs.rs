@@ -76,9 +76,18 @@ impl GatewayAgentApi {
                 "environments/jobs/create requires at least one job",
             ));
         }
-        self.read_live_environment_provider(&instance.provider_id)
-            .await?;
-        if !instance.capabilities.job_start {
+        let key = self
+            .environment_gateway
+            .route_key(self.store.config().universe_id, &instance);
+        let connection = self.environment_gateway.connection(&key);
+        let (_client, capabilities) = connect_initialized_host_data_client(
+            &connection,
+            self.environment_gateway
+                .connect_options("lightspeed-temporal-server"),
+        )
+        .await
+        .map_err(|error| AgentApiError::rejected(error.to_string()))?;
+        if !capabilities.job_start {
             return Err(AgentApiError::rejected(format!(
                 "environment does not support durable job start: {}",
                 instance.environment_id
@@ -403,12 +412,17 @@ impl GatewayAgentApi {
             .read_job_instance(environment_id)
             .await
             .map_err(|error| error.to_string())?;
-        self.read_live_environment_provider(&instance.provider_id)
-            .await
-            .map_err(|error| error.to_string())?;
-        let (client, capabilities) = connect_initialized_host_data_client(&instance.connection)
-            .await
-            .map_err(|error| error.to_string())?;
+        let key = self
+            .environment_gateway
+            .route_key(self.store.config().universe_id, &instance);
+        let connection = self.environment_gateway.connection(&key);
+        let (client, capabilities) = connect_initialized_host_data_client(
+            &connection,
+            self.environment_gateway
+                .connect_options("lightspeed-temporal-server"),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let supported = match operation {
             "read" => capabilities.job_read,
             "cancel" => capabilities.job_cancel,
@@ -529,6 +543,7 @@ fn derived_job_group_id(
 
 async fn connect_initialized_host_data_client(
     connection: &HostConnectionSpec,
+    options: WebSocketConnectOptions,
 ) -> Result<
     (
         HostDataClient<host_client::WebSocketTransport>,
@@ -536,7 +551,7 @@ async fn connect_initialized_host_data_client(
     ),
     AgentApiError,
 > {
-    let mut client = connect_host_data_client(connection).await?;
+    let mut client = connect_host_data_client(connection, options).await?;
     let response = client
         .initialize(&HostInitializeParams {
             protocol_version: CURRENT_PROTOCOL_VERSION,
@@ -562,17 +577,12 @@ async fn connect_initialized_host_data_client(
 
 pub(crate) async fn connect_host_data_client(
     connection: &HostConnectionSpec,
+    options: WebSocketConnectOptions,
 ) -> Result<HostDataClient<host_client::WebSocketTransport>, AgentApiError> {
     match &connection.transport {
-        HostTransport::WebSocket => HostDataClient::connect(
-            &connection.endpoint,
-            WebSocketConnectOptions {
-                user_agent: Some("lightspeed-temporal-server".to_owned()),
-                ..WebSocketConnectOptions::default()
-            },
-        )
-        .await
-        .map_err(map_host_client_api_error),
+        HostTransport::WebSocket => HostDataClient::connect(&connection.endpoint, options)
+            .await
+            .map_err(map_host_client_api_error),
         other => Err(AgentApiError::rejected(format!(
             "unsupported host data transport for environment jobs: {other:?}"
         ))),

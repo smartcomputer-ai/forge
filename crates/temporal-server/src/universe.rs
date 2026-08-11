@@ -33,6 +33,7 @@ use uuid::Uuid;
 
 use crate::{
     config::DeploymentStores,
+    environment_gateway::EnvironmentGatewayClientConfig,
     fleet::AgentApiFleetRuntime,
     gateway::GatewayAgentApi,
     worker::{ActivityState, AudioTranscoder},
@@ -138,6 +139,7 @@ pub struct UniverseRuntime {
     public_base_url: Option<String>,
     stores: DeploymentStores,
     clients: DeploymentClients,
+    environment_gateway: EnvironmentGatewayClientConfig,
     states: tokio::sync::Mutex<BTreeMap<Uuid, UniverseEntry>>,
 }
 
@@ -148,12 +150,15 @@ impl UniverseRuntime {
         public_base_url: Option<String>,
         stores: DeploymentStores,
     ) -> anyhow::Result<Self> {
+        let environment_gateway =
+            EnvironmentGatewayClientConfig::from_env(public_base_url.as_deref())?;
         Ok(Self {
             client,
             task_queue,
             public_base_url,
             stores,
             clients: DeploymentClients::from_env()?,
+            environment_gateway,
             states: tokio::sync::Mutex::new(BTreeMap::new()),
         })
     }
@@ -168,6 +173,10 @@ impl UniverseRuntime {
 
     pub fn client(&self) -> &Client {
         &self.client
+    }
+
+    pub fn environment_gateway(&self) -> &EnvironmentGatewayClientConfig {
+        &self.environment_gateway
     }
 
     /// Drop the universe's cached runtime state (operator purge). In-flight
@@ -208,6 +217,39 @@ impl UniverseRuntime {
         Ok(state)
     }
 
+    /// Run the one active deployment lifecycle reconciler. Provider calls are
+    /// idempotent, so process restart safely resumes any persisted intent.
+    pub async fn run_environment_reconciler(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let universe_ids = match store_pg::list_universes_with_pending_environments(
+                self.stores.pool(),
+            )
+            .await
+            {
+                Ok(ids) => ids,
+                Err(error) => {
+                    tracing::warn!(target: "temporal_server", %error, "environment reconciler scan failed");
+                    continue;
+                }
+            };
+            for universe_id in universe_ids {
+                let state = match self.state_for(universe_id, false).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        tracing::warn!(target: "temporal_server", %universe_id, %error, "environment reconciler could not resolve universe");
+                        continue;
+                    }
+                };
+                if let Err(error) = state.api.reconcile_environment_lifecycle_once().await {
+                    tracing::warn!(target: "temporal_server", %universe_id, %error, "environment lifecycle reconcile pass failed");
+                }
+            }
+        }
+    }
+
     async fn build_state(&self, universe_id: Uuid) -> Result<UniverseState, UniverseError> {
         let store = self.stores.store_for(universe_id);
         store
@@ -222,7 +264,8 @@ impl UniverseRuntime {
             .with_model_discovery_clients(
                 self.clients.openai.clone(),
                 self.clients.anthropic.clone(),
-            );
+            )
+            .with_environment_gateway(self.environment_gateway.clone());
         if let Some(public_base_url) = &self.public_base_url {
             api = api.with_public_base_url(public_base_url.clone());
         }
@@ -233,6 +276,7 @@ impl UniverseRuntime {
             Some(fleet_runtime),
             &self.clients,
             self.client.clone(),
+            self.environment_gateway.clone(),
         )?);
         Ok(UniverseState {
             universe_id,

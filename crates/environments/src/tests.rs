@@ -1,168 +1,358 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use host_protocol::{
-    control::targets::{HostTargetStatus, HostTargetSummary},
-    shared::{
-        HostCapabilities, HostConnectionSpec, HostPath, HostScope, HostTargetId, HostTransport,
-        ImplementationInfo,
-    },
-};
+use host_protocol::shared::{HostTargetId, HostTransport};
+use uuid::Uuid;
 
 use super::*;
 
-fn provider() -> RegisterEnvironmentProvider {
-    RegisterEnvironmentProvider {
-        provider_id: EnvironmentProviderId::new("bridge"),
-        provider_kind: EnvironmentProviderKind::Bridge,
-        display_name: None,
+fn provider() -> PutEnvironmentProvider {
+    PutEnvironmentProvider {
+        provider_id: EnvironmentProviderId::new("incus-local"),
+        display_name: Some("Local Incus".to_owned()),
         controller_connection: HostControllerConnectionSpec::new(
-            "http://bridge",
-            HostTransport::Http,
+            "ws://127.0.0.1:19090/control",
+            HostTransport::WebSocket,
         ),
-        capabilities: EnvironmentProviderCapabilities {
-            list_targets: true,
-            create_target: true,
-            get_target: true,
-            close_target: true,
-        },
-        implementation: ImplementationInfo {
-            name: "test".to_owned(),
-            version: None,
-        },
-        lease_ttl_ms: 1_000,
         metadata: BTreeMap::new(),
-        observed_at_ms: 100,
+        updated_at_ms: 1_000,
     }
 }
 
-fn observation(environment_id: &str, origin: EnvironmentOrigin) -> ObserveEnvironment {
-    let target_id = HostTargetId::new("local");
-    ObserveEnvironment::from_observation(
-        EnvironmentId::new(environment_id),
-        EnvironmentProviderId::new("bridge"),
-        origin,
-        ObservedEnvironmentTarget {
-            target: HostTargetSummary {
-                target_id: target_id.clone(),
-                display_name: None,
-                status: HostTargetStatus::Ready,
-                scope: HostScope::Default,
-                capabilities: HostCapabilities::filesystem(true, true)
-                    .with_process()
-                    .with_jobs(),
-                default_cwd: Some(HostPath::new("/workspace").expect("path")),
-                metadata: BTreeMap::new(),
-            },
-            connection: HostConnectionSpec {
-                target_id,
-                endpoint: "http://host".to_owned(),
-                transport: HostTransport::Http,
-                scope: HostScope::Default,
-                default_cwd: Some(HostPath::new("/workspace").expect("path")),
-                capabilities: HostCapabilities::filesystem(true, true)
-                    .with_process()
-                    .with_jobs(),
-            },
-        },
-        200,
-    )
+fn binding(universe_id: Uuid, expected_revision: Option<u64>) -> PutEnvironmentProviderBinding {
+    PutEnvironmentProviderBinding {
+        universe_id,
+        binding_id: EnvironmentProviderBindingId::new("primary"),
+        provider_id: EnvironmentProviderId::new("incus-local"),
+        status: EnvironmentProviderBindingStatus::Enabled,
+        metadata: BTreeMap::new(),
+        expected_revision,
+        updated_at_ms: 1_000 + expected_revision.unwrap_or(0) as i64,
+    }
 }
 
-#[test]
-fn provider_presence_derives_stale_from_lease() {
-    let record = provider().into_record().expect("provider");
-    assert_eq!(record.presence_at(500), EnvironmentProviderPresence::Online);
+fn create(request: &str, environment: &str, incarnation: &str, at: i64) -> CreateEnvironment {
+    CreateEnvironment {
+        request_id: EnvironmentProvisionRequestId::new(request),
+        environment_id: EnvironmentId::new(environment),
+        incarnation_id: EnvironmentIncarnationId::new(incarnation),
+        binding_id: EnvironmentProviderBindingId::new("primary"),
+        template_id: EnvironmentTemplateId::new("rust-v1"),
+        display_name: None,
+        metadata: BTreeMap::new(),
+        created_at_ms: at,
+    }
+}
+
+async fn store() -> (Uuid, InMemoryEnvironmentRegistryStore) {
+    let universe_id = Uuid::new_v4();
+    let store = InMemoryEnvironmentRegistryStore::for_universe(universe_id);
+    store.put_provider(provider()).await.expect("provider");
+    store
+        .put_provider_binding(binding(universe_id, None))
+        .await
+        .expect("binding");
+    (universe_id, store)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn binding_put_is_revisioned_and_unique_per_provider() {
+    let (universe_id, store) = store().await;
+    let first = store
+        .read_provider_binding(universe_id, &EnvironmentProviderBindingId::new("primary"))
+        .await
+        .expect("read");
+    assert_eq!(first.revision, 1);
+
+    let conflict = store
+        .put_provider_binding(binding(universe_id, None))
+        .await
+        .expect_err("stale write");
+    assert!(matches!(
+        conflict,
+        EnvironmentRegistryError::RevisionConflict {
+            actual: Some(1),
+            ..
+        }
+    ));
+
+    let second = store
+        .put_provider_binding(binding(universe_id, Some(1)))
+        .await
+        .expect("replace");
+    assert_eq!(second.revision, 2);
+
+    let mut duplicate = binding(universe_id, None);
+    duplicate.binding_id = EnvironmentProviderBindingId::new("secondary");
+    assert!(matches!(
+        store.put_provider_binding(duplicate).await,
+        Err(EnvironmentRegistryError::AlreadyExists { .. })
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn provider_delete_requires_all_bindings_to_be_removed() {
+    let (universe_id, store) = store().await;
+    let provider_id = EnvironmentProviderId::new("incus-local");
+    assert!(matches!(
+        store.delete_provider(&provider_id).await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
+    store
+        .delete_provider_binding(universe_id, &EnvironmentProviderBindingId::new("primary"))
+        .await
+        .expect("delete binding");
+    let deleted = store
+        .delete_provider(&provider_id)
+        .await
+        .expect("delete provider");
+    assert_eq!(deleted.provider_id, provider_id);
+    assert!(matches!(
+        store.read_provider(&provider_id).await,
+        Err(EnvironmentRegistryError::NotFound { .. })
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stable_request_id_returns_the_original_environment() {
+    let (_, store) = store().await;
+    let first = store
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
+        .await
+        .expect("first");
+    let retry = store
+        .create_environment(create(
+            "request-1",
+            "different-environment",
+            "different-incarnation",
+            3_000,
+        ))
+        .await
+        .expect("retry");
+    assert_eq!(retry.environment_id, first.environment_id);
     assert_eq!(
-        record.presence_at(1_100),
-        EnvironmentProviderPresence::Stale
+        retry.incarnation.incarnation_id,
+        first.incarnation.incarnation_id
+    );
+    assert_eq!(
+        store
+            .list_environments(ListEnvironments::default())
+            .await
+            .expect("list")
+            .len(),
+        1
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn provider_target_identity_is_stable_across_observations() {
-    let store = InMemoryEnvironmentRegistryStore::new();
-    store.register_provider(provider()).await.expect("provider");
-    let first = store
-        .observe_environment(observation("instance-a", EnvironmentOrigin::Provided))
+async fn adoption_creates_a_provisioned_environment_without_a_template() {
+    let (_, store) = store().await;
+    let adopted = store
+        .adopt_environment(AdoptEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("adopt-request-1"),
+            environment_id: EnvironmentId::new("environment-adopted"),
+            incarnation_id: EnvironmentIncarnationId::new("incarnation-adopted"),
+            binding_id: EnvironmentProviderBindingId::new("primary"),
+            source_target: "legacy/hand-built-vm".to_owned(),
+            display_name: Some("Hand-built VM".to_owned()),
+            metadata: BTreeMap::new(),
+            created_at_ms: 2_000,
+        })
         .await
-        .expect("first");
-    let second = store
-        .observe_environment(observation("instance-b", EnvironmentOrigin::Provided))
+        .expect("adopt");
+
+    assert_eq!(adopted.status, EnvironmentStatus::Provisioning);
+    assert!(matches!(
+        adopted.source,
+        EnvironmentSource::Provisioned { .. }
+    ));
+    assert_eq!(adopted.incarnation.template_id, None);
+    assert_eq!(
+        adopted.incarnation.adoption_source_target.as_deref(),
+        Some("legacy/hand-built-vm")
+    );
+
+    let retry = store
+        .adopt_environment(AdoptEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("adopt-request-1"),
+            environment_id: EnvironmentId::new("ignored-on-retry"),
+            incarnation_id: EnvironmentIncarnationId::new("ignored-on-retry"),
+            binding_id: EnvironmentProviderBindingId::new("primary"),
+            source_target: "legacy/another-vm".to_owned(),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            created_at_ms: 3_000,
+        })
         .await
-        .expect("second");
-    assert_eq!(first.environment_id, second.environment_id);
+        .expect("idempotent retry");
+    assert_eq!(retry.environment_id, adopted.environment_id);
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn credentials_are_bound_directly_to_universe_environments() {
-    let store = InMemoryEnvironmentRegistryStore::new();
-    store.register_provider(provider()).await.expect("provider");
+async fn lightspeed_does_not_enforce_provider_quota() {
+    let (_, store) = store().await;
     let first = store
-        .observe_environment(observation("instance-a", EnvironmentOrigin::Provided))
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
         .await
         .expect("first");
     store
-        .bind_credential(PutEnvironmentCredential {
+        .fail_environment_lifecycle(FailEnvironmentLifecycle {
             environment_id: first.environment_id.clone(),
-            env_name: "TOKEN".to_owned(),
-            source: EnvironmentCredentialSource::DirectSecret {
-                secret_id: SecretId::new("secret"),
-            },
-            created_at_ms: 301,
+            message: "provider failed".to_owned(),
+            observed_at_ms: 3_000,
         })
         .await
-        .expect("credential");
-    let credentials = store
-        .list_credentials(ListEnvironmentCredentials {
-            environment_id: first.environment_id,
-        })
+        .expect("fail");
+    store
+        .create_environment(create("request-2", "environment-2", "incarnation-2", 4_000))
         .await
-        .expect("credentials");
-    assert_eq!(credentials.len(), 1);
-    assert_eq!(credentials[0].env_name, "TOKEN");
+        .expect("second intent");
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn close_allows_instances_without_attached_bindings() {
-    let store = InMemoryEnvironmentRegistryStore::new();
-    store.register_provider(provider()).await.expect("provider");
-    let instance = store
-        .observe_environment(observation("instance", EnvironmentOrigin::Provisioned))
+async fn provider_observation_populates_only_the_current_incarnation() {
+    let (_, store) = store().await;
+    let environment = store
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
         .await
-        .expect("instance");
-    let closing = store
-        .begin_close_environment(BeginCloseEnvironment {
-            environment_id: instance.environment_id,
-            updated_at_ms: 400,
+        .expect("create");
+    let target_id = HostTargetId::new("target-1");
+    let observed = store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment.environment_id.clone(),
+            provider_target_id: target_id.clone(),
+            status: EnvironmentStatus::Ready,
+            observed_at_ms: 3_000,
         })
         .await
-        .expect("close begins without local job occupancy state");
-    assert_eq!(closing.status, HostTargetStatus::Closing);
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn missing_provided_targets_become_unknown() {
-    let store = InMemoryEnvironmentRegistryStore::new();
-    store.register_provider(provider()).await.expect("provider");
-    let instance = store
-        .observe_environment(observation("instance", EnvironmentOrigin::Provided))
-        .await
-        .expect("instance");
-    let changed = store
-        .mark_missing_provided_environments_unknown(
-            &EnvironmentProviderId::new("bridge"),
-            &BTreeSet::new(),
-            500,
-        )
-        .await
-        .expect("missing");
-    assert_eq!(changed.len(), 1);
+        .expect("observe");
+    assert_eq!(observed.status, EnvironmentStatus::Ready);
+    assert_eq!(observed.incarnation.provider_target_id, Some(target_id));
     assert_eq!(
-        store
-            .read_environment(&instance.environment_id)
-            .await
-            .expect("instance")
-            .status,
-        HostTargetStatus::Unknown
+        observed.incarnation.template_id,
+        Some(EnvironmentTemplateId::new("rust-v1"))
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn public_ingress_is_a_realized_environment_facet() {
+    let (_, store) = store().await;
+    let environment = store
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
+        .await
+        .expect("create");
+    let enabled = store
+        .set_environment_ingress(SetEnvironmentIngress {
+            environment_id: environment.environment_id.clone(),
+            enabled: true,
+            public_endpoint: Some("https://opaque.env.example".to_owned()),
+            updated_at_ms: 3_000,
+        })
+        .await
+        .expect("enable ingress");
+    assert!(enabled.public_ingress_enabled);
+    assert_eq!(
+        enabled.public_endpoint.as_deref(),
+        Some("https://opaque.env.example")
+    );
+    let disabled = store
+        .set_environment_ingress(SetEnvironmentIngress {
+            environment_id: environment.environment_id,
+            enabled: false,
+            public_endpoint: None,
+            updated_at_ms: 4_000,
+        })
+        .await
+        .expect("disable ingress");
+    assert!(!disabled.public_ingress_enabled);
+    assert_eq!(disabled.public_endpoint, None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn external_environment_cannot_enable_provider_managed_ingress() {
+    let store = InMemoryEnvironmentRegistryStore::new();
+    let environment = store
+        .create_external_environment(CreateExternalEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("external-request"),
+            environment_id: EnvironmentId::new("external-environment"),
+            incarnation_id: EnvironmentIncarnationId::new("external-incarnation"),
+            connection: EnvironmentConnectionSpec::new(
+                "ws://envd.example",
+                HostTransport::WebSocket,
+            ),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            created_at_ms: 1_000,
+        })
+        .await
+        .expect("external");
+    assert!(matches!(
+        store
+            .set_environment_ingress(SetEnvironmentIngress {
+                environment_id: environment.environment_id,
+                enabled: true,
+                public_endpoint: Some("https://invalid.example".to_owned()),
+                updated_at_ms: 2_000,
+            })
+            .await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn external_environment_persists_a_typed_connection() {
+    let store = InMemoryEnvironmentRegistryStore::new();
+    let environment = store
+        .create_external_environment(CreateExternalEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("external-request"),
+            environment_id: EnvironmentId::new("external-environment"),
+            incarnation_id: EnvironmentIncarnationId::new("external-incarnation"),
+            connection: EnvironmentConnectionSpec::new(
+                "ws://envd.example:19091",
+                HostTransport::WebSocket,
+            ),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            created_at_ms: 1_000,
+        })
+        .await
+        .expect("create external environment");
+    let EnvironmentSource::External { connection } = environment.source else {
+        panic!("external source")
+    };
+    assert_eq!(connection.endpoint, "ws://envd.example:19091");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn disabled_binding_blocks_create_and_live_references_block_delete() {
+    let (universe_id, store) = store().await;
+    let environment = store
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
+        .await
+        .expect("create");
+    let mut disabled = binding(universe_id, Some(1));
+    disabled.status = EnvironmentProviderBindingStatus::Disabled;
+    store.put_provider_binding(disabled).await.expect("disable");
+    assert!(matches!(
+        store
+            .create_environment(create("request-2", "environment-2", "incarnation-2", 3_000))
+            .await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
+    assert!(matches!(
+        store
+            .delete_provider_binding(universe_id, &EnvironmentProviderBindingId::new("primary"))
+            .await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
+    store
+        .finish_close_environment(FinishCloseEnvironment {
+            environment_id: environment.environment_id,
+            observed_at_ms: 4_000,
+        })
+        .await
+        .expect("close");
+    store
+        .delete_provider_binding(universe_id, &EnvironmentProviderBindingId::new("primary"))
+        .await
+        .expect("delete");
 }
