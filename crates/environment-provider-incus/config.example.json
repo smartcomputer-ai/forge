@@ -1,0 +1,35 @@
+{
+  "controllerListen": "127.0.0.1:19090",
+  "incus": {
+    "mode": "single",
+    "endpoints": ["https://hz02.example.ts.net:8443"],
+    "clientCertificatePem": "/run/secrets/incus-client.crt",
+    "clientPrivateKeyPem": "/run/secrets/incus-client.key",
+    "serverCaPem": "/run/secrets/incus-server-ca.crt",
+    "storagePool": "default",
+    "imageServerUrl": "https://hz01-image-builder.example.ts.net:8443"
+  },
+  "relayIdleSeconds": 60,
+  "dialTimeoutSeconds": 10,
+  "envdPort": 19091,
+  "ingress": {
+    "publicBaseUrl": "https://env.example.com",
+    "listen": "127.0.0.1:19092"
+  },
+  "network": {
+    "deniedEgressCidrs": ["100.64.0.0/10", "169.254.169.254/32"]
+  },
+  "templates": [
+    {
+      "templateId": "dev-small-v1",
+      "displayName": "Small development VM",
+      "description": "2 vCPU, 4 GiB RAM, 40 GiB disk",
+      "imageFingerprint": "replace-with-immutable-sha256-fingerprint",
+      "cpu": 2,
+      "memory": "4GiB",
+      "disk": "40GiB",
+      "publicIngress": true,
+      "ingressPort": 8080
+    }
+  ]
+}

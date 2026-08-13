@@ -2,14 +2,16 @@
 
 use host_protocol::control::{
     handshake::{ControllerInitializeParams, ControllerInitializeResponse},
+    ingress::{EnsureIngressParams, IngressResponse, RemoveIngressParams},
     methods::{
-        ATTACH_TARGET_METHOD, CLOSE_TARGET_METHOD, CREATE_TARGET_METHOD, GET_TARGET_METHOD,
-        INITIALIZE_METHOD, LIST_TARGETS_METHOD,
+        ADOPT_TARGET_METHOD, CLOSE_TARGET_METHOD, CREATE_TARGET_METHOD, ENSURE_INGRESS_METHOD,
+        GET_TARGET_METHOD, INITIALIZE_METHOD, LIST_TARGETS_METHOD, LIST_TEMPLATES_METHOD,
+        REMOVE_INGRESS_METHOD,
     },
     targets::{
-        AttachTargetParams, AttachTargetResponse, CloseTargetParams, CloseTargetResponse,
+        AdoptTargetParams, AdoptTargetResponse, CloseTargetParams, CloseTargetResponse,
         CreateTargetParams, CreateTargetResponse, GetTargetParams, GetTargetResponse,
-        ListTargetsParams, ListTargetsResponse,
+        ListTargetsParams, ListTargetsResponse, ListTemplatesParams, ListTemplatesResponse,
     },
 };
 
@@ -55,6 +57,13 @@ where
         self.rpc.request(LIST_TARGETS_METHOD, params).await
     }
 
+    pub async fn list_templates(
+        &mut self,
+        params: &ListTemplatesParams,
+    ) -> HostClientResult<ListTemplatesResponse> {
+        self.rpc.request(LIST_TEMPLATES_METHOD, params).await
+    }
+
     pub async fn create_target(
         &mut self,
         params: &CreateTargetParams,
@@ -62,11 +71,11 @@ where
         self.rpc.request(CREATE_TARGET_METHOD, params).await
     }
 
-    pub async fn attach_target(
+    pub async fn adopt_target(
         &mut self,
-        params: &AttachTargetParams,
-    ) -> HostClientResult<AttachTargetResponse> {
-        self.rpc.request(ATTACH_TARGET_METHOD, params).await
+        params: &AdoptTargetParams,
+    ) -> HostClientResult<AdoptTargetResponse> {
+        self.rpc.request(ADOPT_TARGET_METHOD, params).await
     }
 
     pub async fn get_target(
@@ -81,6 +90,20 @@ where
         params: &CloseTargetParams,
     ) -> HostClientResult<CloseTargetResponse> {
         self.rpc.request(CLOSE_TARGET_METHOD, params).await
+    }
+
+    pub async fn ensure_ingress(
+        &mut self,
+        params: &EnsureIngressParams,
+    ) -> HostClientResult<IngressResponse> {
+        self.rpc.request(ENSURE_INGRESS_METHOD, params).await
+    }
+
+    pub async fn remove_ingress(
+        &mut self,
+        params: &RemoveIngressParams,
+    ) -> HostClientResult<IngressResponse> {
+        self.rpc.request(REMOVE_INGRESS_METHOD, params).await
     }
 }
 

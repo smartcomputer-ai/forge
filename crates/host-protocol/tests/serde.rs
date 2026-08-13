@@ -4,12 +4,12 @@ use host_protocol::{
     control::{
         handshake::ControllerInitializeParams,
         methods::{
-            ATTACH_TARGET_METHOD, CREATE_TARGET_METHOD,
-            INITIALIZE_METHOD as CONTROL_INITIALIZE_METHOD, LIST_TARGETS_METHOD,
+            CREATE_TARGET_METHOD, INITIALIZE_METHOD as CONTROL_INITIALIZE_METHOD,
+            LIST_TARGETS_METHOD,
         },
         targets::{
-            AttachTargetParams, CreateTargetParams, CreateTargetResponse, HostTargetAttachRequest,
-            HostTargetCreateRequest, HostTargetStatus, HostTargetSummary, ListTargetsResponse,
+            CreateTargetParams, CreateTargetResponse, HostTargetStatus, HostTargetSummary,
+            ListTargetsResponse, ProviderBindingContext,
         },
     },
     data::{
@@ -29,8 +29,8 @@ use host_protocol::{
         },
     },
     shared::{
-        ByteChunk, CURRENT_PROTOCOL_VERSION, HostCapabilities, HostConnectionId,
-        HostConnectionSpec, HostScope, HostTargetId, HostTransport, JobId, ProcessId,
+        ByteChunk, CURRENT_PROTOCOL_VERSION, HostCapabilities, HostConnectionId, HostScope,
+        HostTargetId, JobId, ProcessId,
     },
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -52,9 +52,6 @@ fn fixture(name: &str) -> Value {
         }
         "controller_create_target_response" => {
             include_str!("../fixtures/controller_create_target_response.json")
-        }
-        "controller_attach_target_params" => {
-            include_str!("../fixtures/controller_attach_target_params.json")
         }
         "controller_list_targets_response" => {
             include_str!("../fixtures/controller_list_targets_response.json")
@@ -91,7 +88,6 @@ fn method_names_match_controller_plane_contract() {
     assert_eq!(CONTROL_INITIALIZE_METHOD, "controller/initialize");
     assert_eq!(LIST_TARGETS_METHOD, "controller/listTargets");
     assert_eq!(CREATE_TARGET_METHOD, "controller/createTarget");
-    assert_eq!(ATTACH_TARGET_METHOD, "controller/attachTarget");
 }
 
 #[test]
@@ -261,38 +257,26 @@ fn controller_initialize_params_match_fixture() {
 fn create_target_params_match_provider_fixture() {
     assert_round_trip(
         CreateTargetParams {
-            request: HostTargetCreateRequest::Provider {
-                provider_type: "smolvm".to_owned(),
-                spec: json!({
-                    "cpus": 2,
-                    "image": "lightspeed-dev"
-                }),
+            request_id: "request-1".to_owned(),
+            environment_id: "environment-1".to_owned(),
+            incarnation_id: "incarnation-1".to_owned(),
+            binding: ProviderBindingContext {
+                universe_id: "universe-1".to_owned(),
+                binding_id: "primary".to_owned(),
             },
+            template_id: "lightspeed-dev-v1".to_owned(),
         },
         fixture("controller_create_target_params"),
     );
 }
 
 #[test]
-fn create_target_response_carries_data_plane_connection_spec() {
+fn create_target_response_carries_only_provider_lifecycle_state() {
     assert_round_trip(
         CreateTargetResponse {
             target: ready_target_summary(),
-            connection: data_plane_connection_spec(),
         },
         fixture("controller_create_target_response"),
-    );
-}
-
-#[test]
-fn attach_target_params_match_existing_target_fixture() {
-    assert_round_trip(
-        AttachTargetParams {
-            request: HostTargetAttachRequest::Target {
-                target_id: HostTargetId::new("sandbox-123"),
-            },
-        },
-        fixture("controller_attach_target_params"),
     );
 }
 
@@ -317,19 +301,6 @@ fn ready_target_summary() -> HostTargetSummary {
         capabilities: remote_host_capabilities(),
         default_cwd: Some("/workspace".try_into().expect("cwd")),
         metadata: BTreeMap::from([("provider".to_owned(), "smolvm".to_owned())]),
-    }
-}
-
-fn data_plane_connection_spec() -> HostConnectionSpec {
-    HostConnectionSpec {
-        target_id: HostTargetId::new("sandbox-123"),
-        endpoint: "wss://host.example/data/sandbox-123".to_owned(),
-        transport: HostTransport::WebSocket,
-        scope: HostScope::Session {
-            session_id: "sandbox-123".to_owned(),
-        },
-        default_cwd: Some("/workspace".try_into().expect("cwd")),
-        capabilities: remote_host_capabilities(),
     }
 }
 

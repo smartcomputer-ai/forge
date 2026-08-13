@@ -231,39 +231,93 @@ Removes one variable-to-credential mapping without deleting the underlying grant
 
 ### `environments/create`
 
-**Provision an environment instance**
+**Create an environment**
 
-Asks a live provider with create capability to create a universe-owned environment instance. This does not attach the instance to any session.
+Records an idempotent provisioning intent against an enabled universe binding. The provider validates its provider-wide template and provisions through its backend asynchronously.
 
 - Params: `EnvironmentCreateParams`
 - Result: `AgentApiOutcome<EnvironmentCreateResponse>`
 
 ### `environments/read`
 
-**Read an environment instance**
+**Read an environment**
 
-Returns the universe resource with its provider identity, current observed lifecycle, connection, scope, and capabilities.
+Returns the durable universe resource, source binding, logical lifecycle state, and minimal current-incarnation identity.
 
 - Params: `EnvironmentReadParams`
 - Result: `AgentApiOutcome<EnvironmentReadResponse>`
 
 ### `environments/list`
 
-**List environment instances**
+**List environments**
 
-Lists universe-owned instances, optionally filtered by provider or observed target status.
+Lists universe-owned environment resources, optionally filtered by provider, binding, or logical lifecycle state.
 
 - Params: `EnvironmentListParams`
 - Result: `AgentApiOutcome<EnvironmentListResponse>`
 
 ### `environments/close`
 
-**Close an environment instance**
+**Close an environment**
 
-Tears down the universe resource through its provider. Closing is rejected while session bindings occupy the instance; the provider decides whether active jobs reject close or are interrupted.
+Records an asynchronous idempotent close intent. Provider cleanup is resumed by lifecycle reconciliation; quota is released only after Closed.
 
 - Params: `EnvironmentCloseParams`
 - Result: `AgentApiOutcome<EnvironmentCloseResponse>`
+
+### `environments/external/create`
+
+**Register an external environment**
+
+Creates an environment backed by a Lightspeed-reachable envd WebSocket endpoint. Reachability is checked on demand.
+
+- Params: `EnvironmentExternalCreateParams`
+- Result: `AgentApiOutcome<EnvironmentExternalCreateResponse>`
+
+### `environments/ingress/put`
+
+**Configure environment public ingress**
+
+Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health.
+
+- Params: `EnvironmentIngressPutParams`
+- Result: `AgentApiOutcome<EnvironmentIngressPutResponse>`
+
+### `environments/provider-bindings/list`
+
+**List environment provider bindings**
+
+Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers.
+
+- Params: `EnvironmentProviderBindingListParams`
+- Result: `AgentApiOutcome<EnvironmentProviderBindingListResponse>`
+
+### `environments/provider-bindings/read`
+
+**Read an environment provider binding**
+
+Returns one universe routing and admission binding. Provider-wide templates and physical resource, network, and ingress policy remain provider-owned.
+
+- Params: `EnvironmentProviderBindingReadParams`
+- Result: `AgentApiOutcome<EnvironmentProviderBindingReadResponse>`
+
+### `environments/templates/list`
+
+**List environment templates**
+
+Reads immutable templates directly from the selected bound provider controller.
+
+- Params: `EnvironmentTemplateListParams`
+- Result: `AgentApiOutcome<EnvironmentTemplateListResponse>`
+
+### `environments/templates/read`
+
+**Read an environment template**
+
+Returns one immutable template version from the selected bound provider controller.
+
+- Params: `EnvironmentTemplateReadParams`
+- Result: `AgentApiOutcome<EnvironmentTemplateReadResponse>`
 
 ### `environments/jobs/create`
 
@@ -471,42 +525,6 @@ Deletes the catalog document. Existing session configs that reference it are not
 
 - Params: `McpServerDeleteParams`
 - Result: `AgentApiOutcome<McpServerDeleteResponse>`
-
-### `environments/providers/register`
-
-**Register environment provider presence**
-
-Publishes a controller endpoint, capabilities, implementation identity, and liveness lease. Intended for trusted provider/bridge infrastructure, not ordinary configuration clients.
-
-- Params: `EnvironmentProviderRegisterParams`
-- Result: `AgentApiOutcome<EnvironmentProviderRegisterResponse>`
-
-### `environments/providers/heartbeat`
-
-**Refresh environment provider presence**
-
-Renews a provider lease and records its complete observed target descriptors. Omitted provided targets may become unknown; intended for provider infrastructure.
-
-- Params: `EnvironmentProviderHeartbeatParams`
-- Result: `AgentApiOutcome<EnvironmentProviderHeartbeatResponse>`
-
-### `environments/providers/unregister`
-
-**Unregister environment provider presence**
-
-Marks provider presence offline without deleting its durable environment instance records.
-
-- Params: `EnvironmentProviderUnregisterParams`
-- Result: `AgentApiOutcome<EnvironmentProviderUnregisterResponse>`
-
-### `environments/providers/list`
-
-**List environment providers**
-
-Lists current provider presence with lease-derived online/stale/offline status, optionally filtered by status or kind.
-
-- Params: `EnvironmentProviderListParams`
-- Result: `AgentApiOutcome<EnvironmentProviderListResponse>`
 
 ### `auth/grants/import`
 
@@ -717,4 +735,67 @@ Immediately and idempotently revokes the matching key only when it belongs to th
 
 - Params: `OperatorApiKeyRevokeParams`
 - Result: `AgentApiOutcome<OperatorApiKeyRevokeResponse>`
+
+### `operator/environment-providers/put`
+
+**Put an environment provider**
+
+Registers or replaces one deployment provider and its controller connection. The provider does not call this API or require access to Lightspeed.
+
+- Params: `OperatorEnvironmentProviderPutParams`
+- Result: `AgentApiOutcome<OperatorEnvironmentProviderPutResponse>`
+
+### `operator/environment-providers/list`
+
+**List environment providers**
+
+Returns every operator-registered deployment provider and its controller connection.
+
+- Params: `OperatorEnvironmentProviderListParams`
+- Result: `AgentApiOutcome<OperatorEnvironmentProviderListResponse>`
+
+### `operator/environment-providers/read`
+
+**Read an environment provider**
+
+Returns one operator-registered deployment provider and its controller connection.
+
+- Params: `OperatorEnvironmentProviderReadParams`
+- Result: `AgentApiOutcome<OperatorEnvironmentProviderReadResponse>`
+
+### `operator/environment-providers/delete`
+
+**Delete an environment provider**
+
+Deletes a deployment provider only when no universe binding references it.
+
+- Params: `OperatorEnvironmentProviderDeleteParams`
+- Result: `AgentApiOutcome<OperatorEnvironmentProviderDeleteResponse>`
+
+### `operator/environment-providers/bindings/put`
+
+**Put an environment provider binding**
+
+Creates or replaces one universe's complete revisioned routing and admission binding. A deployment provider may have at most one binding in a universe.
+
+- Params: `OperatorProviderBindingPutParams`
+- Result: `AgentApiOutcome<OperatorProviderBindingPutResponse>`
+
+### `operator/environment-providers/bindings/delete`
+
+**Delete an environment provider binding**
+
+Deletes a universe provider binding only after every referencing environment has reached Closed.
+
+- Params: `OperatorProviderBindingDeleteParams`
+- Result: `AgentApiOutcome<OperatorProviderBindingDeleteResponse>`
+
+### `operator/environments/adopt`
+
+**Adopt a provider environment**
+
+Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer.
+
+- Params: `OperatorEnvironmentAdoptParams`
+- Result: `AgentApiOutcome<OperatorEnvironmentAdoptResponse>`
 

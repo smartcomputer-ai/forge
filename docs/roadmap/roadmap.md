@@ -109,6 +109,34 @@
 - [ ] incremental tool discovery support (at least OAI)
 
 ## Environments & Sandboxes
+- [x] [P117](p117-environment-compute-plan.md) — agreed target architecture for
+  operator-registered reachable compute providers, lightweight universe
+  bindings, provider-wide offering/ingress policy, stable environment
+  identity, reachable external environments, on-demand data connections,
+  managed Incus VMs, public ingress, and standalone/native-cluster Incus modes;
+  delivery is split across P118-P122
+- [ ] [P118](p118-environment-domain-and-lifecycle.md) — replace the
+  provider-as-singleton model with operator providers, revisioned universe
+  routing/admission bindings, transient controller initialization,
+  incarnation-scoped physical facts, idempotent asynchronous lifecycle, and a
+  Lightspeed-owned reconciler over a provider-owned policy boundary
+- [ ] [P119](p119-environment-daemon-gateway-enrollment.md) — core passive
+  `lightspeed-envd` and on-demand gateway data plane implemented; packaging,
+  deployment authentication, and product UX remain follow-ups
+- [ ] [P120](p120-incus-environment-provider.md) — core standalone stateless
+  Incus controller, passive on-demand data endpoint, immutable image recipe, provider-wide policy,
+  and durable VM provisioning are implemented; hz01/hz02 deployment, image
+  publication, ls.bot UX, and live isolation/acceptance proofs remain
+- [ ] [P121](p121-environment-public-ingress.md) — add provider-authorized
+  per-environment HTTPS ingress through a shared node-edge proxy with wildcard
+  DNS/TLS and no agent or platform credential inside the VM; core API,
+  protocol, Incus-provider, and stateless proxy are implemented, while
+  deployment and live acceptance remain
+- [ ] [P122](p122-incus-multi-node-pool.md) — run the stateless Incus provider
+  against either one standalone server or one native Incus cluster, with API
+  endpoint failover, cluster-group placement, bounded topology health, and
+  explicit non-destructive member-loss behavior; live cluster acceptance and
+  deployment remain
 - [x] [P113](p113-explicit-vfs-and-environment-tool-domains.md) — separate
   dedicated VFS tools from ordinary active-environment file/process tools,
   remove generic execution targets and the fused filesystem, and make prompts

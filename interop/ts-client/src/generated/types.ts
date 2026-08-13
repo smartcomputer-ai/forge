@@ -766,51 +766,38 @@ export type ContextAppendStatus = "applied" | "unchanged" | "failed";
 export type ContextRemoveStatus = "removed" | "absent" | "failed";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostScopeView".
+ * via the `definition` "EnvironmentSourceView".
  */
-export type HostScopeView =
+export type EnvironmentSourceView =
   | {
-      type: "default";
+      bindingId: string;
+      providerId: string;
+      type: "provisioned";
     }
   | {
-      sessionId: string;
-      type: "session";
+      connection: EnvironmentConnectionView;
+      type: "external";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostTransportView".
+ * via the `definition` "EnvironmentConnectionTransportView".
  */
-export type HostTransportView =
+export type EnvironmentConnectionTransportView =
+  | ("webSocket" | "http" | "stdio" | "ssh")
   | {
-      type: "webSocket";
-    }
-  | {
-      type: "http";
-    }
-  | {
-      type: "stdio";
-    }
-  | {
-      type: "ssh";
-    }
-  | {
-      providerType: string;
-      type: "provider";
+      provider: {
+        provider_type: string;
+      };
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentOriginView".
+ * via the `definition` "EnvironmentLifecycleStatusView".
  */
-export type EnvironmentOriginView = "provided" | "provisioned";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentTargetStatusView".
- */
-export type EnvironmentTargetStatusView =
-  | "creating"
-  | "starting"
+export type EnvironmentLifecycleStatusView =
+  | "provisioning"
+  | "booting"
   | "ready"
-  | "stopped"
+  | "offline"
   | "closing"
   | "closed"
   | "failed"
@@ -855,14 +842,9 @@ export type SessionJobStatusView =
 export type SessionJobOutputStreamView = "stdout" | "stderr";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderKindView".
+ * via the `definition` "EnvironmentProviderBindingStatusView".
  */
-export type EnvironmentProviderKindView = "sandbox" | "bridge" | "custom";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderStatusView".
- */
-export type EnvironmentProviderStatusView = "online" | "stale" | "offline";
+export type EnvironmentProviderBindingStatusView = "enabled" | "disabled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerAuthPolicy".
@@ -919,6 +901,27 @@ export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
 export type ModelSource = "provider";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderTransport".
+ */
+export type OperatorEnvironmentProviderTransport =
+  | {
+      type: "webSocket";
+    }
+  | {
+      type: "http";
+    }
+  | {
+      type: "stdio";
+    }
+  | {
+      type: "ssh";
+    }
+  | {
+      providerType: string;
+      type: "provider";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileInstructions".
  */
 export type ProfileInstructions =
@@ -970,24 +973,6 @@ export type AuthProviderConfigInput =
       audience?: string | null;
       grantId: string;
       type: "modelOAuth";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostTargetCreateRequestView".
- */
-export type HostTargetCreateRequestView =
-  | {
-      spec: SandboxTargetSpecView;
-      type: "sandbox";
-    }
-  | {
-      spec: AttachedHostSpecView;
-      type: "attachedHost";
-    }
-  | {
-      providerType: string;
-      spec: unknown;
-      type: "provider";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2089,62 +2074,46 @@ export interface AgentApiOutcomeOfEnvironmentCloseResponse {
  * via the `definition` "EnvironmentCloseResponse".
  */
 export interface EnvironmentCloseResponse {
-  environment: EnvironmentInstanceView;
+  environment: EnvironmentView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentInstanceView".
+ * via the `definition` "EnvironmentView".
  */
-export interface EnvironmentInstanceView {
-  capabilities: HostCapabilitiesView;
-  connection: HostConnectionView;
+export interface EnvironmentView {
   createdAtMs: number;
-  defaultCwd?: string | null;
+  displayName?: string | null;
   environmentId: string;
+  incarnation: EnvironmentIncarnationView;
   metadata?: {
     [k: string]: string;
   };
-  observedAtMs: number;
-  origin: EnvironmentOriginView;
-  providerId: string;
-  providerTargetId: string;
-  scope: HostScopeView;
-  status: EnvironmentTargetStatusView;
+  publicEndpoint?: string | null;
+  publicIngressEnabled: boolean;
+  requestId: string;
+  source: EnvironmentSourceView;
+  status: EnvironmentLifecycleStatusView;
   updatedAtMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostCapabilitiesView".
+ * via the `definition` "EnvironmentIncarnationView".
  */
-export interface HostCapabilitiesView {
-  filesystemRead?: boolean;
-  filesystemWrite?: boolean;
-  jobCancel?: boolean;
-  jobDependencies?: boolean;
-  jobList?: boolean;
-  jobQueueKeys?: boolean;
-  jobRead?: boolean;
-  jobStart?: boolean;
-  jobWaitHint?: boolean;
-  network?: boolean;
-  processOutputNotifications?: boolean;
-  processOutputPolling?: boolean;
-  processPty?: boolean;
-  processStart?: boolean;
-  processStdin?: boolean;
-  processTerminate?: boolean;
+export interface EnvironmentIncarnationView {
+  createdAtMs: number;
+  incarnationId: string;
+  providerTargetId?: string | null;
+  provisionRequestId?: string | null;
+  templateId?: string | null;
+  updatedAtMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostConnectionView".
+ * via the `definition` "EnvironmentConnectionView".
  */
-export interface HostConnectionView {
-  capabilities: HostCapabilitiesView;
-  defaultCwd?: string | null;
+export interface EnvironmentConnectionView {
   endpoint: string;
-  scope: HostScopeView;
-  targetId: string;
-  transport: HostTransportView;
+  transport: EnvironmentConnectionTransportView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2159,7 +2128,7 @@ export interface AgentApiOutcomeOfEnvironmentCreateResponse {
  * via the `definition` "EnvironmentCreateResponse".
  */
 export interface EnvironmentCreateResponse {
-  environment: EnvironmentInstanceView;
+  environment: EnvironmentView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2216,6 +2185,36 @@ export interface AgentApiOutcomeOfEnvironmentCredentialUnbindResponse {
  */
 export interface EnvironmentCredentialUnbindResponse {
   credential: EnvironmentCredentialView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentExternalCreateResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentExternalCreateResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentExternalCreateResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentExternalCreateResponse".
+ */
+export interface EnvironmentExternalCreateResponse {
+  environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentIngressPutResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentIngressPutResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentIngressPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIngressPutResponse".
+ */
+export interface EnvironmentIngressPutResponse {
+  environment: EnvironmentView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2363,112 +2362,52 @@ export interface AgentApiOutcomeOfEnvironmentListResponse {
  * via the `definition` "EnvironmentListResponse".
  */
 export interface EnvironmentListResponse {
-  environments?: EnvironmentInstanceView[];
+  environments?: EnvironmentView[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfEnvironmentProviderHeartbeatResponse".
+ * via the `definition` "AgentApiOutcomeOfEnvironmentProviderBindingListResponse".
  */
-export interface AgentApiOutcomeOfEnvironmentProviderHeartbeatResponse {
+export interface AgentApiOutcomeOfEnvironmentProviderBindingListResponse {
   notifications?: AgentNotification[];
-  result: EnvironmentProviderHeartbeatResponse;
+  result: EnvironmentProviderBindingListResponse;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderHeartbeatResponse".
+ * via the `definition` "EnvironmentProviderBindingListResponse".
  */
-export interface EnvironmentProviderHeartbeatResponse {
-  environments?: EnvironmentInstanceView[];
-  provider: EnvironmentProviderView;
+export interface EnvironmentProviderBindingListResponse {
+  bindings: EnvironmentProviderBindingView[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderView".
+ * via the `definition` "EnvironmentProviderBindingView".
  */
-export interface EnvironmentProviderView {
-  capabilities: EnvironmentProviderCapabilitiesView;
-  controllerConnection: HostControllerConnectionView;
-  displayName?: string | null;
-  implementation: EnvironmentProviderImplementationView;
-  lastSeenMs: number;
-  leaseExpiresMs: number;
+export interface EnvironmentProviderBindingView {
+  bindingId: string;
+  createdAtMs: number;
   metadata?: {
     [k: string]: string;
   };
   providerId: string;
-  providerKind: EnvironmentProviderKindView;
-  status: EnvironmentProviderStatusView;
+  revision: number;
+  status: EnvironmentProviderBindingStatusView;
+  updatedAtMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderCapabilitiesView".
+ * via the `definition` "AgentApiOutcomeOfEnvironmentProviderBindingReadResponse".
  */
-export interface EnvironmentProviderCapabilitiesView {
-  closeTarget?: boolean;
-  createTarget?: boolean;
-  getTarget: boolean;
-  listTargets?: boolean;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "HostControllerConnectionView".
- */
-export interface HostControllerConnectionView {
-  endpoint: string;
-  transport: HostTransportView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderImplementationView".
- */
-export interface EnvironmentProviderImplementationView {
-  name: string;
-  version?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfEnvironmentProviderListResponse".
- */
-export interface AgentApiOutcomeOfEnvironmentProviderListResponse {
+export interface AgentApiOutcomeOfEnvironmentProviderBindingReadResponse {
   notifications?: AgentNotification[];
-  result: EnvironmentProviderListResponse;
+  result: EnvironmentProviderBindingReadResponse;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderListResponse".
+ * via the `definition` "EnvironmentProviderBindingReadResponse".
  */
-export interface EnvironmentProviderListResponse {
-  providers?: EnvironmentProviderView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfEnvironmentProviderRegisterResponse".
- */
-export interface AgentApiOutcomeOfEnvironmentProviderRegisterResponse {
-  notifications?: AgentNotification[];
-  result: EnvironmentProviderRegisterResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderRegisterResponse".
- */
-export interface EnvironmentProviderRegisterResponse {
-  provider: EnvironmentProviderView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfEnvironmentProviderUnregisterResponse".
- */
-export interface AgentApiOutcomeOfEnvironmentProviderUnregisterResponse {
-  notifications?: AgentNotification[];
-  result: EnvironmentProviderUnregisterResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderUnregisterResponse".
- */
-export interface EnvironmentProviderUnregisterResponse {
-  provider: EnvironmentProviderView;
+export interface EnvironmentProviderBindingReadResponse {
+  binding: EnvironmentProviderBindingView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2483,7 +2422,53 @@ export interface AgentApiOutcomeOfEnvironmentReadResponse {
  * via the `definition` "EnvironmentReadResponse".
  */
 export interface EnvironmentReadResponse {
-  environment: EnvironmentInstanceView;
+  environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentTemplateListResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentTemplateListResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentTemplateListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplateListResponse".
+ */
+export interface EnvironmentTemplateListResponse {
+  templates: EnvironmentTemplateView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplateView".
+ */
+export interface EnvironmentTemplateView {
+  bindingId: string;
+  deprecated: boolean;
+  description?: string | null;
+  displayName: string;
+  metadata?: {
+    [k: string]: string;
+  };
+  providerId: string;
+  publicIngress: boolean;
+  templateId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentTemplateReadResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentTemplateReadResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentTemplateReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplateReadResponse".
+ */
+export interface EnvironmentTemplateReadResponse {
+  template: EnvironmentTemplateView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2737,6 +2722,133 @@ export interface AgentApiOutcomeOfOperatorApiKeyRevokeResponse {
  */
 export interface OperatorApiKeyRevokeResponse {
   apiKey: OperatorApiKeyView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentAdoptResponse".
+ */
+export interface AgentApiOutcomeOfOperatorEnvironmentAdoptResponse {
+  notifications?: AgentNotification[];
+  result: OperatorEnvironmentAdoptResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentAdoptResponse".
+ */
+export interface OperatorEnvironmentAdoptResponse {
+  environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentProviderDeleteResponse".
+ */
+export interface AgentApiOutcomeOfOperatorEnvironmentProviderDeleteResponse {
+  notifications?: AgentNotification[];
+  result: OperatorEnvironmentProviderDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderDeleteResponse".
+ */
+export interface OperatorEnvironmentProviderDeleteResponse {
+  provider: OperatorEnvironmentProviderView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderView".
+ */
+export interface OperatorEnvironmentProviderView {
+  controllerConnection: OperatorEnvironmentProviderConnection;
+  createdAtMs: number;
+  displayName?: string | null;
+  metadata?: {
+    [k: string]: string;
+  };
+  providerId: string;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderConnection".
+ */
+export interface OperatorEnvironmentProviderConnection {
+  endpoint: string;
+  transport: OperatorEnvironmentProviderTransport;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentProviderListResponse".
+ */
+export interface AgentApiOutcomeOfOperatorEnvironmentProviderListResponse {
+  notifications?: AgentNotification[];
+  result: OperatorEnvironmentProviderListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderListResponse".
+ */
+export interface OperatorEnvironmentProviderListResponse {
+  providers: OperatorEnvironmentProviderView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentProviderPutResponse".
+ */
+export interface AgentApiOutcomeOfOperatorEnvironmentProviderPutResponse {
+  notifications?: AgentNotification[];
+  result: OperatorEnvironmentProviderPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderPutResponse".
+ */
+export interface OperatorEnvironmentProviderPutResponse {
+  provider: OperatorEnvironmentProviderView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentProviderReadResponse".
+ */
+export interface AgentApiOutcomeOfOperatorEnvironmentProviderReadResponse {
+  notifications?: AgentNotification[];
+  result: OperatorEnvironmentProviderReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderReadResponse".
+ */
+export interface OperatorEnvironmentProviderReadResponse {
+  provider: OperatorEnvironmentProviderView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorProviderBindingDeleteResponse".
+ */
+export interface AgentApiOutcomeOfOperatorProviderBindingDeleteResponse {
+  notifications?: AgentNotification[];
+  result: OperatorProviderBindingDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorProviderBindingDeleteResponse".
+ */
+export interface OperatorProviderBindingDeleteResponse {
+  binding: EnvironmentProviderBindingView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorProviderBindingPutResponse".
+ */
+export interface AgentApiOutcomeOfOperatorProviderBindingPutResponse {
+  notifications?: AgentNotification[];
+  result: OperatorProviderBindingPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorProviderBindingPutResponse".
+ */
+export interface OperatorProviderBindingPutResponse {
+  binding: EnvironmentProviderBindingView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3417,19 +3529,6 @@ export interface AgentProfileInput {
   profileId: ProfileId;
 }
 /**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AttachedHostSpecView".
- */
-export interface AttachedHostSpecView {
-  cwd?: string | null;
-  endpoint?: string | null;
-  labels?: {
-    [k: string]: string;
-  };
-  name?: string | null;
-  providerOptions?: unknown;
-}
-/**
  * Register an OAuth client configuration. `client_secret` is the second
  * deliberate inbound-plaintext path after `auth/grants/import`: it is
  * encrypted on receipt and never returned by any method. `Debug` output
@@ -3675,24 +3774,19 @@ export interface EnvironmentCloseParams {
  * via the `definition` "EnvironmentCreateParams".
  */
 export interface EnvironmentCreateParams {
-  providerId: string;
-  request: HostTargetCreateRequestView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SandboxTargetSpecView".
- */
-export interface SandboxTargetSpecView {
-  cwd?: string | null;
-  env?: {
+  bindingId: string;
+  displayName?: string | null;
+  metadata?: {
     [k: string]: string;
   };
-  image?: string | null;
-  labels?: {
-    [k: string]: string;
-  };
-  providerOptions?: unknown;
-  template?: string | null;
+  /**
+   * Stable caller-generated retry identity, unique inside the universe.
+   */
+  requestId: string;
+  /**
+   * Immutable provider template-version identity.
+   */
+  templateId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3716,6 +3810,29 @@ export interface EnvironmentCredentialListParams {
  */
 export interface EnvironmentCredentialUnbindParams {
   envName: string;
+  environmentId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentExternalCreateParams".
+ */
+export interface EnvironmentExternalCreateParams {
+  /**
+   * Connection to an envd instance reachable from Lightspeed.
+   */
+  connection: EnvironmentConnectionView;
+  displayName?: string | null;
+  metadata?: {
+    [k: string]: string;
+  };
+  requestId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIngressPutParams".
+ */
+export interface EnvironmentIngressPutParams {
+  enabled: boolean;
   environmentId: string;
 }
 /**
@@ -3785,71 +3902,21 @@ export interface EnvironmentJobReadParams {
  * via the `definition` "EnvironmentListParams".
  */
 export interface EnvironmentListParams {
+  bindingId?: string | null;
   providerId?: string | null;
-  status?: EnvironmentTargetStatusView | null;
+  status?: EnvironmentLifecycleStatusView | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderHeartbeatParams".
+ * via the `definition` "EnvironmentProviderBindingListParams".
  */
-export interface EnvironmentProviderHeartbeatParams {
-  leaseTtlMs?: number | null;
-  observedTargets?: EnvironmentTargetDescriptorView[];
-  providerId: string;
-}
+export interface EnvironmentProviderBindingListParams {}
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentTargetDescriptorView".
+ * via the `definition` "EnvironmentProviderBindingReadParams".
  */
-export interface EnvironmentTargetDescriptorView {
-  connection: HostConnectionView;
-  target: EnvironmentTargetSummaryView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentTargetSummaryView".
- */
-export interface EnvironmentTargetSummaryView {
-  capabilities: HostCapabilitiesView;
-  defaultCwd?: string | null;
-  displayName?: string | null;
-  metadata?: {
-    [k: string]: string;
-  };
-  scope: HostScopeView;
-  status: EnvironmentTargetStatusView;
-  targetId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderListParams".
- */
-export interface EnvironmentProviderListParams {
-  providerKind?: EnvironmentProviderKindView | null;
-  status?: EnvironmentProviderStatusView | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderRegisterParams".
- */
-export interface EnvironmentProviderRegisterParams {
-  capabilities: EnvironmentProviderCapabilitiesView;
-  controllerConnection: HostControllerConnectionView;
-  displayName?: string | null;
-  implementation: EnvironmentProviderImplementationView;
-  leaseTtlMs: number;
-  metadata?: {
-    [k: string]: string;
-  };
-  providerId: string;
-  providerKind: EnvironmentProviderKindView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentProviderUnregisterParams".
- */
-export interface EnvironmentProviderUnregisterParams {
-  providerId: string;
+export interface EnvironmentProviderBindingReadParams {
+  bindingId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3857,6 +3924,21 @@ export interface EnvironmentProviderUnregisterParams {
  */
 export interface EnvironmentReadParams {
   environmentId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplateListParams".
+ */
+export interface EnvironmentTemplateListParams {
+  bindingId?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentTemplateReadParams".
+ */
+export interface EnvironmentTemplateReadParams {
+  bindingId: string;
+  templateId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4007,6 +4089,85 @@ export interface OperatorApiKeyListParams {
  */
 export interface OperatorApiKeyRevokeParams {
   keyPrefix: string;
+  universeId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentAdoptParams".
+ */
+export interface OperatorEnvironmentAdoptParams {
+  bindingId: string;
+  displayName?: string | null;
+  metadata?: {
+    [k: string]: string;
+  };
+  /**
+   * Stable caller-generated retry identity inside the destination universe.
+   */
+  requestId: string;
+  /**
+   * Provider-native source reference. The Incus provider accepts
+   * `<project>/<instance>` or an instance name in the `default` project.
+   */
+  sourceTarget: string;
+  /**
+   * Required acknowledgement that Lightspeed will move, reconfigure, and
+   * delete the target as part of its ordinary managed lifecycle.
+   */
+  takeOwnership: boolean;
+  universeId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderDeleteParams".
+ */
+export interface OperatorEnvironmentProviderDeleteParams {
+  providerId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderListParams".
+ */
+export interface OperatorEnvironmentProviderListParams {}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderPutParams".
+ */
+export interface OperatorEnvironmentProviderPutParams {
+  controllerConnection: OperatorEnvironmentProviderConnection;
+  displayName?: string | null;
+  metadata?: {
+    [k: string]: string;
+  };
+  providerId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorEnvironmentProviderReadParams".
+ */
+export interface OperatorEnvironmentProviderReadParams {
+  providerId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorProviderBindingDeleteParams".
+ */
+export interface OperatorProviderBindingDeleteParams {
+  bindingId: string;
+  universeId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorProviderBindingPutParams".
+ */
+export interface OperatorProviderBindingPutParams {
+  bindingId: string;
+  expectedRevision?: number | null;
+  metadata?: {
+    [k: string]: string;
+  };
+  providerId: string;
+  status: EnvironmentProviderBindingStatusView;
   universeId: string;
 }
 /**

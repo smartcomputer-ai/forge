@@ -7,7 +7,7 @@ mod common;
 mod environment_credentials;
 mod environment_lifecycle;
 mod environment_projection;
-mod environment_providers;
+pub(crate) mod environment_providers;
 mod environments;
 mod errors;
 mod github_api;
@@ -491,6 +491,7 @@ pub struct GatewayAgentApiBuilder {
     model_discovery_openai: Option<Arc<openai::Client>>,
     model_discovery_anthropic: Option<Arc<anthropic::Client>>,
     host_controller_connector: Arc<dyn HostControllerConnector>,
+    environment_gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
 }
 
 impl GatewayAgentApiBuilder {
@@ -550,6 +551,14 @@ impl GatewayAgentApiBuilder {
 
     pub fn with_default_model(mut self, model: ModelSelection) -> Self {
         self.default_model = model;
+        self
+    }
+
+    pub fn with_environment_gateway(
+        mut self,
+        gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
+    ) -> Self {
+        self.environment_gateway = gateway;
         self
     }
 
@@ -633,6 +642,7 @@ impl GatewayAgentApiBuilder {
             github_api,
             model_discovery,
             host_controller_connector: self.host_controller_connector,
+            environment_gateway: self.environment_gateway,
         }
     }
 }
@@ -652,10 +662,15 @@ pub struct GatewayAgentApi {
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
     host_controller_connector: Arc<dyn HostControllerConnector>,
+    pub(crate) environment_gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
 }
 
 impl GatewayAgentApi {
     pub fn builder(client: Client, store: Arc<PgStore>) -> GatewayAgentApiBuilder {
+        let environment_gateway = crate::environment_gateway::EnvironmentGatewayClientConfig::new(
+            DEFAULT_PUBLIC_BASE_URL,
+            format!("local-{}", uuid::Uuid::new_v4()),
+        );
         GatewayAgentApiBuilder {
             client,
             store,
@@ -671,8 +686,13 @@ impl GatewayAgentApi {
             github_api_client: None,
             model_discovery_openai: None,
             model_discovery_anthropic: None,
-            host_controller_connector: Arc::new(WebSocketHostControllerConnector),
+            host_controller_connector: Arc::new(WebSocketHostControllerConnector::default()),
+            environment_gateway,
         }
+    }
+
+    pub(crate) fn store(&self) -> &Arc<PgStore> {
+        &self.store
     }
 
     pub fn new(client: Client, store: Arc<PgStore>) -> Self {
@@ -2748,6 +2768,24 @@ impl AgentApiService for GatewayAgentApi {
             .map(AgentApiOutcome::new)
     }
 
+    async fn create_external_environment(
+        &self,
+        params: EnvironmentExternalCreateParams,
+    ) -> Result<AgentApiOutcome<EnvironmentExternalCreateResponse>, AgentApiError> {
+        self.create_external_environment_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn put_environment_ingress(
+        &self,
+        params: EnvironmentIngressPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentIngressPutResponse>, AgentApiError> {
+        self.put_environment_ingress_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
@@ -2860,38 +2898,38 @@ impl AgentApiService for GatewayAgentApi {
             .map(AgentApiOutcome::new)
     }
 
-    async fn register_environment_provider(
+    async fn list_environment_provider_bindings(
         &self,
-        params: EnvironmentProviderRegisterParams,
-    ) -> Result<AgentApiOutcome<EnvironmentProviderRegisterResponse>, AgentApiError> {
-        self.register_environment_provider_record(params)
+        params: EnvironmentProviderBindingListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentProviderBindingListResponse>, AgentApiError> {
+        self.list_environment_provider_binding_records(params)
             .await
             .map(AgentApiOutcome::new)
     }
 
-    async fn heartbeat_environment_provider(
+    async fn read_environment_provider_binding(
         &self,
-        params: EnvironmentProviderHeartbeatParams,
-    ) -> Result<AgentApiOutcome<EnvironmentProviderHeartbeatResponse>, AgentApiError> {
-        self.heartbeat_environment_provider_record(params)
+        params: EnvironmentProviderBindingReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentProviderBindingReadResponse>, AgentApiError> {
+        self.read_environment_provider_binding_record(params)
             .await
             .map(AgentApiOutcome::new)
     }
 
-    async fn unregister_environment_provider(
+    async fn list_environment_templates(
         &self,
-        params: EnvironmentProviderUnregisterParams,
-    ) -> Result<AgentApiOutcome<EnvironmentProviderUnregisterResponse>, AgentApiError> {
-        self.unregister_environment_provider_record(params)
+        params: EnvironmentTemplateListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentTemplateListResponse>, AgentApiError> {
+        self.list_environment_template_records(params)
             .await
             .map(AgentApiOutcome::new)
     }
 
-    async fn list_environment_providers(
+    async fn read_environment_template(
         &self,
-        params: EnvironmentProviderListParams,
-    ) -> Result<AgentApiOutcome<EnvironmentProviderListResponse>, AgentApiError> {
-        self.list_environment_provider_records(params)
+        params: EnvironmentTemplateReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentTemplateReadResponse>, AgentApiError> {
+        self.read_environment_template_record(params)
             .await
             .map(AgentApiOutcome::new)
     }

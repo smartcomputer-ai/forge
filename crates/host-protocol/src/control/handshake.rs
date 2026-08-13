@@ -24,15 +24,19 @@ pub struct ControllerInitializeResponse {
 #[serde(rename_all = "camelCase")]
 pub struct ControllerCapabilities {
     #[serde(default)]
+    pub list_templates: bool,
+    #[serde(default)]
     pub list_targets: bool,
     #[serde(default)]
     pub create_target: bool,
     #[serde(default)]
-    pub attach_target: bool,
+    pub adopt_target: bool,
     #[serde(default)]
     pub get_target: bool,
     #[serde(default)]
     pub close_target: bool,
+    #[serde(default)]
+    pub ingress: bool,
 }
 
 fn default_protocol_version() -> u32 {

@@ -67,6 +67,7 @@ pub struct SessionTools {
     environment_store: Option<Arc<dyn EnvironmentStore>>,
     environment_resolver: Option<crate::environment_resolver::EnvironmentResolver>,
     environment_credentials: Option<EnvironmentCredentialResolver>,
+    environment_gateway: Option<crate::environment_gateway::EnvironmentGatewayClientConfig>,
     fleet: Option<FleetToolExecutor>,
 }
 
@@ -81,6 +82,7 @@ impl SessionTools {
             environment_store: None,
             environment_resolver: None,
             environment_credentials: None,
+            environment_gateway: None,
             fleet: None,
         }
     }
@@ -114,6 +116,17 @@ impl SessionTools {
         credentials: EnvironmentCredentialResolver,
     ) -> Self {
         self.environment_credentials = Some(credentials);
+        self
+    }
+
+    pub(crate) fn with_environment_gateway(
+        mut self,
+        gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
+    ) -> Self {
+        if let Some(resolver) = self.environment_resolver.take() {
+            self.environment_resolver = Some(resolver.with_gateway(gateway.clone()));
+        }
+        self.environment_gateway = Some(gateway);
         self
     }
 
@@ -991,10 +1004,11 @@ impl SessionTools {
                 }
                 Err(_) => return Ok(environments),
             };
-            if allowed
-                .as_ref()
-                .is_some_and(|providers| !providers.contains(resource.provider_id.as_str()))
-            {
+            if allowed.as_ref().is_some_and(|providers| {
+                resource
+                    .provider_id()
+                    .is_none_or(|id| !providers.contains(id.as_str()))
+            }) {
                 return Ok(environments);
             }
             resource
@@ -1011,12 +1025,27 @@ impl SessionTools {
         session_id: &SessionId,
         resource: EnvironmentRecord,
     ) -> Result<RuntimeEnvironment, CoreAgentIoError> {
-        let mut client = connect_host_data_client(&resource.connection).await?;
+        let gateway = self
+            .environment_gateway
+            .as_ref()
+            .ok_or_else(|| io_error("environment gateway is not configured on this worker"))?;
+        let connection = gateway.connection_for(
+            self.environment_resolver
+                .as_ref()
+                .map(|resolver| resolver.universe_id())
+                .unwrap_or_default(),
+            &resource,
+        );
+        let mut client = connect_host_data_client(
+            &connection,
+            gateway.connect_options("lightspeed-temporal-server"),
+        )
+        .await?;
         let response = client
             .initialize(&InitializeParams {
                 protocol_version: CURRENT_PROTOCOL_VERSION,
                 client_name: "lightspeed-temporal-server".to_owned(),
-                scope: resource.connection.scope.clone(),
+                scope: connection.scope.clone(),
                 resume_connection_id: None,
             })
             .await
@@ -1030,7 +1059,6 @@ impl SessionTools {
         let cwd = response
             .default_cwd
             .as_deref()
-            .or_else(|| resource.default_cwd.as_ref().map(|cwd| cwd.as_str()))
             .map(FsPath::new)
             .transpose()
             .map_err(|error| io_error(format!("invalid host data default cwd: {error}")))?;
@@ -1098,13 +1126,11 @@ fn environment_model_view(
 ) -> serde_json::Value {
     serde_json::json!({
         "environment_id": environment.environment_id.as_str(),
-        "provider_id": environment.provider_id.as_str(),
+        "provider_id": environment.provider_id().map(|id| id.as_str()),
         "display_name": environment.display_name,
         "status": format!("{:?}", environment.status).to_lowercase(),
-        "capabilities": environment.capabilities,
-        "default_cwd": environment.default_cwd.as_ref().map(|cwd| cwd.as_str()),
         "active": active == Some(&environment.environment_id),
-        "observed_at_ms": environment.observed_at_ms,
+        "observed_at_ms": environment.observed_at_ms(),
     })
 }
 
@@ -1204,17 +1230,12 @@ fn model_job_error(handle: Option<JobHandle>, error: String) -> ModelJobResult {
 
 async fn connect_host_data_client(
     connection: &HostConnectionSpec,
+    options: WebSocketConnectOptions,
 ) -> Result<HostDataClient<host_client::WebSocketTransport>, CoreAgentIoError> {
     match &connection.transport {
-        HostTransport::WebSocket => HostDataClient::connect(
-            &connection.endpoint,
-            WebSocketConnectOptions {
-                user_agent: Some("lightspeed-temporal-server".to_owned()),
-                ..WebSocketConnectOptions::default()
-            },
-        )
-        .await
-        .map_err(map_host_client_error),
+        HostTransport::WebSocket => HostDataClient::connect(&connection.endpoint, options)
+            .await
+            .map_err(map_host_client_error),
         HostTransport::Http => Err(unsupported_host_data_transport("http")),
         HostTransport::Stdio => Err(unsupported_host_data_transport("stdio")),
         HostTransport::Ssh => Err(unsupported_host_data_transport("ssh")),
@@ -1679,14 +1700,14 @@ mod tests {
         },
     };
     use environments::{
-        EnvironmentOrigin, EnvironmentProviderCapabilities, EnvironmentProviderId,
-        EnvironmentProviderKind, EnvironmentProviderStore, HostControllerConnectionSpec,
-        InMemoryEnvironmentRegistryStore, ObserveEnvironment, RegisterEnvironmentProvider,
+        CreateEnvironment, EnvironmentIncarnationId, EnvironmentIncarnationRecord,
+        EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
+        EnvironmentProvisionRequestId, EnvironmentSource, EnvironmentStatus, EnvironmentStore,
+        EnvironmentTemplateId, HostControllerConnectionSpec, InMemoryEnvironmentRegistryStore,
+        ObserveProvisionedEnvironment, PutEnvironmentProvider, PutEnvironmentProviderBinding,
     };
-    use host_protocol::{
-        control::targets::HostTargetStatus,
-        shared::{HostCapabilities, HostPath, HostScope, HostTargetId, ImplementationInfo},
-    };
+    use host_protocol::shared::{HostTargetId, HostTransport};
     use tools::environment::{
         EnvironmentToolContext,
         process::{
@@ -2585,29 +2606,28 @@ mod tests {
         blobs: Arc<InMemoryBlobStore>,
         process: Arc<RecordingProcessExecutor>,
     ) -> RuntimeEnvironment {
-        let target_id = host_protocol::shared::HostTargetId::new("test");
-        let capabilities =
-            host_protocol::shared::HostCapabilities::filesystem(true, true).with_process();
+        let target_id = HostTargetId::new("test");
         let resource = environments::EnvironmentRecord {
             environment_id: engine::EnvironmentId::new("test"),
-            provider_id: environments::EnvironmentProviderId::new("test-provider"),
-            provider_target_id: target_id.clone(),
-            origin: environments::EnvironmentOrigin::Provided,
-            display_name: None,
-            status: host_protocol::control::targets::HostTargetStatus::Ready,
-            scope: host_protocol::shared::HostScope::Default,
-            capabilities: capabilities.clone(),
-            connection: host_protocol::shared::HostConnectionSpec {
-                target_id,
-                endpoint: "http://host.test".to_owned(),
-                transport: host_protocol::shared::HostTransport::Http,
-                scope: host_protocol::shared::HostScope::Default,
-                default_cwd: Some(host_protocol::shared::HostPath::new("/workspace").expect("cwd")),
-                capabilities,
+            request_id: EnvironmentProvisionRequestId::new("request-test"),
+            source: EnvironmentSource::Provisioned {
+                provider_id: EnvironmentProviderId::new("test-provider"),
+                binding_id: EnvironmentProviderBindingId::new("test-binding"),
             },
-            default_cwd: Some(host_protocol::shared::HostPath::new("/workspace").expect("cwd")),
+            display_name: None,
+            status: EnvironmentStatus::Offline,
+            incarnation: EnvironmentIncarnationRecord {
+                incarnation_id: EnvironmentIncarnationId::new("incarnation-test"),
+                provision_request_id: Some(EnvironmentProvisionRequestId::new("request-test")),
+                provider_target_id: Some(target_id.clone()),
+                template_id: Some(EnvironmentTemplateId::new("test-template")),
+                adoption_source_target: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            },
+            public_ingress_enabled: false,
+            public_endpoint: None,
             metadata: BTreeMap::new(),
-            observed_at_ms: 1,
             created_at_ms: 1,
             updated_at_ms: 1,
         };
@@ -2625,28 +2645,30 @@ mod tests {
         provider_id: &str,
     ) {
         store
-            .register_provider(RegisterEnvironmentProvider {
+            .put_provider(PutEnvironmentProvider {
                 provider_id: EnvironmentProviderId::new(provider_id),
-                provider_kind: EnvironmentProviderKind::Bridge,
                 display_name: None,
                 controller_connection: HostControllerConnectionSpec::new(
                     "http://controller.test",
                     HostTransport::Http,
                 ),
-                capabilities: EnvironmentProviderCapabilities {
-                    list_targets: true,
-                    ..EnvironmentProviderCapabilities::default()
-                },
-                implementation: ImplementationInfo {
-                    name: "test".to_owned(),
-                    version: None,
-                },
-                lease_ttl_ms: 1_000,
                 metadata: BTreeMap::new(),
-                observed_at_ms: 10,
+                updated_at_ms: 10,
             })
             .await
             .expect("register provider");
+        store
+            .put_provider_binding(PutEnvironmentProviderBinding {
+                universe_id: store.universe_id(),
+                binding_id: EnvironmentProviderBindingId::new(format!("binding-{provider_id}")),
+                provider_id: EnvironmentProviderId::new(provider_id),
+                status: EnvironmentProviderBindingStatus::Enabled,
+                expected_revision: None,
+                metadata: BTreeMap::new(),
+                updated_at_ms: 10,
+            })
+            .await
+            .expect("register provider binding");
     }
 
     async fn observe_test_environment(
@@ -2656,27 +2678,27 @@ mod tests {
         observed_at_ms: i64,
     ) {
         let target_id = HostTargetId::new(format!("target-{environment_id}"));
-        let capabilities = HostCapabilities::filesystem(true, true).with_process();
+        let environment_id = EnvironmentId::new(environment_id);
         store
-            .observe_environment(ObserveEnvironment {
-                environment_id: EnvironmentId::new(environment_id),
-                provider_id: EnvironmentProviderId::new(provider_id),
-                provider_target_id: target_id.clone(),
-                origin: EnvironmentOrigin::Provided,
+            .create_environment(CreateEnvironment {
+                request_id: EnvironmentProvisionRequestId::new(format!("request-{environment_id}")),
+                environment_id: environment_id.clone(),
+                incarnation_id: EnvironmentIncarnationId::new(format!(
+                    "incarnation-{environment_id}"
+                )),
+                binding_id: EnvironmentProviderBindingId::new(format!("binding-{provider_id}")),
+                template_id: EnvironmentTemplateId::new("test-template"),
                 display_name: None,
-                status: HostTargetStatus::Ready,
-                scope: HostScope::Default,
-                capabilities: capabilities.clone(),
-                connection: HostConnectionSpec {
-                    target_id,
-                    endpoint: "http://host.test".to_owned(),
-                    transport: HostTransport::Http,
-                    scope: HostScope::Default,
-                    default_cwd: Some(HostPath::new("/workspace").expect("cwd")),
-                    capabilities,
-                },
-                default_cwd: Some(HostPath::new("/workspace").expect("cwd")),
                 metadata: BTreeMap::new(),
+                created_at_ms: observed_at_ms.saturating_sub(1),
+            })
+            .await
+            .expect("create environment");
+        store
+            .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                environment_id,
+                provider_target_id: target_id,
+                status: EnvironmentStatus::Offline,
                 observed_at_ms,
             })
             .await
