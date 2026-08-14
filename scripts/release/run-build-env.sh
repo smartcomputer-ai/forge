@@ -21,4 +21,20 @@ docker run --rm --platform linux/amd64 \
   -v lightspeed-cargo-registry:/usr/local/cargo/registry \
   -v lightspeed-release-target:/workspace/target \
   -v "$(pwd):/workspace" "$build_image" \
-  bash -c 'scripts/release/build-dist.sh && chown -R "$(stat -c %u:%g /workspace)" /workspace/dist'
+  bash -c '
+    cleanup() {
+      status=$?
+      trap - EXIT
+      if [[ -e /workspace/dist ]]; then
+        chown -R "$(stat -c %u:%g /workspace)" /workspace/dist || {
+          cleanup_status=$?
+          if (( status == 0 )); then
+            status=$cleanup_status
+          fi
+        }
+      fi
+      exit "$status"
+    }
+    trap cleanup EXIT
+    scripts/release/build-dist.sh
+  '
