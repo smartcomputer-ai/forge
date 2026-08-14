@@ -29,7 +29,7 @@ Remaining outside this repository:
 
 - provision and harden the hz01 build VM/runner carrying the workflow labels;
 - configure GitHub release environments and npm publication credentials;
-- wire the exact completed snapshot-bundle digest into ls.bot, pin its manifest,
-  and remove the sibling-source build;
+- install the narrowly scoped `LSBOT_DISPATCH_TOKEN` secret so the implemented
+  exact snapshot-bundle dispatch reaches ls.bot;
 - complete the deployment/migration/rollback drill; and
 - retire the hz02 CI guest after the required acceptance runs.
