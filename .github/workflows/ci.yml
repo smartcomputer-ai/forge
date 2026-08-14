@@ -2,8 +2,6 @@ name: ci
 
 on:
   pull_request: {}
-  push:
-    branches: [main]
   workflow_dispatch: {}
 
 permissions:
@@ -14,7 +12,70 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.classify.outputs.rust }}
+      consumers: ${{ steps.classify.outputs.consumers }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          if test "$EVENT_NAME" = workflow_dispatch; then
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "consumers=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
+          git cat-file -e "$BASE_SHA^{commit}"
+          git cat-file -e "$HEAD_SHA^{commit}"
+
+          rust=false
+          consumers=false
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              crates/api/*)
+                rust=true
+                consumers=true
+                ;;
+              crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
+                rust=true
+                ;;
+              interop/*)
+                consumers=true
+                ;;
+              .github/workflows/*|release/*|scripts/*)
+                rust=true
+                consumers=true
+                ;;
+              docs/*|README.md|AGENTS.md|CLAUDE.md|LICENSE*|*.md)
+                ;;
+              *)
+                # Unknown paths are checked conservatively so a new source or
+                # build input cannot accidentally bypass CI.
+                rust=true
+                consumers=true
+                ;;
+            esac
+          done < <(git diff --name-only -z "$BASE_SHA" "$HEAD_SHA")
+
+          echo "rust=$rust" >> "$GITHUB_OUTPUT"
+          echo "consumers=$consumers" >> "$GITHUB_OUTPUT"
+
   rust:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -31,7 +92,7 @@ jobs:
           --health-timeout 5s
           --health-retries 15
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Protocol Buffers compiler
         run: |
           sudo apt-get update
@@ -57,10 +118,12 @@ jobs:
       - run: scripts/release/verify-metadata.sh
 
   consumers:
+    needs: changes
+    if: needs.changes.outputs.consumers == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.13.0
           cache: npm
@@ -71,3 +134,25 @@ jobs:
         working-directory: interop/ts-client
       - run: npm ci && npm run check
         working-directory: interop/configurator-mcp
+
+  required:
+    if: always()
+    needs: [changes, rust, consumers]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected check to pass
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RUST_NEEDED: ${{ needs.changes.outputs.rust }}
+          RUST_RESULT: ${{ needs.rust.result }}
+          CONSUMERS_NEEDED: ${{ needs.changes.outputs.consumers }}
+          CONSUMERS_RESULT: ${{ needs.consumers.result }}
+        run: |
+          set -euo pipefail
+          test "$CHANGES_RESULT" = success
+          if test "$RUST_NEEDED" = true; then
+            test "$RUST_RESULT" = success
+          fi
+          if test "$CONSUMERS_NEEDED" = true; then
+            test "$CONSUMERS_RESULT" = success
+          fi
