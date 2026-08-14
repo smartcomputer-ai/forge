@@ -32,19 +32,24 @@ const archive = (key, needle) => {
 };
 const clientFile = fs.readdirSync("dist/npm").find((entry) => entry.endsWith(".tgz"));
 if (!clientFile) throw new Error("missing TypeScript client tarball");
-const existingBuildImage = fs.existsSync("dist/release-manifest.json")
-  ? JSON.parse(fs.readFileSync("dist/release-manifest.json", "utf8")).buildImage
+const existingManifest = fs.existsSync("dist/release-manifest.json")
+  ? JSON.parse(fs.readFileSync("dist/release-manifest.json", "utf8"))
   : undefined;
-const buildImage = process.env.LIGHTSPEED_RELEASE_BUILD_IMAGE ?? existingBuildImage;
+const buildImage = process.env.LIGHTSPEED_RELEASE_BUILD_IMAGE ?? existingManifest?.buildImage;
 if (!/@sha256:[0-9a-f]{64}$/.test(buildImage ?? "")) {
   throw new Error("LIGHTSPEED_RELEASE_BUILD_IMAGE must identify the actual digest-pinned build image");
+}
+const rustVersion = existingManifest?.rustVersion
+  ?? execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim();
+if (typeof rustVersion !== "string" || rustVersion.length === 0) {
+  throw new Error("release manifest must identify the Rust toolchain used by the build environment");
 }
 
 const manifest = {
   manifestVersion: 1,
   version,
   gitSha,
-  rustVersion: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim(),
+  rustVersion,
   target: metadata.LIGHTSPEED_RELEASE_TARGET,
   buildImage,
   protocolVersion: metadata.LIGHTSPEED_API_PROTOCOL_VERSION,
