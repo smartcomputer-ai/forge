@@ -60,9 +60,9 @@ produces `dist/`. `make release-images` copies those prebuilt files into the
 two runtime images; it does not invoke Cargo. The image smoke test extracts the
 server executable and compares it byte-for-byte with `dist/bin`.
 
-Continuous CI first publishes the composite `build-env` image by source commit,
-then runs that exact image by digest. The release manifest records this
-composite image digest, not merely the Rust base-image digest.
+Release and snapshot builds first publish the composite `build-env` image by
+source commit, then run that exact image by digest. The release manifest records
+this composite image digest, not merely the Rust base-image digest.
 
 Release constants are centralized in `release/metadata.env`; run
 `scripts/release/verify-metadata.sh` after changing a product, protocol, schema,
@@ -71,21 +71,23 @@ version, full source commit, target, and Rust version through `--version`.
 
 ## Publication
 
-- Pull requests run on GitHub-hosted runners and perform formatting, lint,
-  workspace tests, contract checks, both generated-consumer checks, and a
-  native Apple Silicon compile/`--version` smoke test. Published standalone
-  archives remain Linux-only in the first cut; macOS development uses
-  `cargo run`.
-- Protected `main` builds run only on the isolated
-  `self-hosted,linux,x64,hz01,protected` runner. They publish `sha-<full-sha>`
-  images and OCI binary/release bundles, with `edge` as a developer-only image
-  alias.
-- A `v<product-version>` annotated tag on protected `main` runs
-  `release-tag.yml`. It verifies the successful source build, copies OCI
-  manifests without rebuilding, publishes the already-packed TypeScript
-  client, and creates the GitHub Release.
+- Pull requests and pushes to `main` run formatting, lint, cached workspace
+  tests, contract checks, both generated-consumer checks, and the live
+  migration-ledger acceptance test on GitHub-hosted runners. They publish
+  nothing.
+- `.github/workflows/macos.yml` provides a manual native Apple Silicon
+  compile/`--version` smoke test. Published standalone archives remain
+  Linux-only in the first cut; macOS development uses `cargo run`.
+- A manual dispatch of `.github/workflows/release.yml` accepts a commit or ref,
+  requires it to resolve to a commit on `main`, and publishes one coherent
+  snapshot under `sha-<full-sha>` references. It does not publish npm
+  `latest`, SemVer aliases, or a GitHub Release.
+- A `v<product-version>` annotated tag on `main` runs the same workflow. It
+  tests and builds the exact tagged commit once, publishes the SHA-addressed
+  snapshot set, applies SemVer aliases from the manifest's exact digests,
+  publishes the stable TypeScript client, and creates the GitHub Release.
 
-The `continuous-release` and `official-release` GitHub environments should
-protect their respective credentials. Configure `NPM_TOKEN` only on the
-official release environment. Production deployment is deliberately outside
-these workflows and belongs to the consuming repository.
+The `official-release` GitHub environment protects tagged-release credentials;
+configure `NPM_TOKEN` only there. Snapshot publication uses only the scoped
+GitHub token. Production deployment is deliberately outside these workflows
+and belongs to the consuming repository.

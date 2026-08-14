@@ -14,10 +14,11 @@ Implemented here:
 - deterministic standalone archives, checksums, release manifest schema, SPDX
   SBOM, and artifact smoke tests;
 - server and Configurator runtime images that consume prebuilt `dist/` output;
-- publishable `@lightspeed/agent-client` release metadata; and
-- protected-main immutable publication plus no-rebuild SemVer promotion
-  workflows; and
-- an Apple Silicon macOS CI build/smoke guard, while macOS release archives
+- publishable `@lightspeed/agent-client` release metadata;
+- a single coherent build workflow: manual main-ancestor snapshots publish only
+  SHA references, while SemVer tags test/build that exact commit and additionally
+  publish version aliases, npm, and a GitHub Release; and
+- a manual Apple Silicon macOS build/smoke guard, while macOS release archives
   remain deferred.
 
 Remaining outside this repository:
