@@ -4,8 +4,11 @@ FROM rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019b
 COPY --from=node /usr/local/ /usr/local/
 RUN apt-get update \
     && apt-get install --yes --no-install-recommends \
-        binutils ca-certificates clang cmake git libssl-dev pkg-config protobuf-compiler \
+        binutils ca-certificates clang cmake git libprotobuf-dev libssl-dev pkg-config protobuf-compiler \
+    && test -f /usr/include/google/protobuf/duration.proto \
     && rm -rf /var/lib/apt/lists/*
 RUN git config --system --add safe.directory /workspace
+
+ENV PROTOC_INCLUDE=/usr/include
 
 WORKDIR /workspace

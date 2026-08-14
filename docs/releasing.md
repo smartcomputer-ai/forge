@@ -72,17 +72,21 @@ version, full source commit, target, and Rust version through `--version`.
 
 ## Publication
 
-- Pull requests and pushes to `main` run formatting, lint, cached workspace
-  tests, contract checks, both generated-consumer checks, and the live
-  migration-ledger acceptance test on GitHub-hosted runners. They publish
-  nothing.
+- Pull requests run path-classified checks on GitHub-hosted runners. Rust
+  inputs run formatting, lint, cached workspace tests, contract checks, and
+  the live migration-ledger acceptance test. TypeScript/contract inputs run
+  both generated-consumer checks. Build, release, and workflow changes run
+  both suites; documentation-only changes run only the lightweight required
+  gate. CI publishes nothing.
 - `.github/workflows/macos.yml` provides a manual native Apple Silicon
   compile/`--version` smoke test. Published standalone archives remain
   Linux-only in the first cut; macOS development uses `cargo run`.
-- A successful push-to-`main` run of `ci.yml` triggers
-  `.github/workflows/snapshot-main.yml`. It checks out the exact SHA reported by
-  CI, confirms that it is still the head of `origin/main`, and builds one
-  coherent Linux artifact set on hz01 without repeating the CI test suite.
+- The `main` ruleset requires a pull request and the successful, up-to-date
+  `required` CI gate. The resulting push to `main` directly triggers
+  `.github/workflows/snapshot-main.yml`, which checks out that exact SHA,
+  confirms that it is still the head of `origin/main`, and builds one coherent
+  Linux artifact set on hz01 without repeating the CI test suite.
+  Documentation-only pushes do not create a snapshot.
 - Snapshot components are first published under a run-specific staging tag and
   recorded by digest in the manifest. After package, archive, manifest, image,
   checksum, and binary/image identity checks pass, the workflow rechecks the

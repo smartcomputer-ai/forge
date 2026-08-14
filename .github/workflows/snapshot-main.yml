@@ -1,10 +1,12 @@
 name: snapshot main
 
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
+  push:
     branches: [main]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'LICENSE*'
 
 concurrency:
   group: snapshot-main
@@ -15,11 +17,6 @@ permissions:
 
 jobs:
   build:
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push' &&
-      github.event.workflow_run.head_branch == 'main' &&
-      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: [self-hosted, linux, x64, hz01, protected]
     permissions:
       contents: read
@@ -30,11 +27,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-          ref: ${{ github.event.workflow_run.head_sha }}
-      - name: Validate the successful main commit
+          ref: ${{ github.sha }}
+      - name: Validate the main commit
         id: identity
         env:
-          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
