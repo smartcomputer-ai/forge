@@ -719,9 +719,11 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
 
 #[test]
 fn bound_dispatch_controls_push_delivery_independently_of_completion() {
-    let mut workflow = AgentSessionWorkflow::default();
-    workflow.universe_id = Some(test_universe());
-    workflow.session_id = Some(SessionId::new("child_session"));
+    let mut workflow = AgentSessionWorkflow {
+        universe_id: Some(test_universe()),
+        session_id: Some(SessionId::new("child_session")),
+        ..Default::default()
+    };
 
     let binding = engine::WorkflowToolBinding::admit(
         test_universe(),
@@ -973,9 +975,11 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
 
 #[test]
 fn start_intents_recompute_pending_start_work_from_durable_state() {
-    let mut workflow = AgentSessionWorkflow::default();
-    workflow.universe_id = Some(test_universe());
-    workflow.session_id = Some(SessionId::new("child_session"));
+    let mut workflow = AgentSessionWorkflow {
+        universe_id: Some(test_universe()),
+        session_id: Some(SessionId::new("child_session")),
+        ..Default::default()
+    };
 
     let start = engine::WorkflowStartRef {
         recipe_format: 1,
@@ -1126,9 +1130,11 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
 
 #[test]
 fn terminal_run_with_notify_intent_queues_emission() {
-    let mut workflow = AgentSessionWorkflow::default();
-    workflow.universe_id = Some(test_universe());
-    workflow.session_id = Some(SessionId::new("child_session"));
+    let mut workflow = AgentSessionWorkflow {
+        universe_id: Some(test_universe()),
+        session_id: Some(SessionId::new("child_session")),
+        ..Default::default()
+    };
     let output_ref = engine::BlobRef::from_bytes(b"done");
     workflow.core_state.runs.completed.push(RunRecord {
         run_id: RunId::new(3),

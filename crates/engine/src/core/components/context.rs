@@ -1228,13 +1228,13 @@ fn apply_entries_applied(
                 entry.entry_id
             )));
         }
-        if let Some(last) = state.context.entries.last() {
-            if entry.entry_id <= last.entry_id {
-                return Err(DomainError::InvariantViolation(format!(
-                    "context entry id {} must be greater than last active entry id {}",
-                    entry.entry_id, last.entry_id
-                )));
-            }
+        if let Some(last) = state.context.entries.last()
+            && entry.entry_id <= last.entry_id
+        {
+            return Err(DomainError::InvariantViolation(format!(
+                "context entry id {} must be greater than last active entry id {}",
+                entry.entry_id, last.entry_id
+            )));
         }
 
         record_entry_materialization(state, entry)?;
@@ -1252,13 +1252,13 @@ fn apply_entries_applied(
 fn validate_no_duplicate_entry_keys(entries: &[ContextEntry]) -> Result<(), DomainError> {
     let mut seen = BTreeSet::new();
     for entry in entries {
-        if let Some(key) = entry.key.as_ref() {
-            if !seen.insert(key.clone()) {
-                return Err(DomainError::InvariantViolation(format!(
-                    "duplicate context key {} in entries event",
-                    key
-                )));
-            }
+        if let Some(key) = entry.key.as_ref()
+            && !seen.insert(key.clone())
+        {
+            return Err(DomainError::InvariantViolation(format!(
+                "duplicate context key {} in entries event",
+                key
+            )));
         }
     }
     Ok(())
@@ -1638,23 +1638,23 @@ fn validate_replacement_entries(
                 entry.entry_id
             )));
         }
-        if let Some(previous_entry_id) = previous_entry_id {
-            if entry.entry_id <= previous_entry_id {
-                return Err(DomainError::InvariantViolation(format!(
-                    "replacement context entry id {} must be greater than previous entry id {}",
-                    entry.entry_id, previous_entry_id
-                )));
-            }
+        if let Some(previous_entry_id) = previous_entry_id
+            && entry.entry_id <= previous_entry_id
+        {
+            return Err(DomainError::InvariantViolation(format!(
+                "replacement context entry id {} must be greater than previous entry id {}",
+                entry.entry_id, previous_entry_id
+            )));
         }
         previous_entry_id = Some(entry.entry_id);
 
-        if let Some(key) = entry.key.as_ref() {
-            if !seen_keys.insert(key.clone()) {
-                return Err(DomainError::InvariantViolation(format!(
-                    "duplicate replacement context key {}",
-                    key
-                )));
-            }
+        if let Some(key) = entry.key.as_ref()
+            && !seen_keys.insert(key.clone())
+        {
+            return Err(DomainError::InvariantViolation(format!(
+                "duplicate replacement context key {}",
+                key
+            )));
         }
 
         match entry_by_id(state, entry.entry_id) {

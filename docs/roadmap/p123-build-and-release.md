@@ -5,7 +5,7 @@ consumer cutover remain in ls.bot.
 
 Implemented here:
 
-- digest-pinned Debian 12/Rust 1.93.1 release build environment, published and
+- digest-pinned Debian 12/Rust 1.97.1 release build environment, published and
   recorded by its composite image digest;
 - one Cargo release compilation for server, provider, envd, and CLI artifacts;
 - shared executable version/source metadata;

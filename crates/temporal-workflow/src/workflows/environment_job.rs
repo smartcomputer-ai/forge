@@ -16,24 +16,13 @@ use crate::{
 };
 
 #[workflow(name = "EnvironmentJobWorkflow")]
+#[derive(Default)]
 pub struct EnvironmentJobWorkflow {
     snapshot: EnvironmentJobWorkflowSnapshot,
     subscriptions: Vec<EnvironmentJobSubscription>,
     pending_cancels: Vec<EnvironmentJobCancelSignal>,
     workflow_tool: Option<EnvironmentJobWorkflowToolContext>,
     nudged: bool,
-}
-
-impl Default for EnvironmentJobWorkflow {
-    fn default() -> Self {
-        Self {
-            snapshot: EnvironmentJobWorkflowSnapshot::default(),
-            subscriptions: Vec::new(),
-            pending_cancels: Vec::new(),
-            workflow_tool: None,
-            nudged: false,
-        }
-    }
 }
 
 #[workflow_methods]
@@ -516,11 +505,13 @@ mod tests {
             engine::WorkflowToolInvocationId::new(format!("wti:sha256:{}", "a".repeat(64)));
         let universe_id = uuid::Uuid::from_u128(1);
         let session_id = engine::SessionId::new("session_1");
-        let mut workflow = EnvironmentJobWorkflow::default();
-        workflow.workflow_tool = Some(EnvironmentJobWorkflowToolContext {
-            execution_id: "execution_1".to_owned(),
-            invocation_id: invocation_id.clone(),
-        });
+        let mut workflow = EnvironmentJobWorkflow {
+            workflow_tool: Some(EnvironmentJobWorkflowToolContext {
+                execution_id: "execution_1".to_owned(),
+                invocation_id: invocation_id.clone(),
+            }),
+            ..Default::default()
+        };
         let mut subscription = subscription();
         subscription.holder_workflow_id = crate::compose_workflow_id(universe_id, &session_id);
         workflow.subscriptions.push(subscription);

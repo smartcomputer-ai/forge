@@ -198,13 +198,19 @@ pub enum LlmApiError {
     #[error(transparent)]
     Transport(#[from] TransportError),
     #[error(transparent)]
-    HttpStatus(#[from] ProviderHttpError),
+    HttpStatus(Box<ProviderHttpError>),
     #[error(transparent)]
     Decode(#[from] DecodeError),
     #[error(transparent)]
     Stream(#[from] StreamError),
     #[error(transparent)]
     Unsupported(#[from] UnsupportedOperation),
+}
+
+impl From<ProviderHttpError> for LlmApiError {
+    fn from(error: ProviderHttpError) -> Self {
+        Self::HttpStatus(Box::new(error))
+    }
 }
 
 impl LlmApiError {

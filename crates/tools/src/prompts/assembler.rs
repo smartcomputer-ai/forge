@@ -352,16 +352,17 @@ async fn read_prompt_source(
         }
     };
 
-    Some(ResolvedPromptSource::source(
-        prompt_source_id(&input.root.root_id, path),
-        input.root.root_id.clone(),
-        path.as_str().to_owned(),
+    Some(ResolvedPromptSource::source(PromptSourceData {
+        id: prompt_source_id(&input.root.root_id, path),
+        root_id: input.root.root_id.clone(),
+        path: path.as_str().to_owned(),
         source,
         content_ref,
         text,
-        bytes.len() as u64,
-        input.root.access == engine::WorkspaceLinkAccess::ReadWrite,
-    ))
+        bytes: bytes.len() as u64,
+        writable: input.root.access == engine::WorkspaceLinkAccess::ReadWrite,
+        warnings: Vec::new(),
+    }))
 }
 
 fn select_prompt_sources(
@@ -740,30 +741,11 @@ struct ResolvedPromptSource {
 }
 
 impl ResolvedPromptSource {
-    fn source(
-        id: String,
-        root_id: String,
-        path: String,
-        source: PromptSourceLocation,
-        content_ref: BlobRef,
-        text: String,
-        bytes: u64,
-        writable: bool,
-    ) -> Self {
+    fn source(source: PromptSourceData) -> Self {
         Self {
-            root_id: root_id.clone(),
-            path: path.clone(),
-            kind: ResolvedPromptSourceKind::Source(PromptSourceData {
-                id,
-                root_id,
-                path,
-                source,
-                content_ref,
-                text,
-                bytes,
-                writable,
-                warnings: Vec::new(),
-            }),
+            root_id: source.root_id.clone(),
+            path: source.path.clone(),
+            kind: ResolvedPromptSourceKind::Source(Box::new(source)),
         }
     }
 
@@ -786,7 +768,7 @@ impl ResolvedPromptSource {
 
 #[derive(Clone, Debug)]
 enum ResolvedPromptSourceKind {
-    Source(PromptSourceData),
+    Source(Box<PromptSourceData>),
     Warning {
         path: String,
         kind: PromptWarningKind,

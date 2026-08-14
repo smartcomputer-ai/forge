@@ -103,10 +103,10 @@ impl BlobStore for PgStore {
 
     async fn read_bytes(&self, blob_ref: &BlobRef) -> Result<Vec<u8>, BlobStoreError> {
         let digest = sha256_hex(blob_ref)?;
-        if let Some(cache) = &self.blob_cache {
-            if let Some(bytes) = cache.get(self.config.universe_id, blob_ref) {
-                return Ok(bytes.to_vec());
-            }
+        if let Some(cache) = &self.blob_cache
+            && let Some(bytes) = cache.get(self.config.universe_id, blob_ref)
+        {
+            return Ok(bytes.to_vec());
         }
         let row = sqlx::query(
             r#"

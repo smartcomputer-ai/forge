@@ -323,16 +323,30 @@ pub fn visible_job_read_output(jobs: &[ModelJobResult]) -> String {
     .unwrap_or_else(|error| format!("failed to encode job results: {error}"))
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct NormalizeJobResultInput {
+    pub handle: Option<JobHandle>,
+    pub summary: Option<JobSummary>,
+    pub output_chunks: Vec<JobOutputChunk>,
+    pub output_next_seq: u64,
+    pub artifacts: Vec<JobArtifact>,
+    pub error: Option<String>,
+    pub output_bytes: Option<usize>,
+}
+
 pub async fn normalize_job_result(
     blobs: &dyn BlobStore,
-    handle: Option<JobHandle>,
-    summary: Option<JobSummary>,
-    output_chunks: Vec<JobOutputChunk>,
-    output_next_seq: u64,
-    artifacts: Vec<JobArtifact>,
-    error: Option<String>,
-    output_bytes: Option<usize>,
+    input: NormalizeJobResultInput,
 ) -> Result<ModelJobResult, BlobStoreError> {
+    let NormalizeJobResultInput {
+        handle,
+        summary,
+        output_chunks,
+        output_next_seq,
+        artifacts,
+        error,
+        output_bytes,
+    } = input;
     let observed_bytes = output_chunks
         .iter()
         .map(|chunk| chunk.chunk.as_slice().len())
@@ -589,18 +603,18 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let result = normalize_job_result(
             &blobs,
-            None,
-            Some(test_summary()),
-            vec![
-                output_chunk(0, JobOutputStream::Stdout, vec![b'a', 0xe2]),
-                output_chunk(1, JobOutputStream::Stdout, vec![0x82, 0xac, b'\n']),
-                output_chunk(2, JobOutputStream::Stderr, b"warning\n".to_vec()),
-                output_chunk(3, JobOutputStream::Stdout, b"done\n".to_vec()),
-            ],
-            4,
-            Vec::new(),
-            None,
-            Some(1024),
+            NormalizeJobResultInput {
+                summary: Some(test_summary()),
+                output_chunks: vec![
+                    output_chunk(0, JobOutputStream::Stdout, vec![b'a', 0xe2]),
+                    output_chunk(1, JobOutputStream::Stdout, vec![0x82, 0xac, b'\n']),
+                    output_chunk(2, JobOutputStream::Stderr, b"warning\n".to_vec()),
+                    output_chunk(3, JobOutputStream::Stdout, b"done\n".to_vec()),
+                ],
+                output_next_seq: 4,
+                output_bytes: Some(1024),
+                ..Default::default()
+            },
         )
         .await
         .expect("normalize text");
@@ -620,13 +634,13 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let result = normalize_job_result(
             &blobs,
-            None,
-            Some(test_summary()),
-            vec![output_chunk(0, JobOutputStream::Stdout, vec![0xff, 0x00])],
-            1,
-            Vec::new(),
-            None,
-            Some(2),
+            NormalizeJobResultInput {
+                summary: Some(test_summary()),
+                output_chunks: vec![output_chunk(0, JobOutputStream::Stdout, vec![0xff, 0x00])],
+                output_next_seq: 1,
+                output_bytes: Some(2),
+                ..Default::default()
+            },
         )
         .await
         .expect("normalize binary");
@@ -654,13 +668,12 @@ mod tests {
         let graph = RecordingGraph::default();
         let result = normalize_job_result(
             &blobs,
-            None,
-            Some(test_summary()),
-            vec![output_chunk(0, JobOutputStream::Stdout, vec![0xff])],
-            1,
-            Vec::new(),
-            None,
-            None,
+            NormalizeJobResultInput {
+                summary: Some(test_summary()),
+                output_chunks: vec![output_chunk(0, JobOutputStream::Stdout, vec![0xff])],
+                output_next_seq: 1,
+                ..Default::default()
+            },
         )
         .await
         .expect("normalize binary");

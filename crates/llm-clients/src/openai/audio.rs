@@ -38,8 +38,10 @@ impl Config {
     }
 
     pub fn without_api_key() -> Self {
-        let mut http = HttpClientConfig::default();
-        http.request_timeout = DEFAULT_AUDIO_REQUEST_TIMEOUT;
+        let http = HttpClientConfig {
+            request_timeout: DEFAULT_AUDIO_REQUEST_TIMEOUT,
+            ..HttpClientConfig::default()
+        };
         Self {
             api_key: None,
             base_url: DEFAULT_BASE_URL.to_owned(),

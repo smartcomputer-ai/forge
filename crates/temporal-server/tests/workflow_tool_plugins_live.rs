@@ -219,15 +219,14 @@ impl TestSelfReceiverControllerWorkflow {
                     EmissionBody::ToolInvocation { invocation } => {
                         let invocation_id = invocation.invocation_id.as_str().to_owned();
                         let fresh = ctx.state_mut(|state| {
-                            if state.snapshot.outbox.contains_key(&invocation_id) {
+                            if let std::collections::btree_map::Entry::Vacant(e) =
+                                state.snapshot.outbox.entry(invocation_id)
+                            {
+                                e.insert(invocation.clone());
+                                true
+                            } else {
                                 state.snapshot.duplicate_invocations += 1;
                                 false
-                            } else {
-                                state
-                                    .snapshot
-                                    .outbox
-                                    .insert(invocation_id, invocation.clone());
-                                true
                             }
                         });
                         if !fresh || !args.auto_reply {
@@ -837,22 +836,20 @@ where
     let client_future = run_client(client.clone(), api, blobs, session_id, plugin_queue);
     tokio::pin!(client_future);
 
-    let client_result = loop {
-        tokio::select! {
-            worker_result = session_worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("session worker stopped before the live test completed")),
-                    Err(error) => Err(error.context("session worker failed")),
-                };
-            }
-            worker_result = plugin_worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("plugin worker stopped before the live test completed")),
-                    Err(error) => Err(error.context("plugin worker failed")),
-                };
-            }
-            client_result = client_future.as_mut() => break client_result,
+    let client_result = tokio::select! {
+        worker_result = session_worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("session worker stopped before the live test completed")),
+                Err(error) => Err(error.context("session worker failed")),
+            };
         }
+        worker_result = plugin_worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("plugin worker stopped before the live test completed")),
+                Err(error) => Err(error.context("plugin worker failed")),
+            };
+        }
+        client_result = client_future.as_mut() => client_result,
     };
 
     shutdown_session_worker();
@@ -928,7 +925,7 @@ async fn wait_for_terminal_run_slow(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_bound_request_reply_resolves_via_plugin_worker() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1050,7 +1047,7 @@ async fn workflow_tool_bound_request_reply_resolves_via_plugin_worker() -> anyho
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_controller_self_receiver_resolves_before_run_terminal() -> anyhow::Result<()>
 {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1240,7 +1237,7 @@ async fn workflow_tool_controller_self_receiver_resolves_before_run_terminal() -
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_pushed_accepted_delivers_after_run_terminal() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1324,7 +1321,7 @@ async fn workflow_tool_pushed_accepted_delivers_after_run_terminal() -> anyhow::
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_controller_self_receiver_deadline_breaks_stalled_reply() -> anyhow::Result<()>
 {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1451,7 +1448,7 @@ async fn workflow_tool_controller_self_receiver_deadline_breaks_stalled_reply() 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1726,7 +1723,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_start_on_call_resolves_via_plugin_worker() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1815,7 +1812,7 @@ async fn workflow_tool_start_on_call_resolves_via_plugin_worker() -> anyhow::Res
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_start_recovery_query_resolves_silent_execution() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1870,7 +1867,7 @@ async fn workflow_tool_start_recovery_query_resolves_silent_execution() -> anyho
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_dead_receiver_fails_promise_terminally() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -1991,7 +1988,7 @@ async fn emitted_promises(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -2135,7 +2132,7 @@ async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_closed_receiver_fails_delivery_terminally() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -2213,7 +2210,7 @@ async fn workflow_tool_closed_receiver_fails_delivery_terminally() -> anyhow::Re
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -2331,7 +2328,7 @@ async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_run_terminal_auto_cancel_notifies_bound_receiver() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -2433,7 +2430,7 @@ async fn workflow_tool_run_terminal_auto_cancel_notifies_bound_receiver() -> any
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_auto_cancel_cancels_started_execution() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -2547,7 +2544,7 @@ async fn workflow_tool_auto_cancel_cancels_started_execution() -> anyhow::Result
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn workflow_tool_start_deadline_fails_unserved_queue() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 

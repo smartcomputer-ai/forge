@@ -525,8 +525,7 @@ async fn openai_responses_live_adapter_generates_result() {
 async fn openai_responses_live_adapter_captures_provider_triggered_compaction() {
     let blobs = Arc::new(InMemoryBlobStore::new());
     let repeated_context = "Lightspeed is testing OpenAI Responses provider-triggered compaction with encrypted native context state. This sentence is repeated to exceed the minimum compact threshold.";
-    let input_text = std::iter::repeat(repeated_context)
-        .take(300)
+    let input_text = std::iter::repeat_n(repeated_context, 300)
         .collect::<Vec<_>>()
         .join("\n");
     let input_ref = text_blob(&blobs, &input_text).await;

@@ -3,7 +3,7 @@
 use std::{
     env,
     future::Future,
-    sync::{Arc, Mutex},
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -27,7 +27,7 @@ use temporal_workflow::{
 };
 use temporalio_client::{Client, WorkflowQueryOptions};
 
-pub static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
+pub static LIVE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub async fn run_with_live_worker<F, Fut>(
     activities: WorkerActivities,
@@ -69,16 +69,14 @@ where
     let client_future = run_client(client, task_queue, session_id);
     tokio::pin!(client_future);
 
-    let client_result = loop {
-        tokio::select! {
-            worker_result = worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
-                    Err(error) => Err(error.context("Temporal worker failed")),
-                };
-            }
-            client_result = client_future.as_mut() => break client_result,
+    let client_result = tokio::select! {
+        worker_result = worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
+                Err(error) => Err(error.context("Temporal worker failed")),
+            };
         }
+        client_result = client_future.as_mut() => client_result,
     };
 
     shutdown_worker();
@@ -217,13 +215,12 @@ pub async fn wait_for_terminal_run(
             .runs
             .into_iter()
             .find(|run| run.id == run_id)
-        {
-            if matches!(
+            && matches!(
                 run.status,
                 RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
-            ) {
-                return Ok(run);
-            }
+            )
+        {
+            return Ok(run);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }

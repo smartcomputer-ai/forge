@@ -7,7 +7,7 @@ use crate::{
         EnvironmentToolContext,
         jobs::{
             JobError, JobReadArgs, JobSubmitArgs, JobSubmitResult, JobSubmitted, ModelJobResultSet,
-            normalize_job_result, visible_job_read_output,
+            NormalizeJobResultInput, normalize_job_result, visible_job_read_output,
         },
     },
     error::ToolResult,
@@ -51,13 +51,14 @@ pub async fn invoke_job_read(
         normalized.push(
             normalize_job_result(
                 ctx.blobs.as_ref(),
-                None,
-                Some(job.summary),
-                job.output_chunks,
-                job.output_next_seq,
-                job.artifacts,
-                None,
-                args.output_bytes,
+                NormalizeJobResultInput {
+                    summary: Some(job.summary),
+                    output_chunks: job.output_chunks,
+                    output_next_seq: job.output_next_seq,
+                    artifacts: job.artifacts,
+                    output_bytes: args.output_bytes,
+                    ..Default::default()
+                },
             )
             .await?,
         );

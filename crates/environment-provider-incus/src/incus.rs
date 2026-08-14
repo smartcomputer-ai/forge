@@ -412,16 +412,15 @@ impl IncusClient {
         project: Option<&str>,
         body: Value,
     ) -> anyhow::Result<()> {
-        if !self.exists(path, project).await? {
-            if let Err(error) = self
+        if !self.exists(path, project).await?
+            && let Err(error) = self
                 .request_unit(Method::POST, collection, project, Some(body))
                 .await
-            {
-                if self.exists(path, project).await? {
-                    return Ok(());
-                }
-                return Err(error);
+        {
+            if self.exists(path, project).await? {
+                return Ok(());
             }
+            return Err(error);
         }
         Ok(())
     }
@@ -947,10 +946,9 @@ impl IncusBackend for IncusClient {
                 })),
             )
             .await
+            && self.instance(&project, &destination).await?.is_none()
         {
-            if self.instance(&project, &destination).await?.is_none() {
-                return Err(move_error);
-            }
+            return Err(move_error);
         }
         let target = self
             .instance(&project, &destination)
@@ -985,10 +983,9 @@ impl IncusBackend for IncusClient {
                 None,
             )
             .await
+            && self.instance(&project, &target.name).await?.is_some()
         {
-            if self.instance(&project, &target.name).await?.is_some() {
-                return Err(error);
-            }
+            return Err(error);
         }
         Ok(())
     }
@@ -1094,10 +1091,10 @@ struct Project {
 
 impl Project {
     fn is_lightspeed_managed(&self) -> bool {
-        if !self
+        if self
             .config
             .get("user.lightspeed.managed")
-            .is_some_and(|value| value == "true")
+            .is_none_or(|value| value != "true")
         {
             return false;
         }

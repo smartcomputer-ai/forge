@@ -276,14 +276,13 @@ pub fn select_authorization_server(
     metadata: &ProtectedResourceMetadata,
     hint: Option<&str>,
 ) -> String {
-    if let Some(hint) = hint {
-        if let Some(matched) = metadata
+    if let Some(hint) = hint
+        && let Some(matched) = metadata
             .authorization_servers
             .iter()
             .find(|issuer| normalized(issuer) == normalized(hint))
-        {
-            return matched.clone();
-        }
+    {
+        return matched.clone();
     }
     metadata.authorization_servers[0].clone()
 }
@@ -341,12 +340,12 @@ impl McpOAuthDriver {
         let prm = self.discover_protected_resource(target).await?;
         let issuer = select_authorization_server(&prm, target.authorization_server_hint.as_deref());
         let as_metadata = self.discover_authorization_server(&issuer).await?;
-        if let Some(methods) = &as_metadata.code_challenge_methods_supported {
-            if !methods.iter().any(|method| method == "S256") {
-                return Err(McpOAuthError::PkceUnsupported {
-                    issuer: as_metadata.issuer,
-                });
-            }
+        if let Some(methods) = &as_metadata.code_challenge_methods_supported
+            && !methods.iter().any(|method| method == "S256")
+        {
+            return Err(McpOAuthError::PkceUnsupported {
+                issuer: as_metadata.issuer,
+            });
         }
 
         let identification = match (cimd, as_metadata.client_id_metadata_document_supported) {
@@ -634,21 +633,21 @@ impl OAuthMetadataClient for HttpOAuthMetadataClient {
         })?;
         if !status.is_success() {
             // RFC 7591 §3.2.2 error response; never echo unparsed bodies.
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-                    let description = value
-                        .get("error_description")
-                        .and_then(|description| description.as_str())
-                        .unwrap_or_default();
-                    return Err(McpOAuthError::RegistrationRejected {
-                        url: url.to_owned(),
-                        message: if description.is_empty() {
-                            error.to_owned()
-                        } else {
-                            format!("{error}: {description}")
-                        },
-                    });
-                }
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(error) = value.get("error").and_then(|error| error.as_str())
+            {
+                let description = value
+                    .get("error_description")
+                    .and_then(|description| description.as_str())
+                    .unwrap_or_default();
+                return Err(McpOAuthError::RegistrationRejected {
+                    url: url.to_owned(),
+                    message: if description.is_empty() {
+                        error.to_owned()
+                    } else {
+                        format!("{error}: {description}")
+                    },
+                });
             }
             return Err(McpOAuthError::Http {
                 url: url.to_owned(),

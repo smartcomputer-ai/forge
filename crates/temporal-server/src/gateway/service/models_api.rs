@@ -41,13 +41,9 @@ impl ModelDiscoveryService {
 
     pub(super) async fn list(&self, selectable_only: bool) -> ModelListResponse {
         let (openai, anthropic) = tokio::join!(self.list_openai(), self.list_anthropic());
-        let (mut models, providers) = match (openai, anthropic) {
-            ((models_a, provider_a), (models_b, provider_b)) => {
-                let mut models = models_a;
-                models.extend(models_b);
-                (models, vec![provider_a, provider_b])
-            }
-        };
+        let ((mut models, provider_a), (models_b, provider_b)) = (openai, anthropic);
+        models.extend(models_b);
+        let providers = vec![provider_a, provider_b];
         models.sort_by(|left, right| {
             (
                 &left.provider_id,

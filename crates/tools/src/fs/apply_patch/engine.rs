@@ -268,7 +268,7 @@ fn compute_replacements(
         }
     }
 
-    replacements.sort_by(|(left_index, _, _), (right_index, _, _)| left_index.cmp(right_index));
+    replacements.sort_by_key(|(index, _, _)| *index);
     Ok(replacements)
 }
 

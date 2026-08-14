@@ -518,8 +518,7 @@ fn first_prompt() -> String {
     );
     format!(
         "{}\n\nReply with exactly READY after preserving the marker.",
-        std::iter::repeat(repeated.as_str())
-            .take(260)
+        std::iter::repeat_n(repeated.as_str(), 260)
             .collect::<Vec<_>>()
             .join("\n")
     )

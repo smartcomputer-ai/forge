@@ -1319,7 +1319,7 @@ pub fn session_config_to_api(config: &SessionConfig) -> Result<api::SessionConfi
         model: Some(model_to_api(&config.model)),
         generation: (!config.generation.is_default())
             .then(|| generation_config_to_api(&config.generation)),
-        limits: (!config.limits.is_default()).then(|| api::LimitsConfig {
+        limits: (!config.limits.is_default()).then_some(api::LimitsConfig {
             max_turns: config.limits.max_turns,
             max_tool_rounds: config.limits.max_tool_rounds,
         }),

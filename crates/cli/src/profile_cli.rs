@@ -738,7 +738,9 @@ fn profile_source_from_args(
         }),
         (None, Some(json_arg)) => {
             let profile = read_json_arg::<InlineAgentProfile>(json_arg)?;
-            Ok(ProfileSource::Inline { profile })
+            Ok(ProfileSource::Inline {
+                profile: Box::new(profile),
+            })
         }
         (None, None) => Err(anyhow!("one of --profile or --profile-json is required")),
     }

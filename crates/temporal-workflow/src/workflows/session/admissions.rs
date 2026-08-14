@@ -13,7 +13,7 @@ pub(super) async fn process_admissions(
             let session_id = drive.session_id().clone();
             match preprocess_input_entries(ctx, session_id, command).await? {
                 RunInputPreprocessResult::Succeeded { command: rewritten } => {
-                    command = rewritten;
+                    command = *rewritten;
                 }
                 RunInputPreprocessResult::Failed { failure } => {
                     record_admission_failure(
@@ -38,7 +38,7 @@ pub(super) async fn process_admissions(
 }
 
 enum RunInputPreprocessResult {
-    Succeeded { command: CoreAgentCommand },
+    Succeeded { command: Box<CoreAgentCommand> },
     Failed { failure: AgentAdmissionFailure },
 }
 
@@ -76,7 +76,7 @@ async fn preprocess_input_entries(
             ),
             engine::RunRequestSource::Context { .. } => {
                 return Ok(RunInputPreprocessResult::Succeeded {
-                    command: CoreAgentCommand::RequestRun(request),
+                    command: Box::new(CoreAgentCommand::RequestRun(request)),
                 });
             }
         },
@@ -99,7 +99,11 @@ async fn preprocess_input_entries(
                 key,
             },
         ),
-        command => return Ok(RunInputPreprocessResult::Succeeded { command }),
+        command => {
+            return Ok(RunInputPreprocessResult::Succeeded {
+                command: Box::new(command),
+            });
+        }
     };
 
     let result = ctx
@@ -113,7 +117,7 @@ async fn preprocess_input_entries(
 
     match result.outcome {
         PreprocessRunInputOutcome::Succeeded { input } => Ok(RunInputPreprocessResult::Succeeded {
-            command: rebuild.rebuild(input)?,
+            command: Box::new(rebuild.rebuild(input)?),
         }),
         PreprocessRunInputOutcome::Failed { failure } => Ok(RunInputPreprocessResult::Failed {
             failure: preprocess_failure_to_admission_failure(submission_id, failure),

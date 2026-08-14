@@ -38,7 +38,7 @@ use tools::{
         JOB_READ_TOOL_NAME, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
         JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, JobHandleArg,
         JobReadArgs, JobSubmitExecutionContextV1, ModelJobResult, ModelJobResultSet,
-        is_environment_job_query_tool_name, normalize_job_result,
+        NormalizeJobResultInput, is_environment_job_query_tool_name, normalize_job_result,
     },
     environment_protocol::RemoteEnvironmentConnection,
     fleet::is_fleet_tool,
@@ -1199,13 +1199,15 @@ async fn job_read_entry_from_response(
     match response {
         Some(response) => normalize_job_result(
             blobs,
-            Some(handle),
-            Some(response.summary),
-            response.output_chunks,
-            response.output_next_seq,
-            response.artifacts,
-            None,
-            output_bytes,
+            NormalizeJobResultInput {
+                handle: Some(handle),
+                summary: Some(response.summary),
+                output_chunks: response.output_chunks,
+                output_next_seq: response.output_next_seq,
+                artifacts: response.artifacts,
+                output_bytes,
+                ..Default::default()
+            },
         )
         .await
         .map_err(map_blob_error),

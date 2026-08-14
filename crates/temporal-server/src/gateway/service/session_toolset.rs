@@ -101,10 +101,10 @@ impl GatewayAgentApi {
                 )));
             }
             if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures {
-                    if let Some(failure) = status.admission_failures.last() {
-                        return Err(map_admission_failure_to_api_error(failure));
-                    }
+                if status.admission_failures.len() > baseline_failures
+                    && let Some(failure) = status.admission_failures.last()
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
                 }
                 if let Some(error) = status.last_error {
                     return Err(AgentApiError::internal(format!(

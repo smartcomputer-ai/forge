@@ -245,7 +245,7 @@ mod tests {
     #[test]
     fn inline_source_validation_rejects_empty_instruction_text() {
         let source = ProfileSource::Inline {
-            profile: InlineAgentProfile {
+            profile: Box::new(InlineAgentProfile {
                 display_name: None,
                 description: None,
                 document: ProfileDocument {
@@ -254,7 +254,7 @@ mod tests {
                     }),
                     ..ProfileDocument::default()
                 },
-            },
+            }),
         };
 
         assert!(matches!(
