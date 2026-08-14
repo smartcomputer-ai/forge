@@ -10,8 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use futures_util::{StreamExt as _, stream};
-use host_protocol::{
+use environment_protocol::{
     control::{
         handshake::{
             ControllerCapabilities, ControllerInitializeParams, ControllerInitializeResponse,
@@ -22,9 +21,12 @@ use host_protocol::{
         methods::*,
         targets::*,
     },
-    error::{HostError, HostErrorCode},
-    shared::{CURRENT_PROTOCOL_VERSION, HostCapabilities, HostScope, ImplementationInfo},
+    error::{EnvironmentProtocolError, EnvironmentProtocolErrorCode},
+    shared::{
+        CURRENT_PROTOCOL_VERSION, EnvironmentCapabilities, EnvironmentScope, ImplementationInfo,
+    },
 };
+use futures_util::{StreamExt as _, stream};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
@@ -90,7 +92,7 @@ async fn data_upgrade<B: IncusBackend>(
     if expected != target_id {
         return StatusCode::CONFLICT.into_response();
     }
-    let target_id = host_protocol::shared::HostTargetId::new(target_id);
+    let target_id = environment_protocol::shared::ProviderTargetId::new(target_id);
     let target = match app.backend.get_owned(&binding, &target_id).await {
         Ok(Some(target)) => target,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -141,7 +143,7 @@ async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
         Err(decode_error) => {
             return error(
                 Value::Null,
-                HostErrorCode::InvalidRequest,
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 decode_error.to_string(),
             );
         }
@@ -188,7 +190,11 @@ async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
     };
     match result {
         Ok(result) => json!({"jsonrpc":"2.0","id":id,"result":result}),
-        Err(error_value) => error(id, HostErrorCode::Internal, error_value.to_string()),
+        Err(error_value) => error(
+            id,
+            EnvironmentProtocolErrorCode::Internal,
+            error_value.to_string(),
+        ),
     }
 }
 
@@ -366,7 +372,7 @@ async fn close_target<B: IncusBackend>(
     let Some(target) = app.backend.get_owned(binding, &params.target_id).await? else {
         return Ok(CloseTargetResponse {
             target_id: params.target_id,
-            status: HostTargetStatus::Closed,
+            status: ProviderTargetStatus::Closed,
         });
     };
     verify_binding(&target, binding)?;
@@ -380,7 +386,7 @@ async fn close_target<B: IncusBackend>(
         .await?;
     Ok(CloseTargetResponse {
         target_id: params.target_id,
-        status: HostTargetStatus::Closed,
+        status: ProviderTargetStatus::Closed,
     })
 }
 
@@ -505,11 +511,11 @@ fn verify_adoption(target: &OwnedTarget, params: &AdoptTargetParams) -> anyhow::
     Ok(())
 }
 async fn observe_daemon_readiness(config: &Config, target: &mut OwnedTarget) {
-    if target.status == HostTargetStatus::Ready && !relay::probe_guest(config, target).await {
-        target.status = HostTargetStatus::Starting;
+    if target.status == ProviderTargetStatus::Ready && !relay::probe_guest(config, target).await {
+        target.status = ProviderTargetStatus::Starting;
     }
 }
-fn summary(target: OwnedTarget) -> HostTargetSummary {
+fn summary(target: OwnedTarget) -> ProviderTargetSummary {
     let mut metadata = BTreeMap::from([
         ("templateId".to_owned(), target.template_id),
         ("imageFingerprint".to_owned(), target.image_fingerprint),
@@ -517,12 +523,12 @@ fn summary(target: OwnedTarget) -> HostTargetSummary {
     if let Some(location) = target.location {
         metadata.insert("incusMember".to_owned(), location);
     }
-    HostTargetSummary {
+    ProviderTargetSummary {
         target_id: target.target_id,
         display_name: Some(target.environment_id),
         status: target.status,
-        scope: HostScope::Default,
-        capabilities: HostCapabilities::filesystem(true, true)
+        scope: EnvironmentScope::Default,
+        capabilities: EnvironmentCapabilities::filesystem(true, true)
             .with_filesystem_search()
             .with_process()
             .with_jobs(),
@@ -536,8 +542,8 @@ fn decode<T: DeserializeOwned>(value: Value) -> anyhow::Result<T> {
 fn encode<T: serde::Serialize>(value: T) -> anyhow::Result<Value> {
     Ok(serde_json::to_value(value)?)
 }
-fn error(id: Value, code: HostErrorCode, message: String) -> Value {
-    json!({"jsonrpc":"2.0","id":id,"error":HostError::new(code,message)})
+fn error(id: Value, code: EnvironmentProtocolErrorCode, message: String) -> Value {
+    json!({"jsonrpc":"2.0","id":id,"error":EnvironmentProtocolError::new(code,message)})
 }
 
 #[cfg(test)]
@@ -556,7 +562,7 @@ mod tests {
             template_id: "dev-small-v1".to_owned(),
             image_fingerprint: "fingerprint-a".to_owned(),
             adoption_source: None,
-            status: HostTargetStatus::Ready,
+            status: ProviderTargetStatus::Ready,
             ipv4_address: Some("10.0.0.2".to_owned()),
             ingress_hostname: None,
             ingress_port: None,

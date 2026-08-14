@@ -15,13 +15,13 @@
   `host-bridge`.
 - Implemented config/env parsing, private advertised endpoint calculation,
   gateway provider registration, heartbeat, and best-effort unregister.
-- Implemented a WebSocket `host-protocol` controller/data-plane server with
+- Implemented a WebSocket `environment-protocol` controller/data-plane server with
   attach-only target lifecycle.
 - Implemented POSIX-first local process execution with stdout/stderr polling,
   stdin writes, termination, and timeout handling.
 - Implemented rooted host filesystem operations with read/write, directory,
   metadata, remove, and copy support.
-- Added focused process/filesystem tests plus a host-client protocol smoke test
+- Added focused process/filesystem tests plus an environment-client protocol smoke test
   that initializes the controller, attaches the target, connects to the returned
   data plane, and executes a process.
 - Added `lightspeed env` CLI helpers for list/read/attach/activate/deactivate/
@@ -56,14 +56,14 @@ host-bridge --gateway-url http://127.0.0.1:18080/rpc \
 The network assumption is private reachability, not public internet exposure.
 The bridge may run on another machine or inside a guest OS, but the Temporal
 server/gateway/worker deployment must be able to reach the bridge's advertised
-`host-protocol` WebSocket endpoint through deployment plumbing such as a LAN,
+`environment-protocol` WebSocket endpoint through deployment plumbing such as a LAN,
 VPN, Tailscale tailnet, port forward, or local development loopback. Provider
 registration does not create a tunnel; it only tells Lightspeed where the
 controller is.
 
 After startup it:
 
-1. serves a `host-protocol` controller/data-plane WebSocket endpoint;
+1. serves a `environment-protocol` controller/data-plane WebSocket endpoint;
 2. registers itself with the gateway through `environmentProviders/register`;
 3. heartbeats while reachable;
 4. advertises one attached-host target representing the OS it is running in;
@@ -87,13 +87,13 @@ crates/host-bridge/
 
 Working binary name: `host-bridge`.
 
-The runner may depend on `api`, `host-protocol`, and small transport helpers. It
+The runner may depend on `api`, `environment-protocol`, and small transport helpers. It
 must not depend on `cli`, `temporal-server`, `store-pg`, `engine`, or any
 workflow/runtime crate. The dependency direction should be:
 
 ```text
 host-bridge -> api
-host-bridge -> host-protocol
+host-bridge -> environment-protocol
 host-bridge -> transport/json-rpc helper code
 ```
 
@@ -154,7 +154,7 @@ session/environments/attach
 ```
 
 Gateway calls `controller/attachTarget`; the runner returns a
-`HostConnectionSpec` with a data-plane endpoint such as:
+`EnvironmentDataConnection` with a data-plane endpoint such as:
 
 ```text
 ws://127.0.0.1:19090/data?target=local
@@ -164,12 +164,12 @@ For non-local deployments this endpoint should be a private routable address,
 for example a Tailscale DNS name or tailnet IP. It must be reachable from both
 gateway controller calls and worker data-plane calls.
 
-The worker already knows how to connect to WebSocket `HostConnectionSpec`
-records, handshake, and build `RemoteHostConnection`.
+The worker already knows how to connect to WebSocket `EnvironmentDataConnection`
+records, handshake, and build `RemoteEnvironmentConnection`.
 
 ## Data Plane
 
-The runner implements the data-plane methods that `RemoteHostConnection` already
+The runner implements the data-plane methods that `RemoteEnvironmentConnection` already
 calls.
 
 ### Process Methods
@@ -204,7 +204,7 @@ The runner should advertise only the capabilities it actually supports.
 
 ### Filesystem Methods
 
-Implement the host filesystem methods needed by `RemoteHostFileSystem`:
+Implement the host filesystem methods needed by `RemoteEnvironmentFileSystem`:
 
 - `fs/readFile`
 - `fs/writeFile`
@@ -215,7 +215,7 @@ Implement the host filesystem methods needed by `RemoteHostFileSystem`:
 - `fs/copy`
 
 By default, file methods are rooted at `--fs-root` if set, otherwise at `--cwd`.
-Paths outside the allowed root should fail with a typed host-protocol error.
+Paths outside the allowed root should fail with a typed environment-protocol error.
 This is an accidental-write/read guard, not a sandbox: commands executed through
 `process/start` still run with the OS permissions of the bridge process.
 
@@ -277,7 +277,7 @@ the address the Temporal server can dial, for example
 
 Start POSIX-first.
 
-The current `HostPath` model is normalized around `/` paths, and the agent-facing
+The current `EnvironmentPath` model is normalized around `/` paths, and the agent-facing
 environment model assumes POSIX-like paths in examples. Linux and macOS are the
 first target. Windows support should be explicit later rather than accidentally
 wrong, because path normalization, drive letters, executable lookup, and process
@@ -302,7 +302,7 @@ The first server can use two paths on one listener:
 - `/data`
 
 Keep request dispatch typed at the boundary: parse JSON-RPC, match method names,
-deserialize into `host-protocol` DTOs, call local handlers, serialize typed
+deserialize into `environment-protocol` DTOs, call local handlers, serialize typed
 responses.
 
 ### G3: Registration And Heartbeat
@@ -320,7 +320,7 @@ Implement a one-target controller:
 - `initialize` returns bridge implementation info and attach/list/get/close
   capabilities;
 - `listTargets` returns the local target summary;
-- `attachTarget(Target { targetId })` returns a data-plane `HostConnectionSpec`;
+- `attachTarget(Target { targetId })` returns a data-plane `EnvironmentDataConnection`;
 - `getTarget` returns the current summary;
 - `closeTarget` returns `closed` for the request but does not stop the bridge
   process.
@@ -343,7 +343,7 @@ Add focused tests for:
 ### G6: Local Filesystem Data Plane
 
 Implement rooted filesystem operations and map local I/O errors to
-host-protocol error codes.
+environment-protocol error codes.
 
 Add focused tests for:
 
@@ -381,7 +381,7 @@ fake provider only simulated.
 - No container/VM lifecycle.
 - No reverse tunnel. Private network and VPN reachability are allowed, but the
   bridge does not establish a relay itself in P81.
-- No public internet host-protocol authentication.
+- No public internet environment-protocol authentication.
 - No PTY/computer-use implementation.
 - No Windows support.
 - No multi-target provider inventory.

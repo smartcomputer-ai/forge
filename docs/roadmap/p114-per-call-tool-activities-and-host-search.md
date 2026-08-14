@@ -27,14 +27,14 @@
   `temporal_live_parallel_tool_batch_completes_per_call` regression test: a
   three-call parallel-safe batch scheduled as concurrent per-call activities
   while `session/read` polling issues mid-batch status queries.
-- Step 4 implemented (2026-08-05): `host-protocol` gained the
+- Step 4 implemented (2026-08-05): `environment-protocol` gained the
   `filesystem_search` capability and the bounded `fs/searchText` operation
   (root, regex, include glob, case sensitivity, max depth, and mandatory
   match/file/byte/time limits; the response reports scan statistics and a
   typed stop reason). The bridge implements it in-process with the ripgrep
   engine crates (`grep-searcher`, `grep-regex`, `ignore`) — no external `rg`
   binary — under its filesystem-root confinement, advertising the capability
-  at the data-plane handshake. `RemoteHostFileSystem` prefers the native
+  at the data-plane handshake. `RemoteEnvironmentFileSystem` prefers the native
   operation for environment grep; every other backend falls through to the
   now-bounded generic traversal (`ToolLimits::max_search_{matches,files,
   bytes,duration_ms}`: 1000 matches / 5000 files / 64 MiB / 30 s defaults —
@@ -83,7 +83,7 @@ non-idempotent batches and can prevent a session from ever advancing.
 
 Remote recursive filesystem tools amplify the problem. `grep` and `glob`
 enumerate through the generic `FileSystem` interface, turning one logical
-search into thousands of serialized host-protocol directory and file calls.
+search into thousands of serialized environment-protocol directory and file calls.
 
 ## Decision 1: One Activity Per Tool Call
 
@@ -178,8 +178,8 @@ shape is to yield a durable process handle and poll or await it.
 
 ## Decision 3: Execute Expensive Search At The Host
 
-Extend `host-protocol` with an optional filesystem text-search capability and
-operation. `RemoteHostFileSystem` prefers it for environment grep; hosts
+Extend `environment-protocol` with an optional filesystem text-search capability and
+operation. `RemoteEnvironmentFileSystem` prefers it for environment grep; hosts
 without the capability use the bounded generic fallback.
 
 The host search request includes the root, regular expression, include filter,

@@ -50,7 +50,7 @@ redesign:
    true`, which closes a machine **other sessions may be attached to** (no
    occupancy check; binding uniqueness is only `(session, env_id)`).
 2. **Connection details are frozen into every binding.**
-   `HostConnectionSpec` (endpoint, caps, cwd) is denormalized into each
+   `EnvironmentDataConnection` (endpoint, caps, cwd) is denormalized into each
    `SessionEnvironmentBindingRecord`; if a machine's endpoint changes, every
    binding is stale with no refresh path.
 3. **Bindings are insert-only and statuses are write-once.**
@@ -107,7 +107,7 @@ The redesign uses three deliberately different identities. Do not reuse
 | Concept | Rust / store name | Wire name | Scope |
 |---|---|---|---|
 | Universe machine | `EnvironmentInstanceId` | `instanceId` | Universe-unique Lightspeed identity |
-| Provider target | `HostTargetId` / `provider_target_id` | `providerTargetId` | Provider-native identity |
+| Provider target | `ProviderTargetId` / `provider_target_id` | `providerTargetId` | Provider-native identity |
 | Session binding alias | `EnvironmentId` / `env_id` | `envId` | Unique only within a session; forms `env:{envId}` |
 
 The prose below calls the universe resource a *machine*; code and wire types
@@ -139,7 +139,7 @@ Make presence real:
 Promote the target inventory to owned, universe-scoped
 `EnvironmentInstanceRecord`s: `instance_id`, `provider_id`, the explicit
 provider-native `provider_target_id`, `origin: Provided | Provisioned`,
-machine facts (capabilities, mutable `connection: HostConnectionSpec`,
+machine facts (capabilities, mutable `connection: EnvironmentDataConnection`,
 `default_cwd`, fs root metadata), lifecycle `status`, `observed_at_ms`, and
 created/updated timestamps. The record is the **single source of connection
 truth**; bindings stop copying it.
@@ -286,7 +286,7 @@ jobs have no session, and a supervised job may intentionally outlive its
 creating run.
 
 Use one workflow per create request rather than one workflow per individual
-job. The host protocol already starts and reads a batch/DAG together, so this
+job. The environment protocol already starts and reads a batch/DAG together, so this
 preserves batched polling and dependency semantics while giving the group an
 independent lifecycle. DAG/lane scheduling remains host-side; the workflow is
 the durable control plane, not the executor.
@@ -400,13 +400,13 @@ a projection of external facts rather than a second owner of them.
 
 #### 6.1 Keep execution tools transport-neutral
 
-The host protocol is the external execution-provider data plane. It is not the
+The environment protocol is the external execution-provider data plane. It is not the
 model-facing tool abstraction:
 
 - Filesystem tools depend only on `tools::fs::FileSystem`/`FsToolContext`;
   process and job tools depend only on `ProcessExecutor` and `JobExecutor`.
-  New tools must not call `HostDataClient` or branch on a host transport.
-- `RemoteHostConnection` remains the adapter that turns one host data-plane
+  New tools must not call `EnvironmentDataClient` or branch on a host transport.
+- `RemoteEnvironmentConnection` remains the adapter that turns one environment data-plane
   connection into those generic contexts. Session filesystem composition
   continues to route generic `FileSystem` implementations, whether they come
   from VFS, a local runtime, or an attached environment.
@@ -420,7 +420,7 @@ model-facing tool abstraction:
   The in-tree bridge/server and future provider data-plane implementations
   must pass the same suite.
 
-Implemented in `tools::host_protocol::assert_host_data_conformance`; the
+Implemented in `tools::environment_protocol::assert_environment_data_conformance`; the
 `host-bridge` WebSocket integration test runs the suite against the real server.
 
 This is an internal architectural constraint and test surface, not a new wire
@@ -519,7 +519,7 @@ Net: 82 → 84 methods.
 | Lease enforcement | Read-time liveness check, no reaper | Background reaper marking `Stale` (rejected: extra machinery; derive staleness) |
 | Binding availability | Derive from binding + instance + provider at use time; failures stay call-scoped | Durable degraded tracking (deferred; requires a controller/reconciler) |
 | Extension scope | Harden the existing execution adapters, projection boundary, and peer job ownership | Build a generic plugin framework now (rejected: no second provider has established the common contract) |
-| Execution data plane | Direct host-protocol adapter behind generic filesystem/process/job traits | Temporal workflow per filesystem/process call (rejected: wrong latency, history, streaming, and connection semantics) |
+| Execution data plane | Direct environment-protocol adapter behind generic filesystem/process/job traits | Temporal workflow per filesystem/process call (rejected: wrong latency, history, streaming, and connection semantics) |
 | Supervised job observation | Peer job workflow is the sole poller and fans out terminal changes; session queries workflow/index only for repair | Peer workflow plus per-session provider polling (rejected: two owners and duplicated load) |
 
 ## Contract invariants
@@ -556,7 +556,7 @@ These are cross-layer requirements, not gateway conventions:
     through a current session binding. Hard-terminated holder workflows are
     treated as dead owners by the reaper.
 12. Model-facing filesystem, process, and job tools are transport-neutral. The
-    host protocol is one runtime adapter and Temporal workflows are never the
+    environment protocol is one runtime adapter and Temporal workflows are never the
     per-operation filesystem/process data plane.
 13. The peer job-group workflow is the only repeated provider poller. Session
     promise notification repair reads the workflow or terminal index rather

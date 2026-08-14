@@ -11,11 +11,11 @@ use ::environments::{
     FailEnvironmentLifecycle, FinishCloseEnvironment, ListEnvironments,
     ObserveProvisionedEnvironment,
 };
-use host_protocol::control::ingress::{
+use environment_protocol::control::ingress::{
     EnsureIngressParams, ProviderIngressStatus, RemoveIngressParams,
 };
-use host_protocol::control::targets::{
-    AdoptTargetParams, CloseTargetParams, CreateTargetParams, HostTargetStatus,
+use environment_protocol::control::targets::{
+    AdoptTargetParams, CloseTargetParams, CreateTargetParams, ProviderTargetStatus,
 };
 
 impl GatewayAgentApi {
@@ -58,7 +58,7 @@ impl GatewayAgentApi {
         .await
         .map_err(map_environments_error)?;
         let mut controller = self
-            .host_controller_connector
+            .provider_controller_connector
             .connect(&provider.controller_connection)
             .await?;
         let public_endpoint = if params.enabled {
@@ -295,7 +295,7 @@ impl GatewayAgentApi {
         .await
         .map_err(map_environments_error)?;
         let mut controller = self
-            .host_controller_connector
+            .provider_controller_connector
             .connect(&provider.controller_connection)
             .await?;
         let target = match (
@@ -335,13 +335,15 @@ impl GatewayAgentApi {
         let status = match target.status {
             // A passive provider reports Ready only after its private envd is
             // reachable. No provider presence has to register separately.
-            HostTargetStatus::Ready => EnvironmentStatus::Ready,
-            HostTargetStatus::Creating | HostTargetStatus::Starting => EnvironmentStatus::Booting,
-            HostTargetStatus::Stopped => EnvironmentStatus::Offline,
-            HostTargetStatus::Closing => EnvironmentStatus::Closing,
-            HostTargetStatus::Closed => EnvironmentStatus::Closed,
-            HostTargetStatus::Failed => EnvironmentStatus::Failed,
-            HostTargetStatus::Unknown => EnvironmentStatus::Unknown,
+            ProviderTargetStatus::Ready => EnvironmentStatus::Ready,
+            ProviderTargetStatus::Creating | ProviderTargetStatus::Starting => {
+                EnvironmentStatus::Booting
+            }
+            ProviderTargetStatus::Stopped => EnvironmentStatus::Offline,
+            ProviderTargetStatus::Closing => EnvironmentStatus::Closing,
+            ProviderTargetStatus::Closed => EnvironmentStatus::Closed,
+            ProviderTargetStatus::Failed => EnvironmentStatus::Failed,
+            ProviderTargetStatus::Unknown => EnvironmentStatus::Unknown,
         };
         let changed = environment.status != status
             || environment.incarnation.provider_target_id.as_ref() != Some(&target.target_id);
@@ -393,7 +395,7 @@ impl GatewayAgentApi {
         .await
         .map_err(map_environments_error)?;
         let mut controller = self
-            .host_controller_connector
+            .provider_controller_connector
             .connect(&provider.controller_connection)
             .await?;
         let ingress_response = controller
@@ -420,7 +422,7 @@ impl GatewayAgentApi {
                 force: false,
             })
             .await?;
-        if response.status == HostTargetStatus::Closed {
+        if response.status == ProviderTargetStatus::Closed {
             EnvironmentStore::finish_close_environment(
                 self.store.as_ref(),
                 FinishCloseEnvironment {
@@ -440,7 +442,7 @@ fn external_connection_from_api(
 ) -> Result<::environments::EnvironmentConnectionSpec, AgentApiError> {
     let transport = match value.transport {
         EnvironmentConnectionTransportView::WebSocket => {
-            host_protocol::shared::HostTransport::WebSocket
+            environment_protocol::shared::EnvironmentTransport::WebSocket
         }
         _ => {
             return Err(AgentApiError::invalid_request(

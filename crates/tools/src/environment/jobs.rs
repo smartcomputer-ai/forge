@@ -3,14 +3,14 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use host_protocol::{
+use environment_protocol::{
     data::jobs::{
         CancelJobsParams, CancelJobsResponse, JobArtifact, JobCancelScope,
-        JobDependency as HostJobDependency, JobDependencyPolicy, JobOutputChunk, JobStartSpec,
+        JobDependency as ProtocolJobDependency, JobDependencyPolicy, JobOutputChunk, JobStartSpec,
         JobStatus, JobSummary, ReadJobsParams, ReadJobsResponse, StartJobsParams,
         StartJobsResponse,
     },
-    shared::{ByteChunk, HostPath, JobId},
+    shared::{ByteChunk, EnvironmentPath, JobId},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -93,7 +93,7 @@ pub struct JobRunArgs {
 }
 
 impl JobRunArgs {
-    pub fn into_host_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
+    pub fn into_protocol_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
         let timeout_ms = self.timeout_ms.unwrap_or(JOB_RUN_DEFAULT_TIMEOUT_MS);
         if timeout_ms > JOB_RUN_MAX_TIMEOUT_MS {
             return Err(JobError::InvalidRequest {
@@ -112,7 +112,7 @@ impl JobRunArgs {
             dependency_policy: JobDependencyPolicy::AllSucceeded,
             queue_key: self.queue_key,
         }
-        .into_host_spec(job_id)
+        .into_protocol_spec(job_id)
     }
 }
 
@@ -149,13 +149,13 @@ pub struct JobDependencyArg {
 }
 
 impl JobDependencyArg {
-    fn into_host_dependency(self) -> JobExecResult<HostJobDependency> {
+    fn into_protocol_dependency(self) -> JobExecResult<ProtocolJobDependency> {
         match (self.job_id, self.name) {
-            (Some(job_id), None) => Ok(HostJobDependency {
+            (Some(job_id), None) => Ok(ProtocolJobDependency {
                 job_id: Some(job_id),
                 name: None,
             }),
-            (None, Some(name)) if !name.is_empty() => Ok(HostJobDependency {
+            (None, Some(name)) if !name.is_empty() => Ok(ProtocolJobDependency {
                 job_id: None,
                 name: Some(name),
             }),
@@ -192,7 +192,7 @@ pub struct JobSubmitSpecArgs {
 }
 
 impl JobSubmitSpecArgs {
-    pub fn into_host_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
+    pub fn into_protocol_spec(self, job_id: JobId) -> JobExecResult<JobStartSpec> {
         if self.argv.is_empty() {
             return Err(JobError::InvalidRequest {
                 message: "job argv must not be empty".to_owned(),
@@ -201,13 +201,13 @@ impl JobSubmitSpecArgs {
         let depends_on = self
             .depends_on
             .into_iter()
-            .map(JobDependencyArg::into_host_dependency)
+            .map(JobDependencyArg::into_protocol_dependency)
             .collect::<JobExecResult<Vec<_>>>()?;
         Ok(JobStartSpec {
             job_id,
             name: self.name,
             argv: self.argv,
-            cwd: self.cwd.as_ref().map(host_path).transpose()?,
+            cwd: self.cwd.as_ref().map(environment_path).transpose()?,
             env: self.env,
             secret_env: BTreeMap::new(),
             stdin: self.stdin.map(|value| ByteChunk::from(value.into_bytes())),
@@ -286,7 +286,7 @@ pub struct ModelJobResultSet {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelJobOutputSegment {
-    pub stream: host_protocol::data::jobs::JobOutputStream,
+    pub stream: environment_protocol::data::jobs::JobOutputStream,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -424,8 +424,8 @@ pub async fn store_model_job_result(
     Ok(root)
 }
 
-fn host_path(path: &FsPath) -> JobExecResult<HostPath> {
-    HostPath::new(path.as_str()).map_err(|error| JobError::InvalidRequest {
+fn environment_path(path: &FsPath) -> JobExecResult<EnvironmentPath> {
+    EnvironmentPath::new(path.as_str()).map_err(|error| JobError::InvalidRequest {
         message: error.to_string(),
     })
 }
@@ -438,7 +438,7 @@ mod tests {
     use engine::storage::{
         BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, InMemoryBlobStore, SessionBlobRoot,
     };
-    use host_protocol::data::jobs::{JobOutputStream, JobStatus};
+    use environment_protocol::data::jobs::{JobOutputStream, JobStatus};
     use serde_json::json;
 
     use super::*;
@@ -462,7 +462,7 @@ mod tests {
         }))
         .expect("decode job_run");
         let spec = args
-            .into_host_spec(JobId::new("job-derived"))
+            .into_protocol_spec(JobId::new("job-derived"))
             .expect("materialize job_run");
 
         assert_eq!(spec.job_id, JobId::new("job-derived"));
@@ -490,14 +490,14 @@ mod tests {
             .into_iter()
             .map(|spec| {
                 let job_id = spec.job_id.clone();
-                spec.into_host_spec(job_id)
+                spec.into_protocol_spec(job_id)
             })
             .collect::<JobExecResult<Vec<_>>>()
-            .expect("materialize host specs");
+            .expect("materialize protocol specs");
 
         assert_eq!(
             specs[1].depends_on,
-            vec![HostJobDependency::job_id("build")]
+            vec![ProtocolJobDependency::job_id("build")]
         );
     }
 
@@ -517,13 +517,18 @@ mod tests {
 
         let spec = args.jobs.into_iter().nth(1).expect("dependent job");
         let job_id = spec.job_id.clone();
-        let spec = spec.into_host_spec(job_id).expect("materialize host spec");
+        let spec = spec
+            .into_protocol_spec(job_id)
+            .expect("materialize protocol spec");
 
-        assert_eq!(spec.depends_on, vec![HostJobDependency::job_id("build")]);
+        assert_eq!(
+            spec.depends_on,
+            vec![ProtocolJobDependency::job_id("build")]
+        );
     }
 
     #[test]
-    fn job_submit_rejects_empty_dependencies_before_host_submission() {
+    fn job_submit_rejects_empty_dependencies_before_environment_submission() {
         let args = serde_json::from_value::<JobSubmitArgs>(json!({
             "jobs": [{
                 "job_id": "test",
@@ -536,7 +541,7 @@ mod tests {
         let spec = args.jobs.into_iter().next().expect("job");
         let job_id = spec.job_id.clone();
         let error = spec
-            .into_host_spec(job_id)
+            .into_protocol_spec(job_id)
             .expect_err("empty dependency must be rejected locally");
 
         assert!(matches!(error, JobError::InvalidRequest { .. }));
@@ -559,7 +564,7 @@ mod tests {
         }))
         .expect("timeout range is a domain validation");
         let error = args
-            .into_host_spec(JobId::new("job-derived"))
+            .into_protocol_spec(JobId::new("job-derived"))
             .expect_err("timeout above maximum must fail");
         assert!(matches!(error, JobError::InvalidRequest { .. }));
     }

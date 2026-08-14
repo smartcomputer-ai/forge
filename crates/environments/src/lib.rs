@@ -10,9 +10,9 @@ use async_trait::async_trait;
 use auth::{AuthGrantId, AuthProviderId, SecretId};
 pub use engine::EnvironmentId;
 use engine::{StringIdError, validate_general_string_id};
-use host_protocol::{
+use environment_protocol::{
     control::targets::EnvironmentTemplate,
-    shared::{HostTargetId, HostTransport},
+    shared::{EnvironmentTransport, ProviderTargetId},
 };
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
@@ -127,11 +127,11 @@ pub enum EnvironmentRegistryError {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentConnectionSpec {
     pub endpoint: String,
-    pub transport: HostTransport,
+    pub transport: EnvironmentTransport,
 }
 
 impl EnvironmentConnectionSpec {
-    pub fn new(endpoint: impl Into<String>, transport: HostTransport) -> Self {
+    pub fn new(endpoint: impl Into<String>, transport: EnvironmentTransport) -> Self {
         Self {
             endpoint: endpoint.into(),
             transport,
@@ -139,17 +139,15 @@ impl EnvironmentConnectionSpec {
     }
 
     pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
-        validate_endpoint("host controller endpoint", &self.endpoint)
+        validate_endpoint("provider controller endpoint", &self.endpoint)
     }
 }
-
-pub type HostControllerConnectionSpec = EnvironmentConnectionSpec;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentProviderRecord {
     pub provider_id: EnvironmentProviderId,
     pub display_name: Option<String>,
-    pub controller_connection: HostControllerConnectionSpec,
+    pub controller_connection: EnvironmentConnectionSpec,
     pub metadata: BTreeMap<String, String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
@@ -169,7 +167,7 @@ impl EnvironmentProviderRecord {
 pub struct PutEnvironmentProvider {
     pub provider_id: EnvironmentProviderId,
     pub display_name: Option<String>,
-    pub controller_connection: HostControllerConnectionSpec,
+    pub controller_connection: EnvironmentConnectionSpec,
     pub metadata: BTreeMap<String, String>,
     pub updated_at_ms: i64,
 }
@@ -278,7 +276,7 @@ pub enum EnvironmentStatus {
 pub struct EnvironmentIncarnationRecord {
     pub incarnation_id: EnvironmentIncarnationId,
     pub provision_request_id: Option<EnvironmentProvisionRequestId>,
-    pub provider_target_id: Option<HostTargetId>,
+    pub provider_target_id: Option<ProviderTargetId>,
     pub template_id: Option<EnvironmentTemplateId>,
     /// Provider-native reference used only while explicitly adopting an
     /// existing target. The provider converts it into `provider_target_id`.
@@ -333,7 +331,7 @@ impl EnvironmentRecord {
             return invalid("external environments cannot have provider-managed ingress");
         }
         if let Some(target_id) = &self.incarnation.provider_target_id {
-            validate_host_target_id(target_id)?;
+            validate_provider_target_id(target_id)?;
         }
         match &self.source {
             EnvironmentSource::Provisioned { .. } => {
@@ -417,7 +415,7 @@ pub struct ListEnvironments {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObserveProvisionedEnvironment {
     pub environment_id: EnvironmentId,
-    pub provider_target_id: HostTargetId,
+    pub provider_target_id: ProviderTargetId,
     pub status: EnvironmentStatus,
     pub observed_at_ms: i64,
 }
@@ -649,7 +647,7 @@ fn validate_endpoint(name: &'static str, value: &str) -> Result<(), EnvironmentR
     Ok(())
 }
 
-fn validate_host_target_id(value: &HostTargetId) -> Result<(), EnvironmentRegistryError> {
+fn validate_provider_target_id(value: &ProviderTargetId) -> Result<(), EnvironmentRegistryError> {
     validate_general_string_id("target_id", value.as_str()).map_err(|error| {
         EnvironmentRegistryError::InvalidInput {
             message: error.to_string(),

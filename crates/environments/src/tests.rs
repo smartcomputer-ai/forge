@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use host_protocol::shared::{HostTargetId, HostTransport};
+use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
 use uuid::Uuid;
 
 use super::*;
@@ -9,9 +9,9 @@ fn provider() -> PutEnvironmentProvider {
     PutEnvironmentProvider {
         provider_id: EnvironmentProviderId::new("incus-local"),
         display_name: Some("Local Incus".to_owned()),
-        controller_connection: HostControllerConnectionSpec::new(
+        controller_connection: EnvironmentConnectionSpec::new(
             "ws://127.0.0.1:19090/control",
-            HostTransport::WebSocket,
+            EnvironmentTransport::WebSocket,
         ),
         metadata: BTreeMap::new(),
         updated_at_ms: 1_000,
@@ -215,7 +215,7 @@ async fn provider_observation_populates_only_the_current_incarnation() {
         .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
         .await
         .expect("create");
-    let target_id = HostTargetId::new("target-1");
+    let target_id = ProviderTargetId::new("target-1");
     let observed = store
         .observe_provisioned_environment(ObserveProvisionedEnvironment {
             environment_id: environment.environment_id.clone(),
@@ -277,7 +277,7 @@ async fn external_environment_cannot_enable_provider_managed_ingress() {
             incarnation_id: EnvironmentIncarnationId::new("external-incarnation"),
             connection: EnvironmentConnectionSpec::new(
                 "ws://envd.example",
-                HostTransport::WebSocket,
+                EnvironmentTransport::WebSocket,
             ),
             display_name: None,
             metadata: BTreeMap::new(),
@@ -308,7 +308,7 @@ async fn external_environment_persists_a_typed_connection() {
             incarnation_id: EnvironmentIncarnationId::new("external-incarnation"),
             connection: EnvironmentConnectionSpec::new(
                 "ws://envd.example:19091",
-                HostTransport::WebSocket,
+                EnvironmentTransport::WebSocket,
             ),
             display_name: None,
             metadata: BTreeMap::new(),

@@ -106,7 +106,7 @@ FsRoute
 ```
 
 Keep these entries thin. Transport config, credentials, leases, provider specs,
-and host protocol connection data remain runtime/deployment facts and must not
+and environment protocol connection data remain runtime/deployment facts and must not
 enter context or the session log.
 
 ## Implementation

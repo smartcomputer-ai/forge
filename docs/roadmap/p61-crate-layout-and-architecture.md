@@ -257,7 +257,7 @@ gateway
 
 tools
   -> engine
-  -> host-protocol / host-client as needed
+  -> environment-protocol / environment-client as needed
 
 llm-runtime
   -> engine

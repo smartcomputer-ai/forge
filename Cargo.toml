@@ -1,9 +1,9 @@
 [workspace]
 members = [
-    "crates/host-client",
+    "crates/environment-client",
     "crates/environment-daemon",
     "crates/environment-provider-incus",
-    "crates/host-protocol",
+    "crates/environment-protocol",
     "crates/llm-clients",
     "crates/api",
     "crates/auth",

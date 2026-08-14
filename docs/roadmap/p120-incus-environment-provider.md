@@ -121,7 +121,7 @@ controller endpoint. Lightspeed derives that endpoint from the registered
 controller URL and opens it on demand. Before upgrade, both sides independently
 validate provider, enabled binding, universe, environment, current incarnation,
 and target ownership. The provider then dials envd over the private guest
-network, proxies the host protocol unchanged, and closes the pair after a
+network, proxies the environment protocol unchanged, and closes the pair after a
 configurable idle timeout. The next use creates fresh connections.
 
 Neither the VM nor provider maintains a permanent connection to Lightspeed.

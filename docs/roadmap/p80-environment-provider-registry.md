@@ -17,7 +17,7 @@ Introduce the runtime registry that lets sandbox runners and bridge runners
 become environment providers for Lightspeed sessions.
 
 After this milestone, an external runner can register itself, heartbeat while it
-is reachable, advertise a `host-protocol` controller, and be used by the gateway
+is reachable, advertise a `environment-protocol` controller, and be used by the gateway
 to create or attach session environments. The deterministic engine still records
 only semantic tool target identity (`env:<id>`), not provider lifecycle.
 
@@ -35,8 +35,8 @@ Use three explicit protocols/boundaries:
    - Owns provider registration, heartbeat, leases, and discovery.
    - Does not mutate session active targets directly.
 
-3. **`host-protocol` controller/data plane**
-   - Already mostly exists in `crates/host-protocol`.
+3. **`environment-protocol` controller/data plane**
+   - Already mostly exists in `crates/environment-protocol`.
    - Any registered provider must speak it directly, or be wrapped by an adapter
      that speaks it.
    - Owns target lifecycle and operations:
@@ -75,11 +75,11 @@ Examples:
 - a future computer-use bridge, if it exposes the required controller/data-plane
   capabilities.
 
-Every provider must advertise a `host-protocol` controller connection.
+Every provider must advertise a `environment-protocol` controller connection.
 
 ### Host Target
 
-A host target is the provider-side object managed by `host-protocol`.
+A host target is the provider-side object managed by `environment-protocol`.
 
 Host targets are not session environments by themselves. A target becomes a
 session environment only when Lightspeed creates a session binding to it.
@@ -107,7 +107,7 @@ provider_id
 provider_kind             sandbox | bridge | custom
 display_name
 status                    registering | online | stale | offline | disabled
-controller_connection     HostControllerConnectionSpec
+controller_connection     EnvironmentConnectionSpec
 capabilities              EnvironmentProviderCapabilities
 implementation            name/version/protocol version
 last_seen_ms
@@ -118,17 +118,17 @@ updated_at_ms
 ```
 
 `controller_connection` is how Lightspeed reaches the provider's
-`host-protocol` controller. It may be a URL, a reverse tunnel channel id, a Unix
+`environment-protocol` controller. It may be a URL, a reverse tunnel channel id, a Unix
 socket descriptor in local mode, or another runtime-supported connection kind.
 
 ### EnvironmentTargetRecord
 
 ```text
 provider_id
-target_id                 host-protocol HostTargetId
+target_id                 environment-protocol ProviderTargetId
 status                    creating | starting | ready | stopped | closing | closed | failed | unknown
-scope                     host-protocol HostScope
-capabilities              host-protocol HostCapabilities
+scope                     environment-protocol EnvironmentScope
+capabilities              environment-protocol EnvironmentCapabilities
 default_cwd
 metadata
 observed_at_ms
@@ -148,7 +148,7 @@ exec_target               ToolExecutionTarget(namespace="env", id=env_id)
 kind                      sandbox | attached_host
 status                    attaching | ready | degraded | detached
 capabilities              EnvironmentCapabilities
-connection                HostConnectionSpec
+connection                EnvironmentDataConnection
 cwd
 fs_routes
 created_at_ms
@@ -198,7 +198,7 @@ Input:
 
 ```text
 provider_id
-observed_targets?          optional HostTargetSummary[]
+observed_targets?          optional ProviderTargetSummary[]
 lease_ttl_ms?
 ```
 
@@ -239,7 +239,7 @@ Input:
 session_id
 env_id?
 provider_id
-request                  opaque provider request or host-protocol create request
+request                  opaque provider request or environment-protocol create request
 activate?                default false
 ```
 
@@ -333,7 +333,7 @@ runner heartbeats capacity and existing targets
 CLI or policy creates environment for session
 gateway calls controller/createTarget
 provider provisions VM/container
-provider returns HostConnectionSpec
+provider returns EnvironmentDataConnection
 gateway stores binding and projects environment
 worker executes process/computer/file-backed environment tools through data plane
 ```
@@ -381,7 +381,7 @@ Instead:
 - gateway list/read/create/attach/close loads session bindings from the registry;
 - gateway projection refresh builds `EnvironmentRecord`s from bindings;
 - worker `SessionTools` loads bindings for the session and materializes
-  `EnvironmentToolContext`s from `HostConnectionSpec`;
+  `EnvironmentToolContext`s from `EnvironmentDataConnection`;
 - test-support can keep an in-memory registry/provider implementation.
 
 The current builder-injected environment path remains useful for tests until the
@@ -399,7 +399,7 @@ At minimum:
 - a provider cannot choose arbitrary `session_id` bindings;
 - opaque provider specs are stored only where needed and should not contain
   long-lived secrets directly;
-- data-plane credentials in `HostConnectionSpec` are treated as secrets if they
+- data-plane credentials in `EnvironmentDataConnection` are treated as secrets if they
   carry bearer tokens or tunnel keys.
 
 ## Non-Goals
@@ -440,13 +440,13 @@ Implemented as JSON-RPC methods:
 - `environmentProviders/unregister`
 
 Implemented provider registration calls `controller/initialize`, validates the
-host-protocol version, and persists controller-advertised capabilities and
+environment-protocol version, and persists controller-advertised capabilities and
 implementation metadata. Heartbeat can poll `controller/listTargets` when the
 provider omits observed target summaries.
 
 ### G4: Host-Protocol Controller Client Integration
 
-Use `host-client`/`host-protocol` to initialize controllers and call
+Use `environment-client`/`environment-protocol` to initialize controllers and call
 `listTargets`, `createTarget`, `attachTarget`, `getTarget`, and `closeTarget`.
 
 Implemented for WebSocket controller transports. Unsupported controller
@@ -476,14 +476,14 @@ Keep core activation as `SetDefaultToolTarget` / `ClearDefaultToolTarget`.
 
 Implemented. Gateway list/read/projection load bindings from the registry.
 Worker `SessionTools` loads ready bindings, connects to the data-plane
-`HostConnectionSpec`, performs the host data handshake, and materializes
+`EnvironmentDataConnection`, performs the host data handshake, and materializes
 environment action contexts. The internal `ToolInvocationBatchRequest` now
 includes the default-target snapshot so `fs:session` can compose the active
 environment filesystem route without stamping a per-route backend into core.
 
 ### G7: Fake Provider Integration Test
 
-Add a fake host-protocol controller that registers, heartbeats, creates or
+Add a fake environment-protocol controller that registers, heartbeats, creates or
 attaches a target, and supports a process tool call through the resulting
 session environment.
 
@@ -492,17 +492,17 @@ Implemented as ignored live test
 `crates/temporal-server/tests/environment_provider_live.rs`. It starts an
 in-process WebSocket fake provider, registers it through the gateway, exercises
 heartbeat/listTargets, bridge-style attach, sandbox-style create, process tool
-execution through the host data plane, and close/detach semantics.
+execution through the environment data plane, and close/detach semantics.
 
 ## Done When
 
 - Providers can register and heartbeat.
 - Provider liveness is visible in runtime state without mutating core state.
-- Gateway can create or attach a session environment through a host-protocol
+- Gateway can create or attach a session environment through an environment-protocol
   controller.
 - Gateway can close or detach a session environment.
 - `SessionEnvironmentManager` can project and execute registry-backed
   environments.
-- Worker tool execution uses `HostConnectionSpec` from the binding.
+- Worker tool execution uses `EnvironmentDataConnection` from the binding.
 - Tests cover bridge-style attach and sandbox-style create against a fake
-  host-protocol provider.
+  environment-protocol provider.

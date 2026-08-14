@@ -257,13 +257,13 @@ If an explicit process/job `env` override tries to set an env var that is bound
 as a credential, reject the request. The bound credential wins by policy, but
 failing is clearer than silently shadowing caller input.
 
-## Host Protocol And Bridge
+## Environment Protocol And Bridge
 
 `run_process` and `job_submit` have an internal resolved-secret-env path
 between `temporal-server` and the active `JobExecutor`/`ProcessExecutor`. This
 path is not exposed in model-visible or public API DTOs.
 
-The host data-plane request can carry:
+The environment data-plane request can carry:
 
 ```rust
 secret_env: BTreeMap<String, SecretString>
@@ -351,9 +351,9 @@ records, not in the environment binding row.
 - [x] Merge resolved credential env into environment process/job starts.
 - [x] Reject caller `env` entries that collide with bound credential env names.
 
-### G4. Host Protocol And Bridge Safety
+### G4. Environment Protocol And Bridge Safety
 
-- [x] Add a redacted `SecretString` wrapper to host-protocol.
+- [x] Add a redacted `SecretString` wrapper to environment-protocol.
 - [x] Add an internal secret env channel for process and job starts.
 - [x] Keep resolved values out of bridge `JobRecord` and bridge spec hashes.
 - [x] Redact stdout/stderr chunks before persistence.

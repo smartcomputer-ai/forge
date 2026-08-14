@@ -591,7 +591,7 @@ impl WorkerActivities {
         self: Arc<Self>,
         _ctx: ActivityContext,
         request: EnvironmentJobCancelActivityRequest,
-    ) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
+    ) -> Result<Vec<environment_protocol::data::jobs::JobSummary>, ActivityError> {
         let state = self.state_for_universe(request.universe_id).await?;
         environment_jobs::cancel(state.environment_jobs(), request).await
     }

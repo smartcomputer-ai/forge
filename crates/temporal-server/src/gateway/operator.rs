@@ -32,14 +32,14 @@ use api::{
 use async_trait::async_trait;
 use auth::ApiKeyStore as _;
 use engine::SessionId;
+use environment_protocol::shared::EnvironmentTransport;
 use environments::{
-    AdoptEnvironment, EnvironmentId, EnvironmentIncarnationId, EnvironmentProviderBindingId,
-    EnvironmentProviderBindingStatus, EnvironmentProviderBindingStore, EnvironmentProviderId,
-    EnvironmentProviderRecord, EnvironmentProviderStore, EnvironmentProvisionRequestId,
-    EnvironmentStore, HostControllerConnectionSpec, ListEnvironmentProviders,
-    PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    AdoptEnvironment, EnvironmentConnectionSpec, EnvironmentId, EnvironmentIncarnationId,
+    EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+    EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderRecord,
+    EnvironmentProviderStore, EnvironmentProvisionRequestId, EnvironmentStore,
+    ListEnvironmentProviders, PutEnvironmentProvider, PutEnvironmentProviderBinding,
 };
-use host_protocol::shared::HostTransport;
 use object_store::ObjectStoreExt as _;
 use object_store::path::Path as ObjectPath;
 use temporal_workflow::{AgentSessionWorkflow, compose_workflow_id};
@@ -543,16 +543,16 @@ fn parse_environment_provider_id(value: String) -> Result<EnvironmentProviderId,
 
 fn provider_connection_from_api(
     connection: OperatorEnvironmentProviderConnection,
-) -> HostControllerConnectionSpec {
-    HostControllerConnectionSpec {
+) -> EnvironmentConnectionSpec {
+    EnvironmentConnectionSpec {
         endpoint: connection.endpoint,
         transport: match connection.transport {
-            OperatorEnvironmentProviderTransport::WebSocket => HostTransport::WebSocket,
-            OperatorEnvironmentProviderTransport::Http => HostTransport::Http,
-            OperatorEnvironmentProviderTransport::Stdio => HostTransport::Stdio,
-            OperatorEnvironmentProviderTransport::Ssh => HostTransport::Ssh,
+            OperatorEnvironmentProviderTransport::WebSocket => EnvironmentTransport::WebSocket,
+            OperatorEnvironmentProviderTransport::Http => EnvironmentTransport::Http,
+            OperatorEnvironmentProviderTransport::Stdio => EnvironmentTransport::Stdio,
+            OperatorEnvironmentProviderTransport::Ssh => EnvironmentTransport::Ssh,
             OperatorEnvironmentProviderTransport::Provider { provider_type } => {
-                HostTransport::Provider { provider_type }
+                EnvironmentTransport::Provider { provider_type }
             }
         },
     }
@@ -565,11 +565,11 @@ fn environment_provider_view(record: EnvironmentProviderRecord) -> OperatorEnvir
         controller_connection: OperatorEnvironmentProviderConnection {
             endpoint: record.controller_connection.endpoint,
             transport: match record.controller_connection.transport {
-                HostTransport::WebSocket => OperatorEnvironmentProviderTransport::WebSocket,
-                HostTransport::Http => OperatorEnvironmentProviderTransport::Http,
-                HostTransport::Stdio => OperatorEnvironmentProviderTransport::Stdio,
-                HostTransport::Ssh => OperatorEnvironmentProviderTransport::Ssh,
-                HostTransport::Provider { provider_type } => {
+                EnvironmentTransport::WebSocket => OperatorEnvironmentProviderTransport::WebSocket,
+                EnvironmentTransport::Http => OperatorEnvironmentProviderTransport::Http,
+                EnvironmentTransport::Stdio => OperatorEnvironmentProviderTransport::Stdio,
+                EnvironmentTransport::Ssh => OperatorEnvironmentProviderTransport::Ssh,
+                EnvironmentTransport::Provider { provider_type } => {
                     OperatorEnvironmentProviderTransport::Provider { provider_type }
                 }
             },

@@ -44,8 +44,8 @@
   `fs.*` / `env.*`; legacy `host.*` IDs remain accepted as aliases.
 - Moved built-in tool definitions under `tools::builtin` and inline execution
   under `tools::runtime::InlineToolRuntime`.
-- Renamed the remaining host-protocol adapter module to `tools::host_protocol`
-  (`RemoteHostConnection`, `RemoteHostFileSystem`, `RemoteProcessExecutor`).
+- Renamed the remaining environment-protocol adapter module to `tools::environment_protocol`
+  (`RemoteEnvironmentConnection`, `RemoteEnvironmentFileSystem`, `RemoteProcessExecutor`).
 
 ## Goal
 
@@ -54,7 +54,7 @@ Refactor the tools package so the code shape matches the environment model:
 - filesystem tools operate on a generic session filesystem;
 - VFS is one filesystem implementation, not a host;
 - environment tools are actions against a real VM/OS/sandbox/attached host;
-- the low-level host protocol remains the implementation mechanism for
+- the low-level environment protocol remains the implementation mechanism for
   environment-backed capabilities.
 
 The immediate goal is not to implement full environment activation. The goal is
@@ -152,7 +152,7 @@ Use the words consistently:
   routes.
 - **environment**: model/product concept: sandbox, VM, attached host, devbox, or
   future action surface with capabilities.
-- **host protocol**: low-level transport/control implementation used to reach
+- **environment protocol**: low-level transport/control implementation used to reach
   environment-backed capabilities.
 - **built-in tools**: Lightspeed-provided fs/env/web/messaging tool
   definitions and inline runtime bindings.
@@ -229,7 +229,7 @@ The exact module names can differ, but the dependency direction should be:
 ```text
 generic file tool implementations -> FileSystem trait
 VFS implementation                 -> FileSystem trait + VFS stores/CAS
-environment filesystem adapter     -> FileSystem trait + host protocol client
+environment filesystem adapter     -> FileSystem trait + environment protocol client
 environment action tools           -> environment/action context
 ```
 
@@ -253,7 +253,7 @@ VFS-specific behavior belongs behind the trait:
 Environment filesystem behavior also belongs behind the trait:
 
 - remote path normalization;
-- host-protocol filesystem calls;
+- environment-protocol filesystem calls;
 - capability and permission errors;
 - optional scoped route prefixes.
 
@@ -349,11 +349,11 @@ file tools, but it has no shell. Activate an environment to run commands.
 That error belongs in the environment action executor, not in the generic
 filesystem layer.
 
-## Host Protocol
+## Environment Protocol
 
-Keep the host protocol as the boundary for real environment backends.
+Keep the environment protocol as the boundary for real environment backends.
 
-An environment provider may use the host protocol to supply:
+An environment provider may use the environment protocol to supply:
 
 - an environment filesystem adapter implementing `FileSystem`;
 - process execution;
@@ -361,7 +361,7 @@ An environment provider may use the host protocol to supply:
 - computer-use or display/control capabilities when added;
 - target lifecycle and status outside deterministic core.
 
-Do not move host protocol DTOs into the engine. The engine records only semantic
+Do not move environment protocol DTOs into the engine. The engine records only semantic
 tool target identity and active tool specs.
 
 ## Implementation Plan
@@ -402,7 +402,7 @@ tool target identity and active tool specs.
 - Add `EnvironmentToolContext` and target resolution for `env:<id>`.
 - Move `run_process` and `write_process_stdin` to use that context.
 - Replace the old host target wrapper with top-level `ToolTargets`.
-- Preserve host-protocol-backed internals as implementation detail.
+- Preserve environment-protocol-backed internals as implementation detail.
 
 ### [x] G5. Add session filesystem router
 
@@ -425,7 +425,7 @@ tool target identity and active tool specs.
 ### [x] G7. Rename public concepts
 
 - Prefer "environment" in docs, APIs, and model-visible prompt text.
-- Keep "host protocol" only for backend transport/control code.
+- Keep "environment protocol" only for backend transport/control code.
 - Avoid model-visible `host` terminology except during temporary compatibility
   windows.
 
@@ -434,7 +434,7 @@ Progress:
 - Built-in tool logical IDs now use `fs.*` and `env.*`.
 - `HostToolContext`, `HostToolTargets`, `HostToolsetConfig`, and
   `InlineHostToolRuntime` were removed from the tools crate.
-- `tools::host_protocol` now means host-protocol adapters, not a semantic tool
+- `tools::environment_protocol` now means environment-protocol adapters, not a semantic tool
   target or combined filesystem/process runtime.
 - API wire/config names now use `FilesystemToolMode` and `tools.filesystem`.
 
@@ -458,7 +458,7 @@ Add or update tests for:
 - Do not implement sandbox providers in P75.
 - Do not implement computer use in P75; only leave the environment action shape
   broad enough for it.
-- Do not make the engine depend on host protocol DTOs.
+- Do not make the engine depend on environment protocol DTOs.
 - Do not create VFS-specific copies of generic file tools.
 
 ## Done When

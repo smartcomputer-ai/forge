@@ -10,8 +10,8 @@ api = { path = "../api" }
 api-projection = { path = "../api-projection" }
 engine = { path = "../engine" }
 environments = { path = "../environments" }
-host-client = { path = "../host-client" }
-host-protocol = { path = "../host-protocol" }
+environment-client = { path = "../environment-client" }
+environment-protocol = { path = "../environment-protocol" }
 vfs = { path = "../vfs" }
 anyhow = "1"
 async-trait = "0.1"

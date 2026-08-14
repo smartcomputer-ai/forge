@@ -301,7 +301,7 @@ async fn cancel_workflow_jobs(
                 universe_id: args.universe_id,
                 environment_id: args.start.environment_id.clone(),
                 jobs,
-                scope: host_protocol::data::jobs::JobCancelScope::Job,
+                scope: environment_protocol::data::jobs::JobCancelScope::Job,
                 force: false,
             },
             environment_job_activity_options(),
@@ -310,7 +310,7 @@ async fn cancel_workflow_jobs(
 }
 
 /// Environment jobs deliberately remain co-located with the core environment
-/// registry and host adapter. Their short, idempotent adapter calls therefore
+/// registry and environment adapter. Their short, idempotent adapter calls therefore
 /// run as local activities: Temporal still records completion and retries, but
 /// does not route the calls through a separately versioned activity worker.
 fn environment_job_activity_options() -> LocalActivityOptions {
@@ -361,7 +361,7 @@ fn queue_workflow_tool_cancellation(
     {
         state.pending_cancels.push(EnvironmentJobCancelSignal {
             jobs: vec![subscription.job_id.clone()],
-            scope: host_protocol::data::jobs::JobCancelScope::Job,
+            scope: environment_protocol::data::jobs::JobCancelScope::Job,
             force: false,
         });
     }
@@ -452,7 +452,7 @@ fn workflow_tool_recovery(state: &EnvironmentJobWorkflow) -> WorkflowToolRecover
 #[cfg(test)]
 mod tests {
     use engine::{BlobRef, PromiseSourceCheckResult};
-    use host_protocol::shared::JobId;
+    use environment_protocol::shared::JobId;
 
     use super::*;
 

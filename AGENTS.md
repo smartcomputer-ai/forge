@@ -126,16 +126,16 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   filesystem domains, environment actions, web, prompts, and skills.
 - `crates/vfs/` — virtual filesystem models, validation, snapshots, mutable
   workspaces, transient workspace-link resolution, and store traits.
-- `crates/host-protocol/`, `crates/host-client/`, and
-  `crates/environment-daemon/` — environment host wire protocol, gateway
-  client, and passive `lightspeed-envd` execution daemon. Lightspeed reaches
-  external daemons directly and provider-managed daemons through the provider,
-  opening both routes on demand.
+- `crates/environment-protocol/`, `crates/environment-client/`, and
+  `crates/environment-daemon/` — environment provider/data-plane wire types,
+  the typed transport client, and the passive `lightspeed-envd` execution
+  daemon. Lightspeed reaches external daemons directly and provider-managed
+  daemons through the provider, opening both routes on demand.
 - `crates/environment-provider-incus/` — standalone stateless Incus controller
-  and passive on-demand data endpoint. It depends only on the host protocol
-  boundary and reconstructs target state from Incus inventory and deployment
-  configuration; it must not depend on Lightspeed stores, API internals,
-  engine, or Temporal runtime.
+  and passive on-demand data endpoint. It depends only on the environment
+  protocol boundary and reconstructs target state from Incus inventory and
+  deployment configuration; it must not depend on Lightspeed stores, API
+  internals, engine, or Temporal runtime.
 - `crates/store-fs/` — filesystem-backed session log and content-addressed blob
   store adapters.
 - `crates/store-pg/` — PostgreSQL-backed session store, CAS catalog, MCP server
@@ -155,7 +155,7 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
   bindings, environment lifecycle intents, minimal incarnation identities,
   universe-scoped credential bindings, validation, errors, and store traits.
   Sessions retain only an active environment id in event-sourced core state.
-  Provider job DTOs live in `host-protocol`; no Lightspeed job registry is
+  Provider job DTOs live in `environment-protocol`; no Lightspeed job registry is
   persisted.
 - `crates/eval/` — eval harness for agent/tool workflows.
 - `crates/llm-runtime/` — CoreAgent LLM runtime from planned requests to

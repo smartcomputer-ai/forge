@@ -1,16 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use engine::{BlobRef, PromiseSourceCheckResult, storage::BlobStore};
-use environments::{EnvironmentId, EnvironmentJobGroupId};
-use host_client::{HostClientError, HostDataClient};
-use host_protocol::{
+use environment_client::{EnvironmentClientError, EnvironmentDataClient};
+use environment_protocol::{
     data::{
         handshake::{InitializeParams, InitializedParams},
         jobs::{CancelJobsParams, JobStatus, ReadJobsParams},
     },
-    error::HostErrorCode,
-    shared::{CURRENT_PROTOCOL_VERSION, HostConnectionSpec, HostTransport},
+    error::EnvironmentProtocolErrorCode,
+    shared::{CURRENT_PROTOCOL_VERSION, EnvironmentDataConnection, EnvironmentTransport},
 };
+use environments::{EnvironmentId, EnvironmentJobGroupId};
 use temporal_workflow::{
     EnvironmentJobCancelActivityRequest, EnvironmentJobPollActivityRequest,
     EnvironmentJobPollActivityResult, EnvironmentJobPrepareWorkflowToolRequest,
@@ -155,7 +155,7 @@ pub(super) async fn prepare_workflow_tool(
                 .into_iter()
                 .map(|spec| {
                     let job_id = spec.job_id.clone();
-                    spec.into_host_spec(job_id)
+                    spec.into_protocol_spec(job_id)
                         .map_err(|error| activity_error(anyhow::anyhow!(error.to_string())))
                 })
                 .collect::<Result<Vec<_>, _>>()?
@@ -165,12 +165,12 @@ pub(super) async fn prepare_workflow_tool(
                 serde_json::from_slice(&arguments).map_err(activity_error)?;
             let job_id = derived_job_run_id(start.invocation.invocation_id.as_str());
             vec![
-                args.into_host_spec(job_id)
+                args.into_protocol_spec(job_id)
                     .map_err(|error| activity_error(anyhow::anyhow!(error.to_string())))?,
             ]
         }
     };
-    let params = host_protocol::data::jobs::StartJobsParams {
+    let params = environment_protocol::data::jobs::StartJobsParams {
         namespace: environment_id.as_str().to_owned(),
         request_id,
         jobs,
@@ -272,9 +272,9 @@ pub(super) async fn prepare_workflow_tool(
     })
 }
 
-fn derived_job_run_id(invocation_id: &str) -> host_protocol::shared::JobId {
+fn derived_job_run_id(invocation_id: &str) -> environment_protocol::shared::JobId {
     let hash = BlobRef::from_bytes(invocation_id.as_bytes());
-    host_protocol::shared::JobId::new(format!("job-{}", &hash.as_str()[7..31]))
+    environment_protocol::shared::JobId::new(format!("job-{}", &hash.as_str()[7..31]))
 }
 
 fn derived_workflow_tool_job_group_id(
@@ -358,7 +358,7 @@ async fn start_on_provider(
     let response = client
         .start_jobs(&payload.request)
         .await
-        .map_err(start_host_activity_error)?;
+        .map_err(start_environment_activity_error)?;
     let requested_ids = payload
         .request
         .jobs
@@ -380,18 +380,18 @@ async fn start_on_provider(
     })
 }
 
-fn start_host_activity_error(error: HostClientError) -> ActivityError {
+fn start_environment_activity_error(error: EnvironmentClientError) -> ActivityError {
     match &error {
-        HostClientError::Host(error)
+        EnvironmentClientError::Protocol(error)
             if matches!(
                 error.code,
-                HostErrorCode::InvalidRequest
-                    | HostErrorCode::Unauthorized
-                    | HostErrorCode::Forbidden
-                    | HostErrorCode::NotFound
-                    | HostErrorCode::Conflict
-                    | HostErrorCode::Unsupported
-                    | HostErrorCode::CapabilityUnavailable
+                EnvironmentProtocolErrorCode::InvalidRequest
+                    | EnvironmentProtocolErrorCode::Unauthorized
+                    | EnvironmentProtocolErrorCode::Forbidden
+                    | EnvironmentProtocolErrorCode::NotFound
+                    | EnvironmentProtocolErrorCode::Conflict
+                    | EnvironmentProtocolErrorCode::Unsupported
+                    | EnvironmentProtocolErrorCode::CapabilityUnavailable
             ) =>
         {
             non_retryable_activity_error(anyhow::anyhow!(error.message.clone()))
@@ -503,7 +503,7 @@ pub(super) async fn poll(
 pub(super) async fn cancel(
     deps: Option<&EnvironmentJobActivityDeps>,
     request: EnvironmentJobCancelActivityRequest,
-) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
+) -> Result<Vec<environment_protocol::data::jobs::JobSummary>, ActivityError> {
     let deps = deps.ok_or_else(|| {
         activity_error(anyhow::anyhow!(
             "environment job activities are not configured"
@@ -535,22 +535,22 @@ pub(super) async fn cancel(
 }
 
 async fn initialized_client(
-    connection: &HostConnectionSpec,
+    connection: &EnvironmentDataConnection,
     gateway: &crate::environment_gateway::EnvironmentGatewayClientConfig,
 ) -> Result<
     (
-        HostDataClient<host_client::WebSocketTransport>,
-        host_protocol::shared::HostCapabilities,
+        EnvironmentDataClient<environment_client::WebSocketTransport>,
+        environment_protocol::shared::EnvironmentCapabilities,
     ),
     ActivityError,
 > {
-    if connection.transport != HostTransport::WebSocket {
+    if connection.transport != EnvironmentTransport::WebSocket {
         return Err(activity_error(anyhow::anyhow!(
             "unsupported environment job transport: {:?}",
             connection.transport
         )));
     }
-    let mut client = HostDataClient::connect(
+    let mut client = EnvironmentDataClient::connect(
         &connection.endpoint,
         gateway.connect_options("lightspeed-environment-job-workflow"),
     )
@@ -567,7 +567,7 @@ async fn initialized_client(
         .map_err(activity_error)?;
     if response.protocol_version != CURRENT_PROTOCOL_VERSION {
         return Err(activity_error(anyhow::anyhow!(
-            "unsupported host protocol version {}",
+            "unsupported environment protocol version {}",
             response.protocol_version
         )));
     }

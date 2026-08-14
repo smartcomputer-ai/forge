@@ -15,8 +15,8 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use environment_protocol::gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX};
 use futures_util::{SinkExt as _, StreamExt as _};
-use host_protocol::gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX};
 use serde::Deserialize;
 use store_pg::{PgApiKeyStore, PgStore};
 use temporalio_client::Client;
@@ -473,7 +473,8 @@ async fn environment_route_upgrade(
     }
     match &environment.source {
         environments::EnvironmentSource::External { connection } => {
-            if connection.transport != host_protocol::shared::HostTransport::WebSocket {
+            if connection.transport != environment_protocol::shared::EnvironmentTransport::WebSocket
+            {
                 return StatusCode::BAD_GATEWAY.into_response();
             }
             let endpoint = daemon_data_endpoint(&connection.endpoint);
@@ -617,7 +618,8 @@ async fn authorize_external_route(
     else {
         anyhow::bail!("external route no longer belongs to an external environment")
     };
-    if assigned_connection.transport != host_protocol::shared::HostTransport::WebSocket
+    if assigned_connection.transport
+        != environment_protocol::shared::EnvironmentTransport::WebSocket
         || daemon_data_endpoint(&assigned_connection.endpoint) != endpoint
         || environment.incarnation.incarnation_id.as_str() != key.incarnation_id
         || matches!(

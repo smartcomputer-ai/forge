@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use auth::{AuthGrantId, AuthProviderId, SecretId};
+use environment_protocol::shared::ProviderTargetId;
 use environments::{
     AdoptEnvironment, BeginCloseEnvironment, CreateEnvironment, CreateExternalEnvironment,
     EnvironmentCredentialRecord, EnvironmentCredentialSource, EnvironmentCredentialStore,
@@ -13,7 +14,6 @@ use environments::{
     ObserveProvisionedEnvironment, PutEnvironmentCredential, PutEnvironmentProvider,
     PutEnvironmentProviderBinding, SetEnvironmentIngress,
 };
-use host_protocol::shared::HostTargetId;
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
 
@@ -852,7 +852,7 @@ fn provider_from_row(
     row: &sqlx::postgres::PgRow,
 ) -> Result<EnvironmentProviderRecord, EnvironmentRegistryError> {
     let provider_id = parse_id(row, "provider_id", EnvironmentProviderId::try_new)?;
-    let connection: environments::HostControllerConnectionSpec =
+    let connection: environments::EnvironmentConnectionSpec =
         json_column(row, "controller_connection_json")?;
     let record = EnvironmentProviderRecord {
         provider_id,
@@ -935,7 +935,7 @@ fn environment_from_row(
                 "provision_request_id",
                 EnvironmentProvisionRequestId::try_new,
             )?,
-            provider_target_id: target.map(HostTargetId::new),
+            provider_target_id: target.map(ProviderTargetId::new),
             template_id: optional_id(row, "template_id", EnvironmentTemplateId::try_new)?,
             adoption_source_target: row
                 .try_get("adoption_source_target")

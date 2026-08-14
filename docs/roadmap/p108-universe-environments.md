@@ -72,7 +72,7 @@ that is independent of active selection.
 
 ## Provider Extension Seam And Internal Resolver
 
-The existing environment-provider registration API plus `host-protocol` is the
+The existing environment-provider registration API plus `environment-protocol` is the
 only external environment extension seam. External providers advertise
 universe environments and own their live execution. P108 does not introduce an
 environment plugin type, plugin manifest, workflow-plugin binding, dynamic
@@ -98,7 +98,7 @@ do not add a network boundary merely to make it look extensible.
 
 This consolidation leaves future service extraction possible without designing
 or committing to it now. Provider implementations remain pluggable through the
-existing provider API and `host-protocol`; `EnvironmentResolver` itself is not
+existing provider API and `environment-protocol`; `EnvironmentResolver` itself is not
 pluggable.
 
 ## Session Config And Provider Policy

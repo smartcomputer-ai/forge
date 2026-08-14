@@ -7,13 +7,13 @@ use auth::{
     HttpGitHubApiClient, HttpOAuthTokenClient, OAuthClientStore, OAuthRefreshRuntime,
     RegistryTokenBroker, SecretStore, TokenAudience,
 };
+use environment_protocol::{
+    data::jobs::{StartJobsParams, StartJobsResponse},
+    shared::SecretString,
+};
 use environments::{
     EnvironmentCredentialSource, EnvironmentCredentialStore, EnvironmentId,
     ListEnvironmentCredentials,
-};
-use host_protocol::{
-    data::jobs::{StartJobsParams, StartJobsResponse},
-    shared::SecretString,
 };
 use store_pg::PgStore;
 use thiserror::Error;
@@ -263,15 +263,15 @@ impl JobExecutor for CredentialInjectingJobExecutor {
 
     async fn read_jobs(
         &self,
-        request: host_protocol::data::jobs::ReadJobsParams,
-    ) -> JobExecResult<host_protocol::data::jobs::ReadJobsResponse> {
+        request: environment_protocol::data::jobs::ReadJobsParams,
+    ) -> JobExecResult<environment_protocol::data::jobs::ReadJobsResponse> {
         self.inner.read_jobs(request).await
     }
 
     async fn cancel_jobs(
         &self,
-        request: host_protocol::data::jobs::CancelJobsParams,
-    ) -> JobExecResult<host_protocol::data::jobs::CancelJobsResponse> {
+        request: environment_protocol::data::jobs::CancelJobsParams,
+    ) -> JobExecResult<environment_protocol::data::jobs::CancelJobsResponse> {
         self.inner.cancel_jobs(request).await
     }
 }

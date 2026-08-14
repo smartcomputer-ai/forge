@@ -7,15 +7,15 @@ use std::{
     time::Duration,
 };
 
-use host_protocol::{
+use environment_protocol::{
     data::process::{
         ProcessOutputChunk, ProcessOutputStream, ReadProcessParams, ReadProcessResponse,
         ResizeProcessParams, ResizeProcessResponse, StartProcessParams, StartProcessResponse,
         TerminateProcessParams, TerminateProcessResponse, WriteProcessParams, WriteProcessResponse,
         WriteProcessStatus,
     },
-    error::{HostError, HostErrorCode},
-    shared::{ByteChunk, HostPath, ProcessId},
+    error::{EnvironmentProtocolError, EnvironmentProtocolErrorCode},
+    shared::{ByteChunk, EnvironmentPath, ProcessId},
 };
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use tokio::{
@@ -91,10 +91,10 @@ impl ProcessManager {
     pub async fn start_process(
         &self,
         params: StartProcessParams,
-    ) -> Result<StartProcessResponse, HostError> {
+    ) -> Result<StartProcessResponse, EnvironmentProtocolError> {
         if params.argv.is_empty() {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "process argv must not be empty",
             ));
         }
@@ -106,8 +106,8 @@ impl ProcessManager {
             .unwrap_or_else(|| self.cwd.clone());
         for name in params.secret_env.keys() {
             if params.env.contains_key(name) {
-                return Err(HostError::new(
-                    HostErrorCode::InvalidRequest,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::InvalidRequest,
                     format!("process env collides with secret env: {name}"),
                 ));
             }
@@ -135,8 +135,8 @@ impl ProcessManager {
         process_group::spawn_in_own_group(&mut command);
 
         let mut child = command.spawn().map_err(|error| {
-            HostError::new(
-                HostErrorCode::ProcessFailed,
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::ProcessFailed,
                 format!("spawn process {:?}: {error}", params.argv),
             )
         })?;
@@ -146,15 +146,17 @@ impl ProcessManager {
         let mut stdin = child.stdin.take();
         if let Some(input) = params.stdin {
             let Some(writer) = stdin.as_mut() else {
-                return Err(HostError::new(
-                    HostErrorCode::ProcessFailed,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::ProcessFailed,
                     "process stdin was not available",
                 ));
             };
-            writer
-                .write_all(input.as_slice())
-                .await
-                .map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))?;
+            writer.write_all(input.as_slice()).await.map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::ProcessFailed,
+                    error.to_string(),
+                )
+            })?;
         }
         if !params.pipe_stdin {
             stdin.take();
@@ -189,8 +191,8 @@ impl ProcessManager {
         {
             let mut processes = self.processes.lock().await;
             if processes.contains_key(process_id.as_str()) {
-                return Err(HostError::new(
-                    HostErrorCode::Conflict,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Conflict,
                     format!("process id already exists: {process_id}"),
                 ));
             }
@@ -229,7 +231,7 @@ impl ProcessManager {
         &self,
         params: StartProcessParams,
         cwd: PathBuf,
-    ) -> Result<StartProcessResponse, HostError> {
+    ) -> Result<StartProcessResponse, EnvironmentProtocolError> {
         let pty = native_pty_system()
             .openpty(PtySize::default())
             .map_err(process_error("open PTY"))?;
@@ -289,8 +291,8 @@ impl ProcessManager {
         {
             let mut processes = self.processes.lock().await;
             if processes.contains_key(process_id.as_str()) {
-                return Err(HostError::new(
-                    HostErrorCode::Conflict,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Conflict,
                     format!("process id already exists: {process_id}"),
                 ));
             }
@@ -314,10 +316,10 @@ impl ProcessManager {
     pub async fn read_process(
         &self,
         params: ReadProcessParams,
-    ) -> Result<ReadProcessResponse, HostError> {
+    ) -> Result<ReadProcessResponse, EnvironmentProtocolError> {
         let Some(entry) = self.entry(&params.process_id).await else {
-            return Err(HostError::new(
-                HostErrorCode::NotFound,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::NotFound,
                 format!("unknown process id: {}", params.process_id),
             ));
         };
@@ -373,7 +375,7 @@ impl ProcessManager {
     pub async fn write_process(
         &self,
         params: WriteProcessParams,
-    ) -> Result<WriteProcessResponse, HostError> {
+    ) -> Result<WriteProcessResponse, EnvironmentProtocolError> {
         let Some(entry) = self.entry(&params.process_id).await else {
             return Ok(WriteProcessResponse {
                 status: WriteProcessStatus::UnknownProcess,
@@ -398,7 +400,12 @@ impl ProcessManager {
                 ProcessInput::Pipe(stdin) => stdin.write_all(chunk.as_slice()).await,
                 ProcessInput::Pty(stdin) => stdin.write_all(chunk.as_slice()),
             }
-            .map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))?;
+            .map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::ProcessFailed,
+                    error.to_string(),
+                )
+            })?;
         }
         if params.close_stdin {
             state.stdin.take();
@@ -411,7 +418,7 @@ impl ProcessManager {
     pub async fn terminate_process(
         &self,
         params: TerminateProcessParams,
-    ) -> Result<TerminateProcessResponse, HostError> {
+    ) -> Result<TerminateProcessResponse, EnvironmentProtocolError> {
         let Some(entry) = self.entry(&params.process_id).await else {
             return Ok(TerminateProcessResponse { running: false });
         };
@@ -437,17 +444,17 @@ impl ProcessManager {
     pub async fn resize_process(
         &self,
         params: ResizeProcessParams,
-    ) -> Result<ResizeProcessResponse, HostError> {
+    ) -> Result<ResizeProcessResponse, EnvironmentProtocolError> {
         let Some(entry) = self.entry(&params.process_id).await else {
-            return Err(HostError::new(
-                HostErrorCode::NotFound,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::NotFound,
                 format!("unknown process id: {}", params.process_id),
             ));
         };
         let state = entry.state.lock().await;
         let Some(master) = state.pty_master.as_ref() else {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "process is not attached to a PTY",
             ));
         };
@@ -462,7 +469,7 @@ impl ProcessManager {
         Ok(ResizeProcessResponse {})
     }
 
-    fn resolve_cwd(&self, path: &HostPath) -> Result<PathBuf, HostError> {
+    fn resolve_cwd(&self, path: &EnvironmentPath) -> Result<PathBuf, EnvironmentProtocolError> {
         let candidate = if path.is_absolute() {
             PathBuf::from(path.as_str())
         } else if path.as_str() == "." {
@@ -472,8 +479,8 @@ impl ProcessManager {
         };
         let normalized = normalize_path(candidate);
         if !normalized.starts_with(&self.fs_root) {
-            return Err(HostError::new(
-                HostErrorCode::Forbidden,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Forbidden,
                 format!(
                     "process cwd is outside bridge fs root: {} (root {})",
                     normalized.display(),
@@ -645,7 +652,7 @@ async fn timeout_process(entry: Arc<ProcessEntry>, timeout: Duration) {
 /// Polls the child for exit. When the exit is newly observed while
 /// descendants are still alive in the process group, returns the group id so
 /// the caller can spawn a sweep.
-fn update_exit_status(state: &mut ProcessState) -> Result<Option<u32>, HostError> {
+fn update_exit_status(state: &mut ProcessState) -> Result<Option<u32>, EnvironmentProtocolError> {
     if state.exited {
         return Ok(None);
     }
@@ -671,24 +678,36 @@ fn update_exit_status(state: &mut ProcessState) -> Result<Option<u32>, HostError
         Ok(None) => Ok(None),
         Err(error) => {
             state.failure = Some(error.to_string());
-            Err(HostError::new(
-                HostErrorCode::ProcessFailed,
+            Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::ProcessFailed,
                 format!("poll process exit: {error}"),
             ))
         }
     }
 }
 
-async fn kill_child(child: &mut ProcessChild) -> Result<(), HostError> {
+async fn kill_child(child: &mut ProcessChild) -> Result<(), EnvironmentProtocolError> {
     let result = match child {
         ProcessChild::Pipe(child) => child.kill().await,
         ProcessChild::Pty(child) => child.kill(),
     };
-    result.map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))
+    result.map_err(|error| {
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::ProcessFailed,
+            error.to_string(),
+        )
+    })
 }
 
-fn process_error<E: std::fmt::Display>(context: &'static str) -> impl FnOnce(E) -> HostError {
-    move |error| HostError::new(HostErrorCode::ProcessFailed, format!("{context}: {error}"))
+fn process_error<E: std::fmt::Display>(
+    context: &'static str,
+) -> impl FnOnce(E) -> EnvironmentProtocolError {
+    move |error| {
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::ProcessFailed,
+            format!("{context}: {error}"),
+        )
+    }
 }
 
 /// Sweeps descendants left in the group after the root process exited, then
@@ -810,7 +829,7 @@ fn normalize_path(path: PathBuf) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use host_protocol::shared::SecretString;
+    use environment_protocol::shared::SecretString;
 
     #[tokio::test(flavor = "current_thread")]
     async fn process_reports_stdout_stderr_and_exit_code() {
@@ -979,7 +998,7 @@ mod tests {
         manager
             .resize_process(ResizeProcessParams {
                 process_id: process_id.clone(),
-                size: host_protocol::data::process::TerminalSize {
+                size: environment_protocol::data::process::TerminalSize {
                     rows: 40,
                     cols: 120,
                 },

@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-use host_protocol::shared::{
-    HostCapabilities, HostConnectionSpec, HostScope, HostTargetId, HostTransport,
+use environment_protocol::shared::{
+    EnvironmentCapabilities, EnvironmentDataConnection, EnvironmentScope, EnvironmentTransport,
+    ProviderTargetId,
 };
 use uuid::Uuid;
 
@@ -60,18 +61,18 @@ impl EnvironmentGatewayClientConfig {
         }
     }
 
-    pub fn connection(&self, key: &RouteKey) -> HostConnectionSpec {
+    pub fn connection(&self, key: &RouteKey) -> EnvironmentDataConnection {
         let base = websocket_base(&self.base_url);
-        HostConnectionSpec {
-            target_id: HostTargetId::new(key.environment_id.clone()),
+        EnvironmentDataConnection {
+            target_id: ProviderTargetId::new(key.environment_id.clone()),
             endpoint: format!(
                 "{base}/environment-gateway/routes/{}/{}/{}",
                 key.universe_id, key.environment_id, key.incarnation_id
             ),
-            transport: HostTransport::WebSocket,
-            scope: HostScope::Default,
+            transport: EnvironmentTransport::WebSocket,
+            scope: EnvironmentScope::Default,
             default_cwd: None,
-            capabilities: HostCapabilities::default(),
+            capabilities: EnvironmentCapabilities::default(),
         }
     }
 
@@ -79,15 +80,15 @@ impl EnvironmentGatewayClientConfig {
         &self,
         universe_id: Uuid,
         environment: &environments::EnvironmentRecord,
-    ) -> HostConnectionSpec {
+    ) -> EnvironmentDataConnection {
         self.connection(&self.route_key(universe_id, environment))
     }
 
     pub fn connect_options(
         &self,
         user_agent: impl Into<String>,
-    ) -> host_client::WebSocketConnectOptions {
-        host_client::WebSocketConnectOptions {
+    ) -> environment_client::WebSocketConnectOptions {
+        environment_client::WebSocketConnectOptions {
             bearer_token: Some((*self.deployment_token).clone()),
             user_agent: Some(user_agent.into()),
             headers: Vec::new(),
@@ -151,6 +152,6 @@ mod tests {
             connection.endpoint,
             "wss://gateway.test/environment-gateway/routes/00000000-0000-0000-0000-000000000000/environment-a/incarnation-a"
         );
-        assert_eq!(connection.capabilities, HostCapabilities::default());
+        assert_eq!(connection.capabilities, EnvironmentCapabilities::default());
     }
 }

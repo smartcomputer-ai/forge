@@ -10,15 +10,15 @@ use engine::{
     ToolInvocationBatchResult, ToolInvocationResult, promise_create_effect,
     storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, SessionStore},
 };
-use environments::{EnvironmentId, EnvironmentRecord, EnvironmentRegistryError, EnvironmentStore};
-use host_client::{HostClientError, HostDataClient, WebSocketConnectOptions};
-use host_protocol::{
+use environment_client::{EnvironmentClientError, EnvironmentDataClient, WebSocketConnectOptions};
+use environment_protocol::{
     data::{
         handshake::{InitializeParams, InitializedParams},
-        jobs::{JobReadResult as HostJobReadResult, ReadJobsParams},
+        jobs::{JobReadResult as ProtocolJobReadResult, ReadJobsParams},
     },
-    shared::{CURRENT_PROTOCOL_VERSION, HostConnectionSpec, HostTransport},
+    shared::{CURRENT_PROTOCOL_VERSION, EnvironmentDataConnection, EnvironmentTransport},
 };
+use environments::{EnvironmentId, EnvironmentRecord, EnvironmentRegistryError, EnvironmentStore};
 use store_pg::PgStore;
 use tools::{
     concurrency::{
@@ -40,9 +40,9 @@ use tools::{
         JobReadArgs, JobSubmitExecutionContextV1, ModelJobResult, ModelJobResultSet,
         is_environment_job_query_tool_name, normalize_job_result,
     },
+    environment_protocol::RemoteEnvironmentConnection,
     fleet::is_fleet_tool,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
-    host_protocol::RemoteHostConnection,
     limits::ToolLimits,
     runtime::InlineToolRuntime,
     runtime::{ToolCatalog, ToolTarget},
@@ -1036,7 +1036,7 @@ impl SessionTools {
                 .unwrap_or_default(),
             &resource,
         );
-        let mut client = connect_host_data_client(
+        let mut client = connect_environment_data_client(
             &connection,
             gateway.connect_options("lightspeed-temporal-server"),
         )
@@ -1049,10 +1049,10 @@ impl SessionTools {
                 resume_connection_id: None,
             })
             .await
-            .map_err(map_host_client_error)?;
+            .map_err(map_environment_client_error)?;
         if response.protocol_version != CURRENT_PROTOCOL_VERSION {
             return Err(io_error(format!(
-                "unsupported host data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
+                "unsupported environment data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
                 response.protocol_version
             )));
         }
@@ -1061,13 +1061,13 @@ impl SessionTools {
             .as_deref()
             .map(FsPath::new)
             .transpose()
-            .map_err(|error| io_error(format!("invalid host data default cwd: {error}")))?;
+            .map_err(|error| io_error(format!("invalid environment data default cwd: {error}")))?;
         client
             .initialized(&InitializedParams {})
             .await
-            .map_err(map_host_client_error)?;
+            .map_err(map_environment_client_error)?;
 
-        let mut connection = RemoteHostConnection::new(client, response.capabilities);
+        let mut connection = RemoteEnvironmentConnection::new(client, response.capabilities);
         if let Some(cwd) = cwd {
             connection = connection.with_cwd(cwd);
         }
@@ -1193,7 +1193,7 @@ fn timer_promise_id(
 async fn job_read_entry_from_response(
     blobs: &dyn BlobStore,
     handle: JobHandle,
-    response: Option<HostJobReadResult>,
+    response: Option<ProtocolJobReadResult>,
     output_bytes: Option<usize>,
 ) -> Result<ModelJobResult, CoreAgentIoError> {
     match response {
@@ -1228,26 +1228,28 @@ fn model_job_error(handle: Option<JobHandle>, error: String) -> ModelJobResult {
     }
 }
 
-async fn connect_host_data_client(
-    connection: &HostConnectionSpec,
+async fn connect_environment_data_client(
+    connection: &EnvironmentDataConnection,
     options: WebSocketConnectOptions,
-) -> Result<HostDataClient<host_client::WebSocketTransport>, CoreAgentIoError> {
+) -> Result<EnvironmentDataClient<environment_client::WebSocketTransport>, CoreAgentIoError> {
     match &connection.transport {
-        HostTransport::WebSocket => HostDataClient::connect(&connection.endpoint, options)
-            .await
-            .map_err(map_host_client_error),
-        HostTransport::Http => Err(unsupported_host_data_transport("http")),
-        HostTransport::Stdio => Err(unsupported_host_data_transport("stdio")),
-        HostTransport::Ssh => Err(unsupported_host_data_transport("ssh")),
-        HostTransport::Provider { provider_type } => Err(unsupported_host_data_transport(format!(
-            "provider:{provider_type}"
-        ))),
+        EnvironmentTransport::WebSocket => {
+            EnvironmentDataClient::connect(&connection.endpoint, options)
+                .await
+                .map_err(map_environment_client_error)
+        }
+        EnvironmentTransport::Http => Err(unsupported_environment_data_transport("http")),
+        EnvironmentTransport::Stdio => Err(unsupported_environment_data_transport("stdio")),
+        EnvironmentTransport::Ssh => Err(unsupported_environment_data_transport("ssh")),
+        EnvironmentTransport::Provider { provider_type } => Err(
+            unsupported_environment_data_transport(format!("provider:{provider_type}")),
+        ),
     }
 }
 
-fn unsupported_host_data_transport(transport: impl std::fmt::Display) -> CoreAgentIoError {
+fn unsupported_environment_data_transport(transport: impl std::fmt::Display) -> CoreAgentIoError {
     io_error(format!(
-        "host data transport is not supported by this worker: {transport}"
+        "environment data transport is not supported by this worker: {transport}"
     ))
 }
 
@@ -1659,8 +1661,8 @@ fn map_environments_error(error: EnvironmentRegistryError) -> CoreAgentIoError {
     io_error(format!("load session environment bindings: {error}"))
 }
 
-fn map_host_client_error(error: HostClientError) -> CoreAgentIoError {
-    io_error(format!("host data-plane call failed: {error}"))
+fn map_environment_client_error(error: EnvironmentClientError) -> CoreAgentIoError {
+    io_error(format!("environment data-plane call failed: {error}"))
 }
 
 fn map_blob_error(error: BlobStoreError) -> CoreAgentIoError {
@@ -1699,15 +1701,16 @@ mod tests {
             SessionStore,
         },
     };
+    use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
     use environments::{
-        CreateEnvironment, EnvironmentIncarnationId, EnvironmentIncarnationRecord,
-        EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
-        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
-        EnvironmentProvisionRequestId, EnvironmentSource, EnvironmentStatus, EnvironmentStore,
-        EnvironmentTemplateId, HostControllerConnectionSpec, InMemoryEnvironmentRegistryStore,
-        ObserveProvisionedEnvironment, PutEnvironmentProvider, PutEnvironmentProviderBinding,
+        CreateEnvironment, EnvironmentConnectionSpec, EnvironmentIncarnationId,
+        EnvironmentIncarnationRecord, EnvironmentProviderBindingId,
+        EnvironmentProviderBindingStatus, EnvironmentProviderBindingStore, EnvironmentProviderId,
+        EnvironmentProviderStore, EnvironmentProvisionRequestId, EnvironmentSource,
+        EnvironmentStatus, EnvironmentStore, EnvironmentTemplateId,
+        InMemoryEnvironmentRegistryStore, ObserveProvisionedEnvironment, PutEnvironmentProvider,
+        PutEnvironmentProviderBinding,
     };
-    use host_protocol::shared::{HostTargetId, HostTransport};
     use tools::environment::{
         EnvironmentToolContext,
         process::{
@@ -2606,7 +2609,7 @@ mod tests {
         blobs: Arc<InMemoryBlobStore>,
         process: Arc<RecordingProcessExecutor>,
     ) -> RuntimeEnvironment {
-        let target_id = HostTargetId::new("test");
+        let target_id = ProviderTargetId::new("test");
         let resource = environments::EnvironmentRecord {
             environment_id: engine::EnvironmentId::new("test"),
             request_id: EnvironmentProvisionRequestId::new("request-test"),
@@ -2648,9 +2651,9 @@ mod tests {
             .put_provider(PutEnvironmentProvider {
                 provider_id: EnvironmentProviderId::new(provider_id),
                 display_name: None,
-                controller_connection: HostControllerConnectionSpec::new(
+                controller_connection: EnvironmentConnectionSpec::new(
                     "http://controller.test",
-                    HostTransport::Http,
+                    EnvironmentTransport::Http,
                 ),
                 metadata: BTreeMap::new(),
                 updated_at_ms: 10,
@@ -2677,7 +2680,7 @@ mod tests {
         provider_id: &str,
         observed_at_ms: i64,
     ) {
-        let target_id = HostTargetId::new(format!("target-{environment_id}"));
+        let target_id = ProviderTargetId::new(format!("target-{environment_id}"));
         let environment_id = EnvironmentId::new(environment_id);
         store
             .create_environment(CreateEnvironment {

@@ -746,7 +746,7 @@ filesystem.
 - Make materialization idempotent by snapshot or committed workspace digest.
 - Return root path and warnings.
 - Add tests with an in-memory/local host implementation first; remote-host
-  materialization can follow when host protocol coverage is ready.
+  materialization can follow when environment protocol coverage is ready.
 
 ### G7: CLI-Local API And Projection Hooks
 

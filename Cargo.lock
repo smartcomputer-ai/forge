@@ -1007,6 +1007,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "environment-client"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "environment-protocol",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite 0.26.2",
+]
+
+[[package]]
 name = "environment-daemon"
 version = "0.1.0"
 dependencies = [
@@ -1015,12 +1029,12 @@ dependencies = [
  "clap",
  "dotenvy",
  "engine",
+ "environment-client",
+ "environment-protocol",
  "futures-util",
  "glob",
  "grep-regex",
  "grep-searcher",
- "host-client",
- "host-protocol",
  "ignore",
  "libc",
  "portable-pty",
@@ -1035,6 +1049,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "environment-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "environment-provider-incus"
 version = "0.1.0"
 dependencies = [
@@ -1043,8 +1067,8 @@ dependencies = [
  "axum",
  "clap",
  "dotenvy",
+ "environment-protocol",
  "futures-util",
- "host-protocol",
  "reqwest",
  "serde",
  "serde_json",
@@ -1063,7 +1087,7 @@ dependencies = [
  "async-trait",
  "auth",
  "engine",
- "host-protocol",
+ "environment-protocol",
  "serde",
  "serde_json",
  "sha2",
@@ -1596,30 +1620,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
 dependencies = [
  "windows-sys 0.61.2",
-]
-
-[[package]]
-name = "host-client"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "futures-util",
- "host-protocol",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
- "tokio",
- "tokio-tungstenite 0.26.2",
-]
-
-[[package]]
-name = "host-protocol"
-version = "0.1.0"
-dependencies = [
- "base64",
- "serde",
- "serde_json",
- "thiserror 1.0.69",
 ]
 
 [[package]]
@@ -4031,8 +4031,8 @@ dependencies = [
  "auth",
  "base64",
  "engine",
+ "environment-protocol",
  "environments",
- "host-protocol",
  "mcp",
  "moka",
  "object_store",
@@ -4171,11 +4171,11 @@ dependencies = [
  "dotenvy",
  "ed25519-dalek",
  "engine",
+ "environment-client",
+ "environment-protocol",
  "environments",
  "futures",
  "futures-util",
- "host-client",
- "host-protocol",
  "jsonschema",
  "llm-clients",
  "llm-runtime",
@@ -4214,10 +4214,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "engine",
+ "environment-protocol",
  "futures",
  "futures-util",
  "hex",
- "host-protocol",
  "serde",
  "serde_json",
  "sha2",
@@ -4718,10 +4718,10 @@ dependencies = [
  "api",
  "async-trait",
  "engine",
+ "environment-client",
+ "environment-protocol",
  "futures-util",
  "glob",
- "host-client",
- "host-protocol",
  "jsonschema",
  "regex",
  "reqwest",

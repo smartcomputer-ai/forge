@@ -4,8 +4,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::UTF8};
-use host_protocol::{
+use environment_protocol::{
     data::fs::{
         CopyParams, CopyResponse, CreateDirectoryParams, CreateDirectoryResponse,
         GetMetadataParams, GetMetadataResponse, GlobFilesParams, GlobFilesResponse, GlobFilesStop,
@@ -13,9 +12,10 @@ use host_protocol::{
         ReadFileResponse, RemoveParams, RemoveResponse, SearchTextMatch, SearchTextParams,
         SearchTextResponse, SearchTextStop, WriteFileParams, WriteFileResponse,
     },
-    error::{HostError, HostErrorCode},
-    shared::{ByteChunk, HostPath},
+    error::{EnvironmentProtocolError, EnvironmentProtocolErrorCode},
+    shared::{ByteChunk, EnvironmentPath},
 };
+use grep_searcher::{BinaryDetection, SearcherBuilder, sinks::UTF8};
 use tokio::fs;
 
 #[derive(Clone)]
@@ -34,7 +34,10 @@ impl LocalFileSystem {
         }
     }
 
-    pub async fn read_file(&self, params: ReadFileParams) -> Result<ReadFileResponse, HostError> {
+    pub async fn read_file(
+        &self,
+        params: ReadFileParams,
+    ) -> Result<ReadFileResponse, EnvironmentProtocolError> {
         let path = self.resolve(&params.path)?;
         let metadata = fs::metadata(&path)
             .await
@@ -86,7 +89,7 @@ impl LocalFileSystem {
     pub async fn write_file(
         &self,
         params: WriteFileParams,
-    ) -> Result<WriteFileResponse, HostError> {
+    ) -> Result<WriteFileResponse, EnvironmentProtocolError> {
         self.ensure_writable()?;
         let path = self.resolve(&params.path)?;
         fs::write(&path, params.data.into_inner())
@@ -98,7 +101,7 @@ impl LocalFileSystem {
     pub async fn create_directory(
         &self,
         params: CreateDirectoryParams,
-    ) -> Result<CreateDirectoryResponse, HostError> {
+    ) -> Result<CreateDirectoryResponse, EnvironmentProtocolError> {
         self.ensure_writable()?;
         let path = self.resolve(&params.path)?;
         if params.recursive.unwrap_or(false) {
@@ -116,7 +119,7 @@ impl LocalFileSystem {
     pub async fn get_metadata(
         &self,
         params: GetMetadataParams,
-    ) -> Result<GetMetadataResponse, HostError> {
+    ) -> Result<GetMetadataResponse, EnvironmentProtocolError> {
         let path = self.resolve(&params.path)?;
         let metadata = fs::symlink_metadata(&path)
             .await
@@ -136,7 +139,7 @@ impl LocalFileSystem {
     pub async fn read_directory(
         &self,
         params: ReadDirectoryParams,
-    ) -> Result<ReadDirectoryResponse, HostError> {
+    ) -> Result<ReadDirectoryResponse, EnvironmentProtocolError> {
         let path = self.resolve(&params.path)?;
         let mut directory = fs::read_dir(&path)
             .await
@@ -161,7 +164,10 @@ impl LocalFileSystem {
         Ok(ReadDirectoryResponse { entries })
     }
 
-    pub async fn remove(&self, params: RemoveParams) -> Result<RemoveResponse, HostError> {
+    pub async fn remove(
+        &self,
+        params: RemoveParams,
+    ) -> Result<RemoveResponse, EnvironmentProtocolError> {
         self.ensure_writable()?;
         let path = self.resolve(&params.path)?;
         let metadata = match fs::symlink_metadata(&path).await {
@@ -191,13 +197,18 @@ impl LocalFileSystem {
         Ok(RemoveResponse {})
     }
 
-    pub async fn copy(&self, params: CopyParams) -> Result<CopyResponse, HostError> {
+    pub async fn copy(&self, params: CopyParams) -> Result<CopyResponse, EnvironmentProtocolError> {
         self.ensure_writable()?;
         let source = self.resolve(&params.source_path)?;
         let destination = self.resolve(&params.destination_path)?;
         tokio::task::spawn_blocking(move || copy_path(&source, &destination, params.recursive))
             .await
-            .map_err(|error| HostError::new(HostErrorCode::Internal, error.to_string()))??;
+            .map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Internal,
+                    error.to_string(),
+                )
+            })??;
         Ok(CopyResponse {})
     }
 
@@ -207,11 +218,16 @@ impl LocalFileSystem {
     pub async fn search_text(
         &self,
         params: SearchTextParams,
-    ) -> Result<SearchTextResponse, HostError> {
+    ) -> Result<SearchTextResponse, EnvironmentProtocolError> {
         let root = self.resolve(&params.root)?;
         tokio::task::spawn_blocking(move || search_text_blocking(root, params))
             .await
-            .map_err(|error| HostError::new(HostErrorCode::Internal, error.to_string()))?
+            .map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Internal,
+                    error.to_string(),
+                )
+            })?
     }
 
     /// Bounded recursive file enumeration executed locally, so a broad glob
@@ -219,14 +235,19 @@ impl LocalFileSystem {
     pub async fn glob_files(
         &self,
         params: GlobFilesParams,
-    ) -> Result<GlobFilesResponse, HostError> {
+    ) -> Result<GlobFilesResponse, EnvironmentProtocolError> {
         let root = self.resolve(&params.root)?;
         tokio::task::spawn_blocking(move || glob_files_blocking(root, params))
             .await
-            .map_err(|error| HostError::new(HostErrorCode::Internal, error.to_string()))?
+            .map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Internal,
+                    error.to_string(),
+                )
+            })?
     }
 
-    fn resolve(&self, path: &HostPath) -> Result<PathBuf, HostError> {
+    fn resolve(&self, path: &EnvironmentPath) -> Result<PathBuf, EnvironmentProtocolError> {
         let candidate = if path.is_absolute() {
             PathBuf::from(path.as_str())
         } else if path.as_str() == "." {
@@ -236,8 +257,8 @@ impl LocalFileSystem {
         };
         let normalized = normalize_path(candidate);
         if !normalized.starts_with(&self.root) {
-            return Err(HostError::new(
-                HostErrorCode::Forbidden,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Forbidden,
                 format!(
                     "path is outside bridge fs root: {} (root {})",
                     normalized.display(),
@@ -248,12 +269,12 @@ impl LocalFileSystem {
         Ok(normalized)
     }
 
-    fn ensure_writable(&self) -> Result<(), HostError> {
+    fn ensure_writable(&self) -> Result<(), EnvironmentProtocolError> {
         if self.writable {
             Ok(())
         } else {
-            Err(HostError::new(
-                HostErrorCode::CapabilityUnavailable,
+            Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::CapabilityUnavailable,
                 "bridge filesystem is read-only",
             ))
         }
@@ -263,10 +284,10 @@ impl LocalFileSystem {
 fn search_text_blocking(
     root: PathBuf,
     params: SearchTextParams,
-) -> Result<SearchTextResponse, HostError> {
+) -> Result<SearchTextResponse, EnvironmentProtocolError> {
     if params.pattern.is_empty() {
-        return Err(HostError::new(
-            HostErrorCode::InvalidRequest,
+        return Err(EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::InvalidRequest,
             "search pattern must not be empty",
         ));
     }
@@ -276,8 +297,8 @@ fn search_text_blocking(
         || limits.max_bytes == 0
         || limits.max_duration_ms == 0
     {
-        return Err(HostError::new(
-            HostErrorCode::InvalidRequest,
+        return Err(EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::InvalidRequest,
             "search limits must all be at least 1",
         ));
     }
@@ -285,8 +306,8 @@ fn search_text_blocking(
         .case_insensitive(!params.case_sensitive)
         .build(&params.pattern)
         .map_err(|error| {
-            HostError::new(
-                HostErrorCode::InvalidRequest,
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 format!("invalid search regex: {error}"),
             )
         })?;
@@ -296,8 +317,8 @@ fn search_text_blocking(
         .map(glob::Pattern::new)
         .transpose()
         .map_err(|error| {
-            HostError::new(
-                HostErrorCode::InvalidRequest,
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 format!("invalid search include glob: {error}"),
             )
         })?;
@@ -334,7 +355,7 @@ fn search_text_blocking(
         }
         let path = entry.path();
         if let Some(include) = &include
-            && !host_path_matches_include(include, path, &root)
+            && !local_path_matches_include(include, path, &root)
         {
             continue;
         }
@@ -391,23 +412,23 @@ fn search_text_blocking(
 fn glob_files_blocking(
     root: PathBuf,
     params: GlobFilesParams,
-) -> Result<GlobFilesResponse, HostError> {
+) -> Result<GlobFilesResponse, EnvironmentProtocolError> {
     if params.pattern.is_empty() {
-        return Err(HostError::new(
-            HostErrorCode::InvalidRequest,
+        return Err(EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::InvalidRequest,
             "glob pattern must not be empty",
         ));
     }
     let limits = params.limits;
     if limits.max_matches == 0 || limits.max_entries == 0 || limits.max_duration_ms == 0 {
-        return Err(HostError::new(
-            HostErrorCode::InvalidRequest,
+        return Err(EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::InvalidRequest,
             "glob limits must all be at least 1",
         ));
     }
     let pattern = glob::Pattern::new(&params.pattern).map_err(|error| {
-        HostError::new(
-            HostErrorCode::InvalidRequest,
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::InvalidRequest,
             format!("invalid glob pattern: {error}"),
         )
     })?;
@@ -472,7 +493,7 @@ fn glob_files_blocking(
 fn glob_pattern_matches(
     pattern: &glob::Pattern,
     pattern_text: &str,
-    caller_path: &HostPath,
+    caller_path: &EnvironmentPath,
     path: &Path,
     root: &Path,
 ) -> bool {
@@ -496,7 +517,7 @@ fn glob_pattern_matches(
 
 /// Include globs match the root-relative path or the bare file name, exactly
 /// like the caller-side generic fallback.
-fn host_path_matches_include(pattern: &glob::Pattern, path: &Path, root: &Path) -> bool {
+fn local_path_matches_include(pattern: &glob::Pattern, path: &Path, root: &Path) -> bool {
     let relative = path
         .strip_prefix(root)
         .map(|relative| {
@@ -514,13 +535,13 @@ fn host_path_matches_include(pattern: &glob::Pattern, path: &Path, root: &Path) 
 /// Map a matched local path back into the caller's path space by joining its
 /// root-relative suffix onto the requested root.
 fn response_path(
-    requested_root: &HostPath,
+    requested_root: &EnvironmentPath,
     path: &Path,
     resolved_root: &Path,
-) -> Result<HostPath, HostError> {
+) -> Result<EnvironmentPath, EnvironmentProtocolError> {
     let relative = path.strip_prefix(resolved_root).map_err(|_| {
-        HostError::new(
-            HostErrorCode::Internal,
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::Internal,
             format!("search match escaped its root: {}", path.display()),
         )
     })?;
@@ -535,20 +556,24 @@ fn response_path(
         requested_root.as_str().trim_end_matches('/'),
         relative
     );
-    HostPath::new(&joined).map_err(|error| {
-        HostError::new(
-            HostErrorCode::Internal,
-            format!("search match produced an invalid host path {joined}: {error}"),
+    EnvironmentPath::new(&joined).map_err(|error| {
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::Internal,
+            format!("search match produced an invalid environment path {joined}: {error}"),
         )
     })
 }
 
-fn copy_path(source: &Path, destination: &Path, recursive: bool) -> Result<(), HostError> {
+fn copy_path(
+    source: &Path,
+    destination: &Path,
+    recursive: bool,
+) -> Result<(), EnvironmentProtocolError> {
     let metadata = std::fs::symlink_metadata(source).map_err(|error| io_error(error, source))?;
     if metadata.is_dir() {
         if !recursive {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "copy requires recursive=true when source is a directory",
             ));
         }
@@ -563,7 +588,7 @@ fn copy_path(source: &Path, destination: &Path, recursive: bool) -> Result<(), H
     }
 }
 
-fn copy_directory(source: &Path, destination: &Path) -> Result<(), HostError> {
+fn copy_directory(source: &Path, destination: &Path) -> Result<(), EnvironmentProtocolError> {
     std::fs::create_dir_all(destination).map_err(|error| io_error(error, destination))?;
     for entry in std::fs::read_dir(source).map_err(|error| io_error(error, source))? {
         let entry = entry.map_err(|error| io_error(error, source))?;
@@ -598,15 +623,17 @@ fn normalize_path(path: PathBuf) -> PathBuf {
     normalized
 }
 
-fn io_error(error: io::Error, path: &Path) -> HostError {
+fn io_error(error: io::Error, path: &Path) -> EnvironmentProtocolError {
     let code = match error.kind() {
-        io::ErrorKind::NotFound => HostErrorCode::NotFound,
-        io::ErrorKind::PermissionDenied => HostErrorCode::Forbidden,
-        io::ErrorKind::AlreadyExists => HostErrorCode::Conflict,
-        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => HostErrorCode::InvalidRequest,
-        _ => HostErrorCode::Internal,
+        io::ErrorKind::NotFound => EnvironmentProtocolErrorCode::NotFound,
+        io::ErrorKind::PermissionDenied => EnvironmentProtocolErrorCode::Forbidden,
+        io::ErrorKind::AlreadyExists => EnvironmentProtocolErrorCode::Conflict,
+        io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData => {
+            EnvironmentProtocolErrorCode::InvalidRequest
+        }
+        _ => EnvironmentProtocolErrorCode::Internal,
     };
-    HostError::new(code, format!("{}: {}", path.display(), error))
+    EnvironmentProtocolError::new(code, format!("{}: {}", path.display(), error))
 }
 
 fn system_time_ms(value: SystemTime) -> i64 {
@@ -625,7 +652,8 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
         let fs = LocalFileSystem::new(root.clone(), root.clone(), true);
-        let path = HostPath::new(root.join("file.txt").to_string_lossy()).expect("host path");
+        let path = EnvironmentPath::new(root.join("file.txt").to_string_lossy())
+            .expect("environment path");
 
         fs.write_file(WriteFileParams {
             path: path.clone(),
@@ -654,7 +682,8 @@ mod tests {
         std::fs::create_dir(&root).expect("root");
         let root = root.canonicalize().expect("canonical root");
         let fs = LocalFileSystem::new(root, temp.path().to_path_buf(), true);
-        let outside = HostPath::new(temp.path().join("outside.txt").to_string_lossy()).unwrap();
+        let outside =
+            EnvironmentPath::new(temp.path().join("outside.txt").to_string_lossy()).unwrap();
 
         let error = fs
             .read_file(ReadFileParams {
@@ -665,10 +694,10 @@ mod tests {
             .await
             .expect_err("escape should fail");
 
-        assert_eq!(error.code, HostErrorCode::Forbidden);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::Forbidden);
     }
 
-    fn search_fixture() -> (tempfile::TempDir, LocalFileSystem, HostPath) {
+    fn search_fixture() -> (tempfile::TempDir, LocalFileSystem, EnvironmentPath) {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
         std::fs::create_dir_all(root.join("src/deep")).expect("dirs");
@@ -681,12 +710,13 @@ mod tests {
         std::fs::write(root.join("readme.md"), "target readme\n").expect("readme");
         std::fs::write(root.join("binary.bin"), b"tar\x00get\n").expect("binary");
         let fs = LocalFileSystem::new(root.clone(), root.clone(), false);
-        let host_root = HostPath::new(root.to_string_lossy()).expect("host root");
-        (temp, fs, host_root)
+        let environment_root =
+            EnvironmentPath::new(root.to_string_lossy()).expect("environment root");
+        (temp, fs, environment_root)
     }
 
-    fn limits() -> host_protocol::data::fs::SearchTextLimits {
-        host_protocol::data::fs::SearchTextLimits {
+    fn limits() -> environment_protocol::data::fs::SearchTextLimits {
+        environment_protocol::data::fs::SearchTextLimits {
             max_matches: 100,
             max_files: 100,
             max_bytes: 1024 * 1024,
@@ -694,7 +724,7 @@ mod tests {
         }
     }
 
-    fn search_params(root: &HostPath) -> SearchTextParams {
+    fn search_params(root: &EnvironmentPath) -> SearchTextParams {
         SearchTextParams {
             root: root.clone(),
             pattern: "target".to_owned(),
@@ -775,12 +805,12 @@ mod tests {
         let mut params = search_params(&root);
         params.pattern = "(unclosed".to_owned();
         let error = fs.search_text(params).await.expect_err("invalid regex");
-        assert_eq!(error.code, HostErrorCode::InvalidRequest);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::InvalidRequest);
 
         let mut params = search_params(&root);
         params.limits.max_matches = 0;
         let error = fs.search_text(params).await.expect_err("zero limit");
-        assert_eq!(error.code, HostErrorCode::InvalidRequest);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::InvalidRequest);
 
         let nested_root = temp.path().join("root");
         std::fs::create_dir(&nested_root).expect("nested root");
@@ -790,15 +820,15 @@ mod tests {
             .search_text(search_params(&root))
             .await
             .expect_err("escape should fail");
-        assert_eq!(error.code, HostErrorCode::Forbidden);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::Forbidden);
     }
 
-    fn glob_params(root: &HostPath, pattern: &str) -> GlobFilesParams {
+    fn glob_params(root: &EnvironmentPath, pattern: &str) -> GlobFilesParams {
         GlobFilesParams {
             root: root.clone(),
             pattern: pattern.to_owned(),
             max_depth: None,
-            limits: host_protocol::data::fs::GlobFilesLimits {
+            limits: environment_protocol::data::fs::GlobFilesLimits {
                 max_matches: 100,
                 max_entries: 100,
                 max_duration_ms: 10_000,
@@ -853,13 +883,13 @@ mod tests {
         let mut params = glob_params(&root, "**/*");
         params.pattern = String::new();
         let error = fs.glob_files(params).await.expect_err("empty pattern");
-        assert_eq!(error.code, HostErrorCode::InvalidRequest);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::InvalidRequest);
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn ranged_read_truncates_at_the_source_and_reports_true_size() {
         let (_temp, fs, root) = search_fixture();
-        let path = HostPath::new(format!("{}/readme.md", root.as_str())).expect("path");
+        let path = EnvironmentPath::new(format!("{}/readme.md", root.as_str())).expect("path");
         let full = std::fs::read(std::path::Path::new(root.as_str()).join("readme.md"))
             .expect("full contents");
 

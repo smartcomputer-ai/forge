@@ -124,7 +124,7 @@ async fn list(args: ResourceArgs) -> Result<()> {
         for environment in &response.environments {
             let provider = match &environment.source {
                 api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-                api::EnvironmentSourceView::Enrolled => "enrolled",
+                api::EnvironmentSourceView::External { .. } => "external",
             };
             println!(
                 "{} {} {:?}",
@@ -145,7 +145,7 @@ async fn read(args: EnvironmentResourceArgs) -> Result<()> {
     print_json_or(args.json, &response, || {
         let provider = match &response.environment.source {
             api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-            api::EnvironmentSourceView::Enrolled => "enrolled",
+            api::EnvironmentSourceView::External { .. } => "external",
         };
         println!(
             "{} {} {:?}",

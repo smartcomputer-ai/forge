@@ -51,7 +51,7 @@ The result is wrong at both abstraction boundaries:
 - Promise payloads containing environment-job transport DTOs expose Base64
   byte chunks rather than readable output.
 
-Environment jobs make the problem especially visible. The host protocol
+Environment jobs make the problem especially visible. The environment protocol
 correctly represents arbitrary process bytes as Base64 `ByteChunk` values, but
 the environment-job workflow currently serializes the raw `JobReadResult` as
 the Promise payload. The Base64 transport representation consequently crosses

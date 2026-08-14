@@ -719,7 +719,7 @@ First end-to-end slice is implemented:
 - Make `CoreAgentTools` batch-oriented with `invoke_batch`.
 - Reuse `agent-tools` host filesystem/process packages.
 - Tool runtime maps `ToolExecutionTarget` to concrete capabilities such as the
-  local host, a remote host protocol connection, or a future sandbox target.
+  local host, a remote environment protocol connection, or a future sandbox target.
 - Return `ToolInvocationBatchResult` directly.
 - Keep target selection in planning so each call request carries the resolved
   target.

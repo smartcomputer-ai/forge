@@ -1101,7 +1101,7 @@ mod tests {
                         usage: None,
                         tool_calls: vec![ObservedToolCall {
                             call_id: engine::ToolCallId::new(self.call_id.clone()),
-                            tool_name: ToolName::new("read_file"),
+                            tool_name: ToolName::new("vfs_read_file"),
                             provider_kind: None,
                             arguments_ref,
                             native_call_ref: None,

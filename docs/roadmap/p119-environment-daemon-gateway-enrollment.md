@@ -59,7 +59,7 @@ Temporal workers connect to a stable, deployment-authenticated Lightspeed route:
 
 The gateway reads current durable state on each connection. It then opens one
 outbound WebSocket to either the external envd connection or the registered
-provider's target route and proxies host-protocol frames unchanged.
+provider's target route and proxies environment-protocol frames unchanged.
 
 This works with multiple Temporal workers because workers do not own daemon
 connections or in-memory route entries. Idle environments use no open
@@ -86,7 +86,7 @@ reconnect loop.
 ## Implementation
 
 - [x] Rename/refactor `host-bridge` to `environment-daemon` / `lightspeed-envd`.
-- [x] Implement filesystem, process, PTY, and durable-job host protocol methods.
+- [x] Implement filesystem, process, PTY, and durable-job environment protocol methods.
 - [x] Implement a passive, on-demand WebSocket listener.
 - [x] Route workers through a stable Lightspeed gateway path.
 - [x] Dial external envd endpoints on demand.

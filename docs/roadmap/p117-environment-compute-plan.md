@@ -68,14 +68,14 @@ appropriately configured environment remains a first-class product path.
    directly as an environment without pretending it is a provider.
 5. Use one canonical in-environment daemon, `lightspeed-envd`, for enrolled
    hosts and managed VMs.
-6. Keep the environment and host-protocol model neutral to Incus, Firecracker,
+6. Keep the environment and environment-protocol model neutral to Incus, Firecracker,
    KubeVirt, and provider-native execution adapters.
 7. Give every environment a stable logical identity while fencing stale boots,
    restored snapshots, duplicate daemons, and superseded connections.
 8. Make provisioning and close idempotent, observable, and recoverable across
    controller, gateway, provider, and node restarts.
 9. Allow an environment to expose software on the internet without exposing
-   its host-protocol endpoint, SSH, Docker daemon, or Lightspeed gateway.
+   its environment-protocol endpoint, SSH, Docker daemon, or Lightspeed gateway.
 10. Maintain one authoritative owner for each durable fact and avoid a third
     database until coordination state proves necessary.
 
@@ -190,7 +190,7 @@ stable environment or its source kind.
 ### Environment daemon
 
 `lightspeed-envd`, shortened operationally to `envd`, is the canonical daemon
-that implements host-protocol filesystem, process, PTY, and job operations on
+that implements environment-protocol filesystem, process, PTY, and job operations on
 the environment's own operating system.
 
 It replaces the `host-bridge` project and name. “Agent” remains reserved for AI
@@ -199,7 +199,7 @@ agents.
 ### Environment gateway
 
 The authenticated data-plane broker. Environment daemons connect outbound to
-it. Lightspeed workers route host-protocol calls through it to the current
+it. Lightspeed workers route environment-protocol calls through it to the current
 connection for an environment incarnation.
 
 The gateway is independent of any compute provider. It serves provisioned VMs
@@ -274,7 +274,7 @@ networking, capabilities, lifecycle, and ingress eligibility.
         ▼                                                ▼
  Environment Gateway ◄──────────────────────── authenticated connection
         │
-        └──────── direct host-protocol data plane ─────► filesystem/process/jobs
+        └──────── direct environment-protocol data plane ─────► filesystem/process/jobs
 ```
 
 Control and data planes remain separate:
@@ -308,8 +308,8 @@ Control and data planes remain separate:
 13. Environment credentials are resolved by Lightspeed at process or job start
     and sent only to the selected environment data plane.
 14. Provider type is not part of model-facing tool behavior. Tools consume
-    generic filesystem, process, and job traits backed by `HostConnectionSpec`.
-15. A provider-native adapter and `envd` must pass the same host data-plane
+    generic filesystem, process, and job traits backed by `EnvironmentDataConnection`.
+15. A provider-native adapter and `envd` must pass the same environment data-plane
     conformance suite.
 16. Public application ingress never exposes the environment gateway or host
     control protocol.
@@ -657,7 +657,7 @@ Responsibilities:
 - enforce environment incarnation fencing;
 - negotiate protocol version and capabilities;
 - allocate ephemeral connection IDs;
-- route host-protocol calls to the current connection;
+- route environment-protocol calls to the current connection;
 - propagate disconnect and health observations;
 - apply per-environment concurrency, frame, and bandwidth limits;
 - redact secrets and sensitive request data from logs; and
@@ -787,7 +787,7 @@ rather than prescribing that mechanism.
 ### Provider-native execution remains valid
 
 The environment model does not require envd. A specialized provider may return
-a provider-native `HostConnectionSpec` and implement the same filesystem,
+a provider-native `EnvironmentDataConnection` and implement the same filesystem,
 process, and job traits outside the guest.
 
 Use provider-native execution only when it can faithfully represent the live
@@ -796,13 +796,14 @@ development VM because it misses live mounts, overlays, permissions, tmpfs,
 process state, PTYs, and job supervision.
 
 Every native adapter advertises only supported capabilities and passes the
-shared host data-plane conformance suite.
+shared environment data-plane conformance suite.
 
-## Host protocol target contract
+## Environment protocol target contract
 
-Keep `host-protocol` as the backend-neutral controller and data-plane wire
-contract. Do not rename it to environment protocol; an environment is the
-semantic resource and host protocol is one concrete execution substrate.
+Keep `environment-protocol` as the backend-neutral provider controller and
+environment data-plane wire contract. The `environments` crate owns Lightspeed's
+semantic resource model; `environment-protocol` owns the external extension
+boundary used by providers, daemons, and provider-native execution adapters.
 
 Refactor the controller plane around global providers and binding-aware calls.
 Conceptual target operations:
@@ -967,7 +968,7 @@ deferred.
 ### Deployment
 
 The first provider is a Rust deployable on hz01's trusted application plane. It
-reuses Lightspeed host-protocol types but does not depend on the engine,
+reuses Lightspeed environment-protocol types but does not depend on the engine,
 Temporal worker, session runtime, or ls.bot app.
 
 It talks over the tailnet to the Incus remote HTTPS API on hz02 using a
@@ -1166,7 +1167,7 @@ recreates the vsock backing channel, supplies a fresh incarnation, and exposes
 a freshly fenced route. Snapshot state never authorizes two clones as the same
 live environment.
 
-A Firecracker provider may instead implement host protocol outside the guest
+A Firecracker provider may instead implement environment protocol outside the guest
 when it owns a deliberately shared workspace and has a faithful execution
 mechanism. That adapter is capability-limited and must pass conformance. Do not
 make provider-native execution the general VM default.
@@ -1193,7 +1194,7 @@ Public ingress            Service + Gateway/Ingress
 Backend state             VM/VMI conditions
 ```
 
-Do not route normal host-protocol traffic through `kubectl`, `virtctl`, console,
+Do not route normal environment-protocol traffic through `kubectl`, `virtctl`, console,
 SSH port forwarding, or the Kubernetes API server. Those are operator/debug
 paths. envd uses an ordinary Service/data-network connection so filesystem and
 PTY traffic does not load the control plane.
@@ -1313,7 +1314,7 @@ Expose bounded metrics for:
 - image cache/fetch latency;
 - gateway active connections and reconnects;
 - enrollment success/failure/expiry;
-- host-protocol latency, bytes, errors, and backpressure by method class;
+- environment-protocol latency, bytes, errors, and backpressure by method class;
 - environment readiness transition duration;
 - public ingress health; and
 - provider policy, quota, and capacity rejection counts.
@@ -1344,7 +1345,7 @@ Target work:
 - implement direct-enrollment records and daemon identity;
 - add the environment gateway deployment role;
 - rename/refactor `host-bridge` into `environment-daemon`;
-- harden host-protocol control context and connection fencing;
+- harden environment-protocol control context and connection fencing;
 - add template discovery;
 - preserve transport-neutral filesystem/process/job adapters;
 - implement the Incus provider as a standalone deployable crate; and

@@ -1,6 +1,5 @@
 use anyhow::Context as _;
-use futures_util::{SinkExt as _, StreamExt as _};
-use host_protocol::{
+use environment_protocol::{
     data::{
         fs::{
             CopyParams, CreateDirectoryParams, GetMetadataParams, GlobFilesParams,
@@ -22,9 +21,10 @@ use host_protocol::{
             WriteProcessParams,
         },
     },
-    error::{HostError, HostErrorCode},
+    error::{EnvironmentProtocolError, EnvironmentProtocolErrorCode},
     shared::CURRENT_PROTOCOL_VERSION,
 };
+use futures_util::{SinkExt as _, StreamExt as _};
 use serde_json::Value;
 use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
@@ -119,7 +119,10 @@ async fn dispatch_gateway_json(
         responses
             .send(error_response(
                 Some(id),
-                HostError::new(HostErrorCode::Conflict, "daemon request limit reached"),
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Conflict,
+                    "daemon request limit reached",
+                ),
             ))
             .await?;
         return Ok(());
@@ -145,13 +148,13 @@ async fn handle_data(
     runtime: &DaemonRuntime,
     method: &str,
     params: Value,
-) -> Result<Value, HostError> {
+) -> Result<Value, EnvironmentProtocolError> {
     match method {
         DATA_INITIALIZE_METHOD => {
             let params = decode_params::<InitializeParams>(params)?;
             if params.protocol_version != CURRENT_PROTOCOL_VERSION {
-                return Err(HostError::new(
-                    HostErrorCode::Unsupported,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Unsupported,
                     format!(
                         "unsupported data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
                         params.protocol_version

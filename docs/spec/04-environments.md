@@ -17,7 +17,7 @@ The universe owns:
 - provider observations, connection information, and capabilities; and
 - credentials bound directly to an environment.
 
-The environment provider API and `host-protocol` are the external extension
+The environment provider API and `environment-protocol` are the external extension
 seam. Provider implementations may run outside this repository. Lightspeed's
 internal `EnvironmentResolver` only centralizes lookup, provider filtering,
 liveness checks, and structured errors; it is not another plugin interface.

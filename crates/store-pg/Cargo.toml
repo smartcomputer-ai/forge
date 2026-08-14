@@ -11,7 +11,7 @@ base64 = "0.22"
 engine = { path = "../engine" }
 moka = { version = "0.12", features = ["sync"] }
 environments = { path = "../environments" }
-host-protocol = { path = "../host-protocol" }
+environment-protocol = { path = "../environment-protocol" }
 async-trait = "0.1"
 mcp = { path = "../mcp" }
 object_store = { version = "0.13.1", features = ["aws"] }

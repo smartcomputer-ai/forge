@@ -5,7 +5,7 @@ use ::environments::{
     EnvironmentProviderBindingStatus, EnvironmentProviderId, EnvironmentProviderRecord,
     EnvironmentRecord, EnvironmentRegistryError, EnvironmentSource, EnvironmentStatus,
 };
-use host_protocol::control::targets::{
+use environment_protocol::control::targets::{
     EnvironmentTemplate, ListTemplatesParams, ProviderBindingContext,
 };
 
@@ -78,7 +78,7 @@ impl GatewayAgentApi {
         {
             let provider = self.read_environment_provider(&binding.provider_id).await?;
             let mut controller = self
-                .host_controller_connector
+                .provider_controller_connector
                 .connect(&provider.controller_connection)
                 .await?;
             let response = controller
@@ -204,23 +204,23 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
                 connection: EnvironmentConnectionView {
                     endpoint: connection.endpoint.clone(),
                     transport: match &connection.transport {
-                        host_protocol::shared::HostTransport::WebSocket => {
+                        environment_protocol::shared::EnvironmentTransport::WebSocket => {
                             EnvironmentConnectionTransportView::WebSocket
                         }
-                        host_protocol::shared::HostTransport::Http => {
+                        environment_protocol::shared::EnvironmentTransport::Http => {
                             EnvironmentConnectionTransportView::Http
                         }
-                        host_protocol::shared::HostTransport::Stdio => {
+                        environment_protocol::shared::EnvironmentTransport::Stdio => {
                             EnvironmentConnectionTransportView::Stdio
                         }
-                        host_protocol::shared::HostTransport::Ssh => {
+                        environment_protocol::shared::EnvironmentTransport::Ssh => {
                             EnvironmentConnectionTransportView::Ssh
                         }
-                        host_protocol::shared::HostTransport::Provider { provider_type } => {
-                            EnvironmentConnectionTransportView::Provider {
-                                provider_type: provider_type.clone(),
-                            }
-                        }
+                        environment_protocol::shared::EnvironmentTransport::Provider {
+                            provider_type,
+                        } => EnvironmentConnectionTransportView::Provider {
+                            provider_type: provider_type.clone(),
+                        },
                     },
                 },
             },

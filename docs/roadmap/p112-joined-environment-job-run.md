@@ -229,7 +229,7 @@ P112 does not:
 - dynamically choose completion mode from model arguments;
 - add a Joined job-group aggregate;
 - add compatibility aliases for the former `job_start` name;
-- change the raw host protocol or control-plane job APIs;
+- change the raw environment protocol or control-plane job APIs;
 - add streaming job output or progress events;
 - make binary artifacts model context automatically;
 - add environment-level non-secret variables; or

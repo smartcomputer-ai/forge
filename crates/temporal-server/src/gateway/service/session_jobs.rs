@@ -3,26 +3,26 @@ use super::*;
 use ::environments::{EnvironmentId, EnvironmentJobGroupId, EnvironmentRecord};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use engine::validate_general_string_id;
-use host_client::{HostClientError, HostDataClient, WebSocketConnectOptions};
-use host_protocol::{
+use environment_client::{EnvironmentClientError, EnvironmentDataClient, WebSocketConnectOptions};
+use environment_protocol::{
     data::{
         handshake::{
-            InitializeParams as HostInitializeParams, InitializedParams as HostInitializedParams,
+            InitializeParams as DataInitializeParams, InitializedParams as DataInitializedParams,
         },
         jobs::{
-            CancelJobsParams as HostCancelJobsParams, JobArtifact as HostJobArtifact,
-            JobCancelScope as HostJobCancelScope, JobDependency as HostJobDependency,
-            JobDependencyPolicy as HostJobDependencyPolicy, JobOutputChunk as HostJobOutputChunk,
-            JobOutputStream as HostJobOutputStream, JobReadResult as HostJobReadResult,
-            JobStartSpec as HostJobStartSpec, JobStatus as HostJobStatus,
-            JobSummary as HostJobSummary, ReadJobsParams as HostReadJobsParams,
-            StartJobsParams as HostStartJobsParams,
+            CancelJobsParams as ProtocolCancelJobsParams, JobArtifact as ProtocolJobArtifact,
+            JobCancelScope as ProtocolJobCancelScope, JobDependency as ProtocolJobDependency,
+            JobDependencyPolicy as ProtocolJobDependencyPolicy,
+            JobOutputChunk as ProtocolJobOutputChunk, JobOutputStream as ProtocolJobOutputStream,
+            JobReadResult as ProtocolJobReadResult, JobStartSpec as ProtocolJobStartSpec,
+            JobStatus as ProtocolJobStatus, JobSummary as ProtocolJobSummary,
+            ReadJobsParams as ProtocolReadJobsParams, StartJobsParams as ProtocolStartJobsParams,
         },
     },
-    error::HostErrorCode,
+    error::EnvironmentProtocolErrorCode,
     shared::{
-        ByteChunk, CURRENT_PROTOCOL_VERSION, HostCapabilities, HostConnectionSpec, HostPath,
-        HostTransport, JobId,
+        ByteChunk, CURRENT_PROTOCOL_VERSION, EnvironmentCapabilities, EnvironmentDataConnection,
+        EnvironmentPath, EnvironmentTransport, JobId,
     },
 };
 
@@ -41,34 +41,34 @@ impl GatewayAgentApi {
         environment_id: EnvironmentId,
         request_id: String,
         jobs: Vec<SessionJobStartSpecInput>,
-        default_cwd: Option<HostPath>,
+        default_cwd: Option<EnvironmentPath>,
     ) -> Result<EnvironmentJobCreateResponse, AgentApiError> {
-        let mut host_specs = Vec::with_capacity(jobs.len());
+        let mut protocol_specs = Vec::with_capacity(jobs.len());
         for (index, spec) in jobs.into_iter().enumerate() {
             let job_id = spec
                 .job_id
                 .as_deref()
-                .map(parse_host_job_id)
+                .map(parse_protocol_job_id)
                 .transpose()
                 .map_err(AgentApiError::invalid_request)?
                 .unwrap_or_else(|| derived_job_id(&environment_id, &request_id, index));
             let mut spec =
-                api_start_spec_to_host(spec, job_id).map_err(AgentApiError::invalid_request)?;
+                api_start_spec_to_protocol(spec, job_id).map_err(AgentApiError::invalid_request)?;
             if spec.cwd.is_none() {
                 spec.cwd = default_cwd.clone();
             }
-            host_specs.push(spec);
+            protocol_specs.push(spec);
         }
         let instance = self.read_job_instance(&environment_id).await?;
-        self.start_environment_jobs_host_specs(instance, request_id, host_specs)
+        self.start_environment_jobs_protocol_specs(instance, request_id, protocol_specs)
             .await
     }
 
-    async fn start_environment_jobs_host_specs(
+    async fn start_environment_jobs_protocol_specs(
         &self,
         instance: EnvironmentRecord,
         request_id: String,
-        jobs: Vec<HostJobStartSpec>,
+        jobs: Vec<ProtocolJobStartSpec>,
     ) -> Result<EnvironmentJobCreateResponse, AgentApiError> {
         validate_job_request_id(&request_id)?;
         if jobs.is_empty() {
@@ -80,7 +80,7 @@ impl GatewayAgentApi {
             .environment_gateway
             .route_key(self.store.config().universe_id, &instance);
         let connection = self.environment_gateway.connection(&key);
-        let (_client, capabilities) = connect_initialized_host_data_client(
+        let (_client, capabilities) = connect_initialized_environment_data_client(
             &connection,
             self.environment_gateway
                 .connect_options("lightspeed-temporal-server"),
@@ -93,7 +93,7 @@ impl GatewayAgentApi {
                 instance.environment_id
             )));
         }
-        let request = HostStartJobsParams {
+        let request = ProtocolStartJobsParams {
             namespace: instance.environment_id.as_str().to_owned(),
             request_id: request_id.clone(),
             jobs,
@@ -269,7 +269,7 @@ impl GatewayAgentApi {
                     continue;
                 }
             };
-            let job_id = match parse_host_job_id(&resolved.job_id) {
+            let job_id = match parse_protocol_job_id(&resolved.job_id) {
                 Ok(job_id) => job_id,
                 Err(error) => {
                     entries.push(session_job_read_error(Some(resolved), error));
@@ -287,7 +287,7 @@ impl GatewayAgentApi {
                 }
             };
             match client
-                .read_jobs(&HostReadJobsParams {
+                .read_jobs(&ProtocolReadJobsParams {
                     namespace: environment_id.as_str().to_owned(),
                     jobs: vec![job_id],
                     after_seq,
@@ -346,7 +346,7 @@ impl GatewayAgentApi {
                     continue;
                 }
             };
-            let job_id = match parse_host_job_id(&resolved.job_id) {
+            let job_id = match parse_protocol_job_id(&resolved.job_id) {
                 Ok(job_id) => job_id,
                 Err(error) => {
                     entries.push(session_job_cancel_error(Some(resolved), error));
@@ -374,15 +374,15 @@ impl GatewayAgentApi {
         job_id: JobId,
         scope: SessionJobCancelScopeView,
         force: bool,
-    ) -> Result<HostJobSummary, String> {
+    ) -> Result<ProtocolJobSummary, String> {
         let mut client = self
             .connect_client_for_job_handle(environment_id, "cancel")
             .await?;
         let response = client
-            .cancel_jobs(&HostCancelJobsParams {
+            .cancel_jobs(&ProtocolCancelJobsParams {
                 namespace: environment_id.as_str().to_owned(),
                 jobs: vec![job_id],
-                scope: host_cancel_scope(scope),
+                scope: protocol_cancel_scope(scope),
                 force,
             })
             .await
@@ -407,7 +407,7 @@ impl GatewayAgentApi {
         &self,
         environment_id: &EnvironmentId,
         operation: &str,
-    ) -> Result<HostDataClient<host_client::WebSocketTransport>, String> {
+    ) -> Result<EnvironmentDataClient<environment_client::WebSocketTransport>, String> {
         let instance = self
             .read_job_instance(environment_id)
             .await
@@ -416,7 +416,7 @@ impl GatewayAgentApi {
             .environment_gateway
             .route_key(self.store.config().universe_id, &instance);
         let connection = self.environment_gateway.connection(&key);
-        let (client, capabilities) = connect_initialized_host_data_client(
+        let (client, capabilities) = connect_initialized_environment_data_client(
             &connection,
             self.environment_gateway
                 .connect_options("lightspeed-temporal-server"),
@@ -449,7 +449,7 @@ fn validate_job_request_id(value: &str) -> Result<(), AgentApiError> {
         .map_err(|error| AgentApiError::invalid_request(format!("invalid request_id: {error}")))
 }
 
-fn parse_host_job_id(value: &str) -> Result<JobId, String> {
+fn parse_protocol_job_id(value: &str) -> Result<JobId, String> {
     validate_general_string_id("job_id", value)
         .map_err(|error| format!("invalid job_id: {error}"))?;
     Ok(JobId::new(value.to_owned()))
@@ -458,28 +458,28 @@ fn parse_host_job_id(value: &str) -> Result<JobId, String> {
 fn parse_job_handle(handle: SessionJobHandleInput) -> Result<SessionJobHandleView, String> {
     let environment_id = EnvironmentId::try_new(handle.environment_id)
         .map_err(|error| format!("invalid job handle environment_id: {error}"))?;
-    let job_id = parse_host_job_id(&handle.job_id)?;
+    let job_id = parse_protocol_job_id(&handle.job_id)?;
     Ok(SessionJobHandleView {
         environment_id: environment_id.as_str().to_owned(),
         job_id: job_id.as_str().to_owned(),
     })
 }
 
-fn api_start_spec_to_host(
+fn api_start_spec_to_protocol(
     spec: SessionJobStartSpecInput,
     job_id: JobId,
-) -> Result<HostJobStartSpec, String> {
+) -> Result<ProtocolJobStartSpec, String> {
     if spec.argv.is_empty() {
         return Err("job argv must not be empty".to_owned());
     }
-    Ok(HostJobStartSpec {
+    Ok(ProtocolJobStartSpec {
         job_id,
         name: spec.name,
         argv: spec.argv,
         cwd: spec
             .cwd
             .as_deref()
-            .map(HostPath::new)
+            .map(EnvironmentPath::new)
             .transpose()
             .map_err(|error| format!("invalid job cwd: {error}"))?,
         env: spec.env,
@@ -489,25 +489,27 @@ fn api_start_spec_to_host(
         depends_on: spec
             .depends_on
             .into_iter()
-            .map(api_dependency_to_host)
+            .map(api_dependency_to_protocol)
             .collect::<Result<Vec<_>, _>>()?,
         dependency_policy: match spec.dependency_policy {
-            SessionJobDependencyPolicyView::AllSucceeded => HostJobDependencyPolicy::AllSucceeded,
-            SessionJobDependencyPolicyView::AllTerminal => HostJobDependencyPolicy::AllTerminal,
+            SessionJobDependencyPolicyView::AllSucceeded => {
+                ProtocolJobDependencyPolicy::AllSucceeded
+            }
+            SessionJobDependencyPolicyView::AllTerminal => ProtocolJobDependencyPolicy::AllTerminal,
         },
         queue_key: spec.queue_key,
     })
 }
 
-fn api_dependency_to_host(
+fn api_dependency_to_protocol(
     dependency: SessionJobDependencyInput,
-) -> Result<HostJobDependency, String> {
+) -> Result<ProtocolJobDependency, String> {
     match (dependency.job_id, dependency.name) {
-        (Some(job_id), None) => Ok(HostJobDependency {
-            job_id: Some(parse_host_job_id(&job_id)?),
+        (Some(job_id), None) => Ok(ProtocolJobDependency {
+            job_id: Some(parse_protocol_job_id(&job_id)?),
             name: None,
         }),
-        (None, Some(name)) if !name.is_empty() => Ok(HostJobDependency {
+        (None, Some(name)) if !name.is_empty() => Ok(ProtocolJobDependency {
             job_id: None,
             name: Some(name),
         }),
@@ -518,10 +520,10 @@ fn api_dependency_to_host(
     }
 }
 
-fn host_cancel_scope(scope: SessionJobCancelScopeView) -> HostJobCancelScope {
+fn protocol_cancel_scope(scope: SessionJobCancelScopeView) -> ProtocolJobCancelScope {
     match scope {
-        SessionJobCancelScopeView::Job => HostJobCancelScope::Job,
-        SessionJobCancelScopeView::Dependents => HostJobCancelScope::Dependents,
+        SessionJobCancelScopeView::Job => ProtocolJobCancelScope::Job,
+        SessionJobCancelScopeView::Dependents => ProtocolJobCancelScope::Dependents,
     }
 }
 
@@ -541,62 +543,68 @@ fn derived_job_group_id(
     EnvironmentJobGroupId::new(format!("ejg_{}", &hash.as_str()[7..31]))
 }
 
-async fn connect_initialized_host_data_client(
-    connection: &HostConnectionSpec,
+async fn connect_initialized_environment_data_client(
+    connection: &EnvironmentDataConnection,
     options: WebSocketConnectOptions,
 ) -> Result<
     (
-        HostDataClient<host_client::WebSocketTransport>,
-        HostCapabilities,
+        EnvironmentDataClient<environment_client::WebSocketTransport>,
+        EnvironmentCapabilities,
     ),
     AgentApiError,
 > {
-    let mut client = connect_host_data_client(connection, options).await?;
+    let mut client = connect_environment_data_client(connection, options).await?;
     let response = client
-        .initialize(&HostInitializeParams {
+        .initialize(&DataInitializeParams {
             protocol_version: CURRENT_PROTOCOL_VERSION,
             client_name: "lightspeed-temporal-server".to_owned(),
             scope: connection.scope.clone(),
             resume_connection_id: None,
         })
         .await
-        .map_err(map_host_client_api_error)?;
+        .map_err(map_environment_client_api_error)?;
     if response.protocol_version != CURRENT_PROTOCOL_VERSION {
         return Err(AgentApiError::internal(format!(
-            "unsupported host data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
+            "unsupported environment data protocol version {}; expected {CURRENT_PROTOCOL_VERSION}",
             response.protocol_version
         )));
     }
     let capabilities = response.capabilities;
     client
-        .initialized(&HostInitializedParams {})
+        .initialized(&DataInitializedParams {})
         .await
-        .map_err(map_host_client_api_error)?;
+        .map_err(map_environment_client_api_error)?;
     Ok((client, capabilities))
 }
 
-pub(crate) async fn connect_host_data_client(
-    connection: &HostConnectionSpec,
+pub(crate) async fn connect_environment_data_client(
+    connection: &EnvironmentDataConnection,
     options: WebSocketConnectOptions,
-) -> Result<HostDataClient<host_client::WebSocketTransport>, AgentApiError> {
+) -> Result<EnvironmentDataClient<environment_client::WebSocketTransport>, AgentApiError> {
     match &connection.transport {
-        HostTransport::WebSocket => HostDataClient::connect(&connection.endpoint, options)
-            .await
-            .map_err(map_host_client_api_error),
+        EnvironmentTransport::WebSocket => {
+            EnvironmentDataClient::connect(&connection.endpoint, options)
+                .await
+                .map_err(map_environment_client_api_error)
+        }
         other => Err(AgentApiError::rejected(format!(
-            "unsupported host data transport for environment jobs: {other:?}"
+            "unsupported environment data transport for environment jobs: {other:?}"
         ))),
     }
 }
 
-fn map_host_client_api_error(error: HostClientError) -> AgentApiError {
+fn map_environment_client_api_error(error: EnvironmentClientError) -> AgentApiError {
     match error {
-        HostClientError::Host(error) => match error.code {
-            HostErrorCode::InvalidRequest => AgentApiError::invalid_request(error.message),
-            HostErrorCode::NotFound => AgentApiError::not_found(error.message),
-            HostErrorCode::Conflict
-            | HostErrorCode::Unsupported
-            | HostErrorCode::CapabilityUnavailable => AgentApiError::rejected(error.message),
+        EnvironmentClientError::Protocol(error) => match error.code {
+            EnvironmentProtocolErrorCode::InvalidRequest => {
+                AgentApiError::invalid_request(error.message)
+            }
+            EnvironmentProtocolErrorCode::NotFound => AgentApiError::not_found(error.message),
+            EnvironmentProtocolErrorCode::Conflict
+            | EnvironmentProtocolErrorCode::Unsupported
+            | EnvironmentProtocolErrorCode::CapabilityUnavailable => {
+                AgentApiError::rejected(error.message)
+            }
             _ => AgentApiError::internal(error.message),
         },
         other => AgentApiError::internal(other.to_string()),
@@ -605,7 +613,7 @@ fn map_host_client_api_error(error: HostClientError) -> AgentApiError {
 
 fn session_job_read_entry_from_response(
     handle: SessionJobHandleView,
-    response: Option<HostJobReadResult>,
+    response: Option<ProtocolJobReadResult>,
 ) -> SessionJobReadEntryView {
     match response {
         Some(response) => SessionJobReadEntryView {
@@ -653,7 +661,7 @@ fn session_job_cancel_error(
     }
 }
 
-fn api_job_summary(summary: HostJobSummary) -> SessionJobSummaryView {
+fn api_job_summary(summary: ProtocolJobSummary) -> SessionJobSummaryView {
     SessionJobSummaryView {
         namespace: summary.namespace,
         job_id: summary.job_id.as_str().to_owned(),
@@ -675,34 +683,34 @@ fn api_job_summary(summary: HostJobSummary) -> SessionJobSummaryView {
     }
 }
 
-fn api_job_status(status: HostJobStatus) -> SessionJobStatusView {
+fn api_job_status(status: ProtocolJobStatus) -> SessionJobStatusView {
     match status {
-        HostJobStatus::Accepted => SessionJobStatusView::Accepted,
-        HostJobStatus::Queued => SessionJobStatusView::Queued,
-        HostJobStatus::Running => SessionJobStatusView::Running,
-        HostJobStatus::Succeeded => SessionJobStatusView::Succeeded,
-        HostJobStatus::Failed => SessionJobStatusView::Failed,
-        HostJobStatus::CancelRequested => SessionJobStatusView::CancelRequested,
-        HostJobStatus::Cancelled => SessionJobStatusView::Cancelled,
-        HostJobStatus::TimedOut => SessionJobStatusView::TimedOut,
-        HostJobStatus::DependencyFailed => SessionJobStatusView::DependencyFailed,
-        HostJobStatus::Interrupted => SessionJobStatusView::Interrupted,
-        HostJobStatus::Lost => SessionJobStatusView::Lost,
+        ProtocolJobStatus::Accepted => SessionJobStatusView::Accepted,
+        ProtocolJobStatus::Queued => SessionJobStatusView::Queued,
+        ProtocolJobStatus::Running => SessionJobStatusView::Running,
+        ProtocolJobStatus::Succeeded => SessionJobStatusView::Succeeded,
+        ProtocolJobStatus::Failed => SessionJobStatusView::Failed,
+        ProtocolJobStatus::CancelRequested => SessionJobStatusView::CancelRequested,
+        ProtocolJobStatus::Cancelled => SessionJobStatusView::Cancelled,
+        ProtocolJobStatus::TimedOut => SessionJobStatusView::TimedOut,
+        ProtocolJobStatus::DependencyFailed => SessionJobStatusView::DependencyFailed,
+        ProtocolJobStatus::Interrupted => SessionJobStatusView::Interrupted,
+        ProtocolJobStatus::Lost => SessionJobStatusView::Lost,
     }
 }
 
-fn api_job_output_chunk(chunk: HostJobOutputChunk) -> SessionJobOutputChunkView {
+fn api_job_output_chunk(chunk: ProtocolJobOutputChunk) -> SessionJobOutputChunkView {
     SessionJobOutputChunkView {
         seq: chunk.seq,
         stream: match chunk.stream {
-            HostJobOutputStream::Stdout => SessionJobOutputStreamView::Stdout,
-            HostJobOutputStream::Stderr => SessionJobOutputStreamView::Stderr,
+            ProtocolJobOutputStream::Stdout => SessionJobOutputStreamView::Stdout,
+            ProtocolJobOutputStream::Stderr => SessionJobOutputStreamView::Stderr,
         },
         data_base64: BASE64_STANDARD.encode(chunk.chunk.into_inner()),
     }
 }
 
-fn api_job_artifact(artifact: HostJobArtifact) -> SessionJobArtifactView {
+fn api_job_artifact(artifact: ProtocolJobArtifact) -> SessionJobArtifactView {
     SessionJobArtifactView {
         path: artifact.path.as_str().to_owned(),
         kind: artifact.kind,

@@ -181,7 +181,7 @@ impl WorkflowActivities {
     pub async fn environment_job_cancel(
         _ctx: ActivityContext,
         _request: EnvironmentJobCancelActivityRequest,
-    ) -> Result<Vec<host_protocol::data::jobs::JobSummary>, ActivityError> {
+    ) -> Result<Vec<environment_protocol::data::jobs::JobSummary>, ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 

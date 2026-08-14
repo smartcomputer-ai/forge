@@ -71,18 +71,18 @@ mod tests {
     use std::{collections::BTreeMap, sync::Arc};
 
     use engine::storage::InMemoryBlobStore;
+    use environment_protocol::shared::ProviderTargetId;
     use environments::{
         EnvironmentIncarnationId, EnvironmentIncarnationRecord, EnvironmentProviderBindingId,
         EnvironmentProviderId, EnvironmentProvisionRequestId, EnvironmentSource, EnvironmentStatus,
         EnvironmentTemplateId,
     };
-    use host_protocol::shared::HostTargetId;
     use tools::fs::{FsPath, FsToolContext, InMemoryFileSystem};
 
     use super::*;
 
     fn resource() -> EnvironmentRecord {
-        let target_id = HostTargetId::new("target-a");
+        let target_id = ProviderTargetId::new("target-a");
         EnvironmentRecord {
             environment_id: engine::EnvironmentId::new("environment-a"),
             request_id: EnvironmentProvisionRequestId::new("request-a"),

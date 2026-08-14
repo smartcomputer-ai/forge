@@ -1,6 +1,6 @@
 use sha2::{Digest as _, Sha256};
 
-use host_protocol::control::targets::ProviderBindingContext;
+use environment_protocol::control::targets::ProviderBindingContext;
 
 pub const META_PREFIX: &str = "user.lightspeed.";
 

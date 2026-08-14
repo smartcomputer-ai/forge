@@ -1,6 +1,6 @@
 //! Canonical durable-job operations.
 
-use host_protocol::data::jobs::{ReadJobsParams, StartJobsParams, StartJobsResponse};
+use environment_protocol::data::jobs::{ReadJobsParams, StartJobsParams, StartJobsResponse};
 
 use crate::{
     environment::{
@@ -76,7 +76,7 @@ fn submit_params_from_args(
     let mut specs = Vec::with_capacity(args.jobs.len());
     for spec in args.jobs {
         let job_id = spec.job_id.clone();
-        specs.push(spec.into_host_spec(job_id)?);
+        specs.push(spec.into_protocol_spec(job_id)?);
     }
     Ok(StartJobsParams {
         namespace: job_namespace(ctx, None)?,

@@ -9,14 +9,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use host_protocol::{
+use environment_protocol::{
     data::jobs::{
         CancelJobsParams, CancelJobsResponse, JobCancelScope, JobDependencyPolicy, JobOutputChunk,
         JobOutputStream, JobReadResult, JobStartSpec, JobStatus, JobSummary, ListJobsParams,
         ListJobsResponse, ReadJobsParams, ReadJobsResponse, StartJobsParams, StartJobsResponse,
     },
-    error::{HostError, HostErrorCode},
-    shared::{ByteChunk, HostPath, JobId, SecretString},
+    error::{EnvironmentProtocolError, EnvironmentProtocolErrorCode},
+    shared::{ByteChunk, EnvironmentPath, JobId, SecretString},
 };
 use serde::{Deserialize, Serialize};
 use tokio::{
@@ -60,7 +60,7 @@ struct JobRecord {
     job_id: JobId,
     name: Option<String>,
     argv: Vec<String>,
-    cwd: Option<HostPath>,
+    cwd: Option<EnvironmentPath>,
     env: BTreeMap<String, String>,
     #[serde(default)]
     secret_env_names: Vec<String>,
@@ -154,7 +154,7 @@ impl JobManager {
     pub async fn start_jobs(
         &self,
         params: StartJobsParams,
-    ) -> Result<StartJobsResponse, HostError> {
+    ) -> Result<StartJobsResponse, EnvironmentProtocolError> {
         let now = now_ms();
         let resolved = {
             let state = self.state.lock().await;
@@ -230,11 +230,14 @@ impl JobManager {
         })
     }
 
-    pub async fn read_jobs(&self, params: ReadJobsParams) -> Result<ReadJobsResponse, HostError> {
+    pub async fn read_jobs(
+        &self,
+        params: ReadJobsParams,
+    ) -> Result<ReadJobsResponse, EnvironmentProtocolError> {
         validate_id_component("namespace", &params.namespace)?;
         if params.jobs.is_empty() {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "job/read requires at least one job id",
             ));
         }
@@ -270,11 +273,14 @@ impl JobManager {
         }
     }
 
-    pub async fn list_jobs(&self, params: ListJobsParams) -> Result<ListJobsResponse, HostError> {
+    pub async fn list_jobs(
+        &self,
+        params: ListJobsParams,
+    ) -> Result<ListJobsResponse, EnvironmentProtocolError> {
         validate_id_component("namespace", &params.namespace)?;
         if matches!(params.limit, Some(0)) {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "job/list limit must be greater than zero",
             ));
         }
@@ -300,11 +306,11 @@ impl JobManager {
     pub async fn cancel_jobs(
         &self,
         params: CancelJobsParams,
-    ) -> Result<CancelJobsResponse, HostError> {
+    ) -> Result<CancelJobsResponse, EnvironmentProtocolError> {
         validate_id_component("namespace", &params.namespace)?;
         if params.jobs.is_empty() {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "job/cancel requires at least one job id",
             ));
         }
@@ -372,7 +378,7 @@ impl JobManager {
         })
     }
 
-    pub async fn interrupt_all(&self) -> Result<(), HostError> {
+    pub async fn interrupt_all(&self) -> Result<(), EnvironmentProtocolError> {
         let now = now_ms();
         let mut running = Vec::new();
         {
@@ -509,7 +515,10 @@ impl JobManager {
         }
     }
 
-    fn mark_dependency_failures(&self, state: &mut JobManagerState) -> Result<(), HostError> {
+    fn mark_dependency_failures(
+        &self,
+        state: &mut JobManagerState,
+    ) -> Result<(), EnvironmentProtocolError> {
         loop {
             let mut changed = false;
             let failed = state
@@ -634,10 +643,10 @@ impl JobManager {
         record: JobRecord,
         running: Arc<RunningJob>,
         secret_env: BTreeMap<String, SecretString>,
-    ) -> Result<SpawnOutcome, HostError> {
+    ) -> Result<SpawnOutcome, EnvironmentProtocolError> {
         if record.argv.is_empty() {
-            return Err(HostError::new(
-                HostErrorCode::InvalidRequest,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
                 "job argv must not be empty",
             ));
         }
@@ -651,8 +660,8 @@ impl JobManager {
         let mut command = Command::new(&record.argv[0]);
         for name in secret_env.keys() {
             if record.env.contains_key(name) {
-                return Err(HostError::new(
-                    HostErrorCode::InvalidRequest,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::InvalidRequest,
                     format!("job env collides with secret env: {name}"),
                 ));
             }
@@ -674,8 +683,8 @@ impl JobManager {
         process_group::spawn_in_own_group(&mut command);
 
         let mut child = command.spawn().map_err(|error| {
-            HostError::new(
-                HostErrorCode::ProcessFailed,
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::ProcessFailed,
                 format!("spawn job {:?}: {error}", record.argv),
             )
         })?;
@@ -684,15 +693,17 @@ impl JobManager {
         let stderr = child.stderr.take();
         if let Some(input) = record.stdin.as_ref() {
             let Some(stdin) = child.stdin.as_mut() else {
-                return Err(HostError::new(
-                    HostErrorCode::ProcessFailed,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::ProcessFailed,
                     "job stdin was not available",
                 ));
             };
-            stdin
-                .write_all(input.as_slice())
-                .await
-                .map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))?;
+            stdin.write_all(input.as_slice()).await.map_err(|error| {
+                EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::ProcessFailed,
+                    error.to_string(),
+                )
+            })?;
             child.stdin.take();
         }
 
@@ -785,8 +796,12 @@ impl JobManager {
             }
         }
 
-        let status = status
-            .map_err(|error| HostError::new(HostErrorCode::ProcessFailed, error.to_string()))?;
+        let status = status.map_err(|error| {
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::ProcessFailed,
+                error.to_string(),
+            )
+        })?;
         Ok(SpawnOutcome {
             finish,
             exit_code: status.code(),
@@ -794,7 +809,7 @@ impl JobManager {
         })
     }
 
-    fn resolve_cwd(&self, path: &HostPath) -> Result<PathBuf, HostError> {
+    fn resolve_cwd(&self, path: &EnvironmentPath) -> Result<PathBuf, EnvironmentProtocolError> {
         let candidate = if path.is_absolute() {
             PathBuf::from(path.as_str())
         } else if path.as_str() == "." {
@@ -804,8 +819,8 @@ impl JobManager {
         };
         let normalized = normalize_path(candidate);
         if !normalized.starts_with(&self.fs_root) {
-            return Err(HostError::new(
-                HostErrorCode::Forbidden,
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Forbidden,
                 format!(
                     "job cwd is outside bridge fs root: {} (root {})",
                     normalized.display(),
@@ -816,10 +831,10 @@ impl JobManager {
         Ok(normalized)
     }
 
-    fn persist_record(&self, record: &JobRecord) -> Result<(), HostError> {
+    fn persist_record(&self, record: &JobRecord) -> Result<(), EnvironmentProtocolError> {
         persist_record_at(&self.jobs_root, record).map_err(|error| {
-            HostError::new(
-                HostErrorCode::Internal,
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Internal,
                 format!("persist job {}: {error}", record.job_id),
             )
         })
@@ -844,12 +859,12 @@ async fn drain_stream_tasks(tasks: &mut [Option<JoinHandle<()>>; 2], grace: Dura
     drained
 }
 
-fn require_accepting(state: &JobManagerState) -> Result<(), HostError> {
+fn require_accepting(state: &JobManagerState) -> Result<(), EnvironmentProtocolError> {
     if state.accepting {
         Ok(())
     } else {
-        Err(HostError::new(
-            HostErrorCode::Conflict,
+        Err(EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::Conflict,
             "environment target is closed and no longer accepts jobs",
         ))
     }
@@ -946,7 +961,7 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 fn validate_and_resolve_start(
     state: &JobManagerState,
     params: &StartJobsParams,
-) -> Result<Vec<ResolvedJob>, HostError> {
+) -> Result<Vec<ResolvedJob>, EnvironmentProtocolError> {
     if params.jobs.is_empty() {
         return Err(invalid_request("job/start requires at least one job"));
     }
@@ -1016,8 +1031,8 @@ fn validate_and_resolve_start(
         let key = job_key(&params.namespace, &spec.job_id);
         if let Some(existing) = state.jobs.get(&key) {
             if existing.spec_hash != spec_hash {
-                return Err(HostError::new(
-                    HostErrorCode::Conflict,
+                return Err(EnvironmentProtocolError::new(
+                    EnvironmentProtocolErrorCode::Conflict,
                     format!(
                         "job id already exists with different input in namespace {}: {}",
                         params.namespace, spec.job_id
@@ -1041,7 +1056,7 @@ fn validate_and_resolve_start(
 fn resolve_explicit_dependencies(
     names: &BTreeMap<String, JobId>,
     spec: &JobStartSpec,
-) -> Result<Vec<JobId>, HostError> {
+) -> Result<Vec<JobId>, EnvironmentProtocolError> {
     let mut dependencies = Vec::new();
     for dependency in &spec.depends_on {
         match (&dependency.job_id, &dependency.name) {
@@ -1081,7 +1096,7 @@ fn resolve_explicit_dependencies(
     Ok(dependencies)
 }
 
-fn reject_cycles(resolved: &[ResolvedJob]) -> Result<(), HostError> {
+fn reject_cycles(resolved: &[ResolvedJob]) -> Result<(), EnvironmentProtocolError> {
     let graph = resolved
         .iter()
         .map(|job| {
@@ -1112,7 +1127,7 @@ fn visit_job(
     graph: &BTreeMap<String, Vec<String>>,
     visiting: &mut BTreeSet<String>,
     visited: &mut BTreeSet<String>,
-) -> Result<(), HostError> {
+) -> Result<(), EnvironmentProtocolError> {
     if visited.contains(job_id) {
         return Ok(());
     }
@@ -1258,7 +1273,7 @@ fn job_spec_hash(
     params: &StartJobsParams,
     spec: &JobStartSpec,
     dependencies: &[JobId],
-) -> Result<String, HostError> {
+) -> Result<String, EnvironmentProtocolError> {
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     struct JobHashMaterial<'a> {
@@ -1272,7 +1287,7 @@ fn job_spec_hash(
         job_id: &'a JobId,
         name: &'a Option<String>,
         argv: &'a [String],
-        cwd: &'a Option<HostPath>,
+        cwd: &'a Option<EnvironmentPath>,
         env: &'a BTreeMap<String, String>,
         secret_env_names: Vec<&'a String>,
         stdin: &'a Option<ByteChunk>,
@@ -1299,8 +1314,8 @@ fn job_spec_hash(
         },
     };
     let bytes = serde_json::to_vec(&material).map_err(|error| {
-        HostError::new(
-            HostErrorCode::Internal,
+        EnvironmentProtocolError::new(
+            EnvironmentProtocolErrorCode::Internal,
             format!("encode job idempotency hash: {error}"),
         )
     })?;
@@ -1400,14 +1415,17 @@ fn now_ms() -> u64 {
         .unwrap_or_default()
 }
 
-fn validate_optional_id_component(label: &str, value: Option<&str>) -> Result<(), HostError> {
+fn validate_optional_id_component(
+    label: &str,
+    value: Option<&str>,
+) -> Result<(), EnvironmentProtocolError> {
     if let Some(value) = value {
         validate_id_component(label, value)?;
     }
     Ok(())
 }
 
-fn validate_id_component(label: &str, value: &str) -> Result<(), HostError> {
+fn validate_id_component(label: &str, value: &str) -> Result<(), EnvironmentProtocolError> {
     validate_nonempty(label, value)?;
     if value.len() > 128 {
         return Err(invalid_request(format!(
@@ -1431,22 +1449,22 @@ fn validate_id_component(label: &str, value: &str) -> Result<(), HostError> {
     Ok(())
 }
 
-fn validate_nonempty(label: &str, value: &str) -> Result<(), HostError> {
+fn validate_nonempty(label: &str, value: &str) -> Result<(), EnvironmentProtocolError> {
     if value.trim().is_empty() {
         return Err(invalid_request(format!("{label} must not be empty")));
     }
     Ok(())
 }
 
-fn invalid_request(message: impl Into<String>) -> HostError {
-    HostError::new(HostErrorCode::InvalidRequest, message)
+fn invalid_request(message: impl Into<String>) -> EnvironmentProtocolError {
+    EnvironmentProtocolError::new(EnvironmentProtocolErrorCode::InvalidRequest, message)
 }
 
 #[cfg(test)]
 mod tests {
     use std::{collections::BTreeMap, time::Duration};
 
-    use host_protocol::{
+    use environment_protocol::{
         data::jobs::{
             JobCancelScope, JobDependency, JobDependencyPolicy, JobStatus, ListJobsParams,
             ReadJobsParams, StartJobsParams,
@@ -1695,7 +1713,7 @@ mod tests {
             })
             .await
             .expect_err("closed manager must reject starts");
-        assert_eq!(error.code, HostErrorCode::Conflict);
+        assert_eq!(error.code, EnvironmentProtocolErrorCode::Conflict);
     }
 
     #[cfg(unix)]
@@ -1897,7 +1915,7 @@ mod tests {
             })
             .await
             .expect_err("conflict");
-        assert_eq!(conflict.code, HostErrorCode::Conflict);
+        assert_eq!(conflict.code, EnvironmentProtocolErrorCode::Conflict);
     }
 
     #[tokio::test(flavor = "current_thread")]

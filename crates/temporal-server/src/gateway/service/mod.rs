@@ -11,7 +11,6 @@ pub(crate) mod environment_providers;
 mod environments;
 mod errors;
 mod github_api;
-mod host_controllers;
 mod input;
 mod instructions;
 mod mcp_api;
@@ -20,6 +19,7 @@ mod oauth_api;
 mod parse;
 mod profiles;
 mod prompts;
+mod provider_controllers;
 mod session_jobs;
 mod session_toolset;
 mod skills;
@@ -43,7 +43,6 @@ use github_api::{
     auth_provider_create_draft, auth_provider_view, github_installation_grant_draft,
     github_installation_view, map_github_app_error, parse_auth_provider_id,
 };
-use host_controllers::{HostControllerConnector, WebSocketHostControllerConnector};
 use input::{context_entry_input_from_api, run_input_from_api};
 use mcp_api::{map_mcp_error, mcp_server_view, parse_mcp_server_id, put_mcp_server_record};
 use models_api::{ModelDiscoveryService, stored_provider_key_resolver};
@@ -53,6 +52,7 @@ use oauth_api::{
     parse_oauth_client_id,
 };
 use parse::*;
+use provider_controllers::{ProviderControllerConnector, WebSocketProviderControllerConnector};
 use session_toolset::store_tool_documents;
 use skills::{
     active_skill_catalog_ref, active_skill_ids, active_skill_ids_after_remove,
@@ -490,7 +490,7 @@ pub struct GatewayAgentApiBuilder {
     github_api_client: Option<Arc<dyn GitHubApiClient>>,
     model_discovery_openai: Option<Arc<openai::Client>>,
     model_discovery_anthropic: Option<Arc<anthropic::Client>>,
-    host_controller_connector: Arc<dyn HostControllerConnector>,
+    provider_controller_connector: Arc<dyn ProviderControllerConnector>,
     environment_gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
 }
 
@@ -541,11 +541,11 @@ impl GatewayAgentApiBuilder {
 
     #[cfg(test)]
     #[allow(dead_code)]
-    pub(crate) fn with_host_controller_connector(
+    pub(crate) fn with_provider_controller_connector(
         mut self,
-        connector: Arc<dyn HostControllerConnector>,
+        connector: Arc<dyn ProviderControllerConnector>,
     ) -> Self {
-        self.host_controller_connector = connector;
+        self.provider_controller_connector = connector;
         self
     }
 
@@ -641,7 +641,7 @@ impl GatewayAgentApiBuilder {
             mcp_oauth,
             github_api,
             model_discovery,
-            host_controller_connector: self.host_controller_connector,
+            provider_controller_connector: self.provider_controller_connector,
             environment_gateway: self.environment_gateway,
         }
     }
@@ -661,7 +661,7 @@ pub struct GatewayAgentApi {
     mcp_oauth: McpOAuthDriver,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
-    host_controller_connector: Arc<dyn HostControllerConnector>,
+    provider_controller_connector: Arc<dyn ProviderControllerConnector>,
     pub(crate) environment_gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
 }
 
@@ -686,7 +686,7 @@ impl GatewayAgentApi {
             github_api_client: None,
             model_discovery_openai: None,
             model_discovery_anthropic: None,
-            host_controller_connector: Arc::new(WebSocketHostControllerConnector::default()),
+            provider_controller_connector: Arc::new(WebSocketProviderControllerConnector::default()),
             environment_gateway,
         }
     }

@@ -11,8 +11,8 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use host_protocol::shared::{
-    CURRENT_PROTOCOL_VERSION, HostCapabilities, HostConnectionId, ImplementationInfo,
+use environment_protocol::shared::{
+    CURRENT_PROTOCOL_VERSION, EnvironmentCapabilities, EnvironmentConnectionId, ImplementationInfo,
 };
 
 use crate::{
@@ -22,7 +22,7 @@ use crate::{
 #[derive(Clone)]
 pub struct DaemonRuntime {
     config: Arc<DaemonConfig>,
-    capabilities: HostCapabilities,
+    capabilities: EnvironmentCapabilities,
     filesystem: LocalFileSystem,
     processes: ProcessManager,
     jobs: JobManager,
@@ -31,7 +31,7 @@ pub struct DaemonRuntime {
 
 impl DaemonRuntime {
     pub fn new(config: DaemonConfig) -> anyhow::Result<Self> {
-        let capabilities = host_capabilities(&config);
+        let capabilities = environment_capabilities(&config);
         let filesystem = LocalFileSystem::new(
             config.fs_root.clone(),
             config.cwd.clone(),
@@ -64,13 +64,13 @@ impl DaemonRuntime {
         }
     }
 
-    pub fn capabilities(&self) -> HostCapabilities {
+    pub fn capabilities(&self) -> EnvironmentCapabilities {
         self.capabilities.clone()
     }
 
-    pub fn next_connection_id(&self) -> HostConnectionId {
+    pub fn next_connection_id(&self) -> EnvironmentConnectionId {
         let id = self.next_connection_id.fetch_add(1, Ordering::Relaxed);
-        HostConnectionId::new(format!("envd-{id}"))
+        EnvironmentConnectionId::new(format!("envd-{id}"))
     }
 
     pub fn filesystem(&self) -> &LocalFileSystem {
@@ -86,8 +86,8 @@ impl DaemonRuntime {
     }
 }
 
-fn host_capabilities(config: &DaemonConfig) -> HostCapabilities {
-    HostCapabilities {
+fn environment_capabilities(config: &DaemonConfig) -> EnvironmentCapabilities {
+    EnvironmentCapabilities {
         filesystem_read: true,
         filesystem_write: !config.read_only_fs,
         filesystem_search: true,

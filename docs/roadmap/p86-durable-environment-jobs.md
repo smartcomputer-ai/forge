@@ -18,7 +18,7 @@
   public API job lifecycle, including queue keys, parallelism, DAG dependencies,
   cancellation, and retry/idempotency behavior.
 - Builds on **P75-P81 (Environments)** for the `fs`/`env` namespace split,
-  active environment projection, provider registry, host protocol, and
+  active environment projection, provider registry, environment protocol, and
   `host-bridge`.
 - Builds on **P84 (Fleet Wait, Subscriptions, And Send)** for the generic
   deferred-tool-batch primitive (`ToolBatchOutcome::Deferred`, parked
@@ -592,27 +592,25 @@ restart. Providers that cannot reattach must say so clearly through
 provider cannot find the job at all, `job/read` returns a typed missing/lost
 state so Lightspeed can reconcile its ledger.
 
-## Host Protocol Additions
+## Environment Protocol Additions
 
-Keep this in `host-protocol`; do not rename it to `environment-protocol`.
-`environment` is the Lightspeed/session abstraction (`env:<id>`, binding,
-projection, tools). `host-protocol` is the substrate wire protocol for a concrete
-target that exposes filesystem/process/job capabilities. A host-protocol
-implementation may run inside the guest OS, outside the VM as a controller, or
-as a provider adapter. The name is still correct because the protocol speaks to
-the execution host/target, not to the model-facing environment abstraction.
+Keep this in `environment-protocol`. The crate is the external wire boundary
+for environment provider control and environment execution data. Its data-plane
+implementation may run inside the guest OS, outside the VM, or in a provider
+adapter; the protocol remains independent of the model-facing environment tool
+surface.
 
 Jobs should be added as a new **data-plane** method family, not as a separate
 protocol. Controller-plane methods still create/attach/list/close targets and
-return a `HostConnectionSpec`. Once a session has a data-plane connection for a
+return an `EnvironmentDataConnection`. Once a session has a data-plane connection for a
 target, durable work on that target is started/read/cancelled through `job/*`,
 beside `fs/*` and `process/*`.
 
 Recommended crate shape:
 
 ```text
-crates/host-protocol/src/data/jobs.rs
-crates/host-client/src/data.rs        typed job methods beside process/fs
+crates/environment-protocol/src/data/jobs.rs
+crates/environment-client/src/data.rs        typed job methods beside process/fs
 crates/host-bridge/src/jobs.rs        bridge JobManager beside ProcessManager
 ```
 
@@ -622,7 +620,7 @@ job handle registry. The runtime supplies `namespace = session_id`. The registry
 maps `{ session_id, env_id, job_id }` to the provider/target and namespace that
 accepted the target-local `job_id`.
 
-Extend `HostCapabilities` with job capabilities:
+Extend `EnvironmentCapabilities` with job capabilities:
 
 ```text
 job_submit
@@ -638,7 +636,7 @@ These capabilities must be mirrored through the existing environment capability
 path:
 
 ```text
-HostCapabilities
+EnvironmentCapabilities
   -> EnvironmentTargetRecord.capabilities
   -> SessionEnvironmentCapabilities
   -> EnvironmentRecord.capabilities
@@ -711,13 +709,13 @@ locally inferred state.
 A future `job/subscribe` or provider-to-gateway callback can reduce polling
 latency, but v1 should not require it.
 
-This means P86 must add real host-protocol code, not only Lightspeed tools:
+This means P86 must add real environment-protocol code, not only Lightspeed tools:
 
 - protocol DTOs, method constants, serde fixtures, and compatibility tests;
-- `host-client` typed `start_jobs`, `read_jobs`, and `cancel_jobs` calls;
+- `environment-client` typed `start_jobs`, `read_jobs`, and `cancel_jobs` calls;
 - `host-bridge` request handlers and a `JobManager`;
 - tool/runtime adapters that implement a new environment `JobExecutor` by
-  calling the host data-plane methods.
+  calling the environment data-plane methods.
 
 The bridge `JobManager` can reuse the process-spawning internals, but it cannot
 be just `process/start` exposed under another name. Jobs need session namespace/job
@@ -962,11 +960,11 @@ Job handle records must still avoid accidental leakage:
   or artifacts in Lightspeed.
 - Add terminal-state helpers for provider DTOs, not for local persisted state.
 
-### G2. Host Protocol Job Plane
+### G2. Environment Protocol Job Plane
 
-- Add job capability flags to `HostCapabilities`.
+- Add job capability flags to `EnvironmentCapabilities`.
 - Add `job/start`, `job/read`, and `job/cancel` payloads and serde tests.
-- Extend `host-client` with typed job methods.
+- Extend `environment-client` with typed job methods.
 
 ### G3. `host-bridge` Job Manager
 
@@ -1027,7 +1025,7 @@ Job handle records must still avoid accidental leakage:
   - `session/jobs/cancel` resolves registry handles and asks the recorded
     provider/target to cancel.
   - API DTOs mirror the model-visible tool shape where practical while keeping
-    `api` independent from `host-protocol`.
+    `api` independent from `environment-protocol`.
   - Contract artifacts under `interop/contract/` are regenerated.
   - Active environment capability projection already carries job support flags
     through session environment views and prompt/tool projection.

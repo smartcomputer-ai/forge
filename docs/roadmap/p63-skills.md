@@ -554,7 +554,7 @@ pub enum SkillSource {
         root_path: VfsPath,
         skill_path: VfsPath,
     },
-    HostPath {
+    EnvironmentPath {
         target: ToolExecutionTarget,
         root_path: String,
         skill_path: String,

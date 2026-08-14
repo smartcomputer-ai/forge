@@ -409,12 +409,12 @@ pub struct EnvironmentJobStartActivityRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartPayload {
-    pub request: host_protocol::data::jobs::StartJobsParams,
+    pub request: environment_protocol::data::jobs::StartJobsParams,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobStartActivityResult {
-    pub jobs: Vec<host_protocol::data::jobs::JobSummary>,
+    pub jobs: Vec<environment_protocol::data::jobs::JobSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -422,7 +422,7 @@ pub struct EnvironmentJobSubscription {
     pub holder_workflow_id: String,
     pub promise_id: String,
     pub completion_key: String,
-    pub job_id: host_protocol::shared::JobId,
+    pub job_id: environment_protocol::shared::JobId,
     #[serde(default)]
     pub notified: bool,
 }
@@ -431,13 +431,13 @@ pub struct EnvironmentJobSubscription {
 pub struct EnvironmentJobWorkflowArgs {
     pub universe_id: Uuid,
     pub start: EnvironmentJobStartActivityRequest,
-    pub job_ids: Vec<host_protocol::shared::JobId>,
+    pub job_ids: Vec<environment_protocol::shared::JobId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub subscriptions: Vec<EnvironmentJobSubscription>,
     #[serde(default)]
     pub started: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub jobs: Vec<host_protocol::data::jobs::JobSummary>,
+    pub jobs: Vec<environment_protocol::data::jobs::JobSummary>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolutions: BTreeMap<String, engine::PromiseSourceCheckResult>,
     #[serde(default = "default_environment_job_poll_ms")]
@@ -486,7 +486,7 @@ pub struct EnvironmentJobWorkflowSnapshot {
     #[serde(default)]
     pub started: bool,
     #[serde(default)]
-    pub jobs: Vec<host_protocol::data::jobs::JobSummary>,
+    pub jobs: Vec<environment_protocol::data::jobs::JobSummary>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolutions: BTreeMap<String, engine::PromiseSourceCheckResult>,
     pub terminal: bool,
@@ -499,12 +499,12 @@ pub struct EnvironmentJobPollActivityRequest {
     pub universe_id: Uuid,
     pub environment_id: String,
     pub job_group_id: String,
-    pub job_ids: Vec<host_protocol::shared::JobId>,
+    pub job_ids: Vec<environment_protocol::shared::JobId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobPollActivityResult {
-    pub jobs: Vec<host_protocol::data::jobs::JobSummary>,
+    pub jobs: Vec<environment_protocol::data::jobs::JobSummary>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resolutions: BTreeMap<String, engine::PromiseSourceCheckResult>,
     pub terminal: bool,
@@ -512,8 +512,8 @@ pub struct EnvironmentJobPollActivityResult {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobCancelSignal {
-    pub jobs: Vec<host_protocol::shared::JobId>,
-    pub scope: host_protocol::data::jobs::JobCancelScope,
+    pub jobs: Vec<environment_protocol::shared::JobId>,
+    pub scope: environment_protocol::data::jobs::JobCancelScope,
     pub force: bool,
 }
 
@@ -521,8 +521,8 @@ pub struct EnvironmentJobCancelSignal {
 pub struct EnvironmentJobCancelActivityRequest {
     pub universe_id: Uuid,
     pub environment_id: String,
-    pub jobs: Vec<host_protocol::shared::JobId>,
-    pub scope: host_protocol::data::jobs::JobCancelScope,
+    pub jobs: Vec<environment_protocol::shared::JobId>,
+    pub scope: environment_protocol::data::jobs::JobCancelScope,
     pub force: bool,
 }
 

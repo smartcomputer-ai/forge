@@ -101,7 +101,7 @@ impl EnvironmentResolver {
         }
         if let Some(gateway) = &self.gateway {
             let connection = gateway.connection_for(self.universe_id, &environment);
-            if host_client::HostDataClient::connect(
+            if environment_client::EnvironmentDataClient::connect(
                 &connection.endpoint,
                 gateway.connect_options("lightspeed-environment-selection"),
             )
@@ -137,14 +137,14 @@ pub(crate) enum EnvironmentResolveError {
 mod tests {
     use std::collections::BTreeMap;
 
+    use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
     use environments::{
-        CreateEnvironment, EnvironmentIncarnationId, EnvironmentProviderBindingId,
-        EnvironmentProviderBindingStatus, EnvironmentProviderBindingStore, EnvironmentProviderId,
-        EnvironmentProvisionRequestId, EnvironmentStatus, EnvironmentTemplateId,
-        HostControllerConnectionSpec, ObserveProvisionedEnvironment, PutEnvironmentProvider,
-        PutEnvironmentProviderBinding,
+        CreateEnvironment, EnvironmentConnectionSpec, EnvironmentIncarnationId,
+        EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProvisionRequestId,
+        EnvironmentStatus, EnvironmentTemplateId, ObserveProvisionedEnvironment,
+        PutEnvironmentProvider, PutEnvironmentProviderBinding,
     };
-    use host_protocol::shared::{HostTargetId, HostTransport};
 
     use super::*;
 
@@ -155,9 +155,9 @@ mod tests {
             .put_provider(PutEnvironmentProvider {
                 provider_id: provider_id.clone(),
                 display_name: None,
-                controller_connection: HostControllerConnectionSpec::new(
+                controller_connection: EnvironmentConnectionSpec::new(
                     "http://controller.test",
-                    HostTransport::Http,
+                    EnvironmentTransport::Http,
                 ),
                 metadata: BTreeMap::new(),
                 updated_at_ms: 10,
@@ -177,7 +177,7 @@ mod tests {
             .await
             .expect("binding");
         let environment_id = EnvironmentId::new("environment-1");
-        let target_id = HostTargetId::new("target-1");
+        let target_id = ProviderTargetId::new("target-1");
         store
             .create_environment(CreateEnvironment {
                 request_id: EnvironmentProvisionRequestId::new("request-1"),

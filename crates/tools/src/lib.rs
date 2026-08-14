@@ -7,10 +7,10 @@
 pub mod builtin;
 pub mod concurrency;
 pub mod environment;
+pub mod environment_protocol;
 pub mod error;
 pub mod fleet;
 pub mod fs;
-pub mod host_protocol;
 pub mod limits;
 pub mod prompts;
 pub mod runtime;

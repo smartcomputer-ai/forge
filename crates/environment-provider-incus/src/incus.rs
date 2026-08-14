@@ -14,11 +14,11 @@ use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use host_protocol::{
+use environment_protocol::{
     control::targets::{
-        AdoptTargetParams, CreateTargetParams, HostTargetStatus, ProviderBindingContext,
+        AdoptTargetParams, CreateTargetParams, ProviderBindingContext, ProviderTargetStatus,
     },
-    shared::HostTargetId,
+    shared::ProviderTargetId,
 };
 
 use crate::{
@@ -28,7 +28,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct OwnedTarget {
-    pub target_id: HostTargetId,
+    pub target_id: ProviderTargetId,
     pub name: String,
     pub universe_id: String,
     pub binding_id: String,
@@ -38,7 +38,7 @@ pub struct OwnedTarget {
     pub template_id: String,
     pub image_fingerprint: String,
     pub adoption_source: Option<String>,
-    pub status: HostTargetStatus,
+    pub status: ProviderTargetStatus,
     pub ipv4_address: Option<String>,
     pub ingress_hostname: Option<String>,
     pub ingress_port: Option<u16>,
@@ -60,7 +60,7 @@ pub trait IncusBackend: Clone + Send + Sync + 'static {
     async fn get_owned(
         &self,
         binding: &ProviderBindingContext,
-        target_id: &HostTargetId,
+        target_id: &ProviderTargetId,
     ) -> anyhow::Result<Option<OwnedTarget>>;
     async fn create_vm(
         &self,
@@ -716,7 +716,7 @@ impl IncusBackend for IncusClient {
     async fn get_owned(
         &self,
         binding: &ProviderBindingContext,
-        target_id: &HostTargetId,
+        target_id: &ProviderTargetId,
     ) -> anyhow::Result<Option<OwnedTarget>> {
         self.instance(&policy::project_name(binding), target_id.as_str())
             .await
@@ -810,7 +810,7 @@ impl IncusBackend for IncusClient {
             if !observed.as_ref().is_some_and(|target| {
                 matches!(
                     target.status,
-                    HostTargetStatus::Starting | HostTargetStatus::Ready
+                    ProviderTargetStatus::Starting | ProviderTargetStatus::Ready
                 )
             }) {
                 return Err(error);
@@ -1221,7 +1221,7 @@ async fn ensure_instance_started(
 ) -> anyhow::Result<OwnedTarget> {
     if matches!(
         target.status,
-        HostTargetStatus::Ready | HostTargetStatus::Starting
+        ProviderTargetStatus::Ready | ProviderTargetStatus::Starting
     ) {
         return Ok(target);
     }
@@ -1238,7 +1238,7 @@ async fn ensure_instance_started(
         if !observed.as_ref().is_some_and(|target| {
             matches!(
                 target.status,
-                HostTargetStatus::Starting | HostTargetStatus::Ready
+                ProviderTargetStatus::Starting | ProviderTargetStatus::Ready
             )
         }) {
             return Err(error);
@@ -1293,7 +1293,7 @@ fn owned_from_instance(instance: Instance, state: InstanceState) -> anyhow::Resu
         .find(|address| address.family == "inet" && address.scope == "global")
         .map(|address| address.address.clone());
     Ok(OwnedTarget {
-        target_id: HostTargetId::new(instance.name.clone()),
+        target_id: ProviderTargetId::new(instance.name.clone()),
         name: instance.name,
         universe_id,
         binding_id,
@@ -1307,11 +1307,11 @@ fn owned_from_instance(instance: Instance, state: InstanceState) -> anyhow::Resu
             .get(&format!("{}adoption_source", policy::META_PREFIX))
             .cloned(),
         status: match instance.status.as_str() {
-            "Running" => HostTargetStatus::Ready,
-            "Starting" => HostTargetStatus::Starting,
-            "Stopped" => HostTargetStatus::Stopped,
-            "Error" => HostTargetStatus::Failed,
-            _ => HostTargetStatus::Unknown,
+            "Running" => ProviderTargetStatus::Ready,
+            "Starting" => ProviderTargetStatus::Starting,
+            "Stopped" => ProviderTargetStatus::Stopped,
+            "Error" => ProviderTargetStatus::Failed,
+            _ => ProviderTargetStatus::Unknown,
         },
         ipv4_address,
         ingress_hostname: instance

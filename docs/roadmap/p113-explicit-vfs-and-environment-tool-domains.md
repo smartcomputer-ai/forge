@@ -511,7 +511,7 @@ The VFS catalog builder accepts only:
 - linked workspace roots with their observed head snapshot.
 
 Remove host/environment variants from the VFS catalog path, including generic
-target fields and `HostRoot`, `HostPath`, and `HostFilesystem` locations. The
+target fields and `HostRoot`, `EnvironmentPath`, and `HostFilesystem` locations. The
 shared frontmatter parser and source-neutral skill metadata fields may remain
 reusable.
 

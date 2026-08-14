@@ -18,15 +18,15 @@ use engine::{
         SessionLinkDirection, SessionStore, UpsertSessionLink,
     },
 };
+use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
 use environments::{
-    BeginCloseEnvironment, CreateEnvironment, EnvironmentId, EnvironmentIncarnationId,
-    EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+    BeginCloseEnvironment, CreateEnvironment, EnvironmentConnectionSpec, EnvironmentId,
+    EnvironmentIncarnationId, EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
     EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
     EnvironmentProvisionRequestId, EnvironmentStatus, EnvironmentStore, EnvironmentTemplateId,
-    HostControllerConnectionSpec, ListEnvironmentProviders, ListEnvironments,
-    ObserveProvisionedEnvironment, PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    ListEnvironmentProviders, ListEnvironments, ObserveProvisionedEnvironment,
+    PutEnvironmentProvider, PutEnvironmentProviderBinding,
 };
-use host_protocol::shared::{HostTargetId, HostTransport};
 use mcp::{
     ListMcpServers, McpApprovalPolicy, McpRegistryError, McpRegistryStore, McpServerAuthPolicy,
     McpServerId, McpServerStatus, PutMcpServerRecord, RemoteMcpTransport,
@@ -1042,7 +1042,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         assert!(relation.is_none(), "P104 must remove table {table}");
     }
     let provider_id = EnvironmentProviderId::new("bridge-local");
-    let target_id = HostTargetId::new("local-host");
+    let target_id = ProviderTargetId::new("local-host");
     let environment_id = EnvironmentId::new("instance-local");
     let session_id = SessionId::new("session-env");
 
@@ -1050,9 +1050,9 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         .put_provider(PutEnvironmentProvider {
             provider_id: provider_id.clone(),
             display_name: Some("Local bridge".to_owned()),
-            controller_connection: HostControllerConnectionSpec::new(
+            controller_connection: EnvironmentConnectionSpec::new(
                 "ws://127.0.0.1:9000/controller",
-                HostTransport::WebSocket,
+                EnvironmentTransport::WebSocket,
             ),
             metadata: Default::default(),
             updated_at_ms: 10,

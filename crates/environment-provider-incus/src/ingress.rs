@@ -41,11 +41,11 @@ pub fn endpoint(config: &Config, target: &OwnedTarget) -> anyhow::Result<(String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use host_protocol::{control::targets::HostTargetStatus, shared::HostTargetId};
+    use environment_protocol::{control::targets::ProviderTargetStatus, shared::ProviderTargetId};
 
     fn target() -> OwnedTarget {
         OwnedTarget {
-            target_id: HostTargetId::new("target-a"),
+            target_id: ProviderTargetId::new("target-a"),
             name: "target-a".to_owned(),
             universe_id: "universe-a".to_owned(),
             binding_id: "binding-a".to_owned(),
@@ -55,7 +55,7 @@ mod tests {
             template_id: "template-a".to_owned(),
             image_fingerprint: "fingerprint-a".to_owned(),
             adoption_source: None,
-            status: HostTargetStatus::Ready,
+            status: ProviderTargetStatus::Ready,
             ipv4_address: Some("10.0.0.2".to_owned()),
             ingress_hostname: None,
             ingress_port: None,

@@ -22,7 +22,7 @@
   preparation addendum added array-index completion keys and fixed the
   asynchronous acceptance/cancellation contract. The subsequent boundary
   review found that jobs are inseparable from the core environment registry,
-  bindings, credentials, host protocol, public API, and storage without
+  bindings, credentials, environment protocol, public API, and storage without
   inventing a much broader plugin framework. Environment jobs are therefore
   removed from the plugin-extraction candidate list. The model-visible
   `job_submit` path now uses P100b internally while the environment/job domain
@@ -110,7 +110,7 @@ durable `EnvironmentJobWorkflow`:
 
 The environment subsystem, including jobs, remains core. Job execution is
 deeply coupled to environment instances, session bindings, credentials,
-provider presence, the host protocol, public `environments/jobs/*` methods,
+provider presence, the environment protocol, public `environments/jobs/*` methods,
 and the core PostgreSQL environment schema. Moving only the workflow to a
 plugin leaves those dependencies behind; moving all of them requires plugins
 to contribute API namespaces, schemas, credentials, resources, and lifecycle
@@ -183,7 +183,7 @@ fingerprint, and config-only clones omit them.
 The following explicitly remain core-owned:
 
 - environment providers, instances, bindings, and credentials;
-- the fs/process/job host protocol and client;
+- the fs/process/job environment protocol and client;
 - `EnvironmentJobWorkflow` and its activities; and
 - public `environments/jobs/create|read|cancel` API methods.
 

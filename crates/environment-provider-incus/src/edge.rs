@@ -104,7 +104,7 @@ async fn resolve<B: IncusBackend>(
 ) -> anyhow::Result<Option<Route>> {
     for target in state.backend.list_all_owned().await? {
         if target.ingress_hostname.as_deref() == Some(hostname)
-            && target.status == host_protocol::control::targets::HostTargetStatus::Ready
+            && target.status == environment_protocol::control::targets::ProviderTargetStatus::Ready
             && let (Some(address), Some(port)) = (target.ipv4_address, target.ingress_port)
         {
             return Ok(Some(Route { address, port }));
