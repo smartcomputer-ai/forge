@@ -33,9 +33,9 @@ cp interop/contract/api.schema.json interop/contract/methods.json \
   interop/contract/openrpc.json interop/contract/api-reference.md "$dist_dir/contracts/"
 
 npm --prefix interop/ts-client ci
-npm --prefix interop/ts-client run check
+npm --prefix interop/ts-client run build
 npm --prefix interop/configurator-mcp ci
-npm --prefix interop/configurator-mcp run check
+npm --prefix interop/configurator-mcp run build
 
 stage_root="$(mktemp -d)"
 trap 'rm -rf "$stage_root"' EXIT

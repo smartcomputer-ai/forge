@@ -60,9 +60,10 @@ produces `dist/`. `make release-images` copies those prebuilt files into the
 two runtime images; it does not invoke Cargo. The image smoke test extracts the
 server executable and compares it byte-for-byte with `dist/bin`.
 
-Release and snapshot builds first publish the composite `build-env` image by
-source commit, then run that exact image by digest. The release manifest records
-this composite image digest, not merely the Rust base-image digest.
+Release and snapshot builds first publish the composite `build-env` image under
+a run-specific staging tag, then run that exact image by digest. The release
+manifest records this composite image digest, not merely the Rust base-image
+digest.
 
 Release constants are centralized in `release/metadata.env`; run
 `scripts/release/verify-metadata.sh` after changing a product, protocol, schema,
@@ -78,16 +79,29 @@ version, full source commit, target, and Rust version through `--version`.
 - `.github/workflows/macos.yml` provides a manual native Apple Silicon
   compile/`--version` smoke test. Published standalone archives remain
   Linux-only in the first cut; macOS development uses `cargo run`.
-- A manual dispatch of `.github/workflows/release.yml` accepts a commit or ref,
-  requires it to resolve to a commit on `main`, and publishes one coherent
-  snapshot under `sha-<full-sha>` references. It does not publish npm
-  `latest`, SemVer aliases, or a GitHub Release.
-- A `v<product-version>` annotated tag on `main` runs the same workflow. It
-  tests and builds the exact tagged commit once, publishes the SHA-addressed
-  snapshot set, applies SemVer aliases from the manifest's exact digests,
-  publishes the stable TypeScript client, and creates the GitHub Release.
+- A successful push-to-`main` run of `ci.yml` triggers
+  `.github/workflows/snapshot-main.yml`. It checks out the exact SHA reported by
+  CI, confirms that it is still the head of `origin/main`, and builds one
+  coherent Linux artifact set on hz01 without repeating the CI test suite.
+- Snapshot components are first published under a run-specific staging tag and
+  recorded by digest in the manifest. After package, archive, manifest, image,
+  checksum, and binary/image identity checks pass, the workflow rechecks the
+  head of `main` and assigns `release-bundle:sha-<full-sha>` as the single
+  public snapshot identity. Consumers resolve that tag once and follow only the
+  digest-pinned component references in its manifest. A superseded or canceled
+  run may leave staging objects but cannot expose a complete snapshot.
+- The ls.bot notification/dispatch step is intentionally not wired yet. For
+  now, a completed `release-bundle:sha-<full-sha>` is the output that ls.bot can
+  consume later by digest.
+- A `v<product-version>` annotated tag on `main` triggers
+  `.github/workflows/release-tag.yml`. It independently tests and builds the
+  exact tagged commit, applies SemVer aliases from the manifest's exact
+  digests, publishes the stable TypeScript client, and creates the GitHub
+  Release. Release versions may use prerelease suffixes but not `+build`
+  metadata because the same version is also an OCI tag. The workflow never
+  looks up or promotes a prior main snapshot.
 
 The `official-release` GitHub environment protects tagged-release credentials;
 configure `NPM_TOKEN` only there. Snapshot publication uses only the scoped
-GitHub token. Production deployment is deliberately outside these workflows
-and belongs to the consuming repository.
+GitHub token. Deployment remains outside these workflows until the explicit
+ls.bot notification is added.

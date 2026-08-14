@@ -1,0 +1,208 @@
+name: snapshot main
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+
+concurrency:
+  group: snapshot-main
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: [self-hosted, linux, x64, hz01, protected]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Validate the successful main commit
+        id: identity
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD^{commit})" = "$EXPECTED_SHA"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          test "$(git rev-parse origin/main^{commit})" = "$EXPECTED_SHA"
+          source release/metadata.env
+          echo "sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$LIGHTSPEED_PRODUCT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "staging_tag=staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - name: Verify release metadata
+        run: scripts/release/verify-metadata.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Publish the exact release build environment to staging
+        id: build_environment
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/build-env.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/build-env:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Build the coherent artifact set once
+        env:
+          LIGHTSPEED_GIT_SHA: ${{ steps.identity.outputs.sha }}
+          BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+        run: LIGHTSPEED_RELEASE_BUILD_IMAGE="$BUILD_IMAGE" scripts/release/run-build-env.sh "$BUILD_IMAGE"
+      - name: Build and publish the server image to staging
+        id: server
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/server.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.identity.outputs.version }}
+            LIGHTSPEED_GIT_SHA=${{ steps.identity.outputs.sha }}
+          tags: ghcr.io/${{ github.repository }}/server:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Build and publish Configurator MCP image to staging
+        id: configurator
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/configurator-mcp.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.identity.outputs.version }}
+            LIGHTSPEED_GIT_SHA=${{ steps.identity.outputs.sha }}
+          tags: ghcr.io/${{ github.repository }}/configurator-mcp:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Publish standalone archives to staging
+        id: archives
+        env:
+          GHCR_ROOT: ghcr.io/${{ github.repository }}
+          STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
+        run: |
+          set -euo pipefail
+          declare -A files=(
+            [server]="$(find dist/archives -name '*-server-*' -print -quit)"
+            [provider-incus]="$(find dist/archives -name '*-provider-incus-*' -print -quit)"
+            [envd]="$(find dist/archives -name '*-envd-*' -print -quit)"
+            [cli]="$(find dist/archives -name '*-cli-*' -print -quit)"
+          )
+          for name in server provider-incus envd cli; do
+            test -n "${files[$name]}"
+            ref="$GHCR_ROOT/${name}-bundle:$STAGING_TAG"
+            oras push "$ref" "${files[$name]}:application/gzip"
+            digest="$(oras resolve "$ref")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            key="${name^^}"
+            key="${key//-/_}"
+            echo "${key}_URL=oci://$GHCR_ROOT/${name}-bundle@$digest" >> "$GITHUB_OUTPUT"
+          done
+      - name: Finalize the digest-pinned manifest and staged bundle
+        id: release_bundle
+        env:
+          LIGHTSPEED_SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+          LIGHTSPEED_CONFIGURATOR_MCP_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
+          LIGHTSPEED_RELEASE_BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+          LIGHTSPEED_BINARY_URL_SERVER: ${{ steps.archives.outputs.SERVER_URL }}
+          LIGHTSPEED_BINARY_URL_PROVIDER_INCUS: ${{ steps.archives.outputs.PROVIDER_INCUS_URL }}
+          LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
+          LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
+          STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
+        run: |
+          set -euo pipefail
+          scripts/release/create-manifest.mjs \
+            "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.sha }}"
+          scripts/release/checksums.sh
+          scripts/release/verify-manifest.mjs --published
+          (cd dist && sha256sum --check checksums.txt)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf release-bundle.tar.gz dist
+          bundle_ref="ghcr.io/${{ github.repository }}/release-bundle:$STAGING_TAG"
+          oras push "$bundle_ref" release-bundle.tar.gz:application/gzip
+          bundle_digest="$(oras resolve "$bundle_ref")"
+          [[ "$bundle_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$bundle_digest" >> "$GITHUB_OUTPUT"
+      - name: Verify the staged runtime images
+        env:
+          SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+          CONFIGURATOR_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
+          EXPECTED_SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker pull "$SERVER_IMAGE"
+          container_id="$(docker create "$SERVER_IMAGE" --version)"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          mkdir image-check
+          docker cp "$container_id:/usr/local/bin/lightspeed-server" image-check/lightspeed-server
+          cmp dist/bin/lightspeed-server image-check/lightspeed-server
+          docker run --rm "$SERVER_IMAGE" --version | grep -F "$EXPECTED_SHA"
+          docker pull "$CONFIGURATOR_IMAGE"
+          docker run --rm --entrypoint node "$CONFIGURATOR_IMAGE" -e \
+            'const fs = require("node:fs"); for (const f of ["/app/dist/bin.js", "/app/agent-client.tgz"]) fs.accessSync(f);'
+      - name: Confirm this is still the current main commit
+        id: current
+        env:
+          EXPECTED_SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if test "$(git rev-parse origin/main^{commit})" = "$EXPECTED_SHA"; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "main advanced while this snapshot was building; leaving only staged objects"
+          fi
+      - name: Publish the immutable SHA snapshot
+        if: steps.current.outputs.publish == 'true'
+        env:
+          GHCR_ROOT: ghcr.io/${{ github.repository }}
+          BUNDLE_DIGEST: ${{ steps.release_bundle.outputs.digest }}
+          SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          scripts/release/publish-aliases.sh "sha-$SHA" "$BUNDLE_DIGEST"
+          printf 'Snapshot bundle: `%s`\n' \
+            "oci://$GHCR_ROOT/release-bundle@$BUNDLE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        if: steps.current.outputs.publish == 'true'
+        with:
+          subject-path: |
+            dist/archives/*.tar.gz
+            dist/npm/*.tgz
+            dist/checksums.txt
+            dist/release-manifest.json
+            dist/sbom.spdx.json
+            release-bundle.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.current.outputs.publish == 'true'
+        with:
+          name: lightspeed-snapshot-${{ steps.identity.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/
+            release-bundle.tar.gz
+          if-no-files-found: error
+          retention-days: 14

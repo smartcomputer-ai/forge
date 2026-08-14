@@ -3,6 +3,11 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 source release/metadata.env
 
+if [[ ! "$LIGHTSPEED_PRODUCT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+  echo "LIGHTSPEED_PRODUCT_VERSION must be an OCI-compatible SemVer without +build metadata" >&2
+  exit 1
+fi
+
 grep -F "channel = \"$LIGHTSPEED_RELEASE_RUST_VERSION\"" rust-toolchain.toml >/dev/null
 grep -F "version = \"$LIGHTSPEED_PRODUCT_VERSION\"" crates/release-info/Cargo.toml >/dev/null
 grep -F "pub const REQUIRED_SCHEMA_REVISION: i64 = $LIGHTSPEED_SCHEMA_REVISION;" \

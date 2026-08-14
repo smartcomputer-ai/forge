@@ -15,9 +15,13 @@ Implemented here:
   SBOM, and artifact smoke tests;
 - server and Configurator runtime images that consume prebuilt `dist/` output;
 - publishable `@lightspeed/agent-client` release metadata;
-- a single coherent build workflow: manual main-ancestor snapshots publish only
-  SHA references, while SemVer tags test/build that exact commit and additionally
-  publish version aliases, npm, and a GitHub Release; and
+- separate coherent workflows: successful `main` CI automatically builds and
+  publishes only SHA snapshot references, while SemVer tags independently test
+  and build their exact commit before publishing version aliases, npm, and a
+  GitHub Release;
+- two-phase snapshot publication with run-specific staging identities,
+  digest-pinned manifests, and one release-bundle SHA alias as the atomic
+  completion marker; and
 - a manual Apple Silicon macOS build/smoke guard, while macOS release archives
   remain deferred.
 
@@ -25,6 +29,7 @@ Remaining outside this repository:
 
 - provision and harden the hz01 build VM/runner carrying the workflow labels;
 - configure GitHub release environments and npm publication credentials;
-- pin one resulting manifest in ls.bot and remove its sibling-source build;
+- wire the exact completed snapshot-bundle digest into ls.bot, pin its manifest,
+  and remove the sibling-source build;
 - complete the deployment/migration/rollback drill; and
 - retire the hz02 CI guest after the required acceptance runs.

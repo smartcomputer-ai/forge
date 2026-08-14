@@ -2,10 +2,11 @@
 
 ## Work
 - [x] [P123](p123-build-and-release.md) — Lightspeed-owned release artifacts,
-  embedded ledgered migrations, one-build packaging, on-demand coherent
-  snapshots, and exact-commit SemVer releases. Lightspeed side complete
-  2026-08-14; isolated-runner provisioning and ls.bot consumer cutover remain
-  external.
+  embedded ledgered migrations, one-build packaging, automatic coherent
+  snapshots after successful `main` CI, and independent exact-commit SemVer
+  releases. Lightspeed side complete 2026-08-14 except for the intentionally
+  deferred ls.bot dispatch; isolated-runner provisioning and consumer cutover
+  remain external.
 - [x] [P100](p100-workflow-tool-ports.md) — the workflow emission substrate:
   one envelope and one fixed `deliver_emission` signal for all cross-workflow
   facts (run-terminal notifications and env-job source resolutions folded in
