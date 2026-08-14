@@ -1,0 +1,101 @@
+name: release-tag
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing SemVer tag to promote
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+  attestations: write
+
+jobs:
+  promote:
+    runs-on: [self-hosted, linux, x64, hz01, protected]
+    environment: official-release
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.ref_name }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.13.0
+          registry-url: https://registry.npmjs.org
+      - name: Verify tag and locate the successful main build
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]
+          test "$(git cat-file -t "$TAG")" = tag
+          git fetch origin main
+          sha="$(git rev-list -n 1 "$TAG")"
+          git merge-base --is-ancestor "$sha" origin/main
+          source release/metadata.env
+          [[ "$TAG" == "v$LIGHTSPEED_PRODUCT_VERSION" ]]
+          run_id="$(gh run list --workflow release-main.yml --commit "$sha" \
+            --status success --json databaseId --jq '.[0].databaseId')"
+          [[ -n "$run_id" ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Download the commit-addressed release bundle
+        run: |
+          oras pull "ghcr.io/${{ github.repository }}/release-bundle:sha-${{ steps.release.outputs.sha }}"
+          tar -xzf release-bundle.tar.gz
+          scripts/release/verify-manifest.mjs --published
+          test "$(jq -r .gitSha dist/release-manifest.json)" = "${{ steps.release.outputs.sha }}"
+          test "$(jq -r .version dist/release-manifest.json)" = "${{ steps.release.outputs.version }}"
+          (cd dist && sha256sum --check checksums.txt)
+      - name: Promote OCI artifacts without rebuilding
+        env:
+          SHA: ${{ steps.release.outputs.sha }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          root="ghcr.io/${{ github.repository }}"
+          crane cp "$root/build-env:sha-$SHA" "$root/build-env:$VERSION"
+          crane cp "$root/server:sha-$SHA" "$root/server:$VERSION"
+          crane cp "$root/configurator-mcp:sha-$SHA" "$root/configurator-mcp:$VERSION"
+          for name in server provider-incus envd cli; do
+            oras copy "$root/${name}-bundle:sha-$SHA" "$root/${name}-bundle:$VERSION"
+          done
+          oras copy "$root/release-bundle:sha-$SHA" "$root/release-bundle:$VERSION"
+      - name: Publish stable TypeScript client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish dist/npm/*.tgz --access public --tag latest
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/archives/*.tar.gz
+            dist/npm/*.tgz
+            dist/checksums.txt
+            dist/release-manifest.json
+            dist/sbom.spdx.json
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          gh release create "$TAG" --verify-tag --notes-from-tag \
+            dist/archives/*.tar.gz \
+            dist/npm/*.tgz \
+            dist/checksums.txt \
+            dist/release-manifest.json \
+            dist/sbom.spdx.json

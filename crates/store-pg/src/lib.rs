@@ -9,6 +9,7 @@ mod blob;
 mod blob_cache;
 mod environment;
 mod mcp;
+mod migrations;
 mod oauth;
 mod object;
 mod operator;
@@ -24,7 +25,7 @@ use std::sync::Arc;
 use base64::Engine as _;
 use object_store::ObjectStore;
 use object_store::aws::AmazonS3Builder;
-use sqlx::{Executor, PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -201,6 +202,42 @@ pub enum PgStoreError {
 
     #[error("postgres store failure: {message}")]
     Store { message: String },
+
+    #[error(
+        "database schema revision {current_revision} is stale; revision {required_revision} is required (run `lightspeed-server migrate`)"
+    )]
+    MigrationRequired {
+        current_revision: i64,
+        required_revision: i64,
+    },
+
+    #[error(
+        "database schema revision {current_revision} is newer than this server's required revision {required_revision}"
+    )]
+    SchemaTooNew {
+        current_revision: i64,
+        required_revision: i64,
+    },
+
+    #[error("migration {version} name changed: expected {expected:?}, found {actual:?}")]
+    MigrationNameChanged {
+        version: i64,
+        expected: &'static str,
+        actual: String,
+    },
+
+    #[error(
+        "migration {version} ({name}) checksum changed: expected {expected}, found {actual}; shipped migrations are immutable"
+    )]
+    MigrationChecksumChanged {
+        version: i64,
+        name: &'static str,
+        expected: String,
+        actual: String,
+    },
+
+    #[error("migration ledger is not a contiguous prefix: revision {missing_version} is missing")]
+    MigrationLedgerGap { missing_version: i64 },
 }
 
 impl PgStore {
@@ -265,13 +302,7 @@ impl PgStore {
     }
 
     pub async fn migrate(pool: &PgPool) -> Result<(), PgStoreError> {
-        pool.execute(CORE_SCHEMA_SQL).await?;
-        pool.execute(VFS_SCHEMA_SQL).await?;
-        pool.execute(MCP_SCHEMA_SQL).await?;
-        pool.execute(AUTH_SCHEMA_SQL).await?;
-        pool.execute(ENVIRONMENT_SCHEMA_SQL).await?;
-        pool.execute(PROFILE_SCHEMA_SQL).await?;
-        pool.execute(API_KEYS_SCHEMA_SQL).await?;
+        migrations::migrate(pool).await?;
         Ok(())
     }
 
@@ -299,6 +330,9 @@ impl PgStore {
 
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
+pub use migrations::{
+    MIGRATIONS, REQUIRED_SCHEMA_REVISION, SchemaStatus, schema_status, verify_schema,
+};
 pub use operator::{
     UniverseStats, create_universe, delete_universe, list_universe_object_keys,
     list_universe_session_ids, list_universe_stats, read_universe_stats,

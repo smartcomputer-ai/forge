@@ -17,6 +17,7 @@ mcp = { path = "../mcp" }
 object_store = { version = "0.13.1", features = ["aws"] }
 profiles = { path = "../profiles" }
 rand = "0.8"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "json"] }

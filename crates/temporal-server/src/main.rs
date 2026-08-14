@@ -3,7 +3,9 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use temporal_server::{
-    config::{DeploymentStores, gateway_auth_mode_from_env, task_queue_from_env},
+    config::{
+        DeploymentStores, gateway_auth_mode_from_env, postgres_pool_from_env, task_queue_from_env,
+    },
     gateway::{
         DEFAULT_GATEWAY_BIND, DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_TEMPORAL_NAMESPACE,
         DEFAULT_TEMPORAL_TARGET, GatewayServerConfig, GatewayState, gateway_router,
@@ -16,7 +18,8 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "server",
+    name = "lightspeed-server",
+    version = release_info::LONG_VERSION,
     about = "Run the Lightspeed hosted runtime",
     after_help = "When no command is supplied, server runs `both`."
 )]
@@ -27,6 +30,13 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    #[command(about = "Apply embedded PostgreSQL migrations and update the schema ledger")]
+    Migrate,
+    #[command(
+        name = "schema-version",
+        about = "Print the current and required PostgreSQL schema revisions"
+    )]
+    SchemaVersion,
     #[command(about = "Run only the HTTP/JSON-RPC gateway")]
     Gateway(GatewayArgs),
     #[command(about = "Run only the Temporal worker")]
@@ -191,6 +201,8 @@ async fn main() -> anyhow::Result<()> {
     init_logging()?;
     let cli = Cli::parse();
     match cli.command {
+        Some(Command::Migrate) => run_migrate().await,
+        Some(Command::SchemaVersion) => run_schema_version().await,
         Some(Command::Gateway(args)) => {
             serve_gateway(GatewayServerConfig {
                 bind: args.bind,
@@ -214,6 +226,33 @@ async fn main() -> anyhow::Result<()> {
         Some(Command::Universe(command)) => run_universe_command(command).await,
         Some(Command::ApiKey(command)) => run_api_key_command(command).await,
         None => run_both(BothArgs::from_env()?).await,
+    }
+}
+
+async fn run_migrate() -> anyhow::Result<()> {
+    let pool = postgres_pool_from_env().await?;
+    let before = store_pg::schema_status(&pool).await?;
+    println!("current_schema_revision: {}", before.current_revision);
+    println!("required_schema_revision: {}", before.required_revision);
+    store_pg::PgStore::migrate(&pool).await?;
+    let after = store_pg::verify_schema(&pool).await?;
+    println!("applied_schema_revision: {}", after.current_revision);
+    Ok(())
+}
+
+async fn run_schema_version() -> anyhow::Result<()> {
+    let pool = postgres_pool_from_env().await?;
+    let status = store_pg::schema_status(&pool).await?;
+    println!("current_schema_revision: {}", status.current_revision);
+    println!("required_schema_revision: {}", status.required_revision);
+    if status.is_current() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "database migration required: current revision {}, required revision {}",
+            status.current_revision,
+            status.required_revision
+        )
     }
 }
 

@@ -118,15 +118,8 @@ pub struct DeploymentStores {
 
 impl DeploymentStores {
     pub async fn from_env() -> anyhow::Result<Self> {
-        let database_url = env::var("LIGHTSPEED_POSTGRES_URL")
-            .or_else(|_| env::var("LIGHTSPEED_TEST_POSTGRES_URL"))
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "LIGHTSPEED_POSTGRES_URL or LIGHTSPEED_TEST_POSTGRES_URL must be set"
-                )
-            })?;
-        let pool = PgPoolOptions::new().connect(&database_url).await?;
-        PgStore::migrate(&pool).await?;
+        let pool = postgres_pool_from_env().await?;
+        store_pg::verify_schema(&pool).await?;
         let object_store = match object_store_config_from_env()? {
             Some(object_config) => Some(build_s3_object_store(object_config)?),
             None => None,
@@ -197,6 +190,17 @@ impl DeploymentStores {
         };
         Arc::new(store)
     }
+}
+
+/// Connect to the deployment database without inspecting or changing its
+/// schema. Migration and diagnostic commands use this lower-level boundary.
+pub async fn postgres_pool_from_env() -> anyhow::Result<PgPool> {
+    let database_url = env::var("LIGHTSPEED_POSTGRES_URL")
+        .or_else(|_| env::var("LIGHTSPEED_TEST_POSTGRES_URL"))
+        .map_err(|_| {
+            anyhow::anyhow!("LIGHTSPEED_POSTGRES_URL or LIGHTSPEED_TEST_POSTGRES_URL must be set")
+        })?;
+    Ok(PgPoolOptions::new().connect(&database_url).await?)
 }
 
 /// Single-universe store bound to `LIGHTSPEED_PG_UNIVERSE_ID`. Used by

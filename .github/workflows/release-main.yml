@@ -1,0 +1,175 @@
+name: release-main
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    runs-on: [self-hosted, linux, x64, hz01, protected]
+    environment: continuous-release
+    services:
+      postgres:
+        image: postgres:17-bookworm@sha256:84560e3b9c6874893fc4e2854f5dc3e7c1a37bc9d1dfd7a8c641310ae22ba5ad
+        env:
+          POSTGRES_USER: lightspeed
+          POSTGRES_PASSWORD: lightspeed
+          POSTGRES_DB: lightspeed
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightspeed"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Verify source and generated consumers
+        env:
+          LIGHTSPEED_TEST_POSTGRES_URL: postgres://lightspeed:lightspeed@127.0.0.1:55432/lightspeed
+        run: |
+          cargo test --workspace --locked
+          cargo test -p api --locked
+          cargo test --locked -p store-pg --test migrations_live \
+            embedded_migrations_are_locked_idempotent_and_checksum_guarded \
+            -- --ignored --test-threads=1
+          scripts/release/verify-metadata.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Load release metadata
+        id: metadata
+        run: |
+          source release/metadata.env
+          cat release/metadata.env >> "$GITHUB_ENV"
+          echo "product_version=$LIGHTSPEED_PRODUCT_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Publish the exact release build environment
+        id: build_environment
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/build-env.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/build-env:sha-${{ github.sha }}
+          provenance: mode=max
+          sbom: true
+      - name: Build release artifacts once
+        env:
+          LIGHTSPEED_GIT_SHA: ${{ github.sha }}
+          BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+        run: LIGHTSPEED_RELEASE_BUILD_IMAGE="$BUILD_IMAGE" scripts/release/run-build-env.sh "$BUILD_IMAGE"
+      - name: Build and publish server image
+        id: server
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/server.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.metadata.outputs.product_version }}
+            LIGHTSPEED_GIT_SHA=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository }}/server:sha-${{ github.sha }}
+            ghcr.io/${{ github.repository }}/server:edge
+          provenance: mode=max
+          sbom: true
+      - name: Build and publish Configurator MCP image
+        id: configurator
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/configurator-mcp.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.metadata.outputs.product_version }}
+            LIGHTSPEED_GIT_SHA=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository }}/configurator-mcp:sha-${{ github.sha }}
+            ghcr.io/${{ github.repository }}/configurator-mcp:edge
+          provenance: mode=max
+          sbom: true
+      - name: Publish standalone archives as immutable OCI artifacts
+        id: archives
+        env:
+          GHCR_ROOT: ghcr.io/${{ github.repository }}
+          SHA_TAG: sha-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          declare -A files=(
+            [server]="$(find dist/archives -name '*-server-*' -print -quit)"
+            [provider-incus]="$(find dist/archives -name '*-provider-incus-*' -print -quit)"
+            [envd]="$(find dist/archives -name '*-envd-*' -print -quit)"
+            [cli]="$(find dist/archives -name '*-cli-*' -print -quit)"
+          )
+          for name in server provider-incus envd cli; do
+            oras push "$GHCR_ROOT/${name}-bundle:$SHA_TAG" \
+              "${files[$name]}:application/gzip"
+            digest="$(oras resolve "$GHCR_ROOT/${name}-bundle:$SHA_TAG")"
+            key="${name^^}"
+            key="${key//-/_}"
+            echo "${key}_URL=oci://$GHCR_ROOT/${name}-bundle@$digest" >> "$GITHUB_OUTPUT"
+          done
+      - name: Finalize coherent release manifest
+        env:
+          LIGHTSPEED_SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+          LIGHTSPEED_CONFIGURATOR_MCP_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
+          LIGHTSPEED_RELEASE_BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+          LIGHTSPEED_BINARY_URL_SERVER: ${{ steps.archives.outputs.SERVER_URL }}
+          LIGHTSPEED_BINARY_URL_PROVIDER_INCUS: ${{ steps.archives.outputs.PROVIDER_INCUS_URL }}
+          LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
+          LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
+        run: |
+          source release/metadata.env
+          scripts/release/create-manifest.mjs "$LIGHTSPEED_PRODUCT_VERSION" "${{ github.sha }}"
+          scripts/release/checksums.sh
+          scripts/release/verify-manifest.mjs --published
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf release-bundle.tar.gz dist
+          oras push "ghcr.io/${{ github.repository }}/release-bundle:sha-${{ github.sha }}" \
+            release-bundle.tar.gz:application/gzip
+      - name: Verify published server contains the recorded binary
+        env:
+          SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$SERVER_IMAGE"
+          container_id="$(docker create "$SERVER_IMAGE" --version)"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          mkdir image-check
+          docker cp "$container_id:/usr/local/bin/lightspeed-server" image-check/lightspeed-server
+          cmp dist/bin/lightspeed-server image-check/lightspeed-server
+          docker run --rm "$SERVER_IMAGE" --version | grep -F "${{ github.sha }}"
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/archives/*.tar.gz
+            dist/npm/*.tgz
+            dist/checksums.txt
+            dist/release-manifest.json
+            dist/sbom.spdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lightspeed-release-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
