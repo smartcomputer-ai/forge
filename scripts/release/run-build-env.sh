@@ -25,14 +25,14 @@ docker run --rm --platform linux/amd64 \
     cleanup() {
       status=$?
       trap - EXIT
-      if [[ -e /workspace/dist ]]; then
-        chown -R "$(stat -c %u:%g /workspace)" /workspace/dist || {
-          cleanup_status=$?
-          if (( status == 0 )); then
-            status=$cleanup_status
-          fi
-        }
-      fi
+      workspace_owner="$(stat -c %u:%g /workspace)"
+      find /workspace -path /workspace/target -prune -o \
+        -exec chown "$workspace_owner" {} + || {
+        cleanup_status=$?
+        if (( status == 0 )); then
+          status=$cleanup_status
+        fi
+      }
       exit "$status"
     }
     trap cleanup EXIT
