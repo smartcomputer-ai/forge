@@ -94,9 +94,13 @@ version, full source commit, target, and Rust version through `--version`.
   public snapshot identity. Consumers resolve that tag once and follow only the
   digest-pinned component references in its manifest. A superseded or canceled
   run may leave staging objects but cannot expose a complete snapshot.
-- The ls.bot notification/dispatch step is intentionally not wired yet. For
-  now, a completed `release-bundle:sha-<full-sha>` is the output that ls.bot can
-  consume later by digest.
+- After every completed current-main snapshot, the workflow sends ls.bot a
+  `lightspeed-main` repository dispatch containing the full Git SHA and exact
+  release-bundle digest. Configure `LSBOT_DISPATCH_TOKEN` as a narrowly scoped
+  GitHub App installation token or fine-grained token that may trigger Actions
+  in `smartcomputer-ai/ls.bot`. Until the secret exists, snapshot publication
+  succeeds with an explicit warning and an operator can dispatch the digest
+  manually.
 - A `v<product-version>` annotated tag on `main` triggers
   `.github/workflows/release-tag.yml`. It independently tests and builds the
   exact tagged commit, applies SemVer aliases from the manifest's exact
@@ -106,6 +110,7 @@ version, full source commit, target, and Rust version through `--version`.
   looks up or promotes a prior main snapshot.
 
 The `official-release` GitHub environment protects tagged-release credentials;
-configure `NPM_TOKEN` only there. Snapshot publication uses only the scoped
-GitHub token. Deployment remains outside these workflows until the explicit
-ls.bot notification is added.
+configure `NPM_TOKEN` only there. Snapshot publication uses the scoped GitHub
+token; only the final cross-repository notification uses
+`LSBOT_DISPATCH_TOKEN`. That notification starts ls.bot's own checks and image
+publication, not a production deployment.
