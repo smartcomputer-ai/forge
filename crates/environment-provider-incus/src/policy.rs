@@ -22,7 +22,11 @@ pub fn project_name(binding: &ProviderBindingContext) -> String {
 }
 
 pub fn network_name(binding: &ProviderBindingContext) -> String {
-    format!("{}-net", project_name(binding))
+    let component = stable_component("binding", &[&binding.universe_id, &binding.binding_id]);
+    // A managed bridge's Incus network name also becomes its Linux interface
+    // name, whose hard limit is 15 bytes. Keep 48 bits of the scoped digest
+    // while making the resource kind visible within that limit.
+    format!("ls{}n", &component[..12])
 }
 pub fn profile_name(binding: &ProviderBindingContext) -> String {
     format!("{}-vm", project_name(binding))
@@ -64,5 +68,20 @@ mod tests {
         let a = instance_name("u", "b", "e", "i");
         assert_eq!(a, instance_name("u", "b", "e", "i"));
         assert_ne!(a, instance_name("u2", "b", "e", "i"));
+    }
+
+    #[test]
+    fn binding_network_names_fit_the_linux_interface_limit() {
+        let binding = ProviderBindingContext {
+            universe_id: "0d3d9e5e-2428-4e60-b66e-8d4520f64e5d".to_owned(),
+            binding_id: "hz02-incus".to_owned(),
+        };
+        let other = ProviderBindingContext {
+            universe_id: "61092591-cd39-4504-b845-a817e3d9cb71".to_owned(),
+            binding_id: "hz02-incus".to_owned(),
+        };
+
+        assert_eq!(network_name(&binding).len(), 15);
+        assert_ne!(network_name(&binding), network_name(&other));
     }
 }
