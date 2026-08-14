@@ -9,8 +9,7 @@ pub(super) async fn wait_for_workflow_work(ctx: &mut WorkflowContext<AgentSessio
     }
 
     let Some(deadline_ms) = nearest_workflow_wake_ms(ctx) else {
-        ctx.wait_condition(|state| workflow_state_has_immediate_work(state))
-            .await;
+        ctx.wait_condition(workflow_state_has_immediate_work).await;
         return;
     };
     if deadline_ms <= now {
@@ -19,7 +18,7 @@ pub(super) async fn wait_for_workflow_work(ctx: &mut WorkflowContext<AgentSessio
 
     let duration = Duration::from_millis(deadline_ms - now);
     let wake = {
-        let wait = ctx.wait_condition(|state| workflow_state_has_immediate_work(state));
+        let wait = ctx.wait_condition(workflow_state_has_immediate_work);
         let timer = ctx.timer(duration).fuse();
         pin_mut!(wait, timer);
         select! {

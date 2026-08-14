@@ -113,12 +113,12 @@ impl GatewayAgentApi {
                     "timed out waiting for agent session to open: {session_id}"
                 )));
             }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
+            if let Some(status) = self.query_status_optional(session_id).await?
+                && let Some(error) = status.last_error
+            {
+                return Err(AgentApiError::internal(format!(
+                    "agent workflow reported error: {error}"
+                )));
             }
             match self.project_session_by_id(session_id).await {
                 Ok(session) if session.config.is_some() => return Ok(session),
@@ -144,10 +144,10 @@ impl GatewayAgentApi {
                 )));
             }
             if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures {
-                    if let Some(failure) = status.admission_failures.last() {
-                        return Err(map_admission_failure_to_api_error(failure));
-                    }
+                if status.admission_failures.len() > baseline_failures
+                    && let Some(failure) = status.admission_failures.last()
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
                 }
                 if let Some(error) = status.last_error {
                     return Err(AgentApiError::internal(format!(
@@ -323,10 +323,10 @@ impl GatewayAgentApi {
                 )));
             }
             if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures {
-                    if let Some(failure) = status.admission_failures.last() {
-                        return Err(map_admission_failure_to_api_error(failure));
-                    }
+                if status.admission_failures.len() > baseline_failures
+                    && let Some(failure) = status.admission_failures.last()
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
                 }
                 if let Some(error) = status.last_error {
                     return Err(AgentApiError::internal(format!(
@@ -509,12 +509,12 @@ impl GatewayAgentApi {
                     "timed out waiting for agent session to close: {session_id}"
                 )));
             }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
+            if let Some(status) = self.query_status_optional(session_id).await?
+                && let Some(error) = status.last_error
+            {
+                return Err(AgentApiError::internal(format!(
+                    "agent workflow reported error: {error}"
+                )));
             }
             let session = self.project_session_by_id(session_id).await?;
             if matches!(session.status, api::SessionStatus::Closed) {
@@ -537,12 +537,12 @@ impl GatewayAgentApi {
                     api_run_id(run_id)
                 )));
             }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
+            if let Some(status) = self.query_status_optional(session_id).await?
+                && let Some(error) = status.last_error
+            {
+                return Err(AgentApiError::internal(format!(
+                    "agent workflow reported error: {error}"
+                )));
             }
             let loaded = self.load_session_state(session_id).await?;
             if let Some(completed) = loaded

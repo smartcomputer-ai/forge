@@ -106,6 +106,12 @@ cargo run -p temporal-server
 cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_1 "hello"
 ```
 
+The server never migrates PostgreSQL implicitly. Before starting it against a
+new or upgraded database, run `cargo run -p temporal-server -- migrate`; use
+`cargo run -p temporal-server -- schema-version` for a non-mutating diagnostic.
+Release construction, snapshots, and tagged publication are documented in
+`docs/releasing.md`.
+
 ## Crates
 
 - `crates/engine/` — deterministic session kernel plus built-in CoreAgent:
@@ -242,6 +248,7 @@ live commands.
 | `LIGHTSPEED_API_KEY` | Client-side (CLI/bridge): bearer key sent to an `api-key`-mode gateway |
 | `LIGHTSPEED_UNIVERSE` | Client-side (CLI/bridge): universe header sent to a `trusted-header`-mode gateway |
 | `LIGHTSPEED_BLOB_CACHE_BYTES` | CAS blob cache budget per process (`0` disables; default 256MiB) |
+| `LIGHTSPEED_ALLOW_UNLEDGERED_SCHEMA` | Permit runtime startup against externally managed Lightspeed tables without a migration ledger (`false` by default); does not relax `migrate` |
 | `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | Stable gateway base URL used by separate Temporal workers for environment routes |
 | `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | Shared deployment bearer token for worker-to-environment-gateway routing; required for split gateway/worker deployments |
 

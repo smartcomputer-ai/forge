@@ -75,7 +75,7 @@ async fn tool_result_text(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_session_start_then_run_start_completes_fake_runs() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -86,7 +86,7 @@ async fn temporal_live_session_start_then_run_start_completes_fake_runs() -> any
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_session_lifecycle_list_and_closed_only_delete() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -97,7 +97,7 @@ async fn temporal_live_session_lifecycle_list_and_closed_only_delete() -> anyhow
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_continue_as_new_completes_later_fake_run() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -108,7 +108,7 @@ async fn temporal_live_continue_as_new_completes_later_fake_run() -> anyhow::Res
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_hosted_run_exceeds_128_drive_transitions() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -121,7 +121,7 @@ async fn temporal_live_hosted_run_exceeds_128_drive_transitions() -> anyhow::Res
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_run_start_missing_session_returns_not_found() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -132,7 +132,7 @@ async fn temporal_live_run_start_missing_session_returns_not_found() -> anyhow::
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_admission_failures_do_not_poison_workflow() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -143,7 +143,7 @@ async fn temporal_live_admission_failures_do_not_poison_workflow() -> anyhow::Re
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_context_append_is_idempotent_and_projected() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -154,7 +154,7 @@ async fn temporal_live_context_append_is_idempotent_and_projected() -> anyhow::R
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_mcp_and_session_links_materialize() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -165,7 +165,7 @@ async fn temporal_live_mcp_and_session_links_materialize() -> anyhow::Result<()>
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_profiles_create_start_and_apply_idempotently() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -176,7 +176,7 @@ async fn temporal_live_profiles_create_start_and_apply_idempotently() -> anyhow:
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_fleet_executor_spawns_child_workflow_and_run() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -187,7 +187,7 @@ async fn temporal_live_fleet_executor_spawns_child_workflow_and_run() -> anyhow:
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_fleet_executor_spawns_profile_child() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -198,7 +198,7 @@ async fn temporal_live_fleet_executor_spawns_profile_child() -> anyhow::Result<(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_fleet_executor_lists_and_reads_profiles() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -209,7 +209,7 @@ async fn temporal_live_fleet_executor_lists_and_reads_profiles() -> anyhow::Resu
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_parallel_tool_batch_completes_per_call() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -227,7 +227,7 @@ async fn temporal_live_parallel_tool_batch_completes_per_call() -> anyhow::Resul
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_transient_llm_failures_retry_within_the_turn() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -243,7 +243,7 @@ async fn temporal_live_transient_llm_failures_retry_within_the_turn() -> anyhow:
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_exhausted_llm_retries_fail_the_run_not_the_session() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -260,7 +260,7 @@ async fn temporal_live_exhausted_llm_retries_fail_the_run_not_the_session() -> a
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_await_parks_until_child_run_completes() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -270,7 +270,7 @@ async fn temporal_live_await_parks_until_child_run_completes() -> anyhow::Result
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn temporal_live_agent_send_to_parent_wakes_idle_parent() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -280,7 +280,7 @@ async fn temporal_live_agent_send_to_parent_wakes_idle_parent() -> anyhow::Resul
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh, Postgres, Temporal, and OPENAI_API_KEY (costs real money)"]
 async fn temporal_live_session_start_then_run_start_completes_openai_run() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
     require_openai_live_env()?;
@@ -767,16 +767,14 @@ where
     );
     tokio::pin!(client_future);
 
-    let client_result = loop {
-        tokio::select! {
-            worker_result = worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live wait test completed")),
-                    Err(error) => Err(error.context("Temporal worker failed")),
-                };
-            }
-            client_result = client_future.as_mut() => break client_result,
+    let client_result = tokio::select! {
+        worker_result = worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live wait test completed")),
+                Err(error) => Err(error.context("Temporal worker failed")),
+            };
         }
+        client_result = client_future.as_mut() => client_result,
     };
 
     shutdown_worker();
@@ -2092,7 +2090,7 @@ async fn wait_for_active_waits(
     expected: usize,
 ) -> anyhow::Result<()> {
     let started = std::time::Instant::now();
-    let handle = live_workflow_handle(&client, &session_id)?;
+    let handle = live_workflow_handle(client, session_id)?;
     loop {
         if started.elapsed() > Duration::from_secs(10) {
             anyhow::bail!(
@@ -3197,11 +3195,11 @@ async fn run_profiles_live_client(
         .apply_profile(ProfileApplyParams {
             session_id: session_id.as_str().to_owned(),
             profile: ProfileSource::Inline {
-                profile: InlineAgentProfile {
+                profile: Box::new(InlineAgentProfile {
                     display_name: Some("No profile instructions".to_owned()),
                     description: None,
                     document: ProfileDocument::default(),
-                },
+                }),
             },
             expected_config_revision: Some(applied.result.session.config_revision),
             expected_tools_revision: Some(applied.result.session.active_tools.revision),
@@ -3299,7 +3297,7 @@ async fn run_openai_live_client(
             ..SessionConfig::default()
         }),
         profile: Some(ProfileSource::Inline {
-            profile: InlineAgentProfile {
+            profile: Box::new(InlineAgentProfile {
                 display_name: Some("OpenAI live test".to_owned()),
                 description: None,
                 document: ProfileDocument {
@@ -3308,7 +3306,7 @@ async fn run_openai_live_client(
                     }),
                     ..ProfileDocument::default()
                 },
-            },
+            }),
         }),
     })
     .await?;
@@ -3357,7 +3355,7 @@ async fn run_openai_live_client(
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh, Postgres, and Temporal"]
 async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -3490,16 +3488,14 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
     };
     tokio::pin!(client_future);
 
-    let client_result = loop {
-        tokio::select! {
-            worker_result = worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
-                    Err(error) => Err(error.context("Temporal worker failed")),
-                };
-            }
-            client_result = client_future.as_mut() => break client_result,
+    let client_result = tokio::select! {
+        worker_result = worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
+                Err(error) => Err(error.context("Temporal worker failed")),
+            };
         }
+        client_result = client_future.as_mut() => client_result,
     };
 
     shutdown_worker();
@@ -3518,7 +3514,7 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
 async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
     use auth::ApiKeyStore as _;
 
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -3802,16 +3798,14 @@ async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
     };
     tokio::pin!(client_future);
 
-    let client_result = loop {
-        tokio::select! {
-            worker_result = worker_future.as_mut() => {
-                return match worker_result {
-                    Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
-                    Err(error) => Err(error.context("Temporal worker failed")),
-                };
-            }
-            client_result = client_future.as_mut() => break client_result,
+    let client_result = tokio::select! {
+        worker_result = worker_future.as_mut() => {
+            return match worker_result {
+                Ok(()) => Err(anyhow::anyhow!("Temporal worker stopped before the live test completed")),
+                Err(error) => Err(error.context("Temporal worker failed")),
+            };
         }
+        client_result = client_future.as_mut() => client_result,
     };
 
     shutdown_worker();

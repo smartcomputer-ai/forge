@@ -107,7 +107,9 @@ pub fn admit_command(
             Ok(vec![CoreAgentEventProposal::new(
                 CoreAgentJoins::default(),
                 CoreAgentEvent::WorkflowToolConfig(
-                    WorkflowToolConfigEvent::SystemBindingAdmitted { binding },
+                    WorkflowToolConfigEvent::SystemBindingAdmitted {
+                        binding: Box::new(binding),
+                    },
                 ),
             )])
         }
@@ -559,27 +561,27 @@ pub fn admit_command(
         }
         CoreAgentCommand::CancelRun { run_id } => {
             require_open(state)?;
-            if let Some(active_run) = state.runs.active.as_ref() {
-                if active_run.run_id == run_id {
-                    if matches!(
-                        active_run.status,
-                        RunStatus::Cancelling | RunStatus::CancellingGrace
-                    ) {
-                        return Ok(Vec::new());
-                    }
-                    if matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
-                        return Ok(vec![CoreAgentEventProposal::new(
-                            CoreAgentJoins {
-                                run_id: Some(active_run.run_id),
-                                ..CoreAgentJoins::default()
-                            },
-                            CoreAgentEvent::Run(RunEvent::CancellationRequested {
-                                run_id: active_run.run_id,
-                            }),
-                        )]);
-                    }
+            if let Some(active_run) = state.runs.active.as_ref()
+                && active_run.run_id == run_id
+            {
+                if matches!(
+                    active_run.status,
+                    RunStatus::Cancelling | RunStatus::CancellingGrace
+                ) {
                     return Ok(Vec::new());
                 }
+                if matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
+                    return Ok(vec![CoreAgentEventProposal::new(
+                        CoreAgentJoins {
+                            run_id: Some(active_run.run_id),
+                            ..CoreAgentJoins::default()
+                        },
+                        CoreAgentEvent::Run(RunEvent::CancellationRequested {
+                            run_id: active_run.run_id,
+                        }),
+                    )]);
+                }
+                return Ok(Vec::new());
             }
             if state
                 .runs

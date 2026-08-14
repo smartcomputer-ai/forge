@@ -8,24 +8,13 @@ use super::*;
 type CredentialKey = (EnvironmentId, String);
 type BindingKey = (Uuid, EnvironmentProviderBindingId);
 
+#[derive(Default)]
 struct RegistryState {
     providers: BTreeMap<EnvironmentProviderId, EnvironmentProviderRecord>,
     bindings: BTreeMap<BindingKey, EnvironmentProviderBindingRecord>,
     environments: BTreeMap<EnvironmentId, EnvironmentRecord>,
     requests: BTreeMap<EnvironmentProvisionRequestId, EnvironmentId>,
     credentials: BTreeMap<CredentialKey, EnvironmentCredentialRecord>,
-}
-
-impl Default for RegistryState {
-    fn default() -> Self {
-        Self {
-            providers: BTreeMap::new(),
-            bindings: BTreeMap::new(),
-            environments: BTreeMap::new(),
-            requests: BTreeMap::new(),
-            credentials: BTreeMap::new(),
-        }
-    }
 }
 
 pub struct InMemoryEnvironmentRegistryStore {

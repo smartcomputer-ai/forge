@@ -4,7 +4,7 @@ use super::*;
 #[serde(tag = "method", content = "params", rename_all = "camelCase")]
 pub enum AgentNotification {
     #[serde(rename = "session/started")]
-    SessionStarted { session: SessionView },
+    SessionStarted { session: Box<SessionView> },
     #[serde(rename = "session/status/changed")]
     SessionStatusChanged {
         #[serde(rename = "sessionId")]
@@ -12,7 +12,7 @@ pub enum AgentNotification {
         status: SessionStatus,
     },
     #[serde(rename = "session/event")]
-    SessionEvent { event: SessionEventView },
+    SessionEvent { event: Box<SessionEventView> },
     #[serde(rename = "session/runs/started")]
     RunStarted {
         #[serde(rename = "sessionId")]

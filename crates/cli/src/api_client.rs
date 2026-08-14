@@ -65,21 +65,20 @@ fn auth_headers_from_env() -> reqwest::header::HeaderMap {
     let mut headers = reqwest::header::HeaderMap::new();
     if let Ok(api_key) = std::env::var("LIGHTSPEED_API_KEY") {
         let api_key = api_key.trim();
-        if !api_key.is_empty() {
-            if let Ok(mut value) =
+        if !api_key.is_empty()
+            && let Ok(mut value) =
                 reqwest::header::HeaderValue::from_str(&format!("Bearer {api_key}"))
-            {
-                value.set_sensitive(true);
-                headers.insert(reqwest::header::AUTHORIZATION, value);
-            }
+        {
+            value.set_sensitive(true);
+            headers.insert(reqwest::header::AUTHORIZATION, value);
         }
     }
     if let Ok(universe) = std::env::var("LIGHTSPEED_UNIVERSE") {
         let universe = universe.trim();
-        if !universe.is_empty() {
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(universe) {
-                headers.insert("x-lightspeed-universe", value);
-            }
+        if !universe.is_empty()
+            && let Ok(value) = reqwest::header::HeaderValue::from_str(universe)
+        {
+            headers.insert("x-lightspeed-universe", value);
         }
     }
     headers

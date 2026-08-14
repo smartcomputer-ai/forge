@@ -491,7 +491,11 @@ mod tests {
                         LlmFinish::Stop
                     },
                     usage: None,
-                    tool_calls: first.then(|| self.tool_calls.clone()).unwrap_or_default(),
+                    tool_calls: if first {
+                        self.tool_calls.clone()
+                    } else {
+                        Default::default()
+                    },
                     context_token_estimate: None,
                 },
             })

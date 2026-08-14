@@ -34,7 +34,10 @@ export function createToolRegistry(
     tools,
     createServer(auth) {
       const server = new Server(
-        { name: "lightspeed-configurator", version: "0.0.0" },
+        {
+          name: "lightspeed-configurator",
+          version: process.env.LIGHTSPEED_RELEASE_VERSION ?? "0.0.0",
+        },
         {
           capabilities: { tools: {} },
           instructions:

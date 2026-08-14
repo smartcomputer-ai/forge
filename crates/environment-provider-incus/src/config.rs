@@ -5,7 +5,7 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 #[derive(Parser, Debug)]
-#[command(name = "lightspeed-provider-incus", version)]
+#[command(name = "lightspeed-provider-incus", version = release_info::LONG_VERSION)]
 pub struct ProviderArgs {
     #[arg(long, env = "LIGHTSPEED_INCUS_PROVIDER_CONFIG")]
     pub config: PathBuf,

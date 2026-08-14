@@ -317,9 +317,7 @@ pub(crate) fn validate_audience_url(value: &str) -> Result<(), AuthRegistryError
             message: format!("audience URL scheme {scheme:?} is not supported"),
         });
     }
-    let authority_end = rest
-        .find(|ch| matches!(ch, '/' | '?' | '#'))
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     if authority.is_empty() {
         return Err(AuthRegistryError::InvalidInput {
@@ -355,9 +353,7 @@ pub(crate) fn validate_oauth_endpoint_url(
     if scheme.eq_ignore_ascii_case("https") {
         return Ok(());
     }
-    let authority_end = rest
-        .find(|ch| matches!(ch, '/' | '?' | '#'))
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let host =
         rest[..authority_end]
             .rsplit_once(':')

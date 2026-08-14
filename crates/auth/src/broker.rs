@@ -363,10 +363,10 @@ impl StoredTokenSource {
         if let Some(old_access_secret) = old_access_secret {
             let _ = self.secrets.delete_secret(&old_access_secret).await;
         }
-        if new_refresh_secret_id.is_some() {
-            if let Some(old_refresh_secret) = old_refresh_secret {
-                let _ = self.secrets.delete_secret(&old_refresh_secret).await;
-            }
+        if new_refresh_secret_id.is_some()
+            && let Some(old_refresh_secret) = old_refresh_secret
+        {
+            let _ = self.secrets.delete_secret(&old_refresh_secret).await;
         }
         Ok(response.access_token)
     }
@@ -516,13 +516,13 @@ impl RegistryTokenBroker {
                 status: grant.status,
             });
         }
-        if let Some(grant_audience) = &grant.audience {
-            if !audience_covers(grant_audience, audience.resource()) {
-                return Err(AuthBrokerError::AudienceMismatch {
-                    grant_id: grant.grant_id,
-                    requested: audience.resource().to_owned(),
-                });
-            }
+        if let Some(grant_audience) = &grant.audience
+            && !audience_covers(grant_audience, audience.resource())
+        {
+            return Err(AuthBrokerError::AudienceMismatch {
+                grant_id: grant.grant_id,
+                requested: audience.resource().to_owned(),
+            });
         }
         Ok(grant)
     }

@@ -34,7 +34,7 @@ const TRANSCRIPT_TEXT: &str = "please file the deployment note from this audio";
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn preprocess_live_audio_input_is_transcribed_before_admission() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
@@ -49,7 +49,7 @@ async fn preprocess_live_audio_input_is_transcribed_before_admission() -> anyhow
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires local/up.sh or compatible Temporal + Postgres env"]
 async fn preprocess_live_transcodable_audio_is_transcoded_before_admission() -> anyhow::Result<()> {
-    let _lock = LIVE_TEST_LOCK.lock().expect("live test lock");
+    let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 

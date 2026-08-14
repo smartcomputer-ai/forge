@@ -526,9 +526,7 @@ fn validate_remote_mcp_server_url(value: &str) -> Result<(), DomainError> {
         )));
     }
 
-    let authority_end = rest
-        .find(|ch| matches!(ch, '/' | '?' | '#'))
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     if authority.is_empty() {
         return Err(DomainError::InvariantViolation(
@@ -1209,9 +1207,7 @@ fn initial_tool_call_execution_policy(
     turn_id: TurnId,
     call: &ObservedToolCall,
 ) -> Option<ToolCallExecutionPolicy> {
-    let Some(tool) = planned_tool_for_turn(state, turn_id, &call.tool_name) else {
-        return None;
-    };
+    let tool = planned_tool_for_turn(state, turn_id, &call.tool_name)?;
     if !tool.invokes_client_effect() {
         return None;
     }

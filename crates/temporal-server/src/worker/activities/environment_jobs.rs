@@ -22,7 +22,8 @@ use temporalio_common::error::ApplicationFailure;
 use temporalio_sdk::activities::ActivityError;
 use tools::environment::jobs::{
     JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID, JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE,
-    JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, normalize_job_result, store_model_job_result,
+    JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, NormalizeJobResultInput, normalize_job_result,
+    store_model_job_result,
 };
 
 use super::{common::activity_error, state::EnvironmentJobActivityDeps};
@@ -453,16 +454,18 @@ pub(super) async fn poll(
             });
             let normalized = normalize_job_result(
                 deps.blobs.as_ref(),
-                Some(JobHandle {
-                    environment_id: environment_id.as_str().to_owned(),
-                    job_id: summary.job_id.clone(),
-                }),
-                Some(result.summary),
-                result.output_chunks,
-                result.output_next_seq,
-                result.artifacts,
-                error,
-                Some(PROMISE_JOB_OUTPUT_BYTES),
+                NormalizeJobResultInput {
+                    handle: Some(JobHandle {
+                        environment_id: environment_id.as_str().to_owned(),
+                        job_id: summary.job_id.clone(),
+                    }),
+                    summary: Some(result.summary),
+                    output_chunks: result.output_chunks,
+                    output_next_seq: result.output_next_seq,
+                    artifacts: result.artifacts,
+                    error,
+                    output_bytes: Some(PROMISE_JOB_OUTPUT_BYTES),
+                },
             )
             .await
             .map_err(activity_error)?;

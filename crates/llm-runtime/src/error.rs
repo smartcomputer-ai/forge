@@ -38,7 +38,7 @@ pub enum LlmAdapterError {
     #[error("provider call failed: {source}")]
     Provider {
         #[source]
-        source: llm_clients::LlmApiError,
+        source: Box<llm_clients::LlmApiError>,
     },
 }
 
@@ -52,6 +52,8 @@ impl From<engine::storage::BlobStoreError> for LlmAdapterError {
 
 impl From<llm_clients::LlmApiError> for LlmAdapterError {
     fn from(error: llm_clients::LlmApiError) -> Self {
-        Self::Provider { source: error }
+        Self::Provider {
+            source: Box::new(error),
+        }
     }
 }

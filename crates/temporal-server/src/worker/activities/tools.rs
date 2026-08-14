@@ -51,6 +51,50 @@ pub(super) async fn prepare_promise_controls(
     })
 }
 
+pub(super) async fn invoke_batch(
+    deps: &ToolActivityDeps,
+    request: ToolInvokeBatchActivityRequest,
+) -> Result<ToolBatchOutcome, ActivityError> {
+    let request = request.request;
+    match deps.tools.invoke_batch(request.clone()).await {
+        Ok(result) => Ok(result),
+        Err(error) => failed_tool_batch_result(deps.blobs.as_ref(), &request, error.to_string())
+            .await
+            .map(ToolBatchOutcome::completed)
+            .map_err(activity_error),
+    }
+}
+
+/// Execute one call of an admitted tool batch under its class operation
+/// deadline. Tool-level failures and an elapsed operation deadline return an
+/// ordinary terminal failed result; only blob-store failures fail the
+/// activity.
+pub(super) async fn invoke_call(
+    deps: &ToolActivityDeps,
+    request: crate::worker::ToolInvokeCallActivityRequest,
+) -> Result<engine::ToolInvocationResult, ActivityError> {
+    let request = request.request;
+    let deadline = temporal_workflow::tool_call_operation_timeout(request.execution.class);
+    match tokio::time::timeout(deadline, deps.tools.invoke_call(request.clone())).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(error)) => {
+            super::common::failed_tool_call_result(deps.blobs.as_ref(), &request, error.to_string())
+                .await
+                .map_err(activity_error)
+        }
+        Err(_elapsed) => super::common::failed_tool_call_result(
+            deps.blobs.as_ref(),
+            &request,
+            format!(
+                "tool call exceeded its {}s operation deadline",
+                deadline.as_secs()
+            ),
+        )
+        .await
+        .map_err(activity_error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use engine::{BlobRef, PromiseControlArgumentCall, ToolCallId, storage::InMemoryBlobStore};
@@ -109,49 +153,5 @@ mod tests {
                 },
             ]
         );
-    }
-}
-
-pub(super) async fn invoke_batch(
-    deps: &ToolActivityDeps,
-    request: ToolInvokeBatchActivityRequest,
-) -> Result<ToolBatchOutcome, ActivityError> {
-    let request = request.request;
-    match deps.tools.invoke_batch(request.clone()).await {
-        Ok(result) => Ok(result),
-        Err(error) => failed_tool_batch_result(deps.blobs.as_ref(), &request, error.to_string())
-            .await
-            .map(ToolBatchOutcome::completed)
-            .map_err(activity_error),
-    }
-}
-
-/// Execute one call of an admitted tool batch under its class operation
-/// deadline. Tool-level failures and an elapsed operation deadline return an
-/// ordinary terminal failed result; only blob-store failures fail the
-/// activity.
-pub(super) async fn invoke_call(
-    deps: &ToolActivityDeps,
-    request: crate::worker::ToolInvokeCallActivityRequest,
-) -> Result<engine::ToolInvocationResult, ActivityError> {
-    let request = request.request;
-    let deadline = temporal_workflow::tool_call_operation_timeout(request.execution.class);
-    match tokio::time::timeout(deadline, deps.tools.invoke_call(request.clone())).await {
-        Ok(Ok(result)) => Ok(result),
-        Ok(Err(error)) => {
-            super::common::failed_tool_call_result(deps.blobs.as_ref(), &request, error.to_string())
-                .await
-                .map_err(activity_error)
-        }
-        Err(_elapsed) => super::common::failed_tool_call_result(
-            deps.blobs.as_ref(),
-            &request,
-            format!(
-                "tool call exceeded its {}s operation deadline",
-                deadline.as_secs()
-            ),
-        )
-        .await
-        .map_err(activity_error),
     }
 }

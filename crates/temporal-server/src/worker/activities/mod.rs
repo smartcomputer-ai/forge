@@ -387,7 +387,7 @@ mod tests {
         )
         .await
         .expect("post-transient attempt succeeds");
-        assert!(generated.facts.tool_calls.first().is_some());
+        assert!(!generated.facts.tool_calls.is_empty());
     }
 
     fn fake_llm_request() -> LlmGenerationRequest {

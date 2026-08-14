@@ -12,7 +12,7 @@ pub(crate) struct McpArgs {
 #[derive(Subcommand, Debug, Clone)]
 enum McpCommand {
     /// Manage universe-scoped remote MCP server records.
-    Server(McpServerArgs),
+    Server(Box<McpServerArgs>),
     /// Link a registered MCP server into a session tool profile.
     Link(McpLinkArgs),
     /// Remove a linked MCP tool from a session.
@@ -30,7 +30,7 @@ struct McpServerArgs {
 #[derive(Subcommand, Debug, Clone)]
 enum McpServerCommand {
     /// Create or replace a remote MCP server record (full document).
-    Put(McpServerPutArgs),
+    Put(Box<McpServerPutArgs>),
     /// List remote MCP server records.
     List(McpServerListArgs),
     /// Read a remote MCP server record.
@@ -414,7 +414,7 @@ impl From<McpServerStatusArg> for api::McpServerStatus {
 
 pub(crate) async fn handle(args: McpArgs) -> Result<()> {
     match args.command {
-        McpCommand::Server(args) => server(args).await,
+        McpCommand::Server(args) => server(*args).await,
         McpCommand::Link(args) => link(args).await,
         McpCommand::Unlink(args) => unlink(args).await,
         McpCommand::List(args) => list(args).await,
@@ -423,7 +423,7 @@ pub(crate) async fn handle(args: McpArgs) -> Result<()> {
 
 async fn server(args: McpServerArgs) -> Result<()> {
     match args.command {
-        McpServerCommand::Put(args) => server_put(args).await,
+        McpServerCommand::Put(args) => server_put(*args).await,
         McpServerCommand::List(args) => server_list(args).await,
         McpServerCommand::Read(args) => server_read(args).await,
         McpServerCommand::Delete(args) => server_delete(args).await,

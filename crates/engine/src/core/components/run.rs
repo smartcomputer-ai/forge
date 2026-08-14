@@ -454,10 +454,10 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
                     }),
                 )]);
             }
-            if active_run.status == RunStatus::Active {
-                if let Some(proposal) = terminal_run_proposal(active_run)? {
-                    return Ok(vec![proposal]);
-                }
+            if active_run.status == RunStatus::Active
+                && let Some(proposal) = terminal_run_proposal(active_run)?
+            {
+                return Ok(vec![proposal]);
             }
         }
         return Ok(Vec::new());
@@ -723,11 +723,11 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
         }
         Event::MessagePromotedToRun { message_id, run_id } => {
             if !state.runs.queued.iter().any(|run| run.run_id == *run_id)
-                && !state
+                && state
                     .runs
                     .active
                     .as_ref()
-                    .is_some_and(|run| run.run_id == *run_id)
+                    .is_none_or(|run| run.run_id != *run_id)
                 && !state.runs.completed.iter().any(|run| run.run_id == *run_id)
             {
                 return Err(DomainError::InvariantViolation(format!(

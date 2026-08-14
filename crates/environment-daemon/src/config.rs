@@ -9,7 +9,7 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(
     name = "lightspeed-envd",
-    version,
+    version = release_info::LONG_VERSION,
     about = "Lightspeed environment execution daemon"
 )]
 pub struct DaemonArgs {

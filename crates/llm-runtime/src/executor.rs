@@ -192,7 +192,7 @@ mod tests {
             _request: LlmGenerationRequest,
         ) -> LlmAdapterResult<LlmGenerationExecution> {
             Err(LlmAdapterError::Provider {
-                source: self.error.clone(),
+                source: Box::new(self.error.clone()),
             })
         }
     }

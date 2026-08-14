@@ -31,6 +31,7 @@ mcp = { path = "../mcp" }
 object_store = "0.13.1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid"] }
 profiles = { path = "../profiles" }
+release-info = { path = "../release-info" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 store-pg = { path = "../store-pg" }
@@ -56,5 +57,5 @@ futures-util = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [[bin]]
-name = "server"
+name = "lightspeed-server"
 path = "src/main.rs"

@@ -1,0 +1,316 @@
+name: release tag
+
+on:
+  push:
+    tags: ["v*"]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: [self-hosted, linux, x64, hz01, protected]
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      bundle_digest: ${{ steps.release_bundle.outputs.digest }}
+      git_sha: ${{ steps.identity.outputs.sha }}
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+    services:
+      postgres:
+        image: postgres:17-bookworm@sha256:84560e3b9c6874893fc4e2854f5dc3e7c1a37bc9d1dfd7a8c641310ae22ba5ad
+        env:
+          POSTGRES_USER: lightspeed
+          POSTGRES_PASSWORD: lightspeed
+          POSTGRES_DB: lightspeed
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U lightspeed"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+      - name: Validate the annotated SemVer tag
+        id: identity
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          # OCI tags cannot contain SemVer build metadata's `+`, so release
+          # versions support ordinary SemVer and prereleases, but no `+build`.
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          test "$(git cat-file -t "$tag")" = tag
+          sha="$(git rev-parse HEAD^{commit})"
+          test "$(git rev-list -n 1 "$tag")" = "$sha"
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git merge-base --is-ancestor "$sha" origin/main
+          source release/metadata.env
+          test "$tag" = "v$LIGHTSPEED_PRODUCT_VERSION"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$LIGHTSPEED_PRODUCT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "staging_tag=staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: |
+            interop/ts-client/package-lock.json
+            interop/configurator-mcp/package-lock.json
+      - name: Test the exact tagged source
+        env:
+          LIGHTSPEED_TEST_POSTGRES_URL: postgres://lightspeed:lightspeed@127.0.0.1:55432/lightspeed
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked
+          cargo test --locked -p store-pg --test migrations_live \
+            embedded_migrations_are_locked_idempotent_and_checksum_guarded \
+            -- --ignored --test-threads=1
+          npm --prefix interop/ts-client ci
+          npm --prefix interop/ts-client run check
+          npm --prefix interop/configurator-mcp ci
+          npm --prefix interop/configurator-mcp run check
+          scripts/release/verify-metadata.sh
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Publish the exact release build environment to staging
+        id: build_environment
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/build-env.Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/${{ github.repository }}/build-env:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Build the coherent artifact set once
+        env:
+          LIGHTSPEED_GIT_SHA: ${{ steps.identity.outputs.sha }}
+          BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+        run: LIGHTSPEED_RELEASE_BUILD_IMAGE="$BUILD_IMAGE" scripts/release/run-build-env.sh "$BUILD_IMAGE"
+      - name: Build and publish the server image to staging
+        id: server
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/server.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.identity.outputs.version }}
+            LIGHTSPEED_GIT_SHA=${{ steps.identity.outputs.sha }}
+          tags: ghcr.io/${{ github.repository }}/server:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Build and publish Configurator MCP image to staging
+        id: configurator
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: release/configurator-mcp.Dockerfile
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            LIGHTSPEED_RELEASE_VERSION=${{ steps.identity.outputs.version }}
+            LIGHTSPEED_GIT_SHA=${{ steps.identity.outputs.sha }}
+          tags: ghcr.io/${{ github.repository }}/configurator-mcp:${{ steps.identity.outputs.staging_tag }}
+          provenance: mode=max
+          sbom: true
+      - name: Publish standalone archives to staging
+        id: archives
+        env:
+          GHCR_ROOT: ghcr.io/${{ github.repository }}
+          STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
+        run: |
+          set -euo pipefail
+          declare -A files=(
+            [server]="$(find dist/archives -name '*-server-*' -print -quit)"
+            [provider-incus]="$(find dist/archives -name '*-provider-incus-*' -print -quit)"
+            [envd]="$(find dist/archives -name '*-envd-*' -print -quit)"
+            [cli]="$(find dist/archives -name '*-cli-*' -print -quit)"
+          )
+          for name in server provider-incus envd cli; do
+            test -n "${files[$name]}"
+            ref="$GHCR_ROOT/${name}-bundle:$STAGING_TAG"
+            oras push "$ref" "${files[$name]}:application/gzip"
+            digest="$(oras resolve "$ref")"
+            [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+            key="${name^^}"
+            key="${key//-/_}"
+            echo "${key}_URL=oci://$GHCR_ROOT/${name}-bundle@$digest" >> "$GITHUB_OUTPUT"
+          done
+      - name: Finalize the digest-pinned manifest and staged bundle
+        id: release_bundle
+        env:
+          LIGHTSPEED_SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+          LIGHTSPEED_CONFIGURATOR_MCP_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
+          LIGHTSPEED_RELEASE_BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
+          LIGHTSPEED_BINARY_URL_SERVER: ${{ steps.archives.outputs.SERVER_URL }}
+          LIGHTSPEED_BINARY_URL_PROVIDER_INCUS: ${{ steps.archives.outputs.PROVIDER_INCUS_URL }}
+          LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
+          LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
+          STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
+        run: |
+          set -euo pipefail
+          scripts/release/create-manifest.mjs \
+            "${{ steps.identity.outputs.version }}" "${{ steps.identity.outputs.sha }}"
+          scripts/release/checksums.sh
+          scripts/release/verify-manifest.mjs --published
+          (cd dist && sha256sum --check checksums.txt)
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf release-bundle.tar.gz dist
+          bundle_ref="ghcr.io/${{ github.repository }}/release-bundle:$STAGING_TAG"
+          oras push "$bundle_ref" release-bundle.tar.gz:application/gzip
+          bundle_digest="$(oras resolve "$bundle_ref")"
+          [[ "$bundle_digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$bundle_digest" >> "$GITHUB_OUTPUT"
+      - name: Verify the staged runtime images
+        env:
+          SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
+          CONFIGURATOR_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
+          EXPECTED_SHA: ${{ steps.identity.outputs.sha }}
+        run: |
+          set -euo pipefail
+          docker pull "$SERVER_IMAGE"
+          container_id="$(docker create "$SERVER_IMAGE" --version)"
+          trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true' EXIT
+          mkdir image-check
+          docker cp "$container_id:/usr/local/bin/lightspeed-server" image-check/lightspeed-server
+          cmp dist/bin/lightspeed-server image-check/lightspeed-server
+          docker run --rm "$SERVER_IMAGE" --version | grep -F "$EXPECTED_SHA"
+          docker pull "$CONFIGURATOR_IMAGE"
+          docker run --rm --entrypoint node "$CONFIGURATOR_IMAGE" -e \
+            'const fs = require("node:fs"); for (const f of ["/app/dist/bin.js", "/app/agent-client.tgz"]) fs.accessSync(f);'
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: |
+            dist/archives/*.tar.gz
+            dist/npm/*.tgz
+            dist/checksums.txt
+            dist/release-manifest.json
+            dist/sbom.spdx.json
+            release-bundle.tar.gz
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: lightspeed-release-${{ steps.identity.outputs.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/
+            release-bundle.tar.gz
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-release:
+    needs: build
+    runs-on: [self-hosted, linux, x64, hz01, protected]
+    environment: official-release
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.build.outputs.tag }}
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1
+      - uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.13.0
+          registry-url: https://registry.npmjs.org
+      - name: Retrieve and verify this build's bundle by digest
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD^{commit})" = "${{ needs.build.outputs.git_sha }}"
+          root="ghcr.io/${{ github.repository }}/release-bundle"
+          oras pull "$root@${{ needs.build.outputs.bundle_digest }}"
+          tar -xzf release-bundle.tar.gz
+          scripts/release/verify-manifest.mjs --published
+          test "$(jq -r .gitSha dist/release-manifest.json)" = "${{ needs.build.outputs.git_sha }}"
+          test "$(jq -r .version dist/release-manifest.json)" = "${{ needs.build.outputs.version }}"
+          (cd dist && sha256sum --check checksums.txt)
+      - name: Publish SemVer aliases from exact manifest digests
+        env:
+          GHCR_ROOT: ghcr.io/${{ github.repository }}
+          BUNDLE_DIGEST: ${{ needs.build.outputs.bundle_digest }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          scripts/release/publish-aliases.sh "$VERSION" "$BUNDLE_DIGEST"
+          printf 'Release bundle: `%s`\n' \
+            "oci://$GHCR_ROOT/release-bundle@$BUNDLE_DIGEST" >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish stable TypeScript client
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          package_file="$(find dist/npm -maxdepth 1 -name '*.tgz' -print -quit)"
+          expected_integrity="$(node -e '
+            const crypto = require("node:crypto");
+            const fs = require("node:fs");
+            const digest = crypto.createHash("sha512").update(fs.readFileSync(process.argv[1])).digest("base64");
+            process.stdout.write(`sha512-${digest}`);
+          ' "$package_file")"
+          if published_integrity="$(npm view "@lightspeed/agent-client@$VERSION" dist.integrity 2>/dev/null)"; then
+            test "$published_integrity" = "$expected_integrity" || {
+              echo "npm version $VERSION already exists with different bytes" >&2
+              exit 1
+            }
+          else
+            npm publish "$package_file" --access public --tag latest
+          fi
+          npm dist-tag add "@lightspeed/agent-client@$VERSION" latest
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            mkdir existing-release
+            gh release download "$TAG" --pattern release-manifest.json --dir existing-release
+            cmp dist/release-manifest.json existing-release/release-manifest.json
+            published_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+            for file in \
+              dist/archives/*.tar.gz \
+              dist/npm/*.tgz \
+              dist/checksums.txt \
+              dist/release-manifest.json \
+              dist/sbom.spdx.json; do
+              grep -Fx "$(basename "$file")" <<< "$published_assets"
+            done
+          else
+            gh release create "$TAG" --verify-tag --notes-from-tag \
+              dist/archives/*.tar.gz \
+              dist/npm/*.tgz \
+              dist/checksums.txt \
+              dist/release-manifest.json \
+              dist/sbom.spdx.json
+          fi

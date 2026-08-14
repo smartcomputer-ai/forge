@@ -467,10 +467,10 @@ impl JobManager {
                     let Some(record) = state.jobs.get(&key) else {
                         continue;
                     };
-                    if let Some(queue_key) = record.queue_key.as_ref() {
-                        if !busy_queues.insert((record.namespace.clone(), queue_key.clone())) {
-                            continue;
-                        }
+                    if let Some(queue_key) = record.queue_key.as_ref()
+                        && !busy_queues.insert((record.namespace.clone(), queue_key.clone()))
+                    {
+                        continue;
                     }
                     ready_ids.push(key.clone());
                 }
@@ -1029,16 +1029,16 @@ fn validate_and_resolve_start(
 
         let spec_hash = job_spec_hash(params, spec, &dependencies)?;
         let key = job_key(&params.namespace, &spec.job_id);
-        if let Some(existing) = state.jobs.get(&key) {
-            if existing.spec_hash != spec_hash {
-                return Err(EnvironmentProtocolError::new(
-                    EnvironmentProtocolErrorCode::Conflict,
-                    format!(
-                        "job id already exists with different input in namespace {}: {}",
-                        params.namespace, spec.job_id
-                    ),
-                ));
-            }
+        if let Some(existing) = state.jobs.get(&key)
+            && existing.spec_hash != spec_hash
+        {
+            return Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Conflict,
+                format!(
+                    "job id already exists with different input in namespace {}: {}",
+                    params.namespace, spec.job_id
+                ),
+            ));
         }
 
         resolved.push(ResolvedJob {

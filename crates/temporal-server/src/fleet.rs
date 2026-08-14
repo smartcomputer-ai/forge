@@ -78,7 +78,7 @@ impl FleetService {
     ) -> Result<SpawnResult, AgentApiError> {
         validate_spawn_args(&args)?;
         let fleet_config = fleet_policy(&context)?;
-        validate_spawn_policy(&fleet_config, &args)?;
+        validate_spawn_policy(fleet_config, &args)?;
         let child_id_was_derived = args.child_session_id.is_none();
         let child_session_id = match args.child_session_id.as_deref() {
             Some(session_id) => parse_session_id(session_id, "child_session_id")?,
@@ -262,7 +262,7 @@ impl FleetService {
         let profile_id = ProfileId::try_new(args.profile_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid profile_id: {error}"))
         })?;
-        validate_named_profile_allowed(&fleet_config, &profile_id)?;
+        validate_named_profile_allowed(fleet_config, &profile_id)?;
         Ok(ProfileReadOutput {
             profile: self.runtime.read_profile(profile_id).await?,
         })
@@ -2562,8 +2562,7 @@ mod tests {
                 .expect("spawn args"),
             )
             .await
-            .expect("spawn")
-            .output;
+            .expect("spawn");
 
         let started = runtime.started_sessions.lock().expect("lock");
         assert_eq!(started.len(), 1);
@@ -3822,11 +3821,11 @@ mod tests {
         let mut inline = spawn_args("spawn inline");
         inline.base = AgentSpawnBase::Profile {
             profile: ProfileSource::Inline {
-                profile: api::InlineAgentProfile {
+                profile: Box::new(api::InlineAgentProfile {
                     display_name: None,
                     description: None,
                     document: api::ProfileDocument::default(),
-                },
+                }),
             },
         };
         let inline_error = service

@@ -522,6 +522,7 @@ dependencies = [
  "futures-util",
  "pulldown-cmark 0.10.3",
  "ratatui",
+ "release-info",
  "reqwest",
  "serde",
  "serde_json",
@@ -1038,6 +1039,7 @@ dependencies = [
  "ignore",
  "libc",
  "portable-pty",
+ "release-info",
  "reqwest",
  "serde",
  "serde_json",
@@ -1069,6 +1071,7 @@ dependencies = [
  "dotenvy",
  "environment-protocol",
  "futures-util",
+ "release-info",
  "reqwest",
  "serde",
  "serde_json",
@@ -3275,6 +3278,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc897dd8d9e8bd1ed8cdad82b5966c3e0ecae09fb1907d58efaa013543185d0a"
 
 [[package]]
+name = "release-info"
+version = "0.1.0"
+
+[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4040,6 +4047,7 @@ dependencies = [
  "rand 0.8.6",
  "serde",
  "serde_json",
+ "sha2",
  "sqlx",
  "thiserror 1.0.69",
  "tokio",
@@ -4183,6 +4191,7 @@ dependencies = [
  "object_store",
  "profiles",
  "rand 0.8.6",
+ "release-info",
  "reqwest",
  "serde",
  "serde_json",

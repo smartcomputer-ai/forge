@@ -109,7 +109,7 @@ pub(crate) async fn handle(args: ChatArgs) -> Result<()> {
     let session_id = if args.new {
         new_session_id()
     } else if let Some(session_id) = args.session.as_ref() {
-        validate_session_id(&session_id)?
+        validate_session_id(session_id)?
     } else {
         new_session_id()
     };
@@ -187,7 +187,9 @@ fn profile_source_from_args(
             };
             let profile: InlineAgentProfile =
                 serde_json::from_str(&json).context("failed to parse inline profile JSON")?;
-            Ok(Some(ProfileSource::Inline { profile }))
+            Ok(Some(ProfileSource::Inline {
+                profile: Box::new(profile),
+            }))
         }
         (None, None) => Ok(None),
     }
@@ -1059,25 +1061,26 @@ fn project_turns(session: &SessionView, settings: &ChatDraftSettings) -> Vec<Cha
             let user = input_items
                 .iter()
                 .enumerate()
-                .find_map(|(index, item)| match item {
-                    InputItem::Text { text } => Some(ChatMessageView {
+                .next()
+                .map(|(index, item)| match item {
+                    InputItem::Text { text } => ChatMessageView {
                         id: format!("{}:input:{index}", run.id),
                         role: "user".into(),
                         content: text.clone(),
                         ref_: None,
-                    }),
-                    InputItem::TextRef { blob_ref } => Some(ChatMessageView {
+                    },
+                    InputItem::TextRef { blob_ref } => ChatMessageView {
                         id: format!("{}:input:{index}", run.id),
                         role: "user".into(),
                         content: format!("text input ref {blob_ref}"),
                         ref_: Some(blob_ref.clone()),
-                    }),
+                    },
                     InputItem::Media {
                         blob_ref,
                         mime,
                         name,
                         ..
-                    } => Some(ChatMessageView {
+                    } => ChatMessageView {
                         id: format!("{}:input:{index}", run.id),
                         role: "user".into(),
                         content: match name {
@@ -1085,7 +1088,7 @@ fn project_turns(session: &SessionView, settings: &ChatDraftSettings) -> Vec<Cha
                             None => format!("media input ({mime})"),
                         },
                         ref_: Some(blob_ref.clone()),
-                    }),
+                    },
                 });
             let assistant = run.entries.iter().rev().find_map(|entry| match entry.kind {
                 ContextEntryKindView::Message {

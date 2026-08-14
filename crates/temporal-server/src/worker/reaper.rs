@@ -208,14 +208,16 @@ pub(super) async fn reap_universe_once(
     )
     .await;
     apply_child_cancels(
-        universe_id,
-        append_store,
-        workflows.as_ref(),
-        &snapshots,
-        &mut workflow_status_cache,
+        ChildCancelContext {
+            universe_id,
+            store: append_store,
+            workflows: workflows.as_ref(),
+            snapshots: &snapshots,
+            workflow_status_cache: &mut workflow_status_cache,
+            now_ms,
+            stats: &mut stats,
+        },
         plan.child_cancels,
-        now_ms,
-        &mut stats,
     )
     .await;
     Ok(stats)
@@ -244,7 +246,7 @@ async fn plan_repair(
                 continue;
             }
 
-            match promise_source_resolution(
+            if let Some(resolution) = promise_source_resolution(
                 universe_id,
                 snapshots,
                 workflows,
@@ -255,15 +257,12 @@ async fn plan_repair(
             )
             .await
             {
-                Some(resolution) => {
-                    plan_holder_resolution(
-                        &mut plan,
-                        holder_session_id,
-                        promise.promise_id.clone(),
-                        resolution,
-                    );
-                }
-                None => {}
+                plan_holder_resolution(
+                    &mut plan,
+                    holder_session_id,
+                    promise.promise_id.clone(),
+                    resolution,
+                );
             }
         }
     }
@@ -556,16 +555,29 @@ async fn apply_holder_repairs(
     }
 }
 
-async fn apply_child_cancels(
+struct ChildCancelContext<'a> {
     universe_id: Uuid,
     store: Arc<dyn SessionStore>,
-    workflows: &dyn WorkflowRepairClient,
-    snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
-    child_cancels: BTreeSet<(SessionId, RunId)>,
+    workflows: &'a dyn WorkflowRepairClient,
+    snapshots: &'a BTreeMap<SessionId, LoadedSessionSnapshot>,
+    workflow_status_cache: &'a mut BTreeMap<SessionId, SessionWorkflowStatus>,
     now_ms: u64,
-    stats: &mut ReaperStats,
+    stats: &'a mut ReaperStats,
+}
+
+async fn apply_child_cancels(
+    context: ChildCancelContext<'_>,
+    child_cancels: BTreeSet<(SessionId, RunId)>,
 ) {
+    let ChildCancelContext {
+        universe_id,
+        store,
+        workflows,
+        snapshots,
+        workflow_status_cache,
+        now_ms,
+        stats,
+    } = context;
     for (session_id, run_id) in child_cancels {
         if workflow_is_running_cached(workflows, workflow_status_cache, universe_id, &session_id)
             .await
@@ -981,14 +993,16 @@ mod tests {
         )
         .await;
         apply_child_cancels(
-            universe_id,
-            append_store,
-            &workflows,
-            &snapshots,
-            &mut running_cache,
+            ChildCancelContext {
+                universe_id,
+                store: append_store,
+                workflows: &workflows,
+                snapshots: &snapshots,
+                workflow_status_cache: &mut running_cache,
+                now_ms: 2_000,
+                stats: &mut apply_stats,
+            },
             plan.child_cancels,
-            2_000,
-            &mut apply_stats,
         )
         .await;
 

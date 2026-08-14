@@ -87,10 +87,11 @@ Run the Temporal-backed hosted runtime against the local stack:
 
 ```bash
 source local/env.sh
+cargo run -p temporal-server -- migrate
 cargo run -p temporal-server
 ```
 
-With no subcommand, the `server` binary runs the JSON-RPC gateway and Temporal
+With no subcommand, the `lightspeed-server` binary runs the JSON-RPC gateway and Temporal
 worker in one process. For split-role runs, use two shells:
 
 ```bash

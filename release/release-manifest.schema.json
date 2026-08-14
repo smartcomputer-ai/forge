@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lightspeed.dev/schemas/release-manifest-v1.json",
+  "title": "Lightspeed release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifestVersion",
+    "version",
+    "gitSha",
+    "rustVersion",
+    "target",
+    "buildImage",
+    "protocolVersion",
+    "contractRevision",
+    "schemaRevision",
+    "images",
+    "binaries",
+    "typescriptClient"
+  ],
+  "properties": {
+    "manifestVersion": { "const": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "gitSha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "rustVersion": { "type": "string", "minLength": 1 },
+    "target": { "const": "x86_64-unknown-linux-gnu" },
+    "buildImage": { "type": "string", "pattern": "@sha256:[0-9a-f]{64}$" },
+    "protocolVersion": { "type": "string", "minLength": 1 },
+    "contractRevision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "schemaRevision": { "type": "integer", "minimum": 1 },
+    "images": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "configuratorMcp"],
+      "properties": {
+        "server": { "$ref": "#/$defs/imageReference" },
+        "configuratorMcp": { "$ref": "#/$defs/imageReference" }
+      }
+    },
+    "binaries": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "providerIncus", "envd", "cli"],
+      "properties": {
+        "server": { "$ref": "#/$defs/binaryArtifact" },
+        "providerIncus": { "$ref": "#/$defs/binaryArtifact" },
+        "envd": { "$ref": "#/$defs/binaryArtifact" },
+        "cli": { "$ref": "#/$defs/binaryArtifact" }
+      }
+    },
+    "typescriptClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "sha256"],
+      "properties": {
+        "name": { "const": "@lightspeed/agent-client" },
+        "version": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  },
+  "$defs": {
+    "imageReference": {
+      "type": ["string", "null"],
+      "pattern": "@sha256:[0-9a-f]{64}$"
+    },
+    "binaryArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "url", "sha256"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "url": { "type": ["string", "null"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

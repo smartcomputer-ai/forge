@@ -1208,8 +1208,10 @@ fn session_event_serializes_with_cursor_and_kind() {
         },
     };
 
-    let value = serde_json::to_value(AgentNotification::SessionEvent { event })
-        .expect("serialize event notification");
+    let value = serde_json::to_value(AgentNotification::SessionEvent {
+        event: Box::new(event),
+    })
+    .expect("serialize event notification");
 
     assert_eq!(
         value,
@@ -2749,7 +2751,7 @@ async fn operator_environment_provider_methods_dispatch() {
         )
         .await;
         assert!(response.error.is_none(), "{method}: {:?}", response.error);
-        assert_eq!(
+        assert!(
             response.result.expect("result")["result"]
                 .get(if method.ends_with("/list") {
                     "providers"
@@ -2757,7 +2759,6 @@ async fn operator_environment_provider_methods_dispatch() {
                     "provider"
                 })
                 .is_some(),
-            true,
             "{method}"
         );
     }

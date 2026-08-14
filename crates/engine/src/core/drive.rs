@@ -4564,7 +4564,7 @@ mod tests {
             CoreAgentEvent::Tool(ToolEvent::BatchCompleted { .. })
         )));
         let active_run = drive.state().runs.active.as_ref().expect("active run");
-        assert!(active_run.tool_batches.get(&request.batch_id).is_none());
+        assert!(!active_run.tool_batches.contains_key(&request.batch_id));
         assert!(
             active_run
                 .completed_tool_batches

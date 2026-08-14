@@ -1275,10 +1275,10 @@ impl GatewayAgentApi {
                 )));
             }
             if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures {
-                    if let Some(failure) = status.admission_failures.last() {
-                        return Err(map_admission_failure_to_api_error(failure));
-                    }
+                if status.admission_failures.len() > baseline_failures
+                    && let Some(failure) = status.admission_failures.last()
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
                 }
                 if let Some(error) = status.last_error {
                     return Err(AgentApiError::internal(format!(
@@ -2017,12 +2017,12 @@ impl AgentApiService for GatewayAgentApi {
         let session_id = SessionId::try_new(params.session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;
-        if let Some(status) = self.query_status_optional(&session_id).await? {
-            if let Some(error) = status.last_error {
-                return Err(AgentApiError::internal(format!(
-                    "agent workflow reported error: {error}"
-                )));
-            }
+        if let Some(status) = self.query_status_optional(&session_id).await?
+            && let Some(error) = status.last_error
+        {
+            return Err(AgentApiError::internal(format!(
+                "agent workflow reported error: {error}"
+            )));
         }
         let session = self.project_session_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionReadResponse { session }))
@@ -2169,10 +2169,8 @@ impl AgentApiService for GatewayAgentApi {
                 .submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: true })
                 .await
                 .is_ok();
-            if signalled {
-                if let Ok(session) = self.wait_for_closed_session(&session_id).await {
-                    return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
-                }
+            if signalled && let Ok(session) = self.wait_for_closed_session(&session_id).await {
+                return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
             }
             // The workflow exists but never converged: it is wedged (e.g. a
             // permanently failing workflow task). Terminate it so the direct

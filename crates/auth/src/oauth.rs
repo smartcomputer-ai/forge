@@ -605,12 +605,12 @@ pub(crate) fn parse_token_response_body(body: &str) -> Result<OAuthTokenResponse
         .unwrap_or("bearer")
         .to_owned();
     let expires_in_secs = value.get("expires_in").and_then(json_i64);
-    if let Some(expires_in_secs) = expires_in_secs {
-        if expires_in_secs < 0 {
-            return Err(OAuthTokenError::InvalidResponse {
-                message: "token response expires_in is negative".to_owned(),
-            });
-        }
+    if let Some(expires_in_secs) = expires_in_secs
+        && expires_in_secs < 0
+    {
+        return Err(OAuthTokenError::InvalidResponse {
+            message: "token response expires_in is negative".to_owned(),
+        });
     }
     let refresh_token = value
         .get("refresh_token")
@@ -640,20 +640,20 @@ fn json_i64(value: &serde_json::Value) -> Option<i64> {
 }
 
 pub(crate) fn parse_token_error_body(status: u16, body: &str) -> OAuthTokenError {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-        if let Some(error) = value.get("error").and_then(|error| error.as_str()) {
-            let description = value
-                .get("error_description")
-                .and_then(|description| description.as_str())
-                .map(str::to_owned);
-            if error == "invalid_grant" {
-                return OAuthTokenError::InvalidGrant { description };
-            }
-            return OAuthTokenError::Protocol {
-                error: error.to_owned(),
-                description,
-            };
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body)
+        && let Some(error) = value.get("error").and_then(|error| error.as_str())
+    {
+        let description = value
+            .get("error_description")
+            .and_then(|description| description.as_str())
+            .map(str::to_owned);
+        if error == "invalid_grant" {
+            return OAuthTokenError::InvalidGrant { description };
         }
+        return OAuthTokenError::Protocol {
+            error: error.to_owned(),
+            description,
+        };
     }
     // The body is unparsed and could contain anything; never echo it.
     OAuthTokenError::Http {

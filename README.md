@@ -128,6 +128,9 @@ cargo build
 cargo test
 ```
 
+Release construction, artifact identities, and the explicit database migration
+workflow are documented in [docs/releasing.md](docs/releasing.md).
+
 ## Run Lightspeed Locally
 
 The hosted path runs three pieces locally:
@@ -165,10 +168,11 @@ source local/env.sh
 
 # export OPENAI_API_KEY=...  # omit this if it is already in .env
 
+cargo run -p temporal-server -- migrate
 cargo run -p temporal-server
 ```
 
-With no subcommand, the `server` binary runs the gateway and Temporal worker
+With no subcommand, the `lightspeed-server` binary runs the gateway and Temporal worker
 together in one process. The gateway listens on `http://127.0.0.1:18080` by default.
 Optional health check:
 

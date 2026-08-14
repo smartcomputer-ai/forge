@@ -12,7 +12,11 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
-#[command(name = "lightspeed", version, about = "Lightspeed command-line tools")]
+#[command(
+    name = "lightspeed",
+    version = release_info::LONG_VERSION,
+    about = "Lightspeed command-line tools"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,

@@ -347,7 +347,7 @@ impl EnvironmentStore for PgStore {
         .bind(request.created_at_ms)
         .execute(&mut *tx)
         .await
-        .map_err(|error| map_environment_insert_error(error))?;
+        .map_err(map_environment_insert_error)?;
         sqlx::query(
             r#"
             INSERT INTO environment_incarnations (
@@ -1152,24 +1152,24 @@ fn store_message(message: impl Into<String>) -> EnvironmentRegistryError {
     }
 }
 fn map_environment_insert_error(error: sqlx::Error) -> EnvironmentRegistryError {
-    if let Some(db) = error.as_database_error() {
-        if db.constraint() == Some("environments_pkey") {
-            return EnvironmentRegistryError::AlreadyExists {
-                kind: "environment",
-                id: "duplicate environment id".to_owned(),
-            };
-        }
+    if let Some(db) = error.as_database_error()
+        && db.constraint() == Some("environments_pkey")
+    {
+        return EnvironmentRegistryError::AlreadyExists {
+            kind: "environment",
+            id: "duplicate environment id".to_owned(),
+        };
     }
     sql_error("insert environment", error)
 }
 fn map_binding_write_error(action: &str, error: sqlx::Error) -> EnvironmentRegistryError {
-    if let Some(db) = error.as_database_error() {
-        if db.constraint() == Some("environment_provider_bindings_universe_id_provider_id_key") {
-            return EnvironmentRegistryError::AlreadyExists {
-                kind: "environment_provider_binding",
-                id: "universe/provider".to_owned(),
-            };
-        }
+    if let Some(db) = error.as_database_error()
+        && db.constraint() == Some("environment_provider_bindings_universe_id_provider_id_key")
+    {
+        return EnvironmentRegistryError::AlreadyExists {
+            kind: "environment_provider_binding",
+            id: "universe/provider".to_owned(),
+        };
     }
     sql_error(action, error)
 }

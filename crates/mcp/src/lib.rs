@@ -557,9 +557,7 @@ fn validate_remote_mcp_server_url(value: &str) -> Result<(), McpRegistryError> {
             message: format!("remote MCP server URL scheme {scheme:?} is not supported"),
         });
     }
-    let authority_end = rest
-        .find(|ch| matches!(ch, '/' | '?' | '#'))
-        .unwrap_or(rest.len());
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..authority_end];
     if authority.is_empty() {
         return Err(McpRegistryError::InvalidInput {

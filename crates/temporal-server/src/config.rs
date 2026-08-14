@@ -4,7 +4,8 @@ use engine::{ModelSelection, ProviderApiKind};
 use object_store::ObjectStore;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use store_pg::{
-    BlobCache, PgStore, PgStoreConfig, S3ObjectStoreConfig, SecretsMasterKey, build_s3_object_store,
+    BlobCache, PgStore, PgStoreConfig, PgStoreError, S3ObjectStoreConfig, SchemaStatus,
+    SecretsMasterKey, build_s3_object_store,
 };
 use temporal_workflow::{DEFAULT_MODEL, DEFAULT_TASK_QUEUE};
 use uuid::Uuid;
@@ -118,15 +119,9 @@ pub struct DeploymentStores {
 
 impl DeploymentStores {
     pub async fn from_env() -> anyhow::Result<Self> {
-        let database_url = env::var("LIGHTSPEED_POSTGRES_URL")
-            .or_else(|_| env::var("LIGHTSPEED_TEST_POSTGRES_URL"))
-            .map_err(|_| {
-                anyhow::anyhow!(
-                    "LIGHTSPEED_POSTGRES_URL or LIGHTSPEED_TEST_POSTGRES_URL must be set"
-                )
-            })?;
-        let pool = PgPoolOptions::new().connect(&database_url).await?;
-        PgStore::migrate(&pool).await?;
+        let allow_unledgered_schema = allow_unledgered_schema_from_env()?;
+        let pool = postgres_pool_from_env().await?;
+        verify_runtime_schema(&pool, allow_unledgered_schema).await?;
         let object_store = match object_store_config_from_env()? {
             Some(object_config) => Some(build_s3_object_store(object_config)?),
             None => None,
@@ -199,6 +194,60 @@ impl DeploymentStores {
     }
 }
 
+/// Explicit compatibility escape hatch for deployments that provision the
+/// Lightspeed tables outside the embedded migrator. It affects runtime startup
+/// only: migration and schema diagnostic commands continue to inspect and
+/// enforce the ledger normally.
+pub fn allow_unledgered_schema_from_env() -> anyhow::Result<bool> {
+    optional_env("LIGHTSPEED_ALLOW_UNLEDGERED_SCHEMA")
+        .map(|value| {
+            value.parse::<bool>().map_err(|error| {
+                anyhow::anyhow!(
+                    "invalid LIGHTSPEED_ALLOW_UNLEDGERED_SCHEMA={value:?}: {error}; expected true or false"
+                )
+            })
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(false))
+}
+
+async fn verify_runtime_schema(pool: &PgPool, allow_unledgered: bool) -> anyhow::Result<()> {
+    if let Some(relations) =
+        evaluate_schema_verification(store_pg::verify_schema(pool).await, allow_unledgered)?
+    {
+        tracing::warn!(
+            target: "temporal_server",
+            tables = ?relations,
+            "running with an externally managed, unledgered PostgreSQL schema; Lightspeed cannot verify its compatibility"
+        );
+    }
+    Ok(())
+}
+
+fn evaluate_schema_verification(
+    result: Result<SchemaStatus, PgStoreError>,
+    allow_unledgered: bool,
+) -> Result<Option<Vec<String>>, PgStoreError> {
+    match result {
+        Ok(_) => Ok(None),
+        Err(PgStoreError::UnledgeredSchema { relations }) if allow_unledgered => {
+            Ok(Some(relations))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Connect to the deployment database without inspecting or changing its
+/// schema. Migration and diagnostic commands use this lower-level boundary.
+pub async fn postgres_pool_from_env() -> anyhow::Result<PgPool> {
+    let database_url = env::var("LIGHTSPEED_POSTGRES_URL")
+        .or_else(|_| env::var("LIGHTSPEED_TEST_POSTGRES_URL"))
+        .map_err(|_| {
+            anyhow::anyhow!("LIGHTSPEED_POSTGRES_URL or LIGHTSPEED_TEST_POSTGRES_URL must be set")
+        })?;
+    Ok(PgPoolOptions::new().connect(&database_url).await?)
+}
+
 /// Single-universe store bound to `LIGHTSPEED_PG_UNIVERSE_ID`. Used by
 /// `single`-mode deployments, tests, and tools that operate on one universe.
 pub async fn pg_store_from_env() -> anyhow::Result<Arc<PgStore>> {
@@ -255,4 +304,42 @@ fn object_store_config_from_env() -> anyhow::Result<Option<S3ObjectStoreConfig>>
 
 fn optional_env(key: &str) -> Option<String> {
     env::var(key).ok().filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unledgered_schema_bypass_is_narrow() {
+        let relations = vec!["sessions".to_owned(), "universes".to_owned()];
+        let accepted = evaluate_schema_verification(
+            Err(PgStoreError::UnledgeredSchema {
+                relations: relations.clone(),
+            }),
+            true,
+        )
+        .expect("explicit bypass accepts an unledgered schema");
+        assert_eq!(accepted, Some(relations));
+
+        assert!(matches!(
+            evaluate_schema_verification(
+                Err(PgStoreError::UnledgeredSchema {
+                    relations: vec!["sessions".to_owned()],
+                }),
+                false,
+            ),
+            Err(PgStoreError::UnledgeredSchema { .. })
+        ));
+        assert!(matches!(
+            evaluate_schema_verification(
+                Err(PgStoreError::MigrationRequired {
+                    current_revision: 6,
+                    required_revision: 7,
+                }),
+                true,
+            ),
+            Err(PgStoreError::MigrationRequired { .. })
+        ));
+    }
 }

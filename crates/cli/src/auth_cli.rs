@@ -428,7 +428,7 @@ struct AuthClientArgs {
 #[derive(Subcommand, Debug, Clone)]
 enum AuthClientCommand {
     /// Register a manually configured OAuth client.
-    Add(AuthClientAddArgs),
+    Add(Box<AuthClientAddArgs>),
     /// List OAuth clients.
     List(AuthClientListArgs),
     /// Read an OAuth client.
@@ -637,7 +637,7 @@ async fn github(args: AuthGithubArgs) -> Result<()> {
 
 async fn client(args: AuthClientArgs) -> Result<()> {
     match args.command {
-        AuthClientCommand::Add(args) => client_add(args).await,
+        AuthClientCommand::Add(args) => client_add(*args).await,
         AuthClientCommand::List(args) => client_list(args).await,
         AuthClientCommand::Read(args) => client_read(args).await,
         AuthClientCommand::Remove(args) => client_remove(args).await,

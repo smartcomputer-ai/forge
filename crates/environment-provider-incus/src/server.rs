@@ -32,11 +32,15 @@ use serde_json::{Value, json};
 
 use crate::{Config, IncusBackend, incus::OwnedTarget, ingress, policy, relay};
 
+type BindingKey = (String, String);
+type BindingLock = Arc<tokio::sync::Mutex<()>>;
+type BindingLocks = Arc<tokio::sync::Mutex<BTreeMap<BindingKey, BindingLock>>>;
+
 #[derive(Clone)]
 struct App<B> {
     config: Config,
     backend: B,
-    binding_locks: Arc<tokio::sync::Mutex<BTreeMap<(String, String), Arc<tokio::sync::Mutex<()>>>>>,
+    binding_locks: BindingLocks,
 }
 
 pub async fn serve<B: IncusBackend>(config: Config, backend: B) -> anyhow::Result<()> {

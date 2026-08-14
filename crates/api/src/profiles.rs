@@ -210,7 +210,7 @@ pub enum ProfileSource {
         profile_id: ProfileId,
     },
     Inline {
-        profile: InlineAgentProfile,
+        profile: Box<InlineAgentProfile>,
     },
 }
 

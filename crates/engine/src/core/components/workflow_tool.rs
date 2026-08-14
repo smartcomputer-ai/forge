@@ -771,7 +771,7 @@ pub enum WorkflowToolConfigEvent {
     /// One add-only system-owned workflow binding. This is deliberately
     /// separate from managed-session creation: it grants an implementation
     /// capability without assigning lifecycle ownership to a workflow.
-    SystemBindingAdmitted { binding: WorkflowToolBinding },
+    SystemBindingAdmitted { binding: Box<WorkflowToolBinding> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1047,11 +1047,11 @@ impl WorkflowToolEmissionReadProjection<'_> {
                 if binding.bound_receiver() == Some(self.receiver_endpoint) {
                     self.receiver_bound = true;
                 }
-                match self
-                    .bindings
-                    .insert(binding.binding_fingerprint.clone(), binding.clone())
-                {
-                    Some(existing) if existing != *binding => {
+                match self.bindings.insert(
+                    binding.binding_fingerprint.clone(),
+                    binding.as_ref().clone(),
+                ) {
+                    Some(existing) if existing != **binding => {
                         return Err(ReadToolEmissionsError::InvalidBinding {
                             binding_fingerprint: binding.binding_fingerprint.clone(),
                             message: "fingerprint identifies more than one durable binding"
@@ -1186,7 +1186,8 @@ pub(crate) fn apply_config_event(
                 )));
             }
             if let Some(existing) = state.workflow_tools.bindings.get(tool_id) {
-                if existing == binding && state.workflow_tools.system_binding_ids.contains(tool_id)
+                if existing == binding.as_ref()
+                    && state.workflow_tools.system_binding_ids.contains(tool_id)
                 {
                     return Err(DomainError::InvariantViolation(format!(
                         "duplicate system workflow binding event for {tool_id}"
@@ -1203,7 +1204,7 @@ pub(crate) fn apply_config_event(
             state
                 .workflow_tools
                 .bindings
-                .insert(tool_id.clone(), binding.clone());
+                .insert(tool_id.clone(), binding.as_ref().clone());
             Ok(())
         }
     }
