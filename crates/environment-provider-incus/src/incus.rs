@@ -268,8 +268,11 @@ impl IncusClient {
                 ),
             ));
         }
-        let had_operation = envelope.operation.is_some();
-        if let Some(operation) = envelope.operation {
+        // Incus includes `"operation": ""` in synchronous responses. Only
+        // non-empty references identify an asynchronous operation to wait on.
+        let operation = pending_operation(envelope.operation);
+        let had_operation = operation.is_some();
+        if let Some(operation) = operation {
             self.wait_operation(endpoint, &operation, project)
                 .await
                 .map_err(IncusRequestFailure::non_retryable)?;
@@ -1191,6 +1194,10 @@ fn ipv4_cidrs_overlap(left: &str, right: &str) -> bool {
     left_start <= right_end && right_start <= left_end
 }
 
+fn pending_operation(operation: Option<String>) -> Option<String> {
+    operation.filter(|operation| !operation.is_empty())
+}
+
 fn parse_source_target(value: &str) -> anyhow::Result<(&str, &str)> {
     let (project, name) = value.split_once('/').unwrap_or(("default", value));
     if project.is_empty()
@@ -1332,6 +1339,16 @@ mod tests {
         assert!(ipv4_cidrs_overlap("10.42.7.1/24", "10.0.0.0/8"));
         assert!(ipv4_cidrs_overlap("169.254.169.0/24", "169.254.169.254/32"));
         assert!(!ipv4_cidrs_overlap("10.42.7.1/24", "100.64.0.0/10"));
+    }
+
+    #[test]
+    fn synchronous_incus_operation_reference_is_not_pending() {
+        assert_eq!(pending_operation(None), None);
+        assert_eq!(pending_operation(Some(String::new())), None);
+        assert_eq!(
+            pending_operation(Some("/1.0/operations/op-1".to_owned())),
+            Some("/1.0/operations/op-1".to_owned())
+        );
     }
 
     #[test]
