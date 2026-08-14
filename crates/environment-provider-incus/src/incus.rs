@@ -477,8 +477,11 @@ impl IncusClient {
             .request(Method::GET, "/projects?recursion=1", None, None)
             .await?;
         let mut networks = Vec::new();
-        for project in projects.into_iter().filter(Project::is_lightspeed_managed) {
-            let network_name = format!("{}-net", project.name);
+        for project in projects {
+            let Some(binding) = project.binding_context() else {
+                continue;
+            };
+            let network_name = policy::network_name(&binding);
             if !self
                 .exists(&format!("/networks/{network_name}"), Some(&project.name))
                 .await?
@@ -1093,25 +1096,23 @@ struct Project {
 }
 
 impl Project {
-    fn is_lightspeed_managed(&self) -> bool {
+    fn binding_context(&self) -> Option<ProviderBindingContext> {
         if self
             .config
             .get("user.lightspeed.managed")
             .is_none_or(|value| value != "true")
         {
-            return false;
+            return None;
         }
-        let Some(universe_id) = self.config.get("user.lightspeed.universe") else {
-            return false;
+        let binding = ProviderBindingContext {
+            universe_id: self.config.get("user.lightspeed.universe")?.clone(),
+            binding_id: self.config.get("user.lightspeed.binding")?.clone(),
         };
-        let Some(binding_id) = self.config.get("user.lightspeed.binding") else {
-            return false;
-        };
-        self.name
-            == policy::project_name(&ProviderBindingContext {
-                universe_id: universe_id.clone(),
-                binding_id: binding_id.clone(),
-            })
+        (self.name == policy::project_name(&binding)).then_some(binding)
+    }
+
+    fn is_lightspeed_managed(&self) -> bool {
+        self.binding_context().is_some()
     }
 }
 
