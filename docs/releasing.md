@@ -22,6 +22,26 @@ SHA-256 checksums in `schema_migrations`, and applies each pending file in its
 own transaction. Normal startup only verifies the ledger and exits with a
 diagnostic when migration is required.
 
+An existing Lightspeed schema without ledger entries is never baselined
+automatically. By default, both startup verification and `migrate` fail and
+list the recognized tables. Upgrading such a pre-ledger database requires an
+explicit, validated adoption procedure; until one exists, reset the full
+Lightspeed schema or database before applying the embedded migrations.
+Resetting only the environment tables is insufficient.
+
+Deployments that deliberately provision the Lightspeed tables through an
+external schema-management system can set:
+
+```bash
+LIGHTSPEED_ALLOW_UNLEDGERED_SCHEMA=true
+```
+
+This permits gateway and worker startup only when Lightspeed detects its tables
+without ledger entries. It emits a warning and makes the operator responsible
+for schema compatibility. It does not fabricate migration records, bypass a
+stale or corrupted ledger, or make `lightspeed-server migrate` accept an
+unledgered database.
+
 Never edit a migration after an official release. Add the next contiguous SQL
 file under `crates/store-pg/migrations/`, register it in
 `crates/store-pg/src/migrations.rs`, and bump `LIGHTSPEED_SCHEMA_REVISION` in

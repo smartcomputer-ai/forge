@@ -13,6 +13,34 @@ use crate::PgStoreError;
 /// Serializes every Lightspeed schema inspection and migration in a database.
 const MIGRATION_ADVISORY_LOCK_ID: i64 = 0x4c53_5047_4d49_4752;
 
+/// Relations owned by the embedded migrations. Their presence without a
+/// migration ledger is evidence of a pre-ledger Lightspeed database, not an
+/// empty schema that can safely receive the initial migration.
+const LIGHTSPEED_TABLES: &[&str] = &[
+    "agent_profiles",
+    "api_keys",
+    "auth_clients",
+    "auth_flows",
+    "auth_grants",
+    "auth_providers",
+    "auth_secrets",
+    "cas_blob_edges",
+    "cas_blobs",
+    "cas_session_roots",
+    "environment_credentials",
+    "environment_incarnations",
+    "environment_provider_bindings",
+    "environment_providers",
+    "environments",
+    "mcp_servers",
+    "session_events",
+    "session_links",
+    "sessions",
+    "universes",
+    "vfs_snapshots",
+    "vfs_workspaces",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EmbeddedMigration {
     pub version: i64,
@@ -76,8 +104,14 @@ impl SchemaStatus {
 pub async fn migrate(pool: &PgPool) -> Result<SchemaStatus, PgStoreError> {
     with_migration_lock(pool, |connection| {
         Box::pin(async move {
-            ensure_ledger(connection).await?;
+            if !ledger_exists(connection).await? {
+                reject_unledgered_schema(connection).await?;
+                ensure_ledger(connection).await?;
+            }
             let applied = read_ledger(connection).await?;
+            if applied.is_empty() {
+                reject_unledgered_schema(connection).await?;
+            }
             validate_applied(&applied)?;
 
             for migration in MIGRATIONS {
@@ -97,6 +131,7 @@ pub async fn schema_status(pool: &PgPool) -> Result<SchemaStatus, PgStoreError> 
     with_migration_lock(pool, |connection| {
         Box::pin(async move {
             if !ledger_exists(connection).await? {
+                reject_unledgered_schema(connection).await?;
                 return Ok(SchemaStatus {
                     current_revision: 0,
                     required_revision: REQUIRED_SCHEMA_REVISION,
@@ -105,6 +140,9 @@ pub async fn schema_status(pool: &PgPool) -> Result<SchemaStatus, PgStoreError> 
                         .map(|migration| migration.version)
                         .collect(),
                 });
+            }
+            if read_ledger(connection).await?.is_empty() {
+                reject_unledgered_schema(connection).await?;
             }
             status_with_ledger(connection).await
         })
@@ -157,6 +195,33 @@ async fn ledger_exists(connection: &mut sqlx::PgConnection) -> Result<bool, PgSt
     .fetch_one(connection)
     .await?;
     Ok(exists)
+}
+
+async fn reject_unledgered_schema(connection: &mut sqlx::PgConnection) -> Result<(), PgStoreError> {
+    let names: Vec<String> = LIGHTSPEED_TABLES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let relations: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT relation.relname
+        FROM pg_catalog.pg_class AS relation
+        JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = current_schema()
+          AND relation.relkind IN ('r', 'p')
+          AND relation.relname = ANY($1::text[])
+        ORDER BY relation.relname
+        "#,
+    )
+    .bind(names)
+    .fetch_all(connection)
+    .await?;
+    if relations.is_empty() {
+        Ok(())
+    } else {
+        Err(PgStoreError::UnledgeredSchema { relations })
+    }
 }
 
 async fn ensure_ledger(connection: &mut sqlx::PgConnection) -> Result<(), PgStoreError> {
@@ -272,6 +337,8 @@ fn checksum(sql: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
 
     #[test]
@@ -286,6 +353,20 @@ mod tests {
             MIGRATIONS
                 .iter()
                 .all(|migration| checksum(migration.sql).len() == 64)
+        );
+        assert!(LIGHTSPEED_TABLES.windows(2).all(|pair| pair[0] < pair[1]));
+        let migrated_tables: BTreeSet<_> = MIGRATIONS
+            .iter()
+            .flat_map(|migration| migration.sql.lines())
+            .filter_map(|line| line.trim().strip_prefix("CREATE TABLE IF NOT EXISTS "))
+            .map(|remainder| remainder.trim_end_matches(" (").to_owned())
+            .collect();
+        assert_eq!(
+            migrated_tables,
+            LIGHTSPEED_TABLES
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect()
         );
     }
 

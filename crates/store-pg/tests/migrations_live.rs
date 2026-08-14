@@ -56,6 +56,45 @@ async fn exercise_migrator(pool: &sqlx::PgPool) -> Result<(), String> {
         return Err(format!("unexpected pre-migration error: {before}"));
     }
 
+    sqlx::query("CREATE TABLE universes (id text PRIMARY KEY)")
+        .execute(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+    let unledgered_status = store_pg::verify_schema(pool)
+        .await
+        .expect_err("startup verification must reject an unledgered Lightspeed schema");
+    if !matches!(
+        unledgered_status,
+        PgStoreError::UnledgeredSchema { ref relations }
+            if relations == &["universes".to_owned()]
+    ) {
+        return Err(format!(
+            "unexpected unledgered startup error: {unledgered_status}"
+        ));
+    }
+    let unledgered = PgStore::migrate(pool)
+        .await
+        .expect_err("an unledgered Lightspeed schema must not be baselined");
+    if !matches!(
+        unledgered,
+        PgStoreError::UnledgeredSchema { ref relations }
+            if relations == &["universes".to_owned()]
+    ) {
+        return Err(format!("unexpected unledgered-schema error: {unledgered}"));
+    }
+    let ledger: Option<String> =
+        sqlx::query_scalar("SELECT to_regclass('schema_migrations')::text")
+            .fetch_one(pool)
+            .await
+            .map_err(|error| error.to_string())?;
+    if ledger.is_some() {
+        return Err("refused migration unexpectedly created a migration ledger".to_owned());
+    }
+    sqlx::query("DROP TABLE universes")
+        .execute(pool)
+        .await
+        .map_err(|error| error.to_string())?;
+
     let (left, right) = tokio::join!(PgStore::migrate(pool), PgStore::migrate(pool));
     left.map_err(|error| error.to_string())?;
     right.map_err(|error| error.to_string())?;

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -28,6 +29,33 @@ if (kind === "client") {
 
 fs.writeFileSync(packagePath, `${JSON.stringify(manifest, null, 2)}\n`);
 const lockPath = path.join(directory, "package-lock.json");
-if (fs.existsSync(lockPath)) {
-  fs.rmSync(lockPath);
+if (!fs.existsSync(lockPath)) {
+  throw new Error(`${lockPath}: release staging requires a committed npm lockfile`);
 }
+const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+lock.version = version;
+if (!lock.packages?.[""]) {
+  throw new Error(`${lockPath}: missing root package entry`);
+}
+lock.packages[""].version = version;
+
+if (kind === "configurator") {
+  lock.packages[""].dependencies = manifest.dependencies;
+  delete lock.packages["../ts-client"];
+  const clientTarball = path.join(directory, "agent-client.tgz");
+  if (!fs.existsSync(clientTarball)) {
+    throw new Error(`${clientTarball}: staged client tarball is missing`);
+  }
+  const integrity = crypto
+    .createHash("sha512")
+    .update(fs.readFileSync(clientTarball))
+    .digest("base64");
+  lock.packages["node_modules/@lightspeed/agent-client"] = {
+    version,
+    resolved: "file:agent-client.tgz",
+    integrity: `sha512-${integrity}`,
+    engines: { node: ">=18" },
+  };
+}
+
+fs.writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);

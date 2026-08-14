@@ -130,6 +130,7 @@ jobs:
             echo "${key}_URL=oci://$GHCR_ROOT/${name}-bundle@$digest" >> "$GITHUB_OUTPUT"
           done
       - name: Finalize coherent release manifest
+        id: release_bundle
         env:
           LIGHTSPEED_SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}
           LIGHTSPEED_CONFIGURATOR_MCP_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
@@ -139,14 +140,31 @@ jobs:
           LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
           LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
         run: |
+          set -euo pipefail
           source release/metadata.env
           scripts/release/create-manifest.mjs "$LIGHTSPEED_PRODUCT_VERSION" "${{ github.sha }}"
           scripts/release/checksums.sh
           scripts/release/verify-manifest.mjs --published
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -czf release-bundle.tar.gz dist
-          oras push "ghcr.io/${{ github.repository }}/release-bundle:sha-${{ github.sha }}" \
+          root="ghcr.io/${{ github.repository }}/release-bundle"
+          run_ref="$root:run-${{ github.run_id }}-${{ github.run_attempt }}"
+          oras push "$run_ref" \
             release-bundle.tar.gz:application/gzip
+          bundle_digest="$(oras resolve "$run_ref")"
+
+          # The run/attempt ref is the immutable promotion input. Keep the SHA
+          # alias write-once so a rerun cannot silently replace a coherent bundle.
+          sha_ref="$root:sha-${{ github.sha }}"
+          if existing_digest="$(oras resolve "$sha_ref" 2>/dev/null)"; then
+            test "$existing_digest" = "$bundle_digest" || {
+              echo "$sha_ref already points at $existing_digest, not $bundle_digest" >&2
+              exit 1
+            }
+          else
+            oras copy "$root@$bundle_digest" "$sha_ref"
+          fi
+          echo "digest=$bundle_digest" >> "$GITHUB_OUTPUT"
       - name: Verify published server contains the recorded binary
         env:
           SERVER_IMAGE: ghcr.io/${{ github.repository }}/server@${{ steps.server.outputs.digest }}

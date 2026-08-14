@@ -10,6 +10,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   contents: write
   packages: write
   id-token: write
@@ -50,13 +51,24 @@ jobs:
           source release/metadata.env
           [[ "$TAG" == "v$LIGHTSPEED_PRODUCT_VERSION" ]]
           run_id="$(gh run list --workflow release-main.yml --commit "$sha" \
-            --status success --json databaseId --jq '.[0].databaseId')"
+            --status success --limit 1 --json databaseId --jq '.[0].databaseId')"
           [[ -n "$run_id" ]]
+          run_attempt="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq .run_attempt)"
+          [[ "$run_attempt" =~ ^[1-9][0-9]*$ ]]
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-      - name: Download the commit-addressed release bundle
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+      - name: Download the selected run's release bundle by digest
+        id: bundle
         run: |
-          oras pull "ghcr.io/${{ github.repository }}/release-bundle:sha-${{ steps.release.outputs.sha }}"
+          set -euo pipefail
+          root="ghcr.io/${{ github.repository }}/release-bundle"
+          run_ref="$root:run-${{ steps.release.outputs.run_id }}-${{ steps.release.outputs.run_attempt }}"
+          digest="$(oras resolve "$run_ref")"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          oras pull "$root@$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
           tar -xzf release-bundle.tar.gz
           scripts/release/verify-manifest.mjs --published
           test "$(jq -r .gitSha dist/release-manifest.json)" = "${{ steps.release.outputs.sha }}"
@@ -64,18 +76,30 @@ jobs:
           (cd dist && sha256sum --check checksums.txt)
       - name: Promote OCI artifacts without rebuilding
         env:
-          SHA: ${{ steps.release.outputs.sha }}
           VERSION: ${{ steps.release.outputs.version }}
         run: |
           set -euo pipefail
           root="ghcr.io/${{ github.repository }}"
-          crane cp "$root/build-env:sha-$SHA" "$root/build-env:$VERSION"
-          crane cp "$root/server:sha-$SHA" "$root/server:$VERSION"
-          crane cp "$root/configurator-mcp:sha-$SHA" "$root/configurator-mcp:$VERSION"
-          for name in server provider-incus envd cli; do
-            oras copy "$root/${name}-bundle:sha-$SHA" "$root/${name}-bundle:$VERSION"
-          done
-          oras copy "$root/release-bundle:sha-$SHA" "$root/release-bundle:$VERSION"
+          crane cp "$(jq -er .buildImage dist/release-manifest.json)" "$root/build-env:$VERSION"
+          crane cp "$(jq -er .images.server dist/release-manifest.json)" "$root/server:$VERSION"
+          crane cp "$(jq -er .images.configuratorMcp dist/release-manifest.json)" \
+            "$root/configurator-mcp:$VERSION"
+
+          while IFS=$'\t' read -r manifest_key target_name; do
+            source_url="$(jq -er --arg key "$manifest_key" '.binaries[$key].url' \
+              dist/release-manifest.json)"
+            source_ref="${source_url#oci://}"
+            [[ "$source_ref" =~ @sha256:[0-9a-f]{64}$ ]]
+            oras copy "$source_ref" "$root/${target_name}-bundle:$VERSION"
+          done <<'EOF'
+          server	server
+          providerIncus	provider-incus
+          envd	envd
+          cli	cli
+          EOF
+
+          oras copy "$root/release-bundle@${{ steps.bundle.outputs.digest }}" \
+            "$root/release-bundle:$VERSION"
       - name: Publish stable TypeScript client
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -212,6 +212,11 @@ pub enum PgStoreError {
     },
 
     #[error(
+        "found unledgered Lightspeed tables {relations:?}; refusing to baseline an existing schema (reset the full Lightspeed schema or database before running `lightspeed-server migrate`)"
+    )]
+    UnledgeredSchema { relations: Vec<String> },
+
+    #[error(
         "database schema revision {current_revision} is newer than this server's required revision {required_revision}"
     )]
     SchemaTooNew {

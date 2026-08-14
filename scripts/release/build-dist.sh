@@ -42,8 +42,8 @@ trap 'rm -rf "$stage_root"' EXIT
 cp -R interop/ts-client "$stage_root/ts-client"
 rm -rf "$stage_root/ts-client/node_modules" "$stage_root/ts-client/dist"
 node scripts/release/stage-package.mjs client "$stage_root/ts-client" "$version" "$git_sha"
-npm --prefix "$stage_root/ts-client" install --ignore-scripts
-npm --prefix "$stage_root/ts-client" pack --pack-destination "$dist_dir/npm"
+(cd "$stage_root/ts-client" && npm ci --offline --ignore-scripts)
+(cd "$stage_root/ts-client" && npm pack --pack-destination "$dist_dir/npm")
 
 client_tgz="$(find "$dist_dir/npm" -maxdepth 1 -name '*.tgz' -print -quit)"
 cp -R interop/configurator-mcp/dist "$dist_dir/configurator-mcp/dist"
@@ -51,7 +51,8 @@ cp interop/configurator-mcp/package.json interop/configurator-mcp/package-lock.j
   "$dist_dir/configurator-mcp/"
 cp "$client_tgz" "$dist_dir/configurator-mcp/agent-client.tgz"
 node scripts/release/stage-package.mjs configurator "$dist_dir/configurator-mcp" "$version" "$git_sha"
-npm --prefix "$dist_dir/configurator-mcp" install --omit=dev --ignore-scripts
+(cd "$dist_dir/configurator-mcp" && \
+  npm ci --omit=dev --offline --ignore-scripts)
 
 for spec in \
   "lightspeed-server:server" \
