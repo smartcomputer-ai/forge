@@ -1,6 +1,9 @@
 # P90: Multi-Tenancy — Multiple Universes Per Deployment
 
 **Status**
+- The current operational contract now lives in
+  [`docs/multi-tenancy.md`](../multi-tenancy.md); this roadmap remains the
+  implementation history and design record.
 - Updated 2026-07-29: Lightspeed's universe and API-key boundaries remain;
   channel-binding credential handling described below moved to the external
   Channels application.
@@ -308,7 +311,7 @@ Rails, regardless of mode:
 Greenfield stance, consistent with project practice: workflow id composition
 is unconditional (also in `single` mode, for uniformity), and no compatibility
 shim addresses workflows started before this change. Running local/dev
-sessions are reset (`local/reset.sh`). Existing single-universe deployments
+sessions are reset (`./dev.sh reset`). Existing single-universe deployments
 upgrade by resetting or draining sessions.
 
 ## Implementation Phases

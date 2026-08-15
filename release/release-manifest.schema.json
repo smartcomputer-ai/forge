@@ -14,6 +14,8 @@
     "protocolVersion",
     "contractRevision",
     "schemaRevision",
+    "platformSchemaRevision",
+    "platformUpgradeFrom",
     "images",
     "binaries",
     "typescriptClient"
@@ -28,13 +30,22 @@
     "protocolVersion": { "type": "string", "minLength": 1 },
     "contractRevision": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
     "schemaRevision": { "type": "integer", "minimum": 1 },
+    "platformSchemaRevision": { "type": "integer", "minimum": 1 },
+    "platformUpgradeFrom": { "type": "string", "pattern": "^[0-9]{4}_[a-z0-9_]+$" },
     "images": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["server", "configuratorMcp"],
+      "required": [
+        "runtime",
+        "configuratorMcp",
+        "platform",
+        "channels"
+      ],
       "properties": {
-        "server": { "$ref": "#/$defs/imageReference" },
-        "configuratorMcp": { "$ref": "#/$defs/imageReference" }
+        "runtime": { "$ref": "#/$defs/imageReference" },
+        "configuratorMcp": { "$ref": "#/$defs/imageReference" },
+        "platform": { "$ref": "#/$defs/imageReference" },
+        "channels": { "$ref": "#/$defs/imageReference" }
       }
     },
     "binaries": {
