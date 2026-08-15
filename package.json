@@ -1,0 +1,39 @@
+{
+  "name": "lightspeed",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "clients/typescript",
+    "platform/channels",
+    "platform/cli",
+    "platform/configurator-mcp",
+    "platform/db",
+    "platform/foundry",
+    "platform/server",
+    "platform/shared",
+    "platform/web"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @lightspeed/agent-client && npm run build --workspace @lightspeed/configurator-mcp && npm run build --workspace @lightspeed/platform-web",
+    "build:web": "npm run build --workspace @lightspeed/platform-web",
+    "check": "npm run check:dev && npm run check:identity && npm run check:generated && npm run typecheck && npm run test && npm run build",
+    "check:ci": "npm run check && npm run test:migrations && npm run test:integration:channels",
+    "check:dev": "bash -n dev.sh scripts/dev/env.sh scripts/dev/lib/common.sh scripts/dev/infra/*.sh && node --check scripts/dev/stack.mjs && ./dev.sh --help >/dev/null && LIGHTSPEED_CHANNELS_CONNECTORS= node scripts/dev/stack.mjs --plan infra >/dev/null && LIGHTSPEED_CHANNELS_CONNECTORS= node scripts/dev/stack.mjs --plan runtime >/dev/null && LIGHTSPEED_CHANNELS_CONNECTORS= node scripts/dev/stack.mjs --plan platform >/dev/null && LIGHTSPEED_CHANNELS_CONNECTORS= node scripts/dev/stack.mjs --plan full >/dev/null",
+    "check:identity": "node platform/scripts/check-product-identity.mjs",
+    "check:generated": "npm run check:generated --workspace @lightspeed/agent-client && npm run check:generated --workspace @lightspeed/configurator-mcp && node platform/scripts/generate-config-reference.mjs && git diff --exit-code -- platform/web/src/lib/profile-config-reference.ts",
+    "dev": "./dev.sh",
+    "generate": "npm run generate --workspace @lightspeed/platform-db",
+    "test": "npm run test --workspaces --if-present",
+    "test:integration:channels": "npm run test:integration --workspace @lightspeed/channels",
+    "test:migrations": "npm run test:migrations --workspace @lightspeed/platform-db",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/foundry && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

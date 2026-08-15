@@ -76,14 +76,14 @@ cargo test -p tools
 cargo test -p cli --tests
 cargo test -p store-pg --lib
 cargo test -p temporal-server
-npm --prefix interop/ts-client run test
-npm --prefix interop/ts-client run typecheck
+npm --prefix clients/typescript run test
+npm --prefix clients/typescript run typecheck
 npm --prefix interop/messaging run test:bridge
 npm --prefix interop/messaging run typecheck:bridge
 npm --prefix interop/messaging run build:bridge
-source local/env.sh && cargo test -p temporal-server --test temporal_live temporal_live_profiles_create_start_and_apply_idempotently -- --ignored --exact --nocapture
-source local/env.sh && cargo test -p temporal-server --test temporal_live temporal_live_fleet_executor_spawns_profile_child -- --ignored --exact --nocapture
-source local/env.sh && cargo test -p temporal-server --test environment_provider_live temporal_live_profile_attaches_host_environment -- --ignored --exact --nocapture
+source scripts/dev/env.sh && cargo test -p temporal-server --test temporal_live temporal_live_profiles_create_start_and_apply_idempotently -- --ignored --exact --nocapture
+source scripts/dev/env.sh && cargo test -p temporal-server --test temporal_live temporal_live_fleet_executor_spawns_profile_child -- --ignored --exact --nocapture
+source scripts/dev/env.sh && cargo test -p temporal-server --test environment_provider_live temporal_live_profile_attaches_host_environment -- --ignored --exact --nocapture
 ```
 
 ## Goal

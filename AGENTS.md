@@ -18,9 +18,15 @@ Use these files as the index:
   management, CAS offloading, Temporal hosting), moved out of the README.
 - `docs/spec/01-agent-idea.md` — working design notes for the new agent direction.
 - `Cargo.toml` — workspace membership.
-- `interop/` — API contract artifacts, the private TypeScript client, and the
-  generated multi-universe Configurator MCP Streamable HTTP facade.
-- `local/` — local Docker stack, environment exports, and reset helpers.
+- `clients/typescript/` — generated public TypeScript API client.
+- `platform/` — first-party TypeScript management server, web UI, operator CLI,
+  shared inputs, database schema, Channels workers, Configurator MCP, and the
+  mechanically imported Foundry candidate.
+- `crates/api/contract/` — committed generated API schema, method manifest,
+  OpenRPC, and human reference.
+- `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware
+  development supervisor, local Docker stack, environment exports, and reset
+  helpers.
 - `docs/roadmap/` — implementation plans and historical milestones.
 
 ## Build & Test
@@ -46,6 +52,10 @@ cargo test -p eval
 cargo test -p cli --tests
 cargo test -p llm-clients test_name
 cargo test -p llm-clients -- --nocapture
+npm install
+npm run check
+npm run test:integration:channels
+LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
 Live provider tests are ignored by default and require API keys:
@@ -64,11 +74,11 @@ Additional per-capability live suites exist for both providers under
 
 Temporal live tests share local Temporal/PostgreSQL state and must not run in
 parallel. Always pass `--test-threads=1` after the Cargo test-harness separator,
-including when running a filtered test. Source `local/env.sh` first so the live
+including when running a filtered test. Source `scripts/dev/env.sh` first so the live
 tests use the local stack configuration:
 
 ```bash
-source local/env.sh
+source scripts/dev/env.sh
 cargo test -p temporal-server --test temporal_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
@@ -76,23 +86,23 @@ cargo test -p temporal-server --test environment_provider_live temporal_live_env
 ```
 
 After changing `api` wire types, regenerate the committed contract artifacts
-under `interop/contract/` (`cargo test -p api` fails while they are stale):
+under `crates/api/contract/` (`cargo test -p api` fails while they are stale):
 
 ```bash
 cargo run -p api --bin export-schema
 ```
 
 The export includes JSON Schema, the method manifest, OpenRPC, and the generated
-human reference at `interop/contract/api-reference.md`. Method-level summaries
+human reference at `crates/api/contract/api-reference.md`. Method-level summaries
 and descriptions belong in the Rust method manifest; parameter/field docs
 belong on the Rust wire DTOs so every generated consumer stays aligned.
 
-After changing the API contract, regenerate and verify both TypeScript
-consumers:
+After changing the API contract, regenerate and verify every TypeScript
+consumer from the repository root:
 
 ```bash
-cd interop/ts-client && npm install && npm run check
-cd ../configurator-mcp && npm install && npm run check
+npm install
+npm run check
 ```
 
 CLI usage:
@@ -105,6 +115,28 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --new --json "summ
 cargo run -p temporal-server
 cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_1 "hello"
 ```
+
+Unified development profiles run through the root `dev.sh` launcher. `full`
+is the default; `npm run dev` delegates to the same launcher, and connector
+processes remain opt-in through
+`LIGHTSPEED_CHANNELS_CONNECTORS`:
+
+```bash
+./dev.sh
+./dev.sh platform
+./dev.sh runtime
+./dev.sh infra
+./dev.sh --plan full
+./dev.sh status
+./dev.sh stop
+./dev.sh down
+./dev.sh reset
+```
+
+`stop` terminates the tracked host supervisor but keeps infrastructure;
+`down` stops the host supervisor before tearing down Compose. Internal
+infrastructure primitives live under `scripts/dev/infra/` and are not the primary
+developer command surface.
 
 The server never migrates PostgreSQL implicitly. Before starting it against a
 new or upgraded database, run `cargo run -p temporal-server -- migrate`; use
@@ -190,6 +222,10 @@ Release construction, snapshots, and tagged publication are documented in
   `ModelSelection` or the session log.
 - Keep clients on `api`. CLIs, TUIs, editors, hosted gateways, and future
   Temporal frontends should not consume reducer internals directly.
+- Use Lightspeed-owned names for every supported product configuration key,
+  persisted identifier, Temporal identity, browser storage key, and deployment
+  input. Do not reintroduce imported pre-release aliases;
+  `npm run check:identity` enforces this boundary across the repository.
 - Treat hosted `session/runs/start` as an acceptance/start boundary, not a final-output
   boundary. Clients should follow `session/events/read` or refresh
   `session/read` for progress and completion.
@@ -234,23 +270,9 @@ Local commands load a root `.env` file when present. The `.env` file usually
 exists in development environments; check with the developer before running
 live commands.
 
-| Variable | Purpose |
-|---|---|
-| `OPENAI_API_KEY` | OpenAI provider authentication |
-| `ANTHROPIC_API_KEY` | Anthropic provider authentication |
-| `OPENAI_BASE_URL` | Override OpenAI API endpoint |
-| `ANTHROPIC_BASE_URL` | Override Anthropic API endpoint |
-| `LIGHTSPEED_CHAT_PROVIDER` | Default chat provider ID |
-| `LIGHTSPEED_CHAT_MODEL` | Default chat model |
-| `LIGHTSPEED_SECRETS_MASTER_KEY` | Base64 32-byte AES key for the encrypted secret store |
-| `LIGHTSPEED_PUBLIC_BASE_URL` | Externally reachable gateway base URL for the OAuth callback (defaults to `http://{bind}`) |
-| `LIGHTSPEED_AUTH_MODE` | Gateway tenant resolution: `single` (default), `trusted-header`, `api-key` (P90) |
-| `LIGHTSPEED_API_KEY` | Client-side (CLI/bridge): bearer key sent to an `api-key`-mode gateway |
-| `LIGHTSPEED_UNIVERSE` | Client-side (CLI/bridge): universe header sent to a `trusted-header`-mode gateway |
-| `LIGHTSPEED_BLOB_CACHE_BYTES` | CAS blob cache budget per process (`0` disables; default 256MiB) |
-| `LIGHTSPEED_ALLOW_UNLEDGERED_SCHEMA` | Permit runtime startup against externally managed Lightspeed tables without a migration ledger (`false` by default); does not relax `migrate` |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | Stable gateway base URL used by separate Temporal workers for environment routes |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | Shared deployment bearer token for worker-to-environment-gateway routing; required for split gateway/worker deployments |
+See `docs/variables.md` for the authoritative reference, including the strict
+separation between core runtime, Platform, Channels, Configurator, environment
+services, development, test, and release variables.
 
 ## Test Rules
 
