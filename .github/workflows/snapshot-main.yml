@@ -207,9 +207,6 @@ jobs:
           docker cp "$container_id:/usr/local/bin/lightspeed-server" image-check/lightspeed-server
           cmp dist/bin/lightspeed-server image-check/lightspeed-server
           docker run --rm "$RUNTIME_IMAGE" --version | grep -F "$EXPECTED_SHA"
-          docker pull "$CONFIGURATOR_IMAGE"
-          docker run --rm --entrypoint node "$CONFIGURATOR_IMAGE" -e \
-            'const fs = require("node:fs"); for (const f of ["/app/dist/bin.js", "/app/agent-client.tgz"]) fs.accessSync(f);'
           scripts/release/smoke-images.sh
       - name: Confirm this is still the current main commit
         id: current

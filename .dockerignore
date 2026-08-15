@@ -2,4 +2,6 @@
 .env
 target
 **/node_modules
+!dist/configurator-mcp/node_modules
+!dist/configurator-mcp/node_modules/**
 **/.DS_Store
