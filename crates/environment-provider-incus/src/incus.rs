@@ -482,8 +482,9 @@ impl IncusClient {
                 continue;
             };
             let network_name = policy::network_name(&binding);
+            let network_project = network_resource_project(self.config.incus.mode, &project.name);
             if !self
-                .exists(&format!("/networks/{network_name}"), Some(&project.name))
+                .exists(&format!("/networks/{network_name}"), network_project)
                 .await?
             {
                 continue;
@@ -492,7 +493,7 @@ impl IncusClient {
                 .request(
                     Method::GET,
                     &format!("/networks/{network_name}"),
-                    Some(&project.name),
+                    network_project,
                     None,
                 )
                 .await?;
@@ -522,6 +523,7 @@ impl IncusClient {
         }
 
         for (project, own_cidr) in &networks {
+            let network_project = network_resource_project(self.config.incus.mode, project);
             let siblings = networks
                 .iter()
                 .filter(|(_, cidr)| cidr != own_cidr)
@@ -562,7 +564,7 @@ impl IncusClient {
             self.request_unit(
                 Method::PUT,
                 &format!("/network-acls/{project}-acl"),
-                Some(project),
+                network_project,
                 Some(json!({
                     "description":"Lightspeed binding baseline",
                     "ingress":ingress,
@@ -614,8 +616,10 @@ impl IncusBackend for IncusClient {
     async fn reconcile_binding(&self, binding: &ProviderBindingContext) -> anyhow::Result<()> {
         let _reconcile_guard = self.reconcile_lock.lock().await;
         let project = policy::project_name(binding);
-        self.ensure_resource(&format!("/projects/{project}"), "/projects", None, json!({"name":project,"description":"Lightspeed managed binding","config":{"features.images":"false","features.networks":"true","features.profiles":"true","restricted":"true","restricted.devices.nic":"managed","restricted.devices.disk":"managed","restricted.networks.access":policy::network_name(binding),"user.lightspeed.managed":"true","user.lightspeed.universe":binding.universe_id,"user.lightspeed.binding":binding.binding_id}})).await?;
-        self.ensure_resource(&format!("/network-acls/{}", policy::acl_name(binding)), "/network-acls", Some(&project), json!({"name":policy::acl_name(binding),"description":"Lightspeed binding baseline","ingress":[],"egress":[],"config":{}})).await?;
+        let isolated_project_networks = self.config.incus.mode == IncusMode::Cluster;
+        let network_project = network_resource_project(self.config.incus.mode, &project);
+        self.ensure_resource(&format!("/projects/{project}"), "/projects", None, json!({"name":project,"description":"Lightspeed managed binding","config":{"features.images":"false","features.networks":isolated_project_networks.to_string(),"features.profiles":"true","restricted":"true","restricted.devices.nic":"managed","restricted.devices.disk":"managed","restricted.networks.access":policy::network_name(binding),"user.lightspeed.managed":"true","user.lightspeed.universe":binding.universe_id,"user.lightspeed.binding":binding.binding_id}})).await?;
+        self.ensure_resource(&format!("/network-acls/{}", policy::acl_name(binding)), "/network-acls", network_project, json!({"name":policy::acl_name(binding),"description":"Lightspeed binding baseline","ingress":[],"egress":[],"config":{}})).await?;
         let network = match self.config.incus.mode {
             IncusMode::Single => {
                 json!({"name":policy::network_name(binding),"type":"bridge","config":{"ipv4.address":"auto","ipv4.nat":"true","ipv6.address":"none","security.acls":policy::acl_name(binding),"security.acls.default.ingress.action":"allow","security.acls.default.egress.action":"allow"}})
@@ -627,7 +631,7 @@ impl IncusBackend for IncusClient {
         self.ensure_resource(
             &format!("/networks/{}", policy::network_name(binding)),
             "/networks",
-            Some(&project),
+            network_project,
             network,
         )
         .await?;
@@ -1161,6 +1165,8 @@ struct InstanceState {
 #[derive(Default, Deserialize)]
 struct NetworkState {
     #[serde(default)]
+    host_name: String,
+    #[serde(default)]
     addresses: Vec<Address>,
 }
 #[derive(Deserialize)]
@@ -1197,6 +1203,27 @@ fn ipv4_cidrs_overlap(left: &str, right: &str) -> bool {
 
 fn pending_operation(operation: Option<String>) -> Option<String> {
     operation.filter(|operation| !operation.is_empty())
+}
+
+fn managed_ipv4_address(state: &InstanceState) -> Option<String> {
+    state
+        .network
+        .values()
+        // Incus reports a host-side interface for managed instance NICs.
+        // Guest-created networks such as Docker's bridge have no host_name.
+        .filter(|network| !network.host_name.is_empty())
+        .flat_map(|network| &network.addresses)
+        .find(|address| address.family == "inet" && address.scope == "global")
+        .map(|address| address.address.clone())
+}
+
+/// OVN networks are project-local, while standalone bridge networks are
+/// global Incus resources that restricted projects are allowed to reference.
+fn network_resource_project(mode: IncusMode, project: &str) -> Option<&str> {
+    match mode {
+        IncusMode::Single => None,
+        IncusMode::Cluster => Some(project),
+    }
 }
 
 fn parse_source_target(value: &str) -> anyhow::Result<(&str, &str)> {
@@ -1291,12 +1318,7 @@ fn owned_from_instance(instance: Instance, state: InstanceState) -> anyhow::Resu
     {
         anyhow::bail!("managed instance name does not match immutable ownership metadata")
     }
-    let ipv4_address = state
-        .network
-        .values()
-        .flat_map(|network| &network.addresses)
-        .find(|address| address.family == "inet" && address.scope == "global")
-        .map(|address| address.address.clone());
+    let ipv4_address = managed_ipv4_address(&state);
     Ok(OwnedTarget {
         target_id: ProviderTargetId::new(instance.name.clone()),
         name: instance.name,
@@ -1385,5 +1407,48 @@ mod tests {
             ("staging", "manual-vm")
         );
         assert!(parse_source_target("too/many/parts").is_err());
+    }
+
+    #[test]
+    fn standalone_network_resources_are_global_but_cluster_networks_are_project_local() {
+        assert_eq!(
+            network_resource_project(IncusMode::Single, "binding-a"),
+            None
+        );
+        assert_eq!(
+            network_resource_project(IncusMode::Cluster, "binding-a"),
+            Some("binding-a")
+        );
+    }
+
+    #[test]
+    fn managed_ipv4_ignores_guest_created_bridges() {
+        let state = InstanceState {
+            network: BTreeMap::from([
+                (
+                    "docker0".to_owned(),
+                    NetworkState {
+                        host_name: String::new(),
+                        addresses: vec![Address {
+                            family: "inet".to_owned(),
+                            scope: "global".to_owned(),
+                            address: "172.17.0.1".to_owned(),
+                        }],
+                    },
+                ),
+                (
+                    "enp5s0".to_owned(),
+                    NetworkState {
+                        host_name: "tap123".to_owned(),
+                        addresses: vec![Address {
+                            family: "inet".to_owned(),
+                            scope: "global".to_owned(),
+                            address: "10.42.0.2".to_owned(),
+                        }],
+                    },
+                ),
+            ]),
+        };
+        assert_eq!(managed_ipv4_address(&state).as_deref(), Some("10.42.0.2"));
     }
 }
