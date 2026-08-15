@@ -977,15 +977,28 @@ impl IncusBackend for IncusClient {
         force: bool,
     ) -> anyhow::Result<()> {
         let project = policy::project_name(binding);
-        if force {
-            let _ = self
+        if target.status != ProviderTargetStatus::Stopped {
+            let stop_result = self
                 .request_unit(
                     Method::PUT,
                     &format!("/instances/{}/state", target.name),
                     Some(&project),
-                    Some(json!({"action":"stop","timeout":0,"force":true})),
+                    Some(json!({
+                        "action":"stop",
+                        "timeout": if force { 0 } else { 30 },
+                        "force": force
+                    })),
                 )
                 .await;
+            if let Err(error) = stop_result {
+                let observed = self.instance(&project, &target.name).await?;
+                if observed
+                    .as_ref()
+                    .is_some_and(|target| target.status != ProviderTargetStatus::Stopped)
+                {
+                    return Err(error);
+                }
+            }
         }
         if let Err(error) = self
             .request_unit(
