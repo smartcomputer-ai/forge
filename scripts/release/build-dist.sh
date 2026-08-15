@@ -35,6 +35,14 @@ cp crates/api/contract/api.schema.json crates/api/contract/methods.json \
 npm ci
 npm run build
 
+# The publishable client and Configurator retain standalone lockfiles. Prime
+# npm's cache from those exact locks before their staged installs go offline;
+# the root workspace lock may legitimately resolve different transitive
+# versions and therefore cannot guarantee that every standalone tarball is
+# cached.
+npm --prefix clients/typescript ci --ignore-scripts
+npm --prefix platform/configurator-mcp ci --ignore-scripts
+
 stage_root="$(mktemp -d)"
 trap 'rm -rf "$stage_root"' EXIT
 cp -R clients/typescript "$stage_root/ts-client"

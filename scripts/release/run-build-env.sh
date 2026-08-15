@@ -26,7 +26,8 @@ docker run --rm --platform linux/amd64 \
       status=$?
       trap - EXIT
       workspace_owner="$(stat -c %u:%g /workspace)"
-      find /workspace -path /workspace/target -prune -o \
+      find /workspace \
+        \( -path /workspace/.git -o -path /workspace/target \) -prune -o \
         -exec chown "$workspace_owner" {} + || {
         cleanup_status=$?
         if (( status == 0 )); then
