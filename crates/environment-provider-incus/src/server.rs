@@ -527,15 +527,23 @@ fn summary(target: OwnedTarget) -> ProviderTargetSummary {
     if let Some(location) = target.location {
         metadata.insert("incusMember".to_owned(), location);
     }
+    let mut capabilities = EnvironmentCapabilities::filesystem(true, true)
+        .with_filesystem_search()
+        .with_process()
+        .with_jobs();
+    // Keep the controller-plane summary aligned with the envd handshake. The
+    // runtime consumes this summary before opening the data-plane connection.
+    capabilities.network = true;
+    capabilities.filesystem_glob = true;
+    capabilities.filesystem_ranged_read = true;
+    capabilities.process_output_notifications = false;
+    capabilities.process_pty = true;
     ProviderTargetSummary {
         target_id: target.target_id,
         display_name: Some(target.environment_id),
         status: target.status,
         scope: EnvironmentScope::Default,
-        capabilities: EnvironmentCapabilities::filesystem(true, true)
-            .with_filesystem_search()
-            .with_process()
-            .with_jobs(),
+        capabilities,
         default_cwd: None,
         metadata,
     }
@@ -622,5 +630,10 @@ mod tests {
             summary.metadata.get("incusMember").map(String::as_str),
             Some("member-a")
         );
+        assert!(summary.capabilities.network);
+        assert!(summary.capabilities.filesystem_glob);
+        assert!(summary.capabilities.filesystem_ranged_read);
+        assert!(summary.capabilities.process_pty);
+        assert!(!summary.capabilities.process_output_notifications);
     }
 }
