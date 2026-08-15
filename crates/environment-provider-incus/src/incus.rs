@@ -825,9 +825,11 @@ impl IncusBackend for IncusClient {
                 return Err(error);
             }
         }
-        self.instance(&project, &name)
+        let target = self
+            .instance(&project, &name)
             .await?
-            .ok_or_else(|| anyhow::anyhow!("created Incus instance disappeared"))
+            .ok_or_else(|| anyhow::anyhow!("created Incus instance disappeared"))?;
+        Ok(target_after_accepted_start(target))
     }
 
     async fn adopt_vm(
@@ -1276,10 +1278,26 @@ async fn ensure_instance_started(
             return Err(error);
         }
     }
-    client
+    let target = client
         .instance(project, name)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("adopted Incus target disappeared while starting"))
+        .ok_or_else(|| anyhow::anyhow!("Incus target disappeared while starting"))?;
+    Ok(target_after_accepted_start(target))
+}
+
+/// Incus can briefly return the pre-operation `Stopped` state immediately
+/// after its asynchronous start operation succeeds. Keep the provisioning
+/// lifecycle pending until a later observation sees the actual running state.
+fn target_after_accepted_start(mut target: OwnedTarget) -> OwnedTarget {
+    target.status = status_after_accepted_start(target.status);
+    target
+}
+
+fn status_after_accepted_start(status: ProviderTargetStatus) -> ProviderTargetStatus {
+    match status {
+        ProviderTargetStatus::Stopped => ProviderTargetStatus::Starting,
+        status => status,
+    }
 }
 
 fn verify_adopted_target(target: &OwnedTarget, params: &AdoptTargetParams) -> anyhow::Result<()> {
@@ -1450,5 +1468,17 @@ mod tests {
             ]),
         };
         assert_eq!(managed_ipv4_address(&state).as_deref(), Some("10.42.0.2"));
+    }
+
+    #[test]
+    fn accepted_start_does_not_report_a_stale_stopped_state() {
+        assert_eq!(
+            status_after_accepted_start(ProviderTargetStatus::Stopped),
+            ProviderTargetStatus::Starting
+        );
+        assert_eq!(
+            status_after_accepted_start(ProviderTargetStatus::Ready),
+            ProviderTargetStatus::Ready
+        );
     }
 }
