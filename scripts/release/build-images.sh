@@ -30,8 +30,8 @@ trap 'docker rm -f "$container_id" >/dev/null 2>&1 || true; rm -rf "$tmp_dir"' E
 docker cp "$container_id:/usr/local/bin/lightspeed-server" "$tmp_dir/lightspeed-server"
 cmp dist/bin/lightspeed-server "$tmp_dir/lightspeed-server"
 docker run --rm "${tag}-runtime" --version
-docker run --rm --entrypoint node "${tag}-configurator-mcp" -e \
-  'for (const file of ["/app/dist/bin.js", "/app/agent-client.tgz"]) require("node:fs").accessSync(file)'
+docker run --rm --entrypoint node "${tag}-configurator-mcp" \
+  --input-type=module -e 'await import("/app/dist/index.js")'
 docker run --rm --entrypoint node "${tag}-platform" -e \
   'for (const file of ["/app/platform/server/src/main.ts", "/app/platform/web/dist/index.html"]) require("node:fs").accessSync(file)'
 for image in runtime platform channels; do

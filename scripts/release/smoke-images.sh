@@ -3,10 +3,12 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 platform_image="${PLATFORM_IMAGE:?PLATFORM_IMAGE is required}"
+configurator_image="${CONFIGURATOR_IMAGE:?CONFIGURATOR_IMAGE is required}"
 channels_image="${LIGHTSPEED_CHANNELS_IMAGE:?LIGHTSPEED_CHANNELS_IMAGE is required}"
 expected_sha="${EXPECTED_SHA:?EXPECTED_SHA is required}"
 
 docker pull "$platform_image"
+docker pull "$configurator_image"
 docker pull "$channels_image"
 
 test "$(docker image inspect "$platform_image" \
@@ -39,6 +41,11 @@ if [[ "$ready" != true ]]; then
 fi
 curl --fail --silent http://127.0.0.1:18300/app \
   | grep -F '<div id="root"></div>' >/dev/null
+
+test "$(docker image inspect "$configurator_image" \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$expected_sha"
+docker run --rm --entrypoint node "$configurator_image" \
+  --input-type=module -e 'await import("/app/dist/index.js")'
 
 test "$(docker image inspect "$channels_image" \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$expected_sha"
