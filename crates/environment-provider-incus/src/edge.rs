@@ -3,12 +3,13 @@
 use axum::{
     Router,
     body::Body,
-    extract::{State, WebSocketUpgrade, ws::WebSocket},
+    extract::{Query, State, WebSocketUpgrade, ws::WebSocket},
     http::{HeaderMap, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
     routing::any,
 };
 use futures_util::{SinkExt as _, StreamExt as _};
+use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message as UpstreamMessage};
 
 use crate::IncusBackend;
@@ -19,11 +20,14 @@ struct EdgeState<B> {
     http: reqwest::Client,
 }
 
+const AUTHORIZE_PATH: &str = "/.well-known/lightspeed-ingress-authorization";
+
 pub async fn serve<B: IncusBackend>(
     listener: tokio::net::TcpListener,
     backend: B,
 ) -> anyhow::Result<()> {
     let app = Router::new()
+        .route(AUTHORIZE_PATH, axum::routing::get(authorize::<B>))
         .fallback(any(proxy::<B>))
         .with_state(EdgeState {
             backend,
@@ -31,6 +35,25 @@ pub async fn serve<B: IncusBackend>(
         });
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct AuthorizeQuery {
+    domain: String,
+}
+
+/// Authorize Caddy on-demand TLS only for a currently enabled, ready ingress
+/// hostname. The edge remains tailnet-only; Caddy also blocks this path from
+/// the public reverse proxy.
+async fn authorize<B: IncusBackend>(
+    State(state): State<EdgeState<B>>,
+    Query(query): Query<AuthorizeQuery>,
+) -> StatusCode {
+    match resolve(&state, &query.domain).await {
+        Ok(Some(_)) => StatusCode::NO_CONTENT,
+        Ok(None) => StatusCode::NOT_FOUND,
+        Err(_) => StatusCode::BAD_GATEWAY,
+    }
 }
 
 async fn proxy<B: IncusBackend>(
@@ -102,15 +125,22 @@ async fn resolve<B: IncusBackend>(
     state: &EdgeState<B>,
     hostname: &str,
 ) -> anyhow::Result<Option<Route>> {
-    for target in state.backend.list_all_owned().await? {
+    Ok(resolve_targets(
+        state.backend.list_all_owned().await?,
+        hostname,
+    ))
+}
+
+fn resolve_targets(targets: Vec<crate::incus::OwnedTarget>, hostname: &str) -> Option<Route> {
+    for target in targets {
         if target.ingress_hostname.as_deref() == Some(hostname)
             && target.status == environment_protocol::control::targets::ProviderTargetStatus::Ready
             && let (Some(address), Some(port)) = (target.ipv4_address, target.ingress_port)
         {
-            return Ok(Some(Route { address, port }));
+            return Some(Route { address, port });
         }
     }
-    Ok(None)
+    None
 }
 
 async fn proxy_websocket(mut client: WebSocket, endpoint: String) {
@@ -149,5 +179,59 @@ async fn proxy_websocket(mut client: WebSocket, endpoint: String) {
                 _ => break,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::incus::OwnedTarget;
+    use environment_protocol::{control::targets::ProviderTargetStatus, shared::ProviderTargetId};
+
+    fn target(status: ProviderTargetStatus, hostname: Option<&str>) -> OwnedTarget {
+        OwnedTarget {
+            target_id: ProviderTargetId::new("target-a"),
+            name: "target-a".to_owned(),
+            universe_id: "universe-a".to_owned(),
+            binding_id: "binding-a".to_owned(),
+            environment_id: "environment-a".to_owned(),
+            incarnation_id: "incarnation-a".to_owned(),
+            request_id: "request-a".to_owned(),
+            template_id: "template-a".to_owned(),
+            image_fingerprint: "fingerprint-a".to_owned(),
+            adoption_source: None,
+            status,
+            ipv4_address: Some("10.0.0.2".to_owned()),
+            ingress_hostname: hostname.map(ToOwned::to_owned),
+            ingress_port: Some(8080),
+            location: None,
+        }
+    }
+
+    #[test]
+    fn authorization_resolves_only_the_exact_ready_ingress_hostname() {
+        let hostname = "route.env.example.com";
+        let route = resolve_targets(
+            vec![target(ProviderTargetStatus::Ready, Some(hostname))],
+            hostname,
+        )
+        .expect("ready route");
+        assert_eq!(route.address, "10.0.0.2");
+        assert_eq!(route.port, 8080);
+
+        assert!(
+            resolve_targets(
+                vec![target(ProviderTargetStatus::Starting, Some(hostname))],
+                hostname,
+            )
+            .is_none()
+        );
+        assert!(
+            resolve_targets(
+                vec![target(ProviderTargetStatus::Ready, Some(hostname))],
+                "other.env.example.com",
+            )
+            .is_none()
+        );
     }
 }
