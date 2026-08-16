@@ -4,7 +4,46 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { IconSelector, IconCheck, IconChevronUp, IconChevronDown } from "@tabler/icons-react"
 
-const Select = SelectPrimitive.Root
+/// Base UI's `Select.Value` renders the raw value unless the root knows the
+/// items' labels. Every call site here writes `<SelectItem value>{label}</SelectItem>`
+/// JSX, so derive that map from the children once instead of asking each
+/// dropdown to repeat its labels: the closed trigger then shows the same
+/// label as the open list. An explicit `items` prop or a `SelectValue`
+/// render function still wins.
+function Select<Value>({ items, children, ...props }: SelectPrimitive.Root.Props<Value>) {
+  const derived = React.useMemo(
+    () => (items === undefined ? collectSelectItems(children) : undefined),
+    [items, children],
+  )
+  return (
+    <SelectPrimitive.Root
+      {...props}
+      items={items ?? (derived as SelectPrimitive.Root.Props<Value>["items"])}
+    >
+      {children}
+    </SelectPrimitive.Root>
+  )
+}
+
+/// Walks already-rendered JSX (fragments, arrays, `SelectContent`,
+/// `SelectGroup`, …) and collects `{ value, label }` for every `SelectItem`.
+/// Items produced by nested custom components are not visible here; those
+/// call sites pass `items` or a `SelectValue` render function themselves.
+function collectSelectItems(
+  children: React.ReactNode,
+  into: Array<{ value: unknown; label: React.ReactNode }> = [],
+): Array<{ value: unknown; label: React.ReactNode }> {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return
+    const props = child.props as { value?: unknown; children?: React.ReactNode }
+    if (child.type === SelectItem) {
+      into.push({ value: props.value, label: props.children })
+      return
+    }
+    if (props.children !== undefined) collectSelectItems(props.children, into)
+  })
+  return into
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
