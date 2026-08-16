@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
 import { api, type ChannelAccount, type ChannelsStatus } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,8 +11,23 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Field, FieldLabel } from "@/components/ui/field";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableActionsCell,
@@ -43,12 +59,21 @@ export function AdminChannelsPage() {
       void queryClient.invalidateQueries({ queryKey: ["channel-accounts"] }),
   });
 
+  const [createOpen, setCreateOpen] = useState(false);
+
   return (
     <>
       <PageHeader
         title="Channels"
         description="Provider accounts and live connector state for this deployment."
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus data-icon="inline-start" />
+            Add account
+          </Button>
+        }
       />
+      <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} />
       <div className="grid gap-6">
         <Card>
           <CardHeader>
@@ -154,7 +179,6 @@ export function AdminChannelsPage() {
                 </Table>
               </TableCard>
             )}
-            <CreateAccountForm />
           </CardContent>
         </Card>
       </div>
@@ -162,13 +186,30 @@ export function AdminChannelsPage() {
   );
 }
 
-function CreateAccountForm() {
+function CreateAccountDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const queryClient = useQueryClient();
   const [provider, setProvider] = useState<"telegram" | "whatsapp">("telegram");
   const [accountId, setAccountId] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [credentialRef, setCredentialRef] = useState("");
   const [stateRef, setStateRef] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setProvider("telegram");
+    setAccountId("");
+    setDisplayName("");
+    setCredentialRef("");
+    setStateRef("");
+    setError(null);
+  };
+
   const create = useMutation({
     mutationFn: () =>
       api<ChannelAccount>("POST", "/api/v1/channel-accounts", {
@@ -180,58 +221,104 @@ function CreateAccountForm() {
         settings: {},
       }),
     onSuccess: async () => {
-      setAccountId("");
-      setDisplayName("");
-      setCredentialRef("");
-      setStateRef("");
       await queryClient.invalidateQueries({ queryKey: ["channel-accounts"] });
+      onOpenChange(false);
+      reset();
     },
+    onError: (err) => setError(err.message),
   });
   const submit = (event: FormEvent) => {
     event.preventDefault();
+    setError(null);
     create.mutate();
   };
 
   return (
-    <form onSubmit={submit} className="grid gap-3 rounded-xl border p-4 md:grid-cols-2">
-      <div className="md:col-span-2">
-        <h3 className="text-sm font-semibold">Add account</h3>
-      </div>
-      <Field>
-        <FieldLabel htmlFor="channel-provider">Provider</FieldLabel>
-        <select
-          id="channel-provider"
-          className="h-9 rounded-md border bg-transparent px-3 text-sm"
-          value={provider}
-          onChange={(event) => setProvider(event.target.value as typeof provider)}
-        >
-          <option value="telegram">Telegram</option>
-          <option value="whatsapp">WhatsApp</option>
-        </select>
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="channel-account-id">Stable account id</FieldLabel>
-        <Input id="channel-account-id" value={accountId} onChange={(e) => setAccountId(e.target.value)} required />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="channel-display-name">Display name</FieldLabel>
-        <Input id="channel-display-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="channel-credential-ref">Credential reference</FieldLabel>
-        <Input id="channel-credential-ref" value={credentialRef} onChange={(e) => setCredentialRef(e.target.value)} placeholder="optional opaque reference" />
-      </Field>
-      <Field>
-        <FieldLabel htmlFor="channel-state-ref">State reference</FieldLabel>
-        <Input id="channel-state-ref" value={stateRef} onChange={(e) => setStateRef(e.target.value)} placeholder="optional opaque reference" />
-      </Field>
-      <div className="flex items-end md:col-span-2">
-        <Button type="submit" disabled={create.isPending || !accountId.trim() || !displayName.trim()}>
-          {create.isPending ? "Adding…" : "Add account"}
-        </Button>
-      </div>
-      {create.error && <p className="text-sm text-destructive md:col-span-2">{create.error.message}</p>}
-    </form>
+    <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) reset(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add channel account</DialogTitle>
+          <DialogDescription>
+            Registers a provider account for the Channels connectors. Universe owners
+            route conversations to it from their Channels settings.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="grid gap-4">
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="channel-provider">Provider</FieldLabel>
+              <Select
+                value={provider}
+                onValueChange={(value) => setProvider(value as typeof provider)}
+              >
+                <SelectTrigger id="channel-provider">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="telegram">Telegram</SelectItem>
+                  <SelectItem value="whatsapp">WhatsApp</SelectItem>
+                </SelectContent>
+              </Select>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="channel-account-id">Stable account id</FieldLabel>
+              <Input
+                id="channel-account-id"
+                value={accountId}
+                onChange={(e) => setAccountId(e.target.value)}
+                required
+                autoFocus
+              />
+            </Field>
+          </div>
+          <Field>
+            <FieldLabel htmlFor="channel-display-name">Display name</FieldLabel>
+            <Input
+              id="channel-display-name"
+              value={displayName}
+              onChange={(e) => setDisplayName(e.target.value)}
+              required
+            />
+          </Field>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="channel-credential-ref">Credential reference</FieldLabel>
+              <Input
+                id="channel-credential-ref"
+                value={credentialRef}
+                onChange={(e) => setCredentialRef(e.target.value)}
+                placeholder="optional"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="channel-state-ref">State reference</FieldLabel>
+              <Input
+                id="channel-state-ref"
+                value={stateRef}
+                onChange={(e) => setStateRef(e.target.value)}
+                placeholder="optional"
+              />
+            </Field>
+          </div>
+          <FieldDescription>
+            References are opaque handles resolved by the connector; secrets never
+            pass through this form.
+          </FieldDescription>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={create.isPending || !accountId.trim() || !displayName.trim()}
+            >
+              {create.isPending ? "Adding…" : "Add account"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
