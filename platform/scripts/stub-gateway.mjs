@@ -193,117 +193,303 @@ const sessionRecord = (summary, events = []) => ({
   events,
 });
 
-const cannedEnvironments = () => [
+// ---------------------------------------------------------------------------
+// Environments (P118 domain, P121 ingress, P125 profile provisioning).
+//
+// The stub keeps one operator-registered provider ("incus-dev") and binds it
+// to every universe on first use, so the Environments page, the profile
+// editor's provision mode, and the admin providers page are all exercisable.
+// Provisioning is simulated: create → provisioning → booting → ready over a
+// few seconds; close → closing → closed. Nothing is reachable, which matches
+// what the UI can observe without a real data plane.
+// ---------------------------------------------------------------------------
+
+const STUB_PROVIDER_ID = "incus-dev";
+const STUB_TEMPLATES = [
   {
-    environmentId: "env-local-host",
-    providerId: "bridge-local",
-    providerTargetId: "local-host",
-    origin: "provided",
+    templateId: "dev-small-v1",
+    displayName: "Development VM (small)",
+    description: "2 vCPU / 4 GiB, Git, Docker, common toolchains, envd.",
+    publicIngress: true,
+    deprecated: false,
+    metadata: { cpu: "2", memory: "4GiB", disk: "40GiB" },
+  },
+  {
+    templateId: "dev-large-v1",
+    displayName: "Development VM (large)",
+    description: "8 vCPU / 16 GiB, same image as small.",
+    publicIngress: true,
+    deprecated: false,
+    metadata: { cpu: "8", memory: "16GiB", disk: "120GiB" },
+  },
+  {
+    templateId: "dev-small-v0",
+    displayName: "Development VM (small, previous)",
+    description: "Superseded image; kept for existing environments.",
+    publicIngress: false,
+    deprecated: true,
+    metadata: {},
+  },
+];
+const environmentSeeded = new Set(); // universes with the canned provider binding + environments
+const environmentTimers = new Set();
+
+function ensureStubProvider() {
+  if (environmentProviders.has(STUB_PROVIDER_ID)) return;
+  environmentProviders.set(STUB_PROVIDER_ID, {
+    providerId: STUB_PROVIDER_ID,
+    displayName: "Incus (dev stub)",
+    controllerConnection: {
+      endpoint: "ws://incus-provider.internal:19090",
+      transport: { type: "webSocket" },
+    },
+    metadata: { region: "local", mode: "single" },
+    createdAtMs: 0,
+    updatedAtMs: 0,
+  });
+}
+
+/// One enabled binding, one ready environment, one external environment,
+/// and one closed environment per universe so every UI state has an example.
+function ensureDemoEnvironments(universe) {
+  if (!universe || environmentSeeded.has(universe)) return;
+  environmentSeeded.add(universe);
+  ensureStubProvider();
+  const bindingKey = `${universe}:${STUB_PROVIDER_ID}`;
+  if (!providerBindings.has(bindingKey)) {
+    providerBindings.set(bindingKey, {
+      bindingId: STUB_PROVIDER_ID,
+      providerId: STUB_PROVIDER_ID,
+      status: "enabled",
+      revision: 1,
+      metadata: {},
+      createdAtMs: 0,
+      updatedAtMs: 0,
+    });
+  }
+  const now = Date.now();
+  const seed = (environment) =>
+    provisionedEnvironments.set(`${universe}:${environment.environmentId}`, environment);
+  seed({
+    environmentId: "env-dev-box",
+    requestId: "seed-dev-box",
+    source: { type: "provisioned", providerId: STUB_PROVIDER_ID, bindingId: STUB_PROVIDER_ID },
+    displayName: "Team dev box",
     status: "ready",
-    scope: { type: "default" },
-    defaultCwd: "/home/agent",
-    capabilities: {
-      processStart: true,
-      filesystemRead: true,
-      filesystemWrite: true,
-      jobStart: true,
+    incarnation: {
+      incarnationId: "inc-dev-box-1",
+      provisionRequestId: "seed-dev-box",
+      providerTargetId: "ls-dev-box-a1b2c3",
+      templateId: "dev-small-v1",
+      createdAtMs: now - 86_400_000,
+      updatedAtMs: now - 3_600_000,
     },
-    connection: {
-      endpoint: "ws://127.0.0.1:9000/data/local-host",
-      targetId: "local-host",
-      transport: { type: "webSocket" },
-      defaultCwd: "/home/agent",
-      capabilities: {
-        processStart: true,
-        filesystemRead: true,
-        filesystemWrite: true,
-        jobStart: true,
-      },
+    publicIngressEnabled: true,
+    publicEndpoint: "https://a1b2c3.env.lightspeed.dev",
+    metadata: { role: "shared" },
+    createdAtMs: now - 86_400_000,
+    updatedAtMs: now - 3_600_000,
+  });
+  seed({
+    environmentId: "env-laptop",
+    requestId: "seed-laptop",
+    source: {
+      type: "external",
+      connection: { endpoint: "ws://laptop.tailnet:19091", transport: "webSocket" },
     },
+    displayName: "Lukas' laptop (envd)",
+    status: "ready",
+    incarnation: {
+      incarnationId: "inc-laptop-1",
+      createdAtMs: now - 172_800_000,
+      updatedAtMs: now - 60_000,
+    },
+    publicIngressEnabled: false,
     metadata: {},
-    observedAtMs: Date.now() - 5_000,
-    createdAtMs: 0,
-    updatedAtMs: Date.now() - 5_000,
-  },
-  {
-    environmentId: "env-scratch",
-    providerId: "bridge-local",
-    providerTargetId: "scratch",
-    origin: "provided",
-    status: "stopped",
-    scope: { type: "default" },
-    defaultCwd: null,
-    capabilities: {},
-    connection: {
-      endpoint: "ws://127.0.0.1:9000/data/scratch",
-      targetId: "scratch",
-      transport: { type: "webSocket" },
-      defaultCwd: null,
-      capabilities: {},
+    createdAtMs: now - 172_800_000,
+    updatedAtMs: now - 60_000,
+  });
+  seed({
+    environmentId: "env-old-sandbox",
+    requestId: "seed-old-sandbox",
+    source: { type: "provisioned", providerId: STUB_PROVIDER_ID, bindingId: STUB_PROVIDER_ID },
+    displayName: "Old sandbox",
+    status: "closed",
+    incarnation: {
+      incarnationId: "inc-old-sandbox-1",
+      provisionRequestId: "seed-old-sandbox",
+      providerTargetId: "ls-old-sandbox-9f8e7d",
+      templateId: "dev-small-v0",
+      createdAtMs: now - 604_800_000,
+      updatedAtMs: now - 259_200_000,
     },
+    publicIngressEnabled: false,
     metadata: {},
-    observedAtMs: Date.now() - 5_000,
-    createdAtMs: 0,
-    updatedAtMs: Date.now() - 5_000,
-  },
-];
+    createdAtMs: now - 604_800_000,
+    updatedAtMs: now - 259_200_000,
+  });
+}
 
-const allEnvironments = (universe) => [
-  ...cannedEnvironments(),
-  ...prefixed(provisionedEnvironments, universe),
-];
+const allEnvironments = (universe) => {
+  ensureDemoEnvironments(universe);
+  return prefixed(provisionedEnvironments, universe);
+};
 
-const provisionEnvironment = (universe, providerId, request) => {
-  const environmentId = `env-provisioned-${++environmentCounter}`;
+const findEnvironment = (universe, environmentId) =>
+  allEnvironments(universe).find((candidate) => candidate.environmentId === environmentId);
+
+const enabledBinding = (universe, bindingId) => {
+  ensureDemoEnvironments(universe);
+  const binding = providerBindings.get(`${universe}:${bindingId}`);
+  return binding && binding.status === "enabled" ? binding : null;
+};
+
+/// Simulated provider lifecycle: schedules status transitions with delays so
+/// the UI shows provisioning → booting → ready (or closing → closed).
+const scheduleTransition = (environment, status, delayMs) => {
+  const timer = setTimeout(() => {
+    environmentTimers.delete(timer);
+    if (environment.status === "closed") return;
+    if (status !== "closed" && environment.status === "closing") return;
+    environment.status = status;
+    environment.updatedAtMs = Date.now();
+    environment.incarnation.updatedAtMs = environment.updatedAtMs;
+    if (status === "booting" && !environment.incarnation.providerTargetId) {
+      environment.incarnation.providerTargetId = `ls-${environment.environmentId.slice(-8)}`;
+    }
+  }, delayMs);
+  timer.unref?.();
+  environmentTimers.add(timer);
+};
+
+/// `environments/create` semantics: request id dedupes inside the universe,
+/// the binding must be enabled, and the record is accepted before any
+/// provider work. `originSession` is set only by the profile applier.
+const provisionEnvironment = (universe, params, originSession = null) => {
+  const existing = allEnvironments(universe).find((candidate) => candidate.requestId === params.requestId);
+  if (existing) return { environment: existing, created: false };
+  const binding = enabledBinding(universe, params.bindingId);
+  if (!binding) return { error: "environment provider binding is missing or disabled" };
+  const template = STUB_TEMPLATES.find((candidate) => candidate.templateId === params.templateId);
+  const environmentId = `env-${(++environmentCounter).toString().padStart(3, "0")}`;
   const now = Date.now();
   const environment = {
     environmentId,
-    providerId,
-    providerTargetId: `provisioned-${environmentCounter}`,
-    origin: "provisioned",
-    status: "ready",
-    scope: { type: "default" },
-    defaultCwd: request?.spec?.cwd ?? "/workspace",
-    capabilities: {
-      processStart: true,
-      filesystemRead: true,
-      filesystemWrite: true,
+    requestId: params.requestId,
+    source: { type: "provisioned", providerId: binding.providerId, bindingId: binding.bindingId },
+    ...(params.displayName ? { displayName: params.displayName } : {}),
+    status: "provisioning",
+    incarnation: {
+      incarnationId: `inc-${environmentId}-1`,
+      provisionRequestId: params.requestId,
+      templateId: params.templateId,
+      createdAtMs: now,
+      updatedAtMs: now,
     },
-    connection: {
-      endpoint: `ws://127.0.0.1:9000/data/provisioned-${environmentCounter}`,
-      targetId: `provisioned-${environmentCounter}`,
-      transport: { type: "webSocket" },
-      defaultCwd: request?.spec?.cwd ?? "/workspace",
-      capabilities: {
-        processStart: true,
-        filesystemRead: true,
-        filesystemWrite: true,
-      },
-    },
-    metadata: {},
-    observedAtMs: now,
+    publicIngressEnabled: false,
+    ...(originSession ? { originSession } : {}),
+    metadata: params.metadata ?? {},
     createdAtMs: now,
     updatedAtMs: now,
   };
   provisionedEnvironments.set(`${universe}:${environmentId}`, environment);
+  if (!template) {
+    // The provider rejects unknown templates asynchronously.
+    scheduleTransition(environment, "failed", 1_500);
+    environment.metadata = { ...environment.metadata, lifecycleError: `unknown template ${params.templateId}` };
+  } else {
+    scheduleTransition(environment, "booting", 2_500);
+    scheduleTransition(environment, "ready", 6_000);
+  }
+  return { environment, created: true };
+};
+
+const beginCloseEnvironment = (environment) => {
+  if (environment.status === "closed" || environment.status === "closing") return environment;
+  environment.status = "closing";
+  environment.updatedAtMs = Date.now();
+  environment.publicIngressEnabled = false;
+  delete environment.publicEndpoint;
+  scheduleTransition(environment, "closed", 2_000);
   return environment;
 };
 
-// Stub of the P125 profile environment intent: `existing` activates the named
-// environment; `provision` activates a synthetic per-session environment id.
-const profileEnvironmentId = (profile, sessionId) => {
-  const environment = profile?.environment;
-  if (!environment) return null;
-  if (environment.type === "existing") return environment.environmentId ?? null;
-  if (environment.type === "provision") return `env_session_${sessionId}`;
-  return null;
+/// Close every environment a profile provisioned for this session with
+/// `closeWithSession` (the engine's reconciler sweep, done eagerly here).
+const closeSessionOwnedEnvironments = (universe, sessionId) => {
+  for (const environment of allEnvironments(universe)) {
+    if (environment.originSession?.sessionId === sessionId && environment.originSession.closeWithSession) {
+      beginCloseEnvironment(environment);
+    }
+  }
 };
 
-const applyProfileActiveEnvironment = (session, profile) => {
-  const environmentId = profileEnvironmentId(profile, session.summary.id);
-  if (!environmentId || session.summary.activeEnvironmentId === environmentId) return false;
-  session.summary.activeEnvironmentId = environmentId;
-  return true;
+/// The enabled binding a `provision` profile resolves to in this universe.
+const provisionBindingFor = (universe, providerId) => {
+  ensureDemoEnvironments(universe);
+  const binding = prefixed(providerBindings, universe).find((candidate) => candidate.providerId === providerId);
+  if (!binding) {
+    return { error: `profile provisions from environment provider ${providerId}, but this universe has no binding for it` };
+  }
+  if (binding.status !== "enabled") {
+    return { error: `profile provisions from environment provider ${providerId}, but binding ${binding.bindingId} is disabled` };
+  }
+  return { binding };
+};
+
+/// P125 profile environment intent at session start / profiles/apply:
+/// `existing` activates the named environment; `provision` creates (or finds)
+/// the one environment derived from the session id and activates it while it
+/// is still provisioning. Returns { environmentId } or { error }.
+const resolveProfileEnvironment = (universe, profile, sessionId, profileId = null) => {
+  const environment = profile?.environment;
+  if (!environment) return { environmentId: null };
+  if (environment.type === "existing") {
+    const record = findEnvironment(universe, environment.environmentId);
+    if (!record) return { error: `environment not found: ${environment.environmentId}` };
+    if (record.status === "closed" || record.status === "closing" || record.status === "failed") {
+      return { error: `environment is ${record.status}: ${environment.environmentId}` };
+    }
+    return { environmentId: environment.environmentId };
+  }
+  if (environment.type === "provision") {
+    const { binding, error } = provisionBindingFor(universe, environment.providerId);
+    if (error) return { error };
+    const requestId = `session:${sessionId}`;
+    const existing = allEnvironments(universe).find((candidate) => candidate.requestId === requestId);
+    if (existing) {
+      if (existing.status === "closed" || existing.status === "closing" || existing.status === "failed") {
+        return { error: `the environment provisioned for session ${sessionId} (${existing.environmentId}) is ${existing.status}` };
+      }
+      return { environmentId: existing.environmentId, provisioned: false };
+    }
+    const result = provisionEnvironment(
+      universe,
+      {
+        requestId,
+        bindingId: binding.bindingId,
+        templateId: environment.templateId,
+        displayName: environment.displayName ?? (profileId ? `${profileId} · ${sessionId}` : `session ${sessionId}`),
+        metadata: environment.metadata ?? {},
+      },
+      {
+        sessionId,
+        ...(profileId ? { profileId } : {}),
+        closeWithSession: (environment.retention ?? "closeWithSession") === "closeWithSession",
+      },
+    );
+    if (result.error) return { error: result.error };
+    return { environmentId: result.environment.environmentId, provisioned: true };
+  }
+  return { environmentId: null };
+};
+
+const applyProfileActiveEnvironment = (universe, session, profile, profileId = null) => {
+  const resolved = resolveProfileEnvironment(universe, profile, session.summary.id, profileId);
+  if (resolved.error || !resolved.environmentId) return { changed: false, provisioned: false, error: resolved.error };
+  const changed = session.summary.activeEnvironmentId !== resolved.environmentId;
+  session.summary.activeEnvironmentId = resolved.environmentId;
+  return { changed, provisioned: Boolean(resolved.provisioned) };
 };
 
 const applyStubProfileInstructions = (session, instructions) => {
@@ -662,6 +848,7 @@ const server = http.createServer((req, res) => {
 
       // P118 operator provider registry + universe bindings + templates.
       case "operator/environment-providers/list": {
+        ensureStubProvider();
         return ok({ providers: [...environmentProviders.values()] });
       }
       case "operator/environment-providers/read": {
@@ -719,68 +906,96 @@ const server = http.createServer((req, res) => {
         return ok({ binding });
       }
       case "environments/provider-bindings/list": {
+        ensureDemoEnvironments(universe);
         return ok({ bindings: prefixed(providerBindings, universe) });
       }
+      case "environments/provider-bindings/read": {
+        ensureDemoEnvironments(universe);
+        const binding = providerBindings.get(`${universe}:${params.bindingId}`);
+        return binding ? ok({ binding }) : notFound();
+      }
       case "environments/templates/list": {
+        ensureDemoEnvironments(universe);
         const bindings = prefixed(providerBindings, universe)
           .filter((binding) => binding.status === "enabled")
           .filter((binding) => !params.bindingId || binding.bindingId === params.bindingId);
         return ok({
-          templates: bindings.map((binding) => ({
-            templateId: "dev-small-v1",
-            providerId: binding.providerId,
-            bindingId: binding.bindingId,
-            displayName: "Development VM (small)",
-            description: "Stub template",
-            publicIngress: true,
-            deprecated: false,
-            metadata: {},
-          })),
+          templates: bindings.flatMap((binding) =>
+            STUB_TEMPLATES.map((template) => ({
+              ...template,
+              providerId: binding.providerId,
+              bindingId: binding.bindingId,
+            }))),
         });
       }
-      case "environments/providers/list": {
-        // One canned online provider so the observability page and the
-        // profile editor's pickers are exercisable without a real runner.
-        return ok({
-          providers: [
-            {
-              providerId: "bridge-local",
-              providerKind: "bridge",
-              displayName: "Local bridge",
-              status: "online",
-              lastSeenMs: Date.now() - 5_000,
-              leaseExpiresMs: Date.now() + 55_000,
-              implementation: { name: "stub-bridge", version: "0.0.1" },
-              controllerConnection: {
-                endpoint: "ws://127.0.0.1:9000/controller",
-                transport: { type: "webSocket" },
-              },
-              capabilities: { listTargets: true, getTarget: true, createTarget: true, closeTarget: true },
-            },
-          ],
-        });
+      case "environments/templates/read": {
+        ensureDemoEnvironments(universe);
+        const binding = enabledBinding(universe, params.bindingId);
+        const template = STUB_TEMPLATES.find((candidate) => candidate.templateId === params.templateId);
+        if (!binding || !template) return notFound();
+        return ok({ template: { ...template, providerId: binding.providerId, bindingId: binding.bindingId } });
       }
       case "environments/list": {
         const environments = allEnvironments(universe).filter((environment) =>
-          (!params.providerId || environment.providerId === params.providerId)
-          && (!params.status || environment.status === params.status));
+          (!params.providerId || environment.source.providerId === params.providerId)
+          && (!params.bindingId || environment.source.bindingId === params.bindingId)
+          && (!params.status || environment.status === params.status)
+          && (!params.originSessionId || environment.originSession?.sessionId === params.originSessionId));
         return ok({ environments });
       }
       case "environments/create": {
-        if (params.providerId !== "bridge-local") return notFound();
-        const environment = provisionEnvironment(universe, params.providerId, params.request);
+        const result = provisionEnvironment(universe, params);
+        if (result.error) return conflict(result.error);
+        return ok({ environment: result.environment });
+      }
+      case "environments/external/create": {
+        const existing = allEnvironments(universe).find((candidate) => candidate.requestId === params.requestId);
+        if (existing) return ok({ environment: existing });
+        const now = Date.now();
+        const environmentId = `env-ext-${(++environmentCounter).toString().padStart(3, "0")}`;
+        const environment = {
+          environmentId,
+          requestId: params.requestId,
+          source: { type: "external", connection: params.connection },
+          ...(params.displayName ? { displayName: params.displayName } : {}),
+          status: "ready",
+          incarnation: { incarnationId: `inc-${environmentId}-1`, createdAtMs: now, updatedAtMs: now },
+          publicIngressEnabled: false,
+          metadata: params.metadata ?? {},
+          createdAtMs: now,
+          updatedAtMs: now,
+        };
+        provisionedEnvironments.set(`${universe}:${environmentId}`, environment);
         return ok({ environment });
       }
       case "environments/read": {
-        const environment = allEnvironments(universe).find(
-          (candidate) => candidate.environmentId === params.environmentId,
-        );
+        const environment = findEnvironment(universe, params.environmentId);
         return environment ? ok({ environment }) : notFound();
       }
       case "environments/close": {
-        const environment = provisionedEnvironments.get(`${universe}:${params.environmentId}`);
+        const environment = findEnvironment(universe, params.environmentId);
         if (!environment) return notFound();
-        environment.status = "closed";
+        return ok({ environment: beginCloseEnvironment(environment) });
+      }
+      case "environments/ingress/put": {
+        const environment = findEnvironment(universe, params.environmentId);
+        if (!environment) return notFound();
+        if (environment.source.type !== "provisioned") {
+          return conflict("public ingress is available only for provisioned environments");
+        }
+        const template = STUB_TEMPLATES.find((candidate) => candidate.templateId === environment.incarnation.templateId);
+        if (params.enabled && !template?.publicIngress) {
+          return conflict("provider template does not permit public ingress");
+        }
+        if (params.enabled && environment.status !== "ready") {
+          return conflict("environment must be ready before ingress can be enabled");
+        }
+        environment.publicIngressEnabled = params.enabled;
+        if (params.enabled) {
+          environment.publicEndpoint = `https://${environment.environmentId.replace(/[^a-z0-9]/gi, "")}.env.lightspeed.dev`;
+        } else {
+          delete environment.publicEndpoint;
+        }
         environment.updatedAtMs = Date.now();
         return ok({ environment });
       }
@@ -976,6 +1191,7 @@ const server = http.createServer((req, res) => {
           s.summary.lifecycleStatus = "closed";
           s.summary.updatedAtMs = Date.now();
           pushEvent(s, { type: "sessionClosed" });
+          closeSessionOwnedEnvironments(universe, params.sessionId);
         }
         return ok({ session: s.summary });
       }
@@ -1014,13 +1230,20 @@ const server = http.createServer((req, res) => {
             s.summary.configRevision += 1;
           }
         }
-        const activeEnvironmentChanged = applyProfileActiveEnvironment(s, profile);
+        const applied = applyProfileActiveEnvironment(
+          universe,
+          s,
+          profile,
+          params.profile?.kind === "named" ? params.profile.profileId : null,
+        );
+        if (applied.error) return conflict(applied.error);
         return ok({
           session: s.summary,
           applied: {
             configChanged,
             instructionsChanged,
-            activeEnvironmentChanged,
+            activeEnvironmentChanged: applied.changed,
+            environmentProvisioned: applied.provisioned,
           },
         });
       }
@@ -1058,14 +1281,16 @@ const server = http.createServer((req, res) => {
         if (s.summary.status !== "idle") return conflict("environment activation requires an idle session");
         const feature = s.summary.config.features?.environments;
         if (!feature) return conflict("environment activation requires the environments feature");
-        const environment = allEnvironments(universe).find(
-          (candidate) => candidate.environmentId === params.environmentId,
-        );
+        const environment = findEnvironment(universe, params.environmentId);
         if (!environment) return notFound();
-        if (feature.providers?.length && !feature.providers.includes(environment.providerId)) {
-          return conflict(`environment provider is not allowed: ${environment.providerId}`);
+        const providerId = environment.source.providerId ?? null;
+        if (feature.providers?.length && (!providerId || !feature.providers.includes(providerId))) {
+          return conflict(`environment provider is not allowed: ${providerId ?? "external"}`);
         }
-        if (environment.status !== "ready") return conflict("environment is not selectable");
+        // P125: provisioning/booting are valid intent; failed/closing/closed are not.
+        if (["failed", "closing", "closed"].includes(environment.status)) {
+          return conflict(`environment is ${environment.status}: ${environment.environmentId}`);
+        }
         s.summary.activeEnvironmentId = params.environmentId;
         return ok({ session: s.summary });
       }
@@ -1122,6 +1347,18 @@ const server = http.createServer((req, res) => {
             ...structuredClone(profile?.config ?? {}),
             model: structuredClone(profile?.config?.model ?? DEFAULT_SESSION_CONFIG.model),
           };
+          if (profile?.environment?.type === "provision") {
+            // Pre-start checks: binding present + enabled, feature granted.
+            if (!config.features?.environments) {
+              return conflict("profile provisions an environment but the effective session config does not grant features.environments");
+            }
+            const precheck = provisionBindingFor(universe, profile.environment.providerId);
+            if (precheck.error) return conflict(precheck.error);
+            const allowed = config.features.environments.providers;
+            if (allowed?.length && !allowed.includes(profile.environment.providerId)) {
+              return conflict(`profile provisions from environment provider ${profile.environment.providerId}, which features.environments.providers does not allow`);
+            }
+          }
           sessions.set(key, sessionRecord(
             {
               id: sessionId,
@@ -1129,12 +1366,19 @@ const server = http.createServer((req, res) => {
               createdAtMs: now,
               updatedAtMs: now,
               config,
-              activeEnvironmentId: profileEnvironmentId(profile, sessionId),
+              activeEnvironmentId: null,
             },
             [],
           ));
           applyStubProfileInstructions(sessions.get(key), profile?.instructions);
           pushEvent(sessions.get(key), { type: "sessionOpened", model: null });
+          const applied = applyProfileActiveEnvironment(
+            universe,
+            sessions.get(key),
+            profile,
+            params.profile?.kind === "named" ? params.profile.profileId : null,
+          );
+          if (applied.error) return conflict(applied.error);
         }
         return ok({ session: sessions.get(key).summary });
       }
