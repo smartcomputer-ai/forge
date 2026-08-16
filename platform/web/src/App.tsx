@@ -7,6 +7,7 @@ import { ApiKeysPage } from "@/pages/ApiKeysPage";
 import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
+import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { FoundryPage } from "@/pages/FoundryPage";
@@ -148,6 +149,7 @@ export function App() {
             <Route path="admin/users" element={<AdminUsersPage />} />
             <Route path="admin/universes" element={<AdminUniversesPage />} />
             <Route path="admin/channels" element={<AdminChannelsPage />} />
+            <Route path="admin/environment-providers" element={<AdminEnvironmentProvidersPage />} />
           </>
         )}
         <Route path="account" element={<AccountPage user={user} />} />

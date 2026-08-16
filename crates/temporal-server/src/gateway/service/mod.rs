@@ -35,6 +35,7 @@ use auth_api::{
 };
 use blobs::{has_blobs, put_blobs, read_blob};
 use common::now_ms;
+pub use environment_lifecycle::ReconcileFailureLog;
 use environment_lifecycle::parse_registry_environment_id;
 use environment_providers::{map_environments_error, parse_environment_provider_id};
 use environments::{activate_environment_command, deactivate_environment_command};

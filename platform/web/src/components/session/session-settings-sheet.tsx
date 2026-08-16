@@ -32,7 +32,9 @@ import {
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import {
   hasSessionFeature,
+  isActivatableEnvironmentStatus,
   resourceFeatureDisableReasons,
+  selectableEnvironments,
 } from "@/lib/sessions/resource-features";
 import { managedSessionOwnerLabel } from "@/lib/sessions/management";
 
@@ -346,7 +348,7 @@ function instructionSourceLabel(key: string | null, preview: string | null): str
 
 function ActiveEnvironmentEditor({
   value,
-  environments,
+  environments: allEnvironments,
   loading,
   disabled,
   onChange,
@@ -358,6 +360,7 @@ function ActiveEnvironmentEditor({
   onChange: (environmentId: string | null) => void;
 }) {
   const none = "__no_active_environment__";
+  const environments = selectableEnvironments(allEnvironments, value);
   const ids = [...new Set([
     ...environments.map((environment) => environment.environmentId),
     ...(value ? [value] : []),
@@ -394,7 +397,8 @@ function ActiveEnvironmentEditor({
               <SelectItem
                 key={environmentId}
                 value={environmentId}
-                disabled={!environment || (environment.status !== "ready" && environmentId !== value)}
+                disabled={!environment
+                  || (!isActivatableEnvironmentStatus(environment.status) && environmentId !== value)}
               >
                 {environment
                   ? `${environmentLabel(environment)}${environment.status === "ready" ? "" : ` — ${environment.status}`}`
@@ -424,7 +428,7 @@ function activeEnvironmentSelectionError(
       ? null
       : `Environment is unavailable: ${environmentId}`;
   }
-  if (environmentId !== originalEnvironmentId && environment.status !== "ready") {
+  if (environmentId !== originalEnvironmentId && !isActivatableEnvironmentStatus(environment.status)) {
     return `Environment is not currently selectable: ${environmentId} (${environment.status})`;
   }
   const allowedProviders = record(record(record(config).features).environments).providers;

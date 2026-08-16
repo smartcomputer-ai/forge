@@ -3355,6 +3355,16 @@ async fn run_profile_provision_live_client(
             profile_id: profile_id.clone(),
         })
         .await;
+    // Every environment above is closed, so the binding and provider can go.
+    let _ = store
+        .delete_provider_binding(
+            store.config().universe_id,
+            &EnvironmentProviderBindingId::new(binding_id.clone()),
+        )
+        .await;
+    let _ = store
+        .delete_provider(&EnvironmentProviderId::new(provider_id.clone()))
+        .await;
     Ok(())
 }
 

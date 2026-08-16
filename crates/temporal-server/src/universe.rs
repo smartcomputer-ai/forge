@@ -222,6 +222,7 @@ impl UniverseRuntime {
     pub async fn run_environment_reconciler(self: Arc<Self>) {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
         loop {
             interval.tick().await;
             let universe_ids = match store_pg::list_universes_with_pending_environments(
@@ -243,8 +244,9 @@ impl UniverseRuntime {
                         continue;
                     }
                 };
-                if let Err(error) = state.api.reconcile_environment_lifecycle_once().await {
-                    tracing::warn!(target: "temporal_server", %universe_id, %error, "environment lifecycle reconcile pass failed");
+                match state.api.reconcile_environment_lifecycle_once().await {
+                    Ok(_) => failures.succeeded(universe_id),
+                    Err(error) => failures.failed(universe_id, &error),
                 }
             }
         }

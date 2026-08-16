@@ -1191,6 +1191,17 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             .expect("sweep candidates")
             .is_empty()
     );
+
+    // Leave nothing behind for a running dev reconciler to chase: the
+    // provider endpoint is fictional and its closing environments would be
+    // retried forever.
+    store_pg::delete_universe(store.pool(), store.config().universe_id)
+        .await
+        .expect("delete test universe");
+    store
+        .delete_provider(&provider_id)
+        .await
+        .expect("delete test provider");
 }
 
 #[tokio::test(flavor = "current_thread")]

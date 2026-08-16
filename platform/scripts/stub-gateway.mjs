@@ -19,6 +19,8 @@ const workspaces = new Map(); // `${universe}:${workspaceId}` → view
 const profiles = new Map(); // `${universe}:${profileId}` → document
 const sessions = new Map(); // `${universe}:${sessionId}` → { summary, events }
 const provisionedEnvironments = new Map(); // `${universe}:${environmentId}` → environment view
+const environmentProviders = new Map(); // providerId → operator provider view
+const providerBindings = new Map(); // `${universe}:${bindingId}` → binding view
 const mcpServers = new Map(); // `${universe}:${serverId}` → view
 const apiKeys = new Map(); // `${universe}:${keyPrefix}` → non-secret view
 const authGrants = new Map(); // `${universe}:${grantId}` → non-secret view
@@ -658,6 +660,84 @@ const server = http.createServer((req, res) => {
         return ok({ provider });
       }
 
+      // P118 operator provider registry + universe bindings + templates.
+      case "operator/environment-providers/list": {
+        return ok({ providers: [...environmentProviders.values()] });
+      }
+      case "operator/environment-providers/read": {
+        const provider = environmentProviders.get(params.providerId);
+        return provider ? ok({ provider }) : notFound();
+      }
+      case "operator/environment-providers/put": {
+        const existing = environmentProviders.get(params.providerId);
+        const now = Date.now();
+        const provider = {
+          providerId: params.providerId,
+          ...(params.displayName ? { displayName: params.displayName } : {}),
+          controllerConnection: params.controllerConnection,
+          metadata: params.metadata ?? {},
+          createdAtMs: existing?.createdAtMs ?? now,
+          updatedAtMs: now,
+        };
+        environmentProviders.set(params.providerId, provider);
+        return ok({ provider });
+      }
+      case "operator/environment-providers/delete": {
+        const provider = environmentProviders.get(params.providerId);
+        if (!provider) return notFound();
+        if ([...providerBindings.values()].some((binding) => binding.providerId === params.providerId)) {
+          return conflict("environment provider is referenced by a universe binding");
+        }
+        environmentProviders.delete(params.providerId);
+        return ok({ provider });
+      }
+      case "operator/environment-providers/bindings/put": {
+        if (!environmentProviders.has(params.providerId)) return notFound();
+        const key = `${params.universeId}:${params.bindingId}`;
+        const existing = providerBindings.get(key);
+        if (params.expectedRevision != null && existing && existing.revision !== params.expectedRevision) {
+          return conflict("binding revision conflict");
+        }
+        const now = Date.now();
+        const binding = {
+          bindingId: params.bindingId,
+          providerId: params.providerId,
+          status: params.status,
+          revision: (existing?.revision ?? 0) + 1,
+          metadata: params.metadata ?? {},
+          createdAtMs: existing?.createdAtMs ?? now,
+          updatedAtMs: now,
+        };
+        providerBindings.set(key, binding);
+        return ok({ binding });
+      }
+      case "operator/environment-providers/bindings/delete": {
+        const key = `${params.universeId}:${params.bindingId}`;
+        const binding = providerBindings.get(key);
+        if (!binding) return notFound();
+        providerBindings.delete(key);
+        return ok({ binding });
+      }
+      case "environments/provider-bindings/list": {
+        return ok({ bindings: prefixed(providerBindings, universe) });
+      }
+      case "environments/templates/list": {
+        const bindings = prefixed(providerBindings, universe)
+          .filter((binding) => binding.status === "enabled")
+          .filter((binding) => !params.bindingId || binding.bindingId === params.bindingId);
+        return ok({
+          templates: bindings.map((binding) => ({
+            templateId: "dev-small-v1",
+            providerId: binding.providerId,
+            bindingId: binding.bindingId,
+            displayName: "Development VM (small)",
+            description: "Stub template",
+            publicIngress: true,
+            deprecated: false,
+            metadata: {},
+          })),
+        });
+      }
       case "environments/providers/list": {
         // One canned online provider so the observability page and the
         // profile editor's pickers are exercisable without a real runner.

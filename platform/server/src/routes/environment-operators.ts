@@ -4,18 +4,22 @@ import type {
   OperatorEnvironmentProviderPutParams,
   OperatorProviderBindingPutParams,
 } from "@lightspeed/agent-client";
+import { schema } from "@lightspeed/platform-db";
 import type { AppContext, ApiVariables } from "../context.js";
 import { isPlatformAdmin } from "../context.js";
 import { parseBody } from "../http.js";
-import { operatorClientFor, withGateway } from "./gateway.js";
+import { engineClientFor, operatorClientFor, withGateway } from "./gateway.js";
 
 const metadataSchema = z.record(z.string(), z.string()).optional();
 const providerPutSchema = z.object({
   displayName: z.string().trim().min(1).max(200).optional(),
   metadata: metadataSchema,
   controllerConnection: z.object({
-    endpoint: z.string().url(),
-    transport: z.object({ type: z.enum(["webSocket", "http"]) }),
+    endpoint: z.string().trim().min(1).max(2000),
+    transport: z.union([
+      z.object({ type: z.enum(["webSocket", "http"]) }),
+      z.object({ type: z.literal("provider"), providerType: z.string().trim().min(1).max(100) }),
+    ]),
   }),
 });
 const bindingPutSchema = z.object({
@@ -41,6 +45,39 @@ export function environmentOperatorRoutes(ctx: AppContext) {
   app.get("/environment-providers", (c) => withGateway(c, async () => {
     const response = await operatorClientFor(ctx).call("operator/environment-providers/list", {});
     return c.json(response.result.providers);
+  }));
+
+  /// Deployment-wide binding inventory: every platform universe on the
+  /// default deployment with its provider bindings, so admins can see which
+  /// universes may provision from which provider. Universes on another
+  /// gateway are reported without bindings.
+  app.get("/environment-provider-bindings", (c) => withGateway(c, async () => {
+    const rows = await ctx.db.select().from(schema.universes);
+    const universes = await Promise.all(rows.map(async (row) => {
+      const base = {
+        universeId: row.id,
+        lightspeedUniverseId: row.lightspeedUniverseId,
+        name: row.name,
+        status: row.status,
+      };
+      if (row.gatewayUrl) {
+        return { ...base, bindings: [], error: "universe lives on another deployment" };
+      }
+      try {
+        const response = await engineClientFor(ctx, row).call(
+          "environments/provider-bindings/list",
+          {},
+        );
+        return { ...base, bindings: response.result.bindings ?? [], error: null };
+      } catch (error) {
+        return {
+          ...base,
+          bindings: [],
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    }));
+    return c.json(universes);
   }));
 
   app.put("/environment-providers/:providerId", async (c) => {

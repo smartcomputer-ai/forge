@@ -397,10 +397,13 @@ pub async fn serve_gateway_with_client_store(
     let reconciler_api = api.clone();
     let reconciler = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        let universe_id = reconciler_api.universe_id();
         loop {
             interval.tick().await;
-            if let Err(error) = reconciler_api.reconcile_environment_lifecycle_once().await {
-                tracing::warn!(target: "temporal_server", %error, "environment lifecycle reconcile pass failed");
+            match reconciler_api.reconcile_environment_lifecycle_once().await {
+                Ok(_) => failures.succeeded(universe_id),
+                Err(error) => failures.failed(universe_id, &error),
             }
         }
     });

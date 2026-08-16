@@ -58,3 +58,25 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown>
     : {};
 }
+
+/// Environments a session may still select. Closed and closing environments
+/// are gone for good and never offered; `provisioning`/`booting` are valid
+/// selection intent (tools wait for readiness). A currently saved id is kept
+/// even when its environment is closed so the editor can show it as unavailable.
+export function selectableEnvironments<T extends { environmentId: string; status?: string }>(
+  environments: T[],
+  keepEnvironmentId?: string | null,
+): T[] {
+  return environments.filter((environment) =>
+    environment.environmentId === keepEnvironmentId || !isTerminalEnvironmentStatus(environment.status));
+}
+
+export function isTerminalEnvironmentStatus(status: string | undefined): boolean {
+  return status === "closed" || status === "closing";
+}
+
+/// Statuses in which activation is admitted (see P125): ready now, or
+/// provisioning/booting with tools waiting until the environment is reachable.
+export function isActivatableEnvironmentStatus(status: string | undefined): boolean {
+  return status === "ready" || status === "provisioning" || status === "booting";
+}

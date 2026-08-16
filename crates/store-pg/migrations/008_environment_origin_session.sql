@@ -31,3 +31,11 @@ CREATE INDEX IF NOT EXISTS environments_origin_session_idx
 CREATE INDEX IF NOT EXISTS environments_close_with_session_idx
     ON environments (universe_id)
     WHERE origin_close_with_session = true AND status NOT IN ('closing', 'closed');
+
+-- Binding deletion is guarded by the store ("no non-closed environment may
+-- reference the binding", P118); closed environments are history and must not
+-- pin the binding forever. The original RESTRICT foreign key contradicted that
+-- rule, so it is dropped: closed rows keep their binding_id as a historical
+-- fact without referential enforcement.
+ALTER TABLE environments
+    DROP CONSTRAINT IF EXISTS environments_universe_id_binding_id_fkey;

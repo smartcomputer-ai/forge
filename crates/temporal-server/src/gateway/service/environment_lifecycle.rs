@@ -356,18 +356,17 @@ impl GatewayAgentApi {
             EnvironmentStore::list_environments_needing_reconcile(self.store.as_ref())
                 .await
                 .map_err(map_environments_error)?;
+        // One unreachable provider must not stall every other environment in
+        // the universe: per-environment failures are remembered and the pass
+        // continues; the first failure is reported once the pass is complete.
+        let mut first_error: Option<AgentApiError> = None;
         for environment in environments {
-            match environment.status {
-                EnvironmentStatus::Closing => {
-                    if self.reconcile_environment_close(&environment).await? {
-                        changed += 1;
-                    }
-                }
+            let outcome = match environment.status {
+                EnvironmentStatus::Closing => self.reconcile_environment_close(&environment).await,
                 EnvironmentStatus::Provisioning
                 | EnvironmentStatus::Booting
                 | EnvironmentStatus::Unknown => {
                     match self.reconcile_environment_create(&environment).await {
-                        Ok(did_change) => changed += usize::from(did_change),
                         Err(error) if error.kind == api::AgentApiErrorKind::Rejected => {
                             EnvironmentStore::fail_environment_lifecycle(
                                 self.store.as_ref(),
@@ -378,16 +377,33 @@ impl GatewayAgentApi {
                                 },
                             )
                             .await
-                            .map_err(map_environments_error)?;
-                            changed += 1;
+                            .map_err(map_environments_error)
+                            .map(|_| true)
                         }
-                        Err(error) => return Err(error),
+                        other => other,
                     }
                 }
-                _ => {}
+                _ => Ok(false),
+            };
+            match outcome {
+                Ok(did_change) => changed += usize::from(did_change),
+                Err(error) => {
+                    if first_error.is_none() {
+                        first_error = Some(AgentApiError {
+                            message: format!(
+                                "environment {}: {}",
+                                environment.environment_id, error.message
+                            ),
+                            ..error
+                        });
+                    }
+                }
             }
         }
-        Ok(changed)
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(changed),
+        }
     }
 
     async fn reconcile_environment_create(
@@ -569,6 +585,39 @@ fn external_connection_from_api(
         endpoint: value.endpoint,
         transport,
     })
+}
+
+/// Rate-limits repeated reconcile-pass failures per universe so a provider
+/// that stays unreachable produces one warning per minute (or one per
+/// distinct message) instead of one every tick.
+#[derive(Default)]
+pub struct ReconcileFailureLog {
+    last: std::collections::HashMap<uuid::Uuid, (String, std::time::Instant)>,
+}
+
+impl ReconcileFailureLog {
+    const REPEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Record a failed pass; log at `warn` when it is new or stale, else at
+    /// `debug`.
+    pub fn failed(&mut self, universe_id: uuid::Uuid, error: &AgentApiError) {
+        let message = error.to_string();
+        let now = std::time::Instant::now();
+        let repeat = self.last.get(&universe_id).is_some_and(|(last, at)| {
+            *last == message && now.duration_since(*at) < Self::REPEAT_INTERVAL
+        });
+        if repeat {
+            tracing::debug!(target: "temporal_server", %universe_id, error = %message, "environment lifecycle reconcile pass still failing");
+            return;
+        }
+        self.last.insert(universe_id, (message.clone(), now));
+        tracing::warn!(target: "temporal_server", %universe_id, error = %message, "environment lifecycle reconcile pass failed (repeats suppressed for 60s)");
+    }
+
+    /// Record a successful pass so the next failure logs immediately.
+    pub fn succeeded(&mut self, universe_id: uuid::Uuid) {
+        self.last.remove(&universe_id);
+    }
 }
 
 pub(super) fn parse_registry_environment_id(value: String) -> Result<EnvironmentId, AgentApiError> {

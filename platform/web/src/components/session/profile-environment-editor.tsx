@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import type { ProfileEnvironment } from "@/api";
+import { isTerminalEnvironmentStatus, selectableEnvironments } from "@/lib/sessions/resource-features";
 
 export type EnvironmentOption = {
   environmentId: string;
@@ -43,7 +44,7 @@ const NONE = "__no_profile_environment__";
 /// session from a provider template.
 export function ProfileEnvironmentEditor({
   value,
-  environments = [],
+  environments: allEnvironments = [],
   bindings = [],
   templates = [],
   disabled = false,
@@ -61,6 +62,10 @@ export function ProfileEnvironmentEditor({
   onChange: (environment: ProfileEnvironment | undefined) => void;
 }) {
   const mode: Mode = value?.type ?? "none";
+  const environments = selectableEnvironments(
+    allEnvironments,
+    value?.type === "existing" ? value.environmentId : undefined,
+  );
   const providerIds = [...new Set([
     ...bindings.map((binding) => binding.providerId),
     ...(value?.type === "provision" ? [value.providerId] : []),
@@ -161,6 +166,7 @@ function ExistingEnvironmentField({
     ? environments.find((environment) => environment.environmentId === value)
     : undefined;
   const unavailable = Boolean(value) && !selected;
+  const closed = isTerminalEnvironmentStatus(selected?.status);
   return (
     <Field>
       <FieldLabel>Environment</FieldLabel>
@@ -199,10 +205,12 @@ function ExistingEnvironmentField({
           })}
         </SelectContent>
       </Select>
-      <FieldDescription className={unavailable ? "text-xs text-destructive" : "text-xs"}>
+      <FieldDescription className={unavailable || closed ? "text-xs text-destructive" : "text-xs"}>
         {unavailable
           ? "This saved environment is no longer available."
-          : "The profile activates this environment and never closes it."}
+          : closed
+            ? "This saved environment is closed and can no longer be activated."
+            : "The profile activates this environment and never closes it. Closed environments are not offered."}
       </FieldDescription>
     </Field>
   );
@@ -351,8 +359,9 @@ function templateLabel(template: TemplateOption): string {
 }
 
 function environmentLabel(environment: EnvironmentOption): string {
+  const status = environment.status && environment.status !== "ready" ? ` — ${environment.status}` : "";
   return `${environment.displayName
     ?? environment.incarnation.templateId
     ?? environment.incarnation.providerTargetId
-    ?? environment.environmentId} (${environment.environmentId})`;
+    ?? environment.environmentId} (${environment.environmentId})${status}`;
 }

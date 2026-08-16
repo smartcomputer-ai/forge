@@ -729,15 +729,44 @@ function CloseEnvironmentButton({
     || environment.status === "closing") {
     return null;
   }
+  const label = environment.displayName ?? environment.environmentId;
   return (
-    <Button
-      variant="ghost"
-      size="xs"
-      disabled={close.isPending}
-      onClick={() => close.mutate()}
-    >
-      {close.isPending ? "Closing…" : "Close"}
-    </Button>
+    <div className="ml-auto flex flex-col items-end gap-1">
+      <AlertDialog>
+        <AlertDialogTrigger
+          render={
+            <Button variant="destructive" size="sm" disabled={close.isPending} />
+          }
+        >
+          <Trash2 />
+          {close.isPending ? "Closing…" : "Close environment"}
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Close {label}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently destroys the provider target
+              {environment.incarnation.providerTargetId
+                ? <> <span className="font-mono text-xs">{environment.incarnation.providerTargetId}</span></>
+                : null}
+              {" "}and everything stored on it. A closed environment cannot be
+              reopened; sessions that still select it will see it as
+              unavailable and its public endpoint stops working.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep environment</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-white hover:bg-destructive/90"
+              onClick={() => close.mutate()}
+            >
+              Close permanently
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {close.error && <span className="text-xs text-destructive">{close.error.message}</span>}
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ import {
   PackageOpen,
   RadioTower,
   Server,
+  ServerCog,
   Settings,
   SlidersHorizontal,
   UserRound,
@@ -237,6 +238,11 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                   <NavItem to="/admin/users" icon={UserCog} label="Users" />
                   <NavItem to="/admin/universes" icon={Globe} label="Universes" />
                   <NavItem to="/admin/channels" icon={RadioTower} label="Channels" />
+                  <NavItem
+                    to="/admin/environment-providers"
+                    icon={ServerCog}
+                    label="Environment providers"
+                  />
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
