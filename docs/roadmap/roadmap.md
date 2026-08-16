@@ -1,6 +1,12 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P125](p125-profile-provisioned-environments.md) — let a profile
+  provision a fresh environment for the session it starts (`environment:
+  existing | provision`), record origin-session provenance on the
+  environment, close-with-session by default for provisioned ones, derived
+  request identity, and admission of not-yet-ready environments with a
+  bounded readiness wait in environment tools. Proposed 2026-08-16.
 - [ ] [P124](p124-first-party-platform-monorepo.md) — import the complete
   first-party TypeScript platform into Lightspeed, neutralize product branding
   with a greenfield durable-identity reset, enforce atomic cross-language contract
