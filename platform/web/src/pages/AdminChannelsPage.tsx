@@ -14,11 +14,14 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader } from "@/components/page";
 
@@ -58,7 +61,7 @@ export function AdminChannelsPage() {
             {status.isLoading && <LoadingNote />}
             {status.error && <p className="text-sm text-destructive">{status.error.message}</p>}
             {status.data && (
-              <div className="overflow-x-auto rounded-xl border">
+              <TableCard>
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -96,7 +99,7 @@ export function AdminChannelsPage() {
                     })}
                   </TableBody>
                 </Table>
-              </div>
+              </TableCard>
             )}
           </CardContent>
         </Card>
@@ -112,13 +115,12 @@ export function AdminChannelsPage() {
             {accounts.isLoading && <LoadingNote />}
             {accounts.error && <p className="text-sm text-destructive">{accounts.error.message}</p>}
             {accounts.data && (
-              <div className="overflow-x-auto rounded-xl border">
+              <TableCard>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
+                      <TableHead>Account</TableHead>
                       <TableHead>Provider</TableHead>
-                      <TableHead>Account id</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="w-0" />
                     </TableRow>
@@ -126,15 +128,17 @@ export function AdminChannelsPage() {
                   <TableBody>
                     {accounts.data.map((account) => (
                       <TableRow key={account.id}>
-                        <TableCell className="font-medium">{account.displayName}</TableCell>
+                        <TableTitleCell
+                          title={account.displayName}
+                          subtitle={account.accountId}
+                        />
                         <TableCell>{account.provider}</TableCell>
-                        <TableCell className="font-mono text-xs">{account.accountId}</TableCell>
                         <TableCell>
                           <Badge variant={account.enabled ? "secondary" : "outline"}>
                             {account.enabled ? "enabled" : "disabled"}
                           </Badge>
                         </TableCell>
-                        <TableCell>
+                        <TableActionsCell>
                           <Button
                             variant="ghost"
                             size="sm"
@@ -143,12 +147,12 @@ export function AdminChannelsPage() {
                           >
                             {account.enabled ? "Disable" : "Enable"}
                           </Button>
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              </div>
+              </TableCard>
             )}
             <CreateAccountForm />
           </CardContent>

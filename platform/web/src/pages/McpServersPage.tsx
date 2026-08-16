@@ -34,12 +34,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  IdText,
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader, UniverseNotFound } from "@/components/page";
 import { canManage, useActiveUniverse } from "@/lib/universes";
@@ -120,14 +124,12 @@ function ServerList({ universeId }: { universeId: string }) {
         </p>
       )}
       {rows.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border">
+        <TableCard>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Id</TableHead>
+                <TableHead>Server</TableHead>
                 <TableHead>URL</TableHead>
-                <TableHead>Transport</TableHead>
                 <TableHead>Authentication</TableHead>
                 <TableHead>Approval</TableHead>
                 <TableHead>Status</TableHead>
@@ -137,23 +139,21 @@ function ServerList({ universeId }: { universeId: string }) {
             <TableBody>
               {rows.map((server) => (
                 <TableRow key={server.serverId}>
-                  <TableCell className="font-medium">
-                    {server.displayName ?? server.serverId}
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{server.serverId}</TableCell>
-                  <TableCell className="max-w-64 truncate text-muted-foreground">
-                    {server.serverUrl}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {server.transport}
-                  </TableCell>
-                  <TableCell>
+                  <TableTitleCell
+                    title={server.displayName ?? server.serverId}
+                    subtitle={server.serverId}
+                  />
+                  <TableCell className="max-w-64">
                     <div className="grid gap-0.5">
-                      <span className="font-mono text-xs">{server.authPolicy.type}</span>
+                      <IdText className="text-muted-foreground">{server.serverUrl}</IdText>
+                      <span className="text-xs text-muted-foreground">{server.transport}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="max-w-48">
+                    <div className="grid gap-0.5">
+                      <span className="text-xs">{authPolicyLabel(server.authPolicy.type)}</span>
                       {server.credential && (
-                        <span className="max-w-48 truncate font-mono text-xs text-muted-foreground">
-                          {server.credential.grantId}
-                        </span>
+                        <IdText className="text-muted-foreground">{server.credential.grantId}</IdText>
                       )}
                     </div>
                   </TableCell>
@@ -163,7 +163,7 @@ function ServerList({ universeId }: { universeId: string }) {
                   <TableCell>
                     <StatusBadge status={server.status} />
                   </TableCell>
-                  <TableCell className="whitespace-nowrap">
+                  <TableActionsCell>
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -207,12 +207,12 @@ function ServerList({ universeId }: { universeId: string }) {
                         </AlertDialogFooter>
                       </AlertDialogContent>
                     </AlertDialog>
-                  </TableCell>
+                  </TableActionsCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
       <p className="mt-4 text-sm text-muted-foreground">
         Authentication is configured once on the universe server. Sessions and profiles only
@@ -243,6 +243,23 @@ function ServerList({ universeId }: { universeId: string }) {
       />
     </>
   );
+}
+
+function authPolicyLabel(type: string): string {
+  switch (type) {
+    case "none":
+      return "No authentication";
+    case "optionalBearer":
+      return "Bearer token (optional)";
+    case "requiredBearer":
+      return "Bearer token (required)";
+    case "optionalOAuth":
+      return "OAuth (optional)";
+    case "requiredOAuth":
+      return "OAuth (required)";
+    default:
+      return type;
+  }
 }
 
 function StatusBadge({ status }: { status: McpServer["status"] }) {

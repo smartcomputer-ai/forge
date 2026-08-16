@@ -37,12 +37,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  IdText,
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader } from "@/components/page";
 
@@ -226,7 +230,7 @@ export function AdminEnvironmentProvidersPage() {
                     No universe is bound to this provider yet.
                   </p>
                 ) : (
-                  <div className="overflow-x-auto rounded-lg border">
+                  <TableCard className="rounded-lg">
                     <Table>
                       <TableHeader>
                         <TableRow>
@@ -248,7 +252,7 @@ export function AdminEnvironmentProvidersPage() {
                         ))}
                       </TableBody>
                     </Table>
-                  </div>
+                  </TableCard>
                 )}
               </div>
             </section>
@@ -307,18 +311,17 @@ function BindingRow({
   const error = setStatus.error ?? remove.error;
   return (
     <TableRow>
-      <TableCell>
-        <div className="font-medium">{universe.name}</div>
-        <div className="font-mono text-xs text-muted-foreground">{universe.lightspeedUniverseId}</div>
+      <TableTitleCell title={universe.name} subtitle={universe.lightspeedUniverseId} />
+      <TableCell className="max-w-48">
+        <IdText>{binding.bindingId}</IdText>
       </TableCell>
-      <TableCell className="font-mono text-xs">{binding.bindingId}</TableCell>
       <TableCell>
         <Badge variant={binding.status === "enabled" ? "secondary" : "outline"}>
           {binding.status}
         </Badge>
       </TableCell>
       <TableCell className="text-muted-foreground">{binding.revision}</TableCell>
-      <TableCell className="whitespace-nowrap">
+      <TableActionsCell>
         <Button
           variant="ghost"
           size="sm"
@@ -355,7 +358,7 @@ function BindingRow({
           </AlertDialogContent>
         </AlertDialog>
         {error && <div className="mt-1 text-xs text-destructive">{error.message}</div>}
-      </TableCell>
+      </TableActionsCell>
     </TableRow>
   );
 }

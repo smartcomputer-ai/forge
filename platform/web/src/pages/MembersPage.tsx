@@ -32,7 +32,9 @@ import {
 } from "@/components/ui/select";
 import {
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
@@ -91,7 +93,7 @@ function MemberList({ universeId, writable }: { universeId: string; writable: bo
       {members.isLoading && <LoadingNote />}
       {members.error && <p className="text-sm text-destructive">{members.error.message}</p>}
       {members.data && (
-        <div className="mb-6 overflow-x-auto rounded-xl border">
+        <TableCard className="mb-6">
           <Table>
             <TableHeader>
               <TableRow>
@@ -108,7 +110,7 @@ function MemberList({ universeId, writable }: { universeId: string; writable: bo
                   <TableCell>{member.email}</TableCell>
                   <TableCell>{member.role}</TableCell>
                   {writable && (
-                    <TableCell>
+                    <TableActionsCell>
                       <AlertDialog>
                         <AlertDialogTrigger
                           render={
@@ -139,13 +141,13 @@ function MemberList({ universeId, writable }: { universeId: string; writable: bo
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
-                    </TableCell>
+                    </TableActionsCell>
                   )}
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
       {writable && (
         <AddMemberDialog

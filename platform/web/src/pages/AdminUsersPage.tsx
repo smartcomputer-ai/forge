@@ -16,6 +16,7 @@ import {
 import {
   Table,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
@@ -54,7 +55,7 @@ export function AdminUsersPage() {
       {users.isLoading && <LoadingNote />}
       {users.error && <p className="text-sm text-destructive">{users.error.message}</p>}
       {users.data && (
-        <div className="mb-8 overflow-x-auto rounded-xl border">
+        <TableCard className="mb-8">
           <Table>
             <TableHeader>
               <TableRow>
@@ -85,7 +86,7 @@ export function AdminUsersPage() {
               ))}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
       <CreateUserForm />
     </>

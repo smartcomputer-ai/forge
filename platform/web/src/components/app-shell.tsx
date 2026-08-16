@@ -293,7 +293,7 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
           </main>
         ) : (
           <main className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-4xl px-4 py-6 md:px-8 md:py-10">
+            <div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-8 md:py-10">
               <Outlet />
             </div>
           </main>

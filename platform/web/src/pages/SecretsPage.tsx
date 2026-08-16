@@ -44,12 +44,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  IdText,
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import {
   LoadingNote,
@@ -164,12 +168,11 @@ function SecretsList({ universeId }: { universeId: string }) {
                 No model provider credentials.
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border">
+              <TableCard>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Model provider ID</TableHead>
+                      <TableHead>Provider</TableHead>
                       <TableHead>Type</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead>Updated</TableHead>
@@ -179,12 +182,10 @@ function SecretsList({ universeId }: { universeId: string }) {
                   <TableBody>
                     {providers.map((provider) => (
                       <TableRow key={provider.credentialId}>
-                        <TableCell className="font-medium">
-                          {provider.displayName ?? provider.providerId}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {provider.providerId}
-                        </TableCell>
+                        <TableTitleCell
+                          title={provider.displayName ?? provider.providerId}
+                          subtitle={provider.providerId}
+                        />
                         <TableCell className="text-muted-foreground">
                           {providerTypeLabel(provider)}
                         </TableCell>
@@ -194,7 +195,7 @@ function SecretsList({ universeId }: { universeId: string }) {
                         <TableCell className="text-muted-foreground">
                           {formatTimestamp(provider.updatedAtMs)}
                         </TableCell>
-                        <TableCell>
+                        <TableActionsCell>
                           <AlertDialog>
                             <AlertDialogTrigger
                               render={
@@ -231,12 +232,12 @@ function SecretsList({ universeId }: { universeId: string }) {
                               </AlertDialogFooter>
                             </AlertDialogContent>
                           </AlertDialog>
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              </div>
+              </TableCard>
             )}
           </section>
 
@@ -250,12 +251,11 @@ function SecretsList({ universeId }: { universeId: string }) {
                 No access credentials.
               </p>
             ) : (
-              <div className="overflow-x-auto rounded-xl border">
+              <TableCard>
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Credential ID</TableHead>
+                      <TableHead>Credential</TableHead>
                       <TableHead>Provider</TableHead>
                       <TableHead>Type</TableHead>
                       <TableHead>Status</TableHead>
@@ -265,12 +265,12 @@ function SecretsList({ universeId }: { universeId: string }) {
                   <TableBody>
                     {grants.map((grant) => (
                       <TableRow key={grant.grantId}>
-                        <TableCell className="font-medium">
-                          {grant.displayName ?? grant.subjectHint ?? "Unnamed credential"}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">{grant.grantId}</TableCell>
-                        <TableCell className="font-mono text-xs text-muted-foreground">
-                          {grant.providerId}
+                        <TableTitleCell
+                          title={grant.displayName ?? grant.subjectHint ?? "Unnamed credential"}
+                          subtitle={grant.grantId}
+                        />
+                        <TableCell className="max-w-48 text-muted-foreground">
+                          <IdText>{grant.providerId}</IdText>
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {grantTypeLabel(grant)}
@@ -278,7 +278,7 @@ function SecretsList({ universeId }: { universeId: string }) {
                         <TableCell>
                           <GrantStatusBadge status={grant.status} />
                         </TableCell>
-                        <TableCell>
+                        <TableActionsCell>
                           {grant.status !== "revoked" && (
                             <AlertDialog>
                               <AlertDialogTrigger
@@ -314,12 +314,12 @@ function SecretsList({ universeId }: { universeId: string }) {
                               </AlertDialogContent>
                             </AlertDialog>
                           )}
-                        </TableCell>
+                        </TableActionsCell>
                       </TableRow>
                     ))}
                   </TableBody>
                 </Table>
-              </div>
+              </TableCard>
             )}
           </section>
         </div>
