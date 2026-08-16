@@ -11,6 +11,7 @@ import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProviders
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { FoundryPage } from "@/pages/FoundryPage";
+import { FOUNDRY_ENABLED } from "@/lib/features";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
 import { LoginPage } from "@/pages/LoginPage";
@@ -95,8 +96,12 @@ export function App() {
           path="u/:slug/workspaces/:workspaceId/files/*"
           element={<WorkspacesPage admin={admin} />}
         />
-        <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
-        <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
+        {FOUNDRY_ENABLED && (
+          <>
+            <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
+            <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
+          </>
+        )}
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"

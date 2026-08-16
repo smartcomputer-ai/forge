@@ -39,6 +39,7 @@ import { UniverseSwitcher } from "@/components/universe-switcher";
 import { UserMenu } from "@/components/user-menu";
 import type { SessionUser } from "@/auth";
 import { canManage, rememberUniverse, useUniverses } from "@/lib/universes";
+import { FOUNDRY_ENABLED } from "@/lib/features";
 
 /// The sidebar has three modes. Universe mode is the app's top level:
 /// switcher + universe nav. Admin and account are modes *above* the
@@ -161,12 +162,14 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         label="Profiles"
                         prefix
                       />
-                      <NavItem
-                        to={`/u/${active.slug}/foundry`}
-                        icon={Hammer}
-                        label="Foundry"
-                        prefix
-                      />
+                      {FOUNDRY_ENABLED && (
+                        <NavItem
+                          to={`/u/${active.slug}/foundry`}
+                          icon={Hammer}
+                          label="Foundry"
+                          prefix
+                        />
+                      )}
                     </SidebarMenu>
                   </SidebarGroupContent>
                 </SidebarGroup>
