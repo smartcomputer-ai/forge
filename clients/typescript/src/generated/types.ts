@@ -909,6 +909,38 @@ export type OperatorEnvironmentProviderTransport =
       type: "provider";
     };
 /**
+ * Environment intent carried by a profile document.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironment".
+ */
+export type ProfileEnvironment =
+  | {
+      environmentId: string;
+      type: "existing";
+    }
+  | {
+      displayName?: string | null;
+      metadata?: {
+        [k: string]: string;
+      };
+      providerId: string;
+      retention?: ProfileEnvironmentRetention & string;
+      /**
+       * Immutable provider template-version identity.
+       */
+      templateId: string;
+      type: "provision";
+    };
+/**
+ * What happens to a profile-provisioned environment when its originating
+ * session closes.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironmentRetention".
+ */
+export type ProfileEnvironmentRetention = "closeWithSession" | "retain";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileInstructions".
  */
@@ -2076,6 +2108,12 @@ export interface EnvironmentView {
   metadata?: {
     [k: string]: string;
   };
+  /**
+   * Present when a profile provisioned this environment for a session.
+   * Provenance and an optional close trigger, not ownership: the
+   * environment remains an ordinary universe resource.
+   */
+  originSession?: EnvironmentOriginSessionView | null;
   publicEndpoint?: string | null;
   publicIngressEnabled: boolean;
   requestId: string;
@@ -2094,6 +2132,18 @@ export interface EnvironmentIncarnationView {
   provisionRequestId?: string | null;
   templateId?: string | null;
   updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentOriginSessionView".
+ */
+export interface EnvironmentOriginSessionView {
+  /**
+   * When true, Lightspeed closes the environment once the session closes.
+   */
+  closeWithSession: boolean;
+  profileId?: ProfileId | null;
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2958,6 +3008,10 @@ export interface ProfileApplyResponse {
 export interface ProfileApplySummary {
   activeEnvironmentChanged: boolean;
   configChanged: boolean;
+  /**
+   * True when this apply created a new environment for the session.
+   */
+  environmentProvisioned?: boolean;
   instructionsChanged: boolean;
 }
 /**
@@ -2980,15 +3034,17 @@ export interface ProfileCreateResponse {
  * via the `definition` "AgentProfile".
  */
 export interface AgentProfile {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   createdAtMs: number;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
   profileId: ProfileId;
   revision: number;
@@ -3505,14 +3561,16 @@ export interface VfsWorkspaceUpdateResponse {
  * via the `definition` "AgentProfileInput".
  */
 export interface AgentProfileInput {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
   profileId: ProfileId;
 }
@@ -3891,6 +3949,10 @@ export interface EnvironmentJobReadParams {
  */
 export interface EnvironmentListParams {
   bindingId?: string | null;
+  /**
+   * Only environments a profile provisioned for this session.
+   */
+  originSessionId?: string | null;
   providerId?: string | null;
   status?: EnvironmentLifecycleStatusView | null;
 }
@@ -3941,14 +4003,16 @@ export interface InitializeParams {
  * via the `definition` "InlineAgentProfile".
  */
 export interface InlineAgentProfile {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
 }
 /**

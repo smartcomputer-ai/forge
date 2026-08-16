@@ -1098,6 +1098,29 @@ impl GatewayAgentApi {
             config,
         );
         let session_config = self.session_config_for_start(start_config).await?;
+        if let Some(ProfileEnvironment::Provision { provider_id, .. }) = resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.document.environment.as_ref())
+        {
+            // Fail the common misconfigurations before a session or a VM
+            // exists: the universe needs an enabled binding for the provider
+            // and the effective config must let the session use it.
+            self.resolve_profile_provision_binding(provider_id).await?;
+            let feature = session_config.features.environments.as_ref().ok_or_else(|| {
+                AgentApiError::rejected(
+                    "profile provisions an environment but the effective session config does not grant features.environments",
+                )
+            })?;
+            if feature
+                .providers
+                .as_ref()
+                .is_some_and(|providers| !providers.iter().any(|id| id == provider_id))
+            {
+                return Err(AgentApiError::rejected(format!(
+                    "profile provisions from environment provider {provider_id}, which features.environments.providers does not allow"
+                )));
+            }
+        }
         if let Some(workflow_tools) = workflow_tools.as_ref() {
             self.validate_managed_session_materialization(&session_config, workflow_tools)
                 .await?;
@@ -1150,7 +1173,7 @@ impl GatewayAgentApi {
         }
         let _ = self.configure_session_toolset(&session_id, &loaded).await?;
         if let Some(profile) = resolved_profile {
-            self.apply_profile_document(&session_id, &profile.document, false, None, None)
+            self.apply_profile_document(&session_id, &profile, false, None, None)
                 .await?;
         }
         self.load_session_state_with_current_run_context(&session_id)
@@ -2159,6 +2182,7 @@ impl AgentApiService for GatewayAgentApi {
             self.submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: false })
                 .await?;
             let session = self.wait_for_closed_session(&session_id).await?;
+            self.close_session_owned_environments(&session_id).await;
             return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
         }
 
@@ -2170,6 +2194,7 @@ impl AgentApiService for GatewayAgentApi {
                 .await
                 .is_ok();
             if signalled && let Ok(session) = self.wait_for_closed_session(&session_id).await {
+                self.close_session_owned_environments(&session_id).await;
                 return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
             }
             // The workflow exists but never converged: it is wedged (e.g. a
@@ -2185,6 +2210,7 @@ impl AgentApiService for GatewayAgentApi {
         // run status are projections of the log, so this alone recovers the
         // row; the expected-head CAS protects against a concurrent writer.
         self.force_close_session_in_store(&session_id).await?;
+        self.close_session_owned_environments(&session_id).await;
         let session = self.project_session_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionCloseResponse { session }))
     }
@@ -2201,6 +2227,7 @@ impl AgentApiService for GatewayAgentApi {
             .delete_closed_session(&session_id)
             .await
             .map_err(map_session_store_error)?;
+        self.close_session_owned_environments(&session_id).await;
         Ok(AgentApiOutcome::new(SessionDeleteResponse {
             session: session_summary_view(record),
         }))

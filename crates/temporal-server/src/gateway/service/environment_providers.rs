@@ -227,6 +227,16 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
         },
         display_name: record.display_name.clone(),
         status: lifecycle_status_view(record.status),
+        origin_session: record.origin_session.as_ref().map(|origin| {
+            api::EnvironmentOriginSessionView {
+                session_id: origin.session_id.as_str().to_owned(),
+                profile_id: origin
+                    .profile_id
+                    .as_deref()
+                    .and_then(|id| api::ProfileId::try_new(id).ok()),
+                close_with_session: origin.close_with_session,
+            }
+        }),
         incarnation: EnvironmentIncarnationView {
             incarnation_id: record.incarnation.incarnation_id.to_string(),
             provision_request_id: record

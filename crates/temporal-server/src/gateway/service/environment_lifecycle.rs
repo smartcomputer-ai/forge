@@ -7,8 +7,8 @@ use super::*;
 use ::environments::{
     BeginCloseEnvironment, CreateEnvironment, CreateExternalEnvironment, EnvironmentId,
     EnvironmentIncarnationId, EnvironmentProviderBindingStore, EnvironmentProvisionRequestId,
-    EnvironmentSource, EnvironmentStatus, EnvironmentStore, EnvironmentTemplateId,
-    FailEnvironmentLifecycle, FinishCloseEnvironment, ListEnvironments,
+    EnvironmentRecord, EnvironmentSource, EnvironmentStatus, EnvironmentStore,
+    EnvironmentTemplateId, FailEnvironmentLifecycle, FinishCloseEnvironment, ListEnvironments,
     ObserveProvisionedEnvironment,
 };
 use environment_protocol::control::ingress::{
@@ -143,6 +143,22 @@ impl GatewayAgentApi {
         &self,
         params: EnvironmentCreateParams,
     ) -> Result<EnvironmentCreateResponse, AgentApiError> {
+        let environment = self
+            .create_environment_record_with_origin(params, None)
+            .await?;
+        Ok(EnvironmentCreateResponse {
+            environment: environment_view(&environment),
+        })
+    }
+
+    /// Shared acceptance boundary for `environments/create` and
+    /// profile-provisioned environments. Provider I/O is deliberately left to
+    /// the independently restartable reconciler.
+    pub(super) async fn create_environment_record_with_origin(
+        &self,
+        params: EnvironmentCreateParams,
+        origin_session: Option<::environments::EnvironmentOriginSession>,
+    ) -> Result<EnvironmentRecord, AgentApiError> {
         let request_id =
             EnvironmentProvisionRequestId::try_new(params.request_id).map_err(|error| {
                 AgentApiError::invalid_request(format!("invalid environment request id: {error}"))
@@ -151,7 +167,7 @@ impl GatewayAgentApi {
         let template_id = EnvironmentTemplateId::try_new(params.template_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid environment template id: {error}"))
         })?;
-        let environment = EnvironmentStore::create_environment(
+        EnvironmentStore::create_environment(
             self.store.as_ref(),
             CreateEnvironment {
                 request_id,
@@ -161,16 +177,12 @@ impl GatewayAgentApi {
                 template_id,
                 display_name: params.display_name,
                 metadata: params.metadata,
+                origin_session,
                 created_at_ms: now_ms()?,
             },
         )
         .await
-        .map_err(map_environments_error)?;
-        // The transaction above is the acceptance boundary. Provider I/O is
-        // deliberately left to the independently restartable reconciler.
-        Ok(EnvironmentCreateResponse {
-            environment: environment_view(&environment),
-        })
+        .map_err(map_environments_error)
     }
 
     pub(super) async fn read_environment_record(
@@ -202,6 +214,16 @@ impl GatewayAgentApi {
                     .map(parse_environment_provider_binding_id)
                     .transpose()?,
                 status: params.status.map(registry_lifecycle_status),
+                origin_session_id: params
+                    .origin_session_id
+                    .map(|id| {
+                        engine::SessionId::try_new(id).map_err(|error| {
+                            AgentApiError::invalid_request(format!(
+                                "invalid origin session id: {error}"
+                            ))
+                        })
+                    })
+                    .transpose()?,
             },
         )
         .await
@@ -230,17 +252,110 @@ impl GatewayAgentApi {
         })
     }
 
+    /// Close every open profile-provisioned environment whose origin session
+    /// asked for close-with-session and is now closed (or gone). Idempotent
+    /// and restart-safe: this is the backstop behind the eager close in
+    /// `session/close` and covers sessions closed from inside the workflow.
+    pub(crate) async fn reconcile_close_with_session_once(&self) -> Result<usize, AgentApiError> {
+        let candidates =
+            EnvironmentStore::list_environments_closing_with_session(self.store.as_ref())
+                .await
+                .map_err(map_environments_error)?;
+        let mut changed = 0;
+        for environment in candidates {
+            let Some(origin) = environment.origin_session.as_ref() else {
+                continue;
+            };
+            let session_closed = match self.store.load_session(&origin.session_id).await {
+                Ok(Some(record)) => {
+                    record.lifecycle_status == engine::storage::SessionLifecycleStatus::Closed
+                }
+                // A deleted session cannot come back; its environment goes too.
+                Ok(None) => true,
+                Err(error) => return Err(map_session_store_error(error)),
+            };
+            if !session_closed {
+                continue;
+            }
+            match EnvironmentStore::begin_close_environment(
+                self.store.as_ref(),
+                BeginCloseEnvironment {
+                    environment_id: environment.environment_id.clone(),
+                    updated_at_ms: now_ms()?,
+                },
+            )
+            .await
+            {
+                Ok(_) => changed += 1,
+                // Already closing/closed by someone else: converged.
+                Err(::environments::EnvironmentRegistryError::InvalidInput { .. }) => {}
+                Err(error) => return Err(map_environments_error(error)),
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Eagerly request close for the environments a profile provisioned for
+    /// this session with `closeWithSession`. Best effort: the reconciler
+    /// sweep converges the rest.
+    pub(super) async fn close_session_owned_environments(&self, session_id: &SessionId) {
+        let Ok(environments) = EnvironmentStore::list_environments(
+            self.store.as_ref(),
+            ListEnvironments {
+                provider_id: None,
+                binding_id: None,
+                status: None,
+                origin_session_id: Some(session_id.clone()),
+            },
+        )
+        .await
+        else {
+            return;
+        };
+        for environment in environments {
+            let close = environment
+                .origin_session
+                .as_ref()
+                .is_some_and(|origin| origin.close_with_session)
+                && !matches!(
+                    environment.status,
+                    EnvironmentStatus::Closing | EnvironmentStatus::Closed
+                );
+            if !close {
+                continue;
+            }
+            let Ok(updated_at_ms) = now_ms() else {
+                return;
+            };
+            let _ = EnvironmentStore::begin_close_environment(
+                self.store.as_ref(),
+                BeginCloseEnvironment {
+                    environment_id: environment.environment_id.clone(),
+                    updated_at_ms,
+                },
+            )
+            .await;
+        }
+    }
+
+    /// Public entry point for one reconciliation pass; used by acceptance
+    /// tests that drive the reconciler deterministically instead of running
+    /// the background loop.
+    pub async fn reconcile_environments_once(&self) -> Result<usize, AgentApiError> {
+        self.reconcile_environment_lifecycle_once().await
+    }
+
     /// Reconcile every pending environment in this universe once. Calls are
     /// stable and idempotent; a crash after controller I/O is recovered by a
     /// later pass issuing the same IDs again.
     pub(crate) async fn reconcile_environment_lifecycle_once(
         &self,
     ) -> Result<usize, AgentApiError> {
+        let mut changed = self.reconcile_close_with_session_once().await?;
         let environments =
             EnvironmentStore::list_environments_needing_reconcile(self.store.as_ref())
                 .await
                 .map_err(map_environments_error)?;
-        let mut changed = 0;
         for environment in environments {
             match environment.status {
                 EnvironmentStatus::Closing => {

@@ -7,16 +7,22 @@ export function resourceFeatureDisableReasons(
   const workspaceLinkCount = arrayLength(
     record(record(record(document.config).features).vfs).workspaceLinks,
   );
-  const hasActiveEnvironment = typeof document.activeEnvironmentId === "string"
-    && document.activeEnvironmentId.length > 0;
+  const hasEnvironmentIntent = hasProfileEnvironment(document);
   return {
     ...(workspaceLinkCount > 0
       ? { vfs: removeFirstMessage(workspaceLinkCount, "workspace link", "VFS") }
       : {}),
-    ...(hasActiveEnvironment
-      ? { environments: "Clear the active environment before disabling the Environments feature." }
+    ...(hasEnvironmentIntent
+      ? { environments: "Clear the profile environment before disabling the Environments feature." }
       : {}),
   };
+}
+
+/// True when the profile document names an environment intent (`existing`
+/// or `provision`); absence leaves a session's selection unchanged.
+export function hasProfileEnvironment(document: Record<string, unknown>): boolean {
+  const environment = record(document.environment);
+  return environment.type === "existing" || environment.type === "provision";
 }
 
 export function hasSessionFeature(config: unknown, name: ResourceFeature): boolean {
@@ -25,10 +31,15 @@ export function hasSessionFeature(config: unknown, name: ResourceFeature): boole
 
 export function setupResourceFeatureError(setup: unknown): string | null {
   const document = record(setup);
-  if (typeof document.activeEnvironmentId === "string"
-    && document.activeEnvironmentId.length > 0
-    && !hasSessionFeature(document.config, "environments")) {
-    return "An active environment requires the Environments feature to be enabled.";
+  if (hasProfileEnvironment(document) && !hasSessionFeature(document.config, "environments")) {
+    return "A profile environment requires the Environments feature to be enabled.";
+  }
+  const environment = record(document.environment);
+  if (environment.type === "existing" && !environment.environmentId) {
+    return "Select an existing environment or clear the environment mode.";
+  }
+  if (environment.type === "provision" && (!environment.providerId || !environment.templateId)) {
+    return "Provisioning needs a provider and a template.";
   }
   return null;
 }

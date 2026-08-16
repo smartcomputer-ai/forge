@@ -374,13 +374,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "InlineAgentProfile": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -402,6 +395,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -520,6 +524,91 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -2991,13 +3080,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "InlineAgentProfile": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -3019,6 +3101,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -3137,6 +3230,91 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -3831,6 +4009,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "originSessionId": {
+          "description": "Only environments a profile provisioned for this session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "providerId": {
           "type": [
             "string",
@@ -4119,13 +4304,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -4147,6 +4325,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -4590,6 +4779,91 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -5067,13 +5341,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -5095,6 +5362,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -5538,6 +5816,91 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"

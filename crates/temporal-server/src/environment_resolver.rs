@@ -6,7 +6,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use environments::{
     EnvironmentId, EnvironmentProviderStore, EnvironmentRecord, EnvironmentRegistryError,
-    EnvironmentStore, ListEnvironments,
+    EnvironmentStatus, EnvironmentStore, ListEnvironments,
 };
 use store_pg::PgStore;
 use thiserror::Error;
@@ -89,6 +89,34 @@ impl EnvironmentResolver {
         Ok(environment)
     }
 
+    /// Activation admission: like [`Self::selectable`], but a
+    /// `provisioning`/`booting` environment is admitted as valid intent and
+    /// returned with `ready == false` instead of failing. Environment tools
+    /// wait for readiness at call time.
+    pub(crate) async fn activatable(
+        &self,
+        environment_id: &EnvironmentId,
+        allowed_providers: Option<&BTreeSet<String>>,
+        now_ms: i64,
+    ) -> Result<(EnvironmentRecord, bool), EnvironmentResolveError> {
+        match self
+            .selectable(environment_id, allowed_providers, now_ms)
+            .await
+        {
+            Ok(environment) => Ok((environment, true)),
+            Err(EnvironmentResolveError::NotReady { .. }) => Ok((
+                self.read_allowed(environment_id, allowed_providers).await?,
+                false,
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Status-aware selection admission. `provisioning`/`booting`
+    /// environments are admitted as intent without a route probe (they cannot
+    /// be reachable yet) and reported as `NotReady`; `failed`, `closing`, and
+    /// `closed` are rejected with typed errors; everything else must prove the
+    /// full data-plane route.
     pub(crate) async fn selectable(
         &self,
         environment_id: &EnvironmentId,
@@ -98,6 +126,30 @@ impl EnvironmentResolver {
         let environment = self.read_allowed(environment_id, allowed_providers).await?;
         if let Some(provider_id) = environment.provider_id() {
             self.providers.read_provider(provider_id).await?;
+        }
+        match environment.status {
+            EnvironmentStatus::Provisioning | EnvironmentStatus::Booting => {
+                return Err(EnvironmentResolveError::NotReady {
+                    environment_id: environment.environment_id.as_str().to_owned(),
+                    status: environment.status,
+                });
+            }
+            EnvironmentStatus::Failed => {
+                return Err(EnvironmentResolveError::Failed {
+                    environment_id: environment.environment_id.as_str().to_owned(),
+                    message: environment
+                        .metadata
+                        .get(LIFECYCLE_ERROR_METADATA_KEY)
+                        .cloned()
+                        .unwrap_or_else(|| "environment provisioning failed".to_owned()),
+                });
+            }
+            EnvironmentStatus::Closing | EnvironmentStatus::Closed => {
+                return Err(EnvironmentResolveError::Closed {
+                    environment_id: environment.environment_id.as_str().to_owned(),
+                });
+            }
+            EnvironmentStatus::Ready | EnvironmentStatus::Offline | EnvironmentStatus::Unknown => {}
         }
         if let Some(gateway) = &self.gateway {
             let connection = gateway.connection_for(self.universe_id, &environment);
@@ -131,7 +183,28 @@ pub(crate) enum EnvironmentResolveError {
         environment_id: String,
         status: String,
     },
+
+    /// The environment exists and is being provisioned or booted; it is not
+    /// yet reachable but selecting it is valid intent.
+    #[error("environment is not ready yet: {environment_id} ({status:?})")]
+    NotReady {
+        environment_id: String,
+        status: EnvironmentStatus,
+    },
+
+    #[error("environment failed to provision: {environment_id}: {message}")]
+    Failed {
+        environment_id: String,
+        message: String,
+    },
+
+    #[error("environment is closed: {environment_id}")]
+    Closed { environment_id: String },
 }
+
+/// Metadata key under which the lifecycle reconciler records the provider's
+/// failure message on a `failed` environment.
+pub(crate) const LIFECYCLE_ERROR_METADATA_KEY: &str = "lifecycleError";
 
 #[cfg(test)]
 mod tests {
@@ -187,6 +260,7 @@ mod tests {
                 template_id: EnvironmentTemplateId::new("test-template"),
                 display_name: None,
                 metadata: BTreeMap::new(),
+                origin_session: None,
                 created_at_ms: 10,
             })
             .await
@@ -230,12 +304,83 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn selection_is_deferred_until_p119_but_read_still_explores() {
+    async fn offline_environment_without_gateway_is_unavailable_but_readable() {
         let (resolver, environment_id) = resolver().await;
         assert!(resolver.read_allowed(&environment_id, None).await.is_ok());
         assert!(matches!(
             resolver.selectable(&environment_id, None, 111).await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn selection_is_status_aware() {
+        let (resolver, environment_id) = resolver().await;
+        let store = resolver.environments.clone();
+        let observe = |status: EnvironmentStatus| {
+            let store = store.clone();
+            let environment_id = environment_id.clone();
+            async move {
+                store
+                    .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                        environment_id,
+                        provider_target_id: ProviderTargetId::new("target-1"),
+                        status,
+                        observed_at_ms: 20,
+                    })
+                    .await
+                    .expect("observe");
+            }
+        };
+
+        // A provisioning/booting environment is admitted as intent without a
+        // probe and reported as not ready.
+        observe(EnvironmentStatus::Provisioning).await;
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 30).await,
+            Err(EnvironmentResolveError::NotReady {
+                status: EnvironmentStatus::Provisioning,
+                ..
+            })
+        ));
+        observe(EnvironmentStatus::Booting).await;
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 30).await,
+            Err(EnvironmentResolveError::NotReady {
+                status: EnvironmentStatus::Booting,
+                ..
+            })
+        ));
+        let (record, ready) = resolver
+            .activatable(&environment_id, None, 30)
+            .await
+            .expect("activation admits a booting environment");
+        assert!(!ready);
+        assert_eq!(record.status, EnvironmentStatus::Booting);
+
+        store
+            .fail_environment_lifecycle(environments::FailEnvironmentLifecycle {
+                environment_id: environment_id.clone(),
+                message: "no capacity".to_owned(),
+                observed_at_ms: 40,
+            })
+            .await
+            .expect("fail");
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 50).await,
+            Err(EnvironmentResolveError::Failed { message, .. }) if message == "no capacity"
+        ));
+
+        store
+            .begin_close_environment(environments::BeginCloseEnvironment {
+                environment_id: environment_id.clone(),
+                updated_at_ms: 60,
+            })
+            .await
+            .expect("close");
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 70).await,
+            Err(EnvironmentResolveError::Closed { .. })
         ));
     }
 }

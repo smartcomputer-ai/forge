@@ -5,6 +5,7 @@ import type {
   EnvironmentProviderBindingView,
   EnvironmentTemplateView,
   EnvironmentView,
+  ProfileEnvironment as ProfileEnvironmentView,
   SessionEventView,
   SessionEventsReadResponse,
   ToolCallDisplayView,
@@ -130,9 +131,11 @@ export interface ProfileSummary {
   updatedAtMs: number;
 }
 
+export type ProfileEnvironment = ProfileEnvironmentView;
+
 export type ProfileDocument = {
   profileId: string;
-  activeEnvironmentId?: string | null;
+  environment?: ProfileEnvironment | null;
   revision?: number;
   createdAtMs?: number;
   updatedAtMs?: number;
@@ -143,7 +146,7 @@ export type InlineProfile = {
   instructions?:
     | { type: "text"; text: string }
     | { type: "textRef"; blobRef: string };
-  activeEnvironmentId?: string | null;
+  environment?: ProfileEnvironment | null;
 };
 
 export type ProfileSource =

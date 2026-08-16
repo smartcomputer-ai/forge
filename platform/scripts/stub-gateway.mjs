@@ -287,8 +287,18 @@ const provisionEnvironment = (universe, providerId, request) => {
   return environment;
 };
 
+// Stub of the P125 profile environment intent: `existing` activates the named
+// environment; `provision` activates a synthetic per-session environment id.
+const profileEnvironmentId = (profile, sessionId) => {
+  const environment = profile?.environment;
+  if (!environment) return null;
+  if (environment.type === "existing") return environment.environmentId ?? null;
+  if (environment.type === "provision") return `env_session_${sessionId}`;
+  return null;
+};
+
 const applyProfileActiveEnvironment = (session, profile) => {
-  const environmentId = profile?.activeEnvironmentId;
+  const environmentId = profileEnvironmentId(profile, session.summary.id);
   if (!environmentId || session.summary.activeEnvironmentId === environmentId) return false;
   session.summary.activeEnvironmentId = environmentId;
   return true;
@@ -1039,7 +1049,7 @@ const server = http.createServer((req, res) => {
               createdAtMs: now,
               updatedAtMs: now,
               config,
-              activeEnvironmentId: profile?.activeEnvironmentId ?? null,
+              activeEnvironmentId: profileEnvironmentId(profile, sessionId),
             },
             [],
           ));

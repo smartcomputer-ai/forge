@@ -2059,16 +2059,21 @@ fn profile_list_model_visible_text(output: &ProfileListOutput) -> String {
 fn profile_read_model_visible_text(output: &ProfileReadOutput) -> String {
     let profile = &output.profile;
     format!(
-        "Read profile {} revision {}: config {}, instructions {}, active environment {}.",
+        "Read profile {} revision {}: config {}, instructions {}, environment {}.",
         profile.profile_id,
         profile.revision,
         yes_no(profile.document.config.is_some()),
         yes_no(profile.document.instructions.is_some()),
-        profile
-            .document
-            .active_environment_id
-            .as_deref()
-            .unwrap_or("none")
+        match &profile.document.environment {
+            None => "none".to_owned(),
+            Some(api::ProfileEnvironment::Existing { environment_id }) =>
+                format!("existing {environment_id}"),
+            Some(api::ProfileEnvironment::Provision {
+                provider_id,
+                template_id,
+                ..
+            }) => format!("provision {template_id} from {provider_id}"),
+        }
     )
 }
 

@@ -568,8 +568,17 @@ async fn validate_environments(
     profile: &AgentProfileInput,
     report: &mut ValidationReport,
 ) {
-    let Some(environment_id) = profile.document.active_environment_id.as_ref() else {
-        return;
+    let environment_id = match profile.document.environment.as_ref() {
+        None => return,
+        Some(api::ProfileEnvironment::Provision {
+            provider_id,
+            template_id,
+            ..
+        }) => {
+            validate_provision_environment(api, provider_id, template_id, report).await;
+            return;
+        }
+        Some(api::ProfileEnvironment::Existing { environment_id }) => environment_id,
     };
     let environment = match api
         .read_environment(api::EnvironmentReadParams {
@@ -623,6 +632,69 @@ async fn validate_environments(
             )),
             _ => {}
         }
+    }
+}
+
+async fn validate_provision_environment(
+    api: &HttpAgentApi,
+    provider_id: &str,
+    template_id: &str,
+    report: &mut ValidationReport,
+) {
+    let bindings = match api
+        .list_environment_provider_bindings(EnvironmentProviderBindingListParams::default())
+        .await
+    {
+        Ok(response) => response.result.bindings,
+        Err(error) => {
+            report.error(format!(
+                "failed to list environment provider bindings: {}",
+                api_error(error)
+            ));
+            return;
+        }
+    };
+    let Some(binding) = bindings
+        .iter()
+        .find(|binding| binding.provider_id == provider_id)
+    else {
+        report.error(format!(
+            "profile provisions from provider {provider_id}, but this universe has no binding for it"
+        ));
+        return;
+    };
+    if binding.status != EnvironmentProviderBindingStatusView::Enabled {
+        report.warning(format!(
+            "profile provision binding {} for provider {provider_id} is {:?}",
+            binding.binding_id, binding.status
+        ));
+    }
+    match api
+        .list_environment_templates(api::EnvironmentTemplateListParams {
+            binding_id: Some(binding.binding_id.clone()),
+        })
+        .await
+    {
+        Ok(response) => {
+            match response
+                .result
+                .templates
+                .iter()
+                .find(|template| template.template_id == template_id)
+            {
+                None => report.error(format!(
+                    "profile provision template {template_id} is not offered by provider {provider_id}"
+                )),
+                Some(template) if template.deprecated => report.warning(format!(
+                    "profile provision template {template_id} is deprecated"
+                )),
+                Some(_) => {}
+            }
+        }
+        Err(error) => report.warning(format!(
+            "failed to list templates for provider {provider_id}: {}",
+            api_error(error)
+        )),
     }
 }
 

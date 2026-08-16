@@ -261,6 +261,18 @@ Release construction, snapshots, and tagged publication are documented in
   `features.environments.selectionTools` exposes model discovery/selection;
   jobs remain an independent sub-grant. Prompts and `skills.catalog.vfs` are
   VFS-only. See `docs/roadmap/p113-explicit-vfs-and-environment-tool-domains.md`.
+- A profile's `environment` is an intent, not an id: `existing` activates a
+  universe environment and never closes it; `provision` creates one
+  environment per session (request id derived from the session id) from the
+  universe's enabled binding for `providerId`, activates it while it is still
+  provisioning, and by default closes it with the session. Environments record
+  `originSession` as provenance and an optional close trigger, never
+  ownership. Environment-dependent tool calls against a not-ready environment
+  do not wait inside the tool activity: the worker reports
+  `EnvironmentNotReady`, the workflow runs `await_environment_ready`, then
+  re-dispatches the call. Do not put provisioning in `SessionConfig`, on
+  `session/start`, or behind a model tool. See
+  `docs/roadmap/p125-profile-provisioned-environments.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

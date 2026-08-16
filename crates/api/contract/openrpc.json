@@ -1708,13 +1708,6 @@
       },
       "AgentProfile": {
         "properties": {
-          "activeEnvironmentId": {
-            "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "config": {
             "anyOf": [
               {
@@ -1740,6 +1733,17 @@
               "string",
               "null"
             ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileEnvironment"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
           },
           "instructions": {
             "anyOf": [
@@ -1774,13 +1778,6 @@
       },
       "AgentProfileInput": {
         "properties": {
-          "activeEnvironmentId": {
-            "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "config": {
             "anyOf": [
               {
@@ -1802,6 +1799,17 @@
               "string",
               "null"
             ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileEnvironment"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
           },
           "instructions": {
             "anyOf": [
@@ -3967,6 +3975,13 @@
               "null"
             ]
           },
+          "originSessionId": {
+            "description": "Only environments a profile provisioned for this session.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "providerId": {
             "type": [
               "string",
@@ -3996,6 +4011,32 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "EnvironmentOriginSessionView": {
+        "properties": {
+          "closeWithSession": {
+            "description": "When true, Lightspeed closes the environment once the session closes.",
+            "type": "boolean"
+          },
+          "profileId": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileId"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "closeWithSession"
+        ],
         "type": "object"
       },
       "EnvironmentProviderBindingListParams": {
@@ -4264,6 +4305,17 @@
               "type": "string"
             },
             "type": "object"
+          },
+          "originSession": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentOriginSessionView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present when a profile provisioned this environment for a session.\nProvenance and an optional close trigger, not ownership: the\nenvironment remains an ordinary universe resource."
           },
           "publicEndpoint": {
             "type": [
@@ -4687,13 +4739,6 @@
       },
       "InlineAgentProfile": {
         "properties": {
-          "activeEnvironmentId": {
-            "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "config": {
             "anyOf": [
               {
@@ -4715,6 +4760,17 @@
               "string",
               "null"
             ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileEnvironment"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
           },
           "instructions": {
             "anyOf": [
@@ -6378,6 +6434,7 @@
             "default": {
               "activeEnvironmentChanged": false,
               "configChanged": false,
+              "environmentProvisioned": false,
               "instructionsChanged": false
             }
           },
@@ -6396,6 +6453,11 @@
             "type": "boolean"
           },
           "configChanged": {
+            "type": "boolean"
+          },
+          "environmentProvisioned": {
+            "default": false,
+            "description": "True when this apply created a new environment for the session.",
             "type": "boolean"
           },
           "instructionsChanged": {
@@ -6452,6 +6514,87 @@
           "profile"
         ],
         "type": "object"
+      },
+      "ProfileEnvironment": {
+        "description": "Environment intent carried by a profile document.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "Activate an existing universe environment. The profile never closes\nit.",
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "existing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "environmentId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+            "properties": {
+              "displayName": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "metadata": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "providerId": {
+                "type": "string"
+              },
+              "retention": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ProfileEnvironmentRetention"
+                  }
+                ],
+                "default": "closeWithSession"
+              },
+              "templateId": {
+                "description": "Immutable provider template-version identity.",
+                "type": "string"
+              },
+              "type": {
+                "const": "provision",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "providerId",
+              "templateId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "ProfileEnvironmentRetention": {
+        "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+        "oneOf": [
+          {
+            "const": "closeWithSession",
+            "description": "Close the environment when the session that provisioned it closes.",
+            "type": "string"
+          },
+          {
+            "const": "retain",
+            "description": "Leave the environment open; the universe owns its cleanup.",
+            "type": "string"
+          }
+        ]
       },
       "ProfileId": {
         "type": "string"

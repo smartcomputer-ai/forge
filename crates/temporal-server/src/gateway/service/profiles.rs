@@ -1,11 +1,14 @@
 use super::api_config::engine_session_config_from_api;
 use super::*;
+use ::environments::{EnvironmentProviderBindingStore, EnvironmentStore};
 use ::profiles::{ProfileError, ProfileSourceExt, ProfileStore};
 
 const PROFILE_INSTRUCTIONS_CONTEXT_KEY: &str = "instructions.050.profile";
 
 #[derive(Clone, Debug)]
 pub(super) struct ResolvedAgentProfile {
+    /// Registry identity for named profiles; inline profiles have none.
+    pub(super) profile_id: Option<api::ProfileId>,
     pub(super) document: ProfileDocument,
 }
 
@@ -82,7 +85,7 @@ impl GatewayAgentApi {
         let (session, applied) = self
             .apply_profile_document(
                 &session_id,
-                &resolved.document,
+                &resolved,
                 true,
                 params.expected_config_revision,
                 params.expected_tools_revision,
@@ -104,10 +107,12 @@ impl GatewayAgentApi {
                     .await
                     .map_err(map_profile_error)?;
                 Ok(ResolvedAgentProfile {
+                    profile_id: Some(profile.profile_id),
                     document: profile.document,
                 })
             }
             ProfileSource::Inline { profile } => Ok(ResolvedAgentProfile {
+                profile_id: None,
                 document: profile.document,
             }),
         }
@@ -116,11 +121,12 @@ impl GatewayAgentApi {
     pub(super) async fn apply_profile_document(
         &self,
         session_id: &SessionId,
-        document: &ProfileDocument,
+        profile: &ResolvedAgentProfile,
         apply_config: bool,
         expected_config_revision: Option<u64>,
         expected_tools_revision: Option<u64>,
     ) -> Result<(SessionView, ProfileApplySummary), AgentApiError> {
+        let document = &profile.document;
         let mut applied = ProfileApplySummary::default();
 
         if apply_config {
@@ -143,10 +149,39 @@ impl GatewayAgentApi {
                 .await?;
         }
 
-        if let Some(environment_id) = document.active_environment_id.clone() {
-            applied.active_environment_changed = self
-                .apply_profile_active_environment(session_id, environment_id)
-                .await?;
+        match &document.environment {
+            None => {}
+            Some(ProfileEnvironment::Existing { environment_id }) => {
+                applied.active_environment_changed = self
+                    .apply_profile_active_environment(session_id, environment_id.clone())
+                    .await?;
+            }
+            Some(ProfileEnvironment::Provision {
+                provider_id,
+                template_id,
+                display_name,
+                metadata,
+                retention,
+            }) => {
+                let (environment, provisioned) = self
+                    .ensure_profile_provisioned_environment(
+                        session_id,
+                        profile.profile_id.as_ref(),
+                        provider_id,
+                        template_id,
+                        display_name.clone(),
+                        metadata.clone(),
+                        *retention,
+                    )
+                    .await?;
+                applied.environment_provisioned = provisioned;
+                applied.active_environment_changed = self
+                    .apply_profile_active_environment(
+                        session_id,
+                        environment.environment_id.as_str().to_owned(),
+                    )
+                    .await?;
+            }
         }
 
         self.load_session_state_with_current_run_context(session_id)
@@ -301,6 +336,104 @@ impl GatewayAgentApi {
             source_entries,
         )
         .await
+    }
+
+    /// Validate that a `provision` profile can be applied in this universe
+    /// before any session exists: the provider must have an enabled binding
+    /// here. Returns the binding so the applier can create from it.
+    pub(super) async fn resolve_profile_provision_binding(
+        &self,
+        provider_id: &str,
+    ) -> Result<::environments::EnvironmentProviderBindingRecord, AgentApiError> {
+        let provider_id = parse_environment_provider_id(provider_id.to_owned())?;
+        let bindings = EnvironmentProviderBindingStore::list_provider_bindings(
+            self.store.as_ref(),
+            self.universe_id(),
+        )
+        .await
+        .map_err(map_environments_error)?;
+        let binding = bindings
+            .into_iter()
+            .find(|binding| binding.provider_id == provider_id)
+            .ok_or_else(|| {
+                AgentApiError::rejected(format!(
+                    "profile provisions from environment provider {provider_id}, but this universe has no binding for it"
+                ))
+            })?;
+        if binding.status != ::environments::EnvironmentProviderBindingStatus::Enabled {
+            return Err(AgentApiError::rejected(format!(
+                "profile provisions from environment provider {provider_id}, but binding {} is disabled",
+                binding.binding_id
+            )));
+        }
+        Ok(binding)
+    }
+
+    /// Create (or find) the one environment a profile may provision for this
+    /// session. The request id is derived from the session id, so retries and
+    /// repeated applies converge on the same environment.
+    #[allow(clippy::too_many_arguments)]
+    async fn ensure_profile_provisioned_environment(
+        &self,
+        session_id: &SessionId,
+        profile_id: Option<&api::ProfileId>,
+        provider_id: &str,
+        template_id: &str,
+        display_name: Option<String>,
+        metadata: BTreeMap<String, String>,
+        retention: api::ProfileEnvironmentRetention,
+    ) -> Result<(::environments::EnvironmentRecord, bool), AgentApiError> {
+        let request_id = ::environments::EnvironmentProvisionRequestId::for_session(session_id);
+        let existing = match EnvironmentStore::read_environment_by_request_id(
+            self.store.as_ref(),
+            &request_id,
+        )
+        .await
+        {
+            Ok(environment) => Some(environment),
+            Err(::environments::EnvironmentRegistryError::NotFound { .. }) => None,
+            Err(error) => return Err(map_environments_error(error)),
+        };
+        if let Some(environment) = existing {
+            return match environment.status {
+                ::environments::EnvironmentStatus::Closing
+                | ::environments::EnvironmentStatus::Closed
+                | ::environments::EnvironmentStatus::Failed => {
+                    Err(AgentApiError::rejected(format!(
+                        "the environment provisioned for session {session_id} ({}) is {}; activate another environment or create one through environments/create",
+                        environment.environment_id,
+                        format!("{:?}", environment.status).to_lowercase()
+                    )))
+                }
+                _ => Ok((environment, false)),
+            };
+        }
+        let binding = self.resolve_profile_provision_binding(provider_id).await?;
+        let display_name = display_name.or_else(|| {
+            profile_id
+                .map(|id| format!("{id} · {session_id}"))
+                .or_else(|| Some(format!("session {session_id}")))
+        });
+        let environment = self
+            .create_environment_record_with_origin(
+                EnvironmentCreateParams {
+                    request_id: request_id.as_str().to_owned(),
+                    binding_id: binding.binding_id.as_str().to_owned(),
+                    template_id: template_id.to_owned(),
+                    display_name,
+                    metadata,
+                },
+                Some(::environments::EnvironmentOriginSession {
+                    session_id: session_id.clone(),
+                    profile_id: profile_id.map(|id| id.as_str().to_owned()),
+                    close_with_session: matches!(
+                        retention,
+                        api::ProfileEnvironmentRetention::CloseWithSession
+                    ),
+                }),
+            )
+            .await?;
+        Ok((environment, true))
     }
 
     async fn apply_profile_active_environment(

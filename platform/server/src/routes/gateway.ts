@@ -891,6 +891,10 @@ export function gatewayRoutes(ctx: AppContext) {
       if (status) {
         params.status = status as EnvironmentListParams["status"];
       }
+      const originSessionId = c.req.query("originSessionId");
+      if (originSessionId) {
+        params.originSessionId = originSessionId;
+      }
       const response = await client.call("environments/list", params);
       return c.json(response.result.environments ?? []);
     });

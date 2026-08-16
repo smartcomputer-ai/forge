@@ -49,6 +49,17 @@ it. The reference remains in session state and resolves as unavailable; the
 runtime never silently selects a replacement. Closing a session does not close
 an environment unless a separate lifecycle ownership policy requires it.
 
+One such policy exists: a profile's `environment: { type: "provision" }`
+creates one environment for the session it starts (request id derived from
+the session id), activates it while it is still provisioning, and — with the
+default `retention: closeWithSession` — the lifecycle reconciler closes it once
+that session is closed. The environment records `originSession` as
+provenance; it remains an ordinary universe resource that other sessions may
+select and the universe may close. Environment-dependent tool calls made
+before the environment is ready do not fail: the worker reports the call as
+not executed, the session workflow waits in a heartbeated
+`await_environment_ready` activity, and re-dispatches the call.
+
 ## Discovery and selection tools
 
 The environment feature permits active-environment use and always installs

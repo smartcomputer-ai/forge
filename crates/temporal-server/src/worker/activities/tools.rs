@@ -5,7 +5,10 @@ use engine::{
 use temporalio_sdk::activities::ActivityError;
 use tools::concurrency::{CancelArgs, DetachArgs};
 
-use crate::worker::ToolInvokeBatchActivityRequest;
+use crate::worker::{
+    AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult, ToolCallExecution,
+    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityResult,
+};
 
 use super::{
     common::{activity_error, failed_tool_batch_result},
@@ -68,18 +71,36 @@ pub(super) async fn invoke_batch(
 /// Execute one call of an admitted tool batch under its class operation
 /// deadline. Tool-level failures and an elapsed operation deadline return an
 /// ordinary terminal failed result; only blob-store failures fail the
-/// activity.
+/// activity. A call whose active environment is still provisioning does not
+/// run and reports `EnvironmentNotReady` so the workflow can wait outside
+/// this deadline (P125).
 pub(super) async fn invoke_call(
     deps: &ToolActivityDeps,
     request: crate::worker::ToolInvokeCallActivityRequest,
-) -> Result<engine::ToolInvocationResult, ActivityError> {
+) -> Result<ToolInvokeCallActivityResult, ActivityError> {
     let request = request.request;
     let deadline = temporal_workflow::tool_call_operation_timeout(request.execution.class);
-    match tokio::time::timeout(deadline, deps.tools.invoke_call(request.clone())).await {
-        Ok(Ok(result)) => Ok(result),
+    let execution = async {
+        match deps.hosted.as_ref() {
+            Some(hosted) => hosted.invoke_call_execution(request.clone()).await,
+            None => deps
+                .tools
+                .invoke_call(request.clone())
+                .await
+                .map(ToolCallExecution::Completed),
+        }
+    };
+    match tokio::time::timeout(deadline, execution).await {
+        Ok(Ok(ToolCallExecution::Completed(result))) => {
+            Ok(ToolInvokeCallActivityResult::Completed { result })
+        }
+        Ok(Ok(ToolCallExecution::EnvironmentNotReady { environment_id, .. })) => {
+            Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id })
+        }
         Ok(Err(error)) => {
             super::common::failed_tool_call_result(deps.blobs.as_ref(), &request, error.to_string())
                 .await
+                .map(|result| ToolInvokeCallActivityResult::Completed { result })
                 .map_err(activity_error)
         }
         Err(_elapsed) => super::common::failed_tool_call_result(
@@ -91,8 +112,28 @@ pub(super) async fn invoke_call(
             ),
         )
         .await
+        .map(|result| ToolInvokeCallActivityResult::Completed { result })
         .map_err(activity_error),
     }
+}
+
+/// Wait, heartbeating on every poll, until the session's active environment
+/// is reachable, terminally unusable, or the bounded readiness window
+/// elapses. Runs as its own activity so tool classes keep their deadlines.
+pub(super) async fn await_environment_ready(
+    deps: &ToolActivityDeps,
+    ctx: &temporalio_sdk::activities::ActivityContext,
+    request: AwaitEnvironmentReadyActivityRequest,
+) -> Result<AwaitEnvironmentReadyActivityResult, ActivityError> {
+    let Some(hosted) = deps.hosted.as_ref() else {
+        return Ok(AwaitEnvironmentReadyActivityResult::Failed {
+            message: "environment readiness is unavailable on this runtime".to_owned(),
+        });
+    };
+    let deadline = tokio::time::Instant::now() + temporal_workflow::ENVIRONMENT_READY_WAIT;
+    Ok(hosted
+        .await_environment_ready(&request, deadline, || ctx.record_heartbeat(Vec::new()))
+        .await)
 }
 
 #[cfg(test)]

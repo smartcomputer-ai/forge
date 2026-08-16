@@ -6,6 +6,8 @@ import { ChevronRight, Plus, Trash2 } from "lucide-react";
 import {
   api,
   type Environment,
+  type EnvironmentProviderBinding,
+  type EnvironmentTemplate,
   type ProfileDocument,
   type ProfileSummary,
 } from "@/api";
@@ -552,18 +554,35 @@ function InitialEnvironmentSection({
     queryFn: () =>
       api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
   });
+  const bindings = useQuery({
+    queryKey: ["environment-provider-bindings", universeId],
+    queryFn: () =>
+      api<EnvironmentProviderBinding[]>(
+        "GET",
+        `/api/v1/universes/${universeId}/environment-provider-bindings`,
+      ),
+  });
+  const templates = useQuery({
+    queryKey: ["environment-templates", universeId],
+    queryFn: () =>
+      api<EnvironmentTemplate[]>(
+        "GET",
+        `/api/v1/universes/${universeId}/environment-templates`,
+      ),
+  });
   return (
     <ProfileEnvironmentEditor
-      value={draft.activeEnvironmentId}
+      value={draft.environment}
       environments={environments.data}
+      bindings={bindings.data}
+      templates={templates.data}
       disabled={!hasSessionFeature(draft.config, "environments")}
-      title="Active environment"
-      description="The universe environment to activate when this profile is applied. Absence leaves an existing session's selection unchanged."
-      emptyLabel="Do not change the active environment"
-      onChange={(environmentId) =>
+      title="Environment"
+      description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."
+      onChange={(environment) =>
         mutate((document) => {
-          if (environmentId) document.activeEnvironmentId = environmentId;
-          else delete document.activeEnvironmentId;
+          if (environment) document.environment = environment;
+          else delete document.environment;
         })
       }
     />

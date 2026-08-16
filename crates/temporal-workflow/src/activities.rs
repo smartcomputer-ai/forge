@@ -1,23 +1,25 @@
 use engine::{
     BlobRef, ContextCompactionResult, LlmGenerationResult, PromiseSourceCheckResult,
-    ToolBatchOutcome, ToolInvocationResult,
+    ToolBatchOutcome,
 };
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
 use crate::{
-    AppendEventsRequest, AwaitMaterializationRequest, ContextCompactActivityRequest,
-    CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
+    AppendEventsRequest, AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
+    AwaitMaterializationRequest, ContextCompactActivityRequest, CreateOrLoadSessionRequest,
+    CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
     EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
     EnvironmentJobPrepareWorkflowToolRequest, EnvironmentJobStartActivityRequest,
     EnvironmentJobStartActivityResult, LlmGenerateActivityRequest,
     PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, ToolInvokeBatchActivityRequest,
-    ToolInvokeCallActivityRequest, ToolPreparePromiseControlsActivityRequest,
-    WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest,
-    WorkflowToolReplyValidationRequest, WorkflowToolReplyValidationResult,
-    WorkflowToolStartActivityRequest, WorkflowToolStartActivityResult,
+    ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
+    ToolPreparePromiseControlsActivityRequest, WorkflowToolExecutionCancelRequest,
+    WorkflowToolExecutionCheckRequest, WorkflowToolReplyValidationRequest,
+    WorkflowToolReplyValidationResult, WorkflowToolStartActivityRequest,
+    WorkflowToolStartActivityResult,
 };
 
 pub const ACTIVITY_CREATE_OR_LOAD_SESSION: &str = "WorkflowActivities::create_or_load_session";
@@ -47,6 +49,7 @@ pub const ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION: &str =
     "WorkflowActivities::check_workflow_tool_execution";
 pub const ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION: &str =
     "WorkflowActivities::cancel_workflow_tool_execution";
+pub const ACTIVITY_AWAIT_ENVIRONMENT_READY: &str = "WorkflowActivities::await_environment_ready";
 
 pub struct WorkflowActivities;
 
@@ -133,7 +136,18 @@ impl WorkflowActivities {
     pub async fn tool_invoke_call(
         _ctx: ActivityContext,
         _request: ToolInvokeCallActivityRequest,
-    ) -> Result<ToolInvocationResult, ActivityError> {
+    ) -> Result<ToolInvokeCallActivityResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Wait, with heartbeats, until the session's active environment is
+    /// reachable or terminally unusable. Runs outside the per-call tool
+    /// activity so tool classes keep their tight deadlines (P125).
+    #[activity(name = ACTIVITY_AWAIT_ENVIRONMENT_READY)]
+    pub async fn await_environment_ready(
+        _ctx: ActivityContext,
+        _request: AwaitEnvironmentReadyActivityRequest,
+    ) -> Result<AwaitEnvironmentReadyActivityResult, ActivityError> {
         unimplemented!("workflow activity definition only")
     }
 

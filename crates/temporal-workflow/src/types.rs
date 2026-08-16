@@ -682,6 +682,45 @@ pub struct ToolInvokeCallActivityRequest {
     pub request: engine::ToolInvocationCallRequest,
 }
 
+/// Outcome of one per-call tool activity (P114/P125).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ToolInvokeCallActivityResult {
+    /// The call ran (or failed at tool level) and produced a terminal result.
+    Completed {
+        result: engine::ToolInvocationResult,
+    },
+    /// The call did not execute: the session's active environment is still
+    /// provisioning or booting. The workflow waits for readiness with
+    /// `await_environment_ready` and re-dispatches the same call.
+    EnvironmentNotReady { environment_id: String },
+}
+
+/// Wait for the session's active environment to become reachable (P125).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AwaitEnvironmentReadyActivityRequest {
+    pub session_id: SessionId,
+    pub environment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_policy: Option<engine::EnvironmentPolicyRuntime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AwaitEnvironmentReadyActivityResult {
+    Ready,
+    /// The environment reached a terminal non-ready state (failed, closed) or
+    /// became unusable for this session.
+    Failed {
+        message: String,
+    },
+    /// The bounded readiness window elapsed while the environment was still
+    /// provisioning or booting.
+    TimedOut {
+        last_status: String,
+    },
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPreparePromiseControlsActivityRequest {
     pub request: engine::PromiseControlArgumentRequest,

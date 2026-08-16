@@ -2,7 +2,9 @@
 
 **Status**
 
-- Proposed 2026-08-16.
+- Proposed and implemented 2026-08-16 (all slices; live-validated against
+  the fake provider with real Postgres/Temporal). Runtime build and hz01
+  deployment of Slice 0 remain deployment work.
 - Builds on [P85](p85-agent-profiles.md) (profiles),
   [P113](p113-explicit-vfs-and-environment-tool-domains.md) (environment tool
   domain), [P118](p118-environment-domain-and-lifecycle.md) (durable
@@ -128,7 +130,7 @@ Environment
 - The environment is otherwise ordinary: it appears in `environments/list`,
   can be activated by other sessions, closed by the universe, given ingress,
   bound credentials, and so on. `environments/list` gains an optional
-  `sessionId` filter.
+  `originSessionId` filter.
 - `closeWithSession: true` is a *close trigger*, not a lease: when the
   originating session reaches `Closed`, Lightspeed calls the ordinary
   idempotent close path for that environment. If the universe already closed
@@ -297,7 +299,7 @@ deployment, no provider or VM change):
 - `ProfileApplySummary.active_environment_changed` stays; add
   `environment_provisioned: bool`.
 - `EnvironmentView.origin_session: Option<EnvironmentOriginSessionView>`;
-  `EnvironmentListParams.session_id`.
+  `EnvironmentListParams.origin_session_id`.
 - Regenerate `crates/api/contract/*`, TypeScript client, Configurator MCP.
 
 `crates/environments` / `crates/store-pg`:
@@ -361,45 +363,81 @@ rules shared with `environments/create`).
 
 ## Implementation
 
-- [ ] Slice 0: remove the pre-P119 filesystem gate in
-      `RuntimeEnvironment::from_resource`, gate on `filesystem_read` in
-      `into_contexts`, capability-negotiation tests, live read/write
-      assertion; runtime build and deployment.
-- [ ] `api`: `ProfileEnvironment`, `ProfileEnvironmentRetention`, view/list
-      additions; contract export.
-- [ ] `environments` + `store-pg`: `origin_session`, migration, filters,
-      close-with-session query.
-- [ ] `profiles`: document validation.
-- [ ] `temporal-server`: applier `provision` path, derived request id,
-      pre-start checks, status-aware `selectable`, tool readiness wait,
-      reconciler sweep, eager close on `session/close`/`session/delete`.
-- [ ] TypeScript client, Configurator MCP, Platform web/CLI, Foundry test
-      fixture rename; `npm run check`.
-- [ ] Docs: `README.md`, `AGENTS.md` architecture rules (profiles may
-      provision; environments carry origin provenance, not ownership),
-      `docs/variables.md` for the readiness-wait variable.
+- [x] Slice 0: removed the pre-P119 filesystem gate in
+      `RuntimeEnvironment::from_resource` (and its `fs_context` parameter);
+      `into_contexts` attaches a filesystem only when `filesystem_read` was
+      negotiated; capability-negotiation tests in `tools` and
+      `temporal-server`. The remote read/write path is covered by
+      `existing_file_tools_work_through_remote_context`; a session-level live
+      assertion needs a real envd data plane (the fake provider has none) and
+      belongs to the Incus smoke test. Runtime build and deployment pending.
+- [x] `api`: `ProfileEnvironment`, `ProfileEnvironmentRetention`,
+      `EnvironmentOriginSessionView`, `EnvironmentListParams.originSessionId`
+      (not `sessionId`: the contract reserves that name for `session/*`),
+      `ProfileApplySummary.environmentProvisioned`; contract exported.
+- [x] `environments` + `store-pg`: `EnvironmentOriginSession`,
+      `EnvironmentProvisionRequestId::for_session`, migration
+      `008_environment_origin_session`, list filter, close-with-session query;
+      the deployment reconciler scan now also selects universes holding such
+      environments whose session is closed.
+- [x] `profiles`: document validation for both variants.
+- [x] `temporal-server`: applier `provision` path with derived request id and
+      origin provenance, pre-start binding/grant checks, status-aware
+      `selectable`/`activatable`, `NotReady` per-call outcome, hosted
+      `await_environment_ready`, reconciler sweep, eager close on
+      `session/close`/`session/delete`, public `reconcile_environments_once`
+      for acceptance tests.
+- [x] `temporal-workflow`: `ToolInvokeCallActivityResult`,
+      `await_environment_ready` activity with heartbeated bounded options,
+      per-call re-dispatch after readiness.
+- [x] TypeScript client and Configurator MCP regenerated; Platform web
+      editor (existing/provision chooser with provider, template, retention),
+      `originSessionId` route passthrough, environments page provenance,
+      stub gateway; CLI online `provision` validation; Foundry test fixture.
+- [x] Docs: `README.md`, `AGENTS.md`, P108 and `docs/spec/04-environments.md`
+      amendments. The readiness wait is a workflow constant
+      (`ENVIRONMENT_READY_WAIT`, 10 minutes), not a deployment variable.
 
 ## Verification
 
-- Unit: profile document validation for both variants; request-id
-  derivation; `selectable` returns `NotReady` for `provisioning`/`booting`
-  without probing, typed failure for `failed`, and rejects `closed`;
-  `await_environment_ready` activity options bound both timeouts and keep the
-  P114 tool-class options unchanged; workflow tests for not-ready →
-  wait → re-dispatch and for `Failed`/`TimedOut` conversion; reconciler sweep closes only
-  `closeWithSession` environments of closed sessions and is idempotent.
-- `environment_provider_live` (fake provider + real Postgres + real
-  reconciler): `session/start { profile: provision }` returns with the active
-  environment set while it is still `provisioning`; the first environment tool
-  call waits and succeeds once ready; a repeated `session/start` with the same
-  session id and a repeated `profiles/apply` create no second environment; a
-  provider rejection surfaces as a typed tool error and a `failed`
-  environment; `closeWithSession` closes the VM after `session/close`, after
-  `close_on_terminal`, and after a gateway restart between the two;
-  `retain` leaves it open and listable by `sessionId`.
-- Fleet live: a spawned profile child provisions its own environment and the
-  parent's active environment is untouched.
-- Contract and TypeScript consumer checks.
+Executed 2026-08-16:
+
+- `cargo test --workspace` (75 test binaries green), `cargo clippy
+  --workspace --all-targets`, `npm run typecheck`, `npm run test`,
+  `npm run build`, `npm run check:identity`.
+- `store_pg_live::pg_live_universe_environments_are_independent_of_sessions`
+  (origin-session round trip, filter, sweep query).
+- `temporal_live::temporal_live_profile_provisions_environment_for_session`:
+  unknown provider rejected before any session exists; `session/start`
+  returns with the environment active while still `provisioning`; derived
+  request id and origin provenance recorded; repeated start and
+  `profiles/apply` create no second environment; the reconciler brings it to
+  `ready`; `session/close` closes it; the sweep alone closes an environment
+  whose session is already closed; `retain` leaves the environment `ready`
+  after its session closes.
+- `environment_provider_live`,
+  `temporal_live_profiles_create_start_and_apply_idempotently`,
+  `temporal_live_parallel_tool_batch_completes_per_call`, and
+  `temporal_live_fleet_executor_spawns_profile_child` remain green.
+- Migration `008` applied on top of an existing revision-7 database.
+
+Unit coverage added: profile document validation for both variants;
+request-id derivation (verbatim and digest form); `selectable` returns
+`NotReady` for `provisioning`/`booting` without probing, typed failure for
+`failed`, `Closed` for closing/closed, and `activatable` admits a booting
+environment; `await_environment_ready` options are heartbeated and bounded
+while the P114 tool-class options are unchanged; the hosted per-call path
+reports `EnvironmentNotReady` for a provisioning environment while the
+generic trait path degrades to a failed result; the readiness wait fails
+fast on a `failed` environment and times out instead of returning a false
+`Ready`; origin-session filter and sweep query in memory and Postgres.
+
+Not yet covered end-to-end (needs a real envd data plane, which the fake
+provider does not have): the first environment tool call actually waiting
+through `await_environment_ready` and succeeding after re-dispatch, a
+provider rejection surfacing as a typed tool error, and a Fleet-spawned
+`provision` child. These belong to the Incus live smoke test once Slice 0 is
+deployed.
 
 ## Resolved decisions
 

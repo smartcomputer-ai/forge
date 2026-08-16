@@ -274,6 +274,11 @@ CAS rather than restoring an eager catalog of environments.
   Profiles do not provision or close environments, and absence leaves an
   existing selection unchanged. Copying session state naturally copies the
   active identity; environment ownership and credentials remain universe state.
+  *(P125 amendment, 2026-08-16: the field is now `environment` with
+  `existing | provision` variants; a `provision` profile creates one
+  environment for the session and may close it with the session as the
+  "separate lifecycle policy" foreseen above. Environments stay universe
+  resources; see `p125-profile-provisioned-environments.md`.)*
 - Remove environment projection fields from Temporal activity inputs. Carry the
   active environment id required to resolve planned tools, while resolving live
   provider state and credentials at invocation time.

@@ -140,7 +140,11 @@ where
             fs_ctx = fs_ctx.with_cwd(cwd.clone());
             env_ctx = env_ctx.with_process_cwd(cwd);
         }
-        env_ctx = env_ctx.with_filesystem(fs_ctx.clone());
+        // Filesystem tools are exposed only when the daemon negotiated read
+        // access; write access is enforced by the file system's access policy.
+        if self.capabilities.filesystem_read {
+            env_ctx = env_ctx.with_filesystem(fs_ctx.clone());
+        }
         (fs_ctx, env_ctx)
     }
 }
@@ -1021,6 +1025,50 @@ mod tests {
         );
         assert!(env_ctx.process.is_none());
         assert_eq!(fs_ctx.fs.access_policy(), FileAccessPolicy::FullReadOnly);
+        let filesystem = env_ctx
+            .filesystem
+            .as_ref()
+            .expect("read-only capability keeps a filesystem context");
+        assert_eq!(
+            filesystem.fs.access_policy(),
+            FileAccessPolicy::FullReadOnly
+        );
+        assert_eq!(
+            filesystem.fs_cwd,
+            Some(FsPath::new("/workspace").expect("cwd"))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_connection_context_filesystem_follows_negotiated_capabilities() {
+        let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+
+        let (transport, _sent) = MockTransport::new([]);
+        let (_, read_write) = RemoteEnvironmentConnection::new(
+            EnvironmentDataClient::new(transport),
+            EnvironmentCapabilities::filesystem(true, true),
+        )
+        .into_contexts(blobs.clone());
+        assert_eq!(
+            read_write
+                .filesystem
+                .as_ref()
+                .expect("read/write filesystem")
+                .fs
+                .access_policy(),
+            FileAccessPolicy::FullReadWrite
+        );
+
+        let (transport, _sent) = MockTransport::new([]);
+        let (_, none) = RemoteEnvironmentConnection::new(
+            EnvironmentDataClient::new(transport),
+            EnvironmentCapabilities::filesystem(false, false),
+        )
+        .into_contexts(blobs);
+        assert!(
+            none.filesystem.is_none(),
+            "no filesystem tools without negotiated read access"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -10,9 +10,9 @@ engine = { path = "../engine" }
 environment-protocol = { path = "../environment-protocol" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "1"
 uuid = { version = "1", features = ["serde", "v4"] }
 
 [dev-dependencies]
-sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt"] }

@@ -49,6 +49,11 @@ pub struct LlmActivityDeps {
 pub struct ToolActivityDeps {
     pub(super) tools: Arc<dyn CoreAgentTools>,
     pub(super) blobs: Arc<dyn BlobStore>,
+    /// The hosted runtime behind `tools` when it is the real `SessionTools`:
+    /// grants the per-call not-ready outcome and the environment readiness
+    /// wait (P125). Absent for injected fake runtimes, which never report a
+    /// not-ready environment.
+    pub(super) hosted: Option<Arc<SessionTools>>,
 }
 
 #[derive(Clone)]
@@ -117,6 +122,7 @@ impl ActivityState {
             tools: ToolActivityDeps {
                 tools,
                 blobs: blobs.clone(),
+                hosted: None,
             },
             runtime_projection: None,
             preprocess: PreprocessActivityDeps {
@@ -183,6 +189,13 @@ impl ActivityState {
         state
     }
 
+    /// Register the hosted runtime so per-call activities can distinguish a
+    /// not-ready environment and wait for readiness.
+    pub fn with_hosted_tools(mut self, hosted: Arc<SessionTools>) -> Self {
+        self.tools.hosted = Some(hosted);
+        self
+    }
+
     pub fn from_pg_store_with_default_runtime(store: Arc<PgStore>) -> anyhow::Result<Self> {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let broker = registry_token_broker(store.clone())?;
@@ -193,8 +206,11 @@ impl ActivityState {
         let transcriber = default_audio_transcriber(provider_keys.clone())?;
         let transcoder = default_audio_transcoder_from_env()?;
         let llm = default_llm_runtime(blobs, Some(secrets), Some(provider_keys))?;
-        let tools = session_tools(store.clone());
-        let mut state = Self::from_pg_store(store, llm, tools).with_audio_transcriber(transcriber);
+        let hosted = Arc::new(SessionTools::from_pg_store(store.clone()));
+        let tools: Arc<dyn CoreAgentTools> = hosted.clone();
+        let mut state = Self::from_pg_store(store, llm, tools)
+            .with_hosted_tools(hosted)
+            .with_audio_transcriber(transcriber);
         if let Some(transcoder) = transcoder {
             state = state.with_audio_transcoder(transcoder);
         }
@@ -214,8 +230,14 @@ impl ActivityState {
         let transcriber = default_audio_transcriber(provider_keys.clone())?;
         let transcoder = default_audio_transcoder_from_env()?;
         let llm = default_llm_runtime(blobs, Some(secrets), Some(provider_keys))?;
-        let tools = session_tools_with_fleet(store.clone(), fleet_runtime);
-        let mut state = Self::from_pg_store(store, llm, tools).with_audio_transcriber(transcriber);
+        let hosted = Arc::new(SessionTools::from_pg_store_with_fleet_runtime(
+            store.clone(),
+            fleet_runtime,
+        ));
+        let tools: Arc<dyn CoreAgentTools> = hosted.clone();
+        let mut state = Self::from_pg_store(store, llm, tools)
+            .with_hosted_tools(hosted)
+            .with_audio_transcriber(transcriber);
         if let Some(transcoder) = transcoder {
             state = state.with_audio_transcoder(transcoder);
         }
@@ -254,17 +276,18 @@ impl ActivityState {
             clients.anthropic.clone(),
         );
         let temporal_client_for_workflow_tools = temporal_client.clone();
-        let tools: Arc<dyn CoreAgentTools> = match fleet_runtime {
-            Some(fleet_runtime) => Arc::new(
+        let hosted = Arc::new(match fleet_runtime {
+            Some(fleet_runtime) => {
                 SessionTools::from_pg_store_with_fleet_runtime(store.clone(), fleet_runtime)
-                    .with_environment_gateway(gateway.clone()),
-            ),
-            None => Arc::new(
-                SessionTools::from_pg_store(store.clone())
-                    .with_environment_gateway(gateway.clone()),
-            ),
-        };
+                    .with_environment_gateway(gateway.clone())
+            }
+            None => {
+                SessionTools::from_pg_store(store.clone()).with_environment_gateway(gateway.clone())
+            }
+        });
+        let tools: Arc<dyn CoreAgentTools> = hosted.clone();
         let mut state = Self::from_pg_store(store, llm, tools)
+            .with_hosted_tools(hosted)
             .with_audio_transcriber(transcriber)
             .with_workflow_tool_executions(temporal_client_for_workflow_tools);
         if let Some(environment_jobs) = state.environment_jobs.as_mut() {
@@ -308,20 +331,6 @@ impl ActivityState {
     pub(super) fn workflow_tool_executions(&self) -> Option<&WorkflowToolExecutionDeps> {
         self.workflow_tool_executions.as_ref()
     }
-}
-
-fn session_tools(store: Arc<PgStore>) -> Arc<dyn CoreAgentTools> {
-    Arc::new(SessionTools::from_pg_store(store))
-}
-
-fn session_tools_with_fleet(
-    store: Arc<PgStore>,
-    fleet_runtime: Arc<dyn FleetChildRuntime>,
-) -> Arc<dyn CoreAgentTools> {
-    Arc::new(SessionTools::from_pg_store_with_fleet_runtime(
-        store,
-        fleet_runtime,
-    ))
 }
 
 fn stored_provider_key_resolver(

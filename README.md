@@ -77,7 +77,8 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
   shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
-- [x] **Agent profiles**: reusable session setups, shared across clients and fleets
+- [x] **Agent profiles**: reusable session setups, shared across clients and fleets;
+  a profile can activate an existing environment or provision a fresh one per session
 
 **Durability & scale**
 

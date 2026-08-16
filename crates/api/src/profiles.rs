@@ -181,10 +181,53 @@ pub struct ProfileDocument {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instructions: Option<ProfileInstructions>,
-    /// Universe environment to activate when this profile is applied. Absence
-    /// leaves the session's current active environment unchanged.
+    /// How the session obtains its active environment when this profile is
+    /// applied: activate an existing universe environment, or provision a
+    /// fresh one for this session. Absence leaves the session's current
+    /// active environment unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_environment_id: Option<EnvironmentId>,
+    pub environment: Option<ProfileEnvironment>,
+}
+
+/// Environment intent carried by a profile document.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ProfileEnvironment {
+    /// Activate an existing universe environment. The profile never closes
+    /// it.
+    Existing { environment_id: EnvironmentId },
+    /// Provision one environment for the session from the universe's enabled
+    /// binding for `providerId`, then activate it. The provision request id
+    /// is derived from the session id, so retries and repeated applies
+    /// converge on the same environment.
+    Provision {
+        provider_id: EnvironmentProviderId,
+        /// Immutable provider template-version identity.
+        template_id: EnvironmentTemplateId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        display_name: Option<String>,
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        metadata: BTreeMap<String, String>,
+        #[serde(default)]
+        retention: ProfileEnvironmentRetention,
+    },
+}
+
+/// What happens to a profile-provisioned environment when its originating
+/// session closes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileEnvironmentRetention {
+    /// Close the environment when the session that provisioned it closes.
+    #[default]
+    CloseWithSession,
+    /// Leave the environment open; the universe owns its cleanup.
+    Retain,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -302,4 +345,7 @@ pub struct ProfileApplySummary {
     pub config_changed: bool,
     pub instructions_changed: bool,
     pub active_environment_changed: bool,
+    /// True when this apply created a new environment for the session.
+    #[serde(default)]
+    pub environment_provisioned: bool,
 }

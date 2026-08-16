@@ -5,7 +5,7 @@
 
 use api::{
     AgentProfile, AgentProfileInput, AgentProfileSummary, InlineAgentProfile, ProfileDocument,
-    ProfileId, ProfileInstructions, ProfileSource,
+    ProfileEnvironment, ProfileId, ProfileInstructions, ProfileSource,
 };
 use async_trait::async_trait;
 use thiserror::Error;
@@ -164,10 +164,34 @@ pub fn validate_profile_document(document: &ProfileDocument) -> Result<(), Profi
     if let Some(instructions) = &document.instructions {
         validate_profile_instructions(instructions)?;
     }
-    if let Some(environment_id) = &document.active_environment_id {
-        validate_nonempty_string("activeEnvironmentId", environment_id)?;
+    if let Some(environment) = &document.environment {
+        validate_profile_environment(environment)?;
     }
     Ok(())
+}
+
+fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), ProfileError> {
+    match environment {
+        ProfileEnvironment::Existing { environment_id } => {
+            validate_nonempty_string("environment.environmentId", environment_id)
+        }
+        ProfileEnvironment::Provision {
+            provider_id,
+            template_id,
+            display_name,
+            metadata,
+            retention: _,
+        } => {
+            validate_nonempty_string("environment.providerId", provider_id)?;
+            validate_nonempty_string("environment.templateId", template_id)?;
+            validate_nonempty_optional("environment.displayName", display_name.as_deref())?;
+            for (key, value) in metadata {
+                validate_nonempty_string("environment.metadata key", key)?;
+                validate_nonempty_string("environment.metadata value", value)?;
+            }
+            Ok(())
+        }
+    }
 }
 
 fn validate_inline_profile(profile: &InlineAgentProfile) -> Result<(), ProfileError> {
@@ -212,6 +236,10 @@ fn validate_nonnegative_i64(name: &str, value: i64) -> Result<(), ProfileError> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use api::ProfileEnvironmentRetention;
+
     use super::*;
 
     #[test]
@@ -231,15 +259,57 @@ mod tests {
     }
 
     #[test]
-    fn document_validation_rejects_empty_active_environment_id() {
+    fn document_validation_rejects_empty_existing_environment_id() {
         let empty_environment = ProfileDocument {
-            active_environment_id: Some(String::new()),
+            environment: Some(ProfileEnvironment::Existing {
+                environment_id: String::new(),
+            }),
             ..ProfileDocument::default()
         };
         assert!(matches!(
             validate_profile_document(&empty_environment),
-            Err(ProfileError::InvalidInput { message }) if message.contains("activeEnvironmentId")
+            Err(ProfileError::InvalidInput { message }) if message.contains("environment.environmentId")
         ));
+    }
+
+    #[test]
+    fn document_validation_checks_provision_environment_fields() {
+        let provision =
+            |provider_id: &str, template_id: &str, metadata: BTreeMap<String, String>| {
+                ProfileDocument {
+                    environment: Some(ProfileEnvironment::Provision {
+                        provider_id: provider_id.to_owned(),
+                        template_id: template_id.to_owned(),
+                        display_name: None,
+                        metadata,
+                        retention: ProfileEnvironmentRetention::default(),
+                    }),
+                    ..ProfileDocument::default()
+                }
+            };
+        assert!(
+            validate_profile_document(&provision("incus", "dev-small-v1", BTreeMap::new())).is_ok()
+        );
+        assert!(matches!(
+            validate_profile_document(&provision(" ", "dev-small-v1", BTreeMap::new())),
+            Err(ProfileError::InvalidInput { message }) if message.contains("environment.providerId")
+        ));
+        assert!(matches!(
+            validate_profile_document(&provision("incus", "", BTreeMap::new())),
+            Err(ProfileError::InvalidInput { message }) if message.contains("environment.templateId")
+        ));
+        assert!(matches!(
+            validate_profile_document(&provision(
+                "incus",
+                "dev-small-v1",
+                BTreeMap::from([("role".to_owned(), String::new())])
+            )),
+            Err(ProfileError::InvalidInput { message }) if message.contains("environment.metadata value")
+        ));
+        assert_eq!(
+            ProfileEnvironmentRetention::default(),
+            ProfileEnvironmentRetention::CloseWithSession
+        );
     }
 
     #[test]

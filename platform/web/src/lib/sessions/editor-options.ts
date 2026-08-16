@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   api,
   type EnvironmentProviderBinding,
+  type EnvironmentTemplate,
   type ModelListResponse,
   type ProfileSummary,
 } from "@/api";
@@ -42,6 +43,15 @@ export function useSessionConfigEditorOptions(universeId: string, enabled = true
       ),
     enabled,
   });
+  const environmentTemplates = useQuery({
+    queryKey: ["environment-templates", universeId],
+    queryFn: () =>
+      api<EnvironmentTemplate[]>(
+        "GET",
+        `/api/v1/universes/${universeId}/environment-templates`,
+      ),
+    enabled,
+  });
   return {
     mcpServers: servers.data,
     workspaces: workspaces.data,
@@ -49,6 +59,8 @@ export function useSessionConfigEditorOptions(universeId: string, enabled = true
     models: models.data?.models,
     profiles: profiles.data,
     environmentProviders: environmentProviderOptions(environmentProviders.data ?? []),
+    environmentBindings: environmentProviders.data,
+    environmentTemplates: environmentTemplates.data,
   };
 }
 
