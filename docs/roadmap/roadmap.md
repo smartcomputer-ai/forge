@@ -187,7 +187,10 @@
   session and workflow-tool primitives
 
 ## Security Auth
-- [ ] Provider OAuth login
+- [ ] [P127](p127-openai-oauth-login.md) — Provider OAuth login:
+  subscription credentials for Claude Code / Codex in environments
+  (Anthropic setup-token paste, OpenAI device flow), OpenAI API key via
+  sign-in
 - [ ] Send secrets to sandbox/VM/env
 - [ ] Design capability based model for agents
 
