@@ -377,7 +377,7 @@ rules shared with `environments/create`).
       `ProfileApplySummary.environmentProvisioned`; contract exported.
 - [x] `environments` + `store-pg`: `EnvironmentOriginSession`,
       `EnvironmentProvisionRequestId::for_session`, migration
-      `008_environment_origin_session`, list filter, close-with-session query;
+      `008_environment_origin_session` (later extended by P126 with power columns before its first deployment), list filter, close-with-session query;
       the deployment reconciler scan now also selects universes holding such
       environments whose session is closed.
 - [x] `profiles`: document validation for both variants.
@@ -457,7 +457,10 @@ deployed.
 ## Deferred
 
 - Environment pools / pre-warmed capacity behind the same `provision` intent.
-- Idle TTL and reaping policy for retained environments (P117 deferral).
+- ~~Idle TTL and reaping policy for retained environments (P117 deferral).~~
+  Done in [P126](p126-environment-power-and-idle-policy.md): staged
+  `idlePolicy` (pause/suspend/stop/close) applied by the power reaper, and
+  `provision.idlePolicy` on profiles.
 - Model-driven provisioning tools and their grant (P117/P118 deferral).
 - Profile layering (`extends`/`compose`, P85 deferral) — the new field is
   keyed and additive-friendly, so it composes when layering lands.

@@ -359,6 +359,49 @@ mod tests {
     }
 
     #[test]
+    fn env_power_and_idle_policy_parse() {
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "env",
+            "power",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "local-host",
+            "paused",
+        ])
+        .expect("parse env power");
+        assert!(matches!(cli.command, Command::Env(_)));
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "env",
+            "idle-policy",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "local-host",
+            "--pause-after-min",
+            "15",
+            "--close-after-min",
+            "240",
+        ])
+        .expect("parse env idle-policy");
+        assert!(matches!(cli.command, Command::Env(_)));
+        assert!(
+            Cli::try_parse_from([
+                "lightspeed",
+                "env",
+                "idle-policy",
+                "--api-url",
+                "http://127.0.0.1:18080/rpc",
+                "local-host",
+                "--clear",
+                "--pause-after-min",
+                "15",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
     fn env_credentials_bind_parse_accepts_grant_source() {
         let cli = Cli::try_parse_from([
             "lightspeed",

@@ -181,6 +181,7 @@ fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), 
             display_name,
             metadata,
             retention: _,
+            idle_policy,
         } => {
             validate_nonempty_string("environment.providerId", provider_id)?;
             validate_nonempty_string("environment.templateId", template_id)?;
@@ -189,9 +190,50 @@ fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), 
                 validate_nonempty_string("environment.metadata key", key)?;
                 validate_nonempty_string("environment.metadata value", value)?;
             }
+            if let Some(policy) = idle_policy {
+                validate_idle_policy(policy)?;
+            }
             Ok(())
         }
     }
+}
+
+/// Idle-policy shape rules shared with `environments/create`: every stage
+/// positive and non-decreasing in the order pause, suspend, stop, close.
+fn validate_idle_policy(policy: &api::EnvironmentIdlePolicyView) -> Result<(), ProfileError> {
+    let stages = [
+        ("pauseAfterMs", policy.pause_after_ms),
+        ("suspendAfterMs", policy.suspend_after_ms),
+        ("stopAfterMs", policy.stop_after_ms),
+        ("closeAfterMs", policy.close_after_ms),
+    ];
+    let mut previous: Option<(&str, u64)> = None;
+    let mut any = false;
+    for (name, threshold) in stages {
+        let Some(threshold) = threshold else {
+            continue;
+        };
+        any = true;
+        if threshold == 0 {
+            return Err(ProfileError::InvalidInput {
+                message: format!("environment.idlePolicy.{name} must be positive"),
+            });
+        }
+        if let Some((earlier, earlier_threshold)) = previous
+            && threshold < earlier_threshold
+        {
+            return Err(ProfileError::InvalidInput {
+                message: format!("environment.idlePolicy.{name} must not be below {earlier}"),
+            });
+        }
+        previous = Some((name, threshold));
+    }
+    if !any {
+        return Err(ProfileError::InvalidInput {
+            message: "environment.idlePolicy must set at least one stage".to_owned(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_inline_profile(profile: &InlineAgentProfile) -> Result<(), ProfileError> {
@@ -283,10 +325,42 @@ mod tests {
                         display_name: None,
                         metadata,
                         retention: ProfileEnvironmentRetention::default(),
+                        idle_policy: None,
                     }),
                     ..ProfileDocument::default()
                 }
             };
+        let with_policy = |policy: api::EnvironmentIdlePolicyView| ProfileDocument {
+            environment: Some(ProfileEnvironment::Provision {
+                provider_id: "incus".to_owned(),
+                template_id: "dev-small-v1".to_owned(),
+                display_name: None,
+                metadata: BTreeMap::new(),
+                retention: ProfileEnvironmentRetention::default(),
+                idle_policy: Some(policy),
+            }),
+            ..ProfileDocument::default()
+        };
+        assert!(
+            validate_profile_document(&with_policy(api::EnvironmentIdlePolicyView {
+                pause_after_ms: Some(60_000),
+                close_after_ms: Some(3_600_000),
+                ..api::EnvironmentIdlePolicyView::default()
+            }))
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_profile_document(&with_policy(api::EnvironmentIdlePolicyView::default())),
+            Err(ProfileError::InvalidInput { message }) if message.contains("idlePolicy")
+        ));
+        assert!(matches!(
+            validate_profile_document(&with_policy(api::EnvironmentIdlePolicyView {
+                pause_after_ms: Some(60_000),
+                stop_after_ms: Some(1_000),
+                ..api::EnvironmentIdlePolicyView::default()
+            })),
+            Err(ProfileError::InvalidInput { message }) if message.contains("stopAfterMs")
+        ));
         assert!(
             validate_profile_document(&provision("incus", "dev-small-v1", BTreeMap::new())).is_ok()
         );

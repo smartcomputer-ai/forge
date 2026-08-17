@@ -36,6 +36,8 @@ pub struct ControllerCapabilities {
     #[serde(default)]
     pub close_target: bool,
     #[serde(default)]
+    pub set_target_power: bool,
+    #[serde(default)]
     pub ingress: bool,
 }
 

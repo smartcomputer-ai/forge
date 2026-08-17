@@ -133,6 +133,10 @@ struct UniverseEntry {
 /// pinned universe); the worker never creates, because a workflow for a
 /// universe the gateway did not create is a routing error, not a provisioning
 /// request.
+/// How often the power reaper polls daemon idle reports. Idle thresholds are
+/// minutes to hours, so a coarse cadence keeps the data-plane load negligible.
+pub const POWER_REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct UniverseRuntime {
     client: Client,
     task_queue: String,
@@ -245,6 +249,41 @@ impl UniverseRuntime {
                     }
                 };
                 match state.api.reconcile_environment_lifecycle_once().await {
+                    Ok(_) => failures.succeeded(universe_id),
+                    Err(error) => failures.failed(universe_id, &error),
+                }
+            }
+        }
+    }
+
+    /// Run the one active power reaper (P126). Every pass reads daemon idle
+    /// reports for ready environments with an idle policy and records power
+    /// intent; the lifecycle reconciler converges the provider. Failures are
+    /// logged and retried on the next tick.
+    pub async fn run_power_reaper(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(POWER_REAPER_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        loop {
+            interval.tick().await;
+            let universe_ids = match store_pg::list_universes_with_idle_policies(self.stores.pool())
+                .await
+            {
+                Ok(ids) => ids,
+                Err(error) => {
+                    tracing::warn!(target: "temporal_server", %error, "power reaper scan failed");
+                    continue;
+                }
+            };
+            for universe_id in universe_ids {
+                let state = match self.state_for(universe_id, false).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        tracing::warn!(target: "temporal_server", %universe_id, %error, "power reaper could not resolve universe");
+                        continue;
+                    }
+                };
+                match state.api.reconcile_idle_power_once().await {
                     Ok(_) => failures.succeeded(universe_id),
                     Err(error) => failures.failed(universe_id, &error),
                 }

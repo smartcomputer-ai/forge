@@ -760,6 +760,13 @@ export type ContextAppendStatus = "applied" | "unchanged" | "failed";
  */
 export type ContextRemoveStatus = "removed" | "absent" | "failed";
 /**
+ * Steady power state of a provisioned environment (P126).
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerStateView".
+ */
+export type EnvironmentPowerStateView = "running" | "paused" | "suspended" | "stopped";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentSourceView".
  */
@@ -789,7 +796,10 @@ export type EnvironmentConnectionTransportView =
  * via the `definition` "EnvironmentLifecycleStatusView".
  */
 export type EnvironmentLifecycleStatusView =
-  "provisioning" | "booting" | "ready" | "offline" | "closing" | "closed" | "failed" | "unknown";
+  | ("provisioning" | "booting" | "ready" | "closing" | "closed" | "failed" | "unknown")
+  | "paused"
+  | "suspended"
+  | "offline";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentCredentialSourceView".
@@ -921,6 +931,11 @@ export type ProfileEnvironment =
     }
   | {
       displayName?: string | null;
+      /**
+       * Optional staged idle policy for the provisioned environment
+       * (P126). Stages the provider cannot realize are skipped.
+       */
+      idlePolicy?: EnvironmentIdlePolicyView | null;
       metadata?: {
         [k: string]: string;
       };
@@ -2102,8 +2117,13 @@ export interface EnvironmentCloseResponse {
  */
 export interface EnvironmentView {
   createdAtMs: number;
+  /**
+   * Lightspeed-owned power intent; `status` is the observed state.
+   */
+  desiredPower: EnvironmentPowerStateView;
   displayName?: string | null;
   environmentId: string;
+  idlePolicy?: EnvironmentIdlePolicyView | null;
   incarnation: EnvironmentIncarnationView;
   metadata?: {
     [k: string]: string;
@@ -2122,12 +2142,31 @@ export interface EnvironmentView {
   updatedAtMs: number;
 }
 /**
+ * Staged idle policy. Thresholds are milliseconds of daemon-reported idle
+ * time and must be non-decreasing in the order pause, suspend, stop, close.
+ * Stages whose power state the provider does not support are skipped.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyView".
+ */
+export interface EnvironmentIdlePolicyView {
+  closeAfterMs?: number | null;
+  pauseAfterMs?: number | null;
+  stopAfterMs?: number | null;
+  suspendAfterMs?: number | null;
+}
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentIncarnationView".
  */
 export interface EnvironmentIncarnationView {
   createdAtMs: number;
   incarnationId: string;
+  /**
+   * Power states the provider reported for this target; empty until
+   * observed or when the provider offers no power control.
+   */
+  powerStates?: EnvironmentPowerStateView[];
   providerTargetId?: string | null;
   provisionRequestId?: string | null;
   templateId?: string | null;
@@ -2237,6 +2276,21 @@ export interface AgentApiOutcomeOfEnvironmentExternalCreateResponse {
  * via the `definition` "EnvironmentExternalCreateResponse".
  */
 export interface EnvironmentExternalCreateResponse {
+  environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentIdlePolicyPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyPutResponse".
+ */
+export interface EnvironmentIdlePolicyPutResponse {
   environment: EnvironmentView;
 }
 /**
@@ -2401,6 +2455,21 @@ export interface AgentApiOutcomeOfEnvironmentListResponse {
  */
 export interface EnvironmentListResponse {
   environments?: EnvironmentView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentPowerPutResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentPowerPutResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentPowerPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerPutResponse".
+ */
+export interface EnvironmentPowerPutResponse {
+  environment: EnvironmentView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3822,6 +3891,10 @@ export interface EnvironmentCloseParams {
 export interface EnvironmentCreateParams {
   bindingId: string;
   displayName?: string | null;
+  /**
+   * Optional staged idle policy applied by the power reaper.
+   */
+  idlePolicy?: EnvironmentIdlePolicyView | null;
   metadata?: {
     [k: string]: string;
   };
@@ -3872,6 +3945,17 @@ export interface EnvironmentExternalCreateParams {
     [k: string]: string;
   };
   requestId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyPutParams".
+ */
+export interface EnvironmentIdlePolicyPutParams {
+  environmentId: string;
+  /**
+   * The complete new policy; omit to clear it.
+   */
+  idlePolicy?: EnvironmentIdlePolicyView | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3955,6 +4039,18 @@ export interface EnvironmentListParams {
   originSessionId?: string | null;
   providerId?: string | null;
   status?: EnvironmentLifecycleStatusView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerPutParams".
+ */
+export interface EnvironmentPowerPutParams {
+  environmentId: string;
+  /**
+   * Desired steady power state. Must be one of the provider-reported
+   * `incarnation.powerStates`.
+   */
+  power: EnvironmentPowerStateView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

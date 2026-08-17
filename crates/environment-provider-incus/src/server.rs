@@ -173,6 +173,7 @@ async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
                         adopt_target: true,
                         get_target: true,
                         close_target: true,
+                        set_target_power: true,
                         ingress: app.config.ingress.is_some(),
                     },
                     implementation: ImplementationInfo {
@@ -188,6 +189,7 @@ async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
         ADOPT_TARGET_METHOD => adopt_target(app, decode(params)).await.and_then(encode),
         GET_TARGET_METHOD => get_target(app, decode(params)).await.and_then(encode),
         CLOSE_TARGET_METHOD => close_target(app, decode(params)).await.and_then(encode),
+        SET_TARGET_POWER_METHOD => set_target_power(app, decode(params)).await.and_then(encode),
         ENSURE_INGRESS_METHOD => ensure_ingress(app, decode(params)).await.and_then(encode),
         REMOVE_INGRESS_METHOD => remove_ingress(app, decode(params)).await.and_then(encode),
         _ => Err(anyhow::anyhow!("unknown controller method: {method}")),
@@ -394,6 +396,42 @@ async fn close_target<B: IncusBackend>(
     })
 }
 
+async fn set_target_power<B: IncusBackend>(
+    app: &App<B>,
+    params: anyhow::Result<SetTargetPowerParams>,
+) -> anyhow::Result<SetTargetPowerResponse> {
+    let params = params?;
+    let binding = &params.binding;
+    let expected_target_id = policy::instance_name(
+        &params.binding.universe_id,
+        &params.binding.binding_id,
+        &params.environment_id,
+        &params.incarnation_id,
+    );
+    if params.target_id.as_str() != expected_target_id {
+        anyhow::bail!("target handle does not match deterministic ownership identity")
+    }
+    let target = app
+        .backend
+        .get_owned(binding, &params.target_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("target not found"))?;
+    verify_binding(&target, binding)?;
+    if target.environment_id != params.environment_id
+        || target.incarnation_id != params.incarnation_id
+    {
+        anyhow::bail!("target ownership does not match power request")
+    }
+    let mut target = app
+        .backend
+        .set_power(binding, &target, params.power)
+        .await?;
+    observe_daemon_readiness(&app.config, &mut target).await;
+    Ok(SetTargetPowerResponse {
+        target: summary(target),
+    })
+}
+
 async fn ensure_ingress<B: IncusBackend>(
     app: &App<B>,
     params: anyhow::Result<EnsureIngressParams>,
@@ -545,6 +583,7 @@ fn summary(target: OwnedTarget) -> ProviderTargetSummary {
         scope: EnvironmentScope::Default,
         capabilities,
         default_cwd: None,
+        power_states: crate::incus::SUPPORTED_POWER_STATES.to_vec(),
         metadata,
     }
 }
@@ -635,5 +674,9 @@ mod tests {
         assert!(summary.capabilities.filesystem_ranged_read);
         assert!(summary.capabilities.process_pty);
         assert!(!summary.capabilities.process_output_notifications);
+        assert_eq!(
+            summary.power_states,
+            vec![PowerState::Running, PowerState::Paused, PowerState::Stopped]
+        );
     }
 }

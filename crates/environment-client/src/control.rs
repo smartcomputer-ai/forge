@@ -6,12 +6,13 @@ use environment_protocol::control::{
     methods::{
         ADOPT_TARGET_METHOD, CLOSE_TARGET_METHOD, CREATE_TARGET_METHOD, ENSURE_INGRESS_METHOD,
         GET_TARGET_METHOD, INITIALIZE_METHOD, LIST_TARGETS_METHOD, LIST_TEMPLATES_METHOD,
-        REMOVE_INGRESS_METHOD,
+        REMOVE_INGRESS_METHOD, SET_TARGET_POWER_METHOD,
     },
     targets::{
         AdoptTargetParams, AdoptTargetResponse, CloseTargetParams, CloseTargetResponse,
         CreateTargetParams, CreateTargetResponse, GetTargetParams, GetTargetResponse,
         ListTargetsParams, ListTargetsResponse, ListTemplatesParams, ListTemplatesResponse,
+        SetTargetPowerParams, SetTargetPowerResponse,
     },
 };
 
@@ -90,6 +91,13 @@ where
         params: &CloseTargetParams,
     ) -> EnvironmentClientResult<CloseTargetResponse> {
         self.rpc.request(CLOSE_TARGET_METHOD, params).await
+    }
+
+    pub async fn set_target_power(
+        &mut self,
+        params: &SetTargetPowerParams,
+    ) -> EnvironmentClientResult<SetTargetPowerResponse> {
+        self.rpc.request(SET_TARGET_POWER_METHOD, params).await
     }
 
     pub async fn ensure_ingress(

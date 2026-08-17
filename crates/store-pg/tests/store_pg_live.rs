@@ -1089,6 +1089,12 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             display_name: Some("Local host".to_owned()),
             metadata: Default::default(),
             origin_session: None,
+            idle_policy: Some(environments::EnvironmentIdlePolicy {
+                pause_after_ms: Some(60_000),
+                suspend_after_ms: None,
+                stop_after_ms: Some(3_600_000),
+                close_after_ms: None,
+            }),
             created_at_ms: 29,
         })
         .await
@@ -1098,10 +1104,114 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             environment_id: environment_id.clone(),
             provider_target_id: target_id.clone(),
             status: EnvironmentStatus::Offline,
+            power_states: vec![
+                environments::PowerState::Running,
+                environments::PowerState::Paused,
+                environments::PowerState::Stopped,
+            ],
             observed_at_ms: 30,
         })
         .await
         .expect("upsert target");
+    // P126: power intent, observed power states, and idle policy round-trip
+    // and feed the reconcile/reaper queries.
+    assert_eq!(instance.desired_power, environments::PowerState::Running);
+    assert_eq!(
+        instance.incarnation.power_states,
+        vec![
+            environments::PowerState::Running,
+            environments::PowerState::Paused,
+            environments::PowerState::Stopped,
+        ]
+    );
+    assert_eq!(
+        instance
+            .idle_policy
+            .as_ref()
+            .and_then(|policy| policy.pause_after_ms),
+        Some(60_000)
+    );
+    // Offline while desired running: the reconciler must pick it up.
+    assert!(
+        store
+            .list_environments_needing_reconcile()
+            .await
+            .expect("needing reconcile")
+            .iter()
+            .any(|record| record.environment_id == environment_id)
+    );
+    // Not ready: the reaper must not.
+    assert!(
+        store
+            .list_environments_with_idle_policy()
+            .await
+            .expect("idle policy candidates")
+            .is_empty()
+    );
+    let stopped_intent = store
+        .set_environment_power(environments::SetEnvironmentPower {
+            environment_id: environment_id.clone(),
+            desired_power: environments::PowerState::Stopped,
+            updated_at_ms: 31,
+        })
+        .await
+        .expect("set power");
+    assert_eq!(
+        stopped_intent.desired_power,
+        environments::PowerState::Stopped
+    );
+    assert!(
+        !store
+            .list_environments_needing_reconcile()
+            .await
+            .expect("needing reconcile")
+            .iter()
+            .any(|record| record.environment_id == environment_id)
+    );
+    let ready = store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment_id.clone(),
+            provider_target_id: target_id.clone(),
+            status: EnvironmentStatus::Ready,
+            power_states: vec![environments::PowerState::Running],
+            observed_at_ms: 32,
+        })
+        .await
+        .expect("observe ready");
+    assert_eq!(
+        store
+            .list_environments_with_idle_policy()
+            .await
+            .expect("idle policy candidates"),
+        vec![ready.clone()]
+    );
+    let cleared = store
+        .set_environment_idle_policy(environments::SetEnvironmentIdlePolicy {
+            environment_id: environment_id.clone(),
+            idle_policy: None,
+            updated_at_ms: 33,
+        })
+        .await
+        .expect("clear policy");
+    assert!(cleared.idle_policy.is_none());
+    store
+        .set_environment_power(environments::SetEnvironmentPower {
+            environment_id: environment_id.clone(),
+            desired_power: environments::PowerState::Running,
+            updated_at_ms: 34,
+        })
+        .await
+        .expect("restore power");
+    let instance = store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment_id.clone(),
+            provider_target_id: target_id.clone(),
+            status: EnvironmentStatus::Offline,
+            power_states: vec![environments::PowerState::Running],
+            observed_at_ms: 35,
+        })
+        .await
+        .expect("observe offline again");
     assert_eq!(
         store
             .list_environments(ListEnvironments {
@@ -1150,6 +1260,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
                 profile_id: Some("coder".to_owned()),
                 close_with_session: true,
             }),
+            idle_policy: None,
             created_at_ms: 60,
         })
         .await

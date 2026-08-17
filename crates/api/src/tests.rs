@@ -782,6 +782,48 @@ async fn dispatch_json_rpc_routes_environments_create() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_environment_power_and_idle_policy_put() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_ENVIRONMENTS_POWER_PUT.to_owned(),
+            params: Some(json!({
+                "environmentId": "evi_test",
+                "power": "paused"
+            })),
+        },
+    )
+    .await;
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let environment = &response.result.expect("result")["result"]["environment"];
+    assert_eq!(environment["desiredPower"], json!("paused"));
+    assert_eq!(
+        environment["incarnation"]["powerStates"],
+        json!(["running", "paused"])
+    );
+
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(2),
+            method: METHOD_ENVIRONMENTS_IDLE_POLICY_PUT.to_owned(),
+            params: Some(json!({
+                "environmentId": "evi_test",
+                "idlePolicy": {"pauseAfterMs": 60000, "closeAfterMs": 3600000}
+            })),
+        },
+    )
+    .await;
+    assert!(response.error.is_none(), "{:?}", response.error);
+    let environment = &response.result.expect("result")["result"]["environment"];
+    assert_eq!(
+        environment["idlePolicy"],
+        json!({"pauseAfterMs": 60000, "closeAfterMs": 3600000})
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_environment_ingress_put() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -1882,6 +1924,28 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn put_environment_power(
+        &self,
+        params: EnvironmentPowerPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentPowerPutResponse>, AgentApiError> {
+        let mut environment = test_environment_instance();
+        environment.desired_power = params.power;
+        Ok(AgentApiOutcome::new(EnvironmentPowerPutResponse {
+            environment,
+        }))
+    }
+
+    async fn put_environment_idle_policy(
+        &self,
+        params: EnvironmentIdlePolicyPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentIdlePolicyPutResponse>, AgentApiError> {
+        let mut environment = test_environment_instance();
+        environment.idle_policy = params.idle_policy;
+        Ok(AgentApiOutcome::new(EnvironmentIdlePolicyPutResponse {
+            environment,
+        }))
+    }
+
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,
@@ -2459,11 +2523,17 @@ fn test_environment_instance() -> EnvironmentView {
         },
         display_name: Some("Local".to_owned()),
         status: EnvironmentLifecycleStatusView::Ready,
+        desired_power: EnvironmentPowerStateView::Running,
+        idle_policy: None,
         incarnation: EnvironmentIncarnationView {
             incarnation_id: "incarnation-1".to_owned(),
             provision_request_id: Some("request-1".to_owned()),
             provider_target_id: Some("local".to_owned()),
             template_id: Some("rust-v1".to_owned()),
+            power_states: vec![
+                EnvironmentPowerStateView::Running,
+                EnvironmentPowerStateView::Paused,
+            ],
             created_at_ms: 10,
             updated_at_ms: 10,
         },
@@ -2488,11 +2558,14 @@ fn test_external_environment() -> EnvironmentView {
         },
         display_name: Some("External".to_owned()),
         status: EnvironmentLifecycleStatusView::Ready,
+        desired_power: EnvironmentPowerStateView::Running,
+        idle_policy: None,
         incarnation: EnvironmentIncarnationView {
             incarnation_id: "incarnation-enrolled".to_owned(),
             provision_request_id: None,
             provider_target_id: None,
             template_id: None,
+            power_states: Vec::new(),
             created_at_ms: 10,
             updated_at_ms: 10,
         },

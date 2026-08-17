@@ -351,6 +351,10 @@ api_methods! {
         ["Register an external environment", "Creates an environment backed by a Lightspeed-reachable envd WebSocket endpoint. Reachability is checked on demand."],
     METHOD_ENVIRONMENTS_INGRESS_PUT => put_environment_ingress(EnvironmentIngressPutParams) -> EnvironmentIngressPutResponse =>
         ["Configure environment public ingress", "Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health."],
+    METHOD_ENVIRONMENTS_POWER_PUT => put_environment_power(EnvironmentPowerPutParams) -> EnvironmentPowerPutResponse =>
+        ["Set environment power intent", "Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state."],
+    METHOD_ENVIRONMENTS_IDLE_POLICY_PUT => put_environment_idle_policy(EnvironmentIdlePolicyPutParams) -> EnvironmentIdlePolicyPutResponse =>
+        ["Set environment idle policy", "Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports."],
     METHOD_ENVIRONMENTS_PROVIDER_BINDINGS_LIST => list_environment_provider_bindings(EnvironmentProviderBindingListParams) -> EnvironmentProviderBindingListResponse =>
         ["List environment provider bindings", "Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers."],
     METHOD_ENVIRONMENTS_PROVIDER_BINDINGS_READ => read_environment_provider_binding(EnvironmentProviderBindingReadParams) -> EnvironmentProviderBindingReadResponse =>

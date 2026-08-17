@@ -16,7 +16,8 @@ use thiserror::Error;
 
 use environment_protocol::{
     control::targets::{
-        AdoptTargetParams, CreateTargetParams, ProviderBindingContext, ProviderTargetStatus,
+        AdoptTargetParams, CreateTargetParams, PowerState, ProviderBindingContext,
+        ProviderTargetStatus,
     },
     shared::ProviderTargetId,
 };
@@ -86,7 +87,21 @@ pub trait IncusBackend: Clone + Send + Sync + 'static {
         hostname: Option<&str>,
         port: Option<u16>,
     ) -> anyhow::Result<OwnedTarget>;
+    /// Converge one owned instance toward `power`. Idempotent by inventory;
+    /// transitional instances are reported as observed and converged on a
+    /// later call.
+    async fn set_power(
+        &self,
+        binding: &ProviderBindingContext,
+        target: &OwnedTarget,
+        power: PowerState,
+    ) -> anyhow::Result<OwnedTarget>;
 }
+
+/// Power states the Incus provider can move a VM to. Stateful stop
+/// (`suspended`) is deliberately not advertised until it is wired up.
+pub const SUPPORTED_POWER_STATES: [PowerState; 3] =
+    [PowerState::Running, PowerState::Paused, PowerState::Stopped];
 
 #[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -453,6 +468,29 @@ impl IncusClient {
             .await
             .unwrap_or_default();
         owned_from_instance(instance, state).map(Some)
+    }
+
+    async fn observed_instance(&self, project: &str, name: &str) -> anyhow::Result<OwnedTarget> {
+        self.instance(project, name)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Incus target disappeared during a power change"))
+    }
+
+    async fn instance_state_action(
+        &self,
+        project: &str,
+        name: &str,
+        action: &str,
+        timeout: u64,
+        force: bool,
+    ) -> anyhow::Result<()> {
+        self.request_unit(
+            Method::PUT,
+            &format!("/instances/{name}/state"),
+            Some(project),
+            Some(json!({"action":action,"timeout":timeout,"force":force})),
+        )
+        .await
     }
 
     async fn raw_instance(&self, project: &str, name: &str) -> anyhow::Result<Option<Instance>> {
@@ -1015,6 +1053,65 @@ impl IncusBackend for IncusClient {
         Ok(())
     }
 
+    async fn set_power(
+        &self,
+        binding: &ProviderBindingContext,
+        target: &OwnedTarget,
+        power: PowerState,
+    ) -> anyhow::Result<OwnedTarget> {
+        if !SUPPORTED_POWER_STATES.contains(&power) {
+            anyhow::bail!("Incus provider does not support power state {power}")
+        }
+        let project = policy::project_name(binding);
+        let name = target.name.clone();
+        match (target.status, power) {
+            // Already there or already on the way: report the observation.
+            (ProviderTargetStatus::Ready | ProviderTargetStatus::Starting, PowerState::Running)
+            | (ProviderTargetStatus::Paused, PowerState::Paused)
+            | (ProviderTargetStatus::Stopped, PowerState::Stopped) => Ok(target.clone()),
+            (ProviderTargetStatus::Paused, PowerState::Running) => {
+                self.instance_state_action(&project, &name, "unfreeze", 30, false)
+                    .await?;
+                let observed = self.observed_instance(&project, &name).await?;
+                Ok(target_after_accepted_resume(observed))
+            }
+            (ProviderTargetStatus::Stopped, PowerState::Running | PowerState::Paused) => {
+                // A stopped VM cannot be frozen directly; converge through
+                // running and let a later call freeze it.
+                ensure_instance_started(self, &project, &name, target.clone()).await
+            }
+            (ProviderTargetStatus::Ready, PowerState::Paused) => {
+                self.instance_state_action(&project, &name, "freeze", 30, false)
+                    .await?;
+                let observed = self.observed_instance(&project, &name).await?;
+                Ok(target_after_accepted_freeze(observed))
+            }
+            (ProviderTargetStatus::Ready | ProviderTargetStatus::Paused, PowerState::Stopped) => {
+                if target.status == ProviderTargetStatus::Paused {
+                    self.instance_state_action(&project, &name, "unfreeze", 30, false)
+                        .await?;
+                }
+                if let Err(error) = self
+                    .instance_state_action(&project, &name, "stop", 30, false)
+                    .await
+                {
+                    let observed = self.instance(&project, &name).await?;
+                    if !observed
+                        .as_ref()
+                        .is_some_and(|target| target.status == ProviderTargetStatus::Stopped)
+                    {
+                        return Err(error);
+                    }
+                }
+                let observed = self.observed_instance(&project, &name).await?;
+                Ok(target_after_accepted_stop(observed))
+            }
+            // Starting/creating/closing/failed/unknown: nothing safe to do
+            // until the instance settles; the caller re-observes later.
+            (_, _) => Ok(target.clone()),
+        }
+    }
+
     async fn set_ingress(
         &self,
         binding: &ProviderBindingContext,
@@ -1272,6 +1369,13 @@ async fn ensure_instance_started(
     ) {
         return Ok(target);
     }
+    if target.status == ProviderTargetStatus::Paused {
+        client
+            .instance_state_action(project, name, "unfreeze", 30, false)
+            .await?;
+        let observed = client.observed_instance(project, name).await?;
+        return Ok(target_after_accepted_resume(observed));
+    }
     if let Err(error) = client
         .request_unit(
             Method::PUT,
@@ -1311,6 +1415,36 @@ fn status_after_accepted_start(status: ProviderTargetStatus) -> ProviderTargetSt
         ProviderTargetStatus::Stopped => ProviderTargetStatus::Starting,
         status => status,
     }
+}
+
+/// After an accepted unfreeze, a stale `Frozen` read means "resuming", not
+/// "still paused".
+fn target_after_accepted_resume(mut target: OwnedTarget) -> OwnedTarget {
+    if target.status == ProviderTargetStatus::Paused {
+        target.status = ProviderTargetStatus::Starting;
+    }
+    target
+}
+
+/// After an accepted freeze, a stale `Running` read must not make the caller
+/// freeze again; report the requested steady state.
+fn target_after_accepted_freeze(mut target: OwnedTarget) -> OwnedTarget {
+    if target.status == ProviderTargetStatus::Ready {
+        target.status = ProviderTargetStatus::Paused;
+    }
+    target
+}
+
+/// After an accepted stop, a stale `Running`/`Frozen` read is reported as
+/// stopped; a later observation corrects it if the stop did not stick.
+fn target_after_accepted_stop(mut target: OwnedTarget) -> OwnedTarget {
+    if matches!(
+        target.status,
+        ProviderTargetStatus::Ready | ProviderTargetStatus::Paused
+    ) {
+        target.status = ProviderTargetStatus::Stopped;
+    }
+    target
 }
 
 fn verify_adopted_target(target: &OwnedTarget, params: &AdoptTargetParams) -> anyhow::Result<()> {
@@ -1368,6 +1502,8 @@ fn owned_from_instance(instance: Instance, state: InstanceState) -> anyhow::Resu
             "Running" => ProviderTargetStatus::Ready,
             "Starting" => ProviderTargetStatus::Starting,
             "Stopped" => ProviderTargetStatus::Stopped,
+            // Incus reports a frozen container or paused VM as `Frozen`.
+            "Frozen" | "Freezing" => ProviderTargetStatus::Paused,
             "Error" => ProviderTargetStatus::Failed,
             _ => ProviderTargetStatus::Unknown,
         },
@@ -1481,6 +1617,45 @@ mod tests {
             ]),
         };
         assert_eq!(managed_ipv4_address(&state).as_deref(), Some("10.42.0.2"));
+    }
+
+    #[test]
+    fn accepted_power_changes_do_not_report_stale_pre_operation_states() {
+        let target = |status| OwnedTarget {
+            target_id: "t".into(),
+            name: "t".to_owned(),
+            universe_id: "u".to_owned(),
+            binding_id: "b".to_owned(),
+            environment_id: "e".to_owned(),
+            incarnation_id: "i".to_owned(),
+            request_id: "r".to_owned(),
+            template_id: "tpl".to_owned(),
+            image_fingerprint: "img".to_owned(),
+            adoption_source: None,
+            status,
+            ipv4_address: None,
+            ingress_hostname: None,
+            ingress_port: None,
+            location: None,
+        };
+        assert_eq!(
+            target_after_accepted_freeze(target(ProviderTargetStatus::Ready)).status,
+            ProviderTargetStatus::Paused
+        );
+        assert_eq!(
+            target_after_accepted_resume(target(ProviderTargetStatus::Paused)).status,
+            ProviderTargetStatus::Starting
+        );
+        assert_eq!(
+            target_after_accepted_resume(target(ProviderTargetStatus::Ready)).status,
+            ProviderTargetStatus::Ready
+        );
+        assert_eq!(
+            target_after_accepted_stop(target(ProviderTargetStatus::Paused)).status,
+            ProviderTargetStatus::Stopped
+        );
+        assert!(SUPPORTED_POWER_STATES.contains(&PowerState::Paused));
+        assert!(!SUPPORTED_POWER_STATES.contains(&PowerState::Suspended));
     }
 
     #[test]

@@ -215,6 +215,10 @@ pub enum ProfileEnvironment {
         metadata: BTreeMap<String, String>,
         #[serde(default)]
         retention: ProfileEnvironmentRetention,
+        /// Optional staged idle policy for the provisioned environment
+        /// (P126). Stages the provider cannot realize are skipped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        idle_policy: Option<EnvironmentIdlePolicyView>,
     },
 }
 

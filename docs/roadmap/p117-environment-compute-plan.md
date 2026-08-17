@@ -1511,9 +1511,12 @@ umbrella document and have no scheduled implementation plan.
 
 ## Deferred
 
-- Environment stop/start without close.
-- General environment TTL/reaping policy beyond the required P120 relay
-  connection idle timeout.
+- ~~Environment stop/start without close.~~ Done in
+  [P126](p126-environment-power-and-idle-policy.md) (`desiredPower`
+  intent, `controller/setTargetPower`, wake-on-use).
+- ~~General environment TTL/reaping policy beyond the required P120 relay
+  connection idle timeout.~~ Done in P126 (staged `idlePolicy` + power
+  reaper driven by the daemon's `env/idle` report).
 - Operator provider/binding admin UI and provider CRUD API.
 - Node edge-gateway ingress (wildcard DNS, host-terminated TLS, approved-route
   proxying).

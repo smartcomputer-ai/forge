@@ -537,6 +537,23 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/EnvironmentIdlePolicyPutResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfEnvironmentIngressPutResponse": {
       "properties": {
         "notifications": {
@@ -615,6 +632,23 @@
         },
         "result": {
           "$ref": "#/definitions/EnvironmentListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfEnvironmentPowerPutResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/EnvironmentPowerPutResponse"
         }
       },
       "required": [
@@ -3525,6 +3559,17 @@
             "null"
           ]
         },
+        "idlePolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnvironmentIdlePolicyView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional staged idle policy applied by the power reaper."
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -3761,6 +3806,77 @@
       ],
       "type": "object"
     },
+    "EnvironmentIdlePolicyPutParams": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "idlePolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnvironmentIdlePolicyView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The complete new policy; omit to clear it."
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object"
+    },
+    "EnvironmentIdlePolicyPutResponse": {
+      "properties": {
+        "environment": {
+          "$ref": "#/definitions/EnvironmentView"
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "type": "object"
+    },
+    "EnvironmentIdlePolicyView": {
+      "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+      "properties": {
+        "closeAfterMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pauseAfterMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "stopAfterMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "suspendAfterMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "EnvironmentIncarnationView": {
       "properties": {
         "createdAtMs": {
@@ -3769,6 +3885,13 @@
         },
         "incarnationId": {
           "type": "string"
+        },
+        "powerStates": {
+          "description": "Power states the provider reported for this target; empty until\nobserved or when the provider offers no power control.",
+          "items": {
+            "$ref": "#/definitions/EnvironmentPowerStateView"
+          },
+          "type": "array"
         },
         "providerTargetId": {
           "type": [
@@ -3955,17 +4078,35 @@
       "type": "object"
     },
     "EnvironmentLifecycleStatusView": {
-      "enum": [
-        "provisioning",
-        "booting",
-        "ready",
-        "offline",
-        "closing",
-        "closed",
-        "failed",
-        "unknown"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "provisioning",
+            "booting",
+            "ready",
+            "closing",
+            "closed",
+            "failed",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "paused",
+          "description": "Execution frozen (P126); wakes on next use.",
+          "type": "string"
+        },
+        {
+          "const": "suspended",
+          "description": "Execution state saved to disk (P126); wakes on next use.",
+          "type": "string"
+        },
+        {
+          "const": "offline",
+          "description": "Powered off; provisioned environments wake on next use when the\nprovider supports power control.",
+          "type": "string"
+        }
+      ]
     },
     "EnvironmentListParams": {
       "properties": {
@@ -4038,6 +4179,63 @@
         "closeWithSession"
       ],
       "type": "object"
+    },
+    "EnvironmentPowerPutParams": {
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "power": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvironmentPowerStateView"
+            }
+          ],
+          "description": "Desired steady power state. Must be one of the provider-reported\n`incarnation.powerStates`."
+        }
+      },
+      "required": [
+        "environmentId",
+        "power"
+      ],
+      "type": "object"
+    },
+    "EnvironmentPowerPutResponse": {
+      "properties": {
+        "environment": {
+          "$ref": "#/definitions/EnvironmentView"
+        }
+      },
+      "required": [
+        "environment"
+      ],
+      "type": "object"
+    },
+    "EnvironmentPowerStateView": {
+      "description": "Steady power state of a provisioned environment (P126).",
+      "oneOf": [
+        {
+          "enum": [
+            "running"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "paused",
+          "description": "Execution frozen with RAM resident; resume is near-instant.",
+          "type": "string"
+        },
+        {
+          "const": "suspended",
+          "description": "Execution state saved to disk; resume restores it.",
+          "type": "string"
+        },
+        {
+          "const": "stopped",
+          "description": "Powered off with disk retained; resume is a fresh boot.",
+          "type": "string"
+        }
+      ]
     },
     "EnvironmentProviderBindingListParams": {
       "type": "object"
@@ -4288,6 +4486,14 @@
           "format": "int64",
           "type": "integer"
         },
+        "desiredPower": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvironmentPowerStateView"
+            }
+          ],
+          "description": "Lightspeed-owned power intent; `status` is the observed state."
+        },
         "displayName": {
           "type": [
             "string",
@@ -4296,6 +4502,16 @@
         },
         "environmentId": {
           "type": "string"
+        },
+        "idlePolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnvironmentIdlePolicyView"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "incarnation": {
           "$ref": "#/definitions/EnvironmentIncarnationView"
@@ -4345,6 +4561,7 @@
         "requestId",
         "source",
         "status",
+        "desiredPower",
         "incarnation",
         "publicIngressEnabled",
         "createdAtMs",
@@ -6545,6 +6762,17 @@
                 "string",
                 "null"
               ]
+            },
+            "idlePolicy": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentIdlePolicyView"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
             },
             "metadata": {
               "additionalProperties": {

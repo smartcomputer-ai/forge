@@ -60,6 +60,32 @@ before the environment is ready do not fail: the worker reports the call as
 not executed, the session workflow waits in a heartbeated
 `await_environment_ready` activity, and re-dispatches the call.
 
+## Power states and idle policy
+
+A provisioned environment carries a Lightspeed-owned power intent,
+`desiredPower ∈ {running, paused, suspended, stopped}` (default `running`),
+next to its observed lifecycle `status`, which gains `paused` and `suspended`
+beside `offline` (stopped). The lifecycle reconciler converges the provider
+target toward the intent through one provider verb,
+`controller/setTargetPower`; providers report the states each target supports
+(`incarnation.powerStates`) and Lightspeed validates every request against
+that list. Incus offers running/paused/stopped (freeze/unfreeze/stop/start);
+snapshot-based providers may add `suspended`.
+
+Waking is transparent: when a session selects or uses a paused, suspended, or
+stopped provisioned environment whose provider supports power control, the
+resolver records desired `running` and reports the environment as not ready,
+so the same `await_environment_ready` re-dispatch path used for provisioning
+applies. External environments have no power control.
+
+Idle detection is a daemon fact. `lightspeed-envd` keeps a monotonic
+activity clock and answers `env/idle` with the idle duration and the number
+of running processes and jobs. The power reaper polls that report for
+`ready` environments with an `idlePolicy` (`pauseAfterMs`, `suspendAfterMs`,
+`stopAfterMs`, `closeAfterMs`; non-decreasing) and records the most escalated
+due stage the provider supports, never while anything is executing. No
+per-call activity is written to Lightspeed storage.
+
 ## Discovery and selection tools
 
 The environment feature permits active-environment use and always installs
@@ -143,10 +169,12 @@ operations live under universe `environments/credentials/*` APIs.
 
 Universe resource operations are:
 
-- `environments/create`
+- `environments/create` (optionally with `idlePolicy`)
 - `environments/read`
 - `environments/list`
 - `environments/close`
+- `environments/power/put`
+- `environments/idle-policy/put`
 
 Session selection operations are:
 

@@ -2831,12 +2831,15 @@ mod tests {
             },
             display_name: None,
             status: EnvironmentStatus::Offline,
+            desired_power: environments::PowerState::Running,
+            idle_policy: None,
             incarnation: EnvironmentIncarnationRecord {
                 incarnation_id: EnvironmentIncarnationId::new("incarnation-test"),
                 provision_request_id: Some(EnvironmentProvisionRequestId::new("request-test")),
                 provider_target_id: Some(target_id.clone()),
                 template_id: Some(EnvironmentTemplateId::new("test-template")),
                 adoption_source_target: None,
+                power_states: Vec::new(),
                 created_at_ms: 1,
                 updated_at_ms: 1,
             },
@@ -2908,6 +2911,7 @@ mod tests {
                 display_name: None,
                 metadata: BTreeMap::new(),
                 origin_session: None,
+                idle_policy: None,
                 created_at_ms: observed_at_ms.saturating_sub(1),
             })
             .await
@@ -2917,6 +2921,7 @@ mod tests {
                 environment_id,
                 provider_target_id: target_id,
                 status: EnvironmentStatus::Offline,
+                power_states: Vec::new(),
                 observed_at_ms,
             })
             .await
@@ -2994,6 +2999,7 @@ mod tests {
                 display_name: None,
                 metadata: BTreeMap::new(),
                 origin_session: None,
+                idle_policy: None,
                 created_at_ms: 10,
             })
             .await
@@ -3052,6 +3058,7 @@ mod tests {
                 environment_id: EnvironmentId::new("environment-pending"),
                 provider_target_id: ProviderTargetId::new("target-pending"),
                 status: EnvironmentStatus::Ready,
+                power_states: Vec::new(),
                 observed_at_ms: 20,
             })
             .await

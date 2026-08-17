@@ -11,8 +11,9 @@ use environments::{
     EnvironmentRecord, EnvironmentRegistryError, EnvironmentSource, EnvironmentStatus,
     EnvironmentStore, EnvironmentTemplateId, FailEnvironmentLifecycle, FinishCloseEnvironment,
     ListEnvironmentCredentials, ListEnvironmentProviders, ListEnvironments,
-    ObserveProvisionedEnvironment, PutEnvironmentCredential, PutEnvironmentProvider,
-    PutEnvironmentProviderBinding, SessionId, SetEnvironmentIngress,
+    ObserveProvisionedEnvironment, PowerState, PutEnvironmentCredential, PutEnvironmentProvider,
+    PutEnvironmentProviderBinding, SessionId, SetEnvironmentIdlePolicy, SetEnvironmentIngress,
+    SetEnvironmentPower,
 };
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -31,14 +32,26 @@ const BINDING_COLUMNS: &str = r#"
 
 const ENVIRONMENT_COLUMNS: &str = r#"
     e.environment_id, e.request_id, e.source_kind, e.provider_id, e.binding_id, e.daemon_connection_json,
-    e.display_name, e.status, e.public_ingress_enabled, e.public_endpoint, e.metadata_json,
+    e.display_name, e.status, e.desired_power, e.idle_policy_json,
+    e.public_ingress_enabled, e.public_endpoint, e.metadata_json,
     e.origin_session_id, e.origin_profile_id, e.origin_close_with_session,
     e.created_at_ms, e.updated_at_ms,
     i.incarnation_id, i.provision_request_id, i.provider_target_id,
-    i.template_id, i.adoption_source_target,
+    i.template_id, i.adoption_source_target, i.power_states_json,
     i.created_at_ms AS incarnation_created_at_ms,
     i.updated_at_ms AS incarnation_updated_at_ms
 "#;
+
+/// SQL predicate: the observed steady power state differs from the desired
+/// one, so the lifecycle reconciler has power work to do.
+const POWER_DIVERGES_SQL: &str = r#"(
+    e.source_kind = 'provisioned' AND (
+        (e.status = 'ready' AND e.desired_power <> 'running')
+        OR (e.status = 'paused' AND e.desired_power <> 'paused')
+        OR (e.status = 'suspended' AND e.desired_power <> 'suspended')
+        OR (e.status = 'offline' AND e.desired_power <> 'stopped')
+    )
+)"#;
 
 const ENVIRONMENT_JOIN: &str = r#"
     FROM environments e
@@ -331,8 +344,8 @@ impl EnvironmentStore for PgStore {
                 universe_id, environment_id, request_id, source_kind, provider_id, binding_id,
                 display_name, status, current_incarnation_id, metadata_json,
                 origin_session_id, origin_profile_id, origin_close_with_session,
-                created_at_ms, updated_at_ms
-            ) VALUES ($1,$2,$3,'provisioned',$4,$5,$6,'provisioning',$7,$8,$9,$10,$11,$12,$12)
+                idle_policy_json, created_at_ms, updated_at_ms
+            ) VALUES ($1,$2,$3,'provisioned',$4,$5,$6,'provisioning',$7,$8,$9,$10,$11,$12,$13,$13)
         "#,
         )
         .bind(self.config.universe_id)
@@ -363,6 +376,13 @@ impl EnvironmentStore for PgStore {
                 .origin_session
                 .as_ref()
                 .is_some_and(|origin| origin.close_with_session),
+        )
+        .bind(
+            request
+                .idle_policy
+                .as_ref()
+                .map(|policy| json_value("encode idle policy", policy))
+                .transpose()?,
         )
         .bind(request.created_at_ms)
         .execute(&mut *tx)
@@ -509,12 +529,15 @@ impl EnvironmentStore for PgStore {
             },
             display_name: request.display_name.clone(),
             status: EnvironmentStatus::Ready,
+            desired_power: PowerState::Running,
+            idle_policy: None,
             incarnation: EnvironmentIncarnationRecord {
                 incarnation_id: request.incarnation_id.clone(),
                 provision_request_id: None,
                 provider_target_id: None,
                 template_id: None,
                 adoption_source_target: None,
+                power_states: Vec::new(),
                 created_at_ms: request.created_at_ms,
                 updated_at_ms: request.created_at_ms,
             },
@@ -665,7 +688,7 @@ impl EnvironmentStore for PgStore {
         &self,
     ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
         let query = format!(
-            "SELECT {ENVIRONMENT_COLUMNS} {ENVIRONMENT_JOIN} WHERE e.universe_id = $1 AND e.status IN ('provisioning','booting','closing','unknown') ORDER BY e.updated_at_ms, e.environment_id"
+            "SELECT {ENVIRONMENT_COLUMNS} {ENVIRONMENT_JOIN} WHERE e.universe_id = $1 AND (e.status IN ('provisioning','booting','closing','unknown') OR {POWER_DIVERGES_SQL}) ORDER BY e.updated_at_ms, e.environment_id"
         );
         let rows = sqlx::query(&query)
             .bind(self.config.universe_id)
@@ -689,6 +712,20 @@ impl EnvironmentStore for PgStore {
         rows.iter().map(environment_from_row).collect()
     }
 
+    async fn list_environments_with_idle_policy(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
+        let query = format!(
+            "SELECT {ENVIRONMENT_COLUMNS} {ENVIRONMENT_JOIN} WHERE e.universe_id = $1 AND e.status = 'ready' AND e.idle_policy_json IS NOT NULL ORDER BY e.updated_at_ms, e.environment_id"
+        );
+        let rows = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| sql_error("list environments with idle policy", error))?;
+        rows.iter().map(environment_from_row).collect()
+    }
+
     async fn observe_provisioned_environment(
         &self,
         request: ObserveProvisionedEnvironment,
@@ -705,9 +742,11 @@ impl EnvironmentStore for PgStore {
         {
             return invalid("provider target conflicts with current incarnation");
         }
-        sqlx::query("UPDATE environment_incarnations SET provider_target_id=$4, updated_at_ms=$5 WHERE universe_id=$1 AND environment_id=$2 AND incarnation_id=$3")
+        sqlx::query("UPDATE environment_incarnations SET provider_target_id=$4, power_states_json=$5, updated_at_ms=$6 WHERE universe_id=$1 AND environment_id=$2 AND incarnation_id=$3")
             .bind(self.config.universe_id).bind(request.environment_id.as_str()).bind(current.incarnation.incarnation_id.as_str())
-            .bind(request.provider_target_id.as_str()).bind(request.observed_at_ms)
+            .bind(request.provider_target_id.as_str())
+            .bind(json_value("encode power states", &request.power_states)?)
+            .bind(request.observed_at_ms)
             .execute(&self.pool).await.map_err(|error| sql_error("observe environment incarnation", error))?;
         sqlx::query("UPDATE environments SET status=$3, updated_at_ms=$4 WHERE universe_id=$1 AND environment_id=$2")
             .bind(self.config.universe_id).bind(request.environment_id.as_str()).bind(environment_status_to_str(request.status)).bind(request.observed_at_ms)
@@ -793,6 +832,60 @@ impl EnvironmentStore for PgStore {
             .execute(&self.pool).await.map_err(|error| sql_error("set environment ingress", error))?;
         self.read_environment(&request.environment_id).await
     }
+
+    async fn set_environment_power(
+        &self,
+        request: SetEnvironmentPower,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        validate_ingress_request_time(request.updated_at_ms)?;
+        let environment = self.read_environment(&request.environment_id).await?;
+        check_power_mutable(&environment)?;
+        sqlx::query("UPDATE environments SET desired_power=$3, updated_at_ms=GREATEST(updated_at_ms,$4) WHERE universe_id=$1 AND environment_id=$2")
+            .bind(self.config.universe_id)
+            .bind(request.environment_id.as_str())
+            .bind(request.desired_power.as_str())
+            .bind(request.updated_at_ms)
+            .execute(&self.pool).await.map_err(|error| sql_error("set environment power", error))?;
+        self.read_environment(&request.environment_id).await
+    }
+
+    async fn set_environment_idle_policy(
+        &self,
+        request: SetEnvironmentIdlePolicy,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        validate_ingress_request_time(request.updated_at_ms)?;
+        if let Some(policy) = &request.idle_policy {
+            policy.validate()?;
+        }
+        let environment = self.read_environment(&request.environment_id).await?;
+        check_power_mutable(&environment)?;
+        sqlx::query("UPDATE environments SET idle_policy_json=$3, updated_at_ms=GREATEST(updated_at_ms,$4) WHERE universe_id=$1 AND environment_id=$2")
+            .bind(self.config.universe_id)
+            .bind(request.environment_id.as_str())
+            .bind(
+                request
+                    .idle_policy
+                    .as_ref()
+                    .map(|policy| json_value("encode idle policy", policy))
+                    .transpose()?,
+            )
+            .bind(request.updated_at_ms)
+            .execute(&self.pool).await.map_err(|error| sql_error("set environment idle policy", error))?;
+        self.read_environment(&request.environment_id).await
+    }
+}
+
+fn check_power_mutable(record: &EnvironmentRecord) -> Result<(), EnvironmentRegistryError> {
+    if !matches!(record.source, EnvironmentSource::Provisioned { .. }) {
+        return invalid_store("external environments have no power control");
+    }
+    if matches!(
+        record.status,
+        EnvironmentStatus::Closing | EnvironmentStatus::Closed | EnvironmentStatus::Failed
+    ) {
+        return invalid_store("cannot change power of a closing, closed, or failed environment");
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -970,6 +1063,8 @@ fn environment_from_row(
             .try_get("display_name")
             .map_err(|e| sql_error("decode environment display", e))?,
         status: environment_status_from_str(&column(row, "status")?)?,
+        desired_power: power_state_from_str(&column(row, "desired_power")?)?,
+        idle_policy: optional_json_column(row, "idle_policy_json")?,
         incarnation: EnvironmentIncarnationRecord {
             incarnation_id: parse_id(row, "incarnation_id", EnvironmentIncarnationId::try_new)?,
             provision_request_id: optional_id(
@@ -982,6 +1077,7 @@ fn environment_from_row(
             adoption_source_target: row
                 .try_get("adoption_source_target")
                 .map_err(|e| sql_error("decode adoption source target", e))?,
+            power_states: json_column(row, "power_states_json")?,
             created_at_ms: scalar(row, "incarnation_created_at_ms")?,
             updated_at_ms: scalar(row, "incarnation_updated_at_ms")?,
         },
@@ -1096,11 +1192,34 @@ fn binding_status_from_str(
         other => Err(store_message(format!("unknown binding status: {other}"))),
     }
 }
+fn power_state_from_str(value: &str) -> Result<PowerState, EnvironmentRegistryError> {
+    PowerState::ALL
+        .into_iter()
+        .find(|state| state.as_str() == value)
+        .ok_or_else(|| store_message(format!("unknown environment power state: {value}")))
+}
+
+fn optional_json_column<T: serde::de::DeserializeOwned>(
+    row: &sqlx::postgres::PgRow,
+    name: &str,
+) -> Result<Option<T>, EnvironmentRegistryError> {
+    let value: Option<serde_json::Value> = row
+        .try_get(name)
+        .map_err(|e| sql_error("decode json column", e))?;
+    value
+        .map(|value| {
+            serde_json::from_value(value).map_err(|e| store_message(format!("decode {name}: {e}")))
+        })
+        .transpose()
+}
+
 fn environment_status_to_str(value: EnvironmentStatus) -> &'static str {
     match value {
         EnvironmentStatus::Provisioning => "provisioning",
         EnvironmentStatus::Booting => "booting",
         EnvironmentStatus::Ready => "ready",
+        EnvironmentStatus::Paused => "paused",
+        EnvironmentStatus::Suspended => "suspended",
         EnvironmentStatus::Offline => "offline",
         EnvironmentStatus::Closing => "closing",
         EnvironmentStatus::Closed => "closed",
@@ -1113,6 +1232,8 @@ fn environment_status_from_str(value: &str) -> Result<EnvironmentStatus, Environ
         "provisioning" => Ok(EnvironmentStatus::Provisioning),
         "booting" => Ok(EnvironmentStatus::Booting),
         "ready" => Ok(EnvironmentStatus::Ready),
+        "paused" => Ok(EnvironmentStatus::Paused),
+        "suspended" => Ok(EnvironmentStatus::Suspended),
         "offline" => Ok(EnvironmentStatus::Offline),
         "closing" => Ok(EnvironmentStatus::Closing),
         "closed" => Ok(EnvironmentStatus::Closed),

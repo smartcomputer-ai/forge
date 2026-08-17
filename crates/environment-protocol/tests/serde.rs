@@ -5,24 +5,27 @@ use environment_protocol::{
         handshake::ControllerInitializeParams,
         methods::{
             CREATE_TARGET_METHOD, INITIALIZE_METHOD as CONTROL_INITIALIZE_METHOD,
-            LIST_TARGETS_METHOD,
+            LIST_TARGETS_METHOD, SET_TARGET_POWER_METHOD,
         },
         targets::{
-            CreateTargetParams, CreateTargetResponse, ListTargetsResponse, ProviderBindingContext,
-            ProviderTargetStatus, ProviderTargetSummary,
+            CreateTargetParams, CreateTargetResponse, ListTargetsResponse, PowerState,
+            ProviderBindingContext, ProviderTargetStatus, ProviderTargetSummary,
+            SetTargetPowerParams,
         },
     },
     data::{
         fs::ReadFileResponse,
         handshake::InitializeParams,
+        idle::IdleResponse,
         jobs::{
             JobArtifact, JobDependency, JobDependencyPolicy, JobOutputChunk, JobOutputStream,
             JobReadResult, JobStartSpec, JobStatus, JobSummary, ListJobsParams, ReadJobsResponse,
             StartJobsParams,
         },
         methods::{
-            FS_READ_FILE_METHOD, INITIALIZE_METHOD, JOB_CANCEL_METHOD, JOB_LIST_METHOD,
-            JOB_READ_METHOD, JOB_START_METHOD, PROCESS_OUTPUT_METHOD, PROCESS_START_METHOD,
+            ENV_IDLE_METHOD, FS_READ_FILE_METHOD, INITIALIZE_METHOD, JOB_CANCEL_METHOD,
+            JOB_LIST_METHOD, JOB_READ_METHOD, JOB_START_METHOD, PROCESS_OUTPUT_METHOD,
+            PROCESS_START_METHOD,
         },
         process::{
             ProcessOutputChunk, ProcessOutputStream, ReadProcessResponse, StartProcessParams,
@@ -300,8 +303,61 @@ fn ready_target_summary() -> ProviderTargetSummary {
         },
         capabilities: remote_environment_capabilities(),
         default_cwd: Some("/workspace".try_into().expect("cwd")),
+        power_states: Vec::new(),
         metadata: BTreeMap::from([("provider".to_owned(), "smolvm".to_owned())]),
     }
+}
+
+#[test]
+fn power_vocabulary_round_trips_and_maps_steady_states() {
+    assert_eq!(SET_TARGET_POWER_METHOD, "controller/setTargetPower");
+    assert_eq!(ENV_IDLE_METHOD, "env/idle");
+    let params = SetTargetPowerParams {
+        request_id: "power-1".to_owned(),
+        environment_id: "environment-1".to_owned(),
+        incarnation_id: "incarnation-1".to_owned(),
+        binding: ProviderBindingContext {
+            universe_id: "universe-1".to_owned(),
+            binding_id: "binding-1".to_owned(),
+        },
+        target_id: ProviderTargetId::new("sandbox-123"),
+        power: PowerState::Suspended,
+    };
+    assert_round_trip(
+        params,
+        json!({
+            "requestId": "power-1",
+            "environmentId": "environment-1",
+            "incarnationId": "incarnation-1",
+            "binding": {"universeId": "universe-1", "bindingId": "binding-1"},
+            "targetId": "sandbox-123",
+            "power": "suspended"
+        }),
+    );
+    let mut summary = ready_target_summary();
+    summary.status = ProviderTargetStatus::Paused;
+    summary.power_states = vec![PowerState::Running, PowerState::Paused];
+    let encoded = serde_json::to_value(&summary).expect("serialize");
+    assert_eq!(encoded["status"], json!("paused"));
+    assert_eq!(encoded["powerStates"], json!(["running", "paused"]));
+    // A summary from a provider that predates power control decodes with an
+    // empty state list.
+    let legacy: ProviderTargetSummary =
+        serde_json::from_value(serde_json::to_value(ready_target_summary()).unwrap()).unwrap();
+    assert!(legacy.power_states.is_empty());
+    assert_eq!(
+        ProviderTargetStatus::Suspended.power_state(),
+        Some(PowerState::Suspended)
+    );
+    assert_eq!(ProviderTargetStatus::Starting.power_state(), None);
+    assert_round_trip(
+        IdleResponse {
+            idle_for_ms: 1_500,
+            running_processes: 0,
+            running_jobs: 2,
+        },
+        json!({"idleForMs": 1500, "runningProcesses": 0, "runningJobs": 2}),
+    );
 }
 
 fn remote_environment_capabilities() -> EnvironmentCapabilities {

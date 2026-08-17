@@ -151,6 +151,11 @@ impl JobManager {
         })
     }
 
+    /// Jobs currently executing (running or cancelling).
+    pub async fn running_count(&self) -> u32 {
+        u32::try_from(self.state.lock().await.running.len()).unwrap_or(u32::MAX)
+    }
+
     pub async fn start_jobs(
         &self,
         params: StartJobsParams,

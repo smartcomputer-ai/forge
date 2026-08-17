@@ -273,6 +273,20 @@ Release construction, snapshots, and tagged publication are documented in
   re-dispatches the call. Do not put provisioning in `SessionConfig`, on
   `session/start`, or behind a model tool. See
   `docs/roadmap/p125-profile-provisioned-environments.md`.
+- Environment power is intent plus observation (P126). `desiredPower`
+  (`running | paused | suspended | stopped`) is a Lightspeed-owned column that
+  the lifecycle reconciler converges through one provider verb,
+  `controller/setTargetPower`; observed state stays in `status`
+  (`paused`/`suspended`/`offline`). Providers advertise the states they
+  support per target (`powerStates`); Lightspeed validates against that and
+  never stores activity. Idle detection is the daemon's monotonic
+  `env/idle` report read on demand by the power reaper, which applies the
+  environment's staged `idlePolicy` (pause → suspend → stop → close, skipping
+  stages the provider lacks). A powered-down provisioned environment wakes on
+  use: the resolver sets desired `running` and reports `NotReady`, reusing the
+  P125 `await_environment_ready` path. Do not add per-call `lastUsedAt`
+  writes, provider-side policy, or feature-specific pause/resume verbs. See
+  `docs/roadmap/p126-environment-power-and-idle-policy.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

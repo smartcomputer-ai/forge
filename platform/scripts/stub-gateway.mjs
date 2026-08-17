@@ -276,11 +276,14 @@ function ensureDemoEnvironments(universe) {
     source: { type: "provisioned", providerId: STUB_PROVIDER_ID, bindingId: STUB_PROVIDER_ID },
     displayName: "Team dev box",
     status: "ready",
+    desiredPower: "running",
+    idlePolicy: { pauseAfterMs: 900_000, stopAfterMs: 14_400_000 },
     incarnation: {
       incarnationId: "inc-dev-box-1",
       provisionRequestId: "seed-dev-box",
       providerTargetId: "ls-dev-box-a1b2c3",
       templateId: "dev-small-v1",
+      powerStates: STUB_POWER_STATES,
       createdAtMs: now - 86_400_000,
       updatedAtMs: now - 3_600_000,
     },
@@ -299,6 +302,7 @@ function ensureDemoEnvironments(universe) {
     },
     displayName: "Lukas' laptop (envd)",
     status: "ready",
+    desiredPower: "running",
     incarnation: {
       incarnationId: "inc-laptop-1",
       createdAtMs: now - 172_800_000,
@@ -315,11 +319,13 @@ function ensureDemoEnvironments(universe) {
     source: { type: "provisioned", providerId: STUB_PROVIDER_ID, bindingId: STUB_PROVIDER_ID },
     displayName: "Old sandbox",
     status: "closed",
+    desiredPower: "running",
     incarnation: {
       incarnationId: "inc-old-sandbox-1",
       provisionRequestId: "seed-old-sandbox",
       providerTargetId: "ls-old-sandbox-9f8e7d",
       templateId: "dev-small-v0",
+      powerStates: STUB_POWER_STATES,
       createdAtMs: now - 604_800_000,
       updatedAtMs: now - 259_200_000,
     },
@@ -329,6 +335,11 @@ function ensureDemoEnvironments(universe) {
     updatedAtMs: now - 259_200_000,
   });
 }
+
+/// Power states the stub provider advertises (P126); the real Incus provider
+/// reports running/paused/stopped.
+const STUB_POWER_STATES = ["running", "paused", "stopped"];
+const POWER_STATUS = { running: "ready", paused: "paused", suspended: "suspended", stopped: "offline" };
 
 const allEnvironments = (universe) => {
   ensureDemoEnvironments(universe);
@@ -357,6 +368,9 @@ const scheduleTransition = (environment, status, delayMs) => {
     if (status === "booting" && !environment.incarnation.providerTargetId) {
       environment.incarnation.providerTargetId = `ls-${environment.environmentId.slice(-8)}`;
     }
+    if (status === "ready" && environment.source.type === "provisioned") {
+      environment.incarnation.powerStates = STUB_POWER_STATES;
+    }
   }, delayMs);
   timer.unref?.();
   environmentTimers.add(timer);
@@ -379,6 +393,8 @@ const provisionEnvironment = (universe, params, originSession = null) => {
     source: { type: "provisioned", providerId: binding.providerId, bindingId: binding.bindingId },
     ...(params.displayName ? { displayName: params.displayName } : {}),
     status: "provisioning",
+    desiredPower: "running",
+    ...(params.idlePolicy ? { idlePolicy: params.idlePolicy } : {}),
     incarnation: {
       incarnationId: `inc-${environmentId}-1`,
       provisionRequestId: params.requestId,
@@ -551,6 +567,7 @@ const server = http.createServer((req, res) => {
     const ok = (result) => reply({ result: { result } });
     const notFound = () => reply({ error: { code: -32004, message: "not found" } });
     const conflict = (message) => reply({ error: { code: -32009, message } });
+    const invalid = (message) => reply({ error: { code: -32602, message } });
 
     // Operator methods address the deployment: a universe header is a
     // tenant claim that will not be honored — reject it (engine parity).
@@ -977,6 +994,58 @@ const server = http.createServer((req, res) => {
         if (!environment) return notFound();
         return ok({ environment: beginCloseEnvironment(environment) });
       }
+      case "environments/power/put": {
+        const environment = findEnvironment(universe, params.environmentId);
+        if (!environment) return notFound();
+        if (environment.source.type !== "provisioned") {
+          return conflict("external environments have no power control");
+        }
+        if (["closing", "closed", "failed"].includes(environment.status)) {
+          return invalid("cannot change power of a closing, closed, or failed environment");
+        }
+        const supported = environment.incarnation.powerStates ?? [];
+        if (params.power !== "running" && !supported.includes(params.power)) {
+          return conflict(`environment power state ${params.power} is not supported by the provider`);
+        }
+        environment.desiredPower = params.power;
+        environment.updatedAtMs = Date.now();
+        // The reconciler converges asynchronously; simulate it. Waking goes
+        // through booting like a real resume.
+        if (POWER_STATUS[params.power] !== environment.status) {
+          if (params.power === "running") {
+            scheduleTransition(environment, "booting", 800);
+            scheduleTransition(environment, "ready", 2_500);
+          } else {
+            scheduleTransition(environment, POWER_STATUS[params.power], 1_200);
+          }
+        }
+        return ok({ environment });
+      }
+      case "environments/idle-policy/put": {
+        const environment = findEnvironment(universe, params.environmentId);
+        if (!environment) return notFound();
+        if (environment.source.type !== "provisioned") {
+          return invalid("external environments have no power control");
+        }
+        if (params.idlePolicy) {
+          const stages = ["pauseAfterMs", "suspendAfterMs", "stopAfterMs", "closeAfterMs"]
+            .map((key) => [key, params.idlePolicy[key]])
+            .filter(([, value]) => value !== undefined && value !== null);
+          if (stages.length === 0) return invalid("idle policy must set at least one stage");
+          for (let index = 0; index < stages.length; index += 1) {
+            const [key, value] = stages[index];
+            if (!(value > 0)) return invalid(`idle policy ${key} must be positive`);
+            if (index > 0 && value < stages[index - 1][1]) {
+              return invalid(`idle policy ${key} must not be below ${stages[index - 1][0]}`);
+            }
+          }
+          environment.idlePolicy = params.idlePolicy;
+        } else {
+          delete environment.idlePolicy;
+        }
+        environment.updatedAtMs = Date.now();
+        return ok({ environment });
+      }
       case "environments/ingress/put": {
         const environment = findEnvironment(universe, params.environmentId);
         if (!environment) return notFound();
@@ -1290,6 +1359,17 @@ const server = http.createServer((req, res) => {
         // P125: provisioning/booting are valid intent; failed/closing/closed are not.
         if (["failed", "closing", "closed"].includes(environment.status)) {
           return conflict(`environment is ${environment.status}: ${environment.environmentId}`);
+        }
+        // P126: selecting a powered-down environment wakes it.
+        if (
+          ["paused", "suspended", "offline"].includes(environment.status) &&
+          environment.source.type === "provisioned" &&
+          (environment.incarnation.powerStates ?? []).includes("running")
+        ) {
+          environment.desiredPower = "running";
+          environment.updatedAtMs = Date.now();
+          scheduleTransition(environment, "booting", 800);
+          scheduleTransition(environment, "ready", 2_500);
         }
         s.summary.activeEnvironmentId = params.environmentId;
         return ok({ session: s.summary });

@@ -21,8 +21,63 @@ enum EnvCommand {
     Deactivate(SessionArgs),
     /// Close one universe environment.
     Close(EnvironmentResourceArgs),
+    /// Set the desired power state (running, paused, suspended, stopped) of
+    /// a provisioned environment; the runtime converges it asynchronously and
+    /// a powered-down environment wakes on its next use.
+    Power(PowerArgs),
+    /// Replace or clear the staged idle policy of a provisioned environment.
+    IdlePolicy(IdlePolicyArgs),
     /// Bind, list, or unbind universe environment credentials.
     Credentials(CredentialArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct PowerArgs {
+    #[command(flatten)]
+    common: EnvironmentResourceArgs,
+    /// One of: running, paused, suspended, stopped.
+    #[arg(value_enum)]
+    power: PowerArg,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+enum PowerArg {
+    Running,
+    Paused,
+    Suspended,
+    Stopped,
+}
+
+impl From<PowerArg> for api::EnvironmentPowerStateView {
+    fn from(value: PowerArg) -> Self {
+        match value {
+            PowerArg::Running => Self::Running,
+            PowerArg::Paused => Self::Paused,
+            PowerArg::Suspended => Self::Suspended,
+            PowerArg::Stopped => Self::Stopped,
+        }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+struct IdlePolicyArgs {
+    #[command(flatten)]
+    common: EnvironmentResourceArgs,
+    /// Pause after this many minutes idle.
+    #[arg(long = "pause-after-min")]
+    pause_after_min: Option<u64>,
+    /// Suspend after this many minutes idle (providers that support it).
+    #[arg(long = "suspend-after-min")]
+    suspend_after_min: Option<u64>,
+    /// Stop after this many minutes idle.
+    #[arg(long = "stop-after-min")]
+    stop_after_min: Option<u64>,
+    /// Close after this many minutes idle.
+    #[arg(long = "close-after-min")]
+    close_after_min: Option<u64>,
+    /// Remove the idle policy entirely.
+    #[arg(long, conflicts_with_all = ["pause_after_min", "suspend_after_min", "stop_after_min", "close_after_min"])]
+    clear: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -110,8 +165,71 @@ pub(crate) async fn handle(args: EnvArgs) -> Result<()> {
         EnvCommand::Activate(args) => activate(args).await,
         EnvCommand::Deactivate(args) => deactivate(args).await,
         EnvCommand::Close(args) => close(args).await,
+        EnvCommand::Power(args) => power(args).await,
+        EnvCommand::IdlePolicy(args) => idle_policy(args).await,
         EnvCommand::Credentials(args) => credentials(args).await,
     }
+}
+
+async fn power(args: PowerArgs) -> Result<()> {
+    let response = HttpAgentApi::new(args.common.api_url)
+        .put_environment_power(api::EnvironmentPowerPutParams {
+            environment_id: args.common.environment_id,
+            power: args.power.into(),
+        })
+        .await
+        .map_err(crate::api_client::api_error)?
+        .result;
+    print_json_or(args.common.json, &response, || {
+        println!(
+            "{} desired {:?} (observed {:?})",
+            response.environment.environment_id,
+            response.environment.desired_power,
+            response.environment.status
+        )
+    })
+}
+
+async fn idle_policy(args: IdlePolicyArgs) -> Result<()> {
+    let minutes = |value: Option<u64>| value.map(|minutes| minutes.saturating_mul(60_000));
+    let idle_policy = if args.clear {
+        None
+    } else {
+        let policy = api::EnvironmentIdlePolicyView {
+            pause_after_ms: minutes(args.pause_after_min),
+            suspend_after_ms: minutes(args.suspend_after_min),
+            stop_after_ms: minutes(args.stop_after_min),
+            close_after_ms: minutes(args.close_after_min),
+        };
+        if policy == api::EnvironmentIdlePolicyView::default() {
+            anyhow::bail!("set at least one --*-after-min stage or pass --clear");
+        }
+        Some(policy)
+    };
+    let response = HttpAgentApi::new(args.common.api_url)
+        .put_environment_idle_policy(api::EnvironmentIdlePolicyPutParams {
+            environment_id: args.common.environment_id,
+            idle_policy,
+        })
+        .await
+        .map_err(crate::api_client::api_error)?
+        .result;
+    print_json_or(args.common.json, &response, || {
+        match &response.environment.idle_policy {
+            Some(policy) => println!(
+                "{} idle policy pause={:?} suspend={:?} stop={:?} close={:?} (ms)",
+                response.environment.environment_id,
+                policy.pause_after_ms,
+                policy.suspend_after_ms,
+                policy.stop_after_ms,
+                policy.close_after_ms
+            ),
+            None => println!(
+                "{} idle policy cleared",
+                response.environment.environment_id
+            ),
+        }
+    })
 }
 
 async fn list(args: ResourceArgs) -> Result<()> {

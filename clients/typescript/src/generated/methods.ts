@@ -36,6 +36,8 @@ export const METHODS = [
   "environments/close",
   "environments/external/create",
   "environments/ingress/put",
+  "environments/power/put",
+  "environments/idle-policy/put",
   "environments/provider-bindings/list",
   "environments/provider-bindings/read",
   "environments/templates/list",
@@ -250,6 +252,16 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Configure environment public ingress",
     description: "Synchronously enables or disables one provider-authorized HTTPS endpoint for a provisioned environment. The provider owns hostname allocation, the approved guest port, routing, TLS, and health.",
+  },
+  "environments/power/put": {
+    scope: "universe",
+    summary: "Set environment power intent",
+    description: "Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.",
+  },
+  "environments/idle-policy/put": {
+    scope: "universe",
+    summary: "Set environment idle policy",
+    description: "Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.",
   },
   "environments/provider-bindings/list": {
     scope: "universe",
@@ -829,6 +841,24 @@ export interface MethodMap {
   "environments/ingress/put": {
     params: Api.EnvironmentIngressPutParams;
     result: Api.AgentApiOutcomeOfEnvironmentIngressPutResponse;
+  };
+  /**
+   * Set environment power intent
+   *
+   * Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.
+   */
+  "environments/power/put": {
+    params: Api.EnvironmentPowerPutParams;
+    result: Api.AgentApiOutcomeOfEnvironmentPowerPutResponse;
+  };
+  /**
+   * Set environment idle policy
+   *
+   * Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.
+   */
+  "environments/idle-policy/put": {
+    params: Api.EnvironmentIdlePolicyPutParams;
+    result: Api.AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse;
   };
   /**
    * List environment provider bindings
@@ -1600,6 +1630,22 @@ export const rpc = {
    */
   environmentsIngressPut(client: RpcCaller, params: Api.EnvironmentIngressPutParams): Promise<Api.AgentApiOutcomeOfEnvironmentIngressPutResponse> {
     return client.call("environments/ingress/put", params);
+  },
+  /**
+   * Set environment power intent
+   *
+   * Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.
+   */
+  environmentsPowerPut(client: RpcCaller, params: Api.EnvironmentPowerPutParams): Promise<Api.AgentApiOutcomeOfEnvironmentPowerPutResponse> {
+    return client.call("environments/power/put", params);
+  },
+  /**
+   * Set environment idle policy
+   *
+   * Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.
+   */
+  environmentsIdlePolicyPut(client: RpcCaller, params: Api.EnvironmentIdlePolicyPutParams): Promise<Api.AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse> {
+    return client.call("environments/idle-policy/put", params);
   },
   /**
    * List environment provider bindings

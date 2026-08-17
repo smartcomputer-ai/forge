@@ -559,6 +559,42 @@
       "summary": "Configure environment public ingress"
     },
     {
+      "description": "Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.",
+      "method": "environments/power/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentPowerPutParams"
+        },
+        "type": "EnvironmentPowerPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentPowerPutResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentPowerPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Set environment power intent"
+    },
+    {
+      "description": "Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.",
+      "method": "environments/idle-policy/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentIdlePolicyPutParams"
+        },
+        "type": "EnvironmentIdlePolicyPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentIdlePolicyPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Set environment idle policy"
+    },
+    {
       "description": "Lists this universe's revisioned routing and admission bindings to deployment-scoped physical providers.",
       "method": "environments/provider-bindings/list",
       "params": {

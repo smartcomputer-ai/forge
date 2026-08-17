@@ -1,6 +1,7 @@
 use super::environment_providers::{
     binding_context, environment_view, map_environments_error,
-    parse_environment_provider_binding_id, registry_lifecycle_status,
+    parse_environment_provider_binding_id, registry_idle_policy, registry_lifecycle_status,
+    registry_power_state,
 };
 use super::*;
 
@@ -9,14 +10,34 @@ use ::environments::{
     EnvironmentIncarnationId, EnvironmentProviderBindingStore, EnvironmentProvisionRequestId,
     EnvironmentRecord, EnvironmentSource, EnvironmentStatus, EnvironmentStore,
     EnvironmentTemplateId, FailEnvironmentLifecycle, FinishCloseEnvironment, ListEnvironments,
-    ObserveProvisionedEnvironment,
+    ObserveProvisionedEnvironment, PowerState, SetEnvironmentIdlePolicy, SetEnvironmentPower,
 };
 use environment_protocol::control::ingress::{
     EnsureIngressParams, ProviderIngressStatus, RemoveIngressParams,
 };
 use environment_protocol::control::targets::{
     AdoptTargetParams, CloseTargetParams, CreateTargetParams, ProviderTargetStatus,
+    ProviderTargetSummary, SetTargetPowerParams,
 };
+
+/// Map a provider target observation to the logical lifecycle status. A
+/// passive provider reports Ready only after its private envd is reachable;
+/// no provider presence has to register separately.
+pub(super) fn lifecycle_status_from_target(status: ProviderTargetStatus) -> EnvironmentStatus {
+    match status {
+        ProviderTargetStatus::Ready => EnvironmentStatus::Ready,
+        ProviderTargetStatus::Creating | ProviderTargetStatus::Starting => {
+            EnvironmentStatus::Booting
+        }
+        ProviderTargetStatus::Paused => EnvironmentStatus::Paused,
+        ProviderTargetStatus::Suspended => EnvironmentStatus::Suspended,
+        ProviderTargetStatus::Stopped => EnvironmentStatus::Offline,
+        ProviderTargetStatus::Closing => EnvironmentStatus::Closing,
+        ProviderTargetStatus::Closed => EnvironmentStatus::Closed,
+        ProviderTargetStatus::Failed => EnvironmentStatus::Failed,
+        ProviderTargetStatus::Unknown => EnvironmentStatus::Unknown,
+    }
+}
 
 impl GatewayAgentApi {
     pub(super) async fn put_environment_ingress_record(
@@ -29,10 +50,13 @@ impl GatewayAgentApi {
             .map_err(map_environments_error)?;
         if !matches!(
             environment.status,
-            EnvironmentStatus::Ready | EnvironmentStatus::Offline
+            EnvironmentStatus::Ready
+                | EnvironmentStatus::Offline
+                | EnvironmentStatus::Paused
+                | EnvironmentStatus::Suspended
         ) {
             return Err(AgentApiError::rejected(
-                "public ingress requires a ready or offline environment",
+                "public ingress requires a ready or powered-down environment",
             ));
         }
         let EnvironmentSource::Provisioned {
@@ -167,6 +191,10 @@ impl GatewayAgentApi {
         let template_id = EnvironmentTemplateId::try_new(params.template_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid environment template id: {error}"))
         })?;
+        let idle_policy = params.idle_policy.as_ref().map(registry_idle_policy);
+        if let Some(policy) = &idle_policy {
+            policy.validate().map_err(map_environments_error)?;
+        }
         EnvironmentStore::create_environment(
             self.store.as_ref(),
             CreateEnvironment {
@@ -178,11 +206,95 @@ impl GatewayAgentApi {
                 display_name: params.display_name,
                 metadata: params.metadata,
                 origin_session,
+                idle_policy,
                 created_at_ms: now_ms()?,
             },
         )
         .await
         .map_err(map_environments_error)
+    }
+
+    /// `environments/power/put`: record power intent. Provider support is
+    /// checked against the states observed on the current incarnation; the
+    /// reconciler converges asynchronously.
+    pub(super) async fn put_environment_power_record(
+        &self,
+        params: EnvironmentPowerPutParams,
+    ) -> Result<EnvironmentPowerPutResponse, AgentApiError> {
+        let environment_id = parse_registry_environment_id(params.environment_id)?;
+        let desired_power = registry_power_state(params.power);
+        let environment = EnvironmentStore::read_environment(self.store.as_ref(), &environment_id)
+            .await
+            .map_err(map_environments_error)?;
+        if !matches!(environment.source, EnvironmentSource::Provisioned { .. }) {
+            return Err(AgentApiError::rejected(
+                "external environments have no power control",
+            ));
+        }
+        if desired_power != PowerState::Running
+            && !environment
+                .incarnation
+                .power_states
+                .contains(&desired_power)
+        {
+            return Err(AgentApiError::rejected(
+                if environment.incarnation.power_states.is_empty() {
+                    format!(
+                        "environment power state {desired_power} is unavailable: the provider has not reported power support for this environment yet"
+                    )
+                } else {
+                    format!(
+                        "environment power state {desired_power} is not supported by the provider (supported: {})",
+                        environment
+                            .incarnation
+                            .power_states
+                            .iter()
+                            .map(|state| state.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+            ));
+        }
+        let environment = EnvironmentStore::set_environment_power(
+            self.store.as_ref(),
+            SetEnvironmentPower {
+                environment_id,
+                desired_power,
+                updated_at_ms: now_ms()?,
+            },
+        )
+        .await
+        .map_err(map_environments_error)?;
+        Ok(EnvironmentPowerPutResponse {
+            environment: environment_view(&environment),
+        })
+    }
+
+    /// `environments/idle-policy/put`: replace or clear the staged idle
+    /// policy of a provisioned environment.
+    pub(super) async fn put_environment_idle_policy_record(
+        &self,
+        params: EnvironmentIdlePolicyPutParams,
+    ) -> Result<EnvironmentIdlePolicyPutResponse, AgentApiError> {
+        let environment_id = parse_registry_environment_id(params.environment_id)?;
+        let idle_policy = params.idle_policy.as_ref().map(registry_idle_policy);
+        if let Some(policy) = &idle_policy {
+            policy.validate().map_err(map_environments_error)?;
+        }
+        let environment = EnvironmentStore::set_environment_idle_policy(
+            self.store.as_ref(),
+            SetEnvironmentIdlePolicy {
+                environment_id,
+                idle_policy,
+                updated_at_ms: now_ms()?,
+            },
+        )
+        .await
+        .map_err(map_environments_error)?;
+        Ok(EnvironmentIdlePolicyPutResponse {
+            environment: environment_view(&environment),
+        })
     }
 
     pub(super) async fn read_environment_record(
@@ -363,6 +475,14 @@ impl GatewayAgentApi {
         for environment in environments {
             let outcome = match environment.status {
                 EnvironmentStatus::Closing => self.reconcile_environment_close(&environment).await,
+                EnvironmentStatus::Ready
+                | EnvironmentStatus::Paused
+                | EnvironmentStatus::Suspended
+                | EnvironmentStatus::Offline
+                    if environment.power_diverges() =>
+                {
+                    self.reconcile_environment_power(&environment).await
+                }
                 EnvironmentStatus::Provisioning
                 | EnvironmentStatus::Booting
                 | EnvironmentStatus::Unknown => {
@@ -463,21 +583,20 @@ impl GatewayAgentApi {
                 ));
             }
         };
-        let status = match target.status {
-            // A passive provider reports Ready only after its private envd is
-            // reachable. No provider presence has to register separately.
-            ProviderTargetStatus::Ready => EnvironmentStatus::Ready,
-            ProviderTargetStatus::Creating | ProviderTargetStatus::Starting => {
-                EnvironmentStatus::Booting
-            }
-            ProviderTargetStatus::Stopped => EnvironmentStatus::Offline,
-            ProviderTargetStatus::Closing => EnvironmentStatus::Closing,
-            ProviderTargetStatus::Closed => EnvironmentStatus::Closed,
-            ProviderTargetStatus::Failed => EnvironmentStatus::Failed,
-            ProviderTargetStatus::Unknown => EnvironmentStatus::Unknown,
-        };
+        self.record_target_observation(environment, target).await
+    }
+
+    /// Persist a provider observation when it changes the record: status,
+    /// target id, or the provider-reported power states.
+    async fn record_target_observation(
+        &self,
+        environment: &::environments::EnvironmentRecord,
+        target: ProviderTargetSummary,
+    ) -> Result<bool, AgentApiError> {
+        let status = lifecycle_status_from_target(target.status);
         let changed = environment.status != status
-            || environment.incarnation.provider_target_id.as_ref() != Some(&target.target_id);
+            || environment.incarnation.provider_target_id.as_ref() != Some(&target.target_id)
+            || environment.incarnation.power_states != target.power_states;
         if changed {
             EnvironmentStore::observe_provisioned_environment(
                 self.store.as_ref(),
@@ -485,6 +604,7 @@ impl GatewayAgentApi {
                     environment_id: environment.environment_id.clone(),
                     provider_target_id: target.target_id,
                     status,
+                    power_states: target.power_states,
                     observed_at_ms: now_ms()?,
                 },
             )
@@ -492,6 +612,53 @@ impl GatewayAgentApi {
             .map_err(map_environments_error)?;
         }
         Ok(changed)
+    }
+
+    /// Converge a steady-state provisioned environment toward its desired
+    /// power (P126). One idempotent `setTargetPower` per pass; the observed
+    /// summary is recorded like any other observation, so a transitional
+    /// answer (`Starting`) flows back through the create/observe path.
+    async fn reconcile_environment_power(
+        &self,
+        environment: &::environments::EnvironmentRecord,
+    ) -> Result<bool, AgentApiError> {
+        let EnvironmentSource::Provisioned {
+            provider_id,
+            binding_id,
+        } = &environment.source
+        else {
+            return Ok(false);
+        };
+        let Some(target_id) = environment.incarnation.provider_target_id.clone() else {
+            return Ok(false);
+        };
+        let provider = self.read_environment_provider(provider_id).await?;
+        let binding = EnvironmentProviderBindingStore::read_provider_binding(
+            self.store.as_ref(),
+            self.store.config().universe_id,
+            binding_id,
+        )
+        .await
+        .map_err(map_environments_error)?;
+        let mut controller = self
+            .provider_controller_connector
+            .connect(&provider.controller_connection)
+            .await?;
+        let response = controller
+            .set_target_power(&SetTargetPowerParams {
+                request_id: format!(
+                    "power:{}:{}",
+                    environment.request_id, environment.desired_power
+                ),
+                environment_id: environment.environment_id.to_string(),
+                incarnation_id: environment.incarnation.incarnation_id.to_string(),
+                binding: binding_context(&binding),
+                target_id,
+                power: environment.desired_power,
+            })
+            .await?;
+        self.record_target_observation(environment, response.target)
+            .await
     }
 
     async fn reconcile_environment_close(

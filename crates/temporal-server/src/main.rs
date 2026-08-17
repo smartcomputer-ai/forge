@@ -396,6 +396,7 @@ async fn run_both(args: BothArgs) -> anyhow::Result<()> {
     )?);
     prewarm_single_universe(&mode, &universes).await?;
     let environment_reconciler = tokio::spawn(universes.clone().run_environment_reconciler());
+    let power_reaper = tokio::spawn(universes.clone().run_power_reaper());
     let activities = WorkerActivities::with_runtime(universes.clone());
     let mut temporal_worker =
         worker::worker_with_activities(&runtime, client.clone(), task_queue.clone(), activities)?;
@@ -428,6 +429,7 @@ async fn run_both(args: BothArgs) -> anyhow::Result<()> {
         worker_result = worker_future.as_mut() => {
             reaper_task.abort();
             environment_reconciler.abort();
+            power_reaper.abort();
             match worker_result {
                 Ok(()) => anyhow::bail!("Temporal worker stopped while gateway was still running"),
                 Err(error) => Err(error.context("Temporal worker failed")),
@@ -436,6 +438,7 @@ async fn run_both(args: BothArgs) -> anyhow::Result<()> {
         gateway_result = gateway_future.as_mut() => {
             reaper_task.abort();
             environment_reconciler.abort();
+            power_reaper.abort();
             shutdown_worker();
             tokio::time::timeout(Duration::from_secs(10), worker_future.as_mut())
                 .await

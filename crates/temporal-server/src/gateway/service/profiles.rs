@@ -162,6 +162,7 @@ impl GatewayAgentApi {
                 display_name,
                 metadata,
                 retention,
+                idle_policy,
             }) => {
                 let (environment, provisioned) = self
                     .ensure_profile_provisioned_environment(
@@ -172,6 +173,7 @@ impl GatewayAgentApi {
                         display_name.clone(),
                         metadata.clone(),
                         *retention,
+                        idle_policy.clone(),
                     )
                     .await?;
                 applied.environment_provisioned = provisioned;
@@ -382,6 +384,7 @@ impl GatewayAgentApi {
         display_name: Option<String>,
         metadata: BTreeMap<String, String>,
         retention: api::ProfileEnvironmentRetention,
+        idle_policy: Option<api::EnvironmentIdlePolicyView>,
     ) -> Result<(::environments::EnvironmentRecord, bool), AgentApiError> {
         let request_id = ::environments::EnvironmentProvisionRequestId::for_session(session_id);
         let existing = match EnvironmentStore::read_environment_by_request_id(
@@ -422,6 +425,7 @@ impl GatewayAgentApi {
                     template_id: template_id.to_owned(),
                     display_name,
                     metadata,
+                    idle_policy,
                 },
                 Some(::environments::EnvironmentOriginSession {
                     session_id: session_id.clone(),

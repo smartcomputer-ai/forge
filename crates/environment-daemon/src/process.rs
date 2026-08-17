@@ -88,6 +88,19 @@ impl ProcessManager {
         }
     }
 
+    /// Processes started here that have not exited yet.
+    pub async fn running_count(&self) -> u32 {
+        let entries: Vec<Arc<ProcessEntry>> =
+            self.processes.lock().await.values().cloned().collect();
+        let mut running = 0u32;
+        for entry in entries {
+            if !entry.state.lock().await.exited {
+                running += 1;
+            }
+        }
+        running
+    }
+
     pub async fn start_process(
         &self,
         params: StartProcessParams,

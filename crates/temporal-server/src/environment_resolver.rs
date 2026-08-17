@@ -6,7 +6,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use environments::{
     EnvironmentId, EnvironmentProviderStore, EnvironmentRecord, EnvironmentRegistryError,
-    EnvironmentStatus, EnvironmentStore, ListEnvironments,
+    EnvironmentSource, EnvironmentStatus, EnvironmentStore, ListEnvironments, PowerState,
+    SetEnvironmentPower,
 };
 use store_pg::PgStore;
 use thiserror::Error;
@@ -115,13 +116,15 @@ impl EnvironmentResolver {
     /// Status-aware selection admission. `provisioning`/`booting`
     /// environments are admitted as intent without a route probe (they cannot
     /// be reachable yet) and reported as `NotReady`; `failed`, `closing`, and
-    /// `closed` are rejected with typed errors; everything else must prove the
-    /// full data-plane route.
+    /// `closed` are rejected with typed errors; a powered-down provisioned
+    /// environment whose provider supports power control is woken (desired
+    /// power set to `running`) and reported as `NotReady` (P126); everything
+    /// else must prove the full data-plane route.
     pub(crate) async fn selectable(
         &self,
         environment_id: &EnvironmentId,
         allowed_providers: Option<&BTreeSet<String>>,
-        _now_ms: i64,
+        now_ms: i64,
     ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
         let environment = self.read_allowed(environment_id, allowed_providers).await?;
         if let Some(provider_id) = environment.provider_id() {
@@ -129,6 +132,25 @@ impl EnvironmentResolver {
         }
         match environment.status {
             EnvironmentStatus::Provisioning | EnvironmentStatus::Booting => {
+                return Err(EnvironmentResolveError::NotReady {
+                    environment_id: environment.environment_id.as_str().to_owned(),
+                    status: environment.status,
+                });
+            }
+            EnvironmentStatus::Paused
+            | EnvironmentStatus::Suspended
+            | EnvironmentStatus::Offline
+                if wake_on_use_applies(&environment) =>
+            {
+                if environment.desired_power != PowerState::Running {
+                    self.environments
+                        .set_environment_power(SetEnvironmentPower {
+                            environment_id: environment.environment_id.clone(),
+                            desired_power: PowerState::Running,
+                            updated_at_ms: now_ms.max(0),
+                        })
+                        .await?;
+                }
                 return Err(EnvironmentResolveError::NotReady {
                     environment_id: environment.environment_id.as_str().to_owned(),
                     status: environment.status,
@@ -149,7 +171,11 @@ impl EnvironmentResolver {
                     environment_id: environment.environment_id.as_str().to_owned(),
                 });
             }
-            EnvironmentStatus::Ready | EnvironmentStatus::Offline | EnvironmentStatus::Unknown => {}
+            EnvironmentStatus::Ready
+            | EnvironmentStatus::Paused
+            | EnvironmentStatus::Suspended
+            | EnvironmentStatus::Offline
+            | EnvironmentStatus::Unknown => {}
         }
         if let Some(gateway) = &self.gateway {
             let connection = gateway.connection_for(self.universe_id, &environment);
@@ -206,6 +232,18 @@ pub(crate) enum EnvironmentResolveError {
 /// failure message on a `failed` environment.
 pub(crate) const LIFECYCLE_ERROR_METADATA_KEY: &str = "lifecycleError";
 
+/// A powered-down provisioned environment wakes on use when its provider
+/// reported that it can be moved back to `running`. External environments and
+/// providers without power control keep the reachability probe.
+pub(crate) fn wake_on_use_applies(environment: &EnvironmentRecord) -> bool {
+    matches!(environment.source, EnvironmentSource::Provisioned { .. })
+        && environment.status.is_powered_down()
+        && environment
+            .incarnation
+            .power_states
+            .contains(&PowerState::Running)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -261,6 +299,7 @@ mod tests {
                 display_name: None,
                 metadata: BTreeMap::new(),
                 origin_session: None,
+                idle_policy: None,
                 created_at_ms: 10,
             })
             .await
@@ -270,6 +309,7 @@ mod tests {
                 environment_id: environment_id.clone(),
                 provider_target_id: target_id.clone(),
                 status: EnvironmentStatus::Offline,
+                power_states: Vec::new(),
                 observed_at_ms: 10,
             })
             .await
@@ -314,6 +354,91 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn powered_down_environment_with_power_control_wakes_on_use() {
+        let (resolver, environment_id) = resolver().await;
+        let store = resolver.environments.clone();
+        let observe = |status: EnvironmentStatus, at: i64| {
+            let store = store.clone();
+            let environment_id = environment_id.clone();
+            async move {
+                store
+                    .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                        environment_id,
+                        provider_target_id: ProviderTargetId::new("target-1"),
+                        status,
+                        power_states: vec![PowerState::Running, PowerState::Paused],
+                        observed_at_ms: at,
+                    })
+                    .await
+                    .expect("observe");
+            }
+        };
+        observe(EnvironmentStatus::Ready, 20).await;
+        store
+            .set_environment_power(SetEnvironmentPower {
+                environment_id: environment_id.clone(),
+                desired_power: PowerState::Paused,
+                updated_at_ms: 21,
+            })
+            .await
+            .expect("pause intent");
+        observe(EnvironmentStatus::Paused, 22).await;
+
+        // Selecting a paused environment requests a wake and reports it as
+        // not ready instead of probing an unreachable daemon.
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 30).await,
+            Err(EnvironmentResolveError::NotReady {
+                status: EnvironmentStatus::Paused,
+                ..
+            })
+        ));
+        let woken = store.read_environment(&environment_id).await.expect("read");
+        assert_eq!(woken.desired_power, PowerState::Running);
+        assert!(woken.power_diverges());
+        // Activation admits it as intent.
+        let (record, ready) = resolver
+            .activatable(&environment_id, None, 31)
+            .await
+            .expect("activation admits a paused environment");
+        assert!(!ready);
+        assert_eq!(record.status, EnvironmentStatus::Paused);
+
+        // Once the provider observed it running again the ordinary probe
+        // path applies (no gateway here → unavailable, not NotReady).
+        observe(EnvironmentStatus::Ready, 40).await;
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 50).await,
+            Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
+        ));
+
+        // A stopped environment whose provider offers no power control keeps
+        // the old behaviour: no wake, plain unavailability.
+        store
+            .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                environment_id: environment_id.clone(),
+                provider_target_id: ProviderTargetId::new("target-1"),
+                status: EnvironmentStatus::Offline,
+                power_states: Vec::new(),
+                observed_at_ms: 60,
+            })
+            .await
+            .expect("observe offline without power control");
+        assert!(matches!(
+            resolver.selectable(&environment_id, None, 70).await,
+            Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
+        ));
+        assert_eq!(
+            store
+                .read_environment(&environment_id)
+                .await
+                .expect("read")
+                .desired_power,
+            PowerState::Running
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn selection_is_status_aware() {
         let (resolver, environment_id) = resolver().await;
         let store = resolver.environments.clone();
@@ -326,6 +451,7 @@ mod tests {
                         environment_id,
                         provider_target_id: ProviderTargetId::new("target-1"),
                         status,
+                        power_states: Vec::new(),
                         observed_at_ms: 20,
                     })
                     .await

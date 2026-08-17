@@ -26,3 +26,5 @@ pub const JOB_START_METHOD: &str = "job/start";
 pub const JOB_LIST_METHOD: &str = "job/list";
 pub const JOB_READ_METHOD: &str = "job/read";
 pub const JOB_CANCEL_METHOD: &str = "job/cancel";
+
+pub const ENV_IDLE_METHOD: &str = "env/idle";

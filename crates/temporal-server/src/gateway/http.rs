@@ -407,12 +407,26 @@ pub async fn serve_gateway_with_client_store(
             }
         }
     });
+    let power_api = api.clone();
+    let power_reaper = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(crate::universe::POWER_REAPER_INTERVAL);
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        let universe_id = power_api.universe_id();
+        loop {
+            interval.tick().await;
+            match power_api.reconcile_idle_power_once().await {
+                Ok(_) => failures.succeeded(universe_id),
+                Err(error) => failures.failed(universe_id, &error),
+            }
+        }
+    });
     let state = Arc::new(GatewayState::for_api(api));
     let app = gateway_router(state, config.max_request_body_bytes);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
     reconciler.abort();
+    power_reaper.abort();
     Ok(())
 }
 

@@ -6,6 +6,7 @@ mod blobs;
 mod common;
 mod environment_credentials;
 mod environment_lifecycle;
+mod environment_power;
 mod environment_projection;
 pub(crate) mod environment_providers;
 mod environments;
@@ -37,6 +38,7 @@ use blobs::{has_blobs, put_blobs, read_blob};
 use common::now_ms;
 pub use environment_lifecycle::ReconcileFailureLog;
 use environment_lifecycle::parse_registry_environment_id;
+pub use environment_power::PowerReaperStats;
 use environment_providers::{map_environments_error, parse_environment_provider_id};
 use environments::{activate_environment_command, deactivate_environment_command};
 use errors::*;
@@ -2808,6 +2810,24 @@ impl AgentApiService for GatewayAgentApi {
         params: EnvironmentIngressPutParams,
     ) -> Result<AgentApiOutcome<EnvironmentIngressPutResponse>, AgentApiError> {
         self.put_environment_ingress_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn put_environment_power(
+        &self,
+        params: EnvironmentPowerPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentPowerPutResponse>, AgentApiError> {
+        self.put_environment_power_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn put_environment_idle_policy(
+        &self,
+        params: EnvironmentIdlePolicyPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentIdlePolicyPutResponse>, AgentApiError> {
+        self.put_environment_idle_policy_record(params)
             .await
             .map(AgentApiOutcome::new)
     }
