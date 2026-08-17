@@ -1,12 +1,13 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronDown, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronDown, Copy, Plus, RefreshCw, ShieldOff, Trash2 } from "lucide-react";
 import {
   api,
   type GitHubApp,
   type GitHubInstallation,
   type GitHubIntegration,
   type SecretGrant,
+  type SubscriptionImportResult,
 } from "@/api";
 import {
   AlertDialog,
@@ -55,6 +56,14 @@ import {
   SectionHeader,
   UniverseNotFound,
 } from "@/components/page";
+import {
+  CODEX_AUTH_JSON_BOOTSTRAP,
+  isCodexTokenSet,
+  subscriptionAccountLabel,
+  subscriptionBinding,
+  subscriptionProviderOf,
+  type SubscriptionProvider,
+} from "@/lib/subscriptions";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
@@ -75,9 +84,405 @@ export function IntegrationsPage({ admin }: { admin: boolean }) {
         title="Integrations"
         description="Third-party services connected to this universe. Each connection stores its credentials in Lightspeed and exposes them to sessions and tools without revealing their values."
       />
-      <GitHubSection universeId={universe.id} />
+      <div className="grid gap-10">
+        <SubscriptionSection universeId={universe.id} provider="anthropic" />
+        <SubscriptionSection universeId={universe.id} provider="openAi" />
+        <GitHubSection universeId={universe.id} />
+      </div>
     </>
   );
+}
+
+const SUBSCRIPTION_COPY: Record<
+  SubscriptionProvider,
+  {
+    title: string;
+    description: string;
+    connect: string;
+    dialogTitle: string;
+    steps: string[];
+    placeholder: string;
+    inputRows: number;
+    apiKeyNote: string;
+  }
+> = {
+  anthropic: {
+    title: "Anthropic",
+    description:
+      "Run Claude Code in environments on a Claude Pro, Max, Team, or Enterprise subscription. The token is injected as CLAUDE_CODE_OAUTH_TOKEN.",
+    connect: "Connect Claude subscription",
+    dialogTitle: "Connect Claude subscription",
+    steps: [
+      "On your own machine, run `claude setup-token` and complete the browser login.",
+      "Copy the token it prints (it starts with sk-ant-oat) and paste it below.",
+      "Bind the credential to environments as CLAUDE_CODE_OAUTH_TOKEN (suggested automatically).",
+    ],
+    placeholder: "sk-ant-oat01-…",
+    inputRows: 3,
+    apiKeyNote:
+      "API keys for Lightspeed sessions are separate: add them under Secrets → Model provider credentials. Do not bind ANTHROPIC_API_KEY next to the subscription token; Claude Code would prefer the key.",
+  },
+  openAi: {
+    title: "OpenAI",
+    description:
+      "Run Codex in environments on a ChatGPT subscription. Plus/Pro/Team: paste your local ~/.codex/auth.json; Enterprise: paste a Codex access token.",
+    connect: "Connect ChatGPT subscription",
+    dialogTitle: "Connect ChatGPT subscription",
+    steps: [
+      "Plus/Pro/Team: on your own machine, run `codex login`, then paste the contents of ~/.codex/auth.json below.",
+      "ChatGPT Enterprise: create a Codex access token in your workspace and paste it instead.",
+      "Bind the credential to environments as CODEX_AUTH_JSON (token set) or CODEX_ACCESS_TOKEN (Enterprise); the name is suggested automatically.",
+    ],
+    placeholder: '{ "auth_mode": "chatgpt", "tokens": { … } }  —  or a Codex access token',
+    inputRows: 6,
+    apiKeyNote:
+      "OpenAI API keys for Lightspeed sessions are separate: add them under Secrets → Model provider credentials.",
+  },
+};
+
+function SubscriptionSection({
+  universeId,
+  provider,
+}: {
+  universeId: string;
+  provider: SubscriptionProvider;
+}) {
+  const queryClient = useQueryClient();
+  const [connectOpen, setConnectOpen] = useState(false);
+  const copy = SUBSCRIPTION_COPY[provider];
+  const subscriptions = useQuery({
+    queryKey: ["integrations", "subscriptions", universeId],
+    queryFn: () =>
+      api<SecretGrant[]>("GET", `/api/v1/universes/${universeId}/integrations/subscriptions`),
+  });
+  const invalidate = () =>
+    Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["integrations", "subscriptions", universeId] }),
+      queryClient.invalidateQueries({ queryKey: ["secrets", universeId] }),
+    ]);
+  const disconnect = useMutation({
+    mutationFn: (grantId: string) =>
+      api<SecretGrant>(
+        "DELETE",
+        `/api/v1/universes/${universeId}/integrations/subscriptions/${encodeURIComponent(grantId)}`,
+      ),
+    onSuccess: () => void invalidate(),
+  });
+
+  const grants = (subscriptions.data ?? [])
+    .filter((grant) => subscriptionProviderOf(grant) === provider && grant.status !== "revoked")
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
+
+  return (
+    <section>
+      <SectionHeader
+        title={copy.title}
+        description={copy.description}
+        actions={
+          <Button size="sm" onClick={() => setConnectOpen(true)}>
+            <Plus />
+            {copy.connect}
+          </Button>
+        }
+      />
+      {subscriptions.isLoading && <LoadingNote />}
+      {subscriptions.error && (
+        <p className="text-sm text-destructive">{subscriptions.error.message}</p>
+      )}
+      {disconnect.error && (
+        <p className="mb-3 text-sm text-destructive">{disconnect.error.message}</p>
+      )}
+      {subscriptions.data && grants.length === 0 && (
+        <p className="rounded-xl border border-dashed p-5 text-sm text-muted-foreground">
+          No subscription connected. {copy.apiKeyNote}
+        </p>
+      )}
+      {grants.length > 0 && (
+        <TableCard>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Credential</TableHead>
+                <TableHead>Account</TableHead>
+                <TableHead>Bind as</TableHead>
+                <TableHead>Expires</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="w-0" />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {grants.map((grant) => {
+                const binding = subscriptionBinding(grant);
+                return (
+                  <TableRow key={grant.grantId}>
+                    <TableTitleCell
+                      title={grant.displayName ?? binding?.label ?? grant.grantId}
+                      subtitle={grant.grantId}
+                    />
+                    <TableCell className="text-muted-foreground">
+                      {subscriptionAccountLabel(grant) || "—"}
+                    </TableCell>
+                    <TableCell>
+                      {binding ? <IdText>{binding.envName}</IdText> : "—"}
+                    </TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatExpiry(grant.expiresAtMs)}
+                    </TableCell>
+                    <TableCell>
+                      <SubscriptionStatusBadge status={grant.status} />
+                    </TableCell>
+                    <TableActionsCell>
+                      <AlertDialog>
+                        <AlertDialogTrigger
+                          render={
+                            <Button
+                              variant="ghost"
+                              size="icon-sm"
+                              className="text-destructive"
+                              aria-label={`Disconnect ${grant.displayName ?? grant.grantId}`}
+                            />
+                          }
+                        >
+                          <ShieldOff />
+                        </AlertDialogTrigger>
+                        <AlertDialogContent>
+                          <AlertDialogHeader>
+                            <AlertDialogTitle>Disconnect this subscription?</AlertDialogTitle>
+                            <AlertDialogDescription>
+                              Environments bound to{" "}
+                              <span className="font-mono text-xs">{grant.grantId}</span> stop
+                              receiving the credential on their next job. The subscription itself
+                              is unaffected; revoke the token with the provider if it leaked.
+                            </AlertDialogDescription>
+                          </AlertDialogHeader>
+                          <AlertDialogFooter>
+                            <AlertDialogCancel>Cancel</AlertDialogCancel>
+                            <AlertDialogAction
+                              className="bg-destructive text-white hover:bg-destructive/90"
+                              onClick={() => disconnect.mutate(grant.grantId)}
+                            >
+                              Disconnect
+                            </AlertDialogAction>
+                          </AlertDialogFooter>
+                        </AlertDialogContent>
+                      </AlertDialog>
+                    </TableActionsCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </TableCard>
+      )}
+      {provider === "openAi" && grants.some(isCodexTokenSet) && <CodexBootstrapNote />}
+      <ConnectSubscriptionDialog
+        universeId={universeId}
+        provider={provider}
+        open={connectOpen}
+        onOpenChange={setConnectOpen}
+        onConnected={() => void invalidate()}
+      />
+    </section>
+  );
+}
+
+function CodexBootstrapNote() {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="mt-3 rounded-xl border bg-muted/15 p-4 text-sm">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <p className="text-muted-foreground">
+          Codex reads the token set from <span className="font-mono">$CODEX_HOME/auth.json</span>.
+          Run this in the environment before Codex (image entrypoint or job pre-command):
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => {
+            void navigator.clipboard?.writeText(CODEX_AUTH_JSON_BOOTSTRAP).then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            });
+          }}
+        >
+          <Copy />
+          {copied ? "Copied" : "Copy"}
+        </Button>
+      </div>
+      <pre className="overflow-x-auto rounded-md bg-background p-3 font-mono text-xs">
+        {CODEX_AUTH_JSON_BOOTSTRAP}
+      </pre>
+    </div>
+  );
+}
+
+function ConnectSubscriptionDialog({
+  universeId,
+  provider,
+  open,
+  onOpenChange,
+  onConnected,
+}: {
+  universeId: string;
+  provider: SubscriptionProvider;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onConnected: () => void;
+}) {
+  const copy = SUBSCRIPTION_COPY[provider];
+  const [displayName, setDisplayName] = useState("");
+  const [credential, setCredential] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<SubscriptionImportResult | null>(null);
+
+  const reset = () => {
+    setDisplayName("");
+    setCredential("");
+    setError(null);
+    setResult(null);
+    connect.reset();
+  };
+
+  const connect = useMutation<SubscriptionImportResult, Error, void>({
+    mutationFn: () =>
+      api<SubscriptionImportResult>(
+        "POST",
+        `/api/v1/universes/${universeId}/integrations/subscriptions`,
+        {
+          provider,
+          credential,
+          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+        },
+      ),
+    onSuccess: (imported) => {
+      onConnected();
+      setCredential("");
+      setResult(imported);
+    },
+    onError: (reason) => setError(reason.message),
+  });
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!credential.trim()) {
+      setError("paste the credential first");
+      return;
+    }
+    connect.mutate();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        onOpenChange(nextOpen);
+        if (!nextOpen) reset();
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{copy.dialogTitle}</DialogTitle>
+          <DialogDescription>
+            The credential is sent once to Lightspeed, encrypted, and never returned by an API.
+          </DialogDescription>
+        </DialogHeader>
+        {result ? (
+          <div className="grid gap-3 text-sm">
+            <p>
+              Connected as{" "}
+              <span className="font-medium">
+                {subscriptionAccountLabel(result.grant) || result.grant.displayName || result.grant.grantId}
+              </span>
+              .
+            </p>
+            <p className="text-muted-foreground">
+              Bind it to environments as{" "}
+              <span className="font-mono">{subscriptionBinding(result.grant)?.envName}</span>
+              {result.shape === "codexTokenSet"
+                ? "; the value is Codex auth.json content — add the bootstrap line shown on this page to your environment."
+                : "."}
+            </p>
+            <DialogFooter>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            </DialogFooter>
+          </div>
+        ) : (
+          <form onSubmit={submit} className="grid gap-4">
+            <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
+              {copy.steps.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <Field>
+              <FieldLabel htmlFor={`sub-name-${provider}`}>Display name</FieldLabel>
+              <Input
+                id={`sub-name-${provider}`}
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder={provider === "anthropic" ? "Lukas · Max" : "Lukas · ChatGPT Pro"}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`sub-cred-${provider}`}>Credential</FieldLabel>
+              <Textarea
+                id={`sub-cred-${provider}`}
+                value={credential}
+                onChange={(event) => {
+                  setCredential(event.target.value);
+                  setError(null);
+                }}
+                autoComplete="off"
+                spellCheck={false}
+                rows={copy.inputRows}
+                className="max-h-40 resize-y overflow-y-auto font-mono text-xs"
+                placeholder={copy.placeholder}
+                autoFocus
+              />
+            </Field>
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  onOpenChange(false);
+                  reset();
+                }}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={connect.isPending}>
+                {connect.isPending ? "Encrypting…" : "Connect"}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function SubscriptionStatusBadge({ status }: { status: SecretGrant["status"] }) {
+  if (status === "active") {
+    return <Badge variant="secondary">connected</Badge>;
+  }
+  if (status === "needsReauth" || status === "failed") {
+    return (
+      <Badge variant="outline" className="border-destructive/50 text-destructive">
+        {status === "needsReauth" ? "reconnect" : status}
+      </Badge>
+    );
+  }
+  return <Badge variant="outline">revoked</Badge>;
+}
+
+export function formatExpiry(expiresAtMs: number | null | undefined, nowMs = Date.now()): string {
+  if (!expiresAtMs) return "—";
+  const days = Math.floor((expiresAtMs - nowMs) / 86_400_000);
+  if (days < 0) return "expired";
+  if (days === 0) return "today";
+  if (days < 45) return `in ${days} d`;
+  return new Date(expiresAtMs).toISOString().slice(0, 10);
 }
 
 function GitHubSection({ universeId }: { universeId: string }) {

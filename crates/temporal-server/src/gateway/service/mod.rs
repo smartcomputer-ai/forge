@@ -24,6 +24,7 @@ mod provider_controllers;
 mod session_jobs;
 mod session_toolset;
 mod skills;
+mod subscription_api;
 mod vfs_api;
 mod workflow;
 
@@ -3170,6 +3171,36 @@ impl AgentApiService for GatewayAgentApi {
                 // The secret is orphaned without its grant; clean up best-effort
                 // so a failed import does not leave sealed values behind.
                 let _ = self.store.delete_secret(&draft.secret.secret_id).await;
+                Err(map_auth_error(error))
+            }
+        }
+    }
+
+    async fn import_auth_subscription(
+        &self,
+        params: AuthSubscriptionImportParams,
+    ) -> Result<AgentApiOutcome<AuthSubscriptionImportResponse>, AgentApiError> {
+        let draft = subscription_api::subscription_import_draft(params, now_ms()?)?;
+        let mut written = Vec::with_capacity(draft.secrets.len());
+        for secret in &draft.secrets {
+            if let Err(error) = self.store.put_secret(secret.clone()).await {
+                for secret_id in &written {
+                    let _ = self.store.delete_secret(secret_id).await;
+                }
+                return Err(map_auth_error(error));
+            }
+            written.push(secret.secret_id.clone());
+        }
+        match self.store.create_grant(draft.grant).await {
+            Ok(record) => Ok(AgentApiOutcome::new(AuthSubscriptionImportResponse {
+                grant: auth_grant_view(record),
+                shape: draft.shape,
+            })),
+            Err(error) => {
+                // Orphaned secrets without their grant: clean up best-effort.
+                for secret_id in &written {
+                    let _ = self.store.delete_secret(secret_id).await;
+                }
                 Err(map_auth_error(error))
             }
         }

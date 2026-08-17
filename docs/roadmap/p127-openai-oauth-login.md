@@ -3,7 +3,18 @@
 **Status**
 
 - Proposed 2026-08-17, revised the same day after checking `openai/codex`
-  `main` and the Claude Code authentication docs. Not started.
+  `main` and the Claude Code authentication docs.
+- **S1 + S2 implemented 2026-08-17** (D1, D2, D4 paste paths): grant kinds
+  `openai_chatgpt` (Claude Code tokens are `static_bearer` grants tagged
+  `metadata.subscription = claudeCode`), `auth/subscriptions/import`,
+  migration 009 (kind only), grant-kind-driven injection (a ChatGPT token
+  set injects as Codex `auth.json` content through the ordinary `authGrant`
+  binding), Anthropic key/token conflict guard, Integrations cards
+  (Anthropic, OpenAI) with paste dialogs and the Codex bootstrap snippet,
+  environment "Assign credential" env-name suggestions. Not yet:
+  D3 device flow / refresh / API-key outcome (S3), D5 defaults, CLI login
+  (S4), D6 (optional). Live check of `codex exec` / `claude -p` on injected
+  credentials still to run.
 - Builds on [P69](archive/p69-generic-auth-token-broker.md) (auth
   substrate: `auth_flows`, grants, encrypted secrets, refresh, `modelApiKey`
   /`modelOAuth` rows), [P90](archive/p90-multi-tenancy.md),
@@ -139,7 +150,8 @@ Store subscription credentials as auth grants (encrypted secrets +
 metadata), never as loose environment secrets:
 
 ```text
-provider_kind      anthropic_claude_code | openai_chatgpt
+provider_kind      static_bearer (Claude Code; metadata.subscription =
+                   claudeCode) | openai_chatgpt
 provider_id        anthropic | openai
 external_authorization_id
                    Anthropic: none (opaque token) → grant per paste
@@ -203,12 +215,13 @@ primitive at the same time (future CLI browser flow, other vendors).
 ### D4. OpenAI: injection into environments
 
 - Enterprise access token → binding `{ envName: "CODEX_ACCESS_TOKEN" }`.
-- Plus/Pro token set → binding with a **rendered value**: a new
-  `EnvironmentCredentialSource::AuthGrantRendered { grant_id, format:
-  codexAuthJson }` resolves the grant (refreshing first) and produces the
-  auth.json document as the env value, e.g. `CODEX_AUTH_JSON`. The
-  environment writes it: one line in the image entrypoint or the profile /
-  job pre-command:
+- Plus/Pro token set → an ordinary `authGrant` binding, e.g.
+  `CODEX_AUTH_JSON`. The **grant kind decides the injected value**: for an
+  `openai_chatgpt` token-set grant the resolver renders the auth.json
+  document from the grant's stored tokens (refreshing first, once S3
+  exists) instead of a bare bearer. No new binding kind. The environment
+  writes the file: one line in the image entrypoint or the profile / job
+  pre-command:
 
   ```sh
   install -d -m 700 "${CODEX_HOME:-$HOME/.codex}" && \
@@ -281,31 +294,30 @@ loop is the API-key outcome of D3.
 
 ## Persistence Delta
 
-- `AuthProviderKind`/`auth_grants.provider_kind`: `anthropic_claude_code`,
-  `openai_chatgpt` (+ `openai_oauth` for the flow row).
+- `AuthProviderKind`/`auth_grants.provider_kind`: `openai_chatgpt` (+
+  `openai_oauth` for the flow row). Claude Code tokens reuse `static_bearer`;
+  a dedicated kind was considered and rejected as carrying no behavior.
 - New secret kind `auth.openai.id_token`.
 - `auth_flows`: allow the new kind; device ids in metadata.
-- `EnvironmentCredentialSource::AuthGrantRendered { grant_id, format }`
-  (additive enum variant + column on the binding table).
 - Optional profile field for default bindings.
 - No new tables. `external_authorization_id` + uniqueness shared with the
   GitHub App roadmap migration.
 
 ## Slices
 
-### S1: Anthropic subscription card (no flow)
+### S1: Anthropic subscription card (no flow) — done 2026-08-17
 
-- `anthropic_claude_code` grant kind; paste endpoint; Integrations card
+- Claude Code token import (`static_bearer` + tag); Integrations card
   (paste, status, disconnect); `CLAUDE_CODE_OAUTH_TOKEN` binding helper and
   the API-key/OAuth-token conflict guard; profile default binding.
 - Live test: environment job runs `claude -p` on the token.
 
-### S2: OpenAI paste paths + Codex injection
+### S2: OpenAI paste paths + Codex injection — done 2026-08-17 (live test pending)
 
 - `openai_chatgpt` grant kind (pasted auth.json or Enterprise access token),
-  `AuthGrantRendered{codexAuthJson}`, `CODEX_ACCESS_TOKEN` /
-  `CODEX_AUTH_JSON` bindings, documented bootstrap snippet + template
-  default.
+  auth.json rendering in the injector for token-set grants,
+  `CODEX_ACCESS_TOKEN` / `CODEX_AUTH_JSON` bindings, documented bootstrap
+  snippet + template default.
 - Live test: environment job runs `codex exec` on a Plus/Pro token set with
   no `OPENAI_API_KEY`.
 

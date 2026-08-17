@@ -6,6 +6,28 @@ use ::environments::{
 };
 use auth::{AuthGrantId, AuthGrantStatus, AuthProviderId, AuthProviderStatus, SecretId};
 
+/// Claude Code picks `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` over
+/// `CLAUDE_CODE_OAUTH_TOKEN`; binding both into one environment silently
+/// disables the subscription, so the pair is rejected (P127 D2).
+const CLAUDE_CODE_OAUTH_TOKEN_ENV: &str = "CLAUDE_CODE_OAUTH_TOKEN";
+const ANTHROPIC_KEY_ENVS: [&str; 2] = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"];
+
+pub(super) fn conflicting_anthropic_env(new_name: &str, existing: &[String]) -> Option<String> {
+    if new_name == CLAUDE_CODE_OAUTH_TOKEN_ENV {
+        return existing
+            .iter()
+            .find(|name| ANTHROPIC_KEY_ENVS.contains(&name.as_str()))
+            .cloned();
+    }
+    if ANTHROPIC_KEY_ENVS.contains(&new_name) {
+        return existing
+            .iter()
+            .find(|name| name.as_str() == CLAUDE_CODE_OAUTH_TOKEN_ENV)
+            .cloned();
+    }
+    None
+}
+
 impl GatewayAgentApi {
     pub(super) async fn bind_environment_credential_record(
         &self,
@@ -14,6 +36,24 @@ impl GatewayAgentApi {
         let environment_id = parse_registry_environment_id(params.environment_id)?;
         validate_credential_env_name(&params.env_name)?;
         let source = self.credential_source_from_api(params.source).await?;
+        let existing = EnvironmentCredentialStore::list_credentials(
+            self.store.as_ref(),
+            ListEnvironmentCredentials {
+                environment_id: environment_id.clone(),
+            },
+        )
+        .await
+        .map_err(map_environments_error)?
+        .into_iter()
+        .map(|credential| credential.env_name)
+        .collect::<Vec<_>>();
+        if let Some(conflict) = conflicting_anthropic_env(&params.env_name, &existing) {
+            return Err(AgentApiError::rejected(format!(
+                "{} cannot be bound alongside {conflict}: Claude Code prefers the API key and \
+                 would ignore the subscription token; unbind one first",
+                params.env_name
+            )));
+        }
         let credential = EnvironmentCredentialStore::bind_credential(
             self.store.as_ref(),
             PutEnvironmentCredential {
@@ -180,4 +220,28 @@ pub(super) fn validate_credential_env_name(value: &str) -> Result<(), AgentApiEr
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::conflicting_anthropic_env;
+
+    #[test]
+    fn anthropic_key_and_subscription_token_conflict_both_ways() {
+        let existing = vec!["ANTHROPIC_API_KEY".to_owned(), "GH_TOKEN".to_owned()];
+        assert_eq!(
+            conflicting_anthropic_env("CLAUDE_CODE_OAUTH_TOKEN", &existing).as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        let existing = vec!["CLAUDE_CODE_OAUTH_TOKEN".to_owned()];
+        assert_eq!(
+            conflicting_anthropic_env("ANTHROPIC_AUTH_TOKEN", &existing).as_deref(),
+            Some("CLAUDE_CODE_OAUTH_TOKEN")
+        );
+        assert_eq!(conflicting_anthropic_env("OPENAI_API_KEY", &existing), None);
+        assert_eq!(
+            conflicting_anthropic_env("CLAUDE_CODE_OAUTH_TOKEN", &[]),
+            None
+        );
+    }
 }

@@ -391,9 +391,17 @@ pub struct EnvironmentCredentialView {
     rename_all_fields = "camelCase"
 )]
 pub enum EnvironmentCredentialSourceView {
-    AuthGrant { grant_id: String },
-    AuthProviderCredential { provider_id: String },
-    DirectSecret { secret_id: String },
+    /// The grant's credential. Most grants inject their bearer token; an
+    /// `openAiChatGpt` token-set grant injects Codex `auth.json` content.
+    AuthGrant {
+        grant_id: String,
+    },
+    AuthProviderCredential {
+        provider_id: String,
+    },
+    DirectSecret {
+        secret_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

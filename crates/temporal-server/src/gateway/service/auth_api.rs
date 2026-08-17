@@ -196,6 +196,7 @@ pub(super) fn api_auth_provider_kind(value: auth::AuthProviderKind) -> api::Auth
         auth::AuthProviderKind::CustomOAuth => api::AuthProviderKind::CustomOAuth,
         auth::AuthProviderKind::ModelApiKey => api::AuthProviderKind::ModelApiKey,
         auth::AuthProviderKind::ModelOAuth => api::AuthProviderKind::ModelOAuth,
+        auth::AuthProviderKind::OpenAiChatGpt => api::AuthProviderKind::OpenAiChatGpt,
     }
 }
 

@@ -69,6 +69,7 @@ export const METHODS = [
   "auth/grants/read",
   "auth/grants/list",
   "auth/grants/revoke",
+  "auth/subscriptions/import",
   "auth/clients/create",
   "auth/clients/read",
   "auth/clients/list",
@@ -417,6 +418,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Revoke an authentication grant",
     description: "Marks the grant unusable by token consumers while retaining non-secret audit metadata.",
+  },
+  "auth/subscriptions/import": {
+    scope: "universe",
+    summary: "Import a coding-agent subscription credential",
+    description: "Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.",
   },
   "auth/clients/create": {
     scope: "universe",
@@ -1138,6 +1144,15 @@ export interface MethodMap {
   "auth/grants/revoke": {
     params: Api.AuthGrantRevokeParams;
     result: Api.AgentApiOutcomeOfAuthGrantRevokeResponse;
+  };
+  /**
+   * Import a coding-agent subscription credential
+   *
+   * Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.
+   */
+  "auth/subscriptions/import": {
+    params: Api.AuthSubscriptionImportParams;
+    result: Api.AgentApiOutcomeOfAuthSubscriptionImportResponse;
   };
   /**
    * Register an OAuth client
@@ -1894,6 +1909,14 @@ export const rpc = {
    */
   authGrantsRevoke(client: RpcCaller, params: Api.AuthGrantRevokeParams): Promise<Api.AgentApiOutcomeOfAuthGrantRevokeResponse> {
     return client.call("auth/grants/revoke", params);
+  },
+  /**
+   * Import a coding-agent subscription credential
+   *
+   * Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.
+   */
+  authSubscriptionsImport(client: RpcCaller, params: Api.AuthSubscriptionImportParams): Promise<Api.AgentApiOutcomeOfAuthSubscriptionImportResponse> {
+    return client.call("auth/subscriptions/import", params);
   },
   /**
    * Register an OAuth client

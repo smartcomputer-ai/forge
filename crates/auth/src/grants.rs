@@ -25,6 +25,10 @@ pub enum AuthProviderKind {
     ModelApiKey,
     #[serde(rename = "model_oauth")]
     ModelOAuth,
+    /// ChatGPT subscription credential for Codex: an Enterprise access token
+    /// or a full token set (id/access/refresh) rendered as `auth.json`.
+    #[serde(rename = "openai_chatgpt")]
+    OpenAiChatGpt,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

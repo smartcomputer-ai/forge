@@ -48,3 +48,14 @@ describe("GitHub App form validation", () => {
     ).toBeNull();
   });
 });
+
+describe("subscription expiry formatting", () => {
+  it("renders relative and absolute expiries", async () => {
+    const { formatExpiry } = await import("./IntegrationsPage");
+    const now = Date.UTC(2026, 7, 17);
+    expect(formatExpiry(undefined, now)).toBe("—");
+    expect(formatExpiry(now - 1, now)).toBe("expired");
+    expect(formatExpiry(now + 3 * 86_400_000, now)).toBe("in 3 d");
+    expect(formatExpiry(Date.UTC(2027, 7, 17), now)).toBe("2027-08-17");
+  });
+});

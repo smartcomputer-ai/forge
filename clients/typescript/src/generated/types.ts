@@ -681,14 +681,17 @@ export type RunAcceptedSourceView =
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
-  | "staticBearer"
-  | "mcpOAuth"
-  | "gitHubApp"
-  | "gitHubAppUser"
-  | "gitHubOAuthApp"
-  | "customOAuth"
-  | "modelApiKey"
-  | "modelOAuth";
+  | (
+      | "staticBearer"
+      | "mcpOAuth"
+      | "gitHubApp"
+      | "gitHubAppUser"
+      | "gitHubOAuthApp"
+      | "customOAuth"
+      | "modelApiKey"
+      | "modelOAuth"
+    )
+  | "openAiChatGpt";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEndpointAuthMethod".
@@ -735,6 +738,14 @@ export type AuthProviderConfigView =
  * via the `definition` "AuthProviderStatus".
  */
 export type AuthProviderStatus = "active" | "needsConfiguration" | "disabled";
+/**
+ * How the imported credential is shaped, so clients can pick the matching
+ * environment binding (env var vs rendered `auth.json`).
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubscriptionCredentialShape".
+ */
+export type SubscriptionCredentialShape = "token" | "codexTokenSet";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "InputAdmissionFailureKind".
@@ -1009,6 +1020,13 @@ export type AuthProviderConfigInput =
       grantId: string;
       type: "modelOAuth";
     };
+/**
+ * Coding-agent subscription providers accepted by `auth/subscriptions/import`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubscriptionProvider".
+ */
+export type SubscriptionProvider = "anthropic" | "openAi";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionJobCancelScopeView".
@@ -1952,6 +1970,22 @@ export interface AgentApiOutcomeOfAuthProviderReadResponse {
  */
 export interface AuthProviderReadResponse {
   provider: AuthProviderView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfAuthSubscriptionImportResponse".
+ */
+export interface AgentApiOutcomeOfAuthSubscriptionImportResponse {
+  notifications?: AgentNotification[];
+  result: AuthSubscriptionImportResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthSubscriptionImportResponse".
+ */
+export interface AuthSubscriptionImportResponse {
+  grant: AuthGrantView;
+  shape: SubscriptionCredentialShape;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3790,6 +3824,27 @@ export interface AuthProviderListParams {}
  */
 export interface AuthProviderReadParams {
   providerId: string;
+}
+/**
+ * Import a coding-agent subscription credential as an auth grant (P127).
+ * Like `auth/grants/import`, `credential` is a deliberate inbound-plaintext
+ * path: parsed and encrypted on receipt, never returned by any method.
+ * `Debug` output redacts it; request logging must never echo these params.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthSubscriptionImportParams".
+ */
+export interface AuthSubscriptionImportParams {
+  /**
+   * The pasted secret: Claude Code token, Codex access token, or `auth.json`.
+   */
+  credential: string;
+  displayName?: string | null;
+  /**
+   * Optional stable grant id; generated when absent.
+   */
+  grantId?: string | null;
+  provider: SubscriptionProvider;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

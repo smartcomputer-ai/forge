@@ -47,6 +47,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { LoadingNote, PageHeader, UniverseNotFound } from "@/components/page";
+import { subscriptionBinding } from "@/lib/subscriptions";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 
 /// Universe environments are provisioned through operator-enabled bindings and
@@ -501,6 +502,8 @@ function AssignCredentialDialog({
                 onValueChange={(value) => {
                   setSourceValue(value as string);
                   setError(null);
+                  const suggested = sources.find((s) => s.value === value)?.suggestedEnvName;
+                  if (suggested && !envName.trim()) setEnvName(suggested);
                 }}
               >
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -534,27 +537,39 @@ function AssignCredentialDialog({
   );
 }
 
-function environmentCredentialOptions(secrets: SecretsInventory | undefined) {
+export function environmentCredentialOptions(secrets: SecretsInventory | undefined) {
   if (!secrets) return [];
   return [
     ...secrets.grants
       .filter((grant) => grant.status === "active")
-      .map((grant) => ({
-        value: `grant:${grant.grantId}`,
-        label: grant.providerId === "environment-secret"
-          ? `${accessGrantName(grant)} · Environment secret`
-          : `${accessGrantName(grant)} · Access credential`,
-      })),
+      .map((grant) => {
+        const subscription = subscriptionBinding(grant);
+        if (subscription) {
+          return {
+            value: `grant:${grant.grantId}`,
+            label: `${accessGrantName(grant)} · ${subscription.label}`,
+            suggestedEnvName: subscription.envName,
+          };
+        }
+        return {
+          value: `grant:${grant.grantId}`,
+          label: grant.providerId === "environment-secret"
+            ? `${accessGrantName(grant)} · Environment secret`
+            : `${accessGrantName(grant)} · Access credential`,
+          suggestedEnvName: undefined as string | undefined,
+        };
+      }),
     ...secrets.providers
       .filter((provider) => provider.status === "active" && provider.hasCredential)
       .map((provider) => ({
         value: `provider:${provider.credentialId}`,
         label: `${modelProviderName(provider)} · Model provider API key`,
+        suggestedEnvName: undefined as string | undefined,
       })),
   ];
 }
 
-function environmentCredentialSourceFromValue(value: string): EnvironmentCredentialSource {
+export function environmentCredentialSourceFromValue(value: string): EnvironmentCredentialSource {
   if (value.startsWith("grant:")) {
     return { type: "authGrant", grantId: value.slice("grant:".length) };
   }

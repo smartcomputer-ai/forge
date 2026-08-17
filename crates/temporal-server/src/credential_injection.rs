@@ -113,6 +113,18 @@ impl EnvironmentCredentialResolver {
                         message: error.to_string(),
                     }
                 })?;
+                if is_codex_token_set_grant(&grant) {
+                    // The grant kind decides the injected shape: a ChatGPT
+                    // token set is Codex `auth.json` content, not a bearer.
+                    let rendered =
+                        self.render_codex_auth_json(&grant)
+                            .await
+                            .map_err(|message| EnvironmentCredentialResolutionError::Source {
+                                env_name: env_name.to_owned(),
+                                message,
+                            })?;
+                    return Ok(SecretString::new(rendered));
+                }
                 let audience = token_audience_for_grant(&grant, environment_id);
                 let Some(broker) = &self.broker else {
                     return Err(EnvironmentCredentialResolutionError::Source {
@@ -170,6 +182,56 @@ impl EnvironmentCredentialResolver {
                 Ok(SecretString::new(value.expose()))
             }
         }
+    }
+
+    async fn read_secret_value(&self, secret_id: &auth::SecretId) -> Result<String, String> {
+        self.secrets
+            .read_secret(secret_id)
+            .await
+            .map(|(_, value)| value.expose().to_owned())
+            .map_err(|error| format!("read grant secret: {error}"))
+    }
+
+    /// Renders an `openai_chatgpt` token-set grant into Codex `auth.json`
+    /// content (P127 D4). The grant must be active; token material never
+    /// leaves the resolver except inside the rendered value.
+    async fn render_codex_auth_json(&self, grant: &AuthGrantRecord) -> Result<String, String> {
+        if grant.status != auth::AuthGrantStatus::Active {
+            return Err(format!("auth grant is not active: {}", grant.grant_id));
+        }
+        let access_id = grant
+            .access_token_secret
+            .as_ref()
+            .ok_or_else(|| "grant has no access token".to_owned())?;
+        let refresh_id = grant
+            .refresh_token_secret
+            .as_ref()
+            .ok_or_else(|| "grant has no refresh token".to_owned())?;
+        let id_token_id = grant
+            .metadata
+            .get("idTokenSecretId")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "grant metadata has no idTokenSecretId".to_owned())
+            .and_then(|raw| {
+                auth::SecretId::try_new(raw.to_owned())
+                    .map_err(|error| format!("invalid idTokenSecretId: {error}"))
+            })?;
+        let tokens = auth::ChatGptTokenSet {
+            access_token: self.read_secret_value(access_id).await?,
+            refresh_token: self.read_secret_value(refresh_id).await?,
+            id_token: self.read_secret_value(&id_token_id).await?,
+            account_id: grant
+                .metadata
+                .get("accountId")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned),
+        };
+        let last_refresh_ms = grant
+            .metadata
+            .get("lastRefreshMs")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(grant.updated_at_ms);
+        Ok(auth::render_codex_auth_json(&tokens, last_refresh_ms))
     }
 
     pub(crate) fn wrap_context(
@@ -298,6 +360,14 @@ fn registry_token_broker(store: Arc<PgStore>) -> Option<Arc<dyn AuthTokenBroker>
     Some(Arc::new(broker))
 }
 
+/// An `openai_chatgpt` grant holding a full ChatGPT token set (pasted
+/// `auth.json`), as opposed to a single Enterprise access token.
+fn is_codex_token_set_grant(grant: &AuthGrantRecord) -> bool {
+    grant.provider_kind == AuthProviderKind::OpenAiChatGpt
+        && grant.metadata.get("credential").and_then(|v| v.as_str()) == Some("tokenSet")
+        && grant.refresh_token_secret.is_some()
+}
+
 fn token_audience_for_grant(
     grant: &AuthGrantRecord,
     environment_id: &EnvironmentId,
@@ -409,6 +479,93 @@ mod tests {
             .expect("resolve environment credentials");
 
         assert_eq!(resolved["GH_TOKEN"].expose(), "environment-token");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn renders_codex_auth_json_from_openai_chatgpt_token_set() {
+        let environment_id = EnvironmentId::new("environment_1");
+        let secrets = Arc::new(InMemorySecretStore::new());
+        for (id, kind, value) in [
+            (
+                "sec_access",
+                auth::SECRET_KIND_OPENAI_CHATGPT_ACCESS_TOKEN,
+                "at",
+            ),
+            (
+                "sec_refresh",
+                auth::SECRET_KIND_OPENAI_CHATGPT_REFRESH_TOKEN,
+                "rt",
+            ),
+            ("sec_id", auth::SECRET_KIND_OPENAI_CHATGPT_ID_TOKEN, "idt"),
+        ] {
+            secrets
+                .put_secret(PutSecretRecord {
+                    secret_id: SecretId::new(id),
+                    secret_kind: kind.to_owned(),
+                    value: SecretValue::new(value),
+                    created_at_ms: 1,
+                })
+                .await
+                .expect("store secret");
+        }
+        let grants = Arc::new(InMemoryAuthGrantStore::new());
+        let grant_id = auth::AuthGrantId::new("grant_codex");
+        auth::AuthGrantStore::create_grant(
+            grants.as_ref(),
+            auth::CreateAuthGrantRecord {
+                grant_id: grant_id.clone(),
+                provider_id: "openai".to_owned(),
+                provider_kind: AuthProviderKind::OpenAiChatGpt,
+                principal: auth::PrincipalRef::universe_default(),
+                display_name: None,
+                subject_hint: None,
+                scopes: Vec::new(),
+                audience: None,
+                access_token_secret: Some(SecretId::new("sec_access")),
+                refresh_token_secret: Some(SecretId::new("sec_refresh")),
+                oauth_client: None,
+                metadata: serde_json::json!({
+                    "credential": "tokenSet",
+                    "idTokenSecretId": "sec_id",
+                    "accountId": "acct_1",
+                    "lastRefreshMs": 1_755_388_800_000i64
+                }),
+                expires_at_ms: None,
+                status: auth::AuthGrantStatus::Active,
+                created_at_ms: 1,
+            },
+        )
+        .await
+        .expect("create grant");
+        let credentials = Arc::new(FixedCredentialStore {
+            credentials: vec![EnvironmentCredentialRecord {
+                environment_id: environment_id.clone(),
+                env_name: "CODEX_AUTH_JSON".to_owned(),
+                source: EnvironmentCredentialSource::AuthGrant { grant_id },
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            }],
+        });
+        let resolver = EnvironmentCredentialResolver::new(
+            credentials,
+            grants,
+            Arc::new(InMemoryAuthProviderStore::new()),
+            secrets,
+            None,
+        );
+
+        let resolved = resolver
+            .resolve_secret_env(&environment_id, &BTreeMap::new())
+            .await
+            .expect("resolve rendered credential");
+        let document: serde_json::Value =
+            serde_json::from_str(resolved["CODEX_AUTH_JSON"].expose()).expect("json");
+        assert_eq!(document["auth_mode"], "chatgpt");
+        assert_eq!(document["tokens"]["access_token"], "at");
+        assert_eq!(document["tokens"]["refresh_token"], "rt");
+        assert_eq!(document["tokens"]["id_token"], "idt");
+        assert_eq!(document["tokens"]["account_id"], "acct_1");
+        assert_eq!(document["last_refresh"], "2025-08-17T00:00:00.000Z");
     }
 
     #[test]

@@ -108,6 +108,7 @@ pub const METHOD_AUTH_GRANTS_IMPORT: &str = "auth/grants/import";
 pub const METHOD_AUTH_GRANTS_READ: &str = "auth/grants/read";
 pub const METHOD_AUTH_GRANTS_LIST: &str = "auth/grants/list";
 pub const METHOD_AUTH_GRANTS_REVOKE: &str = "auth/grants/revoke";
+pub const METHOD_AUTH_SUBSCRIPTIONS_IMPORT: &str = "auth/subscriptions/import";
 pub const METHOD_AUTH_CLIENTS_CREATE: &str = "auth/clients/create";
 pub const METHOD_AUTH_CLIENTS_READ: &str = "auth/clients/read";
 pub const METHOD_AUTH_CLIENTS_LIST: &str = "auth/clients/list";

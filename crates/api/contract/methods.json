@@ -1153,6 +1153,24 @@
       "summary": "Revoke an authentication grant"
     },
     {
+      "description": "Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.",
+      "method": "auth/subscriptions/import",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/AuthSubscriptionImportParams"
+        },
+        "type": "AuthSubscriptionImportParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfAuthSubscriptionImportResponse"
+        },
+        "type": "AgentApiOutcome<AuthSubscriptionImportResponse>"
+      },
+      "scope": "universe",
+      "summary": "Import a coding-agent subscription credential"
+    },
+    {
       "description": "Stores provider endpoints and client identity; an optional plaintext client secret is encrypted and represented thereafter only by hasClientSecret.",
       "method": "auth/clients/create",
       "params": {
