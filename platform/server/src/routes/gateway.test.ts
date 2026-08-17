@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   credentialIdConflictMessage,
   environmentSecretGrantParams,
+  gitHubAppProviderId,
   modelProviderCredentialId,
   modelProviderCredentialView,
 } from "./gateway.js";
@@ -69,5 +70,12 @@ describe("environment secrets", () => {
       displayName: "px-dev SSH key",
       token: privateKey,
     });
+  });
+});
+
+describe("github app provider ids", () => {
+  it("derives a stable provider id from the numeric App ID", () => {
+    expect(gitHubAppProviderId("123456")).toBe("github-app:123456");
+    expect(gitHubAppProviderId(" 123456 ")).toBe("github-app:123456");
   });
 });

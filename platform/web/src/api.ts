@@ -198,6 +198,9 @@ export interface SecretGrant extends AuthGrantOption {
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
   expiresAtMs?: number | null;
+  /// Non-secret provider metadata (GitHub App grants: installation id,
+  /// account login, permissions, repository selection).
+  metadata?: Record<string, unknown>;
   createdAtMs: number;
   updatedAtMs: number;
 }
@@ -231,6 +234,34 @@ export interface SecretProvider {
 
 export interface SecretsInventory {
   providers: SecretProvider[];
+  grants: SecretGrant[];
+}
+
+/// Universe-owned GitHub App (BYO provider). The private key is stored by the
+/// engine and never returned; `hasCredential` is the only trace of it.
+export interface GitHubApp {
+  providerId: string;
+  providerKind: SecretProvider["providerKind"];
+  displayName?: string | null;
+  config: { type: "githubApp"; appId: string; apiBaseUrl: string };
+  hasCredential: boolean;
+  status: "active" | "needsConfiguration" | "disabled";
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+/// One installation of a GitHub App, live from GitHub.
+export interface GitHubInstallation {
+  installationId: number;
+  accountLogin?: string | null;
+  repositorySelection?: string | null;
+  permissions?: Record<string, unknown>;
+}
+
+export interface GitHubIntegration {
+  apps: GitHubApp[];
+  /// Installation grants (`gitHubApp` kind); `metadata.installation_id` links
+  /// each grant to its installation.
   grants: SecretGrant[];
 }
 

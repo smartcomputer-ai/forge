@@ -18,6 +18,7 @@ import { LoginPage } from "@/pages/LoginPage";
 import { McpServersPage } from "@/pages/McpServersPage";
 import { MembersPage } from "@/pages/MembersPage";
 import { ProfilesPage } from "@/pages/ProfilesPage";
+import { IntegrationsPage } from "@/pages/IntegrationsPage";
 import { SecretsPage } from "@/pages/SecretsPage";
 import { SessionsPage } from "@/pages/SessionsPage";
 import { SetupsPage } from "@/pages/SetupsPage";
@@ -127,6 +128,10 @@ export function App() {
         <Route
           path="u/:slug/settings/mcp-servers"
           element={<McpServersPage admin={admin} />}
+        />
+        <Route
+          path="u/:slug/settings/integrations"
+          element={<IntegrationsPage admin={admin} />}
         />
         <Route
           path="u/:slug/settings/secrets"

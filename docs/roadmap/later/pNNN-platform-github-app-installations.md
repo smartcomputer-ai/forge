@@ -424,6 +424,19 @@ remains the BYO path with a universe-owned key.
 
 ## Implementation Slices
 
+### G0: BYO GitHub App via Platform UI (done 2026-08-17)
+
+- New universe settings page **Integrations** (`settings/integrations`,
+  above Secrets): register an existing GitHub App by App ID + PEM (paste or
+  file upload; GHES base URL under advanced), list its installations live,
+  grant/re-grant installations, remove the App.
+- Platform routes `/:id/integrations/github*` wrap the existing
+  `auth/providers/*` and `auth/github/installations/*` methods; default
+  provider id `github-app:<appId>`. No core changes.
+- Later slices add "Create the App for me" (GitHub App Manifest flow) and
+  "Connect" (deployment App) to the same page; OpenAI/Anthropic OAuth logins
+  land there too.
+
 ### G1: Deployment provider from env + provider scope
 
 - Env-loaded deployment GitHub App provider behind a source trait.

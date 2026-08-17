@@ -5,6 +5,8 @@ import {
   LightspeedRpcError,
   type AgentProfileInput,
   type AuthGrantImportParams,
+  type AuthGitHubInstallationGrantParams,
+  type AuthGitHubInstallationListParams,
   type AuthGrantListParams,
   type AuthProviderCreateParams,
   type EnvironmentCreateParams,
@@ -138,6 +140,20 @@ const bearerGrantCreateSchema = z.object({
   displayName: z.string().trim().min(1).max(200).optional(),
   subjectHint: z.string().trim().min(1).max(200).optional(),
   token: z.string().min(1),
+});
+
+/// Register an existing GitHub App by its numeric id and private key. The
+/// PEM is forwarded once to the engine, encrypted there, and never read back.
+const gitHubAppCreateSchema = z.object({
+  providerId: z.string().trim().min(1).max(128).optional(),
+  displayName: z.string().trim().min(1).max(200).optional(),
+  appId: z.string().trim().regex(/^[0-9]+$/, "GitHub App ID must be numeric"),
+  apiBaseUrl: z.string().trim().url().optional(),
+  privateKey: z.string().min(1),
+});
+
+const gitHubInstallationGrantSchema = z.object({
+  displayName: z.string().trim().min(1).max(200).optional(),
 });
 
 const environmentSecretCreateSchema = z.object({
@@ -688,6 +704,115 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  /// GitHub integration inventory: universe-owned GitHub Apps (BYO providers)
+  /// and the installation grants minted through them. No secret material.
+  app.get("/:id/integrations/github", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const [providers, grants] = await Promise.all([
+        client.call("auth/providers/list", {}),
+        client.call("auth/grants/list", {}),
+      ]);
+      return c.json({
+        apps: (providers.result.providers ?? []).filter(
+          (provider) => provider.config.type === "githubApp",
+        ),
+        grants: (grants.result.grants ?? []).filter(
+          (grant) => grant.providerKind === "gitHubApp",
+        ),
+      });
+    });
+  });
+
+  app.post("/:id/integrations/github/apps", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, gitHubAppCreateSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const params: AuthProviderCreateParams = {
+        providerId: body.data.providerId ?? gitHubAppProviderId(body.data.appId),
+        displayName: body.data.displayName,
+        config: {
+          type: "githubApp",
+          appId: body.data.appId,
+          apiBaseUrl: body.data.apiBaseUrl,
+        },
+        credential: body.data.privateKey,
+      };
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/providers/create", params);
+      return c.json(response.result.provider, 201);
+    });
+  });
+
+  app.delete("/:id/integrations/github/apps/:providerId", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/providers/delete", {
+        providerId: c.req.param("providerId"),
+      });
+      return c.json(response.result.provider);
+    });
+  });
+
+  /// Live from GitHub through the App's own JWT: only installations of this
+  /// universe-owned App are visible, so listing is safe to expose to members.
+  app.get("/:id/integrations/github/apps/:providerId/installations", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: AuthGitHubInstallationListParams = {
+        providerId: c.req.param("providerId"),
+      };
+      const response = await client.call("auth/github/installations/list", params);
+      return c.json(response.result.installations ?? []);
+    });
+  });
+
+  app.post(
+    "/:id/integrations/github/apps/:providerId/installations/:installationId/grant",
+    async (c) => {
+      const access = await universeForSession(ctx, c, c.req.param("id"), true);
+      if (!access) {
+        return c.json({ error: "not found" }, 404);
+      }
+      const installationId = Number(c.req.param("installationId"));
+      if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+        return c.json({ error: "installationId must be a positive integer" }, 400);
+      }
+      const body = await parseBody(c, gitHubInstallationGrantSchema);
+      if (!body.ok) {
+        return body.response;
+      }
+      return withGateway(c, async () => {
+        const params: AuthGitHubInstallationGrantParams = {
+          providerId: c.req.param("providerId"),
+          installationId,
+          displayName: body.data.displayName,
+        };
+        const client = engineClientFor(ctx, access.universe);
+        const response = await client.call("auth/github/installations/grant", params);
+        return c.json(response.result.grant, 201);
+      });
+    },
+  );
+
   app.post("/:id/secrets/grants", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -1229,6 +1354,12 @@ export function gatewayRoutes(ctx: AppContext) {
   });
 
   return app;
+}
+
+/// Default provider id for a universe-owned GitHub App: stable per App so a
+/// re-registration of the same App conflicts instead of duplicating.
+export function gitHubAppProviderId(appId: string): string {
+  return `github-app:${appId.trim()}`;
 }
 
 export function modelProviderCredentialId(providerId: string): string {
