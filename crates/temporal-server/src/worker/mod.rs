@@ -25,7 +25,7 @@ pub use activities::{
 pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeTools};
 pub use reaper::{PromiseReaper, ReaperStats};
 pub use secrets::{BrokerSecretResolver, StoredProviderKeyResolver};
-pub use session_tools::SessionTools;
+pub use session_tools::{SessionTools, ToolCallExecution};
 pub use temporal_workflow::{
     ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION,
     ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CONTEXT_COMPACT,
@@ -47,6 +47,10 @@ pub use temporal_workflow::{
     ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest,
     ToolPreparePromiseControlsActivityRequest, connect_temporal, default_run_config,
     default_session_config,
+};
+pub use temporal_workflow::{
+    ACTIVITY_AWAIT_ENVIRONMENT_READY, AwaitEnvironmentReadyActivityRequest,
+    AwaitEnvironmentReadyActivityResult, ToolInvokeCallActivityResult,
 };
 
 #[derive(Clone, Debug)]

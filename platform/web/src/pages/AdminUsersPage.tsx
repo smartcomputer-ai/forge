@@ -1,10 +1,18 @@
 import { useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Plus } from "lucide-react";
 import { authClient } from "@/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
-import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -16,12 +24,13 @@ import {
 import {
   Table,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { LoadingNote, PageHeader, SectionHeader } from "@/components/page";
+import { LoadingNote, PageHeader } from "@/components/page";
 
 interface UserRow {
   id: string;
@@ -45,16 +54,25 @@ export function AdminUsersPage() {
     },
   });
 
+  const [createOpen, setCreateOpen] = useState(false);
+
   return (
     <>
       <PageHeader
         title="Users"
         description="Platform accounts. Signup is closed — accounts are created here."
+        actions={
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus data-icon="inline-start" />
+            Create user
+          </Button>
+        }
       />
+      <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
       {users.isLoading && <LoadingNote />}
       {users.error && <p className="text-sm text-destructive">{users.error.message}</p>}
       {users.data && (
-        <div className="mb-8 overflow-x-auto rounded-xl border">
+        <TableCard className="mb-8">
           <Table>
             <TableHeader>
               <TableRow>
@@ -85,20 +103,33 @@ export function AdminUsersPage() {
               ))}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
-      <CreateUserForm />
     </>
   );
 }
 
-function CreateUserForm() {
+function CreateUserDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const queryClient = useQueryClient();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState("user");
-  const [created, setCreated] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const reset = () => {
+    setName("");
+    setEmail("");
+    setPassword("");
+    setRole("user");
+    setError(null);
+  };
 
   const create = useMutation({
     mutationFn: async () => {
@@ -114,27 +145,31 @@ function CreateUserForm() {
       return result.data;
     },
     onSuccess: () => {
-      setCreated(email);
-      setName("");
-      setEmail("");
-      setPassword("");
       void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      onOpenChange(false);
+      reset();
     },
+    onError: (err) => setError(err.message),
   });
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    setCreated(null);
+    setError(null);
     create.mutate();
   };
 
   return (
-    <section>
-      <SectionHeader title="Create user" />
-      <Card>
-        <CardContent>
+    <Dialog open={open} onOpenChange={(next) => { onOpenChange(next); if (!next) reset(); }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Create user</DialogTitle>
+          <DialogDescription>
+            Creates a platform account. Share the password out of band — users can
+            change it under Account.
+          </DialogDescription>
+        </DialogHeader>
           <form onSubmit={submit} className="grid gap-4">
-            <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="grid gap-4">
               <Field>
                 <FieldLabel htmlFor="user-name">Name</FieldLabel>
                 <Input
@@ -142,6 +177,7 @@ function CreateUserForm() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   required
+                  autoFocus
                 />
               </Field>
               <Field>
@@ -178,23 +214,17 @@ function CreateUserForm() {
                 </Select>
               </Field>
             </div>
-            {create.error && (
-              <p className="text-sm text-destructive">{create.error.message}</p>
-            )}
-            {created && (
-              <p className="text-sm text-muted-foreground">Created {created}.</p>
-            )}
-            <div>
-              <Button type="submit" disabled={create.isPending}>
-                {create.isPending ? "Creating…" : "Create"}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
               </Button>
-            </div>
-            <FieldDescription>
-              Share the password out of band — users can change it under Account.
-            </FieldDescription>
+              <Button type="submit" disabled={create.isPending}>
+                {create.isPending ? "Creating…" : "Create user"}
+              </Button>
+            </DialogFooter>
           </form>
-        </CardContent>
-      </Card>
-    </section>
+      </DialogContent>
+    </Dialog>
   );
 }

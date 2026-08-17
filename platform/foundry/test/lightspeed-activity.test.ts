@@ -20,7 +20,7 @@ describe("Foundry Lightspeed activities", () => {
             revision: 4,
             createdAtMs: 1,
             updatedAtMs: 2,
-            activeEnvironmentId: "profile-environment-must-not-win",
+            environment: { type: "existing", environmentId: "profile-environment-must-not-win" },
             instructions: { type: "text", text: "Base manager instructions." },
             config: {
               features: {
@@ -77,7 +77,7 @@ describe("Foundry Lightspeed activities", () => {
       "session/profiles/apply",
     ]);
     const managed = requests[2]?.params as {
-      profile?: { profile?: { instructions?: { text?: string }; activeEnvironmentId?: string } };
+      profile?: { profile?: { instructions?: { text?: string }; environment?: unknown } };
       workflowTools?: { tools?: Array<Record<string, unknown>> };
     };
     expect(managed.profile?.profile?.instructions?.text).toContain(
@@ -86,7 +86,7 @@ describe("Foundry Lightspeed activities", () => {
     expect(managed.profile?.profile?.instructions?.text).toContain(
       "Registered runtime target: kubernetes:hello-prod",
     );
-    expect(managed.profile?.profile).not.toHaveProperty("activeEnvironmentId");
+    expect(managed.profile?.profile).not.toHaveProperty("environment");
     expect(managed.workflowTools?.tools).toHaveLength(2);
     for (const tool of managed.workflowTools?.tools ?? []) {
       expect(tool).toMatchObject({

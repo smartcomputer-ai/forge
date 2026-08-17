@@ -8,8 +8,9 @@ use std::{collections::BTreeMap, fmt, str::FromStr};
 
 use async_trait::async_trait;
 use auth::{AuthGrantId, AuthProviderId, SecretId};
-pub use engine::EnvironmentId;
+pub use engine::{EnvironmentId, SessionId};
 use engine::{StringIdError, validate_general_string_id};
+pub use environment_protocol::control::targets::PowerState;
 use environment_protocol::{
     control::targets::EnvironmentTemplate,
     shared::{EnvironmentTransport, ProviderTargetId},
@@ -98,6 +99,32 @@ registry_string_id!(EnvironmentIncarnationId);
 registry_string_id!(EnvironmentProvisionRequestId);
 registry_string_id!(EnvironmentTemplateId);
 registry_string_id!(EnvironmentJobGroupId);
+
+/// Prefix of the request id a profile-provisioned environment derives from
+/// its originating session, so retries and repeated applies converge on the
+/// same environment through the `(universe, request_id)` unique key.
+pub const SESSION_PROVISION_REQUEST_PREFIX: &str = "session:";
+
+impl EnvironmentProvisionRequestId {
+    /// The deterministic provision request id for the one environment a
+    /// profile may provision for `session_id`. Uses the session id verbatim
+    /// when it fits the request-id length limit and a SHA-256 digest
+    /// otherwise.
+    pub fn for_session(session_id: &SessionId) -> Self {
+        let plain = format!("{SESSION_PROVISION_REQUEST_PREFIX}{}", session_id.as_str());
+        if let Ok(id) = Self::try_new(plain) {
+            return id;
+        }
+        use sha2::{Digest, Sha256};
+        let digest = Sha256::digest(session_id.as_str().as_bytes());
+        let mut hex = String::with_capacity(64);
+        for byte in digest {
+            use std::fmt::Write as _;
+            let _ = write!(hex, "{byte:02x}");
+        }
+        Self::new(format!("{SESSION_PROVISION_REQUEST_PREFIX}sha256-{hex}"))
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum EnvironmentRegistryError {
@@ -265,11 +292,134 @@ pub enum EnvironmentStatus {
     Provisioning,
     Booting,
     Ready,
+    /// Execution frozen with RAM resident (P126); wakes on use.
+    Paused,
+    /// Execution state saved to disk (P126); wakes on use.
+    Suspended,
+    /// Powered off with disk retained; wakes on use for provisioned
+    /// environments whose provider supports power control.
     Offline,
     Closing,
     Closed,
     Failed,
     Unknown,
+}
+
+impl EnvironmentStatus {
+    /// The steady power state this observed status corresponds to, or `None`
+    /// while the environment is transitioning, failed, or gone.
+    pub fn power_state(self) -> Option<PowerState> {
+        match self {
+            Self::Ready => Some(PowerState::Running),
+            Self::Paused => Some(PowerState::Paused),
+            Self::Suspended => Some(PowerState::Suspended),
+            Self::Offline => Some(PowerState::Stopped),
+            Self::Provisioning
+            | Self::Booting
+            | Self::Closing
+            | Self::Closed
+            | Self::Failed
+            | Self::Unknown => None,
+        }
+    }
+
+    /// True for the observed states a power change can start from or wake
+    /// out of.
+    pub fn is_powered_down(self) -> bool {
+        matches!(self, Self::Paused | Self::Suspended | Self::Offline)
+    }
+}
+
+/// Staged idle policy: each threshold is measured against the daemon's
+/// reported idle duration and must be non-decreasing in the order
+/// pause → suspend → stop → close. Every stage is optional.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentIdlePolicy {
+    pub pause_after_ms: Option<u64>,
+    pub suspend_after_ms: Option<u64>,
+    pub stop_after_ms: Option<u64>,
+    pub close_after_ms: Option<u64>,
+}
+
+/// One stage of an idle policy in escalation order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdleAction {
+    Pause,
+    Suspend,
+    Stop,
+    Close,
+}
+
+impl IdleAction {
+    /// The power state this stage requests; `None` for close.
+    pub fn power_state(self) -> Option<PowerState> {
+        match self {
+            Self::Pause => Some(PowerState::Paused),
+            Self::Suspend => Some(PowerState::Suspended),
+            Self::Stop => Some(PowerState::Stopped),
+            Self::Close => None,
+        }
+    }
+}
+
+impl EnvironmentIdlePolicy {
+    pub fn is_empty(&self) -> bool {
+        self.pause_after_ms.is_none()
+            && self.suspend_after_ms.is_none()
+            && self.stop_after_ms.is_none()
+            && self.close_after_ms.is_none()
+    }
+
+    /// Stages in escalation order with their thresholds.
+    pub fn stages(&self) -> Vec<(IdleAction, u64)> {
+        [
+            (IdleAction::Pause, self.pause_after_ms),
+            (IdleAction::Suspend, self.suspend_after_ms),
+            (IdleAction::Stop, self.stop_after_ms),
+            (IdleAction::Close, self.close_after_ms),
+        ]
+        .into_iter()
+        .filter_map(|(action, threshold)| threshold.map(|threshold| (action, threshold)))
+        .collect()
+    }
+
+    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
+        if self.is_empty() {
+            return invalid("idle policy must set at least one stage");
+        }
+        let mut previous: Option<(IdleAction, u64)> = None;
+        for (action, threshold) in self.stages() {
+            if threshold == 0 {
+                return invalid(format!("idle policy {action:?} threshold must be positive"));
+            }
+            if let Some((earlier, earlier_threshold)) = previous
+                && threshold < earlier_threshold
+            {
+                return invalid(format!(
+                    "idle policy {action:?} threshold must not be below {earlier:?}"
+                ));
+            }
+            previous = Some((action, threshold));
+        }
+        Ok(())
+    }
+
+    /// The most escalated stage whose threshold `idle_for_ms` has crossed and
+    /// whose power state the provider supports (`close` is always
+    /// supported). Returns `None` while no stage applies.
+    pub fn due_action(&self, idle_for_ms: u64, supported: &[PowerState]) -> Option<IdleAction> {
+        self.stages()
+            .into_iter()
+            .filter(|(_, threshold)| idle_for_ms >= *threshold)
+            .filter(|(action, _)| {
+                action
+                    .power_state()
+                    .is_none_or(|state| supported.contains(&state))
+            })
+            .map(|(action, _)| action)
+            .next_back()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -281,6 +431,10 @@ pub struct EnvironmentIncarnationRecord {
     /// Provider-native reference used only while explicitly adopting an
     /// existing target. The provider converts it into `provider_target_id`.
     pub adoption_source_target: Option<String>,
+    /// Power states the provider reported this target supports; observed
+    /// with the target, empty until first observation or when the provider
+    /// offers no power control.
+    pub power_states: Vec<PowerState>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -292,15 +446,34 @@ pub struct EnvironmentRecord {
     pub source: EnvironmentSource,
     pub display_name: Option<String>,
     pub status: EnvironmentStatus,
+    /// Lightspeed-owned power intent (P126). The lifecycle reconciler
+    /// converges the provider target toward it; observed state is `status`.
+    pub desired_power: PowerState,
+    /// Optional staged idle policy the power reaper applies from the
+    /// daemon's idle report.
+    pub idle_policy: Option<EnvironmentIdlePolicy>,
     pub incarnation: EnvironmentIncarnationRecord,
     pub public_ingress_enabled: bool,
     pub public_endpoint: Option<String>,
+    /// Provenance recorded when a profile provisioned this environment for a
+    /// session. Not ownership: the environment stays a universe resource.
+    pub origin_session: Option<EnvironmentOriginSession>,
     pub metadata: BTreeMap<String, String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
 impl EnvironmentRecord {
+    /// True when the observed steady power state differs from the desired
+    /// one and the environment is in a state a power change can act on.
+    pub fn power_diverges(&self) -> bool {
+        matches!(self.source, EnvironmentSource::Provisioned { .. })
+            && self
+                .status
+                .power_state()
+                .is_some_and(|observed| observed != self.desired_power)
+    }
+
     pub fn provider_id(&self) -> Option<&EnvironmentProviderId> {
         self.source.provider_id()
     }
@@ -322,6 +495,12 @@ impl EnvironmentRecord {
             self.incarnation.updated_at_ms,
         )?;
         validate_nonempty_optional("public_endpoint", self.public_endpoint.as_deref())?;
+        if let Some(origin) = &self.origin_session {
+            origin.validate()?;
+        }
+        if let Some(policy) = &self.idle_policy {
+            policy.validate()?;
+        }
         if self.public_ingress_enabled != self.public_endpoint.is_some() {
             return invalid("public ingress requires exactly one public endpoint when enabled");
         }
@@ -361,12 +540,33 @@ impl EnvironmentRecord {
                     || self.incarnation.provider_target_id.is_some()
                     || self.incarnation.template_id.is_some()
                     || self.incarnation.adoption_source_target.is_some()
+                    || !self.incarnation.power_states.is_empty()
                 {
                     return invalid("external incarnation must not have provider linkage");
+                }
+                if self.desired_power != PowerState::Running || self.idle_policy.is_some() {
+                    return invalid("external environments have no power control");
                 }
             }
         }
         Ok(())
+    }
+}
+
+/// Session provenance of a profile-provisioned environment plus its optional
+/// close trigger.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentOriginSession {
+    pub session_id: SessionId,
+    pub profile_id: Option<String>,
+    /// When true, the lifecycle reconciler closes the environment once the
+    /// originating session is closed.
+    pub close_with_session: bool,
+}
+
+impl EnvironmentOriginSession {
+    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
+        validate_nonempty_optional("origin profile id", self.profile_id.as_deref())
     }
 }
 
@@ -379,6 +579,8 @@ pub struct CreateEnvironment {
     pub template_id: EnvironmentTemplateId,
     pub display_name: Option<String>,
     pub metadata: BTreeMap<String, String>,
+    pub origin_session: Option<EnvironmentOriginSession>,
+    pub idle_policy: Option<EnvironmentIdlePolicy>,
     pub created_at_ms: i64,
 }
 
@@ -410,6 +612,7 @@ pub struct ListEnvironments {
     pub provider_id: Option<EnvironmentProviderId>,
     pub binding_id: Option<EnvironmentProviderBindingId>,
     pub status: Option<EnvironmentStatus>,
+    pub origin_session_id: Option<SessionId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -417,7 +620,26 @@ pub struct ObserveProvisionedEnvironment {
     pub environment_id: EnvironmentId,
     pub provider_target_id: ProviderTargetId,
     pub status: EnvironmentStatus,
+    /// Provider-reported supported power states for this target.
+    pub power_states: Vec<PowerState>,
     pub observed_at_ms: i64,
+}
+
+/// Set the Lightspeed-owned power intent. Rejected for external, closing,
+/// closed, and failed environments; the caller validates provider support.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEnvironmentPower {
+    pub environment_id: EnvironmentId,
+    pub desired_power: PowerState,
+    pub updated_at_ms: i64,
+}
+
+/// Replace (or clear) the idle policy of a provisioned environment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetEnvironmentIdlePolicy {
+    pub environment_id: EnvironmentId,
+    pub idle_policy: Option<EnvironmentIdlePolicy>,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -567,6 +789,11 @@ pub trait EnvironmentStore: Send + Sync {
     async fn list_environments_needing_reconcile(
         &self,
     ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
+    /// Open (not closing/closed) environments whose origin session asked for
+    /// close-with-session. The caller decides whether the session is closed.
+    async fn list_environments_closing_with_session(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
     async fn observe_provisioned_environment(
         &self,
         request: ObserveProvisionedEnvironment,
@@ -587,6 +814,19 @@ pub trait EnvironmentStore: Send + Sync {
         &self,
         request: SetEnvironmentIngress,
     ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn set_environment_power(
+        &self,
+        request: SetEnvironmentPower,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn set_environment_idle_policy(
+        &self,
+        request: SetEnvironmentIdlePolicy,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    /// Ready provisioned environments carrying an idle policy: the power
+    /// reaper's candidates.
+    async fn list_environments_with_idle_policy(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
 }
 
 #[async_trait]

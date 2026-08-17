@@ -37,6 +37,9 @@ pub struct EnvironmentCreateParams {
     pub display_name: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
+    /// Optional staged idle policy applied by the power reaper.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<EnvironmentIdlePolicyView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -62,6 +65,9 @@ pub struct EnvironmentReadResponse {
 pub struct EnvironmentListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<EnvironmentProviderId>,
+    /// Only environments a profile provisioned for this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binding_id: Option<EnvironmentProviderBindingId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -100,6 +106,65 @@ pub struct EnvironmentIngressPutResponse {
     pub environment: EnvironmentView,
 }
 
+/// Steady power state of a provisioned environment (P126).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentPowerStateView {
+    Running,
+    /// Execution frozen with RAM resident; resume is near-instant.
+    Paused,
+    /// Execution state saved to disk; resume restores it.
+    Suspended,
+    /// Powered off with disk retained; resume is a fresh boot.
+    Stopped,
+}
+
+/// Staged idle policy. Thresholds are milliseconds of daemon-reported idle
+/// time and must be non-decreasing in the order pause, suspend, stop, close.
+/// Stages whose power state the provider does not support are skipped.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentIdlePolicyView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspend_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_after_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub close_after_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentPowerPutParams {
+    pub environment_id: EnvironmentId,
+    /// Desired steady power state. Must be one of the provider-reported
+    /// `incarnation.powerStates`.
+    pub power: EnvironmentPowerStateView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentPowerPutResponse {
+    pub environment: EnvironmentView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentIdlePolicyPutParams {
+    pub environment_id: EnvironmentId,
+    /// The complete new policy; omit to clear it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<EnvironmentIdlePolicyView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentIdlePolicyPutResponse {
+    pub environment: EnvironmentView,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EnvironmentExternalCreateParams {
@@ -124,6 +189,12 @@ pub enum EnvironmentLifecycleStatusView {
     Provisioning,
     Booting,
     Ready,
+    /// Execution frozen (P126); wakes on next use.
+    Paused,
+    /// Execution state saved to disk (P126); wakes on next use.
+    Suspended,
+    /// Powered off; provisioned environments wake on next use when the
+    /// provider supports power control.
     Offline,
     Closing,
     Closed,
@@ -174,6 +245,10 @@ pub struct EnvironmentIncarnationView {
     pub provider_target_id: Option<EnvironmentTargetId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template_id: Option<EnvironmentTemplateId>,
+    /// Power states the provider reported for this target; empty until
+    /// observed or when the provider offers no power control.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub power_states: Vec<EnvironmentPowerStateView>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -187,14 +262,33 @@ pub struct EnvironmentView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub status: EnvironmentLifecycleStatusView,
+    /// Lightspeed-owned power intent; `status` is the observed state.
+    pub desired_power: EnvironmentPowerStateView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idle_policy: Option<EnvironmentIdlePolicyView>,
     pub incarnation: EnvironmentIncarnationView,
     pub public_ingress_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub public_endpoint: Option<String>,
+    /// Present when a profile provisioned this environment for a session.
+    /// Provenance and an optional close trigger, not ownership: the
+    /// environment remains an ordinary universe resource.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_session: Option<EnvironmentOriginSessionView>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentOriginSessionView {
+    pub session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile_id: Option<ProfileId>,
+    /// When true, Lightspeed closes the environment once the session closes.
+    pub close_with_session: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

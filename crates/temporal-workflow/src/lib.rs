@@ -8,9 +8,9 @@ mod types;
 mod workflows;
 
 pub use activities::{
-    ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION,
-    ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CONTEXT_COMPACT,
-    ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
+    ACTIVITY_APPEND_EVENTS, ACTIVITY_AWAIT_ENVIRONMENT_READY,
+    ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_CONTEXT_COMPACT, ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
     ACTIVITY_ENVIRONMENT_JOB_POLL, ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL,
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
@@ -21,11 +21,13 @@ pub use activities::{
 pub use config::{
     DEFAULT_BOOTSTRAP_PAYLOAD_BUDGET_BYTES, DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD,
     DEFAULT_MODEL, DEFAULT_TASK_QUEUE, DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET,
-    FAKE_TOOL_NAME, LLM_RETRY_MAX_ATTEMPTS, LLM_RETRY_MAX_INTERVAL, LLM_SCHEDULE_TO_CLOSE,
-    LLM_START_TO_CLOSE, MAX_CONCURRENT_TOOL_CALLS_PER_BATCH, PROCESS_TIMEOUT_CEILING,
-    TOOL_INTERACTIVE_OPERATION_TIMEOUT, TOOL_PROCESS_GRACE, TOOL_REMOTE_OPERATION_TIMEOUT,
-    TOOL_RETRY_SAFE_MAX_ATTEMPTS, activity_options, boundary_error_blob_activity_options,
-    default_instructions, default_run_config, default_session_config, llm_activity_options,
+    ENVIRONMENT_READY_GRACE, ENVIRONMENT_READY_HEARTBEAT_TIMEOUT, ENVIRONMENT_READY_POLL_INTERVAL,
+    ENVIRONMENT_READY_WAIT, FAKE_TOOL_NAME, LLM_RETRY_MAX_ATTEMPTS, LLM_RETRY_MAX_INTERVAL,
+    LLM_SCHEDULE_TO_CLOSE, LLM_START_TO_CLOSE, MAX_CONCURRENT_TOOL_CALLS_PER_BATCH,
+    PROCESS_TIMEOUT_CEILING, TOOL_INTERACTIVE_OPERATION_TIMEOUT, TOOL_PROCESS_GRACE,
+    TOOL_REMOTE_OPERATION_TIMEOUT, TOOL_RETRY_SAFE_MAX_ATTEMPTS, activity_options,
+    boundary_error_blob_activity_options, default_instructions, default_run_config,
+    default_session_config, environment_ready_activity_options, llm_activity_options,
     tool_batch_activity_options, tool_call_activity_options, tool_call_operation_timeout,
 };
 pub use rehydrate::{ReducedSession, RehydrateError, reduce_session_entries};
@@ -34,6 +36,7 @@ pub use types::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,
     AgentCompletedRunSummary, AgentMessageSubmissionConsumptionSummary, AgentQueuedRunSummary,
     AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
+    AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
     AwaitMaterializationRequest, AwaitOutcome, AwaitPromiseResult, CancellingWatchdog,
     ContextCompactActivityRequest, CreateOrLoadSessionRequest, CreateOrLoadSessionResult,
     EnvironmentJobCancelActivityRequest, EnvironmentJobCancelSignal,
@@ -49,7 +52,7 @@ pub use types::{
     PreprocessRunInputFailureKind, PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, SessionBootstrapPayloadTooLarge,
-    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest,
+    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
     ToolPreparePromiseControlsActivityRequest, WORKFLOW_TOOL_RECIPE_FORMAT_V1,
     WORKFLOW_TOOL_RECOVERY_QUERY, WorkflowToolExecutionCancelRequest,
     WorkflowToolExecutionCheckRequest, WorkflowToolRecipeV1, WorkflowToolRecoveryResult,

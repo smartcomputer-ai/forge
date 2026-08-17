@@ -135,6 +135,44 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -374,13 +412,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "InlineAgentProfile": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -402,6 +433,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -520,6 +562,102 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "idlePolicy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/EnvironmentIdlePolicyView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -2752,6 +2890,44 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -2991,13 +3167,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "InlineAgentProfile": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -3019,6 +3188,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -3137,6 +3317,102 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "idlePolicy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/EnvironmentIdlePolicyView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -3772,6 +4048,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "idlePolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnvironmentIdlePolicyView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional staged idle policy applied by the power reaper."
+        },
         "metadata": {
           "additionalProperties": {
             "type": "string"
@@ -3792,7 +4079,47 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "bindingId",
         "templateId"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      }
     }
   },
   {
@@ -3831,6 +4158,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "originSessionId": {
+          "description": "Only environments a profile provisioned for this session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "providerId": {
           "type": [
             "string",
@@ -3851,17 +4185,35 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "type": "object",
       "definitions": {
         "EnvironmentLifecycleStatusView": {
-          "enum": [
-            "provisioning",
-            "booting",
-            "ready",
-            "offline",
-            "closing",
-            "closed",
-            "failed",
-            "unknown"
-          ],
-          "type": "string"
+          "oneOf": [
+            {
+              "enum": [
+                "provisioning",
+                "booting",
+                "ready",
+                "closing",
+                "closed",
+                "failed",
+                "unknown"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Execution frozen (P126); wakes on next use.",
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "Execution state saved to disk (P126); wakes on next use.",
+              "type": "string"
+            },
+            {
+              "const": "offline",
+              "description": "Powered off; provisioned environments wake on next use when the\nprovider supports power control.",
+              "type": "string"
+            }
+          ]
         }
       }
     }
@@ -4004,6 +4356,134 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
+    "name": "lightspeed_environments_power_put",
+    "method": "environments/power/put",
+    "summary": "Set environment power intent",
+    "description": "Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.",
+    "paramsType": "EnvironmentPowerPutParams",
+    "resultType": "AgentApiOutcome<EnvironmentPowerPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "power": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvironmentPowerStateView"
+            }
+          ],
+          "description": "Desired steady power state. Must be one of the provider-reported\n`incarnation.powerStates`."
+        }
+      },
+      "required": [
+        "environmentId",
+        "power"
+      ],
+      "type": "object",
+      "definitions": {
+        "EnvironmentPowerStateView": {
+          "description": "Steady power state of a provisioned environment (P126).",
+          "oneOf": [
+            {
+              "enum": [
+                "running"
+              ],
+              "type": "string"
+            },
+            {
+              "const": "paused",
+              "description": "Execution frozen with RAM resident; resume is near-instant.",
+              "type": "string"
+            },
+            {
+              "const": "suspended",
+              "description": "Execution state saved to disk; resume restores it.",
+              "type": "string"
+            },
+            {
+              "const": "stopped",
+              "description": "Powered off with disk retained; resume is a fresh boot.",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_environments_idle-policy_put",
+    "method": "environments/idle-policy/put",
+    "summary": "Set environment idle policy",
+    "description": "Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.",
+    "paramsType": "EnvironmentIdlePolicyPutParams",
+    "resultType": "AgentApiOutcome<EnvironmentIdlePolicyPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "environmentId": {
+          "type": "string"
+        },
+        "idlePolicy": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EnvironmentIdlePolicyView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The complete new policy; omit to clear it."
+        }
+      },
+      "required": [
+        "environmentId"
+      ],
+      "type": "object",
+      "definitions": {
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        }
+      }
+    }
+  },
+  {
     "name": "lightspeed_environments_provider-bindings_list",
     "method": "environments/provider-bindings/list",
     "summary": "List environment provider bindings",
@@ -4119,13 +4599,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -4147,6 +4620,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -4244,6 +4728,44 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
               ]
             }
           },
@@ -4590,6 +5112,102 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "idlePolicy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/EnvironmentIdlePolicyView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"
@@ -5067,13 +5685,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "definitions": {
         "AgentProfileInput": {
           "properties": {
-            "activeEnvironmentId": {
-              "description": "Universe environment to activate when this profile is applied. Absence\nleaves the session's current active environment unchanged.",
-              "type": [
-                "string",
-                "null"
-              ]
-            },
             "config": {
               "anyOf": [
                 {
@@ -5095,6 +5706,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "string",
                 "null"
               ]
+            },
+            "environment": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileEnvironment"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "How the session obtains its active environment when this profile is\napplied: activate an existing universe environment, or provision a\nfresh one for this session. Absence leaves the session's current\nactive environment unchanged."
             },
             "instructions": {
               "anyOf": [
@@ -5192,6 +5814,44 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "EnvironmentIdlePolicyView": {
+          "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
+          "properties": {
+            "closeAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "pauseAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "stopAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "suspendAfterMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
               ]
             }
           },
@@ -5538,6 +6198,102 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ProfileEnvironment": {
+          "description": "Environment intent carried by a profile document.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate an existing universe environment. The profile never closes\nit.",
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
+              "properties": {
+                "displayName": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "idlePolicy": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/EnvironmentIdlePolicyView"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                },
+                "metadata": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "type": "object"
+                },
+                "providerId": {
+                  "type": "string"
+                },
+                "retention": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ProfileEnvironmentRetention"
+                    }
+                  ],
+                  "default": "closeWithSession"
+                },
+                "templateId": {
+                  "description": "Immutable provider template-version identity.",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "provision",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId",
+                "templateId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileEnvironmentRetention": {
+          "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
+          "oneOf": [
+            {
+              "const": "closeWithSession",
+              "description": "Close the environment when the session that provisioned it closes.",
+              "type": "string"
+            },
+            {
+              "const": "retain",
+              "description": "Leave the environment open; the universe owns its cleanup.",
+              "type": "string"
+            }
+          ]
         },
         "ProfileId": {
           "type": "string"

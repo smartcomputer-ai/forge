@@ -12,22 +12,24 @@ use temporalio_sdk::activities::{ActivityContext, ActivityError};
 use crate::fleet::FleetChildRuntime;
 use crate::universe::{UniverseError, UniverseRuntime};
 use crate::worker::{
-    ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION,
-    ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CONTEXT_COMPACT,
-    ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
+    ACTIVITY_APPEND_EVENTS, ACTIVITY_AWAIT_ENVIRONMENT_READY,
+    ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION, ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_CONTEXT_COMPACT, ACTIVITY_CREATE_OR_LOAD_SESSION, ACTIVITY_ENVIRONMENT_JOB_CANCEL,
     ACTIVITY_ENVIRONMENT_JOB_POLL, ACTIVITY_ENVIRONMENT_JOB_PREPARE_WORKFLOW_TOOL,
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
     ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
-    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest, ContextCompactActivityRequest,
-    CreateOrLoadSessionRequest, CreateOrLoadSessionResult, EnvironmentJobCancelActivityRequest,
-    EnvironmentJobPollActivityRequest, EnvironmentJobPollActivityResult,
-    EnvironmentJobStartActivityRequest, EnvironmentJobStartActivityResult,
-    LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
-    PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
-    RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
-    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest,
+    ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest,
+    AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
+    ContextCompactActivityRequest, CreateOrLoadSessionRequest, CreateOrLoadSessionResult,
+    EnvironmentJobCancelActivityRequest, EnvironmentJobPollActivityRequest,
+    EnvironmentJobPollActivityResult, EnvironmentJobStartActivityRequest,
+    EnvironmentJobStartActivityResult, LlmGenerateActivityRequest,
+    PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult, PutBlobRequest,
+    ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
+    RuntimeProjectionRefreshActivityResult, ToolInvokeBatchActivityRequest,
+    ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
     ToolPreparePromiseControlsActivityRequest,
 };
 
@@ -235,6 +237,10 @@ mod tests {
         assert_eq!(
             WorkerActivities::tool_invoke_call.name(),
             temporal_workflow::WorkflowActivities::tool_invoke_call.name()
+        );
+        assert_eq!(
+            WorkerActivities::await_environment_ready.name(),
+            temporal_workflow::WorkflowActivities::await_environment_ready.name()
         );
         assert_eq!(
             WorkerActivities::tool_prepare_promise_controls.name(),
@@ -531,9 +537,19 @@ impl WorkerActivities {
         self: Arc<Self>,
         ctx: ActivityContext,
         request: ToolInvokeCallActivityRequest,
-    ) -> Result<engine::ToolInvocationResult, ActivityError> {
+    ) -> Result<ToolInvokeCallActivityResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
         tools::invoke_call(state.tools(), request).await
+    }
+
+    #[activity(name = ACTIVITY_AWAIT_ENVIRONMENT_READY)]
+    pub async fn await_environment_ready(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        request: AwaitEnvironmentReadyActivityRequest,
+    ) -> Result<AwaitEnvironmentReadyActivityResult, ActivityError> {
+        let state = self.state_for(&ctx).await?;
+        tools::await_environment_ready(state.tools(), &ctx, request).await
     }
 
     #[activity(name = ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS)]

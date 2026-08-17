@@ -82,16 +82,32 @@ const sessionInstructionsPutSchema = z.object({
   text: z.string().max(1_000_000).nullable(),
 });
 
+const environmentIdlePolicySchema = z.object({
+  pauseAfterMs: z.number().int().positive().optional(),
+  suspendAfterMs: z.number().int().positive().optional(),
+  stopAfterMs: z.number().int().positive().optional(),
+  closeAfterMs: z.number().int().positive().optional(),
+});
+
 const environmentCreateSchema = z.object({
   requestId: z.string().trim().min(1).max(200),
   bindingId: z.string().trim().min(1).max(200),
   templateId: z.string().trim().min(1).max(200),
   displayName: z.string().trim().min(1).max(200).optional(),
   metadata: z.record(z.string(), z.string()).optional(),
+  idlePolicy: environmentIdlePolicySchema.optional(),
 });
 
 const environmentIngressPutSchema = z.object({
   enabled: z.boolean(),
+});
+
+const environmentPowerPutSchema = z.object({
+  power: z.enum(["running", "paused", "suspended", "stopped"]),
+});
+
+const environmentIdlePolicyPutSchema = z.object({
+  idlePolicy: environmentIdlePolicySchema.nullable().optional(),
 });
 
 const environmentCredentialBindSchema = z.object({
@@ -891,6 +907,10 @@ export function gatewayRoutes(ctx: AppContext) {
       if (status) {
         params.status = status as EnvironmentListParams["status"];
       }
+      const originSessionId = c.req.query("originSessionId");
+      if (originSessionId) {
+        params.originSessionId = originSessionId;
+      }
       const response = await client.call("environments/list", params);
       return c.json(response.result.environments ?? []);
     });
@@ -929,6 +949,44 @@ export function gatewayRoutes(ctx: AppContext) {
       const response = await client.call("environments/ingress/put", {
         environmentId: c.req.param("environmentId"),
         enabled: body.data.enabled,
+      });
+      return c.json(response.result.environment);
+    });
+  });
+
+  app.put("/:id/environments/:environmentId/power", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, environmentPowerPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("environments/power/put", {
+        environmentId: c.req.param("environmentId"),
+        power: body.data.power,
+      });
+      return c.json(response.result.environment);
+    });
+  });
+
+  app.put("/:id/environments/:environmentId/idle-policy", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, environmentIdlePolicyPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("environments/idle-policy/put", {
+        environmentId: c.req.param("environmentId"),
+        ...(body.data.idlePolicy ? { idlePolicy: body.data.idlePolicy } : {}),
       });
       return c.json(response.result.environment);
     });

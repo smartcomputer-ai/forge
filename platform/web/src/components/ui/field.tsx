@@ -52,7 +52,10 @@ function FieldGroup({ className, ...props }: React.ComponentProps<"div">) {
 }
 
 const fieldVariants = cva(
-  "group/field flex w-full gap-3 data-[invalid=true]:text-destructive",
+  // `min-w-0`: fields sit in CSS grids/flex rows whose tracks default to a
+  // content-sized minimum; long select labels or mono ids would otherwise
+  // widen the whole form instead of truncating inside the control.
+  "group/field flex w-full min-w-0 gap-3 data-[invalid=true]:text-destructive",
   {
     variants: {
       orientation: {

@@ -49,21 +49,50 @@ function ComboboxClear({ className, ...props }: ComboboxPrimitive.Clear.Props) {
   )
 }
 
+/// Single-value combobox input. The field shows the selected item's label,
+/// so the first keystroke must replace it rather than append: on focus the
+/// whole text is selected (the mouseup that follows a click is prevented from
+/// collapsing that selection once), exactly like a browser address bar. Base
+/// UI already shows the full, unfiltered list while the text still equals the
+/// selected label and restores it when the popup closes without a choice.
 function ComboboxInput({
   className,
   children,
   disabled = false,
   showTrigger = true,
   showClear = false,
+  onFocus,
+  onBlur,
+  onMouseUp,
   ...props
 }: ComboboxPrimitive.Input.Props & {
   showTrigger?: boolean
   showClear?: boolean
 }) {
+  const keepSelectionOnMouseUp = React.useRef(false)
   return (
     <InputGroup className={cn("w-auto", className)}>
       <ComboboxPrimitive.Input
         render={<InputGroupInput disabled={disabled} />}
+        onFocus={(event) => {
+          onFocus?.(event)
+          const input = event.currentTarget
+          if (input.value) {
+            input.select()
+            keepSelectionOnMouseUp.current = true
+          }
+        }}
+        onBlur={(event) => {
+          onBlur?.(event)
+          keepSelectionOnMouseUp.current = false
+        }}
+        onMouseUp={(event) => {
+          onMouseUp?.(event)
+          if (keepSelectionOnMouseUp.current) {
+            keepSelectionOnMouseUp.current = false
+            event.preventDefault()
+          }
+        }}
         {...props}
       />
       <InputGroupAddon align="inline-end">

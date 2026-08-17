@@ -77,7 +77,8 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
   shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
-- [x] **Agent profiles**: reusable session setups, shared across clients and fleets
+- [x] **Agent profiles**: reusable session setups, shared across clients and fleets;
+  a profile can activate an existing environment or provision a fresh one per session
 
 **Durability & scale**
 
@@ -96,10 +97,14 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
   and selection is a separate, default-off `selectionTools` grant. Ordinary
   file and process tools always operate on the selected environment and never
   on linked VFS content. The in-repo stateless Incus provider supplies
-  durable full-VM provisioning, explicit takeover of existing VMs, and
-  on-demand envd routes; real
+  durable full-VM provisioning, explicit takeover of existing VMs,
+  on-demand envd routes, and pause/stop power control; real
   Incus deployment still requires node certificates, an immutable image, and
   provider policy configuration
+- [x] **Environment power states and idle policy**: environments can be
+  paused, suspended, or stopped by intent, staged idle policies power them
+  down from the daemon's own idle clock, and any powered-down environment
+  wakes transparently on its next use
 - [x] **Provider-owned jobs** for long-running work: downloads, experiments,
   and delegated coding-agent runs with optional session/run supervision. Jobs
   are an advanced, default-off environment grant and appear as model tools

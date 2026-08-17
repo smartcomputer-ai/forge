@@ -6,9 +6,10 @@ use environment_protocol::{
             ReadDirectoryParams, ReadFileParams, RemoveParams, SearchTextParams, WriteFileParams,
         },
         handshake::{InitializeParams, InitializeResponse, InitializedParams},
+        idle::IdleParams,
         jobs::{CancelJobsParams, ListJobsParams, ReadJobsParams, StartJobsParams},
         methods::{
-            FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD,
+            ENV_IDLE_METHOD, FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD,
             FS_GLOB_FILES_METHOD, FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD,
             FS_SEARCH_TEXT_METHOD, FS_WRITE_FILE_METHOD,
             INITIALIZE_METHOD as DATA_INITIALIZE_METHOD, INITIALIZED_METHOD, JOB_CANCEL_METHOD,
@@ -149,7 +150,16 @@ async fn handle_data(
     method: &str,
     params: Value,
 ) -> Result<Value, EnvironmentProtocolError> {
+    // Handshakes and idle reports are observation, not use: only real
+    // filesystem/process/job requests count as activity.
+    if !matches!(method, DATA_INITIALIZE_METHOD | ENV_IDLE_METHOD) {
+        runtime.touch_activity();
+    }
     match method {
+        ENV_IDLE_METHOD => {
+            decode_params::<IdleParams>(params)?;
+            encode_result(runtime.idle_report().await)
+        }
         DATA_INITIALIZE_METHOD => {
             let params = decode_params::<InitializeParams>(params)?;
             if params.protocol_version != CURRENT_PROTOCOL_VERSION {

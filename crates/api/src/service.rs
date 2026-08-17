@@ -172,6 +172,16 @@ pub trait AgentApiService: Send + Sync {
         params: EnvironmentIngressPutParams,
     ) -> Result<AgentApiOutcome<EnvironmentIngressPutResponse>, AgentApiError>;
 
+    async fn put_environment_power(
+        &self,
+        params: EnvironmentPowerPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentPowerPutResponse>, AgentApiError>;
+
+    async fn put_environment_idle_policy(
+        &self,
+        params: EnvironmentIdlePolicyPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentIdlePolicyPutResponse>, AgentApiError>;
+
     async fn list_environment_provider_bindings(
         &self,
         _params: EnvironmentProviderBindingListParams,

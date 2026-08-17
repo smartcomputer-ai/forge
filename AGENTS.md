@@ -261,6 +261,32 @@ Release construction, snapshots, and tagged publication are documented in
   `features.environments.selectionTools` exposes model discovery/selection;
   jobs remain an independent sub-grant. Prompts and `skills.catalog.vfs` are
   VFS-only. See `docs/roadmap/p113-explicit-vfs-and-environment-tool-domains.md`.
+- A profile's `environment` is an intent, not an id: `existing` activates a
+  universe environment and never closes it; `provision` creates one
+  environment per session (request id derived from the session id) from the
+  universe's enabled binding for `providerId`, activates it while it is still
+  provisioning, and by default closes it with the session. Environments record
+  `originSession` as provenance and an optional close trigger, never
+  ownership. Environment-dependent tool calls against a not-ready environment
+  do not wait inside the tool activity: the worker reports
+  `EnvironmentNotReady`, the workflow runs `await_environment_ready`, then
+  re-dispatches the call. Do not put provisioning in `SessionConfig`, on
+  `session/start`, or behind a model tool. See
+  `docs/roadmap/p125-profile-provisioned-environments.md`.
+- Environment power is intent plus observation (P126). `desiredPower`
+  (`running | paused | suspended | stopped`) is a Lightspeed-owned column that
+  the lifecycle reconciler converges through one provider verb,
+  `controller/setTargetPower`; observed state stays in `status`
+  (`paused`/`suspended`/`offline`). Providers advertise the states they
+  support per target (`powerStates`); Lightspeed validates against that and
+  never stores activity. Idle detection is the daemon's monotonic
+  `env/idle` report read on demand by the power reaper, which applies the
+  environment's staged `idlePolicy` (pause → suspend → stop → close, skipping
+  stages the provider lacks). A powered-down provisioned environment wakes on
+  use: the resolver sets desired `running` and reports `NotReady`, reusing the
+  P125 `await_environment_ready` path. Do not add per-call `lastUsedAt`
+  writes, provider-side policy, or feature-specific pause/resume verbs. See
+  `docs/roadmap/p126-environment-power-and-idle-policy.md`.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

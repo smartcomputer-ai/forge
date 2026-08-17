@@ -7,9 +7,11 @@ import { ApiKeysPage } from "@/pages/ApiKeysPage";
 import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
+import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { FoundryPage } from "@/pages/FoundryPage";
+import { FOUNDRY_ENABLED } from "@/lib/features";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
 import { LoginPage } from "@/pages/LoginPage";
@@ -94,8 +96,12 @@ export function App() {
           path="u/:slug/workspaces/:workspaceId/files/*"
           element={<WorkspacesPage admin={admin} />}
         />
-        <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
-        <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
+        {FOUNDRY_ENABLED && (
+          <>
+            <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
+            <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
+          </>
+        )}
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"
@@ -148,6 +154,7 @@ export function App() {
             <Route path="admin/users" element={<AdminUsersPage />} />
             <Route path="admin/universes" element={<AdminUniversesPage />} />
             <Route path="admin/channels" element={<AdminChannelsPage />} />
+            <Route path="admin/environment-providers" element={<AdminEnvironmentProvidersPage />} />
           </>
         )}
         <Route path="account" element={<AccountPage user={user} />} />

@@ -39,6 +39,8 @@ fn create(request: &str, environment: &str, incarnation: &str, at: i64) -> Creat
         template_id: EnvironmentTemplateId::new("rust-v1"),
         display_name: None,
         metadata: BTreeMap::new(),
+        origin_session: None,
+        idle_policy: None,
         created_at_ms: at,
     }
 }
@@ -221,12 +223,17 @@ async fn provider_observation_populates_only_the_current_incarnation() {
             environment_id: environment.environment_id.clone(),
             provider_target_id: target_id.clone(),
             status: EnvironmentStatus::Ready,
+            power_states: vec![PowerState::Running, PowerState::Paused],
             observed_at_ms: 3_000,
         })
         .await
         .expect("observe");
     assert_eq!(observed.status, EnvironmentStatus::Ready);
     assert_eq!(observed.incarnation.provider_target_id, Some(target_id));
+    assert_eq!(
+        observed.incarnation.power_states,
+        vec![PowerState::Running, PowerState::Paused]
+    );
     assert_eq!(
         observed.incarnation.template_id,
         Some(EnvironmentTemplateId::new("rust-v1"))
@@ -355,4 +362,261 @@ async fn disabled_binding_blocks_create_and_live_references_block_delete() {
         .delete_provider_binding(universe_id, &EnvironmentProviderBindingId::new("primary"))
         .await
         .expect("delete");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn origin_session_is_recorded_listed_and_swept() {
+    let (_universe, store) = store().await;
+    let mut request = create("session:s-1", "env-s1", "inc-s1", 1);
+    request.origin_session = Some(EnvironmentOriginSession {
+        session_id: SessionId::new("s-1"),
+        profile_id: Some("coder".to_owned()),
+        close_with_session: true,
+    });
+    let created = store.create_environment(request).await.expect("create");
+    assert_eq!(
+        created
+            .origin_session
+            .as_ref()
+            .map(|origin| origin.session_id.as_str()),
+        Some("s-1")
+    );
+    let plain = store
+        .create_environment(create("plain", "env-plain", "inc-plain", 2))
+        .await
+        .expect("create plain");
+    assert!(plain.origin_session.is_none());
+
+    let by_session = store
+        .list_environments(ListEnvironments {
+            provider_id: None,
+            binding_id: None,
+            status: None,
+            origin_session_id: Some(SessionId::new("s-1")),
+        })
+        .await
+        .expect("list");
+    assert_eq!(by_session.len(), 1);
+    assert_eq!(by_session[0].environment_id.as_str(), "env-s1");
+
+    let sweep = store
+        .list_environments_closing_with_session()
+        .await
+        .expect("sweep");
+    assert_eq!(sweep.len(), 1);
+    assert_eq!(sweep[0].environment_id.as_str(), "env-s1");
+
+    store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: EnvironmentId::new("env-s1"),
+            updated_at_ms: 3,
+        })
+        .await
+        .expect("begin close");
+    assert!(
+        store
+            .list_environments_closing_with_session()
+            .await
+            .expect("sweep")
+            .is_empty()
+    );
+}
+
+#[test]
+fn session_provision_request_id_is_deterministic_and_bounded() {
+    let short = SessionId::new("session-1");
+    assert_eq!(
+        EnvironmentProvisionRequestId::for_session(&short).as_str(),
+        "session:session-1"
+    );
+    assert_eq!(
+        EnvironmentProvisionRequestId::for_session(&short),
+        EnvironmentProvisionRequestId::for_session(&short)
+    );
+    let long = SessionId::new("s".repeat(128));
+    let derived = EnvironmentProvisionRequestId::for_session(&long);
+    assert!(derived.as_str().starts_with("session:sha256-"));
+    assert!(derived.as_str().len() <= 128);
+    assert_eq!(derived, EnvironmentProvisionRequestId::for_session(&long));
+}
+
+#[test]
+fn idle_policy_validates_monotone_stages_and_picks_the_supported_due_action() {
+    let policy = EnvironmentIdlePolicy {
+        pause_after_ms: Some(10),
+        suspend_after_ms: Some(20),
+        stop_after_ms: Some(30),
+        close_after_ms: Some(40),
+    };
+    policy.validate().expect("valid");
+    assert!(EnvironmentIdlePolicy::default().validate().is_err());
+    assert!(
+        EnvironmentIdlePolicy {
+            pause_after_ms: Some(0),
+            ..EnvironmentIdlePolicy::default()
+        }
+        .validate()
+        .is_err()
+    );
+    assert!(
+        EnvironmentIdlePolicy {
+            pause_after_ms: Some(30),
+            stop_after_ms: Some(10),
+            ..EnvironmentIdlePolicy::default()
+        }
+        .validate()
+        .is_err()
+    );
+    let incus = [PowerState::Running, PowerState::Paused, PowerState::Stopped];
+    assert_eq!(policy.due_action(5, &incus), None);
+    assert_eq!(policy.due_action(10, &incus), Some(IdleAction::Pause));
+    // Suspend is due but unsupported by this provider: pause stays the
+    // most escalated applicable stage.
+    assert_eq!(policy.due_action(25, &incus), Some(IdleAction::Pause));
+    assert_eq!(policy.due_action(30, &incus), Some(IdleAction::Stop));
+    assert_eq!(policy.due_action(40, &incus), Some(IdleAction::Close));
+    // Close never needs provider support.
+    assert_eq!(policy.due_action(40, &[]), Some(IdleAction::Close));
+    assert_eq!(policy.due_action(30, &[]), None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn power_intent_and_idle_policy_are_provisioned_only_and_drive_reconcile_lists() {
+    let (_, store) = store().await;
+    let environment = store
+        .create_environment(create("request-1", "environment-1", "incarnation-1", 2_000))
+        .await
+        .expect("create");
+    assert_eq!(environment.desired_power, PowerState::Running);
+    assert!(environment.idle_policy.is_none());
+
+    store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment.environment_id.clone(),
+            provider_target_id: ProviderTargetId::new("target-1"),
+            status: EnvironmentStatus::Ready,
+            power_states: vec![PowerState::Running, PowerState::Paused],
+            observed_at_ms: 3_000,
+        })
+        .await
+        .expect("observe");
+    // Ready and converged: nothing to reconcile.
+    assert!(
+        store
+            .list_environments_needing_reconcile()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let paused = store
+        .set_environment_power(SetEnvironmentPower {
+            environment_id: environment.environment_id.clone(),
+            desired_power: PowerState::Paused,
+            updated_at_ms: 4_000,
+        })
+        .await
+        .expect("set power");
+    assert_eq!(paused.desired_power, PowerState::Paused);
+    assert!(paused.power_diverges());
+    let pending = store.list_environments_needing_reconcile().await.unwrap();
+    assert_eq!(pending.len(), 1);
+
+    // Observed paused: converged again.
+    store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment.environment_id.clone(),
+            provider_target_id: ProviderTargetId::new("target-1"),
+            status: EnvironmentStatus::Paused,
+            power_states: vec![PowerState::Running, PowerState::Paused],
+            observed_at_ms: 5_000,
+        })
+        .await
+        .expect("observe paused");
+    assert!(
+        store
+            .list_environments_needing_reconcile()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    // Idle policy only lists ready environments.
+    let policy = EnvironmentIdlePolicy {
+        pause_after_ms: Some(60_000),
+        ..EnvironmentIdlePolicy::default()
+    };
+    store
+        .set_environment_idle_policy(SetEnvironmentIdlePolicy {
+            environment_id: environment.environment_id.clone(),
+            idle_policy: Some(policy.clone()),
+            updated_at_ms: 6_000,
+        })
+        .await
+        .expect("policy");
+    assert!(
+        store
+            .list_environments_with_idle_policy()
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    store
+        .observe_provisioned_environment(ObserveProvisionedEnvironment {
+            environment_id: environment.environment_id.clone(),
+            provider_target_id: ProviderTargetId::new("target-1"),
+            status: EnvironmentStatus::Ready,
+            power_states: vec![PowerState::Running, PowerState::Paused],
+            observed_at_ms: 7_000,
+        })
+        .await
+        .expect("observe ready");
+    let candidates = store.list_environments_with_idle_policy().await.unwrap();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].idle_policy, Some(policy));
+
+    // External environments have no power control.
+    let external = store
+        .create_external_environment(CreateExternalEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("external-1"),
+            environment_id: EnvironmentId::new("external-env"),
+            incarnation_id: EnvironmentIncarnationId::new("external-inc"),
+            connection: EnvironmentConnectionSpec::new(
+                "ws://envd.test:9000",
+                environment_protocol::shared::EnvironmentTransport::WebSocket,
+            ),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            created_at_ms: 8_000,
+        })
+        .await
+        .expect("external");
+    assert!(matches!(
+        store
+            .set_environment_power(SetEnvironmentPower {
+                environment_id: external.environment_id.clone(),
+                desired_power: PowerState::Paused,
+                updated_at_ms: 9_000,
+            })
+            .await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
+
+    // Closing environments cannot change power.
+    store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: environment.environment_id.clone(),
+            updated_at_ms: 10_000,
+        })
+        .await
+        .expect("close");
+    assert!(matches!(
+        store
+            .set_environment_power(SetEnvironmentPower {
+                environment_id: environment.environment_id.clone(),
+                desired_power: PowerState::Running,
+                updated_at_ms: 11_000,
+            })
+            .await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
 }

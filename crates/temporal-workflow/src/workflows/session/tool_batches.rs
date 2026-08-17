@@ -17,8 +17,10 @@ use futures::future::select_all;
 use temporalio_sdk::ActivityExecutionError;
 
 use crate::{
+    AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
     MAX_CONCURRENT_TOOL_CALLS_PER_BATCH, ToolInvokeCallActivityRequest,
-    boundary_error_blob_activity_options, tool_call_activity_options,
+    ToolInvokeCallActivityResult, boundary_error_blob_activity_options,
+    environment_ready_activity_options, tool_call_activity_options,
 };
 
 use super::*;
@@ -108,8 +110,16 @@ fn execution_groups(
 /// context directly; combinators with internal waker machinery (e.g.
 /// `FuturesUnordered`) trip the SDK's nondeterminism detector ([TMPRL1100])
 /// and must not be used inside workflow code.
-type InflightCall =
-    Pin<Box<dyn Future<Output = (usize, Result<ToolInvocationResult, ActivityExecutionError>)>>>;
+type InflightCall = Pin<
+    Box<
+        dyn Future<
+            Output = (
+                usize,
+                Result<ToolInvokeCallActivityResult, ActivityExecutionError>,
+            ),
+        >,
+    >,
+>;
 
 async fn execute_call_group(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
@@ -165,18 +175,29 @@ fn start_call_activity(
 /// infrastructure) becomes an ordinary terminal failed call result, a
 /// cancelled activity records a terminal cancelled result, and a result whose
 /// call id does not match the scheduled call is rejected as a boundary
-/// failure. The drive then appends the durable per-call completion.
+/// failure. A call that did not execute because its active environment is
+/// still provisioning waits for readiness in a dedicated heartbeated activity
+/// and is re-dispatched once (P125). The drive then appends the durable
+/// per-call completion.
 async fn resume_call(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     drive: &mut CoreAgentDrive,
     request: &ToolInvocationBatchRequest,
     index: usize,
-    outcome: Result<ToolInvocationResult, ActivityExecutionError>,
+    outcome: Result<ToolInvokeCallActivityResult, ActivityExecutionError>,
 ) -> anyhow::Result<()> {
+    let outcome = match outcome {
+        Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id }) => {
+            await_environment_then_redispatch(ctx, drive.state(), request, index, environment_id)
+                .await
+        }
+        Ok(ToolInvokeCallActivityResult::Completed { result }) => CallOutcome::Completed(result),
+        Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
+    };
     let scheduled_call_id = &request.calls[index].call_id;
     let result = match outcome {
-        Ok(result) if result.call_id == *scheduled_call_id => result,
-        Ok(result) => {
+        CallOutcome::Completed(result) if result.call_id == *scheduled_call_id => result,
+        CallOutcome::Completed(result) => {
             let error_ref = put_boundary_error_blob(
                 ctx,
                 &format!(
@@ -187,10 +208,14 @@ async fn resume_call(
             .await;
             boundary_call_result(scheduled_call_id.clone(), ToolCallStatus::Failed, error_ref)
         }
-        Err(error) => {
+        CallOutcome::ActivityFailed(error) => {
             let status = boundary_call_status(&error);
             let error_ref = put_boundary_error_blob(ctx, &format!("{error}")).await;
             boundary_call_result(scheduled_call_id.clone(), status, error_ref)
+        }
+        CallOutcome::EnvironmentUnusable(message) => {
+            let error_ref = put_boundary_error_blob(ctx, &message).await;
+            boundary_call_result(scheduled_call_id.clone(), ToolCallStatus::Failed, error_ref)
         }
     };
     let action = drive.resume_tool_call(request.batch_id, result, workflow_time_ms(ctx))?;
@@ -203,6 +228,68 @@ async fn resume_call(
             Ok(())
         }
         other => anyhow::bail!("tool call resume emitted unexpected action: {other:?}"),
+    }
+}
+
+/// One call's outcome after the optional readiness wait.
+enum CallOutcome {
+    Completed(ToolInvocationResult),
+    ActivityFailed(Box<ActivityExecutionError>),
+    /// The active environment failed, closed, or stayed unready past the
+    /// bounded wait; recorded as a terminal failed call with this message.
+    EnvironmentUnusable(String),
+}
+
+/// Wait for the session's active environment, then run the call once more
+/// with its ordinary options. The wait is its own activity so tool classes
+/// keep their tight deadlines; the fast path never reaches this function.
+async fn await_environment_then_redispatch(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    state: &CoreAgentState,
+    request: &ToolInvocationBatchRequest,
+    index: usize,
+    environment_id: String,
+) -> CallOutcome {
+    let readiness = ctx
+        .start_activity(
+            WorkflowActivities::await_environment_ready,
+            AwaitEnvironmentReadyActivityRequest {
+                session_id: request.session_id.clone(),
+                environment_id: environment_id.clone(),
+                environment_policy: request.environment_policy.clone(),
+            },
+            environment_ready_activity_options(),
+        )
+        .await;
+    match readiness {
+        Ok(AwaitEnvironmentReadyActivityResult::Ready) => {
+            let (_, outcome) = start_call_activity(ctx, state, request, index).await;
+            match outcome {
+                Ok(ToolInvokeCallActivityResult::Completed { result }) => {
+                    CallOutcome::Completed(result)
+                }
+                // The environment regressed between the wait and the
+                // re-dispatch. Do not loop: report it.
+                Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id }) => {
+                    CallOutcome::EnvironmentUnusable(format!(
+                        "active environment {environment_id} was still not ready after the readiness wait"
+                    ))
+                }
+                Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
+            }
+        }
+        Ok(AwaitEnvironmentReadyActivityResult::Failed { message }) => {
+            CallOutcome::EnvironmentUnusable(format!(
+                "active environment {environment_id} cannot serve this call: {message}"
+            ))
+        }
+        Ok(AwaitEnvironmentReadyActivityResult::TimedOut { last_status }) => {
+            CallOutcome::EnvironmentUnusable(format!(
+                "active environment {environment_id} was still {last_status} after waiting {}s",
+                crate::ENVIRONMENT_READY_WAIT.as_secs()
+            ))
+        }
+        Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
     }
 }
 

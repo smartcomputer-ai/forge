@@ -253,17 +253,21 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
             },
             display_name: request.display_name,
             status: EnvironmentStatus::Provisioning,
+            desired_power: PowerState::Running,
+            idle_policy: request.idle_policy,
             incarnation: EnvironmentIncarnationRecord {
                 incarnation_id: request.incarnation_id,
                 provision_request_id: Some(request.request_id.clone()),
                 provider_target_id: None,
                 template_id: Some(request.template_id),
                 adoption_source_target: None,
+                power_states: Vec::new(),
                 created_at_ms: request.created_at_ms,
                 updated_at_ms: request.created_at_ms,
             },
             public_ingress_enabled: false,
             public_endpoint: None,
+            origin_session: request.origin_session,
             metadata: request.metadata,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
@@ -322,17 +326,21 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
             },
             display_name: request.display_name,
             status: EnvironmentStatus::Provisioning,
+            desired_power: PowerState::Running,
+            idle_policy: None,
             incarnation: EnvironmentIncarnationRecord {
                 incarnation_id: request.incarnation_id,
                 provision_request_id: Some(request.request_id.clone()),
                 provider_target_id: None,
                 template_id: None,
                 adoption_source_target: Some(request.source_target),
+                power_states: Vec::new(),
                 created_at_ms: request.created_at_ms,
                 updated_at_ms: request.created_at_ms,
             },
             public_ingress_enabled: false,
             public_endpoint: None,
+            origin_session: None,
             metadata: request.metadata,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
@@ -375,17 +383,21 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
             },
             display_name: request.display_name,
             status: EnvironmentStatus::Ready,
+            desired_power: PowerState::Running,
+            idle_policy: None,
             incarnation: EnvironmentIncarnationRecord {
                 incarnation_id: request.incarnation_id,
                 provision_request_id: None,
                 provider_target_id: None,
                 template_id: None,
                 adoption_source_target: None,
+                power_states: Vec::new(),
                 created_at_ms: request.created_at_ms,
                 updated_at_ms: request.created_at_ms,
             },
             public_ingress_enabled: false,
             public_endpoint: None,
+            origin_session: None,
             metadata: request.metadata,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
@@ -448,6 +460,35 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
                     .is_none_or(|id| record.binding_id() == Some(id))
             })
             .filter(|record| request.status.is_none_or(|status| status == record.status))
+            .filter(|record| {
+                request.origin_session_id.as_ref().is_none_or(|session_id| {
+                    record
+                        .origin_session
+                        .as_ref()
+                        .is_some_and(|origin| &origin.session_id == session_id)
+                })
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_environments_closing_with_session(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
+        Ok(self
+            .read_state()?
+            .environments
+            .values()
+            .filter(|record| {
+                record
+                    .origin_session
+                    .as_ref()
+                    .is_some_and(|origin| origin.close_with_session)
+                    && !matches!(
+                        record.status,
+                        EnvironmentStatus::Closing | EnvironmentStatus::Closed
+                    )
+            })
             .cloned()
             .collect())
     }
@@ -466,7 +507,21 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
                         | EnvironmentStatus::Booting
                         | EnvironmentStatus::Closing
                         | EnvironmentStatus::Unknown
-                )
+                ) || record.power_diverges()
+            })
+            .cloned()
+            .collect())
+    }
+
+    async fn list_environments_with_idle_policy(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
+        Ok(self
+            .read_state()?
+            .environments
+            .values()
+            .filter(|record| {
+                record.status == EnvironmentStatus::Ready && record.idle_policy.is_some()
             })
             .cloned()
             .collect())
@@ -493,6 +548,7 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
             return invalid("provider target conflicts with current incarnation");
         }
         record.incarnation.provider_target_id = Some(request.provider_target_id);
+        record.incarnation.power_states = request.power_states;
         record.incarnation.updated_at_ms = request.observed_at_ms;
         record.updated_at_ms = request.observed_at_ms;
         record.status = request.status;
@@ -582,6 +638,60 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
         record.validate()?;
         Ok(record.clone())
     }
+
+    async fn set_environment_power(
+        &self,
+        request: SetEnvironmentPower,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        validate_nonnegative_i64(request.updated_at_ms, "updated_at_ms")?;
+        let mut state = self.write_state()?;
+        let record = state
+            .environments
+            .get_mut(&request.environment_id)
+            .ok_or_else(|| not_found("environment", &request.environment_id))?;
+        check_power_mutable(record)?;
+        record.desired_power = request.desired_power;
+        record.updated_at_ms = record.updated_at_ms.max(request.updated_at_ms);
+        record.validate()?;
+        Ok(record.clone())
+    }
+
+    async fn set_environment_idle_policy(
+        &self,
+        request: SetEnvironmentIdlePolicy,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        validate_nonnegative_i64(request.updated_at_ms, "updated_at_ms")?;
+        if let Some(policy) = &request.idle_policy {
+            policy.validate()?;
+        }
+        let mut state = self.write_state()?;
+        let record = state
+            .environments
+            .get_mut(&request.environment_id)
+            .ok_or_else(|| not_found("environment", &request.environment_id))?;
+        check_power_mutable(record)?;
+        record.idle_policy = request.idle_policy;
+        record.updated_at_ms = record.updated_at_ms.max(request.updated_at_ms);
+        record.validate()?;
+        Ok(record.clone())
+    }
+}
+
+/// Power intent and idle policy exist only for provisioned environments that
+/// are not on their way out.
+pub(crate) fn check_power_mutable(
+    record: &EnvironmentRecord,
+) -> Result<(), EnvironmentRegistryError> {
+    if !matches!(record.source, EnvironmentSource::Provisioned { .. }) {
+        return invalid("external environments have no power control");
+    }
+    if matches!(
+        record.status,
+        EnvironmentStatus::Closing | EnvironmentStatus::Closed | EnvironmentStatus::Failed
+    ) {
+        return invalid("cannot change power of a closing, closed, or failed environment");
+    }
+    Ok(())
 }
 
 #[async_trait]

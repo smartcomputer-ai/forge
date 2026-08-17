@@ -13,6 +13,7 @@ import {
   PackageOpen,
   RadioTower,
   Server,
+  ServerCog,
   Settings,
   SlidersHorizontal,
   UserRound,
@@ -38,6 +39,7 @@ import { UniverseSwitcher } from "@/components/universe-switcher";
 import { UserMenu } from "@/components/user-menu";
 import type { SessionUser } from "@/auth";
 import { canManage, rememberUniverse, useUniverses } from "@/lib/universes";
+import { FOUNDRY_ENABLED } from "@/lib/features";
 
 /// The sidebar has three modes. Universe mode is the app's top level:
 /// switcher + universe nav. Admin and account are modes *above* the
@@ -160,12 +162,14 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         label="Profiles"
                         prefix
                       />
-                      <NavItem
-                        to={`/u/${active.slug}/foundry`}
-                        icon={Hammer}
-                        label="Foundry"
-                        prefix
-                      />
+                      {FOUNDRY_ENABLED && (
+                        <NavItem
+                          to={`/u/${active.slug}/foundry`}
+                          icon={Hammer}
+                          label="Foundry"
+                          prefix
+                        />
+                      )}
                     </SidebarMenu>
                   </SidebarGroupContent>
                 </SidebarGroup>
@@ -237,6 +241,11 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                   <NavItem to="/admin/users" icon={UserCog} label="Users" />
                   <NavItem to="/admin/universes" icon={Globe} label="Universes" />
                   <NavItem to="/admin/channels" icon={RadioTower} label="Channels" />
+                  <NavItem
+                    to="/admin/environment-providers"
+                    icon={ServerCog}
+                    label="Environment providers"
+                  />
                 </SidebarMenu>
               </SidebarGroupContent>
             </SidebarGroup>
@@ -287,7 +296,7 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
           </main>
         ) : (
           <main className="min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-4xl px-4 py-6 md:px-8 md:py-10">
+            <div className="mx-auto w-full max-w-5xl px-4 py-6 md:px-8 md:py-10">
               <Outlet />
             </div>
           </main>

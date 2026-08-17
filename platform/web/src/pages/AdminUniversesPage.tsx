@@ -32,12 +32,16 @@ import {
 import { Field, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
+  IdText,
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import { NewUniverseDialog } from "@/components/universe-switcher";
 import { LoadingNote, PageHeader } from "@/components/page";
@@ -117,12 +121,11 @@ export function AdminUniversesPage() {
         </p>
       )}
       {universes.data && (
-        <div className="overflow-x-auto rounded-xl border">
+        <TableCard>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Slug</TableHead>
+                <TableHead>Universe</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Engine</TableHead>
                 <TableHead>Your role</TableHead>
@@ -133,8 +136,7 @@ export function AdminUniversesPage() {
             <TableBody>
               {rows.map((universe) => (
                 <TableRow key={universe.id}>
-                  <TableCell className="font-medium">{universe.name}</TableCell>
-                  <TableCell className="font-mono text-xs">{universe.slug}</TableCell>
+                  <TableTitleCell title={universe.name} subtitle={universe.slug} />
                   <TableCell>
                     <Badge
                       variant={universe.status === "active" ? "secondary" : "outline"}
@@ -151,7 +153,7 @@ export function AdminUniversesPage() {
                   <TableCell className="text-muted-foreground">
                     {new Date(universe.createdAt).toLocaleDateString()}
                   </TableCell>
-                  <TableCell className="whitespace-nowrap">
+                  <TableActionsCell>
                     {engineStatus.get(universe.id) === "missing" && (
                       <Button
                         variant="ghost"
@@ -229,12 +231,12 @@ export function AdminUniversesPage() {
                         </AlertDialog>
                       </>
                     )}
-                  </TableCell>
+                  </TableActionsCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
       {orphans.length > 0 && (
         <section className="mt-8">
@@ -244,7 +246,7 @@ export function AdminUniversesPage() {
             survivors of a platform reset. Adopt to manage one here, or delete to
             purge it engine-side.
           </p>
-          <div className="overflow-x-auto rounded-xl border">
+          <TableCard>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -259,14 +261,14 @@ export function AdminUniversesPage() {
               <TableBody>
                 {orphans.map((orphan) => (
                   <TableRow key={orphan.universeId}>
-                    <TableCell className="font-mono text-xs">
-                      {orphan.universeId}
+                    <TableCell className="max-w-64">
+                      <IdText>{orphan.universeId}</IdText>
                     </TableCell>
                     <TableCell>{orphan.sessions ?? 0}</TableCell>
                     <TableCell>{orphan.workspaces ?? 0}</TableCell>
                     <TableCell>{orphan.profiles ?? 0}</TableCell>
                     <TableCell>{formatBytes(orphan.blobBytes ?? 0)}</TableCell>
-                    <TableCell className="whitespace-nowrap">
+                    <TableActionsCell>
                       <Button
                         variant="ghost"
                         size="sm"
@@ -309,12 +311,12 @@ export function AdminUniversesPage() {
                           </AlertDialogFooter>
                         </AlertDialogContent>
                       </AlertDialog>
-                    </TableCell>
+                    </TableActionsCell>
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </div>
+          </TableCard>
         </section>
       )}
       <AdoptDialog

@@ -31,11 +31,14 @@ import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
   TableRow,
+  TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader, UniverseNotFound } from "@/components/page";
 import { canManage, useActiveUniverse } from "@/lib/universes";
@@ -103,12 +106,11 @@ function ApiKeyList({ universeId }: { universeId: string }) {
         </div>
       )}
       {rows.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border">
+        <TableCard>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Prefix</TableHead>
+                <TableHead>Key</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead>Last used</TableHead>
                 <TableHead>Status</TableHead>
@@ -120,10 +122,10 @@ function ApiKeyList({ universeId }: { universeId: string }) {
                 const revoked = key.revokedAtMs != null;
                 return (
                   <TableRow key={key.keyPrefix}>
-                    <TableCell className="font-medium">
-                      {key.displayName ?? "Unnamed key"}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{key.keyPrefix}</TableCell>
+                    <TableTitleCell
+                      title={key.displayName ?? "Unnamed key"}
+                      subtitle={key.keyPrefix}
+                    />
                     <TableCell className="text-muted-foreground">
                       {formatTimestamp(key.createdAtMs)}
                     </TableCell>
@@ -137,7 +139,7 @@ function ApiKeyList({ universeId }: { universeId: string }) {
                         <Badge variant="secondary">active</Badge>
                       )}
                     </TableCell>
-                    <TableCell>
+                    <TableActionsCell>
                       {!revoked && (
                         <AlertDialog>
                           <AlertDialogTrigger
@@ -172,13 +174,13 @@ function ApiKeyList({ universeId }: { universeId: string }) {
                           </AlertDialogContent>
                         </AlertDialog>
                       )}
-                    </TableCell>
+                    </TableActionsCell>
                   </TableRow>
                 );
               })}
             </TableBody>
           </Table>
-        </div>
+        </TableCard>
       )}
       <p className="mt-4 text-sm text-muted-foreground">
         Use a key as <code className="font-mono text-xs">Authorization: Bearer lsk_…</code>.

@@ -4,7 +4,46 @@ import { Select as SelectPrimitive } from "@base-ui/react/select"
 import { cn } from "@/lib/utils"
 import { IconSelector, IconCheck, IconChevronUp, IconChevronDown } from "@tabler/icons-react"
 
-const Select = SelectPrimitive.Root
+/// Base UI's `Select.Value` renders the raw value unless the root knows the
+/// items' labels. Every call site here writes `<SelectItem value>{label}</SelectItem>`
+/// JSX, so derive that map from the children once instead of asking each
+/// dropdown to repeat its labels: the closed trigger then shows the same
+/// label as the open list. An explicit `items` prop or a `SelectValue`
+/// render function still wins.
+function Select<Value>({ items, children, ...props }: SelectPrimitive.Root.Props<Value>) {
+  const derived = React.useMemo(
+    () => (items === undefined ? collectSelectItems(children) : undefined),
+    [items, children],
+  )
+  return (
+    <SelectPrimitive.Root
+      {...props}
+      items={items ?? (derived as SelectPrimitive.Root.Props<Value>["items"])}
+    >
+      {children}
+    </SelectPrimitive.Root>
+  )
+}
+
+/// Walks already-rendered JSX (fragments, arrays, `SelectContent`,
+/// `SelectGroup`, …) and collects `{ value, label }` for every `SelectItem`.
+/// Items produced by nested custom components are not visible here; those
+/// call sites pass `items` or a `SelectValue` render function themselves.
+function collectSelectItems(
+  children: React.ReactNode,
+  into: Array<{ value: unknown; label: React.ReactNode }> = [],
+): Array<{ value: unknown; label: React.ReactNode }> {
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement(child)) return
+    const props = child.props as { value?: unknown; children?: React.ReactNode }
+    if (child.type === SelectItem) {
+      into.push({ value: props.value, label: props.children })
+      return
+    }
+    if (props.children !== undefined) collectSelectItems(props.children, into)
+  })
+  return into
+}
 
 function SelectGroup({ className, ...props }: SelectPrimitive.Group.Props) {
   return (
@@ -20,7 +59,7 @@ function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   return (
     <SelectPrimitive.Value
       data-slot="select-value"
-      className={cn("flex flex-1 text-left", className)}
+      className={cn("flex min-w-0 flex-1 truncate text-left", className)}
       {...props}
     />
   )
@@ -39,7 +78,7 @@ function SelectTrigger({
       data-slot="select-trigger"
       data-size={size}
       className={cn(
-        "flex w-fit items-center justify-between gap-1.5 rounded-md border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        "flex w-full min-w-0 items-center justify-between gap-1.5 rounded-md border border-input bg-transparent py-2 pr-2 pl-2.5 text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-placeholder:text-muted-foreground data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-1.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
         className
       )}
       {...props}

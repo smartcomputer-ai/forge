@@ -283,6 +283,24 @@ Synchronously enables or disables one provider-authorized HTTPS endpoint for a p
 - Params: `EnvironmentIngressPutParams`
 - Result: `AgentApiOutcome<EnvironmentIngressPutResponse>`
 
+### `environments/power/put`
+
+**Set environment power intent**
+
+Records the desired power state (running, paused, suspended, or stopped) of a provisioned environment; the lifecycle reconciler converges the provider target asynchronously. Powered-down environments wake transparently on their next use. Rejected when the provider does not support the state.
+
+- Params: `EnvironmentPowerPutParams`
+- Result: `AgentApiOutcome<EnvironmentPowerPutResponse>`
+
+### `environments/idle-policy/put`
+
+**Set environment idle policy**
+
+Replaces or clears the staged idle policy of a provisioned environment. The power reaper measures the daemon's idle duration against the pause/suspend/stop/close thresholds and escalates through the stages the provider supports.
+
+- Params: `EnvironmentIdlePolicyPutParams`
+- Result: `AgentApiOutcome<EnvironmentIdlePolicyPutResponse>`
+
 ### `environments/provider-bindings/list`
 
 **List environment provider bindings**

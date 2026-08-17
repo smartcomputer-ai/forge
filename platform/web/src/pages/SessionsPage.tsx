@@ -594,12 +594,14 @@ function InlineSetupEditor({
         />
       </SetupEditorSection>
       <ProfileEnvironmentEditor
-        value={value.activeEnvironmentId}
+        value={value.environment}
         environments={environments}
+        bindings={options.environmentBindings}
+        templates={options.environmentTemplates}
         disabled={!hasSessionFeature(value.config, "environments")}
-        onChange={(environmentId) => change((next) => {
-          if (environmentId) next.activeEnvironmentId = environmentId;
-          else delete next.activeEnvironmentId;
+        onChange={(environment) => change((next) => {
+          if (environment) next.environment = environment;
+          else delete next.environment;
         })}
       />
     </div>
@@ -610,7 +612,7 @@ function inlineProfileFromDocument(document: ProfileDocument): InlineProfile {
   const profile: InlineProfile = {};
   if (isRecord(document.config)) profile.config = structuredClone(document.config);
   if (isRecord(document.instructions)) profile.instructions = structuredClone(document.instructions) as InlineProfile["instructions"];
-  if (document.activeEnvironmentId) profile.activeEnvironmentId = document.activeEnvironmentId;
+  if (document.environment) profile.environment = structuredClone(document.environment);
   return profile;
 }
 

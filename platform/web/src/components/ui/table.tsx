@@ -2,6 +2,70 @@ import * as React from "react"
 
 import { cn } from "@/lib/utils"
 
+/// Bordered card around a table. `Table` itself owns the horizontal scroll
+/// container, so this must not add another `overflow-x-auto` (nested
+/// scrollers clip the border radius and double the scrollbars).
+function TableCard({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="table-card"
+      className={cn("overflow-hidden rounded-xl border", className)}
+      {...props}
+    />
+  )
+}
+
+/// Primary label with an optional secondary line (typically the mono id):
+/// keeps "name + id" in one column instead of two, which is what makes most
+/// settings tables fit the page column.
+function TableTitleCell({
+  title,
+  subtitle,
+  className,
+  ...props
+}: React.ComponentProps<"td"> & { title: React.ReactNode; subtitle?: React.ReactNode }) {
+  return (
+    <TableCell className={cn("max-w-72", className)} {...props}>
+      <div className="grid gap-0.5">
+        <span className="truncate font-medium">{title}</span>
+        {subtitle != null && subtitle !== "" && (
+          <IdText className="text-muted-foreground">{subtitle}</IdText>
+        )}
+      </div>
+    </TableCell>
+  )
+}
+
+/// Monospace identifier that truncates instead of widening its column; the
+/// full value stays available as a tooltip.
+function IdText({
+  className,
+  children,
+  title,
+  ...props
+}: React.ComponentProps<"span">) {
+  return (
+    <span
+      data-slot="id-text"
+      title={title ?? (typeof children === "string" ? children : undefined)}
+      className={cn("block max-w-full truncate font-mono text-xs", className)}
+      {...props}
+    >
+      {children}
+    </span>
+  )
+}
+
+/// Trailing actions column: never wraps, never widens beyond its content.
+function TableActionsCell({ className, ...props }: React.ComponentProps<"td">) {
+  return (
+    <TableCell
+      className={cn("w-0 whitespace-nowrap text-right [&>*]:align-middle", className)}
+      {...props}
+    />
+  )
+}
+
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
@@ -103,12 +167,16 @@ function TableCaption({
 }
 
 export {
+  IdText,
   Table,
-  TableHeader,
+  TableActionsCell,
   TableBody,
+  TableCaption,
+  TableCard,
+  TableCell,
   TableFooter,
   TableHead,
+  TableHeader,
   TableRow,
-  TableCell,
-  TableCaption,
+  TableTitleCell,
 }

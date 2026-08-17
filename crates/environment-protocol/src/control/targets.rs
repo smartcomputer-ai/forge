@@ -150,6 +150,10 @@ pub struct ProviderTargetSummary {
     pub capabilities: EnvironmentCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_cwd: Option<EnvironmentPath>,
+    /// Power states this target can be moved to with `controller/setTargetPower`.
+    /// Empty when the provider offers no power control beyond create/close.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub power_states: Vec<PowerState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
 }
@@ -160,9 +164,87 @@ pub enum ProviderTargetStatus {
     Creating,
     Starting,
     Ready,
+    /// VMM alive with execution frozen; RAM stays resident, resume is instant.
+    Paused,
+    /// Execution state saved to disk and the VMM released; resume restores it.
+    Suspended,
     Stopped,
     Closing,
     Closed,
     Failed,
     Unknown,
+}
+
+impl ProviderTargetStatus {
+    /// The power state a steady-state observation corresponds to, or `None`
+    /// while the target is transitioning or gone.
+    pub fn power_state(self) -> Option<PowerState> {
+        match self {
+            Self::Ready => Some(PowerState::Running),
+            Self::Paused => Some(PowerState::Paused),
+            Self::Suspended => Some(PowerState::Suspended),
+            Self::Stopped => Some(PowerState::Stopped),
+            Self::Creating
+            | Self::Starting
+            | Self::Closing
+            | Self::Closed
+            | Self::Failed
+            | Self::Unknown => None,
+        }
+    }
+}
+
+/// Requested steady power state of a provider target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PowerState {
+    Running,
+    Paused,
+    Suspended,
+    Stopped,
+}
+
+impl PowerState {
+    pub const ALL: [PowerState; 4] = [
+        PowerState::Running,
+        PowerState::Paused,
+        PowerState::Suspended,
+        PowerState::Stopped,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Suspended => "suspended",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+impl std::fmt::Display for PowerState {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Converge one target to a steady power state. Idempotent by inventory: a
+/// target already in `power` (or transitioning toward it) is reported as
+/// observed without further action; resuming may replace the underlying
+/// host process.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTargetPowerParams {
+    pub request_id: String,
+    pub environment_id: String,
+    pub incarnation_id: String,
+    pub binding: ProviderBindingContext,
+    pub target_id: ProviderTargetId,
+    pub power: PowerState,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetTargetPowerResponse {
+    pub target: ProviderTargetSummary,
 }

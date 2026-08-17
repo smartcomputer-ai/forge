@@ -227,6 +227,18 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
         },
         display_name: record.display_name.clone(),
         status: lifecycle_status_view(record.status),
+        desired_power: power_state_view(record.desired_power),
+        idle_policy: record.idle_policy.as_ref().map(idle_policy_view),
+        origin_session: record.origin_session.as_ref().map(|origin| {
+            api::EnvironmentOriginSessionView {
+                session_id: origin.session_id.as_str().to_owned(),
+                profile_id: origin
+                    .profile_id
+                    .as_deref()
+                    .and_then(|id| api::ProfileId::try_new(id).ok()),
+                close_with_session: origin.close_with_session,
+            }
+        }),
         incarnation: EnvironmentIncarnationView {
             incarnation_id: record.incarnation.incarnation_id.to_string(),
             provision_request_id: record
@@ -244,6 +256,13 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
                 .template_id
                 .as_ref()
                 .map(ToString::to_string),
+            power_states: record
+                .incarnation
+                .power_states
+                .iter()
+                .copied()
+                .map(power_state_view)
+                .collect(),
             created_at_ms: record.incarnation.created_at_ms,
             updated_at_ms: record.incarnation.updated_at_ms,
         },
@@ -255,11 +274,53 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
     }
 }
 
+pub(super) fn power_state_view(value: ::environments::PowerState) -> EnvironmentPowerStateView {
+    match value {
+        ::environments::PowerState::Running => EnvironmentPowerStateView::Running,
+        ::environments::PowerState::Paused => EnvironmentPowerStateView::Paused,
+        ::environments::PowerState::Suspended => EnvironmentPowerStateView::Suspended,
+        ::environments::PowerState::Stopped => EnvironmentPowerStateView::Stopped,
+    }
+}
+
+pub(super) fn registry_power_state(value: EnvironmentPowerStateView) -> ::environments::PowerState {
+    match value {
+        EnvironmentPowerStateView::Running => ::environments::PowerState::Running,
+        EnvironmentPowerStateView::Paused => ::environments::PowerState::Paused,
+        EnvironmentPowerStateView::Suspended => ::environments::PowerState::Suspended,
+        EnvironmentPowerStateView::Stopped => ::environments::PowerState::Stopped,
+    }
+}
+
+pub(super) fn idle_policy_view(
+    value: &::environments::EnvironmentIdlePolicy,
+) -> EnvironmentIdlePolicyView {
+    EnvironmentIdlePolicyView {
+        pause_after_ms: value.pause_after_ms,
+        suspend_after_ms: value.suspend_after_ms,
+        stop_after_ms: value.stop_after_ms,
+        close_after_ms: value.close_after_ms,
+    }
+}
+
+pub(super) fn registry_idle_policy(
+    value: &EnvironmentIdlePolicyView,
+) -> ::environments::EnvironmentIdlePolicy {
+    ::environments::EnvironmentIdlePolicy {
+        pause_after_ms: value.pause_after_ms,
+        suspend_after_ms: value.suspend_after_ms,
+        stop_after_ms: value.stop_after_ms,
+        close_after_ms: value.close_after_ms,
+    }
+}
+
 fn lifecycle_status_view(value: EnvironmentStatus) -> EnvironmentLifecycleStatusView {
     match value {
         EnvironmentStatus::Provisioning => EnvironmentLifecycleStatusView::Provisioning,
         EnvironmentStatus::Booting => EnvironmentLifecycleStatusView::Booting,
         EnvironmentStatus::Ready => EnvironmentLifecycleStatusView::Ready,
+        EnvironmentStatus::Paused => EnvironmentLifecycleStatusView::Paused,
+        EnvironmentStatus::Suspended => EnvironmentLifecycleStatusView::Suspended,
         EnvironmentStatus::Offline => EnvironmentLifecycleStatusView::Offline,
         EnvironmentStatus::Closing => EnvironmentLifecycleStatusView::Closing,
         EnvironmentStatus::Closed => EnvironmentLifecycleStatusView::Closed,
@@ -275,6 +336,8 @@ pub(super) fn registry_lifecycle_status(
         EnvironmentLifecycleStatusView::Provisioning => EnvironmentStatus::Provisioning,
         EnvironmentLifecycleStatusView::Booting => EnvironmentStatus::Booting,
         EnvironmentLifecycleStatusView::Ready => EnvironmentStatus::Ready,
+        EnvironmentLifecycleStatusView::Paused => EnvironmentStatus::Paused,
+        EnvironmentLifecycleStatusView::Suspended => EnvironmentStatus::Suspended,
         EnvironmentLifecycleStatusView::Offline => EnvironmentStatus::Offline,
         EnvironmentLifecycleStatusView::Closing => EnvironmentStatus::Closing,
         EnvironmentLifecycleStatusView::Closed => EnvironmentStatus::Closed,

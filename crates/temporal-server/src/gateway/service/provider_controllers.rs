@@ -14,7 +14,8 @@ use environment_protocol::{
         targets::{
             AdoptTargetParams, AdoptTargetResponse, CloseTargetParams, CloseTargetResponse,
             CreateTargetParams, CreateTargetResponse, EnvironmentTemplate, ListTemplatesParams,
-            ListTemplatesResponse, ProviderTargetStatus, ProviderTargetSummary,
+            ListTemplatesResponse, PowerState, ProviderTargetStatus, ProviderTargetSummary,
+            SetTargetPowerParams, SetTargetPowerResponse,
         },
     },
     shared::{
@@ -55,6 +56,10 @@ pub(crate) trait ProviderController: Send {
         &mut self,
         params: &CloseTargetParams,
     ) -> Result<CloseTargetResponse, AgentApiError>;
+    async fn set_target_power(
+        &mut self,
+        params: &SetTargetPowerParams,
+    ) -> Result<SetTargetPowerResponse, AgentApiError>;
     async fn ensure_ingress(
         &mut self,
         params: &EnsureIngressParams,
@@ -127,6 +132,15 @@ impl ProviderControllerConnector for WebSocketProviderControllerConnector {
     }
 }
 
+/// Power states the in-process fake provider advertises. Suspended is
+/// deliberately included so the Firecracker-shaped path has coverage.
+const FAKE_POWER_STATES: [PowerState; 4] = [
+    PowerState::Running,
+    PowerState::Paused,
+    PowerState::Suspended,
+    PowerState::Stopped,
+];
+
 #[derive(Default)]
 struct FakeBackend {
     targets: BTreeMap<String, FakeTarget>,
@@ -161,6 +175,7 @@ impl ProviderController for FakeProviderController {
                 adopt_target: true,
                 get_target: true,
                 close_target: true,
+                set_target_power: true,
                 ingress: true,
             },
             implementation: ImplementationInfo {
@@ -233,6 +248,7 @@ impl ProviderController for FakeProviderController {
                 scope: EnvironmentScope::Default,
                 capabilities: capabilities.clone(),
                 default_cwd: None,
+                power_states: FAKE_POWER_STATES.to_vec(),
                 metadata: BTreeMap::from([(
                     "imageFingerprint".to_owned(),
                     format!("fake:{}", params.template_id),
@@ -294,6 +310,48 @@ impl ProviderController for FakeProviderController {
         Ok(CloseTargetResponse {
             target_id: params.target_id.clone(),
             status: ProviderTargetStatus::Closed,
+        })
+    }
+
+    /// The fake provider converges instantly: the requested steady state is
+    /// the observed state on return.
+    async fn set_target_power(
+        &mut self,
+        params: &SetTargetPowerParams,
+    ) -> Result<SetTargetPowerResponse, AgentApiError> {
+        if !FAKE_POWER_STATES.contains(&params.power) {
+            return Err(AgentApiError::rejected(format!(
+                "fake provider does not support power state {}",
+                params.power
+            )));
+        }
+        let mut backend = self.backend.lock().await;
+        let target = backend
+            .targets
+            .get_mut(params.target_id.as_str())
+            .ok_or_else(|| {
+                AgentApiError::not_found(format!("fake target not found: {}", params.target_id))
+            })?;
+        if target.universe_id != params.binding.universe_id
+            || target.binding_id != params.binding.binding_id
+            || target.environment_id != params.environment_id
+            || target.incarnation_id != params.incarnation_id
+        {
+            return Err(AgentApiError::rejected(
+                "fake target ownership metadata does not match power request",
+            ));
+        }
+        if target.response.target.status == ProviderTargetStatus::Closed {
+            return Err(AgentApiError::rejected("fake target is closed"));
+        }
+        target.response.target.status = match params.power {
+            PowerState::Running => ProviderTargetStatus::Ready,
+            PowerState::Paused => ProviderTargetStatus::Paused,
+            PowerState::Suspended => ProviderTargetStatus::Suspended,
+            PowerState::Stopped => ProviderTargetStatus::Stopped,
+        };
+        Ok(SetTargetPowerResponse {
+            target: target.response.target.clone(),
         })
     }
 
@@ -364,6 +422,15 @@ where
         params: &CloseTargetParams,
     ) -> Result<CloseTargetResponse, AgentApiError> {
         EnvironmentProviderClient::close_target(self, params)
+            .await
+            .map_err(map_environment_client_error)
+    }
+
+    async fn set_target_power(
+        &mut self,
+        params: &SetTargetPowerParams,
+    ) -> Result<SetTargetPowerResponse, AgentApiError> {
+        EnvironmentProviderClient::set_target_power(self, params)
             .await
             .map_err(map_environment_client_error)
     }
@@ -516,6 +583,30 @@ mod tests {
             .expect_err("ownership mismatch");
         assert_eq!(wrong_owner.kind, AgentApiErrorKind::Rejected);
 
+        let power = |power: PowerState| SetTargetPowerParams {
+            request_id: format!("power-{power}"),
+            environment_id: "environment-1".to_owned(),
+            incarnation_id: "incarnation-environment-1".to_owned(),
+            binding: ProviderBindingContext {
+                universe_id: "universe-a".to_owned(),
+                binding_id: "binding-a".to_owned(),
+            },
+            target_id: created.target.target_id.clone(),
+            power,
+        };
+        assert_eq!(created.target.power_states, FAKE_POWER_STATES.to_vec());
+        let paused = after_restart
+            .set_target_power(&power(PowerState::Paused))
+            .await
+            .expect("pause");
+        assert_eq!(paused.target.status, ProviderTargetStatus::Paused);
+        let resumed = after_restart
+            .set_target_power(&power(PowerState::Running))
+            .await
+            .expect("resume");
+        assert_eq!(resumed.target.status, ProviderTargetStatus::Ready);
+        assert_eq!(resumed.target.target_id, created.target.target_id);
+
         let closed = after_restart
             .close_target(&CloseTargetParams {
                 request_id: "close-1".to_owned(),
@@ -525,11 +616,17 @@ mod tests {
                     universe_id: "universe-a".to_owned(),
                     binding_id: "binding-a".to_owned(),
                 },
-                target_id: created.target.target_id,
+                target_id: created.target.target_id.clone(),
                 force: false,
             })
             .await
             .expect("close");
         assert_eq!(closed.status, ProviderTargetStatus::Closed);
+        assert!(
+            after_restart
+                .set_target_power(&power(PowerState::Running))
+                .await
+                .is_err()
+        );
     }
 }

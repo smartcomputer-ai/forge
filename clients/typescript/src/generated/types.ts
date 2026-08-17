@@ -760,6 +760,13 @@ export type ContextAppendStatus = "applied" | "unchanged" | "failed";
  */
 export type ContextRemoveStatus = "removed" | "absent" | "failed";
 /**
+ * Steady power state of a provisioned environment (P126).
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerStateView".
+ */
+export type EnvironmentPowerStateView = "running" | "paused" | "suspended" | "stopped";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentSourceView".
  */
@@ -789,7 +796,10 @@ export type EnvironmentConnectionTransportView =
  * via the `definition` "EnvironmentLifecycleStatusView".
  */
 export type EnvironmentLifecycleStatusView =
-  "provisioning" | "booting" | "ready" | "offline" | "closing" | "closed" | "failed" | "unknown";
+  | ("provisioning" | "booting" | "ready" | "closing" | "closed" | "failed" | "unknown")
+  | "paused"
+  | "suspended"
+  | "offline";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentCredentialSourceView".
@@ -908,6 +918,43 @@ export type OperatorEnvironmentProviderTransport =
       providerType: string;
       type: "provider";
     };
+/**
+ * Environment intent carried by a profile document.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironment".
+ */
+export type ProfileEnvironment =
+  | {
+      environmentId: string;
+      type: "existing";
+    }
+  | {
+      displayName?: string | null;
+      /**
+       * Optional staged idle policy for the provisioned environment
+       * (P126). Stages the provider cannot realize are skipped.
+       */
+      idlePolicy?: EnvironmentIdlePolicyView | null;
+      metadata?: {
+        [k: string]: string;
+      };
+      providerId: string;
+      retention?: ProfileEnvironmentRetention & string;
+      /**
+       * Immutable provider template-version identity.
+       */
+      templateId: string;
+      type: "provision";
+    };
+/**
+ * What happens to a profile-provisioned environment when its originating
+ * session closes.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironmentRetention".
+ */
+export type ProfileEnvironmentRetention = "closeWithSession" | "retain";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileInstructions".
@@ -2070,12 +2117,23 @@ export interface EnvironmentCloseResponse {
  */
 export interface EnvironmentView {
   createdAtMs: number;
+  /**
+   * Lightspeed-owned power intent; `status` is the observed state.
+   */
+  desiredPower: EnvironmentPowerStateView;
   displayName?: string | null;
   environmentId: string;
+  idlePolicy?: EnvironmentIdlePolicyView | null;
   incarnation: EnvironmentIncarnationView;
   metadata?: {
     [k: string]: string;
   };
+  /**
+   * Present when a profile provisioned this environment for a session.
+   * Provenance and an optional close trigger, not ownership: the
+   * environment remains an ordinary universe resource.
+   */
+  originSession?: EnvironmentOriginSessionView | null;
   publicEndpoint?: string | null;
   publicIngressEnabled: boolean;
   requestId: string;
@@ -2084,16 +2142,47 @@ export interface EnvironmentView {
   updatedAtMs: number;
 }
 /**
+ * Staged idle policy. Thresholds are milliseconds of daemon-reported idle
+ * time and must be non-decreasing in the order pause, suspend, stop, close.
+ * Stages whose power state the provider does not support are skipped.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyView".
+ */
+export interface EnvironmentIdlePolicyView {
+  closeAfterMs?: number | null;
+  pauseAfterMs?: number | null;
+  stopAfterMs?: number | null;
+  suspendAfterMs?: number | null;
+}
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentIncarnationView".
  */
 export interface EnvironmentIncarnationView {
   createdAtMs: number;
   incarnationId: string;
+  /**
+   * Power states the provider reported for this target; empty until
+   * observed or when the provider offers no power control.
+   */
+  powerStates?: EnvironmentPowerStateView[];
   providerTargetId?: string | null;
   provisionRequestId?: string | null;
   templateId?: string | null;
   updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentOriginSessionView".
+ */
+export interface EnvironmentOriginSessionView {
+  /**
+   * When true, Lightspeed closes the environment once the session closes.
+   */
+  closeWithSession: boolean;
+  profileId?: ProfileId | null;
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2187,6 +2276,21 @@ export interface AgentApiOutcomeOfEnvironmentExternalCreateResponse {
  * via the `definition` "EnvironmentExternalCreateResponse".
  */
 export interface EnvironmentExternalCreateResponse {
+  environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentIdlePolicyPutResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentIdlePolicyPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyPutResponse".
+ */
+export interface EnvironmentIdlePolicyPutResponse {
   environment: EnvironmentView;
 }
 /**
@@ -2351,6 +2455,21 @@ export interface AgentApiOutcomeOfEnvironmentListResponse {
  */
 export interface EnvironmentListResponse {
   environments?: EnvironmentView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentPowerPutResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentPowerPutResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentPowerPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerPutResponse".
+ */
+export interface EnvironmentPowerPutResponse {
+  environment: EnvironmentView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2958,6 +3077,10 @@ export interface ProfileApplyResponse {
 export interface ProfileApplySummary {
   activeEnvironmentChanged: boolean;
   configChanged: boolean;
+  /**
+   * True when this apply created a new environment for the session.
+   */
+  environmentProvisioned?: boolean;
   instructionsChanged: boolean;
 }
 /**
@@ -2980,15 +3103,17 @@ export interface ProfileCreateResponse {
  * via the `definition` "AgentProfile".
  */
 export interface AgentProfile {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   createdAtMs: number;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
   profileId: ProfileId;
   revision: number;
@@ -3505,14 +3630,16 @@ export interface VfsWorkspaceUpdateResponse {
  * via the `definition` "AgentProfileInput".
  */
 export interface AgentProfileInput {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
   profileId: ProfileId;
 }
@@ -3764,6 +3891,10 @@ export interface EnvironmentCloseParams {
 export interface EnvironmentCreateParams {
   bindingId: string;
   displayName?: string | null;
+  /**
+   * Optional staged idle policy applied by the power reaper.
+   */
+  idlePolicy?: EnvironmentIdlePolicyView | null;
   metadata?: {
     [k: string]: string;
   };
@@ -3814,6 +3945,17 @@ export interface EnvironmentExternalCreateParams {
     [k: string]: string;
   };
   requestId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdlePolicyPutParams".
+ */
+export interface EnvironmentIdlePolicyPutParams {
+  environmentId: string;
+  /**
+   * The complete new policy; omit to clear it.
+   */
+  idlePolicy?: EnvironmentIdlePolicyView | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3891,8 +4033,24 @@ export interface EnvironmentJobReadParams {
  */
 export interface EnvironmentListParams {
   bindingId?: string | null;
+  /**
+   * Only environments a profile provisioned for this session.
+   */
+  originSessionId?: string | null;
   providerId?: string | null;
   status?: EnvironmentLifecycleStatusView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentPowerPutParams".
+ */
+export interface EnvironmentPowerPutParams {
+  environmentId: string;
+  /**
+   * Desired steady power state. Must be one of the provider-reported
+   * `incarnation.powerStates`.
+   */
+  power: EnvironmentPowerStateView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3941,14 +4099,16 @@ export interface InitializeParams {
  * via the `definition` "InlineAgentProfile".
  */
 export interface InlineAgentProfile {
-  /**
-   * Universe environment to activate when this profile is applied. Absence
-   * leaves the session's current active environment unchanged.
-   */
-  activeEnvironmentId?: string | null;
   config?: SessionConfig | null;
   description?: string | null;
   displayName?: string | null;
+  /**
+   * How the session obtains its active environment when this profile is
+   * applied: activate an existing universe environment, or provision a
+   * fresh one for this session. Absence leaves the session's current
+   * active environment unchanged.
+   */
+  environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
 }
 /**

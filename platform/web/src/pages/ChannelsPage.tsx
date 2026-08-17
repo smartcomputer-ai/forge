@@ -34,8 +34,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  IdText,
   Table,
+  TableActionsCell,
   TableBody,
+  TableCard,
   TableCell,
   TableHead,
   TableHeader,
@@ -127,7 +130,7 @@ function RoutingRules({
           </p>
         )}
         {rows.length > 0 && (
-          <div className="mb-6 overflow-hidden rounded-xl border">
+          <TableCard className="mb-6">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -147,8 +150,8 @@ function RoutingRules({
               <TableBody>
                 {rows.map((binding) => (
                   <TableRow key={binding.id} className="group">
-                    <TableCell className="max-w-40 whitespace-normal break-all font-mono text-xs">
-                      {binding.name}
+                    <TableCell className="max-w-40">
+                      <IdText>{binding.name}</IdText>
                     </TableCell>
                     <TableCell className="max-w-52 whitespace-normal">
                       <span className="block font-medium">
@@ -157,13 +160,13 @@ function RoutingRules({
                       <span className="block break-words text-muted-foreground">
                         {binding.channelAccount.displayName}
                       </span>
-                      <span className="block break-all font-mono text-xs text-muted-foreground">
+                      <IdText className="text-muted-foreground">
                         {binding.channelAccount.accountId}
-                      </span>
+                      </IdText>
                     </TableCell>
                     <TableCell>{binding.matchScope ?? "any"}</TableCell>
-                    <TableCell className="max-w-40 whitespace-normal break-all">
-                      {binding.profileId ?? "default"}
+                    <TableCell className="max-w-40">
+                      <IdText>{binding.profileId ?? "default"}</IdText>
                     </TableCell>
                     <TableCell>
                       <PairingCode code={binding.pairingCode} />
@@ -174,7 +177,7 @@ function RoutingRules({
                       </Badge>
                     </TableCell>
                     {writable && (
-                      <TableCell className="sticky right-0 z-10 whitespace-nowrap border-l bg-background shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.45)] group-hover:bg-muted/50">
+                      <TableActionsCell className="sticky right-0 z-10 border-l bg-background shadow-[-8px_0_12px_-12px_rgba(0,0,0,0.45)] group-hover:bg-muted/50">
                         <Tooltip>
                           <TooltipTrigger
                             render={
@@ -209,13 +212,13 @@ function RoutingRules({
                           name={binding.name}
                           onConfirm={() => remove.mutate(binding.id)}
                         />
-                      </TableCell>
+                      </TableActionsCell>
                     )}
                   </TableRow>
                 ))}
               </TableBody>
             </Table>
-          </div>
+          </TableCard>
         )}
       </section>
       {writable && (

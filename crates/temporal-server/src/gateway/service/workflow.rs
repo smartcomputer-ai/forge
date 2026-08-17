@@ -3,7 +3,7 @@ use super::*;
 impl GatewayAgentApi {
     /// Universe (tenant) this gateway instance serves, taken from the bound
     /// store. All Temporal addressing composes it into the workflow id.
-    pub(super) fn universe_id(&self) -> uuid::Uuid {
+    pub fn universe_id(&self) -> uuid::Uuid {
         self.store.config().universe_id
     }
 

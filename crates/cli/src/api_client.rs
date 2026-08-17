@@ -15,18 +15,20 @@ use api::{
     BlobPutParams, BlobPutResponse, BlobReadParams, BlobReadResponse, EnvironmentCloseParams,
     EnvironmentCloseResponse, EnvironmentCredentialBindParams, EnvironmentCredentialBindResponse,
     EnvironmentCredentialListParams, EnvironmentCredentialListResponse,
-    EnvironmentCredentialUnbindParams, EnvironmentCredentialUnbindResponse, EnvironmentListParams,
-    EnvironmentListResponse, EnvironmentProviderBindingListParams,
-    EnvironmentProviderBindingListResponse, EnvironmentReadParams, EnvironmentReadResponse,
-    JsonRpcRequest, JsonRpcResponse, METHOD_AUTH_CLIENTS_CREATE, METHOD_AUTH_CLIENTS_DELETE,
-    METHOD_AUTH_CLIENTS_LIST, METHOD_AUTH_CLIENTS_READ, METHOD_AUTH_FLOWS_READ,
-    METHOD_AUTH_FLOWS_START, METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT,
-    METHOD_AUTH_GITHUB_INSTALLATIONS_LIST, METHOD_AUTH_GRANTS_IMPORT, METHOD_AUTH_GRANTS_LIST,
-    METHOD_AUTH_GRANTS_READ, METHOD_AUTH_GRANTS_REVOKE, METHOD_AUTH_PROVIDERS_CREATE,
-    METHOD_AUTH_PROVIDERS_DELETE, METHOD_AUTH_PROVIDERS_LIST, METHOD_AUTH_PROVIDERS_READ,
-    METHOD_BLOBS_HAS, METHOD_BLOBS_PUT, METHOD_BLOBS_READ, METHOD_ENVIRONMENTS_CLOSE,
-    METHOD_ENVIRONMENTS_CREDENTIALS_BIND, METHOD_ENVIRONMENTS_CREDENTIALS_LIST,
-    METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND, METHOD_ENVIRONMENTS_LIST,
+    EnvironmentCredentialUnbindParams, EnvironmentCredentialUnbindResponse,
+    EnvironmentIdlePolicyPutParams, EnvironmentIdlePolicyPutResponse, EnvironmentListParams,
+    EnvironmentListResponse, EnvironmentPowerPutParams, EnvironmentPowerPutResponse,
+    EnvironmentProviderBindingListParams, EnvironmentProviderBindingListResponse,
+    EnvironmentReadParams, EnvironmentReadResponse, JsonRpcRequest, JsonRpcResponse,
+    METHOD_AUTH_CLIENTS_CREATE, METHOD_AUTH_CLIENTS_DELETE, METHOD_AUTH_CLIENTS_LIST,
+    METHOD_AUTH_CLIENTS_READ, METHOD_AUTH_FLOWS_READ, METHOD_AUTH_FLOWS_START,
+    METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT, METHOD_AUTH_GITHUB_INSTALLATIONS_LIST,
+    METHOD_AUTH_GRANTS_IMPORT, METHOD_AUTH_GRANTS_LIST, METHOD_AUTH_GRANTS_READ,
+    METHOD_AUTH_GRANTS_REVOKE, METHOD_AUTH_PROVIDERS_CREATE, METHOD_AUTH_PROVIDERS_DELETE,
+    METHOD_AUTH_PROVIDERS_LIST, METHOD_AUTH_PROVIDERS_READ, METHOD_BLOBS_HAS, METHOD_BLOBS_PUT,
+    METHOD_BLOBS_READ, METHOD_ENVIRONMENTS_CLOSE, METHOD_ENVIRONMENTS_CREDENTIALS_BIND,
+    METHOD_ENVIRONMENTS_CREDENTIALS_LIST, METHOD_ENVIRONMENTS_CREDENTIALS_UNBIND,
+    METHOD_ENVIRONMENTS_IDLE_POLICY_PUT, METHOD_ENVIRONMENTS_LIST, METHOD_ENVIRONMENTS_POWER_PUT,
     METHOD_ENVIRONMENTS_PROVIDER_BINDINGS_LIST, METHOD_ENVIRONMENTS_READ,
     METHOD_MCP_SERVERS_DELETE, METHOD_MCP_SERVERS_LIST, METHOD_MCP_SERVERS_PUT,
     METHOD_MCP_SERVERS_READ, METHOD_PROFILES_DELETE, METHOD_PROFILES_LIST, METHOD_PROFILES_PUT,
@@ -494,6 +496,14 @@ impl HttpAgentApi {
             .await
     }
 
+    pub(crate) async fn list_environment_templates(
+        &self,
+        params: api::EnvironmentTemplateListParams,
+    ) -> Result<AgentApiOutcome<api::EnvironmentTemplateListResponse>, AgentApiError> {
+        self.request(api::METHOD_ENVIRONMENTS_TEMPLATES_LIST, params)
+            .await
+    }
+
     pub(crate) async fn list_environments(
         &self,
         params: EnvironmentListParams,
@@ -513,6 +523,21 @@ impl HttpAgentApi {
         params: EnvironmentCloseParams,
     ) -> Result<AgentApiOutcome<EnvironmentCloseResponse>, AgentApiError> {
         self.request(METHOD_ENVIRONMENTS_CLOSE, params).await
+    }
+
+    pub(crate) async fn put_environment_power(
+        &self,
+        params: EnvironmentPowerPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentPowerPutResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_POWER_PUT, params).await
+    }
+
+    pub(crate) async fn put_environment_idle_policy(
+        &self,
+        params: EnvironmentIdlePolicyPutParams,
+    ) -> Result<AgentApiOutcome<EnvironmentIdlePolicyPutResponse>, AgentApiError> {
+        self.request(METHOD_ENVIRONMENTS_IDLE_POLICY_PUT, params)
+            .await
     }
 
     async fn request<P, R>(

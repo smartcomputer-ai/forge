@@ -98,6 +98,7 @@ async fn environment_provider_lifecycle_and_adoption_round_trip() -> anyhow::Res
                 template_id: "rust-v1".to_owned(),
                 display_name: Some("Provisioned live VM".to_owned()),
                 metadata: BTreeMap::new(),
+                idle_policy: None,
             })
             .await?
             .result
@@ -110,6 +111,7 @@ async fn environment_provider_lifecycle_and_adoption_round_trip() -> anyhow::Res
                 template_id: "rust-v1".to_owned(),
                 display_name: None,
                 metadata: BTreeMap::new(),
+                idle_policy: None,
             })
             .await?
             .result

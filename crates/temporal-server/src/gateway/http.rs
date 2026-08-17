@@ -397,10 +397,26 @@ pub async fn serve_gateway_with_client_store(
     let reconciler_api = api.clone();
     let reconciler = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(500));
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        let universe_id = reconciler_api.universe_id();
         loop {
             interval.tick().await;
-            if let Err(error) = reconciler_api.reconcile_environment_lifecycle_once().await {
-                tracing::warn!(target: "temporal_server", %error, "environment lifecycle reconcile pass failed");
+            match reconciler_api.reconcile_environment_lifecycle_once().await {
+                Ok(_) => failures.succeeded(universe_id),
+                Err(error) => failures.failed(universe_id, &error),
+            }
+        }
+    });
+    let power_api = api.clone();
+    let power_reaper = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(crate::universe::POWER_REAPER_INTERVAL);
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        let universe_id = power_api.universe_id();
+        loop {
+            interval.tick().await;
+            match power_api.reconcile_idle_power_once().await {
+                Ok(_) => failures.succeeded(universe_id),
+                Err(error) => failures.failed(universe_id, &error),
             }
         }
     });
@@ -410,6 +426,7 @@ pub async fn serve_gateway_with_client_store(
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
     reconciler.abort();
+    power_reaper.abort();
     Ok(())
 }
 

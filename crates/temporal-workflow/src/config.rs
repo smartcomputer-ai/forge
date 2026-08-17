@@ -81,6 +81,18 @@ pub const TOOL_PROCESS_GRACE: Duration = Duration::from_secs(60);
 /// idempotency exists. No tool activity has an unlimited retry policy.
 pub const TOOL_RETRY_SAFE_MAX_ATTEMPTS: i32 = 3;
 
+/// Bounded wait for a session's active environment to become reachable
+/// before an environment-dependent call is re-dispatched (P125). The wait is
+/// a separate heartbeated activity so tool classes keep their own deadlines.
+pub const ENVIRONMENT_READY_WAIT: Duration = Duration::from_secs(10 * 60);
+/// Heartbeat interval budget for the readiness wait; the worker heartbeats
+/// on every poll, well inside this window.
+pub const ENVIRONMENT_READY_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(60);
+/// Worker poll cadence while waiting for readiness.
+pub const ENVIRONMENT_READY_POLL_INTERVAL: Duration = Duration::from_secs(2);
+/// Transport/completion grace added on top of the readiness wait.
+pub const ENVIRONMENT_READY_GRACE: Duration = Duration::from_secs(30);
+
 /// Deployment-owned ceiling on concurrently executing per-call tool
 /// activities within one batch. Parallel-safe groups wider than this run as a
 /// topped-up window, so one model turn cannot fan out unbounded host
@@ -198,6 +210,20 @@ pub fn tool_call_activity_options(execution: ToolExecutionSpec) -> ActivityOptio
     .build()
 }
 
+/// Temporal options for the `await_environment_ready` activity: one long,
+/// heartbeated attempt window plus bounded retries for infrastructure
+/// failures. Never Temporal's default unlimited retries.
+pub fn environment_ready_activity_options() -> ActivityOptions {
+    let start_to_close = ENVIRONMENT_READY_WAIT + ENVIRONMENT_READY_GRACE;
+    ActivityOptions::with_close_timeouts(ActivityCloseTimeouts::Both {
+        start_to_close,
+        schedule_to_close: start_to_close * 2,
+    })
+    .heartbeat_timeout(ENVIRONMENT_READY_HEARTBEAT_TIMEOUT)
+    .retry_policy(tool_retry_policy(TOOL_RETRY_SAFE_MAX_ATTEMPTS))
+    .build()
+}
+
 /// Temporal options for a batch-unit tool activity (await batches and
 /// workflow-tool batches execute as one unit). Bounded: one attempt and an
 /// explicit total deadline, never Temporal's default unlimited retries.
@@ -259,6 +285,31 @@ mod tests {
                 "{execution:?}: start-to-close must not exceed schedule-to-close"
             );
         }
+    }
+
+    #[test]
+    fn environment_ready_options_are_heartbeated_bounded_and_leave_tool_classes_alone() {
+        let options = environment_ready_activity_options();
+        let ActivityCloseTimeouts::Both {
+            start_to_close,
+            schedule_to_close,
+        } = options.close_timeouts
+        else {
+            panic!("readiness options must bound both timeouts");
+        };
+        assert!(start_to_close > ENVIRONMENT_READY_WAIT);
+        assert!(schedule_to_close >= start_to_close);
+        assert_eq!(
+            options.heartbeat_timeout,
+            Some(ENVIRONMENT_READY_HEARTBEAT_TIMEOUT)
+        );
+        assert!(ENVIRONMENT_READY_POLL_INTERVAL < ENVIRONMENT_READY_HEARTBEAT_TIMEOUT);
+        let retry = options.retry_policy.expect("bounded retry policy");
+        assert!(retry.maximum_attempts > 0);
+        // The readiness wait must not have loosened the per-class tool
+        // deadlines: interactive calls stay well below the wait window.
+        assert!(TOOL_INTERACTIVE_START_TO_CLOSE < ENVIRONMENT_READY_WAIT);
+        assert!(TOOL_REMOTE_START_TO_CLOSE < ENVIRONMENT_READY_WAIT);
     }
 
     #[test]

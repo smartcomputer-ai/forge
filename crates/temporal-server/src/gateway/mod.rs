@@ -14,6 +14,7 @@ pub use http::{
 pub use operator::GatewayOperatorApi;
 pub use service::{
     DEFAULT_PUBLIC_BASE_URL, GatewayAgentApi, GatewayAgentApiBuilder, OAuthCallbackOutcome,
+    PowerReaperStats, ReconcileFailureLog,
 };
 pub use temporal_workflow::{
     AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind, AgentCompletedRunSummary,

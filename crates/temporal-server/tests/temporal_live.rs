@@ -175,6 +175,28 @@ async fn temporal_live_profiles_create_start_and_apply_idempotently() -> anyhow:
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_profile_provisions_environment_for_session() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    let activities = fake_worker_activities().await?;
+    run_with_live_worker(activities, run_profile_provision_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_environment_power_intent_converges_and_wakes_on_use() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    let activities = fake_worker_activities().await?;
+    run_with_live_worker(activities, run_environment_power_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_fleet_executor_spawns_child_workflow_and_run() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
@@ -1366,7 +1388,7 @@ async fn run_fleet_profile_spawn_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "You are a profile-spawned live child.".to_owned(),
                 }),
-                active_environment_id: None,
+                environment: None,
             },
         },
     })
@@ -1546,7 +1568,7 @@ async fn run_fleet_profile_tools_live_client(
                 instructions: Some(ProfileInstructions::Text {
                     text: "Profile read tools should return this document.".to_owned(),
                 }),
-                active_environment_id: None,
+                environment: None,
             },
         },
     })
@@ -3026,6 +3048,717 @@ async fn run_mcp_live_client(
     Ok(())
 }
 
+/// P125: a `provision` profile creates one environment for the session it
+/// starts, activates it while it is still provisioning, converges on retries
+/// and repeated applies, and closes it with the session (or retains it).
+async fn run_profile_provision_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+
+    use environment_protocol::shared::EnvironmentTransport;
+    use environments::{
+        EnvironmentConnectionSpec, EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
+        PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    };
+
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store.clone())
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("fake-profile-{suffix}");
+    let binding_id = format!("binding-profile-{suffix}");
+    let profile_id = ProfileId::new(format!("live_provision_{suffix}"));
+
+    // Register the in-process fake provider and bind it to this universe
+    // directly through the store: the operator API is deployment-scoped and
+    // this test drives one universe's gateway.
+    store
+        .put_provider(PutEnvironmentProvider {
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            display_name: Some("Live fake provider".to_owned()),
+            controller_connection: EnvironmentConnectionSpec::new(
+                "in-process",
+                EnvironmentTransport::Provider {
+                    provider_type: "fake".to_owned(),
+                },
+            ),
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+    store
+        .put_provider_binding(PutEnvironmentProviderBinding {
+            universe_id: store.config().universe_id,
+            binding_id: EnvironmentProviderBindingId::new(binding_id.clone()),
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            status: EnvironmentProviderBindingStatus::Enabled,
+            expected_revision: None,
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+
+    let provision_document = |retention: api::ProfileEnvironmentRetention| ProfileDocument {
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(api::FeaturesConfig {
+                environments: Some(api::EnvironmentsFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    providers: None,
+                    selection_tools: false,
+                    jobs: false,
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        instructions: None,
+        environment: Some(api::ProfileEnvironment::Provision {
+            provider_id: provider_id.clone(),
+            template_id: "rust-v1".to_owned(),
+            display_name: None,
+            metadata: BTreeMap::from([("role".to_owned(), "sandbox".to_owned())]),
+            retention,
+            idle_policy: None,
+        }),
+    };
+    api.create_profile(ProfileCreateParams {
+        profile: AgentProfileInput {
+            profile_id: profile_id.clone(),
+            display_name: Some("Live provisioning profile".to_owned()),
+            description: None,
+            document: provision_document(api::ProfileEnvironmentRetention::CloseWithSession),
+        },
+    })
+    .await?;
+
+    // A profile that provisions from an unknown provider fails before any
+    // session exists.
+    let rejected = api
+        .start_session(SessionStartParams {
+            session_id: Some(format!("{}_rejected", session_id.as_str())),
+            display_name: None,
+            config: None,
+            profile: Some(ProfileSource::Inline {
+                profile: Box::new(api::InlineAgentProfile {
+                    display_name: None,
+                    description: None,
+                    document: ProfileDocument {
+                        environment: Some(api::ProfileEnvironment::Provision {
+                            provider_id: format!("missing-{suffix}"),
+                            template_id: "rust-v1".to_owned(),
+                            display_name: None,
+                            metadata: BTreeMap::new(),
+                            retention: api::ProfileEnvironmentRetention::CloseWithSession,
+                            idle_policy: None,
+                        }),
+                        ..provision_document(api::ProfileEnvironmentRetention::CloseWithSession)
+                    },
+                }),
+            }),
+        })
+        .await;
+    assert!(
+        rejected.is_err(),
+        "unknown provider must be rejected before start"
+    );
+    assert!(
+        api.read_session(api::SessionReadParams {
+            session_id: format!("{}_rejected", session_id.as_str()),
+        })
+        .await
+        .is_err(),
+        "no session may exist after a pre-start rejection"
+    );
+
+    // Start: the environment is created and activated while still
+    // provisioning (no reconciler has run yet).
+    let start = |session_id: String| {
+        api.start_session(SessionStartParams {
+            session_id: Some(session_id),
+            display_name: None,
+            config: None,
+            profile: Some(ProfileSource::Named {
+                profile_id: profile_id.clone(),
+            }),
+        })
+    };
+    let started = start(session_id.as_str().to_owned()).await?;
+    let active = started
+        .result
+        .session
+        .active_environment_id
+        .clone()
+        .expect("profile provisioning activates the new environment");
+    let listed = api
+        .list_environments(api::EnvironmentListParams {
+            origin_session_id: Some(session_id.as_str().to_owned()),
+            ..api::EnvironmentListParams::default()
+        })
+        .await?
+        .result
+        .environments;
+    assert_eq!(listed.len(), 1);
+    let environment = &listed[0];
+    assert_eq!(environment.environment_id, active);
+    assert_eq!(
+        environment.status,
+        api::EnvironmentLifecycleStatusView::Provisioning
+    );
+    assert_eq!(
+        environment.request_id,
+        environments::EnvironmentProvisionRequestId::for_session(&session_id)
+            .as_str()
+            .to_owned()
+    );
+    let origin = environment
+        .origin_session
+        .as_ref()
+        .expect("origin session provenance");
+    assert_eq!(origin.session_id, session_id.as_str());
+    assert_eq!(origin.profile_id.as_ref(), Some(&profile_id));
+    assert!(origin.close_with_session);
+    assert_eq!(
+        environment.metadata.get("role").map(String::as_str),
+        Some("sandbox")
+    );
+
+    // Retry the start and re-apply the profile: still exactly one environment.
+    let restarted = start(session_id.as_str().to_owned()).await?;
+    assert_eq!(
+        restarted.result.session.active_environment_id.as_deref(),
+        Some(active.as_str())
+    );
+    let applied = api
+        .apply_profile(ProfileApplyParams {
+            session_id: session_id.as_str().to_owned(),
+            profile: ProfileSource::Named {
+                profile_id: profile_id.clone(),
+            },
+            expected_config_revision: None,
+            expected_tools_revision: None,
+        })
+        .await?;
+    assert!(!applied.result.applied.environment_provisioned);
+    assert!(!applied.result.applied.active_environment_changed);
+    assert_eq!(
+        api.list_environments(api::EnvironmentListParams {
+            origin_session_id: Some(session_id.as_str().to_owned()),
+            ..api::EnvironmentListParams::default()
+        })
+        .await?
+        .result
+        .environments
+        .len(),
+        1
+    );
+
+    // Drive the reconciler: the fake provider brings the environment to ready.
+    wait_for_environment_status(&api, &active, api::EnvironmentLifecycleStatusView::Ready).await?;
+
+    // Closing the session closes the environment (eager close, then the
+    // reconciler finishes it).
+    api.close_session(api::SessionCloseParams {
+        session_id: session_id.as_str().to_owned(),
+        force: false,
+    })
+    .await?;
+    wait_for_environment_status(&api, &active, api::EnvironmentLifecycleStatusView::Closed).await?;
+
+    // The sweep alone (no eager close) also converges: an environment whose
+    // origin session is already closed is picked up by reconciliation.
+    let swept = api
+        .create_environment(api::EnvironmentCreateParams {
+            request_id: format!("sweep-{suffix}"),
+            binding_id: binding_id.clone(),
+            template_id: "rust-v1".to_owned(),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            idle_policy: None,
+        })
+        .await?
+        .result
+        .environment;
+    sqlx::query(
+        "UPDATE environments SET origin_session_id = $3, origin_close_with_session = true \
+         WHERE universe_id = $1 AND environment_id = $2",
+    )
+    .bind(store.config().universe_id)
+    .bind(&swept.environment_id)
+    .bind(session_id.as_str())
+    .execute(store.pool())
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &swept.environment_id,
+        api::EnvironmentLifecycleStatusView::Closed,
+    )
+    .await?;
+
+    // `retain`: the environment outlives its session.
+    let retained_session = format!("{}_retain", session_id.as_str());
+    let retained_start = api
+        .start_session(SessionStartParams {
+            session_id: Some(retained_session.clone()),
+            display_name: None,
+            config: None,
+            profile: Some(ProfileSource::Inline {
+                profile: Box::new(api::InlineAgentProfile {
+                    display_name: None,
+                    description: None,
+                    document: provision_document(api::ProfileEnvironmentRetention::Retain),
+                }),
+            }),
+        })
+        .await?;
+    let retained_environment = retained_start
+        .result
+        .session
+        .active_environment_id
+        .clone()
+        .expect("retained environment activated");
+    wait_for_environment_status(
+        &api,
+        &retained_environment,
+        api::EnvironmentLifecycleStatusView::Ready,
+    )
+    .await?;
+    api.close_session(api::SessionCloseParams {
+        session_id: retained_session.clone(),
+        force: false,
+    })
+    .await?;
+    for _ in 0..5 {
+        api.reconcile_environments_once().await?;
+    }
+    let retained = api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: retained_environment.clone(),
+        })
+        .await?
+        .result
+        .environment;
+    assert_eq!(retained.status, api::EnvironmentLifecycleStatusView::Ready);
+    assert!(
+        !retained
+            .origin_session
+            .as_ref()
+            .expect("origin")
+            .close_with_session
+    );
+    api.close_environment(api::EnvironmentCloseParams {
+        environment_id: retained_environment.clone(),
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &retained_environment,
+        api::EnvironmentLifecycleStatusView::Closed,
+    )
+    .await?;
+
+    let _ = api
+        .delete_profile(api::ProfileDeleteParams {
+            profile_id: profile_id.clone(),
+        })
+        .await;
+    // Every environment above is closed, so the binding and provider can go.
+    let _ = store
+        .delete_provider_binding(
+            store.config().universe_id,
+            &EnvironmentProviderBindingId::new(binding_id.clone()),
+        )
+        .await;
+    let _ = store
+        .delete_provider(&EnvironmentProviderId::new(provider_id.clone()))
+        .await;
+    Ok(())
+}
+
+/// P126: power intent is recorded through the API, converged by the lifecycle
+/// reconciler against the provider, and a powered-down environment wakes
+/// transparently when a session selects it. Idle policy round-trips and the
+/// power reaper treats an environment without a reachable daemon as
+/// untouchable.
+async fn run_environment_power_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+
+    use environment_protocol::shared::EnvironmentTransport;
+    use environments::{
+        EnvironmentConnectionSpec, EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
+        PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    };
+
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store.clone())
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("fake-power-{suffix}");
+    let binding_id = format!("binding-power-{suffix}");
+    store
+        .put_provider(PutEnvironmentProvider {
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            display_name: Some("Live fake provider (power)".to_owned()),
+            controller_connection: EnvironmentConnectionSpec::new(
+                "in-process",
+                EnvironmentTransport::Provider {
+                    provider_type: "fake".to_owned(),
+                },
+            ),
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+    store
+        .put_provider_binding(PutEnvironmentProviderBinding {
+            universe_id: store.config().universe_id,
+            binding_id: EnvironmentProviderBindingId::new(binding_id.clone()),
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            status: EnvironmentProviderBindingStatus::Enabled,
+            expected_revision: None,
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+
+    let policy = api::EnvironmentIdlePolicyView {
+        pause_after_ms: Some(60_000),
+        suspend_after_ms: None,
+        stop_after_ms: Some(3_600_000),
+        close_after_ms: None,
+    };
+    let created = api
+        .create_environment(api::EnvironmentCreateParams {
+            request_id: format!("power-{suffix}"),
+            binding_id: binding_id.clone(),
+            template_id: "rust-v1".to_owned(),
+            display_name: Some("Power VM".to_owned()),
+            metadata: BTreeMap::new(),
+            idle_policy: Some(policy.clone()),
+        })
+        .await?
+        .result
+        .environment;
+    let environment_id = created.environment_id.clone();
+    assert_eq!(
+        created.desired_power,
+        api::EnvironmentPowerStateView::Running
+    );
+    assert_eq!(created.idle_policy.as_ref(), Some(&policy));
+    assert!(created.incarnation.power_states.is_empty());
+
+    // Before the provider reported power support, power changes are refused.
+    let premature = api
+        .put_environment_power(api::EnvironmentPowerPutParams {
+            environment_id: environment_id.clone(),
+            power: api::EnvironmentPowerStateView::Paused,
+        })
+        .await
+        .expect_err("power change before observation is rejected");
+    assert_eq!(premature.kind, api::AgentApiErrorKind::Rejected);
+
+    let ready = wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Ready,
+    )
+    .await?;
+    assert_eq!(
+        ready.incarnation.power_states,
+        vec![
+            api::EnvironmentPowerStateView::Running,
+            api::EnvironmentPowerStateView::Paused,
+            api::EnvironmentPowerStateView::Suspended,
+            api::EnvironmentPowerStateView::Stopped,
+        ]
+    );
+
+    // A malformed idle policy is rejected; a valid replacement and a clear
+    // round-trip.
+    let bad_policy = api
+        .put_environment_idle_policy(api::EnvironmentIdlePolicyPutParams {
+            environment_id: environment_id.clone(),
+            idle_policy: Some(api::EnvironmentIdlePolicyView {
+                pause_after_ms: Some(10),
+                stop_after_ms: Some(5),
+                ..api::EnvironmentIdlePolicyView::default()
+            }),
+        })
+        .await
+        .expect_err("non-monotone idle policy is rejected");
+    assert_eq!(bad_policy.kind, api::AgentApiErrorKind::InvalidRequest);
+    let cleared = api
+        .put_environment_idle_policy(api::EnvironmentIdlePolicyPutParams {
+            environment_id: environment_id.clone(),
+            idle_policy: None,
+        })
+        .await?
+        .result
+        .environment;
+    assert!(cleared.idle_policy.is_none());
+    let restored = api
+        .put_environment_idle_policy(api::EnvironmentIdlePolicyPutParams {
+            environment_id: environment_id.clone(),
+            idle_policy: Some(policy.clone()),
+        })
+        .await?
+        .result
+        .environment;
+    assert_eq!(restored.idle_policy.as_ref(), Some(&policy));
+
+    // The reaper sees the candidate but cannot reach a daemon through the
+    // fake provider, so it leaves the environment alone.
+    let stats = api.reap_idle_environments_once().await?;
+    assert_eq!(stats.candidates, 1);
+    assert_eq!(stats.unreachable, 1);
+    assert_eq!(stats.powered_down, 0);
+    assert_eq!(stats.closed, 0);
+
+    // Pause intent: recorded immediately, converged by the reconciler.
+    let paused_intent = api
+        .put_environment_power(api::EnvironmentPowerPutParams {
+            environment_id: environment_id.clone(),
+            power: api::EnvironmentPowerStateView::Paused,
+        })
+        .await?
+        .result
+        .environment;
+    assert_eq!(
+        paused_intent.desired_power,
+        api::EnvironmentPowerStateView::Paused
+    );
+    assert_eq!(
+        paused_intent.status,
+        api::EnvironmentLifecycleStatusView::Ready
+    );
+    let paused = wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Paused,
+    )
+    .await?;
+    assert_eq!(paused.desired_power, api::EnvironmentPowerStateView::Paused);
+    // Paused is a filterable lifecycle status.
+    assert!(
+        api.list_environments(api::EnvironmentListParams {
+            status: Some(api::EnvironmentLifecycleStatusView::Paused),
+            ..api::EnvironmentListParams::default()
+        })
+        .await?
+        .result
+        .environments
+        .iter()
+        .any(|environment| environment.environment_id == environment_id)
+    );
+
+    // Wake-on-use: activating the paused environment for a session admits it
+    // as intent and flips desired power back to running; the reconciler then
+    // brings it to ready.
+    let started = api
+        .start_session(SessionStartParams {
+            session_id: Some(session_id.as_str().to_owned()),
+            display_name: None,
+            config: Some(SessionConfig {
+                model: Some(model_to_api(&model)),
+                features: Some(api::FeaturesConfig {
+                    environments: Some(api::EnvironmentsFeature {
+                        version: api::CURRENT_FEATURE_VERSION,
+                        providers: None,
+                        selection_tools: false,
+                        jobs: false,
+                    }),
+                    ..api::FeaturesConfig::default()
+                }),
+                ..SessionConfig::default()
+            }),
+            profile: None,
+        })
+        .await?;
+    assert!(started.result.session.active_environment_id.is_none());
+    let activated = api
+        .activate_session_environment(api::SessionEnvironmentActivateParams {
+            session_id: session_id.as_str().to_owned(),
+            environment_id: environment_id.clone(),
+        })
+        .await?;
+    assert_eq!(
+        activated.result.session.active_environment_id.as_deref(),
+        Some(environment_id.as_str())
+    );
+    let woken = api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: environment_id.clone(),
+        })
+        .await?
+        .result
+        .environment;
+    assert_eq!(woken.desired_power, api::EnvironmentPowerStateView::Running);
+    wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Ready,
+    )
+    .await?;
+
+    // Suspend and stop are ordinary intents on a provider that supports them.
+    api.put_environment_power(api::EnvironmentPowerPutParams {
+        environment_id: environment_id.clone(),
+        power: api::EnvironmentPowerStateView::Suspended,
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Suspended,
+    )
+    .await?;
+    api.put_environment_power(api::EnvironmentPowerPutParams {
+        environment_id: environment_id.clone(),
+        power: api::EnvironmentPowerStateView::Stopped,
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Offline,
+    )
+    .await?;
+    api.put_environment_power(api::EnvironmentPowerPutParams {
+        environment_id: environment_id.clone(),
+        power: api::EnvironmentPowerStateView::Running,
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Ready,
+    )
+    .await?;
+
+    // External environments have no power control.
+    let external = api
+        .create_external_environment(api::EnvironmentExternalCreateParams {
+            request_id: format!("power-external-{suffix}"),
+            connection: api::EnvironmentConnectionView {
+                endpoint: format!("ws://127.0.0.1:1/{suffix}"),
+                transport: api::EnvironmentConnectionTransportView::WebSocket,
+            },
+            display_name: None,
+            metadata: BTreeMap::new(),
+        })
+        .await?
+        .result
+        .environment;
+    let external_rejected = api
+        .put_environment_power(api::EnvironmentPowerPutParams {
+            environment_id: external.environment_id.clone(),
+            power: api::EnvironmentPowerStateView::Paused,
+        })
+        .await
+        .expect_err("external environments have no power control");
+    assert_eq!(external_rejected.kind, api::AgentApiErrorKind::Rejected);
+    let external_policy_rejected = api
+        .put_environment_idle_policy(api::EnvironmentIdlePolicyPutParams {
+            environment_id: external.environment_id.clone(),
+            idle_policy: Some(policy.clone()),
+        })
+        .await
+        .expect_err("external environments have no idle policy");
+    assert_eq!(
+        external_policy_rejected.kind,
+        api::AgentApiErrorKind::InvalidRequest
+    );
+
+    // Closing wins over power intent.
+    api.close_session(api::SessionCloseParams {
+        session_id: session_id.as_str().to_owned(),
+        force: false,
+    })
+    .await?;
+    api.close_environment(api::EnvironmentCloseParams {
+        environment_id: environment_id.clone(),
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &environment_id,
+        api::EnvironmentLifecycleStatusView::Closed,
+    )
+    .await?;
+    let closed_rejected = api
+        .put_environment_power(api::EnvironmentPowerPutParams {
+            environment_id: environment_id.clone(),
+            power: api::EnvironmentPowerStateView::Running,
+        })
+        .await
+        .expect_err("closed environments cannot change power");
+    assert_eq!(closed_rejected.kind, api::AgentApiErrorKind::InvalidRequest);
+    api.close_environment(api::EnvironmentCloseParams {
+        environment_id: external.environment_id.clone(),
+    })
+    .await?;
+    wait_for_environment_status(
+        &api,
+        &external.environment_id,
+        api::EnvironmentLifecycleStatusView::Closed,
+    )
+    .await?;
+
+    let _ = store
+        .delete_provider_binding(
+            store.config().universe_id,
+            &EnvironmentProviderBindingId::new(binding_id.clone()),
+        )
+        .await;
+    let _ = store
+        .delete_provider(&EnvironmentProviderId::new(provider_id.clone()))
+        .await;
+    Ok(())
+}
+
+async fn wait_for_environment_status(
+    api: &GatewayAgentApi,
+    environment_id: &str,
+    expected: api::EnvironmentLifecycleStatusView,
+) -> anyhow::Result<api::EnvironmentView> {
+    let started = std::time::Instant::now();
+    loop {
+        api.reconcile_environments_once().await?;
+        let environment = api
+            .read_environment(api::EnvironmentReadParams {
+                environment_id: environment_id.to_owned(),
+            })
+            .await?
+            .result
+            .environment;
+        if environment.status == expected {
+            return Ok(environment);
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            anyhow::bail!(
+                "timed out waiting for environment {environment_id} to reach {expected:?}; current status is {:?}",
+                environment.status
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn run_profiles_live_client(
     client: Client,
     task_queue: String,
@@ -3084,7 +3817,7 @@ async fn run_profiles_live_client(
                     instructions: Some(ProfileInstructions::Text {
                         text: "Use the profile instructions in this live test.".to_owned(),
                     }),
-                    active_environment_id: None,
+                    environment: None,
                 },
             },
         })

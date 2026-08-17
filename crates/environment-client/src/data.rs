@@ -8,15 +8,16 @@ use environment_protocol::data::{
         RemoveResponse, SearchTextParams, SearchTextResponse, WriteFileParams, WriteFileResponse,
     },
     handshake::{InitializeParams, InitializeResponse, InitializedParams},
+    idle::{IdleParams, IdleResponse},
     jobs::{
         CancelJobsParams, CancelJobsResponse, ListJobsParams, ListJobsResponse, ReadJobsParams,
         ReadJobsResponse, StartJobsParams, StartJobsResponse,
     },
     methods::{
-        FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD, FS_GLOB_FILES_METHOD,
-        FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD, FS_SEARCH_TEXT_METHOD,
-        FS_WRITE_FILE_METHOD, INITIALIZE_METHOD, INITIALIZED_METHOD, JOB_CANCEL_METHOD,
-        JOB_LIST_METHOD, JOB_READ_METHOD, JOB_START_METHOD, PROCESS_READ_METHOD,
+        ENV_IDLE_METHOD, FS_COPY_METHOD, FS_CREATE_DIRECTORY_METHOD, FS_GET_METADATA_METHOD,
+        FS_GLOB_FILES_METHOD, FS_READ_DIRECTORY_METHOD, FS_READ_FILE_METHOD, FS_REMOVE_METHOD,
+        FS_SEARCH_TEXT_METHOD, FS_WRITE_FILE_METHOD, INITIALIZE_METHOD, INITIALIZED_METHOD,
+        JOB_CANCEL_METHOD, JOB_LIST_METHOD, JOB_READ_METHOD, JOB_START_METHOD, PROCESS_READ_METHOD,
         PROCESS_RESIZE_METHOD, PROCESS_START_METHOD, PROCESS_TERMINATE_METHOD,
         PROCESS_WRITE_METHOD,
     },
@@ -187,6 +188,11 @@ where
         params: &CancelJobsParams,
     ) -> EnvironmentClientResult<CancelJobsResponse> {
         self.rpc.request(JOB_CANCEL_METHOD, params).await
+    }
+
+    /// Daemon activity report for idle power policy. Not itself activity.
+    pub async fn idle(&mut self, params: &IdleParams) -> EnvironmentClientResult<IdleResponse> {
+        self.rpc.request(ENV_IDLE_METHOD, params).await
     }
 
     pub async fn next_notification(

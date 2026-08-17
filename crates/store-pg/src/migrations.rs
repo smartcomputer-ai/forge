@@ -84,9 +84,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "api_keys",
         sql: include_str!("../migrations/007_api_keys.sql"),
     },
+    EmbeddedMigration {
+        version: 8,
+        name: "environment_origin_session",
+        sql: include_str!("../migrations/008_environment_origin_session.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 7;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {
