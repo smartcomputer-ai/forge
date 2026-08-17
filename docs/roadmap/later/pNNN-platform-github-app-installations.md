@@ -1,461 +1,508 @@
-# Platform GitHub App And Universe Installations
+# Deployment-Owned App Identities And Universe Authorizations (GitHub App First)
 
 **Status**
 
 - Later / product integration.
-- Written 2026-08-16 after reviewing the existing universe-scoped GitHub App
-  provider and installation-grant implementation.
-- Builds on P69's GitHub App token broker, P90's multi-tenant boundary, P118's
+- Written 2026-08-16 after reviewing the universe-scoped GitHub App provider
+  and installation-grant implementation; revised 2026-08-17 after verifying
+  the design against `crates/auth`, `crates/store-pg`, the gateway, and
+  `platform/`.
+- Builds on P69's auth substrate and GitHub App token broker, P90's
+  multi-tenant boundary and deployment-level state lookup, P118's
   deployment-provider/universe-binding pattern, and P124's first-party
   Platform management plane.
+- Not urgent. The universe-owned (BYO) GitHub App path already works. Build
+  this when hosted onboarding friction ("Connect GitHub, pick an org, done")
+  is an actual product problem. The generic pieces below are worth having
+  regardless because deployment-owned OAuth clients for Notion, Linear, Slack,
+  and Google Workspace need the same axis.
 
 ## Goal
 
-Support one Lightspeed-operated GitHub App that customers can install on
-arbitrary GitHub user or organization accounts and connect to one universe,
-without copying the App private key into every universe or weakening
-universe isolation.
+Let one Lightspeed-operated application identity (first: a GitHub App) be
+connected to arbitrary external accounts by many universes, without copying
+the deployment's private key or client secret into every universe and
+without weakening universe isolation.
 
-The load-bearing scope split is:
+The design is intentionally generic. GitHub is the first driver, not the
+shape of the schema:
 
 ```text
-GitHub App identity and private key       deployment-scoped
-GitHub App installation                  universe-scoped
-Installation grant and repository access universe-scoped
-Installation token                       short-lived, minted on demand
+Deployment-owned app identity + credentials    deployment configuration (env)
+  GitHub App id, private key, OAuth client id/secret, webhook secret
+  (later: Notion/Linear/Slack client id/secret, Google client or service key)
+
+Universe-owned external authorization           auth_grants row
+  GitHub installation, Notion workspace, Slack team, Google consent
+
+One-time connect flow with public callback      auth_flows + core /auth/callback
+
+Short-lived tokens                              minted or refreshed on demand,
+                                                cached in process memory only
 ```
 
-A universe may own multiple installations, for example one personal-account
-installation and installations for several organizations. One GitHub
-installation must belong to at most one universe.
+Keep the existing universe-owned GitHub App path. It remains the route for
+bring-your-own Apps, self-hosting, GitHub Enterprise Server, customers that
+require an isolated App identity, and the one case the deployment App cannot
+serve (below).
 
-Keep the existing universe-owned GitHub App path. It remains useful for
-bring-your-own Apps, self-hosting, GitHub Enterprise Server, and customers
-that require an isolated App identity.
+### Terminology (read this first)
 
-## Current State
+- **App** — the GitHub-side identity: app id + private key. Owned by the
+  deployment. Installed many times.
+- **Installation** — GitHub's record that the App is installed on **one**
+  GitHub account (a user or an organization), with a repository selection.
+  Each has its own numeric `installation_id`. Installing the same App on
+  `acme-org` and on `lukas` yields two installations.
+- **Installation token** — minted from App key + installation id; reaches
+  only that installation's repositories.
 
-P69 models both parts inside one universe:
+Ownership rules that follow:
 
-- `auth_providers` stores a GitHub App's non-secret configuration and a
-  reference to its private-key secret;
-- `auth_secrets` stores the encrypted private key;
-- an `auth_grants` row of kind `github_app` represents one installation and
-  carries its installation id, account, permissions, and repository selection
-  in non-secret metadata; and
-- `GitHubAppRuntime` reads that provider and grant, signs an App JWT, exchanges
-  it for an installation token, and caches the token only in process memory.
+- One deployment App serves installations in many universes.
+- One universe may own many installations (personal account plus several
+  organizations). Repositories owned by unrelated accounts require one
+  installation per owning account; that is normal universe configuration.
+- **One installation belongs to at most one universe.** This is a
+  Lightspeed choice (see below), enforced structurally.
+- GitHub allows an App to be installed on a given account **only once**.
+  Therefore, with the deployment App, one GitHub organization can be
+  connected to **one universe**. A customer who needs the same organization
+  in two universes uses the BYO path for one of them. Document this in the
+  product; it is the same limitation Vercel, Sentry, and Linear live with.
 
-All three auth tables are keyed by `universe_id`. This is correct for a
-universe-owned developer App, but a hosted product App has one deployment
-identity shared by installations in many universes. Duplicating its private
-key into every universe would create unnecessary secret copies, complicate
-rotation, and confuse provider ownership.
+Exclusivity is deliberately chosen over shared installations because it is
+simpler (webhook routing resolves to exactly one universe) and because
+exclusive → shared later is a one-line index drop, whereas shared → exclusive
+later breaks existing claims.
 
-The runtime already has deployment-scoped concepts. Inbound API keys are
-deployment-scoped because they resolve a caller to a universe, and environment
-compute uses a deployment provider plus universe-scoped bindings. A
-platform-operated GitHub App should follow the same shape.
+## Current State (verified 2026-08-17)
+
+P69 models both halves inside one universe:
+
+- `auth_providers` stores a GitHub App's non-secret configuration
+  (`config_json = { appId, apiBaseUrl }`) and `credential_secret_id`, with an
+  `ON DELETE RESTRICT` FK into `auth_secrets`;
+- `auth_secrets` stores the AEAD-encrypted private key;
+- an `auth_grants` row of kind `github_app` represents one installation; its
+  installation id, account login, permissions, and repository selection live
+  only in `metadata_json` (`GitHubInstallationGrantMetadata`);
+- `GitHubAppRuntime` reads provider + grant, signs the App JWT, exchanges it
+  for an installation token, and caches it in a process-memory
+  `BTreeMap<AuthGrantId, Token>`;
+- `auth_flows` is a generic one-time flow table (hashed `state`, expiry,
+  `consumed_at_ms`, `redirect_uri`, `grant_id` result) with provider kinds
+  `mcp_oauth | github_app_user | github_oauth_app | custom_oauth`;
+- the core gateway hosts the only public ingress in the system,
+  `/auth/callback`, and resolves the callback's universe with the
+  deployment-level `find_auth_flow_universe(state_hash)` query;
+- `auth/github/installations/list` enumerates every installation the
+  provider's App JWT can see and `auth/github/installations/grant` creates a
+  grant for one of them.
+
+All auth tables (`auth_secrets`, `auth_grants`, `auth_clients`, `auth_flows`,
+`auth_providers`) are keyed by `universe_id`. There is no scope concept:
+`AuthProviderStore`, `SecretStore`, and `AuthGrantStore` are universe-bound
+and take no universe parameter. The only deployment-scoped auth table is
+inbound `api_keys` (P90).
+
+Gaps this design must close:
+
+- No column or index carries the installation id; nothing prevents two grants
+  for the same installation, even within one universe
+  (`github_installation_grant_draft` mints a random grant id with no lookup).
+- Installation tokens are minted with **no request body**: no
+  `repositories`/`repository_ids`/`permissions` narrowing exists, and the
+  cache is keyed by grant id only.
+- `AuthGrantStatus` is `Active | NeedsReauth | Revoked | Failed`; there is no
+  `Suspended`, and `InstallationNotFound` (uninstall) is currently mapped to
+  `NeedsReauth`, which is a mislabel.
+- Platform has no public/unauthenticated route, no webhook receiver, and no
+  GitHub App code beyond passthrough to `auth/providers/*` and better-auth
+  social login.
 
 ## Design Decisions
 
-### The installation remains an auth grant
+### D1. Deployment app identity comes from environment configuration
 
-Do not add a second durable `github_installations` catalog for the first
-slice. A GitHub App installation is the external authorization represented by
-the existing universe auth grant. Splitting the same lifecycle between a
-GitHub installation row and an auth grant would create two sources of truth
-for ownership, status, permissions, and revocation.
-
-Promote the installation id out of opaque metadata into an indexed external
-authorization identity. Candidate additions to `auth_grants` are:
+The deployment provider is the same record as a universe `auth_providers`
+row, constructed once per process from `LIGHTSPEED_*` variables and held in
+deployment-shared runtime state (alongside P90's `DeploymentStores` /
+`DeploymentClients`). Secrets are env-managed too, exactly like
+`LIGHTSPEED_AUTH_SECRETS_MASTER_KEY` and the environment-daemon bearer token:
 
 ```text
-provider_scope                 universe | deployment
-provider_id                    logical provider id
-external_authorization_id      provider-native authorization id
+LIGHTSPEED_GITHUB_APP_PROVIDER_ID          logical id referenced by grants
+LIGHTSPEED_GITHUB_APP_ID
+LIGHTSPEED_GITHUB_APP_API_BASE_URL
+LIGHTSPEED_GITHUB_APP_PRIVATE_KEY_FILE     (or inline / secret-manager ref)
+LIGHTSPEED_GITHUB_APP_CLIENT_ID            install / user-OAuth callback
+LIGHTSPEED_GITHUB_APP_CLIENT_SECRET_FILE
+LIGHTSPEED_GITHUB_APP_WEBHOOK_SECRET_FILE
 ```
+
+If the variables are unset, the platform-App feature is off. Rotation is
+change-config-and-redeploy.
+
+Code reads it through a small trait (`DeploymentAuthProviderSource` or
+similar) so that a Postgres-backed implementation with `operator/auth/
+providers/*` can replace the env source later without touching grant, flow,
+callback, or webhook code. **No `deployment_auth_providers`,
+`deployment_auth_clients`, or deployment secret table now.** They become
+worthwhile only for several apps per deployment, operator UI registration
+without redeploy, or online rotation with status tracking.
+
+Do not create a "system universe" to hold the deployment provider. Do not
+replicate its private key or client secret into universe `auth_secrets`.
+
+### D2. The external authorization stays an auth grant, with two new columns
+
+Do not add `github_installations`, `github_install_intents`,
+`github_installation_repositories`, or per-vendor inventory tables. The
+installation is the external authorization already represented by
+`auth_grants`. Promote the identity out of opaque metadata:
+
+```text
+auth_grants
+  provider_scope             text NOT NULL DEFAULT 'universe'
+                             ('universe' | 'deployment')
+  external_authorization_id  text        (GitHub installation id; later Notion
+                                          workspace id, Slack team id, ...)
+```
+
+Constraints (both partial, both generic):
+
+```sql
+-- no duplicate grants for one authorization within a universe (BYO too)
+UNIQUE (universe_id, provider_id, external_authorization_id)
+  WHERE external_authorization_id IS NOT NULL;
+
+-- one deployment-app authorization is owned by at most one universe;
+-- doubles as the webhook reverse-lookup index
+UNIQUE (provider_id, external_authorization_id)
+  WHERE provider_scope = 'deployment'
+    AND external_authorization_id IS NOT NULL;
+```
+
+`provider_id` already exists on `auth_grants`. Provider scope must be
+explicit; never infer deployment ownership from a provider-id prefix.
+`external_authorization_id` is generic auth-grant vocabulary from the start
+(open question resolved: other deployment-owned integrations need it).
 
 For a platform GitHub App grant:
 
 ```text
 universe_id                    owning universe
 provider_scope                 deployment
-provider_id                    platform GitHub App provider
+provider_id                    LIGHTSPEED_GITHUB_APP_PROVIDER_ID
 provider_kind                  github_app
 external_authorization_id      GitHub installation id
 metadata_json                  account id/login/type, permissions,
                                repository selection, non-secret observations
 ```
 
-Enforce exclusive ownership structurally with the equivalent of:
+Do not scan or filter installation ids out of `metadata_json`.
 
-```sql
-UNIQUE (provider_id, external_authorization_id)
-WHERE provider_scope = 'deployment'
-  AND provider_kind = 'github_app';
-```
+### D3. Grant status gains `suspended`; uninstall becomes `revoked`
 
-This index also supports the cross-universe reverse lookup required by
-webhooks. Do not scan or filter installation ids out of `metadata_json`.
+Add `Suspended` to `AuthGrantStatus` and the SQL check. GitHub suspension is
+an installation lifecycle condition, not an OAuth refresh failure. In the
+same slice, change the existing `InstallationNotFound → NeedsReauth` mapping
+to `Revoked` (reinstalling produces a new installation id and therefore a new
+grant).
 
-Provider scope must be explicit. Do not infer deployment ownership from a
-reserved provider-id prefix.
+### D4. The connect intent is an `auth_flows` row, hosted by core
 
-### Add a deployment provider source
-
-The runtime needs a provider source above the universe boundary. A candidate
-durable representation is:
-
-```text
-deployment_auth_providers
-  provider_id
-  provider_kind
-  display_name
-  config_json
-  credential_ref
-  status
-  created_at_ms
-  updated_at_ms
-```
-
-The first implementation may instead load the single platform App identity
-from deployment configuration and the deployment secret manager. The table is
-needed when Lightspeed must support multiple deployment Apps, operator API
-management, status, or online credential rotation. In either form, the token
-broker resolves a grant according to `provider_scope`:
+There is no Platform intent table. `auth_flows` already is a one-time,
+hashed-state, expiring, universe-scoped intent with a deployment-level
+reverse lookup and a public callback. Extend it with one column so a flow can
+reference the deployment OAuth client (there is no `auth_clients` row for the
+platform App):
 
 ```text
-universe   -> existing universe AuthProviderStore and SecretStore
-deployment -> deployment provider source and deployment credential source
+auth_flows
+  client_scope   text NOT NULL DEFAULT 'universe'   ('universe' | 'deployment')
 ```
 
-Do not create a fake "system universe" to hold the deployment provider. Do
-not replicate its private key into universe `auth_secrets` rows.
+Enable "Request user authorization (OAuth) during installation" on the
+deployment App. GitHub then delivers `code`, `installation_id`,
+`setup_action`, and `state` to a single callback URL, so the setup callback
+*is* the OAuth callback and the user-token proof the flow needs falls out of
+the existing `github_app_user` flow kind.
 
-Current `auth_secrets` rows require a universe. For the initial hosted product,
-the deployment provider may reference an external deployment secret. Add a
-deployment-scoped encrypted-secret table only if recoverable credential CRUD
-and rotation must be owned by Lightspeed itself; do not add it merely to make
-the schema resemble the universe secret store.
+### D5. Core is authoritative; Platform is a membership gate plus UI
 
-### Core is authoritative
+Core (Rust runtime) owns:
 
-The provider and installation authorization belong in Lightspeed core even
-though the product setup experience lives in Platform.
+- the deployment provider identity and credentials (from env);
+- the universe-owned authorization grant and its status;
+- exclusive `(provider, external_authorization_id)` ownership;
+- the connect flow, its state, and the public callback;
+- live verification of the authorization before creating or reactivating a
+  grant;
+- token minting, narrowing, in-memory caching, and eviction;
+- the public webhook receiver, signature verification, delivery
+  deduplication, and reverse lookup from external authorization id to
+  universe.
 
-Core is authoritative for:
+Placing callback and webhooks in core is not optional: both need deployment
+secrets (client secret, webhook secret) that must not be copied into
+Platform, and core already hosts the only public ingress and the reverse
+lookup. This also keeps CLI/headless deployments and Platform-down operation
+working.
 
-- deployment GitHub App provider identity, status, and private-key reference;
-- the universe-owned installation grant;
-- exclusive `(provider, installation)` ownership;
-- live installation validation and reconciliation;
-- installation status and non-secret permission/account observations;
-- installation-token minting, narrowing, and in-memory caching; and
-- reverse lookup from a GitHub installation id to its universe for trusted
-  webhook routing.
+Platform (TypeScript) owns:
 
-This keeps the broker's authorization decision and credential resolution in
-one domain, permits CLI and headless deployments, and prevents agent execution
-from depending on the Platform database or TypeScript server.
+- authenticating the human;
+- checking universe owner/admin membership (better-auth `member.role`);
+- starting the flow through the ordinary universe-scoped API and redirecting
+  the browser;
+- rendering authorizations, status, and repository views from core
+  projections.
 
-Platform owns the human-facing control flow:
+Platform keeps no authoritative mirror of authorization ownership,
+permissions, or webhook state, and gets no new tables. Platform → core is the
+existing trusted-header path; no new deployment credential is introduced.
 
-- authenticating the user;
-- checking universe owner/admin membership;
-- creating a short-lived, one-time installation intent;
-- redirecting the user to GitHub;
-- handling the setup callback;
-- verifying that the returning user may associate the installation;
-- receiving and authenticating GitHub webhooks when Platform hosts the public
-  webhook endpoint; and
-- invoking trusted core operator methods to claim, reconcile, suspend, or
-  revoke an installation grant.
+### D6. Existing enumeration/grant methods are BYO-only
 
-Platform must not keep an authoritative mirror of installation ownership or
-permissions. It may retain webhook delivery/deduplication records and setup
-workflow state. Reads shown in the product should come from core projections.
+With a shared App, `auth/github/installations/list` under the App JWT would
+enumerate every customer's installations, and `auth/github/installations/
+grant` would let any universe member claim one without a flow. Both must
+reject `provider_scope = deployment` providers. Deployment-App claims happen
+only inside the callback (D7).
 
-There are no cross-database foreign keys. Platform passes stable universe,
-provider, installation, intent, and delivery identifiers through idempotent
-operator calls.
+### D7. Vendor-specific behavior lives behind a driver trait
 
-## Minimal Persistence Shape
-
-The intended first slice does not require a family of GitHub-specific core
-tables.
-
-### Core runtime database
-
-1. Add a deployment auth-provider table if the provider is managed durably;
-   otherwise use deployment configuration plus a secret-manager reference.
-2. Extend `auth_grants` with explicit provider scope and indexed external
-   authorization identity.
-3. Add the partial uniqueness constraint that prevents an installation from
-   being claimed by two universes.
-
-### Platform database
-
-Add a short-lived installation-intent table, or an equivalent durable
-one-time-state mechanism:
+Vendors differ in signature scheme, where the external id appears, how to
+prove authority, and event → lifecycle mapping. Keep that behind a small
+per-`provider_kind` trait, not in schema or API shape:
 
 ```text
-github_install_intents
-  intent_id
-  state_hash
-  universe_id
-  initiated_by_user_id
-  expires_at
-  consumed_at
-  created_at
+ExternalAuthorizationDriver
+  authorization_id_from_callback(query, token_response) -> external id
+      GitHub: installation_id query param
+      Notion / Slack: workspace_id / team.id in the token response
+  verify_authorization_live(deployment provider, external id, user token)
+      GitHub: external id ∈ GET /user/installations, then App-JWT lookup
+      Notion / Linear: no-op
+  verify_inbound_event(headers, body) -> (external id, delivery id, event)
+      GitHub: X-Hub-Signature-256 HMAC, X-GitHub-Delivery, installation.* events
 ```
 
-Store only a hash of the externally transmitted `state` value. Intents expire,
-are one-time-use, and cannot be completed for another universe.
+Token acquisition already dispatches per kind through `GrantTokenSource`.
+GitHub App remains one implementation; a Google service-account
+domain-wide-delegation source would be a second; Notion, Linear, and Slack
+reuse the existing OAuth refresh path with a deployment-scoped client and
+need no new Rust driver beyond id extraction.
 
-A webhook-delivery ledger keyed by GitHub's delivery id is optional but useful
-for replay protection, diagnostics, and retry-safe processing. Raw webhook
-payload retention is not required for installation authority.
+## Persistence Delta
 
-### Deferred tables
+Everything fits existing tables:
 
-Do not add `github_installation_repositories` initially. Fetch or reconcile
-the accessible repository list from GitHub and keep repository selection and
-summary observations in grant metadata.
+- `auth_grants`: `provider_scope`, `external_authorization_id`, two partial
+  unique indexes, backfill (`provider_scope = 'universe'`;
+  `external_authorization_id` from validated `github_app` metadata, rejecting
+  duplicates before the constraint is added; invalid legacy metadata leaves
+  the grant unusable and visible to operators, never guessed).
+- `auth_grants.status` and `AuthGrantStatus`: add `suspended`.
+- `auth_flows`: `client_scope`.
+- No new core tables. No Platform tables. Webhook delivery dedup may start as
+  a bounded in-memory set keyed by delivery id plus idempotent reconcile; a
+  generic `inbound_deliveries` ledger is optional later.
 
-Add a normalized repository table only when repository inventory becomes a
-first-class Lightspeed resource that needs search, policy, stable selection,
-or event-driven synchronization. At that point repository ids, not mutable
-`owner/name` strings, are the external identity.
-
-## Installation Flow
+## Connect Flow
 
 1. A universe owner or admin selects **Connect GitHub** in Platform.
-2. Platform creates a one-time installation intent bound to the universe and
-   initiating user.
-3. Platform redirects to the public GitHub App installation URL with the
-   opaque `state` value.
-4. GitHub lets the user choose a user or organization account and `all` or
-   selected repositories.
-5. GitHub redirects to the configured setup URL with an installation id.
-6. Platform consumes the matching intent and verifies the initiating user's
-   authority over both the Lightspeed universe and the GitHub installation.
-7. Platform calls a trusted core operator method to claim the installation for
-   the universe.
-8. Core authenticates as the deployment App, reads the installation live from
-   GitHub, rejects an existing claim by another universe, and creates or
-   idempotently returns the universe auth grant.
-9. Subsequent consumers resolve the grant through the normal token broker.
+2. Platform checks membership and calls the universe-scoped flow-start method
+   with `client_scope = deployment`, kind `github_app_user`, and the return
+   URL.
+3. Core creates the `auth_flows` row (hashed `state`, expiry) and returns the
+   GitHub App installation URL with `state`; Platform redirects.
+4. GitHub lets the user choose an account and `all` or selected repositories.
+5. GitHub redirects to core `/auth/callback` with `code`, `installation_id`,
+   `setup_action`, `state`.
+6. Core resolves the universe from `state_hash`, consumes the flow once,
+   exchanges `code` for a user token, verifies `installation_id` is among the
+   user's accessible installations, reads the installation live with the App
+   JWT, and creates the grant under the unique index (idempotent for the same
+   universe; rejected for another universe).
+7. Core redirects to the flow's return URL; Platform shows the result from
+   core projections.
+8. Consumers resolve tokens through the normal broker.
 
-The setup callback's `installation_id` is untrusted input. GitHub explicitly
-warns that callers can spoof it. The flow must validate the installation using
-an authenticated GitHub relationship, such as a GitHub App user token proving
-that the initiating user can access the installation, followed by a live App
-lookup. A signed webhook may assist reconciliation but must not silently bind
-an installation to a universe without the matching Platform intent and
-membership check.
-
-One installation belongs to one GitHub user or organization account. Access
-to repositories owned by unrelated accounts requires multiple installations;
-that is a normal universe configuration.
+The callback's `installation_id` is untrusted input; GitHub documents that
+it can be spoofed. Steps 6's user-token check plus live App lookup are the
+proof. A signed webhook may assist reconciliation but never binds an
+installation to a universe without a matching flow.
 
 ## Token Minting And Repository Scope
 
-Installation tokens remain short-lived and are never persisted durably. The
-broker signs an App JWT using the deployment credential and exchanges it for a
-token for the universe grant's installation id.
+Installation tokens remain short-lived and are never persisted. The broker
+branches on `provider_scope`:
 
-When an installation is exclusively bound to one universe, the installation's
-GitHub-side repository selection is the primary boundary. Where a consumer
-needs only one repository, request a token narrowed to that repository id and
-to the minimum required permissions. Narrowing is defense in depth and becomes
-mandatory if a future design ever subdivides one installation between
-multiple internal principals or resources.
+```text
+universe    -> universe AuthProviderStore + SecretStore (unchanged)
+deployment  -> env-loaded deployment provider with matching provider_id
+```
 
-Never allow caller-supplied repository names, ids, or permission maps to widen
-what GitHub granted to the installation. Token-mint requests may only preserve
-or reduce installation access.
-
-Token cache keys must include enough identity to prevent reuse across grants
-or narrowed scopes. A cache keyed only by installation grant is insufficient
-once different repository or permission subsets can be minted concurrently.
+Add request-body narrowing to `GitHubApiClient::create_installation_token`
+(`repository_ids`, `permissions`) and make the cache key
+`(grant_id, narrowing fingerprint)`. Narrowing may only preserve or reduce
+what GitHub granted the installation; caller-supplied repository names, ids,
+or permission maps never widen it. Evict all of a universe's cached tokens on
+universe purge (P90) and on grant revoke/suspend.
 
 ## Webhook Lifecycle
 
-The public webhook receiver verifies the GitHub signature before parsing or
-routing an event. Processing is idempotent by GitHub delivery id.
+Core `/webhooks/github` verifies the signature with the deployment webhook
+secret before parsing, deduplicates by delivery id, resolves the universe via
+the deployment-scope unique index (exactly one or fail closed), and
+reconciles the grant:
 
-Installation lifecycle events reconcile the core grant:
+- installation created: observe; never claim without a matching flow;
+- permissions accepted/changed: refresh permission metadata;
+- suspended: `Suspended`, block token resolution, keep ownership;
+- unsuspended: revalidate live, restore `Active`;
+- deleted: `Revoked`, evict cached tokens;
+- repositories added/removed: refresh selection metadata, invalidate affected
+  narrowed-token cache entries.
 
-- installation created: observe it, but do not claim it without a matching
-  setup intent;
-- permissions accepted or changed: refresh the grant's permission metadata;
-- suspended: prevent token resolution while preserving the ownership record;
-- unsuspended: revalidate live and restore token resolution;
-- deleted: revoke or tombstone the grant and evict cached tokens; and
-- repositories added or removed: refresh repository-selection observations
-  and invalidate any affected narrowed-token cache entries.
-
-Repository events route by the authenticated App identity and installation id,
-not by repository name. The reverse lookup must return exactly one universe or
-fail closed. Events for unknown or unclaimed installations may be logged and
-reconciled, but must not create universe state implicitly.
-
-The current generic grant states may need a distinct `suspended` state. Do not
-mislabel GitHub suspension as `needs_reauth`: it is an installation lifecycle
-condition, not a user OAuth refresh failure.
+Repository events route by installation id, never by repository name. Events
+for unknown or unclaimed installations may be logged but create no universe
+state.
 
 ## API Shape
 
-The exact method names remain open, but the boundary should distinguish
-universe consumption from deployment administration.
-
-Platform-facing universe operations:
+Universe-scoped (universe inferred from request context per P90; also
+exposed by Configurator MCP as read/disconnect only):
 
 ```text
-github/installations/list
-github/installations/read
-github/installations/repositories/list
-github/installations/disconnect
+auth/flows/start                     (existing; gains client_scope)
+auth/authorizations/list|read        grants with external ids, status,
+                                     account/permission observations
+auth/authorizations/disconnect       revoke + evict
+auth/github/repositories/list        per-authorization accessible repos
+                                     (GitHub-specific because narrowing is)
 ```
 
-Trusted operator operations:
+Existing `auth/github/installations/list|grant` stay for BYO providers only
+(D6). Trusted operator surface (never in Configurator MCP):
 
 ```text
-operator/github/providers/*
-operator/github/installations/claim
-operator/github/installations/lookup
-operator/github/installations/reconcile
-operator/github/installations/revoke
+operator/auth/authorizations/lookup      external id -> universe
+operator/auth/authorizations/reconcile
+operator/auth/authorizations/revoke
 ```
 
-Ordinary universe APIs infer the universe from authenticated request context,
-as required by P90. They never accept an arbitrary universe id. Cross-universe
-lookup and mutation are trusted operator surfaces and must not be exposed by
-Configurator MCP.
-
-Do not reuse the current universe `auth/providers/create` method to register
-the platform App. That method remains the BYO path and its private key remains
-universe-owned.
+No `claim` operator method (claims happen in the callback) and no
+`operator/auth/providers/*` until the deployment provider moves out of env.
+Do not reuse `auth/providers/create` for the platform App; that method
+remains the BYO path with a universe-owned key.
 
 ## Security Invariants
 
-1. One deployment GitHub installation is owned by at most one universe.
-2. A universe may have multiple installations.
-3. The platform App private key is never copied into universe storage.
-4. Installation tokens are never persisted and never returned by management
-   APIs.
-5. A setup callback parameter alone never proves installation ownership.
-6. Only a universe owner/admin may start or complete an installation binding.
-7. Core verifies the installation live before creating or reactivating a
-   grant.
-8. Webhook signatures and delivery identities are verified before routing.
-9. Unknown, ambiguous, suspended, deleted, or cross-universe installations
-   fail closed before provider or repository I/O.
-10. GitHub account and repository numeric ids are authoritative external
-    identities; logins and names are display metadata.
-11. Token narrowing can only reduce GitHub-granted repositories and
-    permissions.
-12. Removing a universe deletes or revokes its installation grants and cached
-    tokens but never deletes or rotates the deployment App identity.
-
-## Migration And Compatibility
-
-Existing universe-owned GitHub App providers and grants continue to resolve
-with `provider_scope = universe`. Backfill existing grants accordingly.
-
-Platform-managed installations use `provider_scope = deployment`. Do not
-automatically convert BYO providers or deduplicate private keys across
-universes: their ownership and rotation semantics are intentionally different.
-
-If `external_authorization_id` is introduced as a generic string, backfill it
-from validated `github_app` grant metadata and reject duplicate installation
-claims before adding the uniqueness constraint. Invalid legacy metadata should
-leave the grant unusable and visible to operators for repair rather than
-guessing an installation identity.
+1. One deployment-app authorization is owned by at most one universe.
+2. A universe may hold many authorizations.
+3. Deployment app credentials (private key, client secret, webhook secret)
+   live only in deployment configuration; never in universe storage or in
+   Platform.
+4. Tokens are never persisted and never returned by management APIs.
+5. A callback parameter alone never proves ownership; a consumed one-time
+   flow plus live verification does.
+6. Only a universe owner/admin may start a connect flow.
+7. Webhook signatures and delivery ids are verified before routing.
+8. Unknown, ambiguous, suspended, revoked, or cross-universe authorizations
+   fail closed before provider I/O.
+9. Numeric account/repository ids are identity; logins and names are display
+   metadata.
+10. Narrowing only reduces granted access.
+11. Deleting a universe cascades its grants and evicts its cached tokens; it
+    never touches the deployment app identity.
+12. Deployment-scope providers are never enumerable or claimable through the
+    BYO installation methods.
 
 ## Implementation Slices
 
-### G1: Deployment provider resolution
+### G1: Deployment provider from env + provider scope
 
-- Add the deployment provider/credential source.
-- Add explicit provider scope to grants and the broker.
-- Preserve the existing universe provider path.
-- Cover same provider ids in different scopes and fail-closed lookup.
+- Env-loaded deployment GitHub App provider behind a source trait.
+- `provider_scope` on `auth_grants`; broker branch; BYO path untouched.
+- Reject deployment-scope providers in `auth/github/installations/*`.
+- Tests: same provider id in both scopes; missing env → feature off; fail-
+  closed lookup.
 
-### G2: Structured installation ownership
+### G2: External authorization identity
 
-- Add and backfill `external_authorization_id`.
-- Add the global partial uniqueness constraint.
-- Add deployment-level lookup by provider plus installation id.
-- Add cross-universe isolation and concurrent-claim tests.
+- `external_authorization_id` + backfill + both partial unique indexes.
+- `Suspended` status; uninstall → `Revoked`.
+- Deployment-level lookup by `(provider_id, external_authorization_id)`.
+- Tests: concurrent cross-universe claims yield one owner; in-universe
+  reconnect is idempotent.
 
-### G3: Platform installation flow
+### G3: Connect flow in core
 
-- Add one-time installation intents and membership checks.
-- Add the GitHub redirect and setup callback.
-- Verify the returning user's access to the installation.
-- Claim the installation through an idempotent operator API.
+- `client_scope` on `auth_flows`; flow start with the deployment client.
+- Callback handles `installation_id`/`setup_action`, user-token check, live
+  lookup, claim, redirect.
+- Platform: membership gate, start-and-redirect, result page.
+- Tests: spoofed/replayed callback, wrong-universe state, expired flow.
 
-### G4: Webhook reconciliation
+### G4: Webhooks
 
-- Verify webhook signatures and deduplicate deliveries.
-- Reconcile installation deletion, suspension, permission changes, and
-  repository-selection changes.
-- Evict affected token-cache entries.
-- Route repository events by authenticated installation identity.
+- Core `/webhooks/github`; signature, dedup, reverse lookup, reconcile,
+  cache eviction.
 
-### G5: Product consumption
+### G5: Consumption
 
-- Add universe installation and repository views.
-- Let repository-aware tools select only repositories visible through the
-  universe's installations.
-- Mint narrowly scoped tokens where the consumer can state its repository and
-  permission requirements.
-- Surface disconnected, suspended, and permission-upgrade states clearly.
+- `auth/authorizations/*`, repository listing, narrowed minting with the
+  compound cache key, Platform views for connected/suspended/needs-upgrade.
+
+### G6 (when needed): Second vendor
+
+- Deployment-scoped OAuth client (Notion or Linear) through the same
+  `client_scope`/`provider_scope` axis, proving no GitHub-specific schema
+  leaked.
 
 ## Acceptance Criteria
 
-- One deployment App credential serves installations in at least two
-  universes without copying the private key into either universe.
-- Each universe lists and uses only its own installations and repositories.
-- Concurrent attempts to claim the same installation for different universes
-  result in exactly one owner.
-- A spoofed setup callback cannot create or move an installation binding.
-- An installation deleted or suspended at GitHub becomes unusable before the
-  next repository operation and cannot return a cached token.
-- Repository-selection changes are reflected without recreating the provider
-  or installation grant.
-- Removing universe A does not affect the deployment App or universe B's
-  installations.
-- Existing universe-owned/BYO GitHub Apps continue to mint tokens through the
-  original universe-scoped credential path.
-- The runtime can resolve installation tokens while Platform is unavailable.
+- One deployment App serves installations in two universes with no
+  universe-stored key.
+- Each universe lists and uses only its own authorizations.
+- Concurrent claims of one installation by two universes yield exactly one
+  owner; the loser fails closed.
+- A spoofed or replayed callback cannot create or move a binding.
+- An installation suspended or deleted at GitHub is unusable before the next
+  repository operation and cannot return a cached token.
+- Repository-selection changes are reflected without recreating the grant.
+- Deleting universe A affects neither the deployment App nor universe B.
+- BYO GitHub Apps continue to mint through the universe-scoped path.
+- Tokens resolve while Platform is unavailable.
+- `npm run check:identity` passes (no new deployment inputs outside
+  Lightspeed-owned names).
+
+## Resolved Questions
+
+- One deployment App, configured via env, secrets via env/secret-manager
+  reference; tables only if operator-managed multi-app arrives.
+- `external_authorization_id` is generic vocabulary.
+- Suspension is a grant status.
+- Core hosts callback and webhook ingress.
+- Installations are exclusive per universe; the one-org-one-universe
+  limitation is documented and BYO is the escape hatch; relax later by
+  dropping one index if product needs it.
 
 ## Open Questions
 
-- Is one deployment App sufficient for the first hosted product, allowing its
-  provider configuration to remain deployment config, or is operator-managed
-  multi-App support required immediately?
-- Should deployment credentials use an external secret-manager reference or a
-  new deployment-scoped encrypted-secret store?
-- Should `external_authorization_id` be generic auth-grant vocabulary or a
-  typed GitHub-only column? Prefer generic vocabulary only if another concrete
-  provider needs the same identity.
-- Should installation suspension extend `AuthGrantStatus`, or should external
-  provider lifecycle be modeled separately from generic token health?
-- Which component hosts the public webhook endpoint? Platform is the natural
-  product ingress, but core remains authoritative regardless of ingress
-  placement.
-- How much webhook delivery history is operationally useful, and what is its
-  retention policy?
-- When repository inventory becomes first class, does it belong to the auth
-  domain, a future source-repository catalog, or a workspace-import domain?
+- Webhook delivery retention: in-memory dedup only, or a generic ledger?
+- When repository inventory becomes first class, which domain owns it (auth,
+  a source-repository catalog, or workspace import)?
+- Which vendor is second, and does it need `verify_authorization_live` at all?
 
 ## References
 
-- [P69 generic auth and token broker](../p69-generic-auth-token-broker.md)
-- [P90 multi-tenancy](../p90-multi-tenancy.md)
+- [P69 generic auth and token broker](../archive/p69-generic-auth-token-broker.md)
+- [P90 multi-tenancy](../archive/p90-multi-tenancy.md)
 - [P118 environment domain and lifecycle](../p118-environment-domain-and-lifecycle.md)
 - [P124 first-party Platform monorepo](../p124-first-party-platform-monorepo.md)
 - [GitHub: sharing a GitHub App](https://docs.github.com/en/apps/sharing-github-apps/sharing-your-github-app)
