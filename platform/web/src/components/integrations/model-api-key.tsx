@@ -1,6 +1,13 @@
 import { useState, type FormEvent } from "react";
-import { useMutation } from "@tanstack/react-query";
-import { api, type ModelEndpointConfig, type SecretProvider } from "@/api";
+import { useMutation, useQuery } from "@tanstack/react-query";
+import { RefreshCw, Search } from "lucide-react";
+import {
+  api,
+  type ModelEndpointConfig,
+  type ModelListResponse,
+  type ModelOption,
+  type SecretProvider,
+} from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DialogFooter } from "@/components/ui/dialog";
@@ -19,7 +26,10 @@ import { ConfirmDangerButton } from "./confirm-danger-button";
 
 export type ModelKeyProvider = "openai" | "anthropic";
 
-const COPY: Record<ModelKeyProvider, { name: string; where: string; placeholder: string }> = {
+const COPY: Record<
+  ModelKeyProvider,
+  { name: string; where: string; placeholder: string }
+> = {
   openai: {
     name: "OpenAI",
     where: "platform.openai.com → API keys",
@@ -55,7 +65,8 @@ const COMPATIBLE_PROVIDER_PRESETS = [
   },
 ] as const;
 
-type CompatibleProviderPresetId = (typeof COMPATIBLE_PROVIDER_PRESETS)[number]["id"];
+type CompatibleProviderPresetId =
+  (typeof COMPATIBLE_PROVIDER_PRESETS)[number]["id"];
 type CompatibleProviderChoice = CompatibleProviderPresetId | "custom";
 
 function compatibleProviderPreset(id: string) {
@@ -96,13 +107,17 @@ export function ModelApiKeyForm({
             apiKinds: ["openai:responses", "openai:completions"],
           }
         : undefined;
-      return api<SecretProvider>("POST", `/api/v1/universes/${universeId}/integrations/model-keys`, {
-        provider,
-        credential: key,
-        replace,
-        endpoint,
-        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-      });
+      return api<SecretProvider>(
+        "POST",
+        `/api/v1/universes/${universeId}/integrations/model-keys`,
+        {
+          provider,
+          credential: key,
+          replace,
+          endpoint,
+          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+        },
+      );
     },
     onSuccess: (saved) => {
       setKey("");
@@ -123,13 +138,17 @@ export function ModelApiKeyForm({
   return (
     <form onSubmit={submit} className="grid gap-4">
       <p className="text-sm text-muted-foreground">
-        Sessions using <span className="font-mono">model.providerId = {provider}</span> will use
-        this key for model discovery and inference instead of the deployment-wide fallback key.
-        {replace && " Saving replaces the current key."} The key is sent once to Lightspeed,
-        encrypted, and never returned by an API.
+        Sessions using{" "}
+        <span className="font-mono">model.providerId = {provider}</span> will
+        use this key for model discovery and inference instead of the
+        deployment-wide fallback key.
+        {replace && " Saving replaces the current key."} The key is sent once to
+        Lightspeed, encrypted, and never returned by an API.
       </p>
       <Field>
-        <FieldLabel htmlFor={`model-key-name-${provider}`}>Display name</FieldLabel>
+        <FieldLabel htmlFor={`model-key-name-${provider}`}>
+          Display name
+        </FieldLabel>
         <Input
           id={`model-key-name-${provider}`}
           value={displayName}
@@ -140,7 +159,9 @@ export function ModelApiKeyForm({
       {provider === "openai" && (
         <>
           <Field>
-            <FieldLabel htmlFor="model-key-base-url">Compatible endpoint override</FieldLabel>
+            <FieldLabel htmlFor="model-key-base-url">
+              Compatible endpoint override
+            </FieldLabel>
             <Input
               id="model-key-base-url"
               value={baseUrl}
@@ -158,10 +179,14 @@ export function ModelApiKeyForm({
                 id="model-key-headers"
                 value={headers}
                 onChange={(event) => setHeaders(event.target.value)}
-                placeholder={"HTTP-Referer: https://example.com\nX-Title: Lightspeed"}
+                placeholder={
+                  "HTTP-Referer: https://example.com\nX-Title: Lightspeed"
+                }
                 className="font-mono"
               />
-              <FieldDescription>One non-secret header per line. Authorization is reserved.</FieldDescription>
+              <FieldDescription>
+                One non-secret header per line. Authorization is reserved.
+              </FieldDescription>
             </Field>
           )}
         </>
@@ -182,7 +207,9 @@ export function ModelApiKeyForm({
           placeholder={copy.placeholder}
           autoFocus
         />
-        <FieldDescription>Create one at {copy.where}. Whitespace is preserved.</FieldDescription>
+        <FieldDescription>
+          Create one at {copy.where}. Whitespace is preserved.
+        </FieldDescription>
       </Field>
       {error && <p className="text-sm text-destructive">{error}</p>}
       <DialogFooter>
@@ -190,7 +217,11 @@ export function ModelApiKeyForm({
           {cancelLabel}
         </Button>
         <Button type="submit" disabled={save.isPending}>
-          {save.isPending ? "Encrypting…" : replace ? "Replace key" : "Save key"}
+          {save.isPending
+            ? "Encrypting…"
+            : replace
+              ? "Replace key"
+              : "Save key"}
         </Button>
       </DialogFooter>
     </form>
@@ -218,7 +249,8 @@ export function ModelApiKeyDetails({
       ),
     onSuccess: onRemoved,
   });
-  const providerKey: ModelKeyProvider = provider.providerId === "openai" ? "openai" : "anthropic";
+  const providerKey: ModelKeyProvider =
+    provider.providerId === "openai" ? "openai" : "anthropic";
 
   if (replacing) {
     return (
@@ -247,14 +279,22 @@ export function ModelApiKeyDetails({
         </dd>
         <dt className="text-muted-foreground">Status</dt>
         <dd>
-          {provider.status === "active" && provider.hasCredential && provider.usableForModels ? (
+          {provider.status === "active" &&
+          provider.hasCredential &&
+          provider.usableForModels ? (
             <Badge variant="secondary">active</Badge>
           ) : !provider.usableForModels ? (
-            <Badge variant="outline" className="border-destructive/50 text-destructive">
+            <Badge
+              variant="outline"
+              className="border-destructive/50 text-destructive"
+            >
               legacy id — replace
             </Badge>
           ) : (
-            <Badge variant="outline" className="border-destructive/50 text-destructive">
+            <Badge
+              variant="outline"
+              className="border-destructive/50 text-destructive"
+            >
               needs key
             </Badge>
           )}
@@ -262,21 +302,32 @@ export function ModelApiKeyDetails({
       </dl>
       <p className="text-sm text-muted-foreground">
         Used by Lightspeed sessions with{" "}
-        <span className="font-mono">model.providerId = {provider.providerId}</span>. Not injected
-        into environments; coding-agent subscriptions are separate integrations.
+        <span className="font-mono">
+          model.providerId = {provider.providerId}
+        </span>
+        . Not injected into environments; coding-agent subscriptions are
+        separate integrations.
       </p>
       {provider.config.type !== "githubApp" && provider.config.endpoint && (
         <EndpointSummary endpoint={provider.config.endpoint} />
       )}
-      {remove.error && <p className="text-sm text-destructive">{remove.error.message}</p>}
+      <ProviderModelList
+        universeId={universeId}
+        providerId={provider.providerId}
+      />
+      {remove.error && (
+        <p className="text-sm text-destructive">{remove.error.message}</p>
+      )}
       <DialogFooter>
         <ConfirmDangerButton
           label="Remove key"
           title="Remove this API key?"
           description={
             <>
-              Sessions using <span className="font-mono text-xs">{provider.providerId}</span> fall
-              back to the deployment-wide key, or fail if none is configured.
+              Sessions using{" "}
+              <span className="font-mono text-xs">{provider.providerId}</span>{" "}
+              fall back to the deployment-wide key, or fail if none is
+              configured.
             </>
           }
           pending={remove.isPending}
@@ -302,16 +353,16 @@ export function OpenAiCompatibleForm({
   onCancel: () => void;
 }) {
   const initialEndpoint =
-    initial?.config.type === "modelApiKey" || initial?.config.type === "modelOAuth"
+    initial?.config.type === "modelApiKey" ||
+    initial?.config.type === "modelOAuth"
       ? initial.config.endpoint
       : initial?.config.type === "modelEndpoint"
         ? initial.config.endpoint
         : undefined;
   const initialProviderId = initial?.providerId ?? "deepseek";
   const initialPreset = compatibleProviderPreset(initialProviderId);
-  const [providerChoice, setProviderChoice] = useState<CompatibleProviderChoice>(
-    initialPreset?.id ?? "custom",
-  );
+  const [providerChoice, setProviderChoice] =
+    useState<CompatibleProviderChoice>(initialPreset?.id ?? "custom");
   const [providerId, setProviderId] = useState(initialProviderId);
   const [displayName, setDisplayName] = useState(
     initial?.displayName ?? initialPreset?.label ?? "",
@@ -356,13 +407,21 @@ export function OpenAiCompatibleForm({
         ...(completions ? (["openai:completions"] as const) : []),
       ];
       if (!apiKinds.length) throw new Error("select at least one API kind");
-      return api<SecretProvider>("POST", `/api/v1/universes/${universeId}/integrations/model-keys`, {
-        provider: providerId.trim(),
-        ...(key ? { credential: key } : {}),
-        endpoint: { baseUrl: baseUrl.trim(), headers: parseHeaders(headers), apiKinds },
-        replace,
-        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-      });
+      return api<SecretProvider>(
+        "POST",
+        `/api/v1/universes/${universeId}/integrations/model-keys`,
+        {
+          provider: providerId.trim(),
+          ...(key ? { credential: key } : {}),
+          endpoint: {
+            baseUrl: baseUrl.trim(),
+            headers: parseHeaders(headers),
+            apiKinds,
+          },
+          replace,
+          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+        },
+      );
     },
     onSuccess: onSaved,
     onError: (reason) => setError(reason.message),
@@ -377,21 +436,25 @@ export function OpenAiCompatibleForm({
           return;
         }
         if (replace && initial?.hasCredential && !key) {
-          setError("paste the replacement API key; existing keys cannot be read back");
+          setError(
+            "paste the replacement API key; existing keys cannot be read back",
+          );
           return;
         }
         save.mutate();
       }}
     >
       <p className="text-sm text-muted-foreground">
-        Add an OpenAI-compatible Responses or Chat Completions endpoint. API keys are optional for
-        local credentialless servers.
+        Add an OpenAI-compatible Responses or Chat Completions endpoint. API
+        keys are optional for local credentialless servers.
       </p>
       <Field>
         <FieldLabel htmlFor="compatible-provider">Provider</FieldLabel>
         <Select
           value={providerChoice}
-          onValueChange={(value) => changeProvider(value as CompatibleProviderChoice)}
+          onValueChange={(value) =>
+            changeProvider(value as CompatibleProviderChoice)
+          }
           disabled={replace}
         >
           <SelectTrigger id="compatible-provider">
@@ -416,7 +479,9 @@ export function OpenAiCompatibleForm({
       </Field>
       {providerChoice === "custom" && (
         <Field>
-          <FieldLabel htmlFor="compatible-provider-id">Custom provider ID</FieldLabel>
+          <FieldLabel htmlFor="compatible-provider-id">
+            Custom provider ID
+          </FieldLabel>
           <Input
             id="compatible-provider-id"
             value={providerId}
@@ -425,36 +490,357 @@ export function OpenAiCompatibleForm({
             placeholder="my-provider"
           />
           <FieldDescription>
-            Lowercase letters, numbers, dots, underscores, and hyphens are supported.
+            Lowercase letters, numbers, dots, underscores, and hyphens are
+            supported.
           </FieldDescription>
         </Field>
       )}
-      <Field><FieldLabel>Display name</FieldLabel><Input value={displayName} onChange={(event) => setDisplayName(event.target.value)} placeholder="OpenRouter production" /></Field>
-      <Field><FieldLabel>Base URL</FieldLabel><Input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://openrouter.ai/api/v1" /></Field>
-      <Field><FieldLabel>API key (optional)</FieldLabel><Input type="password" value={key} onChange={(event) => setKey(event.target.value)} autoComplete="new-password" /></Field>
-      <Field><FieldLabel>API kinds</FieldLabel><label className="flex gap-2 text-sm"><input type="checkbox" checked={completions} onChange={(event) => setCompletions(event.target.checked)} /> Chat Completions</label><label className="flex gap-2 text-sm"><input type="checkbox" checked={responses} onChange={(event) => setResponses(event.target.checked)} /> Responses</label></Field>
-      <Field><FieldLabel>Extra headers</FieldLabel><Textarea value={headers} onChange={(event) => setHeaders(event.target.value)} placeholder={"HTTP-Referer: https://example.com\nX-Title: Lightspeed"} className="font-mono" /><FieldDescription>Non-secret headers only; Authorization, Host, and Content-Type are reserved.</FieldDescription></Field>
+      <Field>
+        <FieldLabel>Display name</FieldLabel>
+        <Input
+          value={displayName}
+          onChange={(event) => setDisplayName(event.target.value)}
+          placeholder="OpenRouter production"
+        />
+      </Field>
+      <Field>
+        <FieldLabel>Base URL</FieldLabel>
+        <Input
+          value={baseUrl}
+          onChange={(event) => setBaseUrl(event.target.value)}
+          placeholder="https://openrouter.ai/api/v1"
+        />
+      </Field>
+      <Field>
+        <FieldLabel>API key (optional)</FieldLabel>
+        <Input
+          type="password"
+          value={key}
+          onChange={(event) => setKey(event.target.value)}
+          autoComplete="new-password"
+        />
+      </Field>
+      <Field>
+        <FieldLabel>API kinds</FieldLabel>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={completions}
+            onChange={(event) => setCompletions(event.target.checked)}
+          />{" "}
+          Chat Completions
+        </label>
+        <label className="flex gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={responses}
+            onChange={(event) => setResponses(event.target.checked)}
+          />{" "}
+          Responses
+        </label>
+      </Field>
+      <Field>
+        <FieldLabel>Extra headers</FieldLabel>
+        <Textarea
+          value={headers}
+          onChange={(event) => setHeaders(event.target.value)}
+          placeholder={"HTTP-Referer: https://example.com\nX-Title: Lightspeed"}
+          className="font-mono"
+        />
+        <FieldDescription>
+          Non-secret headers only; Authorization, Host, and Content-Type are
+          reserved.
+        </FieldDescription>
+      </Field>
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <DialogFooter><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="submit" disabled={save.isPending}>{save.isPending ? "Saving…" : "Save provider"}</Button></DialogFooter>
+      <DialogFooter>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" disabled={save.isPending}>
+          {save.isPending ? "Saving…" : "Save provider"}
+        </Button>
+      </DialogFooter>
     </form>
   );
 }
 
-export function OpenAiCompatibleDetails({ universeId, provider, onChanged, onRemoved }: { universeId: string; provider: SecretProvider; onChanged: () => void; onRemoved: () => void }) {
+export function OpenAiCompatibleDetails({
+  universeId,
+  provider,
+  onChanged,
+  onRemoved,
+}: {
+  universeId: string;
+  provider: SecretProvider;
+  onChanged: () => void;
+  onRemoved: () => void;
+}) {
   const [editing, setEditing] = useState(false);
-  const remove = useMutation({ mutationFn: () => api("DELETE", `/api/v1/universes/${universeId}/secrets/providers/${encodeURIComponent(provider.credentialId)}`), onSuccess: onRemoved });
-  if (editing) return <OpenAiCompatibleForm universeId={universeId} replace initial={provider} onSaved={() => { setEditing(false); onChanged(); }} onCancel={() => setEditing(false)} />;
-  const endpoint = provider.config.type === "modelEndpoint" ? provider.config.endpoint : provider.config.type === "modelApiKey" || provider.config.type === "modelOAuth" ? provider.config.endpoint : undefined;
-  return <div className="grid gap-4"><dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm"><dt className="text-muted-foreground">Provider</dt><dd className="font-mono">{provider.providerId}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{provider.hasCredential ? "API key" : provider.config.type === "modelOAuth" ? "OAuth" : "None"}</dd></dl>{endpoint && <EndpointSummary endpoint={endpoint} />}<DialogFooter><ConfirmDangerButton label="Remove provider" title="Remove this model provider?" description="New calls using this provider ID will fail immediately." pending={remove.isPending} onConfirm={() => remove.mutate()} /><Button onClick={() => setEditing(true)}>Edit provider</Button></DialogFooter></div>;
+  const remove = useMutation({
+    mutationFn: () =>
+      api(
+        "DELETE",
+        `/api/v1/universes/${universeId}/secrets/providers/${encodeURIComponent(provider.credentialId)}`,
+      ),
+    onSuccess: onRemoved,
+  });
+  if (editing)
+    return (
+      <OpenAiCompatibleForm
+        universeId={universeId}
+        replace
+        initial={provider}
+        onSaved={() => {
+          setEditing(false);
+          onChanged();
+        }}
+        onCancel={() => setEditing(false)}
+      />
+    );
+  const endpoint =
+    provider.config.type === "modelEndpoint"
+      ? provider.config.endpoint
+      : provider.config.type === "modelApiKey" ||
+          provider.config.type === "modelOAuth"
+        ? provider.config.endpoint
+        : undefined;
+  return (
+    <div className="grid gap-4">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+        <dt className="text-muted-foreground">Provider</dt>
+        <dd className="font-mono">{provider.providerId}</dd>
+        <dt className="text-muted-foreground">Authentication</dt>
+        <dd>
+          {provider.hasCredential
+            ? "API key"
+            : provider.config.type === "modelOAuth"
+              ? "OAuth"
+              : "None"}
+        </dd>
+      </dl>
+      {endpoint && <EndpointSummary endpoint={endpoint} />}
+      <ProviderModelList
+        universeId={universeId}
+        providerId={provider.providerId}
+      />
+      <DialogFooter>
+        <ConfirmDangerButton
+          label="Remove provider"
+          title="Remove this model provider?"
+          description="New calls using this provider ID will fail immediately."
+          pending={remove.isPending}
+          onConfirm={() => remove.mutate()}
+        />
+        <Button onClick={() => setEditing(true)}>Edit provider</Button>
+      </DialogFooter>
+    </div>
+  );
+}
+
+export interface ProviderModelCatalogEntry {
+  model: string;
+  displayName: string;
+  apiKinds: string[];
+}
+
+/** Filter one provider's live model results and collapse API-kind variants. */
+export function providerModelCatalog(
+  models: ModelOption[] | undefined,
+  providerId: string,
+  search: string,
+): ProviderModelCatalogEntry[] {
+  const normalizedSearch = search.trim().toLocaleLowerCase();
+  const catalog = new Map<string, ProviderModelCatalogEntry>();
+  for (const model of models ?? []) {
+    if (model.providerId !== providerId) continue;
+    if (
+      normalizedSearch &&
+      ![model.displayName, model.model]
+        .join(" ")
+        .toLocaleLowerCase()
+        .includes(normalizedSearch)
+    ) {
+      continue;
+    }
+    const existing = catalog.get(model.model);
+    if (existing) {
+      if (!existing.apiKinds.includes(model.apiKind))
+        existing.apiKinds.push(model.apiKind);
+    } else {
+      catalog.set(model.model, {
+        model: model.model,
+        displayName: model.displayName || model.model,
+        apiKinds: [model.apiKind],
+      });
+    }
+  }
+  return [...catalog.values()].sort((left, right) =>
+    left.displayName.localeCompare(right.displayName),
+  );
+}
+
+/** Live provider model catalog. Credentials remain server-side during discovery. */
+export function ProviderModelList({
+  universeId,
+  providerId,
+}: {
+  universeId: string;
+  providerId: string;
+}) {
+  const [search, setSearch] = useState("");
+  const discovery = useQuery({
+    queryKey: ["models", universeId],
+    queryFn: () =>
+      api<ModelListResponse>(
+        "GET",
+        "/api/v1/universes/" + universeId + "/models",
+      ),
+    staleTime: 60_000,
+    refetchOnMount: "always",
+  });
+  const provider = discovery.data?.providers?.find(
+    (item) => item.providerId === providerId,
+  );
+  const allModels = providerModelCatalog(
+    discovery.data?.models,
+    providerId,
+    "",
+  );
+  const visibleModels = providerModelCatalog(
+    discovery.data?.models,
+    providerId,
+    search,
+  );
+
+  return (
+    <section
+      className="grid gap-2"
+      aria-labelledby={"provider-models-" + providerId}
+    >
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3
+            id={"provider-models-" + providerId}
+            className="text-sm font-medium"
+          >
+            Available models
+            {!discovery.isFetching && !discovery.error
+              ? " (" + allModels.length + ")"
+              : ""}
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            Fetched live through Lightspeed; the credential is never sent to the
+            browser.
+          </p>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="icon-sm"
+          aria-label="Refresh available models"
+          title="Refresh available models"
+          disabled={discovery.isFetching}
+          onClick={() => void discovery.refetch()}
+        >
+          <RefreshCw
+            className={discovery.isFetching ? "animate-spin" : undefined}
+          />
+        </Button>
+      </div>
+
+      {allModels.length > 8 && (
+        <div className="relative">
+          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            className="pl-8"
+            placeholder="Search available models"
+            aria-label="Search available models"
+          />
+        </div>
+      )}
+
+      {discovery.isLoading ||
+      (discovery.isFetching && allModels.length === 0) ? (
+        <p className="text-sm text-muted-foreground">Discovering models…</p>
+      ) : discovery.error ? (
+        <p className="text-sm text-destructive">
+          Model discovery failed: {discovery.error.message}
+        </p>
+      ) : provider?.error ? (
+        <p className="text-sm text-destructive">
+          Model discovery failed: {provider.error}
+        </p>
+      ) : allModels.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          The provider returned no selectable models.
+        </p>
+      ) : visibleModels.length === 0 ? (
+        <p className="text-sm text-muted-foreground">
+          No models match “{search.trim()}”.
+        </p>
+      ) : (
+        <ul className="max-h-72 divide-y overflow-y-auto rounded-md border">
+          {visibleModels.map((model) => (
+            <li key={model.model} className="grid gap-1 px-3 py-2">
+              {model.displayName !== model.model && (
+                <span className="text-sm font-medium">{model.displayName}</span>
+              )}
+              <span
+                className={
+                  model.displayName === model.model
+                    ? "break-all font-mono text-sm font-medium"
+                    : "break-all font-mono text-xs text-muted-foreground"
+                }
+              >
+                {model.model}
+              </span>
+              <span className="flex flex-wrap gap-1">
+                {model.apiKinds.map((apiKind) => (
+                  <Badge
+                    key={apiKind}
+                    variant="outline"
+                    className="text-[10px]"
+                  >
+                    {formatApiKind(apiKind)}
+                  </Badge>
+                ))}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+
+function formatApiKind(apiKind: string): string {
+  if (apiKind === "openai:completions") return "Chat Completions";
+  if (apiKind === "openai:responses") return "Responses";
+  return apiKind;
 }
 
 function EndpointSummary({ endpoint }: { endpoint: ModelEndpointConfig }) {
-  return <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm"><dt className="text-muted-foreground">Base URL</dt><dd className="break-all font-mono">{endpoint.baseUrl}</dd><dt className="text-muted-foreground">API kinds</dt><dd>{endpoint.apiKinds.join(", ")}</dd><dt className="text-muted-foreground">Extra headers</dt><dd>{Object.keys(endpoint.headers ?? {}).join(", ") || "None"}</dd></dl>;
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt className="text-muted-foreground">Base URL</dt>
+      <dd className="break-all font-mono">{endpoint.baseUrl}</dd>
+      <dt className="text-muted-foreground">API kinds</dt>
+      <dd>{endpoint.apiKinds.join(", ")}</dd>
+      <dt className="text-muted-foreground">Extra headers</dt>
+      <dd>{Object.keys(endpoint.headers ?? {}).join(", ") || "None"}</dd>
+    </dl>
+  );
 }
 
 function parseHeaders(value: string): Record<string, string> {
   const headers: Record<string, string> = {};
-  for (const line of value.split("\n").map((line) => line.trim()).filter(Boolean)) {
+  for (const line of value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)) {
     const separator = line.indexOf(":");
     if (separator < 1) throw new Error(`invalid header line: ${line}`);
     headers[line.slice(0, separator).trim()] = line.slice(separator + 1).trim();

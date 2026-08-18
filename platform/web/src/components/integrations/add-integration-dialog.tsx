@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
-import type { SubscriptionImportResult } from "@/api";
+import type { SecretProvider, SubscriptionImportResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -11,9 +11,17 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { subscriptionBinding } from "@/lib/subscriptions";
-import { INTEGRATION_CATALOG, integrationDefinition, type IntegrationKind } from "./catalog";
+import {
+  INTEGRATION_CATALOG,
+  integrationDefinition,
+  type IntegrationKind,
+} from "./catalog";
 import { GitHubAppForm } from "./github-app";
-import { ModelApiKeyForm, OpenAiCompatibleForm } from "./model-api-key";
+import {
+  ModelApiKeyForm,
+  OpenAiCompatibleForm,
+  ProviderModelList,
+} from "./model-api-key";
 import { SubscriptionForm } from "./subscription";
 import type { ConnectedIntegration } from "./use-integrations";
 
@@ -38,8 +46,14 @@ export function AddIntegrationDialog({
   useEffect(() => {
     if (open && initialKind) setSelected(initialKind);
   }, [open, initialKind]);
-  const [done, setDone] = useState<SubscriptionImportResult | "github" | "modelKey" | null>(null);
-  const alreadyConnected = (kind: IntegrationKind) => connected.some((c) => c.kind === kind);
+  const [done, setDone] = useState<
+    | { type: "subscription"; result: SubscriptionImportResult }
+    | { type: "github" }
+    | { type: "modelKey"; provider: SecretProvider }
+    | null
+  >(null);
+  const alreadyConnected = (kind: IntegrationKind) =>
+    connected.some((c) => c.kind === kind);
 
   const close = () => {
     onOpenChange(false);
@@ -79,8 +93,8 @@ export function AddIntegrationDialog({
           </DialogTitle>
           {!definition && (
             <DialogDescription>
-              Connect a third-party service to this universe. Credentials are encrypted by
-              Lightspeed and never returned.
+              Connect a third-party service to this universe. Credentials are
+              encrypted by Lightspeed and never returned.
             </DialogDescription>
           )}
         </DialogHeader>
@@ -108,7 +122,9 @@ export function AddIntegrationDialog({
                         </span>
                       )}
                     </span>
-                    <span className="text-xs text-muted-foreground">{entry.tagline}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {entry.tagline}
+                    </span>
                   </span>
                 </button>
               );
@@ -118,22 +134,40 @@ export function AddIntegrationDialog({
 
         {definition && done && (
           <div className="grid gap-3 text-sm">
-            {done === "github" ? (
+            {done.type === "github" ? (
               <p>
-                GitHub App added. Open it from the list to grant installations once the App is
-                installed on your GitHub accounts.
+                GitHub App added. Open it from the list to grant installations
+                once the App is installed on your GitHub accounts.
               </p>
-            ) : done === "modelKey" ? (
-              <p>API key saved. Sessions using this provider pick it up on their next model call.</p>
+            ) : done.type === "modelKey" ? (
+              <>
+                <p>
+                  Provider saved. Sessions using{" "}
+                  <span className="font-mono">
+                    model.providerId = {done.provider.providerId}
+                  </span>{" "}
+                  pick it up on their next model call.
+                </p>
+                <ProviderModelList
+                  universeId={universeId}
+                  providerId={done.provider.providerId}
+                />
+              </>
             ) : (
               <>
                 <p>
-                  Connected{done.grant.displayName ? ` as ${done.grant.displayName}` : ""}.
+                  Connected
+                  {done.result.grant.displayName
+                    ? ` as ${done.result.grant.displayName}`
+                    : ""}
+                  .
                 </p>
                 <p className="text-muted-foreground">
                   Bind it to environments as{" "}
-                  <span className="font-mono">{subscriptionBinding(done.grant)?.envName}</span>
-                  {done.shape === "codexTokenSet"
+                  <span className="font-mono">
+                    {subscriptionBinding(done.result.grant)?.envName}
+                  </span>
+                  {done.result.shape === "codexTokenSet"
                     ? "; the value is Codex auth.json content — the bootstrap line is shown in the integration's details."
                     : "."}
                 </p>
@@ -145,24 +179,26 @@ export function AddIntegrationDialog({
           </div>
         )}
 
-        {definition && !done && (selected === "openAiApiKey" || selected === "anthropicApiKey") && (
-          <ModelApiKeyForm
-            universeId={universeId}
-            provider={selected === "openAiApiKey" ? "openai" : "anthropic"}
-            replace={alreadyConnected(selected)}
-            onSaved={() => {
-              onAdded();
-              setDone("modelKey");
-            }}
-            onCancel={() => setSelected(null)}
-          />
-        )}
+        {definition &&
+          !done &&
+          (selected === "openAiApiKey" || selected === "anthropicApiKey") && (
+            <ModelApiKeyForm
+              universeId={universeId}
+              provider={selected === "openAiApiKey" ? "openai" : "anthropic"}
+              replace={alreadyConnected(selected)}
+              onSaved={(provider) => {
+                onAdded();
+                setDone({ type: "modelKey", provider });
+              }}
+              onCancel={() => setSelected(null)}
+            />
+          )}
         {definition && !done && selected === "githubApp" && (
           <GitHubAppForm
             universeId={universeId}
             onCreated={() => {
               onAdded();
-              setDone("github");
+              setDone({ type: "github" });
             }}
             onCancel={() => setSelected(null)}
           />
@@ -170,24 +206,29 @@ export function AddIntegrationDialog({
         {definition && !done && selected === "openAiCompatible" && (
           <OpenAiCompatibleForm
             universeId={universeId}
-            onSaved={() => {
+            onSaved={(provider) => {
               onAdded();
-              setDone("modelKey");
+              setDone({ type: "modelKey", provider });
             }}
             onCancel={() => setSelected(null)}
           />
         )}
-        {definition && !done && (selected === "anthropicSubscription" || selected === "openAiSubscription") && (
-          <SubscriptionForm
-            universeId={universeId}
-            provider={selected === "anthropicSubscription" ? "anthropic" : "openAi"}
-            onConnected={(result) => {
-              onAdded();
-              setDone(result);
-            }}
-            onCancel={() => setSelected(null)}
-          />
-        )}
+        {definition &&
+          !done &&
+          (selected === "anthropicSubscription" ||
+            selected === "openAiSubscription") && (
+            <SubscriptionForm
+              universeId={universeId}
+              provider={
+                selected === "anthropicSubscription" ? "anthropic" : "openAi"
+              }
+              onConnected={(result) => {
+                onAdded();
+                setDone({ type: "subscription", result });
+              }}
+              onCancel={() => setSelected(null)}
+            />
+          )}
       </DialogContent>
     </Dialog>
   );
