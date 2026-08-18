@@ -269,10 +269,12 @@ Never reuse their credentials in a deployed environment.
 The supervisor also honors all runtime, Platform, Channels, and Configurator
 variables documented above.
 
-The `full` and `runtime` development profiles require a non-empty
-`OPENAI_API_KEY` or `ANTHROPIC_API_KEY` by default. Pass
-`./dev.sh --allow-missing-api-keys` to start those profiles intentionally
-without provider credentials; the flag does not alter deployed configuration.
+The `full` and `runtime` development profiles warn when neither
+`OPENAI_API_KEY` nor `ANTHROPIC_API_KEY` is set: they still start, and provider
+API keys can be added per universe from the Platform UI (Settings →
+Integrations); the Sessions view shows a banner until a usable key exists.
+Pass `./dev.sh --require-api-keys` to make a missing deployment key fatal
+(useful in CI). `--allow-missing-api-keys` is still accepted and is a no-op.
 
 ### Docker infrastructure
 

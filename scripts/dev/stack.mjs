@@ -51,7 +51,7 @@ if (cli.planOnly) {
   process.exit(0);
 }
 
-validateProviderCredentials(plan, cli.allowMissingApiKeys);
+validateProviderCredentials(plan, cli.requireApiKeys);
 ensureLocalTooling(plan);
 if (plan.profile !== "infra") {
   assertSupervisorStopped();
@@ -92,7 +92,10 @@ function parseCli(argv) {
   const args = [...argv];
   const help = removeFlag(args, "--help") || removeFlag(args, "-h");
   const planOnly = removeFlag(args, "--plan");
-  const allowMissingApiKeys = removeFlag(args, "--allow-missing-api-keys");
+  // Accepted for compatibility; missing keys only warn since keys can be
+  // added per universe from the Platform UI (Integrations).
+  removeFlag(args, "--allow-missing-api-keys");
+  const requireApiKeys = removeFlag(args, "--require-api-keys");
   let action = "start";
   let profile = "full";
 
@@ -109,11 +112,11 @@ function parseCli(argv) {
   if (planOnly && action !== "start") {
     throw new TypeError("--plan is supported only for start profiles");
   }
-  if (allowMissingApiKeys && action !== "start") {
-    throw new TypeError("--allow-missing-api-keys is supported only when starting a profile");
+  if (requireApiKeys && action !== "start") {
+    throw new TypeError("--require-api-keys is supported only when starting a profile");
   }
 
-  return { action, profile, planOnly, help, volumes, allowMissingApiKeys };
+  return { action, profile, planOnly, help, volumes, requireApiKeys };
 }
 
 function removeFlag(args, flag) {
@@ -411,13 +414,10 @@ function ensureLocalTooling(plan) {
   }
 }
 
-function validateProviderCredentials(plan, allowMissingApiKeys) {
-  const usesRuntime = plan.profile === "full" || plan.profile === "runtime";
-  if (!usesRuntime) {
-    if (allowMissingApiKeys) {
-      throw new TypeError(
-        "--allow-missing-api-keys applies only to the full and runtime profiles",
-      );
+function validateProviderCredentials(plan, requireApiKeys) {
+  if (!["full", "runtime"].includes(plan.profile)) {
+    if (requireApiKeys) {
+      throw new TypeError("--require-api-keys applies only to the full and runtime profiles");
     }
     return;
   }
@@ -425,15 +425,16 @@ function validateProviderCredentials(plan, allowMissingApiKeys) {
     (value) => value?.trim() && !value.startsWith("set_your_"),
   );
   if (configured) return;
-  if (!allowMissingApiKeys) {
+  if (requireApiKeys) {
     throw new Error(
-      "no OPENAI_API_KEY or ANTHROPIC_API_KEY is configured; copy .env.example to .env and set a provider key, or pass --allow-missing-api-keys",
+      "no OPENAI_API_KEY or ANTHROPIC_API_KEY is configured; set a deployment key in .env or drop --require-api-keys and add keys per universe under Integrations",
     );
   }
   console.warn(`
-[credentials] No OPENAI_API_KEY or ANTHROPIC_API_KEY is configured.
-[credentials] Continuing because --allow-missing-api-keys was provided.
-[credentials] Provider-backed runs will fail until credentials are configured.`);
+[credentials] No deployment-wide OPENAI_API_KEY or ANTHROPIC_API_KEY is configured.
+[credentials] Starting anyway: add provider API keys per universe in the Platform UI
+[credentials] (Settings -> Integrations). Sessions fail until a key exists for their provider.
+[credentials] Pass --require-api-keys to make this fatal (for CI).`);
 }
 
 async function runDevelopmentAction(options, env) {
@@ -731,8 +732,9 @@ function printHelp() {
   console.log(`Usage:
   ./dev.sh                                 Bootstrap and start the full editable product
   ./dev.sh [start] <profile>               Start full, platform, runtime, or infra
-  ./dev.sh [profile] --allow-missing-api-keys
-                                           Permit full/runtime startup without provider keys
+  ./dev.sh [profile] --require-api-keys    Fail full/runtime startup without provider keys
+                                           (default only warns; keys can be added per
+                                           universe under Settings -> Integrations)
   ./dev.sh --plan <profile>                Print a profile without starting it
   ./dev.sh status                          Show host supervisor and infrastructure
   ./dev.sh stop                            Stop host processes; keep infrastructure

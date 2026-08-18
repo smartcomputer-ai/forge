@@ -1558,6 +1558,8 @@ impl AgentApiService for TestService {
                 api_kinds: vec!["openai:responses".to_owned()],
                 fetched_at_ms: Some(1),
                 error: None,
+                credential: ModelProviderCredentialStatus::Configured,
+                credential_source: ModelProviderCredentialSource::Deployment,
             }],
         }))
     }

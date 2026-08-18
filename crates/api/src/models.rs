@@ -64,6 +64,34 @@ pub struct ModelProviderDiscoveryView {
     /// upstream response body.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether a usable credential exists for this provider — a stable signal
+    /// for clients (no string matching on `error`).
+    pub credential: ModelProviderCredentialStatus,
+    /// Where the credential used for this universe comes from.
+    pub credential_source: ModelProviderCredentialSource,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelProviderCredentialStatus {
+    /// A credential was found and was not rejected by the provider (other
+    /// discovery errors, e.g. transport, may still be reported).
+    Configured,
+    /// No credential anywhere: no universe row and no deployment fallback.
+    Missing,
+    /// A credential exists but is unusable (disabled/legacy universe row) or
+    /// was rejected by the provider (HTTP 401/403).
+    Invalid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelProviderCredentialSource {
+    /// A universe-owned `model:<provider>` credential.
+    Universe,
+    /// The deployment-wide fallback key from server configuration.
+    Deployment,
+    None,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

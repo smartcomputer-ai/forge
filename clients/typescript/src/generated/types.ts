@@ -892,6 +892,16 @@ export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
 export type ModelSource = "provider";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProviderCredentialStatus".
+ */
+export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProviderCredentialSource".
+ */
+export type ModelProviderCredentialSource = "none" | "universe" | "deployment";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "OperatorEnvironmentProviderTransport".
  */
 export type OperatorEnvironmentProviderTransport =
@@ -2749,6 +2759,15 @@ export interface ModelCapabilitiesView {
  */
 export interface ModelProviderDiscoveryView {
   apiKinds: string[];
+  /**
+   * Whether a usable credential exists for this provider — a stable signal
+   * for clients (no string matching on `error`).
+   */
+  credential: ModelProviderCredentialStatus;
+  /**
+   * Where the credential used for this universe comes from.
+   */
+  credentialSource: ModelProviderCredentialSource;
   /**
    * Sanitized Lightspeed error; never a credential, request header, or raw
    * upstream response body.

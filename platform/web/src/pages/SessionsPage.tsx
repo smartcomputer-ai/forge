@@ -93,6 +93,7 @@ import {
   resourceFeatureDisableReasons,
   setupResourceFeatureError,
 } from "@/lib/sessions/resource-features";
+import { ProviderReadinessBanner } from "@/components/provider-readiness-banner";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
@@ -125,6 +126,7 @@ export function SessionsPage({ admin }: { admin: boolean }) {
         <SessionList universeId={universe.id} slug={slug!} activeId={sessionId} />
       </aside>
       <section className={cn("min-w-0 flex-1 flex-col", sessionId ? "flex" : "hidden md:flex")}>
+        <ProviderReadinessBanner universeId={universe.id} slug={slug!} />
         {sessionId ? (
           <SessionDetail
             key={sessionId}

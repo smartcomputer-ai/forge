@@ -124,5 +124,6 @@ export function useInvalidateIntegrations(universeId: string) {
     Promise.all([
       queryClient.invalidateQueries({ queryKey: ["integrations"] }),
       queryClient.invalidateQueries({ queryKey: ["secrets", universeId] }),
+      queryClient.invalidateQueries({ queryKey: ["models", universeId] }),
     ]);
 }

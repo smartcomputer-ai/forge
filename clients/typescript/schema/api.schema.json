@@ -5800,6 +5800,45 @@
       },
       "type": "object"
     },
+    "ModelProviderCredentialSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "universe",
+          "description": "A universe-owned `model:<provider>` credential.",
+          "type": "string"
+        },
+        {
+          "const": "deployment",
+          "description": "The deployment-wide fallback key from server configuration.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelProviderCredentialStatus": {
+      "oneOf": [
+        {
+          "const": "configured",
+          "description": "A credential was found and was not rejected by the provider (other\ndiscovery errors, e.g. transport, may still be reported).",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "No credential anywhere: no universe row and no deployment fallback.",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "A credential exists but is unusable (disabled/legacy universe row) or\nwas rejected by the provider (HTTP 401/403).",
+          "type": "string"
+        }
+      ]
+    },
     "ModelProviderDiscoveryView": {
       "description": "Best-effort status for one provider. A provider failure does not discard\nmodels discovered from other providers.",
       "properties": {
@@ -5808,6 +5847,22 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "credential": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelProviderCredentialStatus"
+            }
+          ],
+          "description": "Whether a usable credential exists for this provider — a stable signal\nfor clients (no string matching on `error`)."
+        },
+        "credentialSource": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelProviderCredentialSource"
+            }
+          ],
+          "description": "Where the credential used for this universe comes from."
         },
         "error": {
           "description": "Sanitized Lightspeed error; never a credential, request header, or raw\nupstream response body.",
@@ -5829,7 +5884,9 @@
       },
       "required": [
         "providerId",
-        "apiKinds"
+        "apiKinds",
+        "credential",
+        "credentialSource"
       ],
       "type": "object"
     },

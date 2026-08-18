@@ -39,8 +39,7 @@ pub enum TokenEndpointAuthMethod {
 pub(crate) fn is_oauth_provider_kind(kind: AuthProviderKind) -> bool {
     matches!(
         kind,
-        AuthProviderKind::McpOAuth
-            | AuthProviderKind::CustomOAuth
+        AuthProviderKind::McpOAuth | AuthProviderKind::CustomOAuth
     )
 }
 

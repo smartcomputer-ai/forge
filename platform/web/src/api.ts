@@ -169,14 +169,19 @@ export interface ModelOption {
   fetchedAtMs: number;
 }
 
+export interface ModelProviderDiscovery {
+  providerId: string;
+  apiKinds: string[];
+  fetchedAtMs?: number | null;
+  error?: string | null;
+  /// Stable credential signal from the engine (no string matching on `error`).
+  credential: "configured" | "missing" | "invalid";
+  credentialSource: "universe" | "deployment" | "none";
+}
+
 export interface ModelListResponse {
   models?: ModelOption[];
-  providers?: {
-    providerId: string;
-    apiKinds: string[];
-    fetchedAtMs?: number | null;
-    error?: string | null;
-  }[];
+  providers?: ModelProviderDiscovery[];
 }
 
 export interface AuthGrantOption {

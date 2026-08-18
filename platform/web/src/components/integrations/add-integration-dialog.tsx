@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ArrowLeft } from "lucide-react";
 import type { SubscriptionImportResult } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -22,16 +22,22 @@ export function AddIntegrationDialog({
   universeId,
   open,
   connected,
+  initialKind = null,
   onOpenChange,
   onAdded,
 }: {
   universeId: string;
   open: boolean;
   connected: ConnectedIntegration[];
+  /// Pre-select a catalog entry (deep links such as `?add=openAiApiKey`).
+  initialKind?: IntegrationKind | null;
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }) {
-  const [selected, setSelected] = useState<IntegrationKind | null>(null);
+  const [selected, setSelected] = useState<IntegrationKind | null>(initialKind);
+  useEffect(() => {
+    if (open && initialKind) setSelected(initialKind);
+  }, [open, initialKind]);
   const [done, setDone] = useState<SubscriptionImportResult | "github" | "modelKey" | null>(null);
   const alreadyConnected = (kind: IntegrationKind) => connected.some((c) => c.kind === kind);
 
