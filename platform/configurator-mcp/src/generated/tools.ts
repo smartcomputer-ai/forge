@@ -7544,8 +7544,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "staticBearer",
             "mcpOAuth",
             "gitHubApp",
-            "gitHubAppUser",
-            "gitHubOAuthApp",
             "customOAuth",
             "modelApiKey",
             "modelOAuth"

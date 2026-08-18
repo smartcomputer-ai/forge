@@ -40,8 +40,6 @@ pub(crate) fn is_oauth_provider_kind(kind: AuthProviderKind) -> bool {
     matches!(
         kind,
         AuthProviderKind::McpOAuth
-            | AuthProviderKind::GitHubAppUser
-            | AuthProviderKind::GitHubOAuthApp
             | AuthProviderKind::CustomOAuth
     )
 }
@@ -728,7 +726,7 @@ mod tests {
         OAuthClientRecord {
             client_id: OAuthClientId::new("github"),
             provider_id: "github".to_owned(),
-            provider_kind: AuthProviderKind::GitHubOAuthApp,
+            provider_kind: AuthProviderKind::CustomOAuth,
             display_name: None,
             authorization_endpoint: "https://github.com/login/oauth/authorize".to_owned(),
             token_endpoint: "https://github.com/login/oauth/access_token".to_owned(),
@@ -871,7 +869,7 @@ mod tests {
             flow_id: AuthFlowId::new("authflow_1"),
             client_id: OAuthClientId::new("github"),
             provider_id: "github".to_owned(),
-            provider_kind: AuthProviderKind::GitHubOAuthApp,
+            provider_kind: AuthProviderKind::CustomOAuth,
             principal: PrincipalRef::universe_default(),
             state_hash: state_hash("state-123"),
             pkce_verifier_secret: SecretId::new("authsec_pkce"),

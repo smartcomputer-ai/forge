@@ -6,8 +6,6 @@ pub enum AuthProviderKind {
     StaticBearer,
     McpOAuth,
     GitHubApp,
-    GitHubAppUser,
-    GitHubOAuthApp,
     CustomOAuth,
     ModelApiKey,
     ModelOAuth,

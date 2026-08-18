@@ -2647,8 +2647,6 @@
           "staticBearer",
           "mcpOAuth",
           "gitHubApp",
-          "gitHubAppUser",
-          "gitHubOAuthApp",
           "customOAuth",
           "modelApiKey",
           "modelOAuth"

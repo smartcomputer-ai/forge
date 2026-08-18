@@ -24,6 +24,10 @@
   normalisation, and login flows that need no deployment secret live in the
   client that imports the credential (Platform); core hosts a flow only when
   a deployment secret is involved or core consumes the result at runtime.
+  Applied retroactively on 2026-08-18: the vestigial `github_app_user` /
+  `github_oauth_app` grant kinds were collapsed into `custom_oauth`
+  (migration 009); GitHub App token minting stays in core because it is a
+  runtime token source that must work without Platform.
 - Builds on [P69](archive/p69-generic-auth-token-broker.md) (auth
   substrate: `auth_flows`, grants, encrypted secrets, refresh, `modelApiKey`
   /`modelOAuth` rows), [P90](archive/p90-multi-tenancy.md),

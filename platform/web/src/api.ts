@@ -216,8 +216,6 @@ export interface SecretProvider {
     | "staticBearer"
     | "mcpOAuth"
     | "gitHubApp"
-    | "gitHubAppUser"
-    | "gitHubOAuthApp"
     | "customOAuth"
     | "modelApiKey"
     | "modelOAuth";

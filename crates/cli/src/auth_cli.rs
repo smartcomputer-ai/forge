@@ -568,8 +568,6 @@ struct AuthLoginArgs {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum AuthProviderKindArg {
     McpOauth,
-    GithubOauthApp,
-    GithubAppUser,
     CustomOauth,
 }
 
@@ -577,8 +575,6 @@ impl From<AuthProviderKindArg> for api::AuthProviderKind {
     fn from(value: AuthProviderKindArg) -> Self {
         match value {
             AuthProviderKindArg::McpOauth => Self::McpOAuth,
-            AuthProviderKindArg::GithubOauthApp => Self::GitHubOAuthApp,
-            AuthProviderKindArg::GithubAppUser => Self::GitHubAppUser,
             AuthProviderKindArg::CustomOauth => Self::CustomOAuth,
         }
     }

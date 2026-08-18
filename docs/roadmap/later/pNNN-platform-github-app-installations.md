@@ -92,7 +92,9 @@ P69 models both halves inside one universe:
   `BTreeMap<AuthGrantId, Token>`;
 - `auth_flows` is a generic one-time flow table (hashed `state`, expiry,
   `consumed_at_ms`, `redirect_uri`, `grant_id` result) with provider kinds
-  `mcp_oauth | github_app_user | github_oauth_app | custom_oauth`;
+  `mcp_oauth | custom_oauth` (the vestigial `github_app_user` /
+  `github_oauth_app` labels were collapsed into `custom_oauth` on 2026-08-18;
+  GitHub identity lives in `provider_id` and the client's endpoints);
 - the core gateway hosts the only public ingress in the system,
   `/auth/callback`, and resolves the callback's universe with the
   deployment-level `find_auth_flow_universe(state_hash)` query;
@@ -228,7 +230,8 @@ Enable "Request user authorization (OAuth) during installation" on the
 deployment App. GitHub then delivers `code`, `installation_id`,
 `setup_action`, and `state` to a single callback URL, so the setup callback
 *is* the OAuth callback and the user-token proof the flow needs falls out of
-the existing `github_app_user` flow kind.
+a `custom_oauth` flow whose client is the App's user-OAuth client
+(GitHub identity is the `provider_id`/endpoints, not a kind).
 
 ### D5. Core is authoritative; Platform is a membership gate plus UI
 
@@ -315,7 +318,8 @@ Everything fits existing tables:
 
 1. A universe owner or admin selects **Connect GitHub** in Platform.
 2. Platform checks membership and calls the universe-scoped flow-start method
-   with `client_scope = deployment`, kind `github_app_user`, and the return
+   with `client_scope = deployment`, kind `custom_oauth` (the App's user
+   OAuth client), and the return
    URL.
 3. Core creates the `auth_flows` row (hashed `state`, expiry) and returns the
    GitHub App installation URL with `state`; Platform redirects.

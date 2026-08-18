@@ -15,10 +15,6 @@ pub enum AuthProviderKind {
     McpOAuth,
     #[serde(rename = "github_app")]
     GitHubApp,
-    #[serde(rename = "github_app_user")]
-    GitHubAppUser,
-    #[serde(rename = "github_oauth_app")]
-    GitHubOAuthApp,
     #[serde(rename = "custom_oauth")]
     CustomOAuth,
     #[serde(rename = "model_api_key")]

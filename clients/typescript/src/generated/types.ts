@@ -681,14 +681,7 @@ export type RunAcceptedSourceView =
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
-  | "staticBearer"
-  | "mcpOAuth"
-  | "gitHubApp"
-  | "gitHubAppUser"
-  | "gitHubOAuthApp"
-  | "customOAuth"
-  | "modelApiKey"
-  | "modelOAuth";
+  "staticBearer" | "mcpOAuth" | "gitHubApp" | "customOAuth" | "modelApiKey" | "modelOAuth";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEndpointAuthMethod".
