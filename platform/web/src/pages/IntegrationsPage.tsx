@@ -45,6 +45,7 @@ function Integrations({ universeId }: { universeId: string }) {
       {!isLoading && <IntegrationList integrations={connected} onSelect={setSelected} />}
       <AddIntegrationDialog
         universeId={universeId}
+        connected={connected}
         open={addOpen}
         onOpenChange={setAddOpen}
         onAdded={() => void invalidate()}

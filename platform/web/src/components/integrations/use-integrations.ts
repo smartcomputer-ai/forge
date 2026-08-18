@@ -1,5 +1,12 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type GitHubApp, type GitHubIntegration, type SecretGrant } from "@/api";
+import {
+  api,
+  type GitHubApp,
+  type GitHubIntegration,
+  type SecretGrant,
+  type SecretProvider,
+  type SecretsInventory,
+} from "@/api";
 import { subscriptionAccountLabel, subscriptionProviderOf } from "@/lib/subscriptions";
 import type { IntegrationKind } from "./catalog";
 
@@ -22,6 +29,14 @@ export type ConnectedIntegration =
       subtitle: string;
       status: IntegrationStatus;
       grant: SecretGrant;
+    }
+  | {
+      kind: "openAiApiKey" | "anthropicApiKey";
+      id: string;
+      title: string;
+      subtitle: string;
+      status: IntegrationStatus;
+      provider: SecretProvider;
     };
 
 export type IntegrationStatus = "active" | "attention" | "disabled";
@@ -37,8 +52,31 @@ export function useIntegrations(universeId: string) {
     queryFn: () =>
       api<SecretGrant[]>("GET", `/api/v1/universes/${universeId}/integrations/subscriptions`),
   });
+  const secrets = useQuery({
+    queryKey: ["secrets", universeId],
+    queryFn: () => api<SecretsInventory>("GET", `/api/v1/universes/${universeId}/secrets`),
+  });
 
   const connected: ConnectedIntegration[] = [
+    ...(secrets.data?.providers ?? [])
+      .filter(
+        (provider) =>
+          (provider.providerId === "openai" || provider.providerId === "anthropic")
+          && provider.config.type === "modelApiKey",
+      )
+      .map((provider): ConnectedIntegration => ({
+        kind: provider.providerId === "openai" ? "openAiApiKey" : "anthropicApiKey",
+        id: `model-key:${provider.credentialId}`,
+        title: provider.providerId === "openai" ? "OpenAI (API key)" : "Anthropic (API key)",
+        subtitle: provider.displayName ?? provider.credentialId,
+        status:
+          provider.status === "active" && provider.hasCredential && provider.usableForModels
+            ? "active"
+            : provider.status === "disabled"
+              ? "disabled"
+              : "attention",
+        provider,
+      })),
     ...(github.data?.apps ?? []).map((app): ConnectedIntegration => {
       const grants = (github.data?.grants ?? []).filter((g) => g.providerId === app.providerId);
       const active = grants.filter((g) => g.status === "active").length;
@@ -75,8 +113,8 @@ export function useIntegrations(universeId: string) {
 
   return {
     connected,
-    isLoading: github.isLoading || subscriptions.isLoading,
-    error: github.error ?? subscriptions.error ?? null,
+    isLoading: github.isLoading || subscriptions.isLoading || secrets.isLoading,
+    error: github.error ?? subscriptions.error ?? secrets.error ?? null,
   };
 }
 

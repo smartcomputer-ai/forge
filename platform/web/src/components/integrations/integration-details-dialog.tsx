@@ -1,6 +1,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { integrationDefinition } from "./catalog";
 import { GitHubAppDetails } from "./github-app";
+import { ModelApiKeyDetails } from "./model-api-key";
 import { SubscriptionDetails } from "./subscription";
 import type { ConnectedIntegration } from "./use-integrations";
 
@@ -29,30 +30,63 @@ export function IntegrationDetailsDialog({
                 {integration.title}
               </DialogTitle>
             </DialogHeader>
-            {integration.kind === "githubApp" ? (
-              <GitHubAppDetails
-                universeId={universeId}
-                app={integration.app}
-                grants={integration.grants}
-                onChanged={onChanged}
-                onRemoved={() => {
-                  onChanged();
-                  onOpenChange(false);
-                }}
-              />
-            ) : (
-              <SubscriptionDetails
-                universeId={universeId}
-                grant={integration.grant}
-                onDisconnected={() => {
-                  onChanged();
-                  onOpenChange(false);
-                }}
-              />
-            )}
+            <IntegrationDetails
+              universeId={universeId}
+              integration={integration}
+              onChanged={onChanged}
+              onClose={() => onOpenChange(false)}
+            />
           </>
         )}
       </DialogContent>
     </Dialog>
   );
+}
+
+function IntegrationDetails({
+  universeId,
+  integration,
+  onChanged,
+  onClose,
+}: {
+  universeId: string;
+  integration: ConnectedIntegration;
+  onChanged: () => void;
+  onClose: () => void;
+}) {
+  const removed = () => {
+    onChanged();
+    onClose();
+  };
+  switch (integration.kind) {
+    case "openAiApiKey":
+    case "anthropicApiKey":
+      return (
+        <ModelApiKeyDetails
+          universeId={universeId}
+          provider={integration.provider}
+          onChanged={onChanged}
+          onRemoved={removed}
+        />
+      );
+    case "githubApp":
+      return (
+        <GitHubAppDetails
+          universeId={universeId}
+          app={integration.app}
+          grants={integration.grants}
+          onChanged={onChanged}
+          onRemoved={removed}
+        />
+      );
+    case "anthropicSubscription":
+    case "openAiSubscription":
+      return (
+        <SubscriptionDetails
+          universeId={universeId}
+          grant={integration.grant}
+          onDisconnected={removed}
+        />
+      );
+  }
 }

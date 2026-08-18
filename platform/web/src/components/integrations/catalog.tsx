@@ -4,7 +4,12 @@ import { AnthropicLogo, GitHubLogo, OpenAiLogo } from "./logos";
 /// Everything a universe can connect from the Integrations page. Adding an
 /// integration = one entry here plus its form/details components; the page
 /// itself stays generic.
-export type IntegrationKind = "githubApp" | "anthropicSubscription" | "openAiSubscription";
+export type IntegrationKind =
+  | "githubApp"
+  | "openAiApiKey"
+  | "anthropicApiKey"
+  | "anthropicSubscription"
+  | "openAiSubscription";
 
 export interface IntegrationDefinition {
   kind: IntegrationKind;
@@ -23,6 +28,20 @@ export const INTEGRATION_CATALOG: IntegrationDefinition[] = [
     tagline: "Bring your own GitHub App and grant its installations to this universe.",
     Logo: GitHubLogo,
     multiple: true,
+  },
+  {
+    kind: "openAiApiKey",
+    name: "OpenAI (API key)",
+    tagline: "API key that Lightspeed sessions use for OpenAI models — discovery and inference.",
+    Logo: OpenAiLogo,
+    multiple: false,
+  },
+  {
+    kind: "anthropicApiKey",
+    name: "Anthropic (API key)",
+    tagline: "API key that Lightspeed sessions use for Anthropic models — discovery and inference.",
+    Logo: AnthropicLogo,
+    multiple: false,
   },
   {
     kind: "anthropicSubscription",

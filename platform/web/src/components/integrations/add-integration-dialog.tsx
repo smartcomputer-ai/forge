@@ -13,22 +13,27 @@ import {
 import { subscriptionBinding } from "@/lib/subscriptions";
 import { INTEGRATION_CATALOG, integrationDefinition, type IntegrationKind } from "./catalog";
 import { GitHubAppForm } from "./github-app";
+import { ModelApiKeyForm } from "./model-api-key";
 import { SubscriptionForm } from "./subscription";
+import type { ConnectedIntegration } from "./use-integrations";
 
 /// Two-step dialog: pick an integration from the catalog, then configure it.
 export function AddIntegrationDialog({
   universeId,
   open,
+  connected,
   onOpenChange,
   onAdded,
 }: {
   universeId: string;
   open: boolean;
+  connected: ConnectedIntegration[];
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }) {
   const [selected, setSelected] = useState<IntegrationKind | null>(null);
-  const [done, setDone] = useState<SubscriptionImportResult | "github" | null>(null);
+  const [done, setDone] = useState<SubscriptionImportResult | "github" | "modelKey" | null>(null);
+  const alreadyConnected = (kind: IntegrationKind) => connected.some((c) => c.kind === kind);
 
   const close = () => {
     onOpenChange(false);
@@ -76,22 +81,32 @@ export function AddIntegrationDialog({
 
         {!definition && (
           <div className="grid gap-2 sm:grid-cols-2">
-            {INTEGRATION_CATALOG.map((entry) => (
-              <button
-                key={entry.kind}
-                type="button"
-                onClick={() => setSelected(entry.kind)}
-                className="flex items-start gap-3 rounded-xl border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-              >
-                <span className="mt-0.5 shrink-0 text-foreground">
-                  <entry.Logo size={22} />
-                </span>
-                <span className="grid gap-0.5">
-                  <span className="text-sm font-medium">{entry.name}</span>
-                  <span className="text-xs text-muted-foreground">{entry.tagline}</span>
-                </span>
-              </button>
-            ))}
+            {INTEGRATION_CATALOG.map((entry) => {
+              const existing = !entry.multiple && alreadyConnected(entry.kind);
+              return (
+                <button
+                  key={entry.kind}
+                  type="button"
+                  onClick={() => setSelected(entry.kind)}
+                  className="flex items-start gap-3 rounded-xl border p-3 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+                >
+                  <span className="mt-0.5 shrink-0 text-foreground">
+                    <entry.Logo size={22} />
+                  </span>
+                  <span className="grid gap-0.5">
+                    <span className="text-sm font-medium">
+                      {entry.name}
+                      {existing && (
+                        <span className="ml-2 rounded-full border px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+                          connected · replace
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-xs text-muted-foreground">{entry.tagline}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -102,6 +117,8 @@ export function AddIntegrationDialog({
                 GitHub App added. Open it from the list to grant installations once the App is
                 installed on your GitHub accounts.
               </p>
+            ) : done === "modelKey" ? (
+              <p>API key saved. Sessions using this provider pick it up on their next model call.</p>
             ) : (
               <>
                 <p>
@@ -122,6 +139,18 @@ export function AddIntegrationDialog({
           </div>
         )}
 
+        {definition && !done && (selected === "openAiApiKey" || selected === "anthropicApiKey") && (
+          <ModelApiKeyForm
+            universeId={universeId}
+            provider={selected === "openAiApiKey" ? "openai" : "anthropic"}
+            replace={alreadyConnected(selected)}
+            onSaved={() => {
+              onAdded();
+              setDone("modelKey");
+            }}
+            onCancel={() => setSelected(null)}
+          />
+        )}
         {definition && !done && selected === "githubApp" && (
           <GitHubAppForm
             universeId={universeId}
