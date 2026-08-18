@@ -189,6 +189,11 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                           label="General"
                         />
                         <NavItem
+                          to={`/u/${active.slug}/settings/integrations`}
+                          icon={Plug}
+                          label="Integrations"
+                        />
+                        <NavItem
                           to={`/u/${active.slug}/settings/setups`}
                           icon={PackageOpen}
                           label="Setups"
@@ -212,11 +217,6 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                     />
                     {canManage(active, admin) && (
                       <>
-                        <NavItem
-                          to={`/u/${active.slug}/settings/integrations`}
-                          icon={Plug}
-                          label="Integrations"
-                        />
                         <NavItem
                           to={`/u/${active.slug}/settings/secrets`}
                           icon={LockKeyhole}
