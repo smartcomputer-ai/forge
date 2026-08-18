@@ -1,4 +1,4 @@
-# ls.bot landing page copy
+# Lightspeed landing page copy
 
 
 ## Hero
@@ -145,5 +145,3 @@ the system does.
 
 *Built on: long-running sessions, dedicated environments and process tools,
 hosted MCP, managed sessions and workflow-backed tools, channels.*
-
-
