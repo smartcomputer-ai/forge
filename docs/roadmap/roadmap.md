@@ -1,6 +1,13 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P128](p128-openai-completions-runtime.md) — OpenAI Chat Completions
+  runtime: phase 1 registers a full `openai:completions` adapter (native
+  context round-trip, standalone compaction, admission rejection of MCP/web
+  search, `models/list` expansion, live suites) on OpenAI's endpoint; phase 2
+  makes the endpoint configurable per model-provider row (`endpoint.baseUrl`
+  + headers + api kinds on `model:<provider_id>`), resolved with the
+  credential at send time, so any OpenAI-compatible server works.
 - [x] [P125](p125-profile-provisioned-environments.md) — let a profile
   provision a fresh environment for the session it starts (`environment:
   existing | provision`), record origin-session provenance on the
