@@ -59,6 +59,7 @@ export type ModelOption = {
   apiKind: string;
   model: string;
   displayName: string;
+  createdAtMs?: number | null;
   capabilities: {
     maxInputTokens?: number | null;
     maxOutputTokens?: number | null;
@@ -529,13 +530,13 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
     }] : []),
     ...models
       .filter((option) => !pinnedApiKind || option.apiKind === pinnedApiKind)
+      .sort(compareModelOptions)
       .map((option) => ({
         key: modelOptionKey(option),
         label: `${option.displayName} (${option.providerId})`,
         search: `${option.displayName} ${option.providerId} ${option.apiKind} ${option.model}`,
         option,
-      }))
-      .sort((left, right) => left.label.localeCompare(right.label)),
+      })),
     {
       key: "manual",
       label: "Enter model manually",
@@ -632,16 +633,27 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
                 const choice = choices.find((item) => item.key === key);
                 if (!choice) return null;
                 return (
-                <ComboboxItem key={choice.key} value={choice.key} className="py-2">
-                  <span className="min-w-0">
-                    <span className="block truncate">{choice.label}</span>
-                    {choice.option && (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {choice.option.model} · {choice.option.apiKind}
-                      </span>
-                    )}
-                  </span>
-                </ComboboxItem>
+                  <ComboboxItem
+                    key={choice.key}
+                    value={choice.key}
+                    className="py-2"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate">{choice.label}</span>
+                      {choice.option && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {choice.option.displayName !== choice.option.model
+                            ? choice.option.model + " · "
+                            : ""}
+                          {choice.option.apiKind}
+                          {choice.option.createdAtMs
+                            ? " · created " +
+                              formatModelCreatedAt(choice.option.createdAtMs)
+                            : ""}
+                        </span>
+                      )}
+                    </span>
+                  </ComboboxItem>
                 );
               }}
             </ComboboxList>
@@ -672,8 +684,8 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
         )}
         <FieldDescription>
           {currentModel?.capabilities.reasoningEfforts?.length
-            ? "Choose a reported tier or enter any provider-supported value."
-            : "No tiers were reported. Enter a provider-supported value, or leave unset for its default."}
+            ? "Choose a known tier or enter any provider-supported value."
+            : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
         </FieldDescription>
       </Field>
       {selected === "manual" && (
@@ -692,8 +704,40 @@ function modelOptionKey(option: Pick<ModelOption, "providerId" | "apiKind" | "mo
   return JSON.stringify([option.providerId, option.apiKind, option.model]);
 }
 
+/** Prefer the provider's newest models while keeping ordering deterministic. */
+export function compareModelOptions(
+  left: ModelOption,
+  right: ModelOption,
+): number {
+  const leftCreated = left.createdAtMs ?? null;
+  const rightCreated = right.createdAtMs ?? null;
+  if (
+    leftCreated !== null &&
+    rightCreated !== null &&
+    leftCreated !== rightCreated
+  ) {
+    return rightCreated - leftCreated;
+  }
+  if (leftCreated !== null) return -1;
+  if (rightCreated !== null) return 1;
+  return (
+    left.displayName.localeCompare(right.displayName) ||
+    left.providerId.localeCompare(right.providerId) ||
+    left.apiKind.localeCompare(right.apiKind)
+  );
+}
+
+function formatModelCreatedAt(createdAtMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(createdAtMs));
+}
+
 function ModelCapabilities({ option }: { option: ModelOption }) {
   const details = [
+    option.createdAtMs ? `created ${formatModelCreatedAt(option.createdAtMs)}` : null,
     option.capabilities.maxInputTokens ? `${option.capabilities.maxInputTokens.toLocaleString()} input tokens` : null,
     option.capabilities.maxOutputTokens ? `${option.capabilities.maxOutputTokens.toLocaleString()} output tokens` : null,
     option.capabilities.parallelToolUse === true ? "parallel tools" : null,

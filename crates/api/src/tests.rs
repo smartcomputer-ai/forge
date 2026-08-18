@@ -1550,6 +1550,7 @@ impl AgentApiService for TestService {
                 model: "gpt-test".to_owned(),
                 display_name: "gpt-test".to_owned(),
                 capabilities: ModelCapabilitiesView::default(),
+                created_at_ms: Some(1_700_000_000_000),
                 source: ModelSource::Provider,
                 fetched_at_ms: 1,
             }],

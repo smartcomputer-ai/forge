@@ -642,6 +642,7 @@ export interface ProviderModelCatalogEntry {
   model: string;
   displayName: string;
   apiKinds: string[];
+  createdAtMs?: number | null;
 }
 
 /** Filter one provider's live model results and collapse API-kind variants. */
@@ -667,17 +668,30 @@ export function providerModelCatalog(
     if (existing) {
       if (!existing.apiKinds.includes(model.apiKind))
         existing.apiKinds.push(model.apiKind);
+      if ((model.createdAtMs ?? 0) > (existing.createdAtMs ?? 0)) {
+        existing.createdAtMs = model.createdAtMs;
+      }
     } else {
       catalog.set(model.model, {
         model: model.model,
         displayName: model.displayName || model.model,
         apiKinds: [model.apiKind],
+        createdAtMs: model.createdAtMs,
       });
     }
   }
-  return [...catalog.values()].sort((left, right) =>
-    left.displayName.localeCompare(right.displayName),
-  );
+  return [...catalog.values()].sort((left, right) => {
+    if (
+      left.createdAtMs &&
+      right.createdAtMs &&
+      left.createdAtMs !== right.createdAtMs
+    ) {
+      return right.createdAtMs - left.createdAtMs;
+    }
+    if (left.createdAtMs) return -1;
+    if (right.createdAtMs) return 1;
+    return left.displayName.localeCompare(right.displayName);
+  });
 }
 
 /** Live provider model catalog. Credentials remain server-side during discovery. */
@@ -807,6 +821,11 @@ export function ProviderModelList({
                     {formatApiKind(apiKind)}
                   </Badge>
                 ))}
+                {model.createdAtMs && (
+                  <span className="self-center text-[10px] text-muted-foreground">
+                    Created {new Date(model.createdAtMs).toLocaleDateString()}
+                  </span>
+                )}
               </span>
             </li>
           ))}

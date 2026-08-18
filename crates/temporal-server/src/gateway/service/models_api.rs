@@ -20,6 +20,10 @@ const OPENAI_RESPONSES_API_KIND: &str = "openai:responses";
 const OPENAI_COMPLETIONS_API_KIND: &str = "openai:completions";
 const ANTHROPIC_MESSAGES_API_KIND: &str = "anthropic:messages";
 const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+/// Keep the normal picker focused on roughly the last eighteen months of
+/// OpenAI models. Older account-visible ids remain usable through manual model
+/// entry and through models/list with selectableOnly=false.
+const OPENAI_SELECTABLE_MAX_AGE_MS: i64 = 548 * 24 * 60 * 60 * 1_000;
 
 /// The whole P97 route set. This remains code-local deliberately: provider
 /// discovery is direct, not a registry or persisted catalog.
@@ -73,7 +77,9 @@ impl ModelDiscoveryService {
         });
         if selectable_only {
             models.retain(|model| {
-                model.provider_id != OPENAI_PROVIDER_ID || is_openai_selectable_model(&model.model)
+                model.provider_id != OPENAI_PROVIDER_ID
+                    || (is_openai_selectable_model(&model.model)
+                        && is_openai_recent_model(model.created_at_ms, model.fetched_at_ms))
             });
         }
         ModelListResponse { models, providers }
@@ -118,7 +124,7 @@ impl ModelDiscoveryService {
                     .parsed
                     .data
                     .into_iter()
-                    .flat_map(|model| openai_model_views(model.id, fetched_at_ms))
+                    .flat_map(|model| openai_model_views(model, fetched_at_ms))
                     .collect();
                 (
                     models,
@@ -187,6 +193,7 @@ impl ModelDiscoveryService {
                             max_input_tokens: model.max_input_tokens,
                         },
                         model: model.id,
+                        created_at_ms: None,
                         source: ModelSource::Provider,
                         fetched_at_ms,
                     })
@@ -301,12 +308,14 @@ impl ModelDiscoveryService {
                     .into_iter()
                     .flat_map(|model| {
                         let provider_id = provider_id.clone();
+                        let created_at_ms = unix_seconds_to_millis(model.created);
                         api_kinds.iter().map(move |api_kind| ModelView {
                             provider_id: provider_id.clone(),
                             api_kind: api_kind.clone(),
                             display_name: model.id.clone(),
                             model: model.id.clone(),
                             capabilities: ModelCapabilitiesView::default(),
+                            created_at_ms,
                             source: ModelSource::Provider,
                             fetched_at_ms,
                         })
@@ -349,15 +358,96 @@ fn model_endpoint(config: &auth::AuthProviderConfig) -> Option<&auth::ModelEndpo
     }
 }
 
-fn openai_model_views(model: String, fetched_at_ms: i64) -> [ModelView; 2] {
+fn openai_model_views(model: openai::Model, fetched_at_ms: i64) -> [ModelView; 2] {
+    let created_at_ms = unix_seconds_to_millis(model.created);
+    let capabilities = openai_model_capabilities(&model.id);
     [OPENAI_RESPONSES_API_KIND, OPENAI_COMPLETIONS_API_KIND].map(|api_kind| ModelView {
         provider_id: OPENAI_PROVIDER_ID.to_owned(),
         api_kind: api_kind.to_owned(),
-        display_name: model.clone(),
-        model: model.clone(),
-        capabilities: ModelCapabilitiesView::default(),
+        display_name: model.id.clone(),
+        model: model.id.clone(),
+        capabilities: capabilities.clone(),
+        created_at_ms,
         source: ModelSource::Provider,
         fetched_at_ms,
+    })
+}
+
+fn unix_seconds_to_millis(seconds: Option<i64>) -> Option<i64> {
+    seconds?.checked_mul(1_000)
+}
+
+/// OpenAI's Models API reports identity and creation time, but not reasoning
+/// capabilities. Keep this deliberately small and family-based so aliases and
+/// dated snapshots receive the same officially documented effort vocabulary.
+fn openai_model_capabilities(model: &str) -> ModelCapabilitiesView {
+    const GPT_5_6: &[&str] = &["none", "low", "medium", "high", "xhigh", "max"];
+    const GPT_5_2_TO_5_5: &[&str] = &["none", "low", "medium", "high", "xhigh"];
+    const GPT_5_PRO: &[&str] = &["medium", "high", "xhigh"];
+    const GPT_5_1: &[&str] = &["none", "low", "medium", "high"];
+    const GPT_5: &[&str] = &["minimal", "low", "medium", "high"];
+
+    let efforts = if ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]
+        .iter()
+        .any(|family| is_model_family(model, family))
+    {
+        Some(GPT_5_6)
+    } else if ["gpt-5.5-pro", "gpt-5.4-pro", "gpt-5.2-pro"]
+        .iter()
+        .any(|family| is_model_family(model, family))
+    {
+        Some(GPT_5_PRO)
+    } else if [
+        "gpt-5.5",
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-nano",
+        "gpt-5.2",
+    ]
+    .iter()
+    .any(|family| is_model_family(model, family))
+    {
+        Some(GPT_5_2_TO_5_5)
+    } else if is_model_family(model, "gpt-5-pro") {
+        Some(&["high"][..])
+    } else if is_model_family(model, "gpt-5.1") {
+        Some(GPT_5_1)
+    } else if ["gpt-5", "gpt-5-mini", "gpt-5-nano"]
+        .iter()
+        .any(|family| is_model_family(model, family))
+    {
+        Some(GPT_5)
+    } else {
+        None
+    };
+
+    ModelCapabilitiesView {
+        reasoning_efforts: efforts
+            .map(|efforts| efforts.iter().map(|effort| (*effort).to_owned()).collect()),
+        ..Default::default()
+    }
+}
+
+fn is_model_family(model: &str, family: &str) -> bool {
+    model == family
+        || model
+            .strip_prefix(family)
+            .and_then(|suffix| suffix.strip_prefix('-'))
+            .is_some_and(is_date_snapshot)
+}
+
+fn is_date_snapshot(suffix: &str) -> bool {
+    suffix.len() == 10
+        && suffix.bytes().enumerate().all(|(index, byte)| {
+            matches!(index, 4 | 7)
+                .then_some(byte == b'-')
+                .unwrap_or(byte.is_ascii_digit())
+        })
+}
+
+fn is_openai_recent_model(created_at_ms: Option<i64>, fetched_at_ms: i64) -> bool {
+    created_at_ms.is_none_or(|created_at_ms| {
+        fetched_at_ms.saturating_sub(created_at_ms) <= OPENAI_SELECTABLE_MAX_AGE_MS
     })
 }
 
@@ -373,19 +463,26 @@ fn is_openai_selectable_model(model: &str) -> bool {
         "omni-moderation-",
         "dall-e-",
         "gpt-image-",
+        "chatgpt-image-",
         "sora-",
         "whisper-",
         "tts-",
         "gpt-realtime",
+        "gpt-live-",
+        "gpt-transcribe",
         "realtime-",
         "gpt-audio",
         "audio-",
         "gpt-4o-transcribe",
         "gpt-4o-mini-transcribe",
         "gpt-4o-mini-tts",
+        "computer-use-",
     ]
     .iter()
     .any(|prefix| model.starts_with(prefix))
+        && !model.contains("-search-preview")
+        && !model.contains("-search-api")
+        && !model.contains("-deep-research")
 }
 
 fn anthropic_reasoning_efforts(
@@ -658,10 +755,16 @@ mod tests {
             "text-embedding-3-large",
             "omni-moderation-latest",
             "gpt-image-1",
+            "chatgpt-image-latest",
             "sora-2",
             "whisper-1",
             "tts-1",
             "gpt-realtime",
+            "gpt-live-transcribe",
+            "computer-use-preview",
+            "gpt-4o-search-preview",
+            "gpt-5-search-api",
+            "o3-deep-research",
             "gpt-4o-mini-transcribe",
         ] {
             assert!(!is_openai_selectable_model(model), "{model}");
@@ -673,15 +776,95 @@ mod tests {
 
     #[test]
     fn openai_models_are_exposed_through_both_registered_api_kinds() {
-        let views = openai_model_views("gpt-test".to_owned(), 42);
+        let views = openai_model_views(
+            openai::Model {
+                id: "gpt-5.5".to_owned(),
+                created: Some(1_700_000_000),
+                object: Some("model".to_owned()),
+                owned_by: Some("system".to_owned()),
+            },
+            42,
+        );
 
         assert_eq!(
-            views.map(|view| view.api_kind),
+            views.clone().map(|view| view.api_kind),
             [
                 OPENAI_RESPONSES_API_KIND.to_owned(),
                 OPENAI_COMPLETIONS_API_KIND.to_owned(),
             ]
         );
+        for view in views {
+            assert_eq!(view.created_at_ms, Some(1_700_000_000_000));
+            assert_eq!(
+                view.capabilities.reasoning_efforts,
+                Some(
+                    ["none", "low", "medium", "high", "xhigh"]
+                        .map(str::to_owned)
+                        .to_vec()
+                )
+            );
+        }
+    }
+
+    #[test]
+    fn openai_reasoning_catalog_covers_current_families_and_snapshots() {
+        for model in ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            assert_eq!(
+                openai_model_capabilities(model).reasoning_efforts,
+                Some(
+                    ["none", "low", "medium", "high", "xhigh", "max"]
+                        .map(str::to_owned)
+                        .to_vec()
+                ),
+                "{model}"
+            );
+        }
+        assert_eq!(
+            openai_model_capabilities("gpt-5.4-mini-2026-03-17").reasoning_efforts,
+            Some(
+                ["none", "low", "medium", "high", "xhigh"]
+                    .map(str::to_owned)
+                    .to_vec()
+            )
+        );
+        assert_eq!(
+            openai_model_capabilities("gpt-5.5-pro-2026-04-23").reasoning_efforts,
+            Some(["medium", "high", "xhigh"].map(str::to_owned).to_vec())
+        );
+        assert_eq!(
+            openai_model_capabilities("gpt-5.1-2025-11-13").reasoning_efforts,
+            Some(
+                ["none", "low", "medium", "high"]
+                    .map(str::to_owned)
+                    .to_vec()
+            )
+        );
+        assert_eq!(
+            openai_model_capabilities("gpt-5-2025-08-07").reasoning_efforts,
+            Some(
+                ["minimal", "low", "medium", "high"]
+                    .map(str::to_owned)
+                    .to_vec()
+            )
+        );
+        assert_eq!(
+            openai_model_capabilities("gpt-5.3-chat-latest").reasoning_efforts,
+            None
+        );
+    }
+
+    #[test]
+    fn selectable_openai_catalog_omits_stale_dated_models_but_keeps_unknown_dates() {
+        let fetched_at_ms = 2_000_000_000_000;
+        assert!(is_openai_recent_model(
+            Some(fetched_at_ms - OPENAI_SELECTABLE_MAX_AGE_MS),
+            fetched_at_ms
+        ));
+        assert!(!is_openai_recent_model(
+            Some(fetched_at_ms - OPENAI_SELECTABLE_MAX_AGE_MS - 1),
+            fetched_at_ms
+        ));
+        assert!(is_openai_recent_model(None, fetched_at_ms));
     }
 
     #[tokio::test(flavor = "current_thread")]

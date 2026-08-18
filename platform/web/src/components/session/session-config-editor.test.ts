@@ -1,9 +1,34 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareModelOptions,
   normalizeSessionConfig,
+  type ModelOption,
   workspaceLinksError,
   workspaceLinksFromConfig,
 } from "./session-config-editor";
+
+describe("model picker ordering", () => {
+  const option = (model: string, createdAtMs?: number): ModelOption => ({
+    providerId: "openai",
+    apiKind: "openai:responses",
+    model,
+    displayName: model,
+    createdAtMs,
+    capabilities: {},
+  });
+
+  it("puts provider-dated models newest first and unknown dates last", () => {
+    expect(
+      [
+        option("unknown"),
+        option("older", 1_700_000_000_000),
+        option("newer", 1_800_000_000_000),
+      ]
+        .sort(compareModelOptions)
+        .map((model) => model.model),
+    ).toEqual(["newer", "older", "unknown"]);
+  });
+});
 
 describe("workspace link config", () => {
   it("round-trips links inside the VFS feature", () => {

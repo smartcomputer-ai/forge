@@ -5815,7 +5815,7 @@
             ]
           },
           "reasoningEfforts": {
-            "description": "Provider-reported effort values. Omitted when the provider does not\nreport per-model effort support.",
+            "description": "Known provider effort values. Prefer provider-reported capabilities;\nLightspeed may enrich important built-in model families when the\nprovider's model-list API omits this metadata.",
             "items": {
               "type": "string"
             },
@@ -6009,6 +6009,14 @@
           },
           "capabilities": {
             "$ref": "#/components/schemas/ModelCapabilitiesView"
+          },
+          "createdAtMs": {
+            "description": "Provider-reported model creation time. Omitted when the provider does\nnot expose one; this is distinct from the discovery fetch time.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "displayName": {
             "type": "string"

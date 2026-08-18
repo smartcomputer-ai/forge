@@ -29,6 +29,9 @@
   no-fallback semantics for custom provider ids; Platform management; a schema
   migration for the new credentialless provider kind; and local-stub plus
   DeepSeek live coverage.
+- A discovery follow-up exposes provider model creation timestamps, enriches
+  current OpenAI GPT-5 families with their documented reasoning-effort tiers,
+  and keeps the normal selectable catalog focused on recent generation models.
 - Builds on [P50](archive/p50-agent-llm.md) (llm-runtime crate shape; listed
   `openai:completions` as step 3 and left `llm-runtime/src/openai_completions.rs`
   as a placeholder), [P69](archive/p69-generic-auth-token-broker.md) (stored

@@ -80,4 +80,20 @@ describe("provider model catalog", () => {
     );
     expect(providerModelCatalog(models, "openrouter", "missing")).toEqual([]);
   });
+
+  it("orders provider models by their reported creation date", () => {
+    const older = {
+      ...model("openai", "gpt-5.4"),
+      createdAtMs: 1_700_000_000_000,
+    };
+    const newer = {
+      ...model("openai", "gpt-5.6-sol"),
+      createdAtMs: 1_800_000_000_000,
+    };
+    expect(
+      providerModelCatalog([older, newer], "openai", "").map(
+        (entry) => entry.model,
+      ),
+    ).toEqual(["gpt-5.6-sol", "gpt-5.4"]);
+  });
 });

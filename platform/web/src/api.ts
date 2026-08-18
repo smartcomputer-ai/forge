@@ -161,6 +161,7 @@ export interface ModelOption {
   apiKind: string;
   model: string;
   displayName: string;
+  createdAtMs?: number | null;
   capabilities: {
     maxInputTokens?: number | null;
     maxOutputTokens?: number | null;

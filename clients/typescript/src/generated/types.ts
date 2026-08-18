@@ -2761,6 +2761,11 @@ export interface ModelView {
    */
   apiKind: string;
   capabilities: ModelCapabilitiesView;
+  /**
+   * Provider-reported model creation time. Omitted when the provider does
+   * not expose one; this is distinct from the discovery fetch time.
+   */
+  createdAtMs?: number | null;
   displayName: string;
   fetchedAtMs: number;
   model: string;
@@ -2782,8 +2787,9 @@ export interface ModelCapabilitiesView {
    */
   parallelToolUse?: boolean | null;
   /**
-   * Provider-reported effort values. Omitted when the provider does not
-   * report per-model effort support.
+   * Known provider effort values. Prefer provider-reported capabilities;
+   * Lightspeed may enrich important built-in model families when the
+   * provider's model-list API omits this metadata.
    */
   reasoningEfforts?: string[] | null;
 }
