@@ -2,7 +2,16 @@
 
 **Status**
 
-- Proposed 2026-08-18. Not started.
+- Proposed 2026-08-18. Phase 1 completed 2026-08-18; Phase 2 is not started.
+- Phase 1 shipped the native client auth/model-list additions, the generation
+  and standalone-compaction adapter, hosted/eval/CLI registration, reasoning
+  admission, dual-kind OpenAI model discovery, and live coverage for client
+  transport, text/media/documents, tools, compaction, prompts, VFS, and skills.
+- The implementation follows the current OpenAI API vocabulary: runtime-owned
+  instruction/catalog entries use `developer` messages, and reasoning accepts
+  `max` in addition to the tiers listed in the original draft. Compaction
+  summaries use a Lightspeed-recognized user message so they remain valid Chat
+  Completions history rather than an opaque pseudo-item.
 - Builds on [P50](archive/p50-agent-llm.md) (llm-runtime crate shape; listed
   `openai:completions` as step 3 and left `llm-runtime/src/openai_completions.rs`
   as a placeholder), [P69](archive/p69-generic-auth-token-broker.md) (stored
@@ -42,7 +51,7 @@ Two phases, shipped in order:
    runtime configuration, exactly like the credential it travels with; it
    never enters `ModelSelection`, `ProviderParams`, or the session log.
 
-## Today
+## Pre-implementation baseline
 
 - `crates/llm-clients/src/openai/completions.rs` (703 lines) is a complete
   native Chat Completions client: `Config { api_key, base_url, organization,
@@ -128,14 +137,11 @@ Two phases, shipped in order:
   entry (Responses items, Anthropic blocks) is a `RequestKindMismatch`
   error — sessions are pinned to one api kind, so this cannot happen without
   a bug.
-- **D3 — Roles.** `Instructions` entries materialize as the *first*
-  message with `role: "system"` (all instruction entries joined with blank
-  lines, as Responses does for `instructions`). `VfsCatalog`, `SkillCatalog`,
-  and `SkillActivation` entries materialize as `system` messages at their
-  context position. `system` is used rather than `developer` because
-  OpenAI accepts both on every current model while OpenAI-compatible
-  servers (phase 2) frequently accept only `system`; a params escape hatch
-  is `extra`, not a new knob.
+- **D3 — Roles.** `Instructions`, `VfsCatalog`, `SkillCatalog`, and
+  `SkillActivation` entries materialize as `developer` messages at their
+  context position. This follows the current OpenAI Chat Completions contract;
+  phase 2 can add an explicit compatibility policy for servers that only
+  implement legacy `system` messages.
 - **D4 — Media.** Image entries → `{ "type": "image_url", "image_url": {
   "url": "data:<mime>;base64,…" } }` user parts; PDF documents → `{ "type":
   "file", "file": { "filename", "file_data": "data:application/pdf;base64,…"
@@ -148,7 +154,7 @@ Two phases, shipped in order:
   `parallel_tool_calls` (params value wins only when the neutral field is
   unset, mirroring Responses); `reasoning_effort` → request
   `reasoning_effort` (**lift** the admission rejection: accept the OpenAI
-  vocabulary `none|minimal|low|medium|high|xhigh`; the adapter re-validates
+  vocabulary `none|minimal|low|medium|high|xhigh|max`; the adapter re-validates
   and forwards verbatim, the provider decides per model). `stream` in
   params is ignored: generation is always non-streaming (`stream=false`),
   matching Responses/Anthropic; the client's stream path stays for tests
@@ -168,9 +174,9 @@ Two phases, shipped in order:
   in `engine::validate_context_config` and implement `LlmCompactionAdapter`
   as summarization-over-context, copying the Anthropic approach
   (`COMPACTION_INSTRUCTION`, target-token budget → `max_completion_tokens`,
-  summary stored as a `ProviderOpaque`/summary entry the way
-  `result_from_compact_response` does for Anthropic). `ProviderTriggered`
-  stays rejected.
+  summary stored as a recognized user `Message` entry so it can be replayed
+  directly as valid Chat Completions history). `ProviderTriggered` stays
+  rejected.
 - **D8 — Unsupported capabilities fail at admission.** Remote MCP tools
   (already false in `remote_mcp_supported_by_provider`), `features.web.search`
   (already Responses-only in `gateway/service/mod.rs`; make the silent skip

@@ -65,10 +65,11 @@ cargo test -p llm-clients --test openai_responses_live -- --ignored
 cargo test -p llm-clients --test openai_completions_live -- --ignored
 cargo test -p llm-clients --test anthropic_messages_live -- --ignored
 cargo test -p llm-runtime --test openai_responses_live -- --ignored
+cargo test -p llm-runtime --test openai_completions_live -- --ignored
 cargo test -p llm-runtime --test anthropic_messages_live -- --ignored
 ```
 
-Additional per-capability live suites exist for both providers under
+Additional per-capability live suites exist for the supported provider API kinds under
 `crates/llm-runtime/tests/` (`*_compaction_live`, `*_mcp_live`,
 `*_prompts_live`, `*_skills_live`).
 

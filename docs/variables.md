@@ -64,8 +64,8 @@ provider credential.
 | --- | --- | --- |
 | `LIGHTSPEED_CHAT_PROVIDER` | `openai` | Default provider ID for new runtime and CLI chat configuration. |
 | `LIGHTSPEED_CHAT_MODEL` | `gpt-5.5` | Default model for new runtime and CLI chat configuration. |
-| `OPENAI_API_KEY` | Conditional | Default OpenAI Responses and audio-transcription credential. |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. |
+| `OPENAI_API_KEY` | Conditional | Default OpenAI Responses, Chat Completions, and audio-transcription credential. |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI API base URL shared by Responses, Chat Completions, and audio transcription. |
 | `OPENAI_ORG_ID` | Unset | Optional `OpenAI-Organization` header. |
 | `OPENAI_PROJECT_ID` | Unset | Optional `OpenAI-Project` header. |
 | `ANTHROPIC_API_KEY` | Conditional | Default Anthropic Messages credential. |

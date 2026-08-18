@@ -1229,37 +1229,47 @@ fn web_feature_grant_maps_search_and_fetch() {
 
 #[test]
 fn web_search_rejects_explicit_enable_for_non_openai_responses() {
-    let config = engine_session_config_from_api(
-        api::SessionConfig {
-            features: Some(api::FeaturesConfig {
-                web: Some(api::WebFeature {
-                    version: api::CURRENT_FEATURE_VERSION,
-                    fetch: None,
-                    search: Some(api::WebSearchFeature {
-                        allowed_domains: None,
-                        blocked_domains: Vec::new(),
+    for (api_kind, provider_id, model) in [
+        (
+            ProviderApiKind::AnthropicMessages,
+            "anthropic",
+            "claude-test",
+        ),
+        (ProviderApiKind::OpenAiCompletions, "openai", "gpt-test"),
+    ] {
+        let config = engine_session_config_from_api(
+            api::SessionConfig {
+                features: Some(api::FeaturesConfig {
+                    web: Some(api::WebFeature {
+                        version: api::CURRENT_FEATURE_VERSION,
+                        fetch: None,
+                        search: Some(api::WebSearchFeature {
+                            allowed_domains: None,
+                            blocked_domains: Vec::new(),
+                        }),
                     }),
+                    ..api::FeaturesConfig::default()
                 }),
-                ..api::FeaturesConfig::default()
-            }),
-            ..api::SessionConfig::default()
-        },
-        ModelSelection {
-            api_kind: ProviderApiKind::AnthropicMessages,
-            provider_id: "anthropic".to_owned(),
-            model: "claude-test".to_owned(),
-        },
-    )
-    .expect("map config");
+                ..api::SessionConfig::default()
+            },
+            ModelSelection {
+                api_kind: api_kind.clone(),
+                provider_id: provider_id.to_owned(),
+                model: model.to_owned(),
+            },
+        )
+        .expect("map config");
 
-    let error = config
-        .validate()
-        .expect_err("web search enable should reject Anthropic");
+        let error = match config.validate() {
+            Ok(()) => panic!("web search must reject {api_kind:?}"),
+            Err(error) => error,
+        };
 
-    assert!(matches!(
-        error,
-        engine::DomainError::ProviderCompatibility(_)
-    ));
+        assert!(matches!(
+            error,
+            engine::DomainError::ProviderCompatibility(_)
+        ));
+    }
 }
 
 #[test]

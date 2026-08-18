@@ -23,7 +23,9 @@ const DEFAULT_BASE_URL: &str = "https://api.openai.com/v1";
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
-    pub api_key: String,
+    /// Default API key for every request. `None` builds a client that can
+    /// only send requests carrying a per-request key.
+    pub api_key: Option<String>,
     pub base_url: String,
     pub organization: Option<String>,
     pub project: Option<String>,
@@ -32,13 +34,53 @@ pub struct Config {
 
 impl Config {
     pub fn new(api_key: impl Into<String>) -> Self {
+        let mut config = Self::without_api_key();
+        config.api_key = Some(api_key.into());
+        config
+    }
+
+    pub fn without_api_key() -> Self {
         Self {
-            api_key: api_key.into(),
+            api_key: None,
             base_url: DEFAULT_BASE_URL.to_string(),
             organization: None,
             project: None,
             http: HttpClientConfig::default(),
         }
+    }
+
+    pub fn from_env() -> Result<Self, LlmApiError> {
+        let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+            ConfigurationError::new("OPENAI_API_KEY must be set for openai:completions")
+        })?;
+        if api_key.trim().is_empty() {
+            return Err(ConfigurationError::new("OPENAI_API_KEY is set but empty").into());
+        }
+        Ok(Self::new(api_key).with_env_overrides())
+    }
+
+    /// Like [`Config::from_env`], but tolerates a missing or empty key so
+    /// requests can authenticate through a universe-owned provider row.
+    pub fn from_env_allow_missing_key() -> Self {
+        let mut config = match std::env::var("OPENAI_API_KEY") {
+            Ok(api_key) if !api_key.trim().is_empty() => Self::new(api_key),
+            _ => Self::without_api_key(),
+        };
+        config = config.with_env_overrides();
+        config
+    }
+
+    fn with_env_overrides(mut self) -> Self {
+        if let Ok(base_url) = std::env::var("OPENAI_BASE_URL") {
+            self.base_url = base_url;
+        }
+        if let Ok(organization) = std::env::var("OPENAI_ORG_ID") {
+            self.organization = Some(organization);
+        }
+        if let Ok(project) = std::env::var("OPENAI_PROJECT_ID") {
+            self.project = Some(project);
+        }
+        self
     }
 }
 
@@ -46,20 +88,22 @@ impl Config {
 pub struct Client {
     http: HttpClient,
     completions_url: Url,
+    models_url: Url,
+    auth: Option<HeaderValue>,
 }
 
 impl Client {
     pub fn new(config: Config) -> Result<Self, LlmApiError> {
         let base_url = normalize_base_url(&config.base_url)?;
         let completions_url = join_url(&base_url, "chat/completions")?;
+        let models_url = join_url(&base_url, "models")?;
+        let auth = config
+            .api_key
+            .as_deref()
+            .map(bearer_auth_value)
+            .transpose()?;
         let mut headers = HeaderMap::new();
         headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", config.api_key)).map_err(|err| {
-                ConfigurationError::new(format!("invalid OpenAI-compatible API key header: {err}"))
-            })?,
-        );
         if let Some(organization) = &config.organization {
             headers.insert(
                 "OpenAI-Organization",
@@ -80,17 +124,45 @@ impl Client {
         Ok(Self {
             http: HttpClient::with_headers(config.http, headers)?,
             completions_url,
+            models_url,
+            auth,
         })
+    }
+
+    fn auth_header(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+    ) -> Result<HeaderValue, LlmApiError> {
+        match auth {
+            Some(crate::RequestAuth::ApiKey(value)) | Some(crate::RequestAuth::Bearer(value)) => {
+                bearer_auth_value(value)
+            }
+            None => self.auth.clone().ok_or_else(|| {
+                ConfigurationError::new(
+                    "no OpenAI API key configured for this client and no per-request auth provided",
+                )
+                .into()
+            }),
+        }
     }
 
     pub async fn create(
         &self,
+        request: CreateCompletionRequest,
+    ) -> Result<ApiResponse<Completion>, LlmApiError> {
+        self.create_with_auth(request, None).await
+    }
+
+    pub async fn create_with_auth(
+        &self,
         mut request: CreateCompletionRequest,
+        auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<Completion>, LlmApiError> {
         request.stream = Some(false);
         let response = self
             .http
             .request(Method::POST, self.completions_url.clone())
+            .header(AUTHORIZATION, self.auth_header(auth)?)
             .json(&request)
             .send()
             .await
@@ -118,6 +190,27 @@ impl Client {
         Ok(ApiResponse::new(parsed, raw_json, status, headers))
     }
 
+    pub async fn list_models(&self) -> Result<ApiResponse<ModelList>, LlmApiError> {
+        self.list_models_with_auth(None).await
+    }
+
+    pub async fn list_models_with_auth(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+    ) -> Result<ApiResponse<ModelList>, LlmApiError> {
+        let response = self
+            .http
+            .request(Method::GET, self.models_url.clone())
+            .header(AUTHORIZATION, self.auth_header(auth)?)
+            .send()
+            .await
+            .map_err(map_reqwest_error)?;
+        let status = response.status();
+        let headers = HeaderSnapshot::from_headermap(response.headers());
+        let body = response.text().await.map_err(map_reqwest_error)?;
+        parse_json_response(status, headers, body, "OpenAI model list")
+    }
+
     pub async fn stream(
         &self,
         mut request: CreateCompletionRequest,
@@ -134,6 +227,7 @@ impl Client {
         let response = self
             .http
             .request(Method::POST, self.completions_url.clone())
+            .header(AUTHORIZATION, self.auth_header(None)?)
             .json(&request)
             .send()
             .await
@@ -180,6 +274,8 @@ pub struct CreateCompletionRequest {
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -215,6 +311,8 @@ pub struct CompletionMessage {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<CompletionToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -380,13 +478,13 @@ pub struct CompletionChoice {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct CompletionToolCall {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(rename = "type")]
     pub r#type: String,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function: Option<CompletionFunctionCall>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index: Option<u64>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -432,6 +530,25 @@ pub struct CompletionUsage {
     pub completion_tokens_details: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelList {
+    #[serde(default)]
+    pub data: Vec<Model>,
+    #[serde(default)]
+    pub object: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Model {
+    pub id: String,
+    #[serde(default)]
+    pub created: Option<i64>,
+    #[serde(default)]
+    pub object: Option<String>,
+    #[serde(default)]
+    pub owned_by: Option<String>,
 }
 
 impl CompletionUsage {
@@ -601,6 +718,33 @@ fn map_reqwest_error(err: reqwest::Error) -> LlmApiError {
     TransportError::new(err.to_string(), err.is_connect() || err.is_request()).into()
 }
 
+fn bearer_auth_value(value: &str) -> Result<HeaderValue, LlmApiError> {
+    HeaderValue::from_str(&format!("Bearer {value}")).map_err(|err| {
+        ConfigurationError::new(format!("invalid OpenAI authorization header: {err}")).into()
+    })
+}
+
+fn parse_json_response<T: serde::de::DeserializeOwned>(
+    status: reqwest::StatusCode,
+    headers: HeaderSnapshot,
+    body: String,
+    label: &str,
+) -> Result<ApiResponse<T>, LlmApiError> {
+    if !status.is_success() {
+        return Err(parse_provider_http_error(status, headers, body).into());
+    }
+    let raw_json: Value = serde_json::from_str(&body).map_err(|err| {
+        DecodeError::with_raw(format!("invalid {label} JSON: {err}"), body.clone())
+    })?;
+    let parsed = serde_json::from_value(raw_json.clone()).map_err(|err| {
+        DecodeError::with_raw(
+            format!("{label} did not match expected shape: {err}"),
+            raw_json.to_string(),
+        )
+    })?;
+    Ok(ApiResponse::new(parsed, raw_json, status, headers))
+}
+
 fn parse_provider_http_error(
     status: reqwest::StatusCode,
     headers: HeaderSnapshot,
@@ -634,7 +778,36 @@ fn parse_provider_http_error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RequestAuth;
     use serde_json::json;
+
+    #[test]
+    fn auth_header_prefers_per_request_auth_and_supports_bearer_tokens() {
+        let client = Client::new(Config::new("deployment-key")).expect("client");
+
+        let api_key = client
+            .auth_header(Some(RequestAuth::ApiKey("universe-key")))
+            .expect("api-key auth");
+        let bearer = client
+            .auth_header(Some(RequestAuth::Bearer("oauth-token")))
+            .expect("bearer auth");
+        let default = client.auth_header(None).expect("default auth");
+
+        assert_eq!(api_key.to_str().expect("header"), "Bearer universe-key");
+        assert_eq!(bearer.to_str().expect("header"), "Bearer oauth-token");
+        assert_eq!(default.to_str().expect("header"), "Bearer deployment-key");
+    }
+
+    #[test]
+    fn auth_header_fails_before_io_when_no_key_is_available() {
+        let client = Client::new(Config::without_api_key()).expect("client");
+
+        let error = client
+            .auth_header(None)
+            .expect_err("missing auth must fail");
+
+        assert!(matches!(error, LlmApiError::Configuration(_)));
+    }
 
     #[test]
     fn completion_helpers_extract_text_usage_and_tool_calls() {

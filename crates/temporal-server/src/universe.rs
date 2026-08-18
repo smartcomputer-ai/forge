@@ -24,7 +24,8 @@ use std::{
 
 use auth::{GitHubApiClient, HttpGitHubApiClient, HttpOAuthTokenClient, OAuthTokenClient};
 use llm_clients::{
-    anthropic::messages as am, openai::audio as oai_audio, openai::responses as oai,
+    anthropic::messages as am,
+    openai::{audio as oai_audio, completions as oai_completions, responses as oai},
 };
 use store_pg::PgStore;
 use temporalio_client::Client;
@@ -64,6 +65,7 @@ pub enum UniverseError {
 /// zero.
 pub struct DeploymentClients {
     pub(crate) openai: Arc<oai::Client>,
+    pub(crate) openai_completions: Arc<oai_completions::Client>,
     pub(crate) openai_audio: Arc<oai_audio::Client>,
     pub(crate) anthropic: Arc<am::Client>,
     pub(crate) oauth_token: Arc<dyn OAuthTokenClient>,
@@ -77,6 +79,10 @@ impl DeploymentClients {
         let openai = Arc::new(
             oai::Client::new(oai::Config::from_env_allow_missing_key())
                 .map_err(|error| anyhow::anyhow!("construct OpenAI client: {error}"))?,
+        );
+        let openai_completions = Arc::new(
+            oai_completions::Client::new(oai_completions::Config::from_env_allow_missing_key())
+                .map_err(|error| anyhow::anyhow!("construct OpenAI Completions client: {error}"))?,
         );
         let openai_audio = Arc::new(
             oai_audio::Client::new(oai_audio::Config::from_env_allow_missing_key())
@@ -101,6 +107,7 @@ impl DeploymentClients {
         let audio_transcoder = crate::worker::default_audio_transcoder_from_env()?;
         Ok(Self {
             openai,
+            openai_completions,
             openai_audio,
             anthropic,
             oauth_token,

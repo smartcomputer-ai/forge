@@ -10,10 +10,13 @@ use engine::{
     storage::{BlobGraphStore, BlobStore, SessionStore},
 };
 use environments::EnvironmentStore;
-use llm_clients::{anthropic::messages as am, openai::responses as oai};
+use llm_clients::{
+    anthropic::messages as am,
+    openai::{completions as oai_completions, responses as oai},
+};
 use llm_runtime::{
-    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, OpenAiResponsesLlmAdapter,
-    provider_keys::ProviderKeyResolver, secrets::SecretResolver,
+    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, OpenAiCompletionsLlmAdapter,
+    OpenAiResponsesLlmAdapter, provider_keys::ProviderKeyResolver, secrets::SecretResolver,
 };
 use store_pg::PgStore;
 use vfs::VfsWorkspaceStore;
@@ -273,6 +276,7 @@ impl ActivityState {
             Some(secrets),
             Some(provider_keys),
             clients.openai.clone(),
+            clients.openai_completions.clone(),
             clients.anthropic.clone(),
         );
         let temporal_client_for_workflow_tools = temporal_client.clone();
@@ -390,12 +394,16 @@ fn default_llm_runtime(
     provider_keys: Option<Arc<dyn ProviderKeyResolver>>,
 ) -> anyhow::Result<Arc<dyn CoreAgentLlm>> {
     let openai = Arc::new(oai::Client::new(oai::Config::from_env_allow_missing_key())?);
+    let openai_completions = Arc::new(oai_completions::Client::new(
+        oai_completions::Config::from_env_allow_missing_key(),
+    )?);
     let anthropic = Arc::new(am::Client::new(am::Config::from_env_allow_missing_key())?);
     Ok(llm_runtime_with_clients(
         blobs,
         secrets,
         provider_keys,
         openai,
+        openai_completions,
         anthropic,
     ))
 }
@@ -405,6 +413,7 @@ fn llm_runtime_with_clients(
     secrets: Option<Arc<dyn SecretResolver>>,
     provider_keys: Option<Arc<dyn ProviderKeyResolver>>,
     openai: Arc<oai::Client>,
+    openai_completions: Arc<oai_completions::Client>,
     anthropic: Arc<am::Client>,
 ) -> Arc<dyn CoreAgentLlm> {
     let mut registry = LlmAdapterRegistry::new();
@@ -419,6 +428,14 @@ fn llm_runtime_with_clients(
     let adapter = Arc::new(adapter);
     registry.insert_generation_adapter(ProviderApiKind::OpenAiResponses, adapter.clone());
     registry.insert_compaction_adapter(ProviderApiKind::OpenAiResponses, adapter);
+
+    let mut adapter = OpenAiCompletionsLlmAdapter::new(openai_completions, blobs.clone());
+    if let Some(provider_keys) = &provider_keys {
+        adapter = adapter.with_provider_key_resolver(provider_keys.clone());
+    }
+    let adapter = Arc::new(adapter);
+    registry.insert_generation_adapter(ProviderApiKind::OpenAiCompletions, adapter.clone());
+    registry.insert_compaction_adapter(ProviderApiKind::OpenAiCompletions, adapter);
 
     let mut adapter = AnthropicMessagesLlmAdapter::new(anthropic, blobs);
     if let Some(secrets) = &secrets {

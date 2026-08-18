@@ -314,3 +314,15 @@ pub fn openai_live_model() -> ModelSelection {
             .unwrap_or_else(|_| "gpt-5.5".to_owned()),
     }
 }
+
+pub fn openai_completions_live_model() -> ModelSelection {
+    ModelSelection {
+        api_kind: ProviderApiKind::OpenAiCompletions,
+        provider_id: "openai".to_owned(),
+        model: env::var("LIGHTSPEED_OPENAI_MODEL")
+            .or_else(|_| env::var("OPENAI_COMPLETIONS_MODEL"))
+            .or_else(|_| env::var("OPENAI_LIVE_MODEL"))
+            .or_else(|_| env::var("LIGHTSPEED_CHAT_MODEL"))
+            .unwrap_or_else(|_| "gpt-5.5".to_owned()),
+    }
+}

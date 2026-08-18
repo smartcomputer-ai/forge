@@ -16,6 +16,7 @@ use super::*;
 const OPENAI_PROVIDER_ID: &str = "openai";
 const ANTHROPIC_PROVIDER_ID: &str = "anthropic";
 const OPENAI_RESPONSES_API_KIND: &str = "openai:responses";
+const OPENAI_COMPLETIONS_API_KIND: &str = "openai:completions";
 const ANTHROPIC_MESSAGES_API_KIND: &str = "anthropic:messages";
 
 /// The whole P97 route set. This remains code-local deliberately: provider
@@ -90,21 +91,13 @@ impl ModelDiscoveryService {
                     .parsed
                     .data
                     .into_iter()
-                    .map(|model| ModelView {
-                        provider_id: OPENAI_PROVIDER_ID.to_owned(),
-                        api_kind: OPENAI_RESPONSES_API_KIND.to_owned(),
-                        display_name: model.id.clone(),
-                        model: model.id,
-                        capabilities: ModelCapabilitiesView::default(),
-                        source: ModelSource::Provider,
-                        fetched_at_ms,
-                    })
+                    .flat_map(|model| openai_model_views(model.id, fetched_at_ms))
                     .collect();
                 (
                     models,
                     provider_success(
                         OPENAI_PROVIDER_ID,
-                        &[OPENAI_RESPONSES_API_KIND],
+                        &[OPENAI_RESPONSES_API_KIND, OPENAI_COMPLETIONS_API_KIND],
                         fetched_at_ms,
                         source,
                     ),
@@ -114,7 +107,7 @@ impl ModelDiscoveryService {
                 Vec::new(),
                 provider_failure(
                     OPENAI_PROVIDER_ID,
-                    &[OPENAI_RESPONSES_API_KIND],
+                    &[OPENAI_RESPONSES_API_KIND, OPENAI_COMPLETIONS_API_KIND],
                     &error,
                     source,
                 ),
@@ -182,6 +175,18 @@ impl ModelDiscoveryService {
             ),
         }
     }
+}
+
+fn openai_model_views(model: String, fetched_at_ms: i64) -> [ModelView; 2] {
+    [OPENAI_RESPONSES_API_KIND, OPENAI_COMPLETIONS_API_KIND].map(|api_kind| ModelView {
+        provider_id: OPENAI_PROVIDER_ID.to_owned(),
+        api_kind: api_kind.to_owned(),
+        display_name: model.clone(),
+        model: model.clone(),
+        capabilities: ModelCapabilitiesView::default(),
+        source: ModelSource::Provider,
+        fetched_at_ms,
+    })
 }
 
 /// `GET /v1/models` does not say which endpoint a model supports. This is
@@ -448,5 +453,18 @@ mod tests {
         for model in ["gpt-5", "gpt-4o-mini", "o4-mini", "custom-fine-tune"] {
             assert!(is_openai_selectable_model(model), "{model}");
         }
+    }
+
+    #[test]
+    fn openai_models_are_exposed_through_both_registered_api_kinds() {
+        let views = openai_model_views("gpt-test".to_owned(), 42);
+
+        assert_eq!(
+            views.map(|view| view.api_kind),
+            [
+                OPENAI_RESPONSES_API_KIND.to_owned(),
+                OPENAI_COMPLETIONS_API_KIND.to_owned(),
+            ]
+        );
     }
 }

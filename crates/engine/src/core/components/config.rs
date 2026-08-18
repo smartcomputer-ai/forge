@@ -797,17 +797,13 @@ fn validate_context_config(
                 compact_threshold_tokens,
                 target_tokens,
             }),
-            ProviderApiKind::OpenAiResponses | ProviderApiKind::AnthropicMessages,
+            ProviderApiKind::OpenAiResponses
+            | ProviderApiKind::OpenAiCompletions
+            | ProviderApiKind::AnthropicMessages,
         ) => validate_provider_standalone_compaction(*compact_threshold_tokens, *target_tokens),
         (Some(CompactionPolicy::ProviderTriggered { .. }), api_kind) => {
             Err(DomainError::ProviderCompatibility(format!(
                 "provider-triggered compaction requires OpenAI Responses api kind, got {:?}",
-                api_kind
-            )))
-        }
-        (Some(CompactionPolicy::ProviderStandalone { .. }), api_kind) => {
-            Err(DomainError::ProviderCompatibility(format!(
-                "provider-standalone compaction requires OpenAI Responses or Anthropic Messages api kind, got {:?}",
                 api_kind
             )))
         }
@@ -991,7 +987,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_standalone_compaction_rejects_unsupported_api_kind() {
+    fn provider_standalone_compaction_accepts_openai_completions_api_kind() {
         let config = config(
             ProviderApiKind::OpenAiCompletions,
             Some(CompactionPolicy::ProviderStandalone {
@@ -1000,11 +996,9 @@ mod tests {
             }),
         );
 
-        let error = config
+        config
             .validate()
-            .expect_err("provider-standalone compaction has no OpenAI Completions adapter");
-
-        assert!(matches!(error, DomainError::ProviderCompatibility(_)));
+            .expect("provider-standalone compaction supports OpenAI Completions");
     }
 
     #[test]

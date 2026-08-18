@@ -1525,7 +1525,10 @@ fn generation_config(settings: &ChatDraftSettings) -> GenerationConfig {
 }
 
 fn api_reasoning_effort(settings: &ChatDraftSettings) -> Option<String> {
-    if settings.api_kind != "openai:responses" {
+    if !matches!(
+        settings.api_kind.as_str(),
+        "openai:responses" | "openai:completions"
+    ) {
         return None;
     }
     Some(
@@ -2224,7 +2227,7 @@ mod tests {
     }
 
     #[test]
-    fn run_start_config_omits_reasoning_for_non_responses_api_kinds() {
+    fn run_start_config_omits_reasoning_for_anthropic() {
         let mut settings =
             draft_settings(&chat_args_with_effort(Some("high"))).expect("draft settings");
         settings.api_kind = "anthropic:messages".to_owned();
@@ -2235,6 +2238,25 @@ mod tests {
             config.generation.expect("generation").reasoning_effort,
             None
         );
+    }
+
+    #[test]
+    fn completions_draft_round_trips_model_reasoning_and_compatible_features() {
+        let mut settings =
+            draft_settings(&chat_args_with_effort(Some("high"))).expect("draft settings");
+        settings.api_kind = "openai:completions".to_owned();
+
+        let session = session_start_config(&settings);
+        let model = session.model.expect("model");
+        let generation = session.generation.expect("generation");
+        let features = session.features.expect("features");
+
+        assert_eq!(model.api_kind, "openai:completions");
+        assert_eq!(model.provider_id, "openai");
+        assert_eq!(generation.reasoning_effort.as_deref(), Some("high"));
+        assert!(features.vfs.is_some());
+        assert!(features.web.as_ref().is_some_and(|web| web.fetch.is_some()));
+        assert!(features.web.as_ref().is_none_or(|web| web.search.is_none()));
     }
 
     fn chat_args_with_effort(effort: Option<&str>) -> ChatArgs {

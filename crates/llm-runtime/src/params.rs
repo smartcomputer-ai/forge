@@ -224,9 +224,39 @@ pub fn anthropic_messages_params(
     parse_params_body(&params.body)
 }
 
+/// Parse OpenAI Chat Completions params from optional opaque params.
+pub fn openai_completions_params(
+    params: Option<&ProviderParams>,
+) -> LlmAdapterResult<OpenAiCompletionsParams> {
+    let Some(params) = params else {
+        return Ok(OpenAiCompletionsParams::default());
+    };
+    if params.api_kind != ProviderApiKind::OpenAiCompletions {
+        return Err(LlmAdapterError::RequestKindMismatch {
+            message: format!(
+                "expected OpenAiCompletions provider params, got {:?}",
+                params.api_kind
+            ),
+        });
+    }
+    if params.version != PROVIDER_PARAMS_VERSION {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "unsupported provider params version {}, expected {}",
+                params.version, PROVIDER_PARAMS_VERSION
+            ),
+        });
+    }
+    parse_params_body(&params.body)
+}
+
 /// Reasoning effort tiers accepted by the OpenAI Responses adapter.
 pub const OPENAI_REASONING_EFFORT_TIERS: &[&str] =
     &["none", "minimal", "low", "medium", "high", "xhigh"];
+
+/// Reasoning effort tiers accepted by current Chat Completions models.
+pub const OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS: &[&str] =
+    &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Reasoning effort tiers accepted by the Anthropic Messages adapter.
 pub const ANTHROPIC_REASONING_EFFORT_TIERS: &[&str] = &["none", "low", "medium", "high", "max"];
@@ -267,6 +297,17 @@ pub fn openai_reasoning_from_effort(
         summary: Some("auto".to_owned()),
         extra: BTreeMap::new(),
     }))
+}
+
+/// Validate and retain a Chat Completions reasoning effort for direct wire
+/// forwarding. Model-specific support remains a provider decision.
+pub fn validate_openai_reasoning_effort(effort: &str) -> LlmAdapterResult<String> {
+    validate_reasoning_effort(
+        effort,
+        OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS,
+        ProviderApiKind::OpenAiCompletions,
+    )?;
+    Ok(effort.to_owned())
 }
 
 /// Materialize Anthropic Messages thinking settings from an intent effort

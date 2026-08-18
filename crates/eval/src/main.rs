@@ -20,11 +20,12 @@ use engine::{
     SessionConfig, SessionId, ToolName, ToolSpec,
     storage::{BlobStore, CreateSession, InMemoryBlobStore, InMemorySessionStore, SessionStore},
 };
-use llm_clients::openai::responses as oai;
+use llm_clients::openai::{completions as oai_c, responses as oai};
 use llm_clients::{ApiResponse, anthropic::messages as anthropic};
 use llm_runtime::{
     AnthropicMessagesApi, AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime,
-    OpenAiResponsesApi, OpenAiResponsesLlmAdapter,
+    OpenAiCompletionsApi, OpenAiCompletionsLlmAdapter, OpenAiResponsesApi,
+    OpenAiResponsesLlmAdapter,
 };
 use tempfile::TempDir;
 use test_support::{
@@ -140,6 +141,11 @@ struct DiagnosticOpenAiResponsesApi {
     diagnostics: Arc<LlmDiagnostics>,
 }
 
+struct DiagnosticOpenAiCompletionsApi {
+    inner: oai_c::Client,
+    diagnostics: Arc<LlmDiagnostics>,
+}
+
 struct DiagnosticAnthropicMessagesApi {
     inner: anthropic::Client,
     diagnostics: Arc<LlmDiagnostics>,
@@ -211,6 +217,38 @@ impl OpenAiResponsesApi for DiagnosticOpenAiResponsesApi {
             Ok(response) => format!(
                 "http_status={} raw={}",
                 response.status,
+                serde_json::to_string(&response.raw_json).unwrap_or_default()
+            ),
+            Err(error) => format!("api_error={error}"),
+        };
+        self.diagnostics.record(LlmCallDiagnostic {
+            request: request_text,
+            outcome,
+        });
+        result
+    }
+}
+
+#[async_trait]
+impl OpenAiCompletionsApi for DiagnosticOpenAiCompletionsApi {
+    async fn create(
+        &self,
+        request: oai_c::CreateCompletionRequest,
+        auth: Option<llm_clients::RequestAuth<'_>>,
+    ) -> Result<ApiResponse<oai_c::Completion>, llm_clients::LlmApiError> {
+        let request_text = serde_json::to_string(&request)
+            .unwrap_or_else(|error| format!("failed to encode request: {error}"));
+        let result = self.inner.create_with_auth(request, auth).await;
+        let outcome = match &result {
+            Ok(response) => format!(
+                "http_status={} response_id={} finish_reason={:?} raw={}",
+                response.status,
+                response.parsed.id,
+                response
+                    .parsed
+                    .choices
+                    .first()
+                    .and_then(|choice| choice.finish_reason.as_deref()),
                 serde_json::to_string(&response.raw_json).unwrap_or_default()
             ),
             Err(error) => format!("api_error={error}"),
@@ -744,6 +782,19 @@ async fn build_runtime(
                 )),
             )
         }
+        ProviderApiKind::OpenAiCompletions => {
+            let openai = DiagnosticOpenAiCompletionsApi {
+                inner: oai_c::Client::new(openai_completions_config(provider))?,
+                diagnostics: Arc::clone(&diagnostics),
+            };
+            LlmAdapterRegistry::new().with_generation_adapter(
+                ProviderApiKind::OpenAiCompletions,
+                Arc::new(OpenAiCompletionsLlmAdapter::new(
+                    Arc::new(openai),
+                    blobs.clone(),
+                )),
+            )
+        }
         ProviderApiKind::AnthropicMessages => {
             let anthropic = DiagnosticAnthropicMessagesApi {
                 inner: anthropic::Client::new(anthropic_config(provider))?,
@@ -757,7 +808,6 @@ async fn build_runtime(
                 )),
             )
         }
-        ref api_kind => bail!("eval does not support API kind {api_kind:?}"),
     };
     let llm_executor = Arc::new(LlmRuntime::new(registry));
 
@@ -1078,6 +1128,16 @@ fn openai_config(provider: &ProviderRuntime) -> oai::Config {
     config
 }
 
+fn openai_completions_config(provider: &ProviderRuntime) -> oai_c::Config {
+    let mut config = oai_c::Config::new(provider.api_key.clone());
+    if let Some(base_url) = provider.base_url.clone() {
+        config.base_url = base_url;
+    }
+    config.organization = provider.organization.clone();
+    config.project = provider.project.clone();
+    config
+}
+
 fn anthropic_config(provider: &ProviderRuntime) -> anthropic::Config {
     let mut config = anthropic::Config::new(provider.api_key.clone());
     if let Some(base_url) = provider.base_url.clone() {
@@ -1104,6 +1164,22 @@ fn resolve_provider(provider_id: String, model: Option<String>) -> Result<Provid
                 project: env_var("OPENAI_PROJECT_ID"),
             })
         }
+        "openai-completions" => {
+            let api_key = env_var("OPENAI_API_KEY")
+                .ok_or_else(|| anyhow!("missing OPENAI_API_KEY (env or .env)"))?;
+            Ok(ProviderRuntime {
+                provider_id: "openai".to_owned(),
+                api_kind: ProviderApiKind::OpenAiCompletions,
+                model: model
+                    .or_else(|| env_var("OPENAI_COMPLETIONS_MODEL"))
+                    .or_else(|| env_var("OPENAI_LIVE_MODEL"))
+                    .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_owned()),
+                api_key,
+                base_url: env_var("OPENAI_BASE_URL"),
+                organization: env_var("OPENAI_ORG_ID"),
+                project: env_var("OPENAI_PROJECT_ID"),
+            })
+        }
         "anthropic" => {
             let api_key = env_var("ANTHROPIC_API_KEY")
                 .ok_or_else(|| anyhow!("missing ANTHROPIC_API_KEY (env or .env)"))?;
@@ -1120,7 +1196,9 @@ fn resolve_provider(provider_id: String, model: Option<String>) -> Result<Provid
                 project: None,
             })
         }
-        _ => bail!("eval supports --provider openai or --provider anthropic"),
+        _ => bail!(
+            "eval supports --provider openai, --provider openai-completions, or --provider anthropic"
+        ),
     }
 }
 

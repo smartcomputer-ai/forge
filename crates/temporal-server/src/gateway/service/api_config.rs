@@ -238,9 +238,7 @@ pub(super) fn validate_reasoning_effort(
         ProviderApiKind::OpenAiResponses => &["none", "low", "medium", "high", "xhigh"],
         ProviderApiKind::AnthropicMessages => &["none", "low", "medium", "high", "max"],
         ProviderApiKind::OpenAiCompletions => {
-            return Err(AgentApiError::invalid_request(
-                "reasoning effort is not supported for openai:completions",
-            ));
+            &["none", "minimal", "low", "medium", "high", "xhigh", "max"]
         }
     };
     if supported.contains(&effort) {
@@ -326,4 +324,22 @@ pub(super) fn model_selection_from_api(
         provider_id: model.provider_id,
         model: model.model,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completions_accepts_current_openai_reasoning_vocabulary() {
+        for effort in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+            validate_reasoning_effort(&ProviderApiKind::OpenAiCompletions, effort)
+                .unwrap_or_else(|error| panic!("{effort} should be supported: {error}"));
+        }
+    }
+
+    #[test]
+    fn completions_rejects_unknown_reasoning_effort() {
+        assert!(validate_reasoning_effort(&ProviderApiKind::OpenAiCompletions, "ultra").is_err());
+    }
 }
