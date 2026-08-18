@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compareModelOptions,
+  modelPickerOptions,
   normalizeSessionConfig,
   type ModelOption,
   workspaceLinksError,
@@ -8,9 +9,13 @@ import {
 } from "./session-config-editor";
 
 describe("model picker ordering", () => {
-  const option = (model: string, createdAtMs?: number): ModelOption => ({
+  const option = (
+    model: string,
+    createdAtMs?: number,
+    apiKind = "openai:responses",
+  ): ModelOption => ({
     providerId: "openai",
-    apiKind: "openai:responses",
+    apiKind,
     model,
     displayName: model,
     createdAtMs,
@@ -27,6 +32,27 @@ describe("model picker ordering", () => {
         .sort(compareModelOptions)
         .map((model) => model.model),
     ).toEqual(["newer", "older", "unknown"]);
+  });
+
+  it("collapses API-kind variants while preserving an existing or pinned route", () => {
+    const responses = option("gpt-5.5", 1_800_000_000_000);
+    const completions = option(
+      "gpt-5.5",
+      1_800_000_000_000,
+      "openai:completions",
+    );
+
+    expect(modelPickerOptions([completions, responses])).toEqual([responses]);
+    expect(modelPickerOptions([responses, completions], completions)).toEqual([
+      completions,
+    ]);
+    expect(
+      modelPickerOptions(
+        [responses, completions],
+        undefined,
+        "openai:completions",
+      ),
+    ).toEqual([completions]);
   });
 });
 

@@ -528,9 +528,7 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
       label: "Deployment default",
       search: "deployment default",
     }] : []),
-    ...models
-      .filter((option) => !pinnedApiKind || option.apiKind === pinnedApiKind)
-      .sort(compareModelOptions)
+    ...modelPickerOptions(models, currentModel, pinnedApiKind)
       .map((option) => ({
         key: modelOptionKey(option),
         label: `${option.displayName} (${option.providerId})`,
@@ -702,6 +700,39 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
 
 function modelOptionKey(option: Pick<ModelOption, "providerId" | "apiKind" | "model">): string {
   return JSON.stringify([option.providerId, option.apiKind, option.model]);
+}
+
+/**
+ * Discovery returns one route per API kind, but the primary picker is a model
+ * picker. Collapse those route variants while preserving an existing or pinned
+ * route; otherwise prefer Responses for a newly selected compatible model.
+ */
+export function modelPickerOptions(
+  models: ModelOption[],
+  currentModel?: ModelOption,
+  pinnedApiKind?: string,
+): ModelOption[] {
+  const catalog = new Map<string, ModelOption>();
+  const matchesCurrent = (option: ModelOption) =>
+    currentModel !== undefined && modelOptionKey(option) === modelOptionKey(currentModel);
+  const apiKindPriority = (apiKind: string) =>
+    apiKind === "openai:responses" ? 0 : apiKind === "openai:completions" ? 1 : 2;
+
+  for (const option of models) {
+    if (pinnedApiKind && option.apiKind !== pinnedApiKind) continue;
+    const key = JSON.stringify([option.providerId, option.model]);
+    const existing = catalog.get(key);
+    if (
+      !existing ||
+      matchesCurrent(option) ||
+      (!matchesCurrent(existing) &&
+        apiKindPriority(option.apiKind) < apiKindPriority(existing.apiKind))
+    ) {
+      catalog.set(key, option);
+    }
+  }
+
+  return [...catalog.values()].sort(compareModelOptions);
 }
 
 /** Prefer the provider's newest models while keeping ordering deterministic. */
