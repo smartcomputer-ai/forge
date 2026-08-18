@@ -13,7 +13,7 @@ use engine::{
     storage::{BlobStore, BlobStoreError},
 };
 use llm_clients::{LlmApiError, openai::audio as oai};
-use llm_runtime::ProviderKeyResolver;
+use llm_runtime::ModelProviderResolver;
 use temporalio_sdk::activities::ActivityError;
 
 use crate::worker::{PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult};
@@ -219,11 +219,11 @@ impl AudioTranscoder for FfmpegAudioTranscoder {
 
 pub struct OpenAiAudioTranscriber {
     client: Arc<oai::Client>,
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 }
 
 impl OpenAiAudioTranscriber {
-    pub fn new(client: Arc<oai::Client>, provider_keys: Arc<dyn ProviderKeyResolver>) -> Self {
+    pub fn new(client: Arc<oai::Client>, provider_keys: Arc<dyn ModelProviderResolver>) -> Self {
         Self {
             client,
             provider_keys,
@@ -239,7 +239,7 @@ impl AudioTranscriber for OpenAiAudioTranscriber {
     ) -> Result<AudioTranscription, AudioTranscriptionError> {
         let stored_key = self
             .provider_keys
-            .resolve_provider_key(OPENAI_PROVIDER_ID)
+            .resolve_model_provider(OPENAI_PROVIDER_ID)
             .await
             .map_err(|error| AudioTranscriptionError {
                 message: error.to_string(),
@@ -252,7 +252,10 @@ impl AudioTranscriber for OpenAiAudioTranscriber {
                     filename: request.name,
                     mime: request.mime,
                 }),
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                stored_key
+                    .as_ref()
+                    .and_then(|provider| provider.auth.as_ref())
+                    .map(|auth| auth.as_request_auth()),
             )
             .await
             .map_err(map_openai_error)?;
@@ -688,7 +691,7 @@ fn failure(
 }
 
 pub(super) fn default_openai_audio_transcriber(
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 ) -> Result<Arc<dyn AudioTranscriber>, anyhow::Error> {
     let client = oai::Client::new(oai::Config::from_env_allow_missing_key())
         .map_err(|error| anyhow::anyhow!("construct OpenAI audio client: {error}"))?;

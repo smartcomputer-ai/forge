@@ -35,7 +35,7 @@ pub struct SessionConfig {
 
 impl SessionConfig {
     pub fn validate(&self) -> Result<(), DomainError> {
-        validate_generation(&self.generation, &self.model.api_kind)?;
+        validate_generation(&self.generation, &self.model)?;
         validate_context_config(&self.context, &self.model.api_kind)?;
         validate_features(&self.features, &self.model.api_kind)
     }
@@ -74,6 +74,18 @@ pub struct GenerationConfig {
     /// `disable_parallel_tool_use`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_use: Option<bool>,
+    /// Neutral processing class inherited by every generation in the session.
+    /// Provider adapters lower it into their native request vocabulary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_tier: Option<ModelProcessingTier>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelProcessingTier {
+    Standard,
+    Fast,
+    Flex,
 }
 
 impl GenerationConfig {
@@ -478,6 +490,8 @@ pub struct RunConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_tier: Option<ModelProcessingTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_params: Option<ProviderParams>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<ToolChoice>,
@@ -501,6 +515,26 @@ impl RunConfig {
         } else {
             session_api_kind
         };
+        if self.processing_tier.is_some()
+            && !matches!(
+                api_kind,
+                ProviderApiKind::OpenAiResponses | ProviderApiKind::OpenAiCompletions
+            )
+        {
+            return Err(DomainError::ProviderCompatibility(
+                "processing tier requires an OpenAI API kind".to_owned(),
+            ));
+        }
+        if self.processing_tier.is_some()
+            && self
+                .model_override
+                .as_ref()
+                .is_some_and(|model| model.provider_id != "openai")
+        {
+            return Err(DomainError::ProviderCompatibility(
+                "processing tier is supported only by the built-in openai provider".to_owned(),
+            ));
+        }
         validate_provider_params(self.provider_params.as_ref(), api_kind)?;
         Ok(())
     }
@@ -523,9 +557,8 @@ pub(crate) fn validate_run_config_for_state(
 
 fn validate_generation(
     generation: &GenerationConfig,
-    api_kind: &ProviderApiKind,
+    model: &ModelSelection,
 ) -> Result<(), DomainError> {
-    let _ = api_kind;
     if generation
         .reasoning_effort
         .as_ref()
@@ -533,6 +566,17 @@ fn validate_generation(
     {
         return Err(DomainError::InvariantViolation(
             "reasoning_effort must be a non-empty string when set".to_owned(),
+        ));
+    }
+    if generation.processing_tier.is_some()
+        && (model.provider_id != "openai"
+            || !matches!(
+                model.api_kind,
+                ProviderApiKind::OpenAiResponses | ProviderApiKind::OpenAiCompletions
+            ))
+    {
+        return Err(DomainError::ProviderCompatibility(
+            "processing tier is supported only by the built-in openai provider".to_owned(),
         ));
     }
     Ok(())
@@ -797,17 +841,13 @@ fn validate_context_config(
                 compact_threshold_tokens,
                 target_tokens,
             }),
-            ProviderApiKind::OpenAiResponses | ProviderApiKind::AnthropicMessages,
+            ProviderApiKind::OpenAiResponses
+            | ProviderApiKind::OpenAiCompletions
+            | ProviderApiKind::AnthropicMessages,
         ) => validate_provider_standalone_compaction(*compact_threshold_tokens, *target_tokens),
         (Some(CompactionPolicy::ProviderTriggered { .. }), api_kind) => {
             Err(DomainError::ProviderCompatibility(format!(
                 "provider-triggered compaction requires OpenAI Responses api kind, got {:?}",
-                api_kind
-            )))
-        }
-        (Some(CompactionPolicy::ProviderStandalone { .. }), api_kind) => {
-            Err(DomainError::ProviderCompatibility(format!(
-                "provider-standalone compaction requires OpenAI Responses or Anthropic Messages api kind, got {:?}",
                 api_kind
             )))
         }
@@ -991,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn provider_standalone_compaction_rejects_unsupported_api_kind() {
+    fn provider_standalone_compaction_accepts_openai_completions_api_kind() {
         let config = config(
             ProviderApiKind::OpenAiCompletions,
             Some(CompactionPolicy::ProviderStandalone {
@@ -1000,11 +1040,9 @@ mod tests {
             }),
         );
 
-        let error = config
+        config
             .validate()
-            .expect_err("provider-standalone compaction has no OpenAI Completions adapter");
-
-        assert!(matches!(error, DomainError::ProviderCompatibility(_)));
+            .expect("provider-standalone compaction supports OpenAI Completions");
     }
 
     #[test]

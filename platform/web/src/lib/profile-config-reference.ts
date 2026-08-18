@@ -97,6 +97,8 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
     "maxOutputTokens": 0,
     // Whether the model may call several tools in one turn; absent leaves the provider default.
     "parallelToolUse": true | false,
+    // Provider processing class. In session/profile config this becomes the default for every run; in run config it overrides that run. Currently supported only by the built-in OpenAI provider.
+    "processingTier": "standard" | "fast" | "flex",
     // Reasoning effort tier as a provider-native string (e.g. "none", "high", "xhigh", "max"); validated against the session's provider.
     "reasoningEffort": "string",
     "toolChoice": // one of:

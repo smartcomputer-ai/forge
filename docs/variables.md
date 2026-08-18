@@ -64,8 +64,8 @@ provider credential.
 | --- | --- | --- |
 | `LIGHTSPEED_CHAT_PROVIDER` | `openai` | Default provider ID for new runtime and CLI chat configuration. |
 | `LIGHTSPEED_CHAT_MODEL` | `gpt-5.5` | Default model for new runtime and CLI chat configuration. |
-| `OPENAI_API_KEY` | Conditional | Default OpenAI Responses and audio-transcription credential. |
-| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible API base URL. |
+| `OPENAI_API_KEY` | Conditional | Default OpenAI Responses, Chat Completions, and audio-transcription credential. |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` | Deployment fallback URL for the built-in `openai` provider, shared by Responses, Chat Completions, and audio transcription. Custom universe providers use their stored endpoint instead. |
 | `OPENAI_ORG_ID` | Unset | Optional `OpenAI-Organization` header. |
 | `OPENAI_PROJECT_ID` | Unset | Optional `OpenAI-Project` header. |
 | `ANTHROPIC_API_KEY` | Conditional | Default Anthropic Messages credential. |
@@ -347,6 +347,9 @@ fixtures. Ordinary unit tests do not require them.
 | `OPENAI_COMPLETIONS_API_KEY` | Credential override for OpenAI-compatible Completions tests; falls back to `OPENAI_API_KEY`. |
 | `OPENAI_COMPLETIONS_BASE_URL` | Base URL override for Completions tests; falls back to `OPENAI_BASE_URL`. |
 | `OPENAI_COMPLETIONS_MODEL` | Completions live-test model. |
+| `DEEPSEEK_API_KEY` | Credential for ignored DeepSeek compatibility and endpoint-routing live tests. |
+| `DEEPSEEK_BASE_URL` | DeepSeek live-test endpoint; defaults to `https://api.deepseek.com`. |
+| `DEEPSEEK_COMPLETIONS_MODEL` | DeepSeek live-test model; defaults to `deepseek-v4-pro`. |
 | `OPENAI_AUDIO_TRANSCRIPTION_MODEL` | Audio transcription live-test model; defaults to `gpt-4o-transcribe`. |
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE` | Repository-relative local audio fixture; overrides the remote fixture URL. |
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE_URL` | Remote audio fixture URL. |

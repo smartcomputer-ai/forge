@@ -130,6 +130,9 @@ impl Client {
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<HeaderValue, LlmApiError> {
         match auth {
+            Some(crate::RequestAuth::None) => {
+                Err(ConfigurationError::new("anonymous audio requests are not supported").into())
+            }
             Some(crate::RequestAuth::ApiKey(value)) | Some(crate::RequestAuth::Bearer(value)) => {
                 bearer_auth_value(value)
             }

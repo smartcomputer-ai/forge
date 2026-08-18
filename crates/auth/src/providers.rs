@@ -8,6 +8,12 @@
 //! `auth_secrets`.
 
 use async_trait::async_trait;
+use std::collections::{BTreeMap, BTreeSet};
+
+use reqwest::{
+    Url,
+    header::{HeaderName, HeaderValue},
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -36,6 +42,8 @@ pub enum AuthProviderConfig {
     ModelApiKey(ModelApiKeyConfig),
     #[serde(rename = "model_oauth")]
     ModelOAuth(ModelOAuthConfig),
+    #[serde(rename = "model_endpoint")]
+    ModelEndpoint(ModelEndpointOnlyConfig),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -53,7 +61,10 @@ pub struct GitHubAppConfig {
 /// session's `ModelSelection.provider_id`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct ModelApiKeyConfig {}
+pub struct ModelApiKeyConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ModelEndpointConfig>,
+}
 
 /// OAuth-grant-backed model provider credential (P69 G7). The referenced
 /// grant's access token (refreshed by the broker as needed) authenticates
@@ -68,6 +79,28 @@ pub struct ModelOAuthConfig {
     /// base URL. When omitted, only audience-unrestricted grants resolve.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ModelEndpointConfig>,
+}
+
+/// An OpenAI-compatible endpoint and its non-secret transport metadata.
+/// Credentials remain in the provider row's encrypted secret or OAuth grant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ModelEndpointConfig {
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    /// Explicitly admitted Lightspeed API kinds. Empty lists are rejected.
+    pub api_kinds: Vec<String>,
+}
+
+/// Credentialless OpenAI-compatible endpoint, primarily for loopback
+/// Ollama/vLLM deployments.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ModelEndpointOnlyConfig {
+    pub endpoint: ModelEndpointConfig,
 }
 
 /// Provider-row id for a stored model provider credential:
@@ -82,6 +115,7 @@ impl AuthProviderConfig {
             Self::GitHubApp(_) => AuthProviderKind::GitHubApp,
             Self::ModelApiKey(_) => AuthProviderKind::ModelApiKey,
             Self::ModelOAuth(_) => AuthProviderKind::ModelOAuth,
+            Self::ModelEndpoint(_) => AuthProviderKind::ModelEndpoint,
         }
     }
 
@@ -115,7 +149,7 @@ impl AuthProviderConfig {
                     other => other,
                 })
             }
-            Self::ModelApiKey(ModelApiKeyConfig {}) => Ok(()),
+            Self::ModelApiKey(config) => validate_optional_model_endpoint(config.endpoint.as_ref()),
             Self::ModelOAuth(config) => {
                 if let Some(audience) = &config.audience {
                     validate_audience_url(audience).map_err(|error| match error {
@@ -127,10 +161,129 @@ impl AuthProviderConfig {
                         other => other,
                     })?;
                 }
-                Ok(())
+                validate_optional_model_endpoint(config.endpoint.as_ref())
             }
+            Self::ModelEndpoint(config) => validate_model_endpoint(&config.endpoint),
         }
     }
+}
+
+fn validate_optional_model_endpoint(
+    endpoint: Option<&ModelEndpointConfig>,
+) -> Result<(), AuthRegistryError> {
+    endpoint.map_or(Ok(()), validate_model_endpoint)
+}
+
+fn validate_model_endpoint(endpoint: &ModelEndpointConfig) -> Result<(), AuthRegistryError> {
+    validate_audience_url(&endpoint.base_url).map_err(|error| match error {
+        AuthRegistryError::InvalidInput { message } => AuthRegistryError::InvalidInput {
+            message: format!("model endpoint base URL: {message}"),
+        },
+        other => other,
+    })?;
+    let url = Url::parse(&endpoint.base_url).map_err(|error| AuthRegistryError::InvalidInput {
+        message: format!("model endpoint base URL is invalid: {error}"),
+    })?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(AuthRegistryError::InvalidInput {
+            message: "model endpoint base URL must not include credentials".to_owned(),
+        });
+    }
+    if url.fragment().is_some() || url.query().is_some() {
+        return Err(AuthRegistryError::InvalidInput {
+            message: "model endpoint base URL must not include a query or fragment".to_owned(),
+        });
+    }
+    match url.scheme() {
+        "https" => {}
+        "http" if is_loopback_host(url.host_str()) => {}
+        "http" => {
+            return Err(AuthRegistryError::InvalidInput {
+                message: "model endpoint base URL must use HTTPS; HTTP is allowed only for loopback hosts"
+                    .to_owned(),
+            });
+        }
+        scheme => {
+            return Err(AuthRegistryError::InvalidInput {
+                message: format!("model endpoint URL scheme {scheme:?} is not supported"),
+            });
+        }
+    }
+    if endpoint.api_kinds.is_empty() {
+        return Err(AuthRegistryError::InvalidInput {
+            message: "model endpoint api_kinds must contain at least one API kind".to_owned(),
+        });
+    }
+    let mut kinds = BTreeSet::new();
+    for kind in &endpoint.api_kinds {
+        if !matches!(kind.as_str(), "openai:responses" | "openai:completions") {
+            return Err(AuthRegistryError::InvalidInput {
+                message: format!("model endpoint API kind {kind:?} is not supported"),
+            });
+        }
+        if !kinds.insert(kind) {
+            return Err(AuthRegistryError::InvalidInput {
+                message: format!("model endpoint API kind {kind:?} is duplicated"),
+            });
+        }
+    }
+    if endpoint.headers.len() > 32 {
+        return Err(AuthRegistryError::InvalidInput {
+            message: "model endpoint headers must contain at most 32 entries".to_owned(),
+        });
+    }
+    for (name, value) in &endpoint.headers {
+        if name.len() > 128 || value.len() > 4096 {
+            return Err(AuthRegistryError::InvalidInput {
+                message: format!(
+                    "model endpoint header {name:?} exceeds the supported name or value length"
+                ),
+            });
+        }
+        let parsed_name = HeaderName::from_bytes(name.as_bytes()).map_err(|_| {
+            AuthRegistryError::InvalidInput {
+                message: format!("model endpoint header name {name:?} is invalid"),
+            }
+        })?;
+        if is_reserved_model_header(&parsed_name) {
+            return Err(AuthRegistryError::InvalidInput {
+                message: format!(
+                    "model endpoint header {name:?} is transport-owned and cannot be overridden"
+                ),
+            });
+        }
+        HeaderValue::from_str(value).map_err(|_| AuthRegistryError::InvalidInput {
+            message: format!("model endpoint header {name:?} has an invalid value"),
+        })?;
+    }
+    Ok(())
+}
+
+fn is_loopback_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    let host = host
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or(host);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn is_reserved_model_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "authorization"
+            | "content-type"
+            | "host"
+            | "cookie"
+            | "set-cookie"
+            | "connection"
+            | "transfer-encoding"
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -160,6 +313,22 @@ impl AuthProviderRecord {
         }
         validate_nonempty_optional("display_name", self.display_name.as_deref())?;
         self.config.validate()?;
+        if matches!(
+            self.config,
+            AuthProviderConfig::ModelApiKey(_)
+                | AuthProviderConfig::ModelOAuth(_)
+                | AuthProviderConfig::ModelEndpoint(_)
+        ) && self
+            .provider_id
+            .as_str()
+            .strip_prefix("model:")
+            .is_none_or(str::is_empty)
+        {
+            return Err(AuthRegistryError::InvalidInput {
+                message: "model providers require a provider id of the form model:<provider_id>"
+                    .to_owned(),
+            });
+        }
         if matches!(self.config, AuthProviderConfig::GitHubApp(_))
             && self.credential_secret.is_none()
         {
@@ -180,6 +349,13 @@ impl AuthProviderRecord {
             return Err(AuthRegistryError::InvalidInput {
                 message: "model_oauth providers bind a grant and carry no credential secret"
                     .to_owned(),
+            });
+        }
+        if matches!(self.config, AuthProviderConfig::ModelEndpoint(_))
+            && self.credential_secret.is_some()
+        {
+            return Err(AuthRegistryError::InvalidInput {
+                message: "model_endpoint providers carry no credential secret".to_owned(),
             });
         }
         validate_nonnegative_i64(self.created_at_ms, "created_at_ms")?;
@@ -350,6 +526,7 @@ mod tests {
         AuthProviderConfig::ModelOAuth(ModelOAuthConfig {
             grant_id: AuthGrantId::new("authgrant_1"),
             audience: audience.map(str::to_owned),
+            endpoint: None,
         })
     }
 
@@ -401,5 +578,59 @@ mod tests {
 
         let decoded = AuthProviderConfig::from_json(&json).expect("decode config");
         assert_eq!(decoded, config);
+    }
+
+    fn endpoint(base_url: &str) -> ModelEndpointConfig {
+        ModelEndpointConfig {
+            base_url: base_url.to_owned(),
+            headers: BTreeMap::from([("x-title".to_owned(), "Lightspeed".to_owned())]),
+            api_kinds: vec!["openai:completions".to_owned()],
+        }
+    }
+
+    #[test]
+    fn model_endpoints_require_tls_except_for_loopback_and_reserve_transport_headers() {
+        validate_model_endpoint(&endpoint("https://router.example/v1")).expect("HTTPS endpoint");
+        validate_model_endpoint(&endpoint("http://127.0.0.1:11434/v1")).expect("loopback endpoint");
+        validate_model_endpoint(&endpoint("http://[::1]:11434/v1"))
+            .expect("IPv6 loopback endpoint");
+
+        for invalid in [
+            "http://router.example/v1",
+            "https://user:secret@router.example/v1",
+            "https://router.example/v1?api-version=1",
+        ] {
+            assert!(
+                validate_model_endpoint(&endpoint(invalid)).is_err(),
+                "{invalid}"
+            );
+        }
+
+        let mut reserved = endpoint("https://router.example/v1");
+        reserved
+            .headers
+            .insert("Authorization".to_owned(), "secret".to_owned());
+        assert!(validate_model_endpoint(&reserved).is_err());
+    }
+
+    #[test]
+    fn credentialless_model_endpoint_validates_and_round_trips() {
+        let config = AuthProviderConfig::ModelEndpoint(ModelEndpointOnlyConfig {
+            endpoint: endpoint("http://localhost:11434/v1"),
+        });
+        let record = CreateAuthProviderRecord {
+            provider_id: AuthProviderId::new("model:ollama"),
+            display_name: Some("Local Ollama".to_owned()),
+            config: config.clone(),
+            credential_secret: None,
+            status: AuthProviderStatus::Active,
+            created_at_ms: 10,
+        }
+        .into_record();
+        record.validate().expect("credentialless endpoint");
+        assert_eq!(
+            AuthProviderConfig::from_json(&config.to_json().expect("encode")).expect("decode"),
+            config
+        );
     }
 }

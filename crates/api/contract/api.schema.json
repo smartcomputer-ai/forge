@@ -2483,6 +2483,16 @@
         {
           "description": "Stored model provider API key; the key arrives via `credential` and is\nencrypted on receipt.",
           "properties": {
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "const": "modelApiKey",
               "type": "string"
@@ -2502,6 +2512,16 @@
                 "null"
               ]
             },
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "grantId": {
               "type": "string"
             },
@@ -2513,6 +2533,23 @@
           "required": [
             "type",
             "grantId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Register an endpoint that requires no provider credential.",
+          "properties": {
+            "endpoint": {
+              "$ref": "#/definitions/ModelEndpointConfig"
+            },
+            "type": {
+              "const": "modelEndpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "endpoint"
           ],
           "type": "object"
         }
@@ -2544,6 +2581,16 @@
         {
           "description": "Stored model provider API key (`model:<provider_id>` rows). The key itself\nis the provider credential and never appears in views.",
           "properties": {
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "const": "modelApiKey",
               "type": "string"
@@ -2563,6 +2610,16 @@
                 "null"
               ]
             },
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "grantId": {
               "type": "string"
             },
@@ -2574,6 +2631,23 @@
           "required": [
             "type",
             "grantId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Credentialless OpenAI-compatible endpoint.",
+          "properties": {
+            "endpoint": {
+              "$ref": "#/definitions/ModelEndpointConfig"
+            },
+            "type": {
+              "const": "modelEndpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "endpoint"
           ],
           "type": "object"
         }
@@ -2649,7 +2723,8 @@
         "gitHubApp",
         "customOAuth",
         "modelApiKey",
-        "modelOAuth"
+        "modelOAuth",
+        "modelEndpoint"
       ],
       "type": "string"
     },
@@ -4864,6 +4939,17 @@
             "null"
           ]
         },
+        "processingTier": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ModelProcessingTier"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+        },
         "reasoningEffort": {
           "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
           "type": [
@@ -5740,7 +5826,7 @@
           ]
         },
         "reasoningEfforts": {
-          "description": "Provider-reported effort values. Omitted when the provider does not\nreport per-model effort support.",
+          "description": "Known provider effort values. Prefer provider-reported capabilities;\nLightspeed may enrich important built-in model families when the\nprovider's model-list API omits this metadata.",
           "items": {
             "type": "string"
           },
@@ -5768,6 +5854,30 @@
         "providerId",
         "apiKind",
         "model"
+      ],
+      "type": "object"
+    },
+    "ModelEndpointConfig": {
+      "properties": {
+        "apiKinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "baseUrl",
+        "apiKinds"
       ],
       "type": "object"
     },
@@ -5799,6 +5909,15 @@
         }
       },
       "type": "object"
+    },
+    "ModelProcessingTier": {
+      "description": "Provider processing class used by session defaults and per-run overrides.",
+      "enum": [
+        "standard",
+        "fast",
+        "flex"
+      ],
+      "type": "string"
     },
     "ModelProviderCredentialSource": {
       "oneOf": [
@@ -5835,6 +5954,11 @@
         {
           "const": "invalid",
           "description": "A credential exists but is unusable (disabled/legacy universe row) or\nwas rejected by the provider (HTTP 401/403).",
+          "type": "string"
+        },
+        {
+          "const": "notRequired",
+          "description": "The universe provider row explicitly configures an unauthenticated\nendpoint, so no credential is expected.",
           "type": "string"
         }
       ]
@@ -5905,6 +6029,14 @@
         },
         "capabilities": {
           "$ref": "#/definitions/ModelCapabilitiesView"
+        },
+        "createdAtMs": {
+          "description": "Provider-reported model creation time. Omitted when the provider does\nnot expose one; this is distinct from the discovery fetch time.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
         },
         "displayName": {
           "type": "string"

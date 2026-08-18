@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { supportsOpenAiProcessingTier } from "@/lib/sessions/run-options";
 import { cn } from "@/lib/utils";
 
 export type SessionConfig = Record<string, unknown>;
@@ -59,6 +60,7 @@ export type ModelOption = {
   apiKind: string;
   model: string;
   displayName: string;
+  createdAtMs?: number | null;
   capabilities: {
     maxInputTokens?: number | null;
     maxOutputTokens?: number | null;
@@ -200,6 +202,13 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
   for (const key of ["reasoningEffort"] as const) {
     const item = string(generation[key]).trim();
     if (item) generationResult[key] = item;
+  }
+  const processingTier = string(generation.processingTier);
+  if (
+    supportsOpenAiProcessingTier({ model: modelResult }) &&
+    ["standard", "fast", "flex"].includes(processingTier)
+  ) {
+    generationResult.processingTier = processingTier;
   }
   if (typeof generation.parallelToolUse === "boolean") {
     generationResult.parallelToolUse = generation.parallelToolUse;
@@ -527,15 +536,13 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
       label: "Deployment default",
       search: "deployment default",
     }] : []),
-    ...models
-      .filter((option) => !pinnedApiKind || option.apiKind === pinnedApiKind)
+    ...modelPickerOptions(models, currentModel, pinnedApiKind)
       .map((option) => ({
         key: modelOptionKey(option),
         label: `${option.displayName} (${option.providerId})`,
         search: `${option.displayName} ${option.providerId} ${option.apiKind} ${option.model}`,
         option,
-      }))
-      .sort((left, right) => left.label.localeCompare(right.label)),
+      })),
     {
       key: "manual",
       label: "Enter model manually",
@@ -568,11 +575,21 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
     ]),
   ];
   const reasoningOptionsId = useId();
+  const supportsProcessingTier = supportsOpenAiProcessingTier({ model });
+  const processingTier = string(generation.processingTier) || "providerDefault";
   const updateReasoningEffort = (value: string | undefined) =>
     change((next) => {
       const nextGeneration = record(next.generation);
       if (value) nextGeneration.reasoningEffort = value;
       else delete nextGeneration.reasoningEffort;
+      if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
+      else delete next.generation;
+    });
+  const updateProcessingTier = (value: string | null) =>
+    change((next) => {
+      const nextGeneration = record(next.generation);
+      if (value && value !== "providerDefault") nextGeneration.processingTier = value;
+      else delete nextGeneration.processingTier;
       if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
       else delete next.generation;
     });
@@ -632,16 +649,27 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
                 const choice = choices.find((item) => item.key === key);
                 if (!choice) return null;
                 return (
-                <ComboboxItem key={choice.key} value={choice.key} className="py-2">
-                  <span className="min-w-0">
-                    <span className="block truncate">{choice.label}</span>
-                    {choice.option && (
-                      <span className="block truncate text-xs text-muted-foreground">
-                        {choice.option.model} · {choice.option.apiKind}
-                      </span>
-                    )}
-                  </span>
-                </ComboboxItem>
+                  <ComboboxItem
+                    key={choice.key}
+                    value={choice.key}
+                    className="py-2"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate">{choice.label}</span>
+                      {choice.option && (
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {choice.option.displayName !== choice.option.model
+                            ? choice.option.model + " · "
+                            : ""}
+                          {choice.option.apiKind}
+                          {choice.option.createdAtMs
+                            ? " · created " +
+                              formatModelCreatedAt(choice.option.createdAtMs)
+                            : ""}
+                        </span>
+                      )}
+                    </span>
+                  </ComboboxItem>
                 );
               }}
             </ComboboxList>
@@ -672,10 +700,27 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
         )}
         <FieldDescription>
           {currentModel?.capabilities.reasoningEfforts?.length
-            ? "Choose a reported tier or enter any provider-supported value."
-            : "No tiers were reported. Enter a provider-supported value, or leave unset for its default."}
+            ? "Choose a known tier or enter any provider-supported value."
+            : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
         </FieldDescription>
       </Field>
+      {supportsProcessingTier && (
+        <Field>
+          <FieldLabel>Processing tier</FieldLabel>
+          <Select value={processingTier} onValueChange={updateProcessingTier}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="providerDefault">Provider default</SelectItem>
+              <SelectItem value="standard">Standard</SelectItem>
+              <SelectItem value="fast">Fast</SelectItem>
+              <SelectItem value="flex">Flex</SelectItem>
+            </SelectContent>
+          </Select>
+          <FieldDescription>
+            Applied to every run in this session. Fast prioritizes latency; Flex uses lower-priority processing.
+          </FieldDescription>
+        </Field>
+      )}
       {selected === "manual" && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field><FieldLabel>Provider id</FieldLabel><Input value={string(model.providerId)} onChange={(e) => update("providerId", e.target.value)} placeholder="openai" /></Field>
@@ -692,8 +737,73 @@ function modelOptionKey(option: Pick<ModelOption, "providerId" | "apiKind" | "mo
   return JSON.stringify([option.providerId, option.apiKind, option.model]);
 }
 
+/**
+ * Discovery returns one route per API kind, but the primary picker is a model
+ * picker. Collapse those route variants while preserving an existing or pinned
+ * route; otherwise prefer Responses for a newly selected compatible model.
+ */
+export function modelPickerOptions(
+  models: ModelOption[],
+  currentModel?: ModelOption,
+  pinnedApiKind?: string,
+): ModelOption[] {
+  const catalog = new Map<string, ModelOption>();
+  const matchesCurrent = (option: ModelOption) =>
+    currentModel !== undefined && modelOptionKey(option) === modelOptionKey(currentModel);
+  const apiKindPriority = (apiKind: string) =>
+    apiKind === "openai:responses" ? 0 : apiKind === "openai:completions" ? 1 : 2;
+
+  for (const option of models) {
+    if (pinnedApiKind && option.apiKind !== pinnedApiKind) continue;
+    const key = JSON.stringify([option.providerId, option.model]);
+    const existing = catalog.get(key);
+    if (
+      !existing ||
+      matchesCurrent(option) ||
+      (!matchesCurrent(existing) &&
+        apiKindPriority(option.apiKind) < apiKindPriority(existing.apiKind))
+    ) {
+      catalog.set(key, option);
+    }
+  }
+
+  return [...catalog.values()].sort(compareModelOptions);
+}
+
+/** Prefer the provider's newest models while keeping ordering deterministic. */
+export function compareModelOptions(
+  left: ModelOption,
+  right: ModelOption,
+): number {
+  const leftCreated = left.createdAtMs ?? null;
+  const rightCreated = right.createdAtMs ?? null;
+  if (
+    leftCreated !== null &&
+    rightCreated !== null &&
+    leftCreated !== rightCreated
+  ) {
+    return rightCreated - leftCreated;
+  }
+  if (leftCreated !== null) return -1;
+  if (rightCreated !== null) return 1;
+  return (
+    left.displayName.localeCompare(right.displayName) ||
+    left.providerId.localeCompare(right.providerId) ||
+    left.apiKind.localeCompare(right.apiKind)
+  );
+}
+
+function formatModelCreatedAt(createdAtMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(createdAtMs));
+}
+
 function ModelCapabilities({ option }: { option: ModelOption }) {
   const details = [
+    option.createdAtMs ? `created ${formatModelCreatedAt(option.createdAtMs)}` : null,
     option.capabilities.maxInputTokens ? `${option.capabilities.maxInputTokens.toLocaleString()} input tokens` : null,
     option.capabilities.maxOutputTokens ? `${option.capabilities.maxOutputTokens.toLocaleString()} output tokens` : null,
     option.capabilities.parallelToolUse === true ? "parallel tools" : null,

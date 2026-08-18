@@ -1251,6 +1251,7 @@ mod tests {
             max_output_tokens: None,
             provider_params: None,
             reasoning_effort: None,
+            processing_tier: None,
             tool_choice: None,
             parallel_tool_use: None,
         }

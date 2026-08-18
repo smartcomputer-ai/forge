@@ -81,6 +81,9 @@ pub struct LlmRequest {
     /// (OpenAI `parallel_tool_calls`, Anthropic `disable_parallel_tool_use`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_use: Option<bool>,
+    /// Neutral provider processing class inherited from the session/profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_tier: Option<crate::ModelProcessingTier>,
     /// Provider continuity token (e.g. OpenAI Responses `previous_response_id`)
     /// threaded from prior generation facts. Currently always `None`; adapters
     /// must tolerate absence.
@@ -174,6 +177,7 @@ pub(crate) fn build_llm_request(
         output_limit: generation.max_output_tokens,
         reasoning_effort: generation.reasoning_effort,
         parallel_tool_use: generation.parallel_tool_use,
+        processing_tier: generation.processing_tier,
         provider_response_id: None,
         compaction,
         params,
@@ -272,6 +276,7 @@ fn effective_generation(base: &GenerationConfig, run_config: &RunConfig) -> Gene
             .clone()
             .or_else(|| base.tool_choice.clone()),
         parallel_tool_use: run_config.parallel_tool_use.or(base.parallel_tool_use),
+        processing_tier: run_config.processing_tier.or(base.processing_tier),
     }
 }
 
@@ -388,11 +393,13 @@ mod tests {
             reasoning_effort: Some("high".to_owned()),
             tool_choice: Some(ToolChoice::Auto),
             parallel_tool_use: None,
+            processing_tier: Some(crate::ModelProcessingTier::Standard),
         };
         let run_config = RunConfig {
             max_output_tokens: Some(2048),
             tool_choice: Some(ToolChoice::RequiredAny),
             parallel_tool_use: Some(false),
+            processing_tier: Some(crate::ModelProcessingTier::Fast),
             ..RunConfig::default()
         };
 
@@ -402,6 +409,10 @@ mod tests {
         assert_eq!(resolved.reasoning_effort, Some("high".to_owned()));
         assert_eq!(resolved.tool_choice, Some(ToolChoice::RequiredAny));
         assert_eq!(resolved.parallel_tool_use, Some(false));
+        assert_eq!(
+            resolved.processing_tier,
+            Some(crate::ModelProcessingTier::Fast)
+        );
     }
 
     #[test]
@@ -411,6 +422,7 @@ mod tests {
             reasoning_effort: None,
             tool_choice: Some(ToolChoice::Auto),
             parallel_tool_use: Some(true),
+            processing_tier: Some(crate::ModelProcessingTier::Flex),
         };
 
         let resolved = effective_generation(&base, &RunConfig::default());

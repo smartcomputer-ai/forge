@@ -21,6 +21,8 @@ pub enum AuthProviderKind {
     ModelApiKey,
     #[serde(rename = "model_oauth")]
     ModelOAuth,
+    #[serde(rename = "model_endpoint")]
+    ModelEndpoint,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

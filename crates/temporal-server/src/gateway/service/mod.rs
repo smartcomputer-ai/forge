@@ -629,6 +629,7 @@ impl GatewayAgentApiBuilder {
                 token_client.clone(),
                 github_api.clone(),
             ),
+            self.store.clone() as Arc<dyn AuthProviderStore>,
         );
         GatewayAgentApi {
             client: self.client,

@@ -65,10 +65,11 @@ cargo test -p llm-clients --test openai_responses_live -- --ignored
 cargo test -p llm-clients --test openai_completions_live -- --ignored
 cargo test -p llm-clients --test anthropic_messages_live -- --ignored
 cargo test -p llm-runtime --test openai_responses_live -- --ignored
+cargo test -p llm-runtime --test openai_completions_live -- --ignored
 cargo test -p llm-runtime --test anthropic_messages_live -- --ignored
 ```
 
-Additional per-capability live suites exist for both providers under
+Additional per-capability live suites exist for the supported provider API kinds under
 `crates/llm-runtime/tests/` (`*_compaction_live`, `*_mcp_live`,
 `*_prompts_live`, `*_skills_live`).
 
@@ -220,6 +221,13 @@ Release construction, snapshots, and tagged publication are documented in
   boundaries validate params before they enter the session log. Transport config
   (base URLs, credentials, headers) stays in runtime deployment config, not in
   `ModelSelection` or the session log.
+- Universe model-provider rows are named `model:<providerId>` and may carry an
+  OpenAI-compatible endpoint plus API-key/OAuth authentication, or a
+  credentialless endpoint for local servers. Resolve the row immediately before
+  provider I/O. Only built-in `openai` and `anthropic` ids may fall back to
+  deployment clients; a custom provider without a complete endpoint must fail
+  before network I/O. Endpoint headers are non-secret and must not override
+  transport-owned authentication/content headers.
 - Keep clients on `api`. CLIs, TUIs, editors, hosted gateways, and future
   Temporal frontends should not consume reducer internals directly.
 - Use Lightspeed-owned names for every supported product configuration key,

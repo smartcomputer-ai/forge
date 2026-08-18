@@ -20,7 +20,7 @@ use crate::{
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
     params::{openai_reasoning_from_effort, openai_responses_params},
-    provider_keys::{NoStoredProviderKeys, ProviderKeyResolver, resolve_stored_provider_key},
+    provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
     result::LlmGenerationExecution,
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
@@ -40,12 +40,14 @@ pub trait OpenAiResponsesApi: Send + Sync {
         &self,
         request: oai::CreateResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::Response>, llm_clients::LlmApiError>;
 
     async fn compact(
         &self,
         request: oai::CompactResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::CompactResponse>, llm_clients::LlmApiError>;
 }
 
@@ -55,16 +57,18 @@ impl OpenAiResponsesApi for oai::Client {
         &self,
         request: oai::CreateResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::Response>, llm_clients::LlmApiError> {
-        oai::Client::create_with_auth(self, request, auth).await
+        oai::Client::create_with_transport(self, request, auth, endpoint).await
     }
 
     async fn compact(
         &self,
         request: oai::CompactResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::CompactResponse>, llm_clients::LlmApiError> {
-        oai::Client::compact_with_auth(self, request, auth).await
+        oai::Client::compact_with_transport(self, request, auth, endpoint).await
     }
 }
 
@@ -73,7 +77,7 @@ pub struct OpenAiResponsesLlmAdapter {
     client: Arc<dyn OpenAiResponsesApi>,
     blobs: Arc<dyn BlobStore>,
     secrets: Arc<dyn SecretResolver>,
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 }
 
 impl OpenAiResponsesLlmAdapter {
@@ -82,7 +86,7 @@ impl OpenAiResponsesLlmAdapter {
             client,
             blobs,
             secrets: Arc::new(UnconfiguredSecretResolver),
-            provider_keys: Arc::new(NoStoredProviderKeys),
+            provider_keys: Arc::new(NoStoredModelProviders),
         }
     }
 
@@ -93,7 +97,7 @@ impl OpenAiResponsesLlmAdapter {
 
     pub fn with_provider_key_resolver(
         mut self,
-        provider_keys: Arc<dyn ProviderKeyResolver>,
+        provider_keys: Arc<dyn ModelProviderResolver>,
     ) -> Self {
         self.provider_keys = provider_keys;
         self
@@ -133,15 +137,18 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
         let (send_request, redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let provider_request_ref = put_json(self.blobs.as_ref(), &redacted_request).await?;
         let response = self
             .client
             .create(
                 send_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
+                provider
+                    .as_ref()
+                    .and_then(|provider| provider.endpoint.as_ref())
+                    .map(|endpoint| &endpoint.transport),
             )
             .await?;
         let raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
@@ -170,15 +177,18 @@ impl LlmCompactionAdapter for OpenAiResponsesLlmAdapter {
             });
         }
         let provider_request = self.materialize_compact_request(&request.request).await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let _provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .compact(
                 provider_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
+                provider
+                    .as_ref()
+                    .and_then(|provider| provider.endpoint.as_ref())
+                    .map(|endpoint| &endpoint.transport),
             )
             .await?;
         let _raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
@@ -215,6 +225,11 @@ pub async fn materialize_create_request(
     let tools = materialize_tools(blobs, &request.tools).await?;
 
     let mut extra = params.extra.clone();
+    let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
+        .or(crate::params::openai_processing_service_tier(
+            &request.model.provider_id,
+            request.processing_tier,
+        )?);
     insert_optional(&mut extra, "truncation", params.truncation.clone());
     if let Some(max_tool_calls) = params.max_tool_calls {
         extra.insert("max_tool_calls".to_string(), Value::from(max_tool_calls));
@@ -241,6 +256,7 @@ pub async fn materialize_create_request(
         parallel_tool_calls: params.parallel_tool_calls,
         store: params.store,
         stream: params.stream,
+        service_tier,
         context_management: context_management_from_compaction(request.compaction.as_ref()),
         extra,
     })
@@ -1125,6 +1141,9 @@ fn llm_usage(usage: &oai::Usage) -> LlmUsage {
         output_tokens: usage.output_tokens.map(u64_to_u32),
         reasoning_tokens: usage.reasoning_tokens().map(u64_to_u32),
         total_tokens: usage.total_tokens.map(u64_to_u32),
+        cached_input_tokens: usage.cached_tokens().map(u64_to_u32),
+        cache_write_input_tokens: None,
+        cache_miss_input_tokens: None,
     }
 }
 
@@ -1168,6 +1187,7 @@ mod tests {
 
     fn observed_auth(auth: Option<llm_clients::RequestAuth<'_>>) -> Option<String> {
         auth.map(|auth| match auth {
+            llm_clients::RequestAuth::None => "none".to_owned(),
             llm_clients::RequestAuth::ApiKey(value) => format!("api_key:{value}"),
             llm_clients::RequestAuth::Bearer(value) => format!("bearer:{value}"),
         })
@@ -1179,6 +1199,7 @@ mod tests {
             &self,
             request: oai::CreateResponseRequest,
             auth: Option<llm_clients::RequestAuth<'_>>,
+            _endpoint: Option<&llm_clients::EndpointOverride>,
         ) -> Result<ApiResponse<oai::Response>, llm_clients::LlmApiError> {
             self.seen.lock().expect("lock").push(request);
             self.seen_api_keys
@@ -1192,6 +1213,7 @@ mod tests {
             &self,
             request: oai::CompactResponseRequest,
             auth: Option<llm_clients::RequestAuth<'_>>,
+            _endpoint: Option<&llm_clients::EndpointOverride>,
         ) -> Result<ApiResponse<oai::CompactResponse>, llm_clients::LlmApiError> {
             self.seen_compact.lock().expect("lock").push(request);
             self.seen_api_keys
@@ -1253,6 +1275,7 @@ mod tests {
             output_limit: None,
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,
@@ -1411,6 +1434,7 @@ mod tests {
         request.compaction = Some(CompactionPolicy::ProviderTriggered {
             compact_threshold_tokens: Some(120_000),
         });
+        request.processing_tier = Some(engine::ModelProcessingTier::Flex);
         request.params = Some(openai_params(&OpenAiResponsesParams {
             reasoning: Some(OpenAiReasoningConfig {
                 effort: Some("medium".to_string()),
@@ -1427,7 +1451,8 @@ mod tests {
             stream: Some(true),
             truncation: Some("auto".to_string()),
             max_tool_calls: Some(4),
-            extra: BTreeMap::from([("service_tier".to_string(), json!("flex"))]),
+            service_tier: None,
+            extra: BTreeMap::new(),
         }));
 
         let materialized = materialize_create_request(&blobs, &request)
@@ -1769,12 +1794,12 @@ mod tests {
     struct FailingProviderKeys;
 
     #[async_trait]
-    impl crate::provider_keys::ProviderKeyResolver for FailingProviderKeys {
-        async fn resolve_provider_key(
+    impl crate::provider_keys::ModelProviderResolver for FailingProviderKeys {
+        async fn resolve_model_provider(
             &self,
             provider_id: &str,
         ) -> Result<
-            Option<crate::provider_keys::ResolvedProviderAuth>,
+            Option<crate::provider_keys::ResolvedModelProvider>,
             crate::provider_keys::ProviderKeyError,
         > {
             Err(crate::provider_keys::ProviderKeyError::NotUsable {
@@ -2689,6 +2714,7 @@ mod tests {
                 output_limit: None,
                 reasoning_effort: None,
                 parallel_tool_use: None,
+                processing_tier: None,
                 provider_response_id: None,
                 compaction: None,
                 params: None,

@@ -13,4 +13,5 @@ serde_json = "1"
 thiserror = "1"
 
 [dev-dependencies]
-tokio = { version = "1", features = ["macros", "rt"] }
+base64 = "0.22"
+tokio = { version = "1", features = ["io-util", "macros", "net", "rt", "sync"] }

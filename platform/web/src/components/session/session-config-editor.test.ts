@@ -1,9 +1,118 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import {
+  compareModelOptions,
+  modelPickerOptions,
   normalizeSessionConfig,
+  SessionConfigEditor,
+  type ModelOption,
   workspaceLinksError,
   workspaceLinksFromConfig,
 } from "./session-config-editor";
+
+describe("model picker ordering", () => {
+  const option = (
+    model: string,
+    createdAtMs?: number,
+    apiKind = "openai:responses",
+  ): ModelOption => ({
+    providerId: "openai",
+    apiKind,
+    model,
+    displayName: model,
+    createdAtMs,
+    capabilities: {},
+  });
+
+  it("puts provider-dated models newest first and unknown dates last", () => {
+    expect(
+      [
+        option("unknown"),
+        option("older", 1_700_000_000_000),
+        option("newer", 1_800_000_000_000),
+      ]
+        .sort(compareModelOptions)
+        .map((model) => model.model),
+    ).toEqual(["newer", "older", "unknown"]);
+  });
+
+  it("collapses API-kind variants while preserving an existing or pinned route", () => {
+    const responses = option("gpt-5.5", 1_800_000_000_000);
+    const completions = option(
+      "gpt-5.5",
+      1_800_000_000_000,
+      "openai:completions",
+    );
+
+    expect(modelPickerOptions([completions, responses])).toEqual([responses]);
+    expect(modelPickerOptions([responses, completions], completions)).toEqual([
+      completions,
+    ]);
+    expect(
+      modelPickerOptions(
+        [responses, completions],
+        undefined,
+        "openai:completions",
+      ),
+    ).toEqual([completions]);
+  });
+});
+
+describe("OpenAI processing tier config", () => {
+  it("renders the selector for an OpenAI model in the shared config editor", () => {
+    const model = {
+      providerId: "openai",
+      apiKind: "openai:responses",
+      model: "gpt-5.6-sol",
+      displayName: "GPT-5.6",
+      capabilities: {},
+    } satisfies ModelOption;
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { model },
+      onChange: () => {},
+      models: [model],
+    }));
+
+    expect(html).toContain("Processing tier");
+    expect(html).toContain("Provider default");
+  });
+
+  it("persists the tier in generation defaults for built-in OpenAI", () => {
+    expect(normalizeSessionConfig({
+      model: {
+        providerId: "openai",
+        apiKind: "openai:responses",
+        model: "gpt-5.6-sol",
+      },
+      generation: { processingTier: "fast" },
+    })).toEqual({
+      model: {
+        providerId: "openai",
+        apiKind: "openai:responses",
+        model: "gpt-5.6-sol",
+      },
+      generation: { processingTier: "fast" },
+    });
+  });
+
+  it("drops the OpenAI-only tier when the configured provider changes", () => {
+    expect(normalizeSessionConfig({
+      model: {
+        providerId: "deepseek",
+        apiKind: "openai:completions",
+        model: "deepseek-chat",
+      },
+      generation: { processingTier: "fast" },
+    })).toEqual({
+      model: {
+        providerId: "deepseek",
+        apiKind: "openai:completions",
+        model: "deepseek-chat",
+      },
+    });
+  });
+});
 
 describe("workspace link config", () => {
   it("round-trips links inside the VFS feature", () => {

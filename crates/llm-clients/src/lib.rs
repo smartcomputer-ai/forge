@@ -14,13 +14,18 @@ pub use error::{
     ConfigurationError, DecodeError, LlmApiError, ProviderFailureKind, ProviderHttpError,
     StreamError, TransportError, UnsupportedOperation,
 };
-pub use transport::{ApiResponse, ApiStreamEvent, HeaderSnapshot, HttpClient, SseEvent, SseParser};
+pub use transport::{
+    ApiResponse, ApiStreamEvent, EndpointOverride, HeaderSnapshot, HttpClient, SseEvent, SseParser,
+};
 
 /// Per-request authentication override for provider clients. Overrides the
 /// client's transport-configured key for one request; the scheme decides how
 /// the credential is sent (provider-native key header vs OAuth bearer).
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum RequestAuth<'a> {
+    /// Explicitly send no authentication. This differs from an absent
+    /// per-request override, which falls back to the client's configured key.
+    None,
     /// Provider API key, sent in the provider's native key header
     /// (`x-api-key` for Anthropic, `Authorization: Bearer` for OpenAI).
     ApiKey(&'a str),
@@ -32,6 +37,7 @@ pub enum RequestAuth<'a> {
 impl std::fmt::Debug for RequestAuth<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::None => f.write_str("RequestAuth::None"),
             Self::ApiKey(_) => f.write_str("RequestAuth::ApiKey(<redacted>)"),
             Self::Bearer(_) => f.write_str("RequestAuth::Bearer(<redacted>)"),
         }

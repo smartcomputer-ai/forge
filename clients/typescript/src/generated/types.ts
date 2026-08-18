@@ -223,6 +223,13 @@ export type WorkspaceLinkTarget =
       type: "snapshot";
     };
 /**
+ * Provider processing class used by session defaults and per-run overrides.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProcessingTier".
+ */
+export type ModelProcessingTier = "standard" | "fast" | "flex";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolChoice".
  */
@@ -681,7 +688,13 @@ export type RunAcceptedSourceView =
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
-  "staticBearer" | "mcpOAuth" | "gitHubApp" | "customOAuth" | "modelApiKey" | "modelOAuth";
+  | "staticBearer"
+  | "mcpOAuth"
+  | "gitHubApp"
+  | "customOAuth"
+  | "modelApiKey"
+  | "modelOAuth"
+  | "modelEndpoint";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEndpointAuthMethod".
@@ -716,12 +729,18 @@ export type AuthProviderConfigView =
       type: "githubApp";
     }
   | {
+      endpoint?: ModelEndpointConfig | null;
       type: "modelApiKey";
     }
   | {
       audience?: string | null;
+      endpoint?: ModelEndpointConfig | null;
       grantId: string;
       type: "modelOAuth";
+    }
+  | {
+      endpoint: ModelEndpointConfig;
+      type: "modelEndpoint";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -894,7 +913,7 @@ export type ModelSource = "provider";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelProviderCredentialStatus".
  */
-export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid";
+export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid" | "notRequired";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelProviderCredentialSource".
@@ -1013,12 +1032,18 @@ export type AuthProviderConfigInput =
       type: "githubApp";
     }
   | {
+      endpoint?: ModelEndpointConfig | null;
       type: "modelApiKey";
     }
   | {
       audience?: string | null;
+      endpoint?: ModelEndpointConfig | null;
       grantId: string;
       type: "modelOAuth";
+    }
+  | {
+      endpoint: ModelEndpointConfig;
+      type: "modelEndpoint";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1439,6 +1464,12 @@ export interface GenerationConfig {
    * the provider default.
    */
   parallelToolUse?: boolean | null;
+  /**
+   * Provider processing class. In session/profile config this becomes the
+   * default for every run; in run config it overrides that run. Currently
+   * supported only by the built-in OpenAI provider.
+   */
+  processingTier?: ModelProcessingTier | null;
   /**
    * Reasoning effort tier as a provider-native string (e.g. "none",
    * "high", "xhigh", "max"); validated against the session's provider.
@@ -1918,6 +1949,17 @@ export interface AuthProviderView {
   providerKind: AuthProviderKind;
   status: AuthProviderStatus;
   updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelEndpointConfig".
+ */
+export interface ModelEndpointConfig {
+  apiKinds: string[];
+  baseUrl: string;
+  headers?: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2732,6 +2774,11 @@ export interface ModelView {
    */
   apiKind: string;
   capabilities: ModelCapabilitiesView;
+  /**
+   * Provider-reported model creation time. Omitted when the provider does
+   * not expose one; this is distinct from the discovery fetch time.
+   */
+  createdAtMs?: number | null;
   displayName: string;
   fetchedAtMs: number;
   model: string;
@@ -2753,8 +2800,9 @@ export interface ModelCapabilitiesView {
    */
   parallelToolUse?: boolean | null;
   /**
-   * Provider-reported effort values. Omitted when the provider does not
-   * report per-model effort support.
+   * Known provider effort values. Prefer provider-reported capabilities;
+   * Lightspeed may enrich important built-in model families when the
+   * provider's model-list API omits this metadata.
    */
   reasoningEfforts?: string[] | null;
 }

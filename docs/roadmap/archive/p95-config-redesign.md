@@ -542,8 +542,8 @@ semantics get simpler and deterministic:
 Traced 2026-07-09: the RPC method has **zero production callers** — the CLI
 submits via `session/runs/start`, the TS wrapper `submitMessage` is never
 invoked, and only unit/schema tests reference the route. Its one documented
-future consumer is the unbuilt ACP/A2A adapter idea
-(`docs/roadmap/later/pNNN-acp-a2a-protocol-adapters.md`). Per the
+future consumer is the unbuilt A2A / editor-ACP adapter idea
+(`docs/roadmap/later/pNNN-a2a-protocol-adapter.md`, `pNNN-editor-acp-adapter.md`). Per the
 capability-minimal posture: no use case, no surface.
 
 - Remove: method constant + dispatch (`api/src/constants.rs:32`,

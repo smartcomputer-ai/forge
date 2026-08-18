@@ -131,6 +131,7 @@ fn intent_request(fingerprint: &str, entries: Vec<ContextEntry>) -> LlmRequest {
         output_limit: Some(1024),
         reasoning_effort: None,
         parallel_tool_use: None,
+        processing_tier: None,
         provider_response_id: None,
         compaction: None,
         params: None,

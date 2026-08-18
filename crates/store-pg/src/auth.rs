@@ -574,6 +574,7 @@ pub(crate) fn provider_kind_to_str(value: AuthProviderKind) -> &'static str {
         AuthProviderKind::CustomOAuth => "custom_oauth",
         AuthProviderKind::ModelApiKey => "model_api_key",
         AuthProviderKind::ModelOAuth => "model_oauth",
+        AuthProviderKind::ModelEndpoint => "model_endpoint",
     }
 }
 
@@ -585,6 +586,7 @@ pub(crate) fn provider_kind_from_str(value: &str) -> Result<AuthProviderKind, Au
         "custom_oauth" => Ok(AuthProviderKind::CustomOAuth),
         "model_api_key" => Ok(AuthProviderKind::ModelApiKey),
         "model_oauth" => Ok(AuthProviderKind::ModelOAuth),
+        "model_endpoint" => Ok(AuthProviderKind::ModelEndpoint),
         other => Err(AuthRegistryError::Store {
             message: format!("unsupported auth provider kind '{other}'"),
         }),

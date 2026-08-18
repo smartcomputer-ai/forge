@@ -359,6 +359,34 @@ fn run_terminal_notification_uses_token_only_wire_shape() {
     );
 }
 
+#[test]
+fn session_processing_tier_uses_lightspeed_owned_wire_vocabulary() {
+    let config: SessionConfig = serde_json::from_value(json!({
+        "generation": {"processingTier": "fast"}
+    }))
+    .expect("session processing tier");
+    assert_eq!(
+        config.generation.expect("generation").processing_tier,
+        Some(ModelProcessingTier::Fast)
+    );
+
+    assert!(
+        serde_json::from_value::<SessionConfig>(json!({
+            "generation": {"processingTier": "priority"}
+        }))
+        .is_err()
+    );
+
+    let run: RunStartConfig = serde_json::from_value(json!({
+        "generation": {"processingTier": "flex"}
+    }))
+    .expect("run processing tier override");
+    assert_eq!(
+        run.generation.expect("generation").processing_tier,
+        Some(ModelProcessingTier::Flex)
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_managed_session_start() {
     let response = dispatch_json_rpc(
@@ -1550,6 +1578,7 @@ impl AgentApiService for TestService {
                 model: "gpt-test".to_owned(),
                 display_name: "gpt-test".to_owned(),
                 capabilities: ModelCapabilitiesView::default(),
+                created_at_ms: Some(1_700_000_000_000),
                 source: ModelSource::Provider,
                 fetched_at_ms: 1,
             }],

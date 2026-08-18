@@ -17,6 +17,7 @@ pub const SKILL_ACTIVATION_CONTEXT_KEY_PREFIX: &str = "skills.activation.";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_RUN: &str = "lightspeed.skill.activation.run";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activation.session";
 pub const OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND: &str = "openai.responses.compaction";
+pub const OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND: &str = "openai.completions.compaction";
 pub const OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND: &str = "openai.responses.web_search_call";
 pub const OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND: &str = "openai.responses.mcp_list_tools";
 pub const OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND: &str = "openai.responses.mcp_call";
@@ -974,6 +975,9 @@ fn is_provider_compaction_entry(entry: &ContextEntry) -> bool {
         // The Anthropic adapter compacts by summarization and returns the
         // summary as a user-visible replacement message.
         Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND) => {
+            matches!(entry.kind, ContextEntryKind::Message { .. })
+        }
+        Some(OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND) => {
             matches!(entry.kind, ContextEntryKind::Message { .. })
         }
         _ => false,

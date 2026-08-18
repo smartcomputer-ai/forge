@@ -31,7 +31,7 @@ use crate::{
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
     params::{anthropic_messages_params, anthropic_thinking_from_effort},
-    provider_keys::{NoStoredProviderKeys, ProviderKeyResolver, resolve_stored_provider_key},
+    provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
     result::LlmGenerationExecution,
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
@@ -88,7 +88,7 @@ pub struct AnthropicMessagesLlmAdapter {
     client: Arc<dyn AnthropicMessagesApi>,
     blobs: Arc<dyn BlobStore>,
     secrets: Arc<dyn SecretResolver>,
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 }
 
 impl AnthropicMessagesLlmAdapter {
@@ -97,7 +97,7 @@ impl AnthropicMessagesLlmAdapter {
             client,
             blobs,
             secrets: Arc::new(UnconfiguredSecretResolver),
-            provider_keys: Arc::new(NoStoredProviderKeys),
+            provider_keys: Arc::new(NoStoredModelProviders),
         }
     }
 
@@ -108,7 +108,7 @@ impl AnthropicMessagesLlmAdapter {
 
     pub fn with_provider_key_resolver(
         mut self,
-        provider_keys: Arc<dyn ProviderKeyResolver>,
+        provider_keys: Arc<dyn ModelProviderResolver>,
     ) -> Self {
         self.provider_keys = provider_keys;
         self
@@ -148,15 +148,14 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
         let (send_request, redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let provider_request_ref = put_json(self.blobs.as_ref(), &redacted_request).await?;
         let response = self
             .client
             .create(
                 send_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
             )
             .await?;
         let raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
@@ -185,15 +184,14 @@ impl LlmCompactionAdapter for AnthropicMessagesLlmAdapter {
             });
         }
         let provider_request = self.materialize_compact_request(&request.request).await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let _provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .create(
                 provider_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
             )
             .await?;
         let _raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
@@ -205,6 +203,11 @@ pub async fn materialize_create_request(
     blobs: &dyn BlobStore,
     request: &LlmRequest,
 ) -> LlmAdapterResult<am::CreateMessageRequest> {
+    if request.processing_tier.is_some() {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: "processing tier is not supported by Anthropic Messages".to_owned(),
+        });
+    }
     let mut params = anthropic_messages_params(request.params.as_ref())?;
     // Materialize the intent reasoning effort into provider params. Explicit
     // per-run provider params win: derived values never overwrite fields the
@@ -1007,6 +1010,9 @@ fn llm_usage(usage: &am::Usage) -> LlmUsage {
             (Some(input), Some(output)) => Some(u64_to_u32(input + output)),
             _ => None,
         },
+        cached_input_tokens: usage.cache_read_input_tokens.map(u64_to_u32),
+        cache_write_input_tokens: usage.cache_creation_input_tokens.map(u64_to_u32),
+        cache_miss_input_tokens: usage.input_tokens.map(u64_to_u32),
     }
 }
 
@@ -1048,6 +1054,7 @@ mod tests {
 
     fn observed_auth(auth: Option<llm_clients::RequestAuth<'_>>) -> Option<String> {
         auth.map(|auth| match auth {
+            llm_clients::RequestAuth::None => "none".to_owned(),
             llm_clients::RequestAuth::ApiKey(value) => format!("api_key:{value}"),
             llm_clients::RequestAuth::Bearer(value) => format!("bearer:{value}"),
         })
@@ -1109,6 +1116,7 @@ mod tests {
             output_limit: None,
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,

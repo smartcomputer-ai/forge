@@ -4,14 +4,14 @@ use std::{env, future::Future, sync::Arc, time::Duration};
 
 use api::{
     AgentApiErrorKind, AgentApiService, AgentProfileInput, ContextAppendEntry, ContextAppendParams,
-    ContextAppendStatus, ContextEntryKindView, ContextMessageRoleView, InitializeParams,
-    InlineAgentProfile, InputItem, McpServerDeleteParams, McpServerInput, McpServerListParams,
-    McpServerPutParams, McpServerReadParams, McpServerStatus, ProfileApplyParams,
-    ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId, ProfileInstructions,
-    ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource, RemoteMcpApprovalPolicy,
-    RemoteMcpTransport, RunStartParams, RunStartSource, SessionConfig, SessionConfigPutParams,
-    SessionDeleteParams, SessionEventsReadParams, SessionLifecycleStatus, SessionListParams,
-    SessionReadParams, SessionStartParams, SessionStatus,
+    ContextAppendStatus, ContextEntryKindView, ContextMessageRoleView, FeaturesConfig,
+    InitializeParams, InlineAgentProfile, InputItem, McpServerDeleteParams, McpServerInput,
+    McpServerListParams, McpServerPutParams, McpServerReadParams, McpServerStatus,
+    ProfileApplyParams, ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId,
+    ProfileInstructions, ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource,
+    RemoteMcpApprovalPolicy, RemoteMcpTransport, RunStartParams, RunStartSource, SessionConfig,
+    SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams, SessionLifecycleStatus,
+    SessionListParams, SessionReadParams, SessionStartParams, SessionStatus, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
@@ -26,9 +26,9 @@ use engine::{
 use support::live::{
     LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_with_parallel_tool_calls,
     fake_worker_activities_with_tool_rounds, fake_worker_activities_with_transient_llm_failures,
-    final_assistant_text, live_workflow_handle, openai_live_model, require_openai_live_env,
-    require_storage_live_env, run_with_live_worker, wait_for_admission_failure,
-    wait_for_session_status, wait_for_terminal_run,
+    final_assistant_text, live_workflow_handle, openai_completions_live_model, openai_live_model,
+    require_openai_live_env, require_storage_live_env, run_with_live_worker,
+    wait_for_admission_failure, wait_for_session_status, wait_for_terminal_run,
 };
 use temporal_server::{
     DeploymentStores, UniverseRuntime, default_model_from_env,
@@ -309,6 +309,18 @@ async fn temporal_live_session_start_then_run_start_completes_openai_run() -> an
 
     let activities = WorkerActivities::from_env().await?;
     run_with_live_worker(activities, run_openai_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra, Postgres, Temporal, and OPENAI_API_KEY (costs real money)"]
+async fn temporal_live_openai_completions_tool_call_round_trip() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+    require_openai_live_env()?;
+
+    let activities = WorkerActivities::from_env().await?;
+    run_with_live_worker(activities, run_openai_completions_live_client).await
 }
 
 #[derive(Clone)]
@@ -4076,6 +4088,97 @@ async fn run_openai_live_client(
         .terminate(
             WorkflowTerminateOptions::builder()
                 .reason("agent openai live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
+async fn run_openai_completions_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = openai_completions_live_model();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(FeaturesConfig {
+                timers: Some(TimersFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                }),
+                ..FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        profile: Some(ProfileSource::Inline {
+            profile: Box::new(InlineAgentProfile {
+                display_name: Some("OpenAI Completions tool live test".to_owned()),
+                description: None,
+                document: ProfileDocument {
+                    instructions: Some(ProfileInstructions::Text {
+                        text: "You are in a live tool integration test. You must use the requested tools before replying, then follow the exact-output instruction.".to_owned(),
+                    }),
+                    ..ProfileDocument::default()
+                },
+            }),
+        }),
+    })
+    .await?;
+
+    let run = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "Call sleep with delay_ms=1, await the returned promise, then reply exactly: completions temporal tool ok".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let run = wait_for_terminal_run(&api, &session_id, &run.result.run.id).await?;
+    let output = final_assistant_text(&run).expect("OpenAI Completions assistant output");
+    assert!(
+        output
+            .to_lowercase()
+            .contains("completions temporal tool ok"),
+        "expected completion marker: {output}"
+    );
+    assert!(
+        run.entries.iter().any(|entry| matches!(
+            &entry.kind,
+            ContextEntryKindView::ToolCall { name, .. } if name == tools::concurrency::SLEEP_TOOL_NAME
+        )),
+        "expected sleep tool call in run entries: {:?}",
+        run.entries
+    );
+    assert!(
+        run.entries.iter().any(|entry| matches!(
+            &entry.kind,
+            ContextEntryKindView::ToolResult {
+                is_error: false,
+                ..
+            }
+        )),
+        "expected successful tool result"
+    );
+
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("agent openai completions live test cleanup")
                 .build(),
         )
         .await;

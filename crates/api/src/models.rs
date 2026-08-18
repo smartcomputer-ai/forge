@@ -16,8 +16,9 @@ pub struct ModelListParams {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelCapabilitiesView {
-    /// Provider-reported effort values. Omitted when the provider does not
-    /// report per-model effort support.
+    /// Known provider effort values. Prefer provider-reported capabilities;
+    /// Lightspeed may enrich important built-in model families when the
+    /// provider's model-list API omits this metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_efforts: Option<Vec<String>>,
     /// Omitted when the provider model-list API does not report this fact.
@@ -39,6 +40,10 @@ pub struct ModelView {
     pub model: String,
     pub display_name: String,
     pub capabilities: ModelCapabilitiesView,
+    /// Provider-reported model creation time. Omitted when the provider does
+    /// not expose one; this is distinct from the discovery fetch time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at_ms: Option<i64>,
     /// Always `provider` in P97: there is no maintained model catalog.
     pub source: ModelSource,
     pub fetched_at_ms: i64,
@@ -82,6 +87,9 @@ pub enum ModelProviderCredentialStatus {
     /// A credential exists but is unusable (disabled/legacy universe row) or
     /// was rejected by the provider (HTTP 401/403).
     Invalid,
+    /// The universe provider row explicitly configures an unauthenticated
+    /// endpoint, so no credential is expected.
+    NotRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

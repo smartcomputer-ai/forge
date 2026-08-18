@@ -161,6 +161,7 @@ export interface ModelOption {
   apiKind: string;
   model: string;
   displayName: string;
+  createdAtMs?: number | null;
   capabilities: {
     maxInputTokens?: number | null;
     maxOutputTokens?: number | null;
@@ -177,7 +178,7 @@ export interface ModelProviderDiscovery {
   fetchedAtMs?: number | null;
   error?: string | null;
   /// Stable credential signal from the engine (no string matching on `error`).
-  credential: "configured" | "missing" | "invalid";
+  credential: "configured" | "missing" | "invalid" | "notRequired";
   credentialSource: "universe" | "deployment" | "none";
 }
 
@@ -225,16 +226,29 @@ export interface SecretProvider {
     | "gitHubApp"
     | "customOAuth"
     | "modelApiKey"
-    | "modelOAuth";
+    | "modelOAuth"
+    | "modelEndpoint";
   displayName?: string | null;
   config:
-    | { type: "modelApiKey" }
-    | { type: "modelOAuth"; grantId: string; audience?: string | null }
+    | { type: "modelApiKey"; endpoint?: ModelEndpointConfig | null }
+    | {
+        type: "modelOAuth";
+        grantId: string;
+        audience?: string | null;
+        endpoint?: ModelEndpointConfig | null;
+      }
+    | { type: "modelEndpoint"; endpoint: ModelEndpointConfig }
     | { type: "githubApp"; appId: string; apiBaseUrl: string };
   hasCredential: boolean;
   status: "active" | "needsConfiguration" | "disabled";
   createdAtMs: number;
   updatedAtMs: number;
+}
+
+export interface ModelEndpointConfig {
+  baseUrl: string;
+  headers?: Record<string, string>;
+  apiKinds: Array<"openai:responses" | "openai:completions">;
 }
 
 export interface SecretsInventory {

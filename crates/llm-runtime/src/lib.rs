@@ -24,15 +24,17 @@ pub use anthropic_messages::{
 };
 pub use error::{LlmAdapterError, LlmAdapterResult};
 pub use executor::{LlmAdapterRegistry, LlmCompactionAdapter, LlmGenerationAdapter, LlmRuntime};
+pub use openai_completions::{OpenAiCompletionsApi, OpenAiCompletionsLlmAdapter};
 pub use openai_responses::{OpenAiResponsesApi, OpenAiResponsesLlmAdapter};
 pub use params::{
     AnthropicMessagesParams, AnthropicThinkingConfig, OpenAiCompletionsParams,
-    OpenAiReasoningConfig, OpenAiResponsesParams, PROVIDER_PARAMS_VERSION,
+    OpenAiReasoningConfig, OpenAiResponsesParams, OpenAiServiceTier, PROVIDER_PARAMS_VERSION,
     validate_provider_params,
 };
 pub use provider_keys::{
-    NoStoredProviderKeys, ProviderAuthScheme, ProviderKeyError, ProviderKeyResolver,
-    ResolvedProviderAuth, StaticProviderKeys,
+    ModelProviderResolver, NoStoredModelProviders, NoStoredProviderKeys, ProviderAuthScheme,
+    ProviderKeyError, ResolvedEndpoint, ResolvedModelProvider, ResolvedProviderAuth,
+    StaticModelProviders, StaticProviderKeys,
 };
 pub use result::{LlmGenerationExecution, failed_generation_result};
 pub use secrets::{

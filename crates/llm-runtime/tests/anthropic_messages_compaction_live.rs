@@ -350,6 +350,7 @@ fn standalone_session_config(
             reasoning_effort: None,
             tool_choice: None,
             parallel_tool_use: None,
+            processing_tier: None,
         },
         limits: Default::default(),
         context: ContextConfig {
@@ -367,6 +368,7 @@ fn run_config() -> RunConfig {
         max_turns: Some(4),
         reasoning_effort: None,
         parallel_tool_use: None,
+        processing_tier: None,
         max_tool_rounds: Some(0),
         model_override: None,
         max_output_tokens: None,

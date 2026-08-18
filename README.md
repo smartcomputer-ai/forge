@@ -65,7 +65,10 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 **Models & providers**
 
 - [x] **OpenAI and Anthropic, provider-native**: reasoning traces, native compaction, advanced tool configs, provider tools, files and images, OAuth login, multiple API keys
-- [ ] **Other providers** via the "Completions API" standard
+- [x] **OpenAI-compatible providers** via universe-scoped endpoint records:
+  OpenRouter, DeepSeek, vLLM, Ollama, and similar Chat Completions or Responses
+  servers can each carry their own URL, credential, non-secret headers, and
+  admitted API kinds without putting transport configuration in a session
 
 **Agent capabilities**
 
