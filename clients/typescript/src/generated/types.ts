@@ -223,6 +223,13 @@ export type WorkspaceLinkTarget =
       type: "snapshot";
     };
 /**
+ * Provider processing class used by session defaults and per-run overrides.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProcessingTier".
+ */
+export type ModelProcessingTier = "standard" | "fast" | "flex";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolChoice".
  */
@@ -1457,6 +1464,12 @@ export interface GenerationConfig {
    * the provider default.
    */
   parallelToolUse?: boolean | null;
+  /**
+   * Provider processing class. In session/profile config this becomes the
+   * default for every run; in run config it overrides that run. Currently
+   * supported only by the built-in OpenAI provider.
+   */
+  processingTier?: ModelProcessingTier | null;
   /**
    * Reasoning effort tier as a provider-native string (e.g. "none",
    * "high", "xhigh", "max"); validated against the session's provider.

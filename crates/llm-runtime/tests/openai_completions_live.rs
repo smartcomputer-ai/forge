@@ -74,6 +74,7 @@ fn generation_request(entries: Vec<ContextEntry>) -> LlmGenerationRequest {
             output_limit: Some(384),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: Some(openai_completions_params(&OpenAiCompletionsParams {
@@ -130,6 +131,64 @@ async fn assistant_text(
         })
         .expect("assistant message");
     blobs.read_text(&entry.content_ref).await.expect("text")
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY and Fast mode access (costs real money)"]
+async fn openai_completions_runtime_live_fast_mode_reports_effective_service_tier() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let input_ref = text_blob(&blobs, "Reply with exactly: fast mode ok").await;
+    let mut request = generation_request(vec![entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        ContextEntrySource::RunInput {
+            run_id: RunId::new(1),
+            input_index: 0,
+        },
+        input_ref,
+    )]);
+    request.request.model.model =
+        env_or_dotenv_var("OPENAI_FAST_MODE_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_owned());
+    request.request.reasoning_effort = Some("none".to_owned());
+    request.request.output_limit = Some(64);
+    request.request.processing_tier = Some(engine::ModelProcessingTier::Fast);
+    request.request.params = Some(openai_completions_params(&OpenAiCompletionsParams {
+        store: Some(false),
+        stream: Some(false),
+        ..Default::default()
+    }));
+
+    let execution = live_adapter(blobs.clone())
+        .generate(request)
+        .await
+        .expect("Fast mode completion");
+    let provider_request: serde_json::Value = serde_json::from_str(
+        &blobs
+            .read_text(&execution.provider_request_ref)
+            .await
+            .expect("provider request"),
+    )
+    .expect("provider request JSON");
+    assert_eq!(provider_request["service_tier"], "fast");
+
+    let raw_response: serde_json::Value = serde_json::from_str(
+        &blobs
+            .read_text(&execution.raw_response_ref)
+            .await
+            .expect("raw response"),
+    )
+    .expect("raw response JSON");
+    assert!(
+        matches!(
+            raw_response
+                .get("service_tier")
+                .and_then(serde_json::Value::as_str),
+            Some("fast" | "priority")
+        ),
+        "expected Fast mode response tier, got {raw_response}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

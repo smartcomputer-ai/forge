@@ -442,6 +442,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -614,6 +625,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "ProfileEnvironment": {
           "description": "Environment intent carried by a profile document.",
@@ -1564,6 +1584,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -1688,6 +1719,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "ProfileId": {
           "type": "string"
@@ -2435,6 +2475,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -2547,6 +2598,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "RunLimitsConfig": {
           "properties": {
@@ -3276,6 +3336,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -3448,6 +3519,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "ProfileEnvironment": {
           "description": "Environment intent carried by a profile document.",
@@ -5198,6 +5278,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -5322,6 +5413,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "ProfileEnvironment": {
           "description": "Environment intent carried by a profile document.",
@@ -6363,6 +6463,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "processingTier": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelProcessingTier"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+            },
             "reasoningEffort": {
               "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
               "type": [
@@ -6487,6 +6598,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "model"
           ],
           "type": "object"
+        },
+        "ModelProcessingTier": {
+          "description": "Provider processing class used by session defaults and per-run overrides.",
+          "enum": [
+            "standard",
+            "fast",
+            "flex"
+          ],
+          "type": "string"
         },
         "ProfileEnvironment": {
           "description": "Environment intent carried by a profile document.",

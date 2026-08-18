@@ -60,6 +60,7 @@ fn request(entries: Vec<ContextEntry>) -> LlmGenerationRequest {
             output_limit: Some(256),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,

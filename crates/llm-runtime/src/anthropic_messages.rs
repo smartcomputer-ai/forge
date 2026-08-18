@@ -203,6 +203,11 @@ pub async fn materialize_create_request(
     blobs: &dyn BlobStore,
     request: &LlmRequest,
 ) -> LlmAdapterResult<am::CreateMessageRequest> {
+    if request.processing_tier.is_some() {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: "processing tier is not supported by Anthropic Messages".to_owned(),
+        });
+    }
     let mut params = anthropic_messages_params(request.params.as_ref())?;
     // Materialize the intent reasoning effort into provider params. Explicit
     // per-run provider params win: derived values never overwrite fields the
@@ -1111,6 +1116,7 @@ mod tests {
             output_limit: None,
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,

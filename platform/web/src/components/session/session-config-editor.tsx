@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
+import { supportsOpenAiProcessingTier } from "@/lib/sessions/run-options";
 import { cn } from "@/lib/utils";
 
 export type SessionConfig = Record<string, unknown>;
@@ -201,6 +202,13 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
   for (const key of ["reasoningEffort"] as const) {
     const item = string(generation[key]).trim();
     if (item) generationResult[key] = item;
+  }
+  const processingTier = string(generation.processingTier);
+  if (
+    supportsOpenAiProcessingTier({ model: modelResult }) &&
+    ["standard", "fast", "flex"].includes(processingTier)
+  ) {
+    generationResult.processingTier = processingTier;
   }
   if (typeof generation.parallelToolUse === "boolean") {
     generationResult.parallelToolUse = generation.parallelToolUse;
@@ -567,11 +575,21 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
     ]),
   ];
   const reasoningOptionsId = useId();
+  const supportsProcessingTier = supportsOpenAiProcessingTier({ model });
+  const processingTier = string(generation.processingTier) || "providerDefault";
   const updateReasoningEffort = (value: string | undefined) =>
     change((next) => {
       const nextGeneration = record(next.generation);
       if (value) nextGeneration.reasoningEffort = value;
       else delete nextGeneration.reasoningEffort;
+      if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
+      else delete next.generation;
+    });
+  const updateProcessingTier = (value: string | null) =>
+    change((next) => {
+      const nextGeneration = record(next.generation);
+      if (value && value !== "providerDefault") nextGeneration.processingTier = value;
+      else delete nextGeneration.processingTier;
       if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
       else delete next.generation;
     });
@@ -686,6 +704,23 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
             : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
         </FieldDescription>
       </Field>
+      {supportsProcessingTier && (
+        <Field>
+          <FieldLabel>Processing tier</FieldLabel>
+          <Select value={processingTier} onValueChange={updateProcessingTier}>
+            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="providerDefault">Provider default</SelectItem>
+              <SelectItem value="standard">Standard</SelectItem>
+              <SelectItem value="fast">Fast</SelectItem>
+              <SelectItem value="flex">Flex</SelectItem>
+            </SelectContent>
+          </Select>
+          <FieldDescription>
+            Applied to every run in this session. Fast prioritizes latency; Flex uses lower-priority processing.
+          </FieldDescription>
+        </Field>
+      )}
       {selected === "manual" && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field><FieldLabel>Provider id</FieldLabel><Input value={string(model.providerId)} onChange={(e) => update("providerId", e.target.value)} placeholder="openai" /></Field>

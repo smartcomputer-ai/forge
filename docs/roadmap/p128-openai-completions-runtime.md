@@ -32,6 +32,12 @@
 - A discovery follow-up exposes provider model creation timestamps, enriches
   current OpenAI GPT-5 families with their documented reasoning-effort tiers,
   and keeps the normal selectable catalog focused on recent generation models.
+- A Fast-mode follow-up adds `generation.processingTier` (`standard`, `fast`,
+  or `flex`) as a session/profile default with an optional per-run API
+  override, maps it to typed OpenAI `service_tier` requests for both Responses
+  and Chat Completions, rejects it for compatible custom providers, exposes it
+  in the shared Platform session/profile config editor for built-in OpenAI,
+  and covers all four client/runtime routes with live OpenAI tests.
 - Builds on [P50](archive/p50-agent-llm.md) (llm-runtime crate shape; listed
   `openai:completions` as step 3 and left `llm-runtime/src/openai_completions.rs`
   as a placeholder), [P69](archive/p69-generic-auth-token-broker.md) (stored

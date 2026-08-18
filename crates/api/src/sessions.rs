@@ -228,6 +228,20 @@ pub struct GenerationConfig {
     /// the provider default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallel_tool_use: Option<bool>,
+    /// Provider processing class. In session/profile config this becomes the
+    /// default for every run; in run config it overrides that run. Currently
+    /// supported only by the built-in OpenAI provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub processing_tier: Option<ModelProcessingTier>,
+}
+
+/// Provider processing class used by session defaults and per-run overrides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ModelProcessingTier {
+    Standard,
+    Fast,
+    Flex,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

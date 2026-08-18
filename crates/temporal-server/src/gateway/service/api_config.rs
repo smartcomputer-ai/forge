@@ -40,7 +40,7 @@ pub(super) fn engine_session_config_from_api(
         Some(model) => model_selection_from_api(model)?,
         None => default_model,
     };
-    let generation = generation_from_api(api_config.generation, &model.api_kind)?;
+    let generation = generation_from_api(api_config.generation, &model)?;
     Ok(SessionConfig {
         model,
         generation,
@@ -63,14 +63,18 @@ pub(super) fn engine_session_config_from_api(
 
 fn generation_from_api(
     generation: Option<api::GenerationConfig>,
-    api_kind: &ProviderApiKind,
+    model: &ModelSelection,
 ) -> Result<engine::GenerationConfig, AgentApiError> {
     let Some(generation) = generation else {
         return Ok(engine::GenerationConfig::default());
     };
     if let Some(effort) = generation.reasoning_effort.as_deref() {
-        validate_reasoning_effort(api_kind, effort)?;
+        validate_reasoning_effort(&model.api_kind, effort)?;
     }
+    let processing_tier = generation
+        .processing_tier
+        .map(|tier| processing_tier_from_api(model, tier))
+        .transpose()?;
     Ok(engine::GenerationConfig {
         max_output_tokens: generation.max_output_tokens,
         reasoning_effort: generation.reasoning_effort,
@@ -79,6 +83,28 @@ fn generation_from_api(
             .map(tool_choice_from_api)
             .transpose()?,
         parallel_tool_use: generation.parallel_tool_use,
+        processing_tier,
+    })
+}
+
+fn processing_tier_from_api(
+    model: &ModelSelection,
+    tier: api::ModelProcessingTier,
+) -> Result<engine::ModelProcessingTier, AgentApiError> {
+    if model.provider_id != "openai"
+        || !matches!(
+            model.api_kind,
+            ProviderApiKind::OpenAiResponses | ProviderApiKind::OpenAiCompletions
+        )
+    {
+        return Err(AgentApiError::invalid_request(
+            "generation.processingTier is supported only by the built-in openai provider",
+        ));
+    }
+    Ok(match tier {
+        api::ModelProcessingTier::Standard => engine::ModelProcessingTier::Standard,
+        api::ModelProcessingTier::Fast => engine::ModelProcessingTier::Fast,
+        api::ModelProcessingTier::Flex => engine::ModelProcessingTier::Flex,
     })
 }
 
@@ -187,20 +213,24 @@ pub(super) fn apply_run_start_config(
     let Some(api_config) = api_config else {
         return Ok(());
     };
-    let effective_api_kind = if let Some(model) = api_config.model {
+    let RunStartConfig {
+        model,
+        generation,
+        limits,
+    } = api_config;
+    let effective_model = if let Some(model) = model {
         let model = model_selection_from_api(model)?;
-        let api_kind = model.api_kind.clone();
-        run_config.model_override = Some(model);
-        api_kind
+        run_config.model_override = Some(model.clone());
+        model
     } else {
-        session_config.model.api_kind.clone()
+        session_config.model.clone()
     };
-    if let Some(generation) = api_config.generation {
+    if let Some(generation) = generation {
         if let Some(max_output_tokens) = generation.max_output_tokens {
             run_config.max_output_tokens = Some(max_output_tokens);
         }
         if let Some(effort) = generation.reasoning_effort {
-            validate_reasoning_effort(&effective_api_kind, &effort)?;
+            validate_reasoning_effort(&effective_model.api_kind, &effort)?;
             run_config.reasoning_effort = Some(effort);
         }
         if let Some(tool_choice) = generation.tool_choice {
@@ -209,8 +239,12 @@ pub(super) fn apply_run_start_config(
         if let Some(parallel_tool_use) = generation.parallel_tool_use {
             run_config.parallel_tool_use = Some(parallel_tool_use);
         }
+        if let Some(processing_tier) = generation.processing_tier {
+            run_config.processing_tier =
+                Some(processing_tier_from_api(&effective_model, processing_tier)?);
+        }
     }
-    if let Some(limits) = api_config.limits {
+    if let Some(limits) = limits {
         apply_run_limits_config(run_config, limits);
     }
     run_config

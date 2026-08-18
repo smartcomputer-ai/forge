@@ -1521,6 +1521,7 @@ fn generation_config(settings: &ChatDraftSettings) -> GenerationConfig {
         reasoning_effort: api_reasoning_effort(settings),
         tool_choice: None,
         parallel_tool_use: None,
+        processing_tier: None,
     }
 }
 

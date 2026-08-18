@@ -431,6 +431,7 @@ mod tests {
                 tool_choice: None,
                 reasoning_effort: None,
                 parallel_tool_use: None,
+                processing_tier: None,
                 output_limit: None,
                 provider_response_id: None,
                 compaction: None,

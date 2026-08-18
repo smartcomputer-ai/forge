@@ -225,6 +225,11 @@ pub async fn materialize_create_request(
     let tools = materialize_tools(blobs, &request.tools).await?;
 
     let mut extra = params.extra.clone();
+    let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
+        .or(crate::params::openai_processing_service_tier(
+            &request.model.provider_id,
+            request.processing_tier,
+        )?);
     insert_optional(&mut extra, "truncation", params.truncation.clone());
     if let Some(max_tool_calls) = params.max_tool_calls {
         extra.insert("max_tool_calls".to_string(), Value::from(max_tool_calls));
@@ -251,6 +256,7 @@ pub async fn materialize_create_request(
         parallel_tool_calls: params.parallel_tool_calls,
         store: params.store,
         stream: params.stream,
+        service_tier,
         context_management: context_management_from_compaction(request.compaction.as_ref()),
         extra,
     })
@@ -1269,6 +1275,7 @@ mod tests {
             output_limit: None,
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,
@@ -1427,6 +1434,7 @@ mod tests {
         request.compaction = Some(CompactionPolicy::ProviderTriggered {
             compact_threshold_tokens: Some(120_000),
         });
+        request.processing_tier = Some(engine::ModelProcessingTier::Flex);
         request.params = Some(openai_params(&OpenAiResponsesParams {
             reasoning: Some(OpenAiReasoningConfig {
                 effort: Some("medium".to_string()),
@@ -1443,7 +1451,8 @@ mod tests {
             stream: Some(true),
             truncation: Some("auto".to_string()),
             max_tool_calls: Some(4),
-            extra: BTreeMap::from([("service_tier".to_string(), json!("flex"))]),
+            service_tier: None,
+            extra: BTreeMap::new(),
         }));
 
         let materialized = materialize_create_request(&blobs, &request)
@@ -2705,6 +2714,7 @@ mod tests {
                 output_limit: None,
                 reasoning_effort: None,
                 parallel_tool_use: None,
+                processing_tier: None,
                 provider_response_id: None,
                 compaction: None,
                 params: None,

@@ -4939,6 +4939,17 @@
               "null"
             ]
           },
+          "processingTier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ModelProcessingTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Provider processing class. In session/profile config this becomes the\ndefault for every run; in run config it overrides that run. Currently\nsupported only by the built-in OpenAI provider."
+          },
           "reasoningEffort": {
             "description": "Reasoning effort tier as a provider-native string (e.g. \"none\",\n\"high\", \"xhigh\", \"max\"); validated against the session's provider.",
             "type": [
@@ -5898,6 +5909,15 @@
           }
         },
         "type": "object"
+      },
+      "ModelProcessingTier": {
+        "description": "Provider processing class used by session defaults and per-run overrides.",
+        "enum": [
+          "standard",
+          "fast",
+          "flex"
+        ],
+        "type": "string"
       },
       "ModelProviderCredentialSource": {
         "oneOf": [

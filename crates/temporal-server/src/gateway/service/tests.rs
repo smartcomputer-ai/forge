@@ -892,6 +892,7 @@ fn session_start_config_maps_reasoning_and_max_output_tokens() {
                 reasoning_effort: Some("high".to_owned()),
                 tool_choice: None,
                 parallel_tool_use: None,
+                processing_tier: None,
             }),
             ..api::SessionConfig::default()
         },
@@ -912,6 +913,7 @@ fn session_start_config_rejects_unknown_reasoning_effort() {
                 reasoning_effort: Some("hyper".to_owned()),
                 tool_choice: None,
                 parallel_tool_use: None,
+                processing_tier: None,
             }),
             ..api::SessionConfig::default()
         },
@@ -933,6 +935,7 @@ fn session_start_config_maps_tool_choice_and_parallel_tool_use() {
                     tool_id: "web_fetch".to_owned(),
                 }),
                 parallel_tool_use: Some(false),
+                processing_tier: None,
             }),
             ..api::SessionConfig::default()
         },
@@ -1018,6 +1021,7 @@ fn run_start_config_maps_model_and_generation_overrides() {
                 reasoning_effort: Some("medium".to_owned()),
                 tool_choice: None,
                 parallel_tool_use: None,
+                processing_tier: None,
             }),
             limits: None,
         }),
@@ -1053,6 +1057,7 @@ fn run_start_config_maps_tool_choice() {
                 reasoning_effort: None,
                 tool_choice: Some(api::ToolChoice::RequiredAny),
                 parallel_tool_use: None,
+                processing_tier: None,
             }),
             limits: None,
         }),
@@ -1078,6 +1083,89 @@ fn run_start_without_overrides_keeps_session_defaults_out_of_run_config() {
     let run_config = run_config_for_start(&session_config, None).expect("run config");
 
     assert_eq!(run_config, RunConfig::default());
+}
+
+#[test]
+fn session_processing_tier_maps_all_openai_tiers() {
+    for (tier, expected) in [
+        (
+            api::ModelProcessingTier::Standard,
+            engine::ModelProcessingTier::Standard,
+        ),
+        (
+            api::ModelProcessingTier::Fast,
+            engine::ModelProcessingTier::Fast,
+        ),
+        (
+            api::ModelProcessingTier::Flex,
+            engine::ModelProcessingTier::Flex,
+        ),
+    ] {
+        let config = engine_session_config_from_api(
+            api::SessionConfig {
+                generation: Some(api::GenerationConfig {
+                    processing_tier: Some(tier),
+                    ..api::GenerationConfig::default()
+                }),
+                ..api::SessionConfig::default()
+            },
+            openai_model(),
+        )
+        .expect("OpenAI session processing tier");
+        assert_eq!(config.generation.processing_tier, Some(expected));
+    }
+}
+
+#[test]
+fn run_processing_tier_overrides_the_session_default() {
+    let session_config = engine_session_config_from_api(
+        api::SessionConfig {
+            generation: Some(api::GenerationConfig {
+                processing_tier: Some(api::ModelProcessingTier::Standard),
+                ..api::GenerationConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        openai_model(),
+    )
+    .expect("session config");
+
+    let run_config = run_config_for_start(
+        &session_config,
+        Some(RunStartConfig {
+            generation: Some(api::GenerationConfig {
+                processing_tier: Some(api::ModelProcessingTier::Fast),
+                ..api::GenerationConfig::default()
+            }),
+            ..RunStartConfig::default()
+        }),
+    )
+    .expect("run processing tier override");
+
+    assert_eq!(
+        run_config.processing_tier,
+        Some(engine::ModelProcessingTier::Fast)
+    );
+}
+
+#[test]
+fn session_processing_tier_rejects_compatible_custom_providers() {
+    let mut model = openai_model();
+    model.provider_id = "deepseek".to_owned();
+    model.api_kind = ProviderApiKind::OpenAiCompletions;
+    let error = engine_session_config_from_api(
+        api::SessionConfig {
+            generation: Some(api::GenerationConfig {
+                processing_tier: Some(api::ModelProcessingTier::Fast),
+                ..api::GenerationConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        model,
+    )
+    .expect_err("custom providers must not inherit OpenAI billing tiers");
+
+    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
 }
 
 #[test]

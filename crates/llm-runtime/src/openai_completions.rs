@@ -234,6 +234,11 @@ pub async fn materialize_create_request(
     let params = openai_completions_params(request.params.as_ref())?;
     validate_dialect_capabilities(request, &params, dialect)?;
     let mut extra = params.extra;
+    let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
+        .or(crate::params::openai_processing_service_tier(
+            &request.model.provider_id,
+            request.processing_tier,
+        )?);
     let reasoning_effort = materialize_reasoning_effort(
         request.reasoning_effort.as_deref(),
         &request.model.model,
@@ -263,6 +268,7 @@ pub async fn materialize_create_request(
         parallel_tool_calls,
         store: params.store,
         stream: Some(false),
+        service_tier,
         stream_options: None,
         metadata: non_empty_map(params.metadata),
         reasoning_effort,
@@ -1298,6 +1304,7 @@ mod tests {
             output_limit: None,
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,
@@ -1435,6 +1442,7 @@ mod tests {
         request.output_limit = Some(321);
         request.reasoning_effort = Some("max".to_owned());
         request.parallel_tool_use = Some(false);
+        request.processing_tier = Some(engine::ModelProcessingTier::Fast);
         request.tool_choice = Some(ToolChoice::RequiredAny);
         request.params = Some(ProviderParams::new(
             ProviderApiKind::OpenAiCompletions,
@@ -1464,6 +1472,7 @@ mod tests {
         assert_eq!(value["parallel_tool_calls"], false);
         assert_eq!(value["tool_choice"], "required");
         assert_eq!(value["temperature"], 0.25);
+        assert_eq!(value["service_tier"], "fast");
         assert_eq!(value["extra_wire_field"], "kept");
         assert_eq!(value["stream"], false);
     }

@@ -209,6 +209,7 @@ async fn openai_completions_runtime_live_compacted_summary_continues_conversatio
             output_limit: Some(128),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: None,

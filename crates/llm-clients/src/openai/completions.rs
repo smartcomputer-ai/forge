@@ -320,6 +320,8 @@ pub struct CreateCompletionRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<StreamOptions>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<BTreeMap<String, String>>,
@@ -895,6 +897,26 @@ mod tests {
             .expect_err("missing auth must fail");
 
         assert!(matches!(error, LlmApiError::Configuration(_)));
+    }
+
+    #[test]
+    fn fast_service_tier_round_trips_through_request_and_response() {
+        let request = CreateCompletionRequest {
+            model: "gpt-5.6-sol".to_owned(),
+            messages: vec![CompletionMessage::user("hello")],
+            service_tier: Some("fast".to_owned()),
+            ..CreateCompletionRequest::default()
+        };
+        let value = serde_json::to_value(request).expect("request JSON");
+        assert_eq!(value["service_tier"], "fast");
+
+        let completion: Completion = serde_json::from_value(json!({
+            "id": "chatcmpl_fast",
+            "service_tier": "priority",
+            "choices": []
+        }))
+        .expect("completion");
+        assert_eq!(completion.service_tier.as_deref(), Some("priority"));
     }
 
     #[test]

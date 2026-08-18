@@ -1344,6 +1344,11 @@ fn generation_config_to_api(generation: &engine::GenerationConfig) -> api::Gener
         reasoning_effort: generation.reasoning_effort.clone(),
         tool_choice: generation.tool_choice.as_ref().map(tool_choice_to_api),
         parallel_tool_use: generation.parallel_tool_use,
+        processing_tier: generation.processing_tier.map(|tier| match tier {
+            engine::ModelProcessingTier::Standard => api::ModelProcessingTier::Standard,
+            engine::ModelProcessingTier::Fast => api::ModelProcessingTier::Fast,
+            engine::ModelProcessingTier::Flex => api::ModelProcessingTier::Flex,
+        }),
     }
 }
 
@@ -2622,6 +2627,7 @@ mod tests {
                     tool_name: engine::ToolName::new("read_file"),
                 }),
                 parallel_tool_use: Some(false),
+                processing_tier: None,
             },
             limits: engine::LimitsConfig {
                 max_turns: Some(12),
@@ -2696,6 +2702,7 @@ mod tests {
                         tool_id: "read_file".to_owned(),
                     }),
                     parallel_tool_use: Some(false),
+                    processing_tier: None,
                 }),
                 limits: Some(api::LimitsConfig {
                     max_turns: Some(12),

@@ -178,6 +178,33 @@ async fn openai_completions_live_create_text() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY and Fast mode access (costs real money)"]
+async fn openai_completions_live_fast_mode_reports_effective_service_tier() {
+    let client = live_client();
+    let model =
+        env_or_dotenv_var("OPENAI_FAST_MODE_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_owned());
+    let mut request = CreateCompletionRequest::user_text(model, "Reply with exactly: fast mode ok");
+    request.max_completion_tokens = Some(64);
+    request.reasoning_effort = Some("none".to_owned());
+    request.store = Some(false);
+    request.service_tier = Some("fast".to_owned());
+
+    let response = openai_completions_create(&client, request)
+        .await
+        .expect("Fast mode completion");
+
+    assert_eq!(response.status, 200);
+    assert!(
+        matches!(
+            response.parsed.service_tier.as_deref(),
+            Some("fast" | "priority")
+        ),
+        "expected Fast mode response tier, got {:?}",
+        response.parsed.service_tier
+    );
+}
+
 #[tokio::test]
 #[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_completions_live_developer_instruction_role() {

@@ -28,7 +28,7 @@ pub use openai_completions::{OpenAiCompletionsApi, OpenAiCompletionsLlmAdapter};
 pub use openai_responses::{OpenAiResponsesApi, OpenAiResponsesLlmAdapter};
 pub use params::{
     AnthropicMessagesParams, AnthropicThinkingConfig, OpenAiCompletionsParams,
-    OpenAiReasoningConfig, OpenAiResponsesParams, PROVIDER_PARAMS_VERSION,
+    OpenAiReasoningConfig, OpenAiResponsesParams, OpenAiServiceTier, PROVIDER_PARAMS_VERSION,
     validate_provider_params,
 };
 pub use provider_keys::{

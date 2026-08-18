@@ -134,6 +134,92 @@ async fn store_tool_documents(
 const RED_PNG_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKElEQVR4nO3NsQ0AAAzCMP5/un0CNkuZ41wybXsHAAAAAAAAAAAAxR4yw/wuPL6QkAAAAABJRU5ErkJggg==";
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY and Fast mode access (costs real money)"]
+async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let input_ref = text_blob(&blobs, "Reply with exactly: fast mode ok").await;
+    let model =
+        env_or_dotenv_var("OPENAI_FAST_MODE_MODEL").unwrap_or_else(|_| "gpt-5.6-sol".to_owned());
+    let adapter = OpenAiResponsesLlmAdapter::new(
+        retrying_openai_responses_client(live_client()),
+        blobs.clone(),
+    );
+    let request = LlmGenerationRequest {
+        session_id: SessionId::new("session-live-fast-mode"),
+        run_id: RunId::new(1),
+        turn_id: TurnId::new(1),
+        request: LlmRequest {
+            model: ModelSelection {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                provider_id: "openai".to_owned(),
+                model,
+            },
+            request_fingerprint: "live-openai-responses-fast-mode".to_owned(),
+            context: ContextSnapshot {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                context_revision: 0,
+                entries: vec![ContextEntry {
+                    key: None,
+                    entry_id: ContextEntryId::new(1),
+                    kind: ContextEntryKind::Message {
+                        role: ContextMessageRole::User,
+                    },
+                    source: ContextEntrySource::RunInput {
+                        run_id: RunId::new(1),
+                        input_index: 0,
+                    },
+                    content_ref: input_ref,
+                    media_type: None,
+                    preview: None,
+                    provider_kind: None,
+                    provider_item_id: None,
+                    token_estimate: None,
+                }],
+                token_estimate: None,
+            },
+            tools: Vec::new(),
+            tool_choice: None,
+            output_limit: Some(64),
+            reasoning_effort: Some("none".to_owned()),
+            parallel_tool_use: None,
+            processing_tier: Some(engine::ModelProcessingTier::Fast),
+            provider_response_id: None,
+            compaction: None,
+            params: Some(openai_params(&OpenAiResponsesParams {
+                store: Some(false),
+                stream: Some(false),
+                ..OpenAiResponsesParams::default()
+            })),
+        },
+    };
+
+    let execution = adapter.generate(request).await.expect("Fast mode response");
+    let provider_request: Value = serde_json::from_str(
+        &blobs
+            .read_text(&execution.provider_request_ref)
+            .await
+            .expect("provider request"),
+    )
+    .expect("provider request JSON");
+    assert_eq!(provider_request["service_tier"], "fast");
+
+    let raw_response: Value = serde_json::from_str(
+        &blobs
+            .read_text(&execution.raw_response_ref)
+            .await
+            .expect("raw response"),
+    )
+    .expect("raw response JSON");
+    assert!(
+        matches!(
+            raw_response.get("service_tier").and_then(Value::as_str),
+            Some("fast" | "priority")
+        ),
+        "expected Fast mode response tier, got {raw_response}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires OPENAI_API_KEY (costs real money)"]
 async fn openai_responses_live_adapter_describes_image_input() {
     use base64::Engine as _;
@@ -210,6 +296,7 @@ async fn openai_responses_live_adapter_describes_image_input() {
             output_limit: Some(512),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: Some(openai_params(&OpenAiResponsesParams {
@@ -358,6 +445,7 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
             output_limit: Some(512),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: Some(openai_params(&OpenAiResponsesParams {
@@ -448,6 +536,7 @@ async fn openai_responses_live_adapter_generates_result() {
             output_limit: Some(512),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: Some(openai_params(&OpenAiResponsesParams {
@@ -572,6 +661,7 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
             output_limit: Some(512),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: Some(CompactionPolicy::ProviderTriggered {
                 compact_threshold_tokens: Some(2000),
@@ -671,6 +761,7 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
             output_limit: Some(1024),
             reasoning_effort: None,
             parallel_tool_use: None,
+            processing_tier: None,
             provider_response_id: None,
             compaction: None,
             params: Some(openai_params(&OpenAiResponsesParams {

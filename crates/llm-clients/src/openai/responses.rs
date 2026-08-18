@@ -562,6 +562,8 @@ pub struct CreateResponseRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<Value>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -870,6 +872,8 @@ pub struct Response {
     pub incomplete_details: Option<IncompleteDetails>,
     #[serde(default)]
     pub model: Option<String>,
+    #[serde(default)]
+    pub service_tier: Option<String>,
     #[serde(default)]
     pub output: Vec<ResponseOutputItem>,
     #[serde(default)]
@@ -1294,6 +1298,26 @@ mod tests {
     #[test]
     fn timeout_duration_formats_as_seconds() {
         assert_eq!(format_duration(Duration::from_secs(300)), "300s");
+    }
+
+    #[test]
+    fn fast_service_tier_round_trips_through_request_and_response() {
+        let request = CreateResponseRequest {
+            model: Some("gpt-5.6-sol".to_owned()),
+            input: Some(ResponseInput::Text("hello".to_owned())),
+            service_tier: Some("fast".to_owned()),
+            ..CreateResponseRequest::default()
+        };
+        let value = serde_json::to_value(request).expect("request JSON");
+        assert_eq!(value["service_tier"], "fast");
+
+        let response: Response = serde_json::from_value(json!({
+            "id": "resp_fast",
+            "service_tier": "priority",
+            "output": []
+        }))
+        .expect("response");
+        assert_eq!(response.service_tier.as_deref(), Some("priority"));
     }
 
     #[test]

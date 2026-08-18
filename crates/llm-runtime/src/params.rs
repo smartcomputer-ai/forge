@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use engine::{ProviderApiKind, ProviderParams};
+use engine::{ModelProcessingTier, ProviderApiKind, ProviderParams};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -50,6 +50,10 @@ pub struct OpenAiResponsesParams {
     pub truncation: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tool_calls: Option<u32>,
+    /// OpenAI request processing tier. `fast` is the current name for the
+    /// latency-prioritized tier; `priority` remains a provider alias.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<OpenAiServiceTier>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }
@@ -68,9 +72,75 @@ impl Default for OpenAiResponsesParams {
             stream: None,
             truncation: None,
             max_tool_calls: None,
+            service_tier: None,
             extra: BTreeMap::new(),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenAiServiceTier {
+    Auto,
+    Default,
+    Flex,
+    Fast,
+    Priority,
+}
+
+impl OpenAiServiceTier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Default => "default",
+            Self::Flex => "flex",
+            Self::Fast => "fast",
+            Self::Priority => "priority",
+        }
+    }
+}
+
+pub(crate) fn take_openai_service_tier(
+    extra: &mut BTreeMap<String, Value>,
+    tier: Option<OpenAiServiceTier>,
+) -> LlmAdapterResult<Option<String>> {
+    let legacy = extra.remove("service_tier");
+    let typed = tier.map(|tier| tier.as_str().to_owned());
+    match (typed, legacy) {
+        (Some(typed), Some(Value::String(legacy))) if typed != legacy => {
+            Err(LlmAdapterError::InvalidProviderRequest {
+                message: "service_tier conflicts with extra.service_tier".to_owned(),
+            })
+        }
+        (Some(typed), Some(Value::String(_)) | None) => Ok(Some(typed)),
+        (None, Some(Value::String(legacy))) => Ok(Some(legacy)),
+        (_, Some(_)) => Err(LlmAdapterError::InvalidProviderRequest {
+            message: "extra.service_tier must be a string".to_owned(),
+        }),
+        (None, None) => Ok(None),
+    }
+}
+
+pub(crate) fn openai_processing_service_tier(
+    provider_id: &str,
+    tier: Option<ModelProcessingTier>,
+) -> LlmAdapterResult<Option<String>> {
+    let Some(tier) = tier else {
+        return Ok(None);
+    };
+    if provider_id != "openai" {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: "processing tier is supported only by the built-in openai provider".to_owned(),
+        });
+    }
+    Ok(Some(
+        match tier {
+            ModelProcessingTier::Standard => "default",
+            ModelProcessingTier::Fast => "fast",
+            ModelProcessingTier::Flex => "flex",
+        }
+        .to_owned(),
+    ))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +212,10 @@ pub struct OpenAiCompletionsParams {
     pub stream: Option<bool>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
+    /// OpenAI request processing tier. Compatible providers are not assumed
+    /// to support this field; admission exposes it only for built-in OpenAI.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<OpenAiServiceTier>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }
@@ -408,6 +482,57 @@ mod tests {
             let params = ProviderParams::new(api_kind, body);
             validate_provider_params(&params).expect("valid params");
         }
+    }
+
+    #[test]
+    fn openai_service_tiers_are_typed_for_both_api_kinds() {
+        for api_kind in [
+            ProviderApiKind::OpenAiResponses,
+            ProviderApiKind::OpenAiCompletions,
+        ] {
+            for tier in ["auto", "default", "flex", "fast", "priority"] {
+                validate_provider_params(&ProviderParams::new(
+                    api_kind.clone(),
+                    json!({"service_tier": tier}),
+                ))
+                .expect("documented service tier");
+            }
+            assert!(
+                validate_provider_params(&ProviderParams::new(
+                    api_kind,
+                    json!({"service_tier": "turbo"}),
+                ))
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn typed_service_tier_rejects_conflicting_legacy_extra_value() {
+        let mut extra = BTreeMap::from([("service_tier".to_owned(), json!("flex"))]);
+        let error = take_openai_service_tier(&mut extra, Some(OpenAiServiceTier::Fast))
+            .expect_err("conflicting tier");
+        assert!(matches!(
+            error,
+            LlmAdapterError::InvalidProviderRequest { .. }
+        ));
+    }
+
+    #[test]
+    fn session_processing_tiers_lower_to_openai_service_tiers() {
+        for (tier, expected) in [
+            (ModelProcessingTier::Standard, "default"),
+            (ModelProcessingTier::Fast, "fast"),
+            (ModelProcessingTier::Flex, "flex"),
+        ] {
+            assert_eq!(
+                openai_processing_service_tier("openai", Some(tier)).expect("OpenAI tier"),
+                Some(expected.to_owned())
+            );
+        }
+        assert!(
+            openai_processing_service_tier("openrouter", Some(ModelProcessingTier::Fast)).is_err()
+        );
     }
 
     #[test]

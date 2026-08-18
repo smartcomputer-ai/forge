@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { createElement } from "react";
+import { renderToString } from "react-dom/server";
 import {
   compareModelOptions,
   modelPickerOptions,
   normalizeSessionConfig,
+  SessionConfigEditor,
   type ModelOption,
   workspaceLinksError,
   workspaceLinksFromConfig,
@@ -53,6 +56,61 @@ describe("model picker ordering", () => {
         "openai:completions",
       ),
     ).toEqual([completions]);
+  });
+});
+
+describe("OpenAI processing tier config", () => {
+  it("renders the selector for an OpenAI model in the shared config editor", () => {
+    const model = {
+      providerId: "openai",
+      apiKind: "openai:responses",
+      model: "gpt-5.6-sol",
+      displayName: "GPT-5.6",
+      capabilities: {},
+    } satisfies ModelOption;
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { model },
+      onChange: () => {},
+      models: [model],
+    }));
+
+    expect(html).toContain("Processing tier");
+    expect(html).toContain("Provider default");
+  });
+
+  it("persists the tier in generation defaults for built-in OpenAI", () => {
+    expect(normalizeSessionConfig({
+      model: {
+        providerId: "openai",
+        apiKind: "openai:responses",
+        model: "gpt-5.6-sol",
+      },
+      generation: { processingTier: "fast" },
+    })).toEqual({
+      model: {
+        providerId: "openai",
+        apiKind: "openai:responses",
+        model: "gpt-5.6-sol",
+      },
+      generation: { processingTier: "fast" },
+    });
+  });
+
+  it("drops the OpenAI-only tier when the configured provider changes", () => {
+    expect(normalizeSessionConfig({
+      model: {
+        providerId: "deepseek",
+        apiKind: "openai:completions",
+        model: "deepseek-chat",
+      },
+      generation: { processingTier: "fast" },
+    })).toEqual({
+      model: {
+        providerId: "deepseek",
+        apiKind: "openai:completions",
+        model: "deepseek-chat",
+      },
+    });
   });
 });
 
