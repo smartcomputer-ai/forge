@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatExpiry,
   installationGrantFor,
   permissionSummary,
   validateGitHubAppForm,
-} from "./IntegrationsPage";
+} from "./integrations";
 
 describe("GitHub installation grants", () => {
   it("links grants to installations through metadata and prefers the live one", () => {
@@ -50,8 +51,7 @@ describe("GitHub App form validation", () => {
 });
 
 describe("subscription expiry formatting", () => {
-  it("renders relative and absolute expiries", async () => {
-    const { formatExpiry } = await import("./IntegrationsPage");
+  it("renders relative and absolute expiries", () => {
     const now = Date.UTC(2026, 7, 17);
     expect(formatExpiry(undefined, now)).toBe("—");
     expect(formatExpiry(now - 1, now)).toBe("expired");

@@ -132,6 +132,13 @@ const environmentCredentialBindSchema = z.object({
   ]),
 });
 
+const modelKeyPutSchema = z.object({
+  provider: z.enum(["openai", "anthropic"]),
+  credential: z.string().min(1),
+  displayName: z.string().trim().min(1).max(200).optional(),
+  replace: z.boolean().optional(),
+});
+
 /// Coding-agent subscription credential paste (P127): parsed and normalised
 /// here (vendor knowledge stays in Platform), then imported into the engine as
 /// an ordinary bearer grant with metadata. Encrypted on receipt, never read back.
@@ -717,6 +724,41 @@ export function gatewayRoutes(ctx: AppContext) {
         providerId: c.req.param("providerId"),
       });
       return c.json(modelProviderCredentialView(response.result.provider));
+    });
+  });
+
+  /// Model provider API keys for Lightspeed sessions (`model:<provider>` rows).
+  /// `replace` swaps an existing key: the row is deleted and recreated because
+  /// `auth/providers/create` has no update semantics.
+  app.post("/:id/integrations/model-keys", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, modelKeyPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const providerId = modelProviderCredentialId(body.data.provider);
+      if (body.data.replace) {
+        try {
+          await client.call("auth/providers/delete", { providerId });
+        } catch (error) {
+          if (!(error instanceof LightspeedRpcError && error.kind === "not_found")) {
+            throw error;
+          }
+        }
+      }
+      const params: AuthProviderCreateParams = {
+        providerId,
+        displayName: body.data.displayName,
+        config: { type: "modelApiKey" },
+        credential: body.data.credential,
+      };
+      const response = await client.call("auth/providers/create", params);
+      return c.json(modelProviderCredentialView(response.result.provider), 201);
     });
   });
 
