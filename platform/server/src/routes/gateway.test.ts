@@ -79,3 +79,16 @@ describe("github app provider ids", () => {
     expect(gitHubAppProviderId(" 123456 ")).toBe("github-app:123456");
   });
 });
+
+describe("external environment request ids", () => {
+  it("derives a stable id-safe request id from the endpoint", async () => {
+    const { externalEnvironmentRequestId } = await import("./gateway.js");
+    expect(externalEnvironmentRequestId("ws://127.0.0.1:19091/")).toBe("external-127-0-0-1-19091");
+    expect(externalEnvironmentRequestId("wss://envd.example.com/ws")).toBe(
+      "external-envd-example-com-ws",
+    );
+    expect(externalEnvironmentRequestId("ws://127.0.0.1:19091")).toBe(
+      externalEnvironmentRequestId("ws://127.0.0.1:19091/"),
+    );
+  });
+});

@@ -140,6 +140,18 @@ name. Those caller-chosen secret names are not Lightspeed configuration keys.
 | `LIGHTSPEED_ENVD_FS_ROOT` | Native filesystem root containing the working directory | Filesystem boundary exposed by the daemon. |
 | `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. |
 
+`./dev.sh full` and `./dev.sh runtime` also start one daemon on the developer
+machine (opt out with `./dev.sh --no-envd` or `LIGHTSPEED_DEV_ENVD=off`):
+listening on
+`LIGHTSPEED_ENVD_LISTEN` (default `127.0.0.1:19091`), working directory
+`LIGHTSPEED_DEV_ENVD_CWD` (default `.lightspeed-dev/envd/workspace`, git-
+ignored). It is not registered anywhere automatically; the Platform
+Environments page offers **Attach local daemon** (an external environment,
+no provider) with the endpoint prefilled through
+`LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT`, which the dev supervisor sets for the
+Platform process. Provider-backed provisioning (Incus) is not available on
+machines without Incus.
+
 ### Incus provider
 
 | Variable | Requirement/default | Purpose |
@@ -166,6 +178,7 @@ the Rust runtime database and gateway authentication.
 | `LIGHTSPEED_API_URL` | Per-universe gateway URL, otherwise unset | Fallback Lightspeed JSON-RPC endpoint for universes without their own `gatewayUrl`. |
 | `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL` | Unset | Public Configurator MCP endpoint installed by the Configurator setup. The setup is unavailable when omitted. |
 | `LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS` | Empty list | Comma-separated internal connector health base URLs aggregated for Platform administrators. |
+| `LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT` | unset | Development only: `lightspeed-envd` endpoint offered as the default when registering an external environment. Set by `./dev.sh`; never in deployed configuration. |
 
 The Platform administration CLI additionally accepts
 `LIGHTSPEED_PLATFORM_CONFIG_DIR`; it defaults to

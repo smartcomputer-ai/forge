@@ -10,6 +10,7 @@ import {
   type AuthGrantListParams,
   type AuthProviderCreateParams,
   type EnvironmentCreateParams,
+  type EnvironmentExternalCreateParams,
   type EnvironmentListParams,
   type McpServerInput,
   type ModelListParams,
@@ -131,6 +132,25 @@ const environmentCredentialBindSchema = z.object({
     }),
   ]),
 });
+
+const externalEnvironmentCreateSchema = z.object({
+  endpoint: z
+    .string()
+    .trim()
+    .regex(/^wss?:\/\/[^\s]+$/, "endpoint must be a ws:// or wss:// URL"),
+  displayName: z.string().trim().min(1).max(200).optional(),
+});
+
+/// Stable, id-safe request id for an external environment endpoint.
+export function externalEnvironmentRequestId(endpoint: string): string {
+  const slug = endpoint
+    .replace(/^wss?:\/\//, "")
+    .replace(/\/+$/, "")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+  return `external-${slug || "envd"}`;
+}
 
 const modelKeyPutSchema = z.object({
   provider: z.enum(["openai", "anthropic"]),
@@ -1236,6 +1256,39 @@ export function gatewayRoutes(ctx: AppContext) {
       });
       return c.json(response.result.environment);
     });
+  });
+
+  /// Register a directly attached `lightspeed-envd` as an external environment
+  /// (no provider). The request id is derived from the endpoint so repeating
+  /// the registration converges on the same environment.
+  app.post("/:id/environments/external", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, externalEnvironmentCreateSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: EnvironmentExternalCreateParams = {
+        requestId: externalEnvironmentRequestId(body.data.endpoint),
+        connection: { endpoint: body.data.endpoint, transport: "webSocket" },
+        displayName: body.data.displayName,
+      };
+      const response = await client.call("environments/external/create", params);
+      return c.json(response.result.environment, 201);
+    });
+  });
+
+  /// Environment-related hints for the UI (development daemon endpoint).
+  app.get("/:id/environments/hints", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return c.json({ devEnvdEndpoint: ctx.env.devEnvdEndpoint });
   });
 
   app.get("/:id/environments/:environmentId/credentials", async (c) => {

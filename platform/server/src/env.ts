@@ -17,6 +17,10 @@ export interface ServerEnv {
   configuratorMcpUrl: string | null;
   /// Internal connector health endpoints aggregated for platform admins.
   channelsHealthUrls: string[];
+  /// Development convenience: a directly attached `lightspeed-envd` endpoint
+  /// (started by ./dev.sh) offered as the default when registering an
+  /// external environment. Never set in deployed configuration.
+  devEnvdEndpoint: string | null;
 }
 
 function required(name: string): string {
@@ -48,6 +52,7 @@ export function loadEnv(): ServerEnv {
     lightspeedApiUrl: process.env.LIGHTSPEED_API_URL ?? null,
     configuratorMcpUrl: process.env.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL ?? null,
     channelsHealthUrls: csv(process.env.LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS),
+    devEnvdEndpoint: process.env.LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT ?? null,
   };
 }
 
