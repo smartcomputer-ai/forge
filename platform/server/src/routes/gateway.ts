@@ -9,7 +9,6 @@ import {
   type AuthGitHubInstallationListParams,
   type AuthGrantListParams,
   type AuthProviderCreateParams,
-  type AuthSubscriptionImportParams,
   type EnvironmentCreateParams,
   type EnvironmentListParams,
   type McpServerInput,
@@ -25,6 +24,12 @@ import {
 } from "@lightspeed/foundry/contracts";
 import type { AppContext, ApiVariables } from "../context.js";
 import { parseBody } from "../http.js";
+import {
+  conflictingAnthropicEnv,
+  isSubscriptionGrant,
+  parseSubscriptionCredential,
+  SubscriptionCredentialError,
+} from "../subscriptions.js";
 import { universeForSession } from "./universes.js";
 import {
   asManifest,
@@ -127,25 +132,14 @@ const environmentCredentialBindSchema = z.object({
   ]),
 });
 
-/// Coding-agent subscription credential paste (P127): the value is forwarded
-/// once to the engine, parsed and encrypted there, and never read back.
+/// Coding-agent subscription credential paste (P127): parsed and normalised
+/// here (vendor knowledge stays in Platform), then imported into the engine as
+/// an ordinary bearer grant with metadata. Encrypted on receipt, never read back.
 const subscriptionImportSchema = z.object({
   provider: z.enum(["anthropic", "openAi"]),
   credential: z.string().min(1),
   displayName: z.string().trim().min(1).max(200).optional(),
 });
-
-/// Coding-agent subscription grants: the `openAiChatGpt` kind, or a
-/// `static_bearer` Claude Code token tagged `metadata.subscription = claudeCode`.
-export function isSubscriptionGrant(grant: {
-  providerKind: string;
-  metadata?: Record<string, unknown>;
-}): boolean {
-  return (
-    grant.providerKind === "openAiChatGpt"
-    || (grant.providerKind === "staticBearer" && grant.metadata?.subscription === "claudeCode")
-  );
-}
 
 
 /// Secret values are accepted only on these write-only creation paths. The
@@ -751,15 +745,27 @@ export function gatewayRoutes(ctx: AppContext) {
     if (!body.ok) {
       return body.response;
     }
+    let parsed;
+    try {
+      parsed = parseSubscriptionCredential(body.data.provider, body.data.credential, Date.now());
+    } catch (error) {
+      if (error instanceof SubscriptionCredentialError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
     return withGateway(c, async () => {
-      const params: AuthSubscriptionImportParams = {
-        provider: body.data.provider,
-        credential: body.data.credential,
+      const params: AuthGrantImportParams = {
+        providerId: parsed.providerId,
+        token: parsed.secret,
         displayName: body.data.displayName,
+        subjectHint: parsed.subjectHint,
+        expiresAtMs: parsed.expiresAtMs,
+        metadata: parsed.metadata,
       };
       const client = engineClientFor(ctx, access.universe);
-      const response = await client.call("auth/subscriptions/import", params);
-      return c.json(response.result, 201);
+      const response = await client.call("auth/grants/import", params);
+      return c.json({ grant: response.result.grant, shape: parsed.shape }, 201);
     });
   });
 
@@ -1215,6 +1221,21 @@ export function gatewayRoutes(ctx: AppContext) {
     }
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
+      const existing = await client.call("environments/credentials/list", {
+        environmentId: c.req.param("environmentId"),
+      });
+      const conflict = conflictingAnthropicEnv(
+        body.data.envName,
+        (existing.result.credentials ?? []).map((credential) => credential.envName),
+      );
+      if (conflict) {
+        return c.json(
+          {
+            error: `${body.data.envName} cannot be bound alongside ${conflict}: Claude Code prefers the API key and would ignore the subscription token; unbind one first`,
+          },
+          409,
+        );
+      }
       const response = await client.call("environments/credentials/bind", {
         environmentId: c.req.param("environmentId"),
         envName: body.data.envName,

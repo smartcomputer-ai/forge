@@ -692,6 +692,7 @@ async fn grant_import(args: AuthGrantImportArgs) -> Result<()> {
             scopes: args.scopes.clone(),
             audience: args.audience.clone(),
             expires_at_ms: args.expires_at_ms,
+            metadata: None,
         })
         .await
         .map_err(crate::api_client::api_error)?

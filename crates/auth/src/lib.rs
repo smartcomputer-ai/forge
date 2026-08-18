@@ -107,7 +107,6 @@ mod memory;
 mod oauth;
 mod providers;
 mod secrets;
-mod subscriptions;
 
 pub use api_keys::{
     API_KEY_DISPLAY_PREFIX_LEN, API_KEY_SECRET_PREFIX, ApiKeyError, ApiKeyRecord, ApiKeyStore,
@@ -159,14 +158,6 @@ pub use secrets::{
     PutSecretRecord, SECRET_KIND_MODEL_API_KEY, SECRET_KIND_STATIC_BEARER, SecretRecordMeta,
     SecretStore, SecretValue,
 };
-pub use subscriptions::{
-    ANTHROPIC_CLAUDE_CODE_TOKEN_TTL_MS, ChatGptTokenSet, CodexAuthJson, OpenAiChatGptCredential,
-    OpenAiChatGptMetadata, SECRET_KIND_ANTHROPIC_CLAUDE_CODE_TOKEN,
-    SECRET_KIND_OPENAI_CHATGPT_ACCESS_TOKEN, SECRET_KIND_OPENAI_CHATGPT_ID_TOKEN,
-    SECRET_KIND_OPENAI_CHATGPT_REFRESH_TOKEN, SubscriptionCredentialError,
-    parse_anthropic_claude_code_token, parse_openai_chatgpt_credential, render_codex_auth_json,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AuthRegistryError {
     #[error("auth grant already exists: {grant_id}")]

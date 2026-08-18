@@ -1910,9 +1910,10 @@ async fn pg_live_environment_credentials_round_trip() {
         .await
         .expect("create environment");
 
-    // Two subscription grants (P127): a Codex token set and a Claude Code token.
+    // Two stored-secret grants (P127 subscription credentials are ordinary
+    // static_bearer grants carrying metadata).
     for (grant_id, kind, provider) in [
-        ("authgrant_codex", AuthProviderKind::OpenAiChatGpt, "openai"),
+        ("authgrant_codex", AuthProviderKind::StaticBearer, "openai"),
         (
             "authgrant_claude",
             AuthProviderKind::StaticBearer,
@@ -1934,7 +1935,7 @@ async fn pg_live_environment_credentials_round_trip() {
                 oauth_client: None,
                 expires_at_ms: None,
                 status: AuthGrantStatus::Active,
-                metadata: serde_json::json!({ "credential": "tokenSet" }),
+                metadata: serde_json::json!({ "subscription": "codex" }),
                 created_at_ms: 4,
             })
             .await

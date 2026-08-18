@@ -170,13 +170,12 @@ impl OAuthRefreshRuntime {
 
 /// Provider kinds whose grants carry a stored access token (optionally
 /// refreshable through OAuth). Served by [`StoredTokenSource`].
-const STORED_TOKEN_KINDS: [AuthProviderKind; 6] = [
+const STORED_TOKEN_KINDS: [AuthProviderKind; 5] = [
     AuthProviderKind::StaticBearer,
     AuthProviderKind::McpOAuth,
     AuthProviderKind::CustomOAuth,
     AuthProviderKind::GitHubAppUser,
     AuthProviderKind::GitHubOAuthApp,
-    AuthProviderKind::OpenAiChatGpt,
 ];
 
 /// Token source for grants with stored access tokens: static bearer imports

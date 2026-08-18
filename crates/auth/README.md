@@ -67,21 +67,18 @@ broker for a token for the admitted resource URL. The token is injected into
 the outgoing provider request at the last moment, while the persisted request
 blob keeps `"authorization": "<redacted>"`. Plaintext tokens never enter
 engine events, CAS blobs, Temporal history, API responses, or logs. The
-four deliberate inbound-plaintext paths are `auth/grants/import` (bearer
-token), `auth/clients/create` (client secret), `auth/providers/create`
-(GitHub App private key), and `auth/subscriptions/import` (Claude Code
-`setup-token` or Codex ChatGPT credential, P127); all encrypt on receipt and
-redact `Debug` output.
+three deliberate inbound-plaintext paths are `auth/grants/import` (bearer
+token), `auth/clients/create` (client secret), and `auth/providers/create`
+(GitHub App private key); all encrypt on receipt and redact `Debug` output.
 
-Coding-agent subscription grants are consumed only through ordinary
-environment credential bindings. A Claude Code `setup-token` is a plain
-`static_bearer` grant (`provider_id = anthropic`, tagged
-`metadata.subscription = claudeCode`) injected verbatim as
-`CLAUDE_CODE_OAUTH_TOKEN`; Codex credentials use the `openai_chatgpt` kind
-because their injected value differs: an Enterprise access token injects
-verbatim (`CODEX_ACCESS_TOKEN`), a ChatGPT token set injects as Codex
-`auth.json` content (`CODEX_AUTH_JSON`) that the environment writes to
-`$CODEX_HOME/auth.json` itself.
+Vendor-specific credentials that a *tool inside an environment* consumes
+(a Claude Code `setup-token`, a Codex `auth.json`, a kubeconfig) are not
+modelled in core: they are ordinary `static_bearer` grants imported through
+`auth/grants/import` with caller-defined `metadata`, and injected verbatim
+into environments through credential bindings. Parsing, validation, and any
+vendor login flow live in the client that imports them (Platform), and
+grant kinds only grow when core itself must *behave* differently (see
+`docs/roadmap/p127-openai-oauth-login.md`).
 
 ## Build & test
 

@@ -258,7 +258,7 @@ export interface GitHubInstallation {
   permissions?: Record<string, unknown>;
 }
 
-/// Result of `auth/subscriptions/import`: the grant plus how to bind it.
+/// Result of the Platform subscription import: the grant plus how to bind it.
 export interface SubscriptionImportResult {
   grant: SecretGrant;
   shape: "token" | "codexTokenSet";

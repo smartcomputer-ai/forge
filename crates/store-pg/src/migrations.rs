@@ -89,14 +89,9 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "environment_origin_session",
         sql: include_str!("../migrations/008_environment_origin_session.sql"),
     },
-    EmbeddedMigration {
-        version: 9,
-        name: "subscription_credentials",
-        sql: include_str!("../migrations/009_subscription_credentials.sql"),
-    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 8;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

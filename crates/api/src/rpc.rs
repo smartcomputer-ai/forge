@@ -417,8 +417,6 @@ api_methods! {
         ["List authentication grants", "Lists non-secret grant metadata for the universe, optionally filtered by status."],
     METHOD_AUTH_GRANTS_REVOKE => revoke_auth_grant(AuthGrantRevokeParams) -> AuthGrantRevokeResponse =>
         ["Revoke an authentication grant", "Marks the grant unusable by token consumers while retaining non-secret audit metadata."],
-    METHOD_AUTH_SUBSCRIPTIONS_IMPORT => import_auth_subscription(AuthSubscriptionImportParams) -> AuthSubscriptionImportResponse =>
-        ["Import a coding-agent subscription credential", "Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned."],
     METHOD_AUTH_CLIENTS_CREATE => create_auth_client(AuthClientCreateParams) -> AuthClientCreateResponse =>
         ["Register an OAuth client", "Stores provider endpoints and client identity; an optional plaintext client secret is encrypted and represented thereafter only by hasClientSecret."],
     METHOD_AUTH_CLIENTS_READ => read_auth_client(AuthClientReadParams) -> AuthClientReadResponse =>

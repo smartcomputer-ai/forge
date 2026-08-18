@@ -580,15 +580,6 @@ Marks the grant unusable by token consumers while retaining non-secret audit met
 - Params: `AuthGrantRevokeParams`
 - Result: `AgentApiOutcome<AuthGrantRevokeResponse>`
 
-### `auth/subscriptions/import`
-
-**Import a coding-agent subscription credential**
-
-Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.
-
-- Params: `AuthSubscriptionImportParams`
-- Result: `AgentApiOutcome<AuthSubscriptionImportResponse>`
-
 ### `auth/clients/create`
 
 **Register an OAuth client**

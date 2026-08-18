@@ -7,27 +7,24 @@ export type SubscriptionProvider = "anthropic" | "openAi";
 
 type GrantLike = Pick<SecretGrant, "providerKind" | "metadata">;
 
-/// A Claude Code `setup-token` is stored as an ordinary bearer grant tagged
-/// `metadata.subscription = "claudeCode"`; Codex credentials have their own
-/// `openAiChatGpt` kind because their injected value differs.
-export function isClaudeCodeGrant(grant: GrantLike): boolean {
-  return grant.providerKind === "staticBearer" && grant.metadata?.subscription === "claudeCode";
+/// Subscription credentials are ordinary bearer grants tagged by Platform at
+/// import time: `metadata.subscription = "claudeCode" | "codex"`. Core knows
+/// nothing vendor-specific about them.
+export function subscriptionProviderOf(grant: GrantLike): SubscriptionProvider | null {
+  if (grant.providerKind !== "staticBearer") return null;
+  if (grant.metadata?.subscription === "claudeCode") return "anthropic";
+  if (grant.metadata?.subscription === "codex") return "openAi";
+  return null;
 }
 
 export function isSubscriptionGrant(grant: GrantLike): boolean {
   return subscriptionProviderOf(grant) !== null;
 }
 
-export function subscriptionProviderOf(grant: GrantLike): SubscriptionProvider | null {
-  if (isClaudeCodeGrant(grant)) return "anthropic";
-  if (grant.providerKind === "openAiChatGpt") return "openAi";
-  return null;
-}
-
-/// True for an OpenAI grant that holds a full ChatGPT token set (pasted
+/// True for a Codex grant that holds a full ChatGPT token set (normalised
 /// auth.json) rather than a single Enterprise access token.
-export function isCodexTokenSet(grant: Pick<SecretGrant, "providerKind" | "metadata">): boolean {
-  return grant.providerKind === "openAiChatGpt" && grant.metadata?.credential === "tokenSet";
+export function isCodexTokenSet(grant: GrantLike): boolean {
+  return subscriptionProviderOf(grant) === "openAi" && grant.metadata?.credential === "tokenSet";
 }
 
 export interface SubscriptionBinding {
@@ -42,10 +39,11 @@ export interface SubscriptionBinding {
 
 /// How a subscription grant is expected to be bound into an environment.
 export function subscriptionBinding(grant: GrantLike): SubscriptionBinding | null {
-  if (isClaudeCodeGrant(grant)) {
+  const provider = subscriptionProviderOf(grant);
+  if (provider === "anthropic") {
     return { envName: "CLAUDE_CODE_OAUTH_TOKEN", label: "Claude Code subscription", authJson: false };
   }
-  if (grant.providerKind === "openAiChatGpt") {
+  if (provider === "openAi") {
     return isCodexTokenSet(grant)
       ? { envName: "CODEX_AUTH_JSON", label: "Codex auth.json (ChatGPT subscription)", authJson: true }
       : { envName: "CODEX_ACCESS_TOKEN", label: "Codex access token (ChatGPT Enterprise)", authJson: false };
@@ -67,6 +65,6 @@ export function subscriptionAccountLabel(grant: SecretGrant): string {
   const email = typeof grant.metadata?.email === "string" ? grant.metadata.email : grant.subjectHint;
   if (email) parts.push(email);
   if (typeof grant.metadata?.planType === "string") parts.push(grant.metadata.planType);
-  if (grant.providerKind === "openAiChatGpt" && !isCodexTokenSet(grant)) parts.push("access token");
+  if (subscriptionProviderOf(grant) === "openAi" && !isCodexTokenSet(grant)) parts.push("access token");
   return parts.join(" · ");
 }

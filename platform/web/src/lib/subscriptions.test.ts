@@ -17,8 +17,8 @@ describe("subscription grant bindings", () => {
   });
 
   it("distinguishes Codex token sets from Enterprise access tokens", () => {
-    const tokenSet = { providerKind: "openAiChatGpt", metadata: { credential: "tokenSet" } };
-    const accessToken = { providerKind: "openAiChatGpt", metadata: { credential: "token" } };
+    const tokenSet = { providerKind: "staticBearer", metadata: { subscription: "codex", credential: "tokenSet" } };
+    const accessToken = { providerKind: "staticBearer", metadata: { subscription: "codex", credential: "token" } };
     expect(isCodexTokenSet(tokenSet)).toBe(true);
     expect(subscriptionBinding(tokenSet)).toMatchObject({ envName: "CODEX_AUTH_JSON", authJson: true });
     expect(isCodexTokenSet(accessToken)).toBe(false);

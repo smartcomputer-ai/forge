@@ -708,18 +708,9 @@ impl PutEnvironmentCredential {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentCredentialSource {
-    /// The env value is the grant's credential. For most grants that is the
-    /// bearer token; a grant kind may define a richer shape (an `openai_chatgpt`
-    /// token set injects as Codex `auth.json` content, P127).
-    AuthGrant {
-        grant_id: AuthGrantId,
-    },
-    AuthProviderCredential {
-        provider_id: AuthProviderId,
-    },
-    DirectSecret {
-        secret_id: SecretId,
-    },
+    AuthGrant { grant_id: AuthGrantId },
+    AuthProviderCredential { provider_id: AuthProviderId },
+    DirectSecret { secret_id: SecretId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -4,17 +4,26 @@
 
 - Proposed 2026-08-17, revised the same day after checking `openai/codex`
   `main` and the Claude Code authentication docs.
-- **S1 + S2 implemented 2026-08-17** (D1, D2, D4 paste paths): grant kinds
-  `openai_chatgpt` (Claude Code tokens are `static_bearer` grants tagged
-  `metadata.subscription = claudeCode`), `auth/subscriptions/import`,
-  migration 009 (kind only), grant-kind-driven injection (a ChatGPT token
-  set injects as Codex `auth.json` content through the ordinary `authGrant`
-  binding), Anthropic key/token conflict guard, Integrations cards
-  (Anthropic, OpenAI) with paste dialogs and the Codex bootstrap snippet,
-  environment "Assign credential" env-name suggestions. Not yet:
-  D3 device flow / refresh / API-key outcome (S3), D5 defaults, CLI login
-  (S4), D6 (optional). Live check of `codex exec` / `claude -p` on injected
-  credentials still to run.
+- **S1 + S2 implemented 2026-08-17/18** (D1, D2, D4 paste paths), then
+  **reworked to keep vendor logic out of core**: no new grant kinds, no
+  migration, no core method. Subscription credentials are ordinary
+  `static_bearer` grants imported through `auth/grants/import` (which gained
+  a generic `metadata` field) with `metadata.subscription = claudeCode |
+  codex`; Platform parses/normalises the paste (`platform/server/src/
+  subscriptions.ts`), and the worker injects the stored value verbatim. The
+  Integrations cards (Anthropic, OpenAI), Codex bootstrap snippet, and the
+  environment "Assign credential" env-name suggestions are in place; the
+  Anthropic key/token conflict guard lives in the Platform bind route. Not
+  yet: D3 device flow / refresh / API-key outcome (S3), D5 defaults, CLI
+  login (S4), D6 (optional). Live check of `codex exec` / `claude -p` on
+  injected credentials still to run.
+- Design rule adopted during the rework (D0): **core stores, injects, and
+  brokers; it does not understand vendors.** Grant kinds grow only when core
+  must behave differently (opaque stored secret, OAuth-refreshable,
+  GitHub-App-minted, model key), never per vendor. Vendor parsing,
+  normalisation, and login flows that need no deployment secret live in the
+  client that imports the credential (Platform); core hosts a flow only when
+  a deployment secret is involved or core consumes the result at runtime.
 - Builds on [P69](archive/p69-generic-auth-token-broker.md) (auth
   substrate: `auth_flows`, grants, encrypted secrets, refresh, `modelApiKey`
   /`modelOAuth` rows), [P90](archive/p90-multi-tenancy.md),
@@ -144,84 +153,72 @@ Lightspeed today:
 
 ## Design
 
-### D1. One credential model for both vendors: a `coding_agent_subscription` grant
+### D1. One credential model for both vendors: an opaque stored secret
 
-Store subscription credentials as auth grants (encrypted secrets +
-metadata), never as loose environment secrets:
+Subscription credentials are `static_bearer` grants ("stored secret string")
+with caller-defined metadata; core neither parses nor renders them:
 
 ```text
-provider_kind      static_bearer (Claude Code; metadata.subscription =
-                   claudeCode) | openai_chatgpt
+provider_kind      static_bearer
 provider_id        anthropic | openai
-external_authorization_id
-                   Anthropic: none (opaque token) → grant per paste
-                   OpenAI:    chatgpt_account_id (from id_token)
 access_token_secret_id
                    Anthropic: the setup-token (one-year)
-                   OpenAI:    ChatGPT access token
-refresh_token_secret_id
-                   OpenAI only
-extra secret       OpenAI id_token (kind auth.openai.id_token)
+                   OpenAI:    the Enterprise access token, or the
+                              normalised auth.json document (token set)
 expires_at_ms      Anthropic: paste time + 1y (best effort)
-                   OpenAI: access-token expiry
-metadata_json      email, plan/tier, workspace/enterprise flag,
-                   last_refresh_ms, source (deviceFlow | pasted)
+                   OpenAI: access-token `exp` when decodable
+metadata_json      subscription: claudeCode | codex
+                   credential: token | tokenSet
+                   source: pasted (later: deviceFlow)
+                   email, accountId, planType (OpenAI token set)
 ```
 
-The Integrations page shows account/plan/health from this row; Disconnect
-revokes it and evicts cached tokens. `NeedsReauth` renders as *Reconnect*.
+`auth/grants/import` gained a generic `metadata` field for this; nothing
+else in core changed. The Integrations page shows account/plan/health from
+metadata; Disconnect revokes; `NeedsReauth` renders as *Reconnect*.
 
 ### D2. Anthropic: paste `claude setup-token`, inject `CLAUDE_CODE_OAUTH_TOKEN`
 
 Card copy: "Run `claude setup-token` on your machine (Pro/Max/Team), paste
-the token." Stored as D1. Environment binding
-`{ envName: "CLAUDE_CODE_OAUTH_TOKEN", source: authGrant }`. No refresh, no
-flow, no file. Guardrail: refuse to bind `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` into the same
-environment (precedence would silently pick the key). Anthropic API keys
-for Lightspeed sessions remain the existing `model:anthropic` paste path,
-shown on the same card.
+the token." Platform validates the prefix and imports it as D1. Environment
+binding `{ envName: "CLAUDE_CODE_OAUTH_TOKEN", source: authGrant }`. No
+refresh, no flow, no file. Guardrail (Platform bind route): refuse to bind
+`ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`
+into the same environment (precedence would silently pick the key).
+Anthropic API keys for Lightspeed sessions remain the existing
+`model:anthropic` paste path, shown on the same card.
 
-### D3. OpenAI: device flow in core, tokens land in the table
+### D3. OpenAI: device flow, tokens land in the table
 
-New flow kind `openai_device` on `auth_flows` (compiled preset: client id
-with env override, endpoints, scopes, extra params; not a user
-`auth_clients` row). API:
+Per D0, OpenAI's login uses a *public* PKCE client and needs no deployment
+secret, so the device flow can run in **Platform** (TypeScript) and end in
+the same generic import — core does not need an `openai_device` flow kind.
+Platform:
 
-```text
-auth/flows/start { kind: "openaiDevice", outcomes: ["chatgpt" | "apiKey"]+ }
-  -> { flowId, userCode, verificationUrl, expiresAtMs }
-auth/flows/read  { flowId } -> { status, grantId?, providerId?, error? }
-```
+- shows `user_code` + `verification_url`, polls OpenAI's `deviceauth/token`
+  from the server, exchanges the code, then
+- `chatgpt` outcome → normalises the token set exactly like the paste path
+  and imports it (`metadata.source = deviceFlow`);
+- `apiKey` outcome → id_token exchange → API key → existing
+  `model:openai` `modelApiKey` row (needs `auth/providers/update` with
+  credential replace, also wanted for GitHub App key rotation).
 
-Core polls OpenAI from a bounded background task tied to the flow row (TTL
-15 min), exchanges the code, then applies outcomes:
+Tokens transit the Platform server in memory during the flow (as pastes do
+today) and are never stored there. Refresh: Codex refreshes itself inside
+the environment; if Lightspeed's copy goes stale the card shows *Reconnect*.
+Core-side refresh is only needed if core consumes the token at runtime (D6),
+and then it should be a mechanism-level refresher, not vendor code.
 
-- `chatgpt` → D1 grant (`openai_chatgpt`), refresh via a `GrantTokenSource`
-  reusing `OAuthRefreshRuntime` locking/rotation order; `invalid_grant` →
-  `NeedsReauth`.
-- `apiKey` → id_token exchange → write/replace `model:openai`
-  `modelApiKey` row (needs `auth/providers/update` with credential replace,
-  also wanted for GitHub App key rotation). The token set is not retained
-  unless `chatgpt` was also requested.
-
-Fallbacks on the same card: paste the contents of a local `~/.codex/auth.json`
-(→ D1 grant, `source: pasted`), or an Enterprise access token (→ D1 grant
-with `metadata.enterpriseAccessToken = true`, no refresh).
-
-`auth/flows/complete { flowId, code }` is added as a generic manual-code
-primitive at the same time (future CLI browser flow, other vendors).
+Fallbacks on the same card: paste a local `~/.codex/auth.json` or an
+Enterprise access token (both shipped).
 
 ### D4. OpenAI: injection into environments
 
 - Enterprise access token → binding `{ envName: "CODEX_ACCESS_TOKEN" }`.
-- Plus/Pro token set → an ordinary `authGrant` binding, e.g.
-  `CODEX_AUTH_JSON`. The **grant kind decides the injected value**: for an
-  `openai_chatgpt` token-set grant the resolver renders the auth.json
-  document from the grant's stored tokens (refreshing first, once S3
-  exists) instead of a bare bearer. No new binding kind. The environment
-  writes the file: one line in the image entrypoint or the profile / job
-  pre-command:
+- Plus/Pro token set → binding `{ envName: "CODEX_AUTH_JSON" }`; the stored
+  value *is* the normalised auth.json document, injected verbatim like any
+  other credential. The environment writes it: one line in the image
+  entrypoint or the profile / job pre-command:
 
   ```sh
   install -d -m 700 "${CODEX_HOME:-$HOME/.codex}" && \
@@ -230,12 +227,12 @@ primitive at the same time (future CLI browser flow, other vendors).
   ```
 
   Lightspeed ships this snippet as a documented bootstrap and as a default
-  in first-party environment templates; the daemon is untouched.
+  in first-party environment templates; the daemon and the injector are
+  untouched.
 
-Refresh ownership: Lightspeed refreshes on injection so jobs start fresh;
-Codex may refresh inside the environment during long jobs. Whether that
-invalidates Lightspeed's copy depends on rotation, which O3 measures live
-before choosing between "nothing needed", "report-back message from the
+Refresh ownership: the environment's Codex refreshes on its own; whether
+that invalidates Lightspeed's copy depends on rotation, which S3 measures
+live before choosing between "nothing needed", "report-back from the
 environment", or "accept reconnect". Do not guess.
 
 ### D5. Profiles
@@ -254,7 +251,7 @@ never a dependency of anything else in this plan. Concretely:
 - Endpoint profile (`base_url` + header overlay) on `ResolvedProviderAuth`;
   the OpenAI Responses client applies it per request (clients stay
   deployment singletons).
-- A `model:openai` row bound (`modelOAuth`) to an `openai_chatgpt` grant
+- A `model:openai` row bound (`modelOAuth`) to a Codex token-set grant
   resolves to `https://chatgpt.com/backend-api/codex`, `Authorization:
   Bearer <access>`, `ChatGPT-Account-ID`, `originator`, a Codex-shaped
   `User-Agent`, `session-id`/`thread-id`; body forced to `store: false`,
@@ -278,56 +275,54 @@ loop is the API-key outcome of D3.
 
 ## Security Invariants
 
-1. Platform never sees tokens: pastes go browser → Platform → core in one
-   request and are encrypted on receipt; device-flow tokens never leave
-   core; reads return ids/status/metadata only.
-2. Device `user_code` is bound to the starting universe and flow TTL.
-3. Subscription grants inject only through explicit bindings; they never
-   resolve as model-provider credentials for `api.openai.com` /
-   `api.anthropic.com`.
+1. Platform never persists tokens: pastes (and, in S3, device-flow tokens)
+   pass through the Platform server in memory only, are handed to core in
+   one request, and are encrypted on receipt; reads return ids/status/
+   metadata only.
+2. Device `user_code` is bound to the starting universe and a TTL.
+3. Subscription grants inject only through explicit bindings; nothing binds
+   them as model-provider credentials for `api.openai.com` /
+   `api.anthropic.com` (they are plain bearer grants; only `model:*`
+   provider rows feed the LLM runtime, and those are separate).
 4. Env values are delivered via the existing `secret_env` path (never
    argv, never logged); the auth.json bootstrap unsets the variable after
    writing.
-5. Refresh is single-flight per grant; `invalid_grant` → `NeedsReauth`,
-   cached tokens evicted; Disconnect revokes and evicts.
+5. Disconnect revokes the grant; if core-side refresh is ever added (D6),
+   it is single-flight per grant with `invalid_grant` → `NeedsReauth`.
 6. Universe deletion cascades grants, secrets, and cached tokens.
 
 ## Persistence Delta
 
-- `AuthProviderKind`/`auth_grants.provider_kind`: `openai_chatgpt` (+
-  `openai_oauth` for the flow row). Claude Code tokens reuse `static_bearer`;
-  a dedicated kind was considered and rejected as carrying no behavior.
-- New secret kind `auth.openai.id_token`.
-- `auth_flows`: allow the new kind; device ids in metadata.
-- Optional profile field for default bindings.
-- No new tables. `external_authorization_id` + uniqueness shared with the
-  GitHub App roadmap migration.
+- None in core beyond the generic `metadata` field on `auth/grants/import`
+  (already a column). No new grant kinds, no migration.
+- Optional profile/universe field for default bindings (D5).
+- If D6 is ever built: endpoint profile on `ResolvedProviderAuth`, no schema.
 
 ## Slices
 
 ### S1: Anthropic subscription card (no flow) — done 2026-08-17
 
-- Claude Code token import (`static_bearer` + tag); Integrations card
-  (paste, status, disconnect); `CLAUDE_CODE_OAUTH_TOKEN` binding helper and
-  the API-key/OAuth-token conflict guard; profile default binding.
+- Claude Code token import (Platform parse → `auth/grants/import` +
+  metadata); Integrations card (paste, status, disconnect);
+  `CLAUDE_CODE_OAUTH_TOKEN` env-name suggestion and the API-key/OAuth-token
+  conflict guard in the Platform bind route.
 - Live test: environment job runs `claude -p` on the token.
 
 ### S2: OpenAI paste paths + Codex injection — done 2026-08-17 (live test pending)
 
-- `openai_chatgpt` grant kind (pasted auth.json or Enterprise access token),
-  auth.json rendering in the injector for token-set grants,
-  `CODEX_ACCESS_TOKEN` / `CODEX_AUTH_JSON` bindings, documented bootstrap
-  snippet + template default.
+- Codex credential import (Platform parses/normalises auth.json or accepts an
+  Enterprise access token → `auth/grants/import` + metadata),
+  `CODEX_ACCESS_TOKEN` / `CODEX_AUTH_JSON` env-name suggestions, documented
+  bootstrap snippet + template default.
 - Live test: environment job runs `codex exec` on a Plus/Pro token set with
   no `OPENAI_API_KEY`.
 
-### S3: OpenAI device flow + refresh + API-key outcome
+### S3: OpenAI device flow + API-key outcome (Platform)
 
-- `openai_device` flow kind, background poll, `auth/flows/complete`
-  primitive, refresh source with rotation, API-key exchange →
-  `model:openai` (+ `auth/providers/update`), card gets *Sign in with
-  OpenAI*. Live measurement of refresh-token rotation → decide D4
-  follow-up.
+- Device flow in the Platform server, polling from the server, normalise +
+  import; API-key exchange → `model:openai` (+ `auth/providers/update` in
+  core, generic); card gets *Sign in with OpenAI*. Live measurement of
+  refresh-token rotation → decide the D4 follow-up.
 
 ### S4: CLI parity
 

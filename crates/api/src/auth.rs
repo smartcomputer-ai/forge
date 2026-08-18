@@ -11,9 +11,6 @@ pub enum AuthProviderKind {
     CustomOAuth,
     ModelApiKey,
     ModelOAuth,
-    /// ChatGPT subscription credential for Codex (Enterprise access token or
-    /// a Plus/Pro token set).
-    OpenAiChatGpt,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -102,6 +99,11 @@ pub struct AuthGrantImportParams {
     pub audience: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
+    /// Non-secret, caller-defined metadata stored on the grant and returned
+    /// by reads (for example which product a pasted subscription token
+    /// belongs to). Must be a JSON object; never put secret material here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for AuthGrantImportParams {
@@ -123,66 +125,6 @@ impl std::fmt::Debug for AuthGrantImportParams {
 #[serde(rename_all = "camelCase")]
 pub struct AuthGrantImportResponse {
     pub grant: AuthGrantView,
-}
-
-/// Coding-agent subscription providers accepted by `auth/subscriptions/import`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum SubscriptionProvider {
-    /// Claude Code: paste the token printed by `claude setup-token`.
-    Anthropic,
-    /// Codex: paste a ChatGPT Enterprise access token or the contents of a
-    /// local `$CODEX_HOME/auth.json` (Plus/Pro/Team token set).
-    OpenAi,
-}
-
-/// Import a coding-agent subscription credential as an auth grant (P127).
-/// Like `auth/grants/import`, `credential` is a deliberate inbound-plaintext
-/// path: parsed and encrypted on receipt, never returned by any method.
-/// `Debug` output redacts it; request logging must never echo these params.
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthSubscriptionImportParams {
-    pub provider: SubscriptionProvider,
-    /// The pasted secret: Claude Code token, Codex access token, or `auth.json`.
-    pub credential: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_name: Option<String>,
-    /// Optional stable grant id; generated when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub grant_id: Option<String>,
-}
-
-impl std::fmt::Debug for AuthSubscriptionImportParams {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AuthSubscriptionImportParams")
-            .field("provider", &self.provider)
-            .field("credential", &"<redacted>")
-            .field("display_name", &self.display_name)
-            .field("grant_id", &self.grant_id)
-            .finish()
-    }
-}
-
-/// How the imported credential is shaped, so clients can pick the matching
-/// environment binding (env var vs rendered `auth.json`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum SubscriptionCredentialShape {
-    /// A single token: bind as an environment variable
-    /// (`CLAUDE_CODE_OAUTH_TOKEN`, `CODEX_ACCESS_TOKEN`).
-    Token,
-    /// A ChatGPT token set: bind as an environment variable (e.g.
-    /// `CODEX_AUTH_JSON`); the injected value is Codex `auth.json` content
-    /// for the environment to write to `$CODEX_HOME/auth.json`.
-    CodexTokenSet,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthSubscriptionImportResponse {
-    pub grant: AuthGrantView,
-    pub shape: SubscriptionCredentialShape,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

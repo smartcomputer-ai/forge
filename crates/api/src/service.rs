@@ -325,11 +325,6 @@ pub trait AgentApiService: Send + Sync {
         params: AuthGrantImportParams,
     ) -> Result<AgentApiOutcome<AuthGrantImportResponse>, AgentApiError>;
 
-    async fn import_auth_subscription(
-        &self,
-        params: AuthSubscriptionImportParams,
-    ) -> Result<AgentApiOutcome<AuthSubscriptionImportResponse>, AgentApiError>;
-
     async fn list_auth_grants(
         &self,
         params: AuthGrantListParams,

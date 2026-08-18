@@ -2224,21 +2224,6 @@ impl AgentApiService for TestService {
         }))
     }
 
-    async fn import_auth_subscription(
-        &self,
-        params: AuthSubscriptionImportParams,
-    ) -> Result<AgentApiOutcome<AuthSubscriptionImportResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(AuthSubscriptionImportResponse {
-            grant: test_auth_grant(
-                params
-                    .grant_id
-                    .unwrap_or_else(|| "authgrant_sub".to_owned()),
-                AuthGrantStatus::Active,
-            ),
-            shape: SubscriptionCredentialShape::Token,
-        }))
-    }
-
     async fn list_auth_grants(
         &self,
         _params: AuthGrantListParams,

@@ -3933,7 +3933,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "EnvironmentCredentialSourceView": {
           "oneOf": [
             {
-              "description": "The grant's credential. Most grants inject their bearer token; an\n`openAiChatGpt` token-set grant injects Codex `auth.json` content.",
               "properties": {
                 "grantId": {
                   "type": "string"
@@ -7356,6 +7355,9 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "metadata": {
+          "description": "Non-secret, caller-defined metadata stored on the grant and returned\nby reads (for example which product a pasted subscription token\nbelongs to). Must be a JSON object; never put secret material here."
+        },
         "providerId": {
           "type": [
             "string",
@@ -7460,62 +7462,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
-    "name": "lightspeed_auth_subscriptions_import",
-    "method": "auth/subscriptions/import",
-    "summary": "Import a coding-agent subscription credential",
-    "description": "Accepts a pasted Claude Code token (`claude setup-token`) or a Codex credential (ChatGPT Enterprise access token or a local auth.json token set), encrypts it, and returns grant metadata plus the credential shape for environment binding. Token material is never returned.",
-    "paramsType": "AuthSubscriptionImportParams",
-    "resultType": "AgentApiOutcome<AuthSubscriptionImportResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Import a coding-agent subscription credential as an auth grant (P127).\nLike `auth/grants/import`, `credential` is a deliberate inbound-plaintext\npath: parsed and encrypted on receipt, never returned by any method.\n`Debug` output redacts it; request logging must never echo these params.",
-      "properties": {
-        "credential": {
-          "description": "The pasted secret: Claude Code token, Codex access token, or `auth.json`.",
-          "type": "string"
-        },
-        "displayName": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "grantId": {
-          "description": "Optional stable grant id; generated when absent.",
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "provider": {
-          "$ref": "#/definitions/SubscriptionProvider"
-        }
-      },
-      "required": [
-        "provider",
-        "credential"
-      ],
-      "type": "object",
-      "definitions": {
-        "SubscriptionProvider": {
-          "description": "Coding-agent subscription providers accepted by `auth/subscriptions/import`.",
-          "oneOf": [
-            {
-              "const": "anthropic",
-              "description": "Claude Code: paste the token printed by `claude setup-token`.",
-              "type": "string"
-            },
-            {
-              "const": "openAi",
-              "description": "Codex: paste a ChatGPT Enterprise access token or the contents of a\nlocal `$CODEX_HOME/auth.json` (Plus/Pro/Team token set).",
-              "type": "string"
-            }
-          ]
-        }
-      }
-    }
-  },
-  {
     "name": "lightspeed_auth_clients_create",
     "method": "auth/clients/create",
     "summary": "Register an OAuth client",
@@ -7594,26 +7540,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "type": "object",
       "definitions": {
         "AuthProviderKind": {
-          "oneOf": [
-            {
-              "enum": [
-                "staticBearer",
-                "mcpOAuth",
-                "gitHubApp",
-                "gitHubAppUser",
-                "gitHubOAuthApp",
-                "customOAuth",
-                "modelApiKey",
-                "modelOAuth"
-              ],
-              "type": "string"
-            },
-            {
-              "const": "openAiChatGpt",
-              "description": "ChatGPT subscription credential for Codex (Enterprise access token or\na Plus/Pro token set).",
-              "type": "string"
-            }
-          ]
+          "enum": [
+            "staticBearer",
+            "mcpOAuth",
+            "gitHubApp",
+            "gitHubAppUser",
+            "gitHubOAuthApp",
+            "customOAuth",
+            "modelApiKey",
+            "modelOAuth"
+          ],
+          "type": "string"
         },
         "TokenEndpointAuthMethod": {
           "enum": [
