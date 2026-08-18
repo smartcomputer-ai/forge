@@ -163,6 +163,7 @@ impl GatewayAgentApi {
                 metadata,
                 retention,
                 idle_policy,
+                credentials,
             }) => {
                 let (environment, provisioned) = self
                     .ensure_profile_provisioned_environment(
@@ -176,6 +177,16 @@ impl GatewayAgentApi {
                         idle_policy.clone(),
                     )
                     .await?;
+                if provisioned {
+                    // Initial credential set for a freshly provisioned
+                    // environment (P127 D5): ordinary bindings from here on;
+                    // a re-apply that finds the environment does not resync.
+                    self.bind_profile_environment_credentials(
+                        environment.environment_id.as_str(),
+                        credentials,
+                    )
+                    .await?;
+                }
                 applied.environment_provisioned = provisioned;
                 applied.active_environment_changed = self
                     .apply_profile_active_environment(
@@ -438,6 +449,61 @@ impl GatewayAgentApi {
             )
             .await?;
         Ok((environment, true))
+    }
+
+    /// Bind the profile's requested credentials to a just-provisioned
+    /// environment. Each entry goes through the same validation as
+    /// `environments/credentials/bind`; a failure surfaces as the apply
+    /// error (the session start fails; a `closeWithSession` environment is
+    /// cleaned up when the session closes).
+    async fn bind_profile_environment_credentials(
+        &self,
+        environment_id: &str,
+        credentials: &[api::ProfileEnvironmentCredential],
+    ) -> Result<(), AgentApiError> {
+        for credential in credentials {
+            self.bind_environment_credential_record(EnvironmentCredentialBindParams {
+                environment_id: environment_id.to_owned(),
+                env_name: credential.env_name.clone(),
+                source: credential.source.clone(),
+            })
+            .await
+            .map_err(|error| {
+                AgentApiError::new(
+                    error.kind,
+                    format!(
+                        "profile environment credential {}: {}",
+                        credential.env_name, error.message
+                    ),
+                )
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Validate profile credential references against this universe before a
+    /// session or environment exists (grant active, provider has a credential,
+    /// secret present). Mirrors the bind-time checks so a broken reference
+    /// fails at admission with a typed error.
+    pub(super) async fn validate_profile_environment_credentials(
+        &self,
+        credentials: &[api::ProfileEnvironmentCredential],
+    ) -> Result<(), AgentApiError> {
+        for credential in credentials {
+            environment_credentials::validate_credential_env_name(&credential.env_name)?;
+            self.credential_source_from_api(credential.source.clone())
+                .await
+                .map_err(|error| {
+                    AgentApiError::new(
+                        error.kind,
+                        format!(
+                            "profile environment credential {}: {}",
+                            credential.env_name, error.message
+                        ),
+                    )
+                })?;
+        }
+        Ok(())
     }
 
     async fn apply_profile_active_environment(

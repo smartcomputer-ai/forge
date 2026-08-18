@@ -681,14 +681,7 @@ export type RunAcceptedSourceView =
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
-  | "staticBearer"
-  | "mcpOAuth"
-  | "gitHubApp"
-  | "gitHubAppUser"
-  | "gitHubOAuthApp"
-  | "customOAuth"
-  | "modelApiKey"
-  | "modelOAuth";
+  "staticBearer" | "mcpOAuth" | "gitHubApp" | "customOAuth" | "modelApiKey" | "modelOAuth";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEndpointAuthMethod".
@@ -899,6 +892,16 @@ export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
 export type ModelSource = "provider";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProviderCredentialStatus".
+ */
+export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelProviderCredentialSource".
+ */
+export type ModelProviderCredentialSource = "none" | "universe" | "deployment";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "OperatorEnvironmentProviderTransport".
  */
 export type OperatorEnvironmentProviderTransport =
@@ -930,6 +933,14 @@ export type ProfileEnvironment =
       type: "existing";
     }
   | {
+      /**
+       * Credentials bound to the environment right after it is
+       * provisioned, before activation (P127 D5): references to universe
+       * grants/providers/secrets, never values. They become ordinary
+       * environment credential bindings; the profile is the initial set,
+       * not a live sync. Not available for `existing` environments.
+       */
+      credentials?: ProfileEnvironmentCredential[];
       displayName?: string | null;
       /**
        * Optional staged idle policy for the provisioned environment
@@ -2757,6 +2768,15 @@ export interface ModelCapabilitiesView {
 export interface ModelProviderDiscoveryView {
   apiKinds: string[];
   /**
+   * Whether a usable credential exists for this provider — a stable signal
+   * for clients (no string matching on `error`).
+   */
+  credential: ModelProviderCredentialStatus;
+  /**
+   * Where the credential used for this universe comes from.
+   */
+  credentialSource: ModelProviderCredentialSource;
+  /**
    * Sanitized Lightspeed error; never a credential, request header, or raw
    * upstream response body.
    */
@@ -3118,6 +3138,20 @@ export interface AgentProfile {
   profileId: ProfileId;
   revision: number;
   updatedAtMs: number;
+}
+/**
+ * One environment credential binding requested by a profile: the same shape
+ * as `environments/credentials/bind`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironmentCredential".
+ */
+export interface ProfileEnvironmentCredential {
+  /**
+   * Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).
+   */
+  envName: string;
+  source: EnvironmentCredentialSourceView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3731,6 +3765,14 @@ export interface AuthGrantImportParams {
   displayName?: string | null;
   expiresAtMs?: number | null;
   grantId?: string | null;
+  /**
+   * Non-secret, caller-defined metadata stored on the grant and returned
+   * by reads (for example which product a pasted subscription token
+   * belongs to). Must be a JSON object; never put secret material here.
+   */
+  metadata?: {
+    [k: string]: unknown;
+  };
   providerId?: string | null;
   scopes?: string[];
   subjectHint?: string | null;

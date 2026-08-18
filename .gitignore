@@ -252,3 +252,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# local development environment daemon workspace/state (./dev.sh)
+.lightspeed-dev/

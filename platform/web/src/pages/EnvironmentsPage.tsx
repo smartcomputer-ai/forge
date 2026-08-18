@@ -8,8 +8,6 @@ import {
   type EnvironmentCredentialSource,
   type EnvironmentProviderBinding,
   type EnvironmentTemplate,
-  type SecretGrant,
-  type SecretProvider,
   type SecretsInventory,
 } from "@/api";
 import {
@@ -47,6 +45,13 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { LoadingNote, PageHeader, UniverseNotFound } from "@/components/page";
+import {
+  environmentCredentialAvailable,
+  environmentCredentialOptions,
+  environmentCredentialSourceFromValue,
+  environmentCredentialSourceLabel,
+  environmentCredentialSourceValue,
+} from "@/lib/environment-credentials";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 
 /// Universe environments are provisioned through operator-enabled bindings and
@@ -100,6 +105,15 @@ function ProviderList({ universeId }: { universeId: string }) {
     queryFn: () =>
       api<SecretsInventory>("GET", `/api/v1/universes/${universeId}/secrets`),
   });
+  const hints = useQuery({
+    queryKey: ["environment-hints", universeId],
+    queryFn: () =>
+      api<{ devEnvdEndpoint: string | null }>(
+        "GET",
+        `/api/v1/universes/${universeId}/environments/hints`,
+      ),
+    staleTime: 300_000,
+  });
 
   const bindingRows = (bindings.data ?? [])
     .slice()
@@ -122,9 +136,23 @@ function ProviderList({ universeId }: { universeId: string }) {
       <PageHeader
         title="Environments"
         description="Computers and sandboxes agents can use in this universe."
-        actions={creatableTemplates.length > 0
-          ? <CreateEnvironmentDialog universeId={universeId} templates={creatableTemplates} />
-          : undefined}
+        actions={
+          <div className="flex items-center gap-2">
+            <RegisterExternalEnvironmentDialog
+              universeId={universeId}
+              suggestedEndpoint={hints.data?.devEnvdEndpoint ?? null}
+              alreadyRegistered={(environments.data ?? []).some(
+                (environment) =>
+                  environment.source.type === "external"
+                  && hints.data?.devEnvdEndpoint
+                  && environment.source.connection.endpoint === hints.data.devEnvdEndpoint,
+              )}
+            />
+            {creatableTemplates.length > 0 && (
+              <CreateEnvironmentDialog universeId={universeId} templates={creatableTemplates} />
+            )}
+          </div>
+        }
       />
       {(bindings.isLoading || templates.isLoading || environments.isLoading || secrets.isLoading) && <LoadingNote />}
       {bindings.error && (
@@ -501,6 +529,8 @@ function AssignCredentialDialog({
                 onValueChange={(value) => {
                   setSourceValue(value as string);
                   setError(null);
+                  const suggested = sources.find((s) => s.value === value)?.suggestedEnvName;
+                  if (suggested && !envName.trim()) setEnvName(suggested);
                 }}
               >
                 <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
@@ -532,79 +562,6 @@ function AssignCredentialDialog({
       )}
     </>
   );
-}
-
-function environmentCredentialOptions(secrets: SecretsInventory | undefined) {
-  if (!secrets) return [];
-  return [
-    ...secrets.grants
-      .filter((grant) => grant.status === "active")
-      .map((grant) => ({
-        value: `grant:${grant.grantId}`,
-        label: grant.providerId === "environment-secret"
-          ? `${accessGrantName(grant)} · Environment secret`
-          : `${accessGrantName(grant)} · Access credential`,
-      })),
-    ...secrets.providers
-      .filter((provider) => provider.status === "active" && provider.hasCredential)
-      .map((provider) => ({
-        value: `provider:${provider.credentialId}`,
-        label: `${modelProviderName(provider)} · Model provider API key`,
-      })),
-  ];
-}
-
-function environmentCredentialSourceFromValue(value: string): EnvironmentCredentialSource {
-  if (value.startsWith("grant:")) {
-    return { type: "authGrant", grantId: value.slice("grant:".length) };
-  }
-  if (value.startsWith("provider:")) {
-    return { type: "authProviderCredential", providerId: value.slice("provider:".length) };
-  }
-  throw new Error("invalid environment credential source");
-}
-
-function environmentCredentialSourceLabel(
-  source: EnvironmentCredentialSource,
-  secrets: SecretsInventory | undefined,
-): string {
-  if (source.type === "authGrant") {
-    const grant = secrets?.grants.find((candidate) => candidate.grantId === source.grantId);
-    return grant ? accessGrantName(grant) : source.grantId;
-  }
-  if (source.type === "authProviderCredential") {
-    const provider = secrets?.providers.find(
-      (candidate) => candidate.credentialId === source.providerId,
-    );
-    return provider ? modelProviderName(provider) : source.providerId;
-  }
-  return `Direct secret (${source.secretId})`;
-}
-
-function environmentCredentialAvailable(
-  source: EnvironmentCredentialSource,
-  secrets: SecretsInventory | undefined,
-): boolean {
-  if (!secrets || source.type === "directSecret") return true;
-  if (source.type === "authGrant") {
-    return secrets.grants.some(
-      (grant) => grant.grantId === source.grantId && grant.status === "active",
-    );
-  }
-  return secrets.providers.some(
-    (provider) =>
-      provider.credentialId === source.providerId
-      && provider.status === "active"
-      && provider.hasCredential,
-  );
-}
-
-function accessGrantName(grant: SecretGrant): string {
-  return grant.displayName ?? grant.subjectHint ?? grant.grantId;
-}
-
-function modelProviderName(provider: SecretProvider): string {
-  return provider.displayName ?? provider.providerId;
 }
 
 /// Observed steady power state derived from the lifecycle status (P126).
@@ -1026,4 +983,104 @@ function relativeTime(ms: number): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m ago`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h ago`;
   return `${Math.floor(delta / 86_400_000)}d ago`;
+}
+
+/// Attach a reachable `lightspeed-envd` directly (no provider). In development
+/// `./dev.sh` starts one and Platform offers its endpoint as the default.
+function RegisterExternalEnvironmentDialog({
+  universeId,
+  suggestedEndpoint,
+  alreadyRegistered,
+}: {
+  universeId: string;
+  suggestedEndpoint: string | null;
+  alreadyRegistered: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [endpoint, setEndpoint] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const register = useMutation({
+    mutationFn: () =>
+      api<Environment>("POST", `/api/v1/universes/${universeId}/environments/external`, {
+        endpoint: endpoint.trim(),
+        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["environments", universeId] });
+      setOpen(false);
+      setError(null);
+    },
+    onError: (cause) => setError(cause.message),
+  });
+  const isDevSuggestion = Boolean(suggestedEndpoint) && endpoint.trim() === suggestedEndpoint;
+
+  return (
+    <>
+      <Button
+        variant={suggestedEndpoint && !alreadyRegistered ? "default" : "outline"}
+        onClick={() => {
+          setEndpoint(suggestedEndpoint && !alreadyRegistered ? suggestedEndpoint : "");
+          setDisplayName(suggestedEndpoint && !alreadyRegistered ? "Local daemon" : "");
+          setError(null);
+          setOpen(true);
+        }}
+      >
+        {suggestedEndpoint && !alreadyRegistered ? "Attach local daemon" : "Register external"}
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Register external environment</DialogTitle>
+            <DialogDescription>
+              Attach a running <span className="font-mono">lightspeed-envd</span> that Lightspeed can
+              reach directly, without a provider. Reachability is checked when it is used.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <Field>
+              <FieldLabel htmlFor="external-endpoint">Daemon endpoint</FieldLabel>
+              <input
+                id="external-endpoint"
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 font-mono text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                value={endpoint}
+                onChange={(event) => {
+                  setEndpoint(event.target.value);
+                  setError(null);
+                }}
+                placeholder="ws://127.0.0.1:19091/"
+                spellCheck={false}
+              />
+              <FieldDescription>
+                {isDevSuggestion
+                  ? "The daemon started by ./dev.sh on this machine; its workspace is .lightspeed-dev/envd/workspace."
+                  : "WebSocket URL of the daemon (ws:// or wss://)."}
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="external-display-name">Display name</FieldLabel>
+              <input
+                id="external-display-name"
+                className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30"
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="Local daemon"
+              />
+            </Field>
+            {error && <p className="text-sm text-destructive">{error}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button
+              disabled={!/^wss?:\/\/\S+$/.test(endpoint.trim()) || register.isPending}
+              onClick={() => register.mutate()}
+            >
+              {register.isPending ? "Registering…" : "Register"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }

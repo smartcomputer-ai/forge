@@ -11,6 +11,7 @@ import {
   MessagesSquare,
   Palette,
   PackageOpen,
+  Plug,
   RadioTower,
   Server,
   ServerCog,
@@ -186,6 +187,11 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                           to={`/u/${active.slug}/settings/general`}
                           icon={Settings}
                           label="General"
+                        />
+                        <NavItem
+                          to={`/u/${active.slug}/settings/integrations`}
+                          icon={Plug}
+                          label="Integrations"
                         />
                         <NavItem
                           to={`/u/${active.slug}/settings/setups`}

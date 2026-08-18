@@ -573,9 +573,11 @@ async fn validate_environments(
         Some(api::ProfileEnvironment::Provision {
             provider_id,
             template_id,
+            credentials,
             ..
         }) => {
             validate_provision_environment(api, provider_id, template_id, report).await;
+            validate_provision_credentials(api, credentials, report).await;
             return;
         }
         Some(api::ProfileEnvironment::Existing { environment_id }) => environment_id,
@@ -631,6 +633,68 @@ async fn validate_environments(
                 "profile environment binding {binding_id} is missing"
             )),
             _ => {}
+        }
+    }
+}
+
+/// Profile provision credentials must reference active grants / configured
+/// providers in this universe; the applier rejects broken references at
+/// session start, so surface them at validation time.
+async fn validate_provision_credentials(
+    api: &HttpAgentApi,
+    credentials: &[api::ProfileEnvironmentCredential],
+    report: &mut ValidationReport,
+) {
+    for credential in credentials {
+        match &credential.source {
+            api::EnvironmentCredentialSourceView::AuthGrant { grant_id } => {
+                match api
+                    .read_auth_grant(api::AuthGrantReadParams {
+                        grant_id: grant_id.clone(),
+                    })
+                    .await
+                {
+                    Ok(response)
+                        if response.result.grant.status != api::AuthGrantStatus::Active =>
+                    {
+                        report.error(format!(
+                            "profile environment credential {} references grant {grant_id}, which is {:?}",
+                            credential.env_name, response.result.grant.status
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) => report.error(format!(
+                        "profile environment credential {} references grant {grant_id}: {}",
+                        credential.env_name,
+                        api_error(error)
+                    )),
+                }
+            }
+            api::EnvironmentCredentialSourceView::AuthProviderCredential { provider_id } => {
+                match api
+                    .read_auth_provider(api::AuthProviderReadParams {
+                        provider_id: provider_id.clone(),
+                    })
+                    .await
+                {
+                    Ok(response) if !response.result.provider.has_credential => {
+                        report.error(format!(
+                            "profile environment credential {} references provider {provider_id}, which has no credential",
+                            credential.env_name
+                        ));
+                    }
+                    Ok(_) => {}
+                    Err(error) => report.error(format!(
+                        "profile environment credential {} references provider {provider_id}: {}",
+                        credential.env_name,
+                        api_error(error)
+                    )),
+                }
+            }
+            api::EnvironmentCredentialSourceView::DirectSecret { .. } => {
+                // Secrets have no read method by design; the applier checks
+                // existence at session start.
+            }
         }
     }
 }

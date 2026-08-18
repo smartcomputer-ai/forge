@@ -28,7 +28,7 @@ for argument in "$@"; do
   case "${argument}" in
     --plan) plan_only=true ;;
     --help|-h) help_only=true ;;
-    --allow-missing-api-keys) ;;
+    --allow-missing-api-keys|--require-api-keys|--no-envd) ;;
     --volumes|-v) ;;
     *) positionals+=("${argument}") ;;
   esac

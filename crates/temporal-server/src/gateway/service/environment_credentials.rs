@@ -67,7 +67,7 @@ impl GatewayAgentApi {
         })
     }
 
-    async fn credential_source_from_api(
+    pub(super) async fn credential_source_from_api(
         &self,
         source: EnvironmentCredentialSourceView,
     ) -> Result<EnvironmentCredentialSource, AgentApiError> {

@@ -130,8 +130,6 @@ pub(super) fn registry_auth_provider_kind(value: api::AuthProviderKind) -> auth:
         api::AuthProviderKind::StaticBearer => auth::AuthProviderKind::StaticBearer,
         api::AuthProviderKind::McpOAuth => auth::AuthProviderKind::McpOAuth,
         api::AuthProviderKind::GitHubApp => auth::AuthProviderKind::GitHubApp,
-        api::AuthProviderKind::GitHubAppUser => auth::AuthProviderKind::GitHubAppUser,
-        api::AuthProviderKind::GitHubOAuthApp => auth::AuthProviderKind::GitHubOAuthApp,
         api::AuthProviderKind::CustomOAuth => auth::AuthProviderKind::CustomOAuth,
         api::AuthProviderKind::ModelApiKey => auth::AuthProviderKind::ModelApiKey,
         api::AuthProviderKind::ModelOAuth => auth::AuthProviderKind::ModelOAuth,

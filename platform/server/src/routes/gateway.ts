@@ -5,9 +5,12 @@ import {
   LightspeedRpcError,
   type AgentProfileInput,
   type AuthGrantImportParams,
+  type AuthGitHubInstallationGrantParams,
+  type AuthGitHubInstallationListParams,
   type AuthGrantListParams,
   type AuthProviderCreateParams,
   type EnvironmentCreateParams,
+  type EnvironmentExternalCreateParams,
   type EnvironmentListParams,
   type McpServerInput,
   type ModelListParams,
@@ -22,6 +25,12 @@ import {
 } from "@lightspeed/foundry/contracts";
 import type { AppContext, ApiVariables } from "../context.js";
 import { parseBody } from "../http.js";
+import {
+  conflictingAnthropicEnv,
+  isSubscriptionGrant,
+  parseSubscriptionCredential,
+  SubscriptionCredentialError,
+} from "../subscriptions.js";
 import { universeForSession } from "./universes.js";
 import {
   asManifest,
@@ -124,6 +133,42 @@ const environmentCredentialBindSchema = z.object({
   ]),
 });
 
+const externalEnvironmentCreateSchema = z.object({
+  endpoint: z
+    .string()
+    .trim()
+    .regex(/^wss?:\/\/[^\s]+$/, "endpoint must be a ws:// or wss:// URL"),
+  displayName: z.string().trim().min(1).max(200).optional(),
+});
+
+/// Stable, id-safe request id for an external environment endpoint.
+export function externalEnvironmentRequestId(endpoint: string): string {
+  const slug = endpoint
+    .replace(/^wss?:\/\//, "")
+    .replace(/\/+$/, "")
+    .replace(/[^A-Za-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 100);
+  return `external-${slug || "envd"}`;
+}
+
+const modelKeyPutSchema = z.object({
+  provider: z.enum(["openai", "anthropic"]),
+  credential: z.string().min(1),
+  displayName: z.string().trim().min(1).max(200).optional(),
+  replace: z.boolean().optional(),
+});
+
+/// Coding-agent subscription credential paste (P127): parsed and normalised
+/// here (vendor knowledge stays in Platform), then imported into the engine as
+/// an ordinary bearer grant with metadata. Encrypted on receipt, never read back.
+const subscriptionImportSchema = z.object({
+  provider: z.enum(["anthropic", "openAi"]),
+  credential: z.string().min(1),
+  displayName: z.string().trim().min(1).max(200).optional(),
+});
+
+
 /// Secret values are accepted only on these write-only creation paths. The
 /// engine encrypts them before persistence and all read routes return metadata
 /// and stable handles only.
@@ -138,6 +183,20 @@ const bearerGrantCreateSchema = z.object({
   displayName: z.string().trim().min(1).max(200).optional(),
   subjectHint: z.string().trim().min(1).max(200).optional(),
   token: z.string().min(1),
+});
+
+/// Register an existing GitHub App by its numeric id and private key. The
+/// PEM is forwarded once to the engine, encrypted there, and never read back.
+const gitHubAppCreateSchema = z.object({
+  providerId: z.string().trim().min(1).max(128).optional(),
+  displayName: z.string().trim().min(1).max(200).optional(),
+  appId: z.string().trim().regex(/^[0-9]+$/, "GitHub App ID must be numeric"),
+  apiBaseUrl: z.string().trim().url().optional(),
+  privateKey: z.string().min(1),
+});
+
+const gitHubInstallationGrantSchema = z.object({
+  displayName: z.string().trim().min(1).max(200).optional(),
 });
 
 const environmentSecretCreateSchema = z.object({
@@ -688,6 +747,213 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  /// Model provider API keys for Lightspeed sessions (`model:<provider>` rows).
+  /// `replace` swaps an existing key: the row is deleted and recreated because
+  /// `auth/providers/create` has no update semantics.
+  app.post("/:id/integrations/model-keys", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, modelKeyPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const providerId = modelProviderCredentialId(body.data.provider);
+      if (body.data.replace) {
+        try {
+          await client.call("auth/providers/delete", { providerId });
+        } catch (error) {
+          if (!(error instanceof LightspeedRpcError && error.kind === "not_found")) {
+            throw error;
+          }
+        }
+      }
+      const params: AuthProviderCreateParams = {
+        providerId,
+        displayName: body.data.displayName,
+        config: { type: "modelApiKey" },
+        credential: body.data.credential,
+      };
+      const response = await client.call("auth/providers/create", params);
+      return c.json(modelProviderCredentialView(response.result.provider), 201);
+    });
+  });
+
+  /// Coding-agent subscription credentials (Claude Code / Codex): grant
+  /// metadata only, never token material.
+  app.get("/:id/integrations/subscriptions", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/grants/list", {});
+      return c.json(
+        (response.result.grants ?? []).filter((grant) => isSubscriptionGrant(grant)),
+      );
+    });
+  });
+
+  app.post("/:id/integrations/subscriptions", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, subscriptionImportSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    let parsed;
+    try {
+      parsed = parseSubscriptionCredential(body.data.provider, body.data.credential, Date.now());
+    } catch (error) {
+      if (error instanceof SubscriptionCredentialError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+    return withGateway(c, async () => {
+      const params: AuthGrantImportParams = {
+        providerId: parsed.providerId,
+        token: parsed.secret,
+        displayName: body.data.displayName,
+        subjectHint: parsed.subjectHint,
+        expiresAtMs: parsed.expiresAtMs,
+        metadata: parsed.metadata,
+      };
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/grants/import", params);
+      return c.json({ grant: response.result.grant, shape: parsed.shape }, 201);
+    });
+  });
+
+  app.delete("/:id/integrations/subscriptions/:grantId", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/grants/revoke", {
+        grantId: c.req.param("grantId"),
+      });
+      return c.json(response.result.grant);
+    });
+  });
+
+  /// GitHub integration inventory: universe-owned GitHub Apps (BYO providers)
+  /// and the installation grants minted through them. No secret material.
+  app.get("/:id/integrations/github", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const [providers, grants] = await Promise.all([
+        client.call("auth/providers/list", {}),
+        client.call("auth/grants/list", {}),
+      ]);
+      return c.json({
+        apps: (providers.result.providers ?? []).filter(
+          (provider) => provider.config.type === "githubApp",
+        ),
+        grants: (grants.result.grants ?? []).filter(
+          (grant) => grant.providerKind === "gitHubApp",
+        ),
+      });
+    });
+  });
+
+  app.post("/:id/integrations/github/apps", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, gitHubAppCreateSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const params: AuthProviderCreateParams = {
+        providerId: body.data.providerId ?? gitHubAppProviderId(body.data.appId),
+        displayName: body.data.displayName,
+        config: {
+          type: "githubApp",
+          appId: body.data.appId,
+          apiBaseUrl: body.data.apiBaseUrl,
+        },
+        credential: body.data.privateKey,
+      };
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/providers/create", params);
+      return c.json(response.result.provider, 201);
+    });
+  });
+
+  app.delete("/:id/integrations/github/apps/:providerId", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/providers/delete", {
+        providerId: c.req.param("providerId"),
+      });
+      return c.json(response.result.provider);
+    });
+  });
+
+  /// Live from GitHub through the App's own JWT: only installations of this
+  /// universe-owned App are visible, so listing is safe to expose to members.
+  app.get("/:id/integrations/github/apps/:providerId/installations", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: AuthGitHubInstallationListParams = {
+        providerId: c.req.param("providerId"),
+      };
+      const response = await client.call("auth/github/installations/list", params);
+      return c.json(response.result.installations ?? []);
+    });
+  });
+
+  app.post(
+    "/:id/integrations/github/apps/:providerId/installations/:installationId/grant",
+    async (c) => {
+      const access = await universeForSession(ctx, c, c.req.param("id"), true);
+      if (!access) {
+        return c.json({ error: "not found" }, 404);
+      }
+      const installationId = Number(c.req.param("installationId"));
+      if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+        return c.json({ error: "installationId must be a positive integer" }, 400);
+      }
+      const body = await parseBody(c, gitHubInstallationGrantSchema);
+      if (!body.ok) {
+        return body.response;
+      }
+      return withGateway(c, async () => {
+        const params: AuthGitHubInstallationGrantParams = {
+          providerId: c.req.param("providerId"),
+          installationId,
+          displayName: body.data.displayName,
+        };
+        const client = engineClientFor(ctx, access.universe);
+        const response = await client.call("auth/github/installations/grant", params);
+        return c.json(response.result.grant, 201);
+      });
+    },
+  );
+
   app.post("/:id/secrets/grants", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -992,6 +1258,39 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  /// Register a directly attached `lightspeed-envd` as an external environment
+  /// (no provider). The request id is derived from the endpoint so repeating
+  /// the registration converges on the same environment.
+  app.post("/:id/environments/external", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, externalEnvironmentCreateSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: EnvironmentExternalCreateParams = {
+        requestId: externalEnvironmentRequestId(body.data.endpoint),
+        connection: { endpoint: body.data.endpoint, transport: "webSocket" },
+        displayName: body.data.displayName,
+      };
+      const response = await client.call("environments/external/create", params);
+      return c.json(response.result.environment, 201);
+    });
+  });
+
+  /// Environment-related hints for the UI (development daemon endpoint).
+  app.get("/:id/environments/hints", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return c.json({ devEnvdEndpoint: ctx.env.devEnvdEndpoint });
+  });
+
   app.get("/:id/environments/:environmentId/credentials", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -1017,6 +1316,21 @@ export function gatewayRoutes(ctx: AppContext) {
     }
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
+      const existing = await client.call("environments/credentials/list", {
+        environmentId: c.req.param("environmentId"),
+      });
+      const conflict = conflictingAnthropicEnv(
+        body.data.envName,
+        (existing.result.credentials ?? []).map((credential) => credential.envName),
+      );
+      if (conflict) {
+        return c.json(
+          {
+            error: `${body.data.envName} cannot be bound alongside ${conflict}: Claude Code prefers the API key and would ignore the subscription token; unbind one first`,
+          },
+          409,
+        );
+      }
       const response = await client.call("environments/credentials/bind", {
         environmentId: c.req.param("environmentId"),
         envName: body.data.envName,
@@ -1229,6 +1543,12 @@ export function gatewayRoutes(ctx: AppContext) {
   });
 
   return app;
+}
+
+/// Default provider id for a universe-owned GitHub App: stable per App so a
+/// re-registration of the same App conflicts instead of duplicating.
+export function gitHubAppProviderId(appId: string): string {
+  return `github-app:${appId.trim()}`;
 }
 
 export function modelProviderCredentialId(providerId: string): string {

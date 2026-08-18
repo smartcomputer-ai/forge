@@ -2256,6 +2256,9 @@
             "null"
           ]
         },
+        "metadata": {
+          "description": "Non-secret, caller-defined metadata stored on the grant and returned\nby reads (for example which product a pasted subscription token\nbelongs to). Must be a JSON object; never put secret material here."
+        },
         "providerId": {
           "type": [
             "string",
@@ -2644,8 +2647,6 @@
         "staticBearer",
         "mcpOAuth",
         "gitHubApp",
-        "gitHubAppUser",
-        "gitHubOAuthApp",
         "customOAuth",
         "modelApiKey",
         "modelOAuth"
@@ -5799,6 +5800,45 @@
       },
       "type": "object"
     },
+    "ModelProviderCredentialSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "none"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "universe",
+          "description": "A universe-owned `model:<provider>` credential.",
+          "type": "string"
+        },
+        {
+          "const": "deployment",
+          "description": "The deployment-wide fallback key from server configuration.",
+          "type": "string"
+        }
+      ]
+    },
+    "ModelProviderCredentialStatus": {
+      "oneOf": [
+        {
+          "const": "configured",
+          "description": "A credential was found and was not rejected by the provider (other\ndiscovery errors, e.g. transport, may still be reported).",
+          "type": "string"
+        },
+        {
+          "const": "missing",
+          "description": "No credential anywhere: no universe row and no deployment fallback.",
+          "type": "string"
+        },
+        {
+          "const": "invalid",
+          "description": "A credential exists but is unusable (disabled/legacy universe row) or\nwas rejected by the provider (HTTP 401/403).",
+          "type": "string"
+        }
+      ]
+    },
     "ModelProviderDiscoveryView": {
       "description": "Best-effort status for one provider. A provider failure does not discard\nmodels discovered from other providers.",
       "properties": {
@@ -5807,6 +5847,22 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "credential": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelProviderCredentialStatus"
+            }
+          ],
+          "description": "Whether a usable credential exists for this provider — a stable signal\nfor clients (no string matching on `error`)."
+        },
+        "credentialSource": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelProviderCredentialSource"
+            }
+          ],
+          "description": "Where the credential used for this universe comes from."
         },
         "error": {
           "description": "Sanitized Lightspeed error; never a credential, request header, or raw\nupstream response body.",
@@ -5828,7 +5884,9 @@
       },
       "required": [
         "providerId",
-        "apiKinds"
+        "apiKinds",
+        "credential",
+        "credentialSource"
       ],
       "type": "object"
     },
@@ -6757,6 +6815,13 @@
           "additionalProperties": false,
           "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
           "properties": {
+            "credentials": {
+              "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+              "items": {
+                "$ref": "#/definitions/ProfileEnvironmentCredential"
+              },
+              "type": "array"
+            },
             "displayName": {
               "type": [
                 "string",
@@ -6808,6 +6873,24 @@
           "type": "object"
         }
       ]
+    },
+    "ProfileEnvironmentCredential": {
+      "additionalProperties": false,
+      "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+      "properties": {
+        "envName": {
+          "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+          "type": "string"
+        },
+        "source": {
+          "$ref": "#/definitions/EnvironmentCredentialSourceView"
+        }
+      },
+      "required": [
+        "envName",
+        "source"
+      ],
+      "type": "object"
     },
     "ProfileEnvironmentRetention": {
       "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",

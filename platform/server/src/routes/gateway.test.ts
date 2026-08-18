@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   credentialIdConflictMessage,
   environmentSecretGrantParams,
+  gitHubAppProviderId,
   modelProviderCredentialId,
   modelProviderCredentialView,
 } from "./gateway.js";
@@ -69,5 +70,25 @@ describe("environment secrets", () => {
       displayName: "px-dev SSH key",
       token: privateKey,
     });
+  });
+});
+
+describe("github app provider ids", () => {
+  it("derives a stable provider id from the numeric App ID", () => {
+    expect(gitHubAppProviderId("123456")).toBe("github-app:123456");
+    expect(gitHubAppProviderId(" 123456 ")).toBe("github-app:123456");
+  });
+});
+
+describe("external environment request ids", () => {
+  it("derives a stable id-safe request id from the endpoint", async () => {
+    const { externalEnvironmentRequestId } = await import("./gateway.js");
+    expect(externalEnvironmentRequestId("ws://127.0.0.1:19091/")).toBe("external-127-0-0-1-19091");
+    expect(externalEnvironmentRequestId("wss://envd.example.com/ws")).toBe(
+      "external-envd-example-com-ws",
+    );
+    expect(externalEnvironmentRequestId("ws://127.0.0.1:19091")).toBe(
+      externalEnvironmentRequestId("ws://127.0.0.1:19091/"),
+    );
   });
 });

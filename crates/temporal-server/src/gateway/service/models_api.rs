@@ -67,12 +67,16 @@ impl ModelDiscoveryService {
     }
 
     async fn list_openai(&self) -> (Vec<ModelView>, ModelProviderDiscoveryView) {
+        let mut source = ModelProviderCredentialSource::Deployment;
         let result = async {
             let auth = self
                 .provider_keys
                 .resolve_provider_key(OPENAI_PROVIDER_ID)
                 .await
                 .map_err(DiscoveryError::ProviderKey)?;
+            if auth.is_some() {
+                source = ModelProviderCredentialSource::Universe;
+            }
             self.openai
                 .list_models_with_auth(auth.as_ref().map(|auth| auth.as_request_auth()))
                 .await
@@ -102,6 +106,7 @@ impl ModelDiscoveryService {
                         OPENAI_PROVIDER_ID,
                         &[OPENAI_RESPONSES_API_KIND],
                         fetched_at_ms,
+                        source,
                     ),
                 )
             }
@@ -110,19 +115,24 @@ impl ModelDiscoveryService {
                 provider_failure(
                     OPENAI_PROVIDER_ID,
                     &[OPENAI_RESPONSES_API_KIND],
-                    error.sanitized_message(),
+                    &error,
+                    source,
                 ),
             ),
         }
     }
 
     async fn list_anthropic(&self) -> (Vec<ModelView>, ModelProviderDiscoveryView) {
+        let mut source = ModelProviderCredentialSource::Deployment;
         let result = async {
             let auth = self
                 .provider_keys
                 .resolve_provider_key(ANTHROPIC_PROVIDER_ID)
                 .await
                 .map_err(DiscoveryError::ProviderKey)?;
+            if auth.is_some() {
+                source = ModelProviderCredentialSource::Universe;
+            }
             self.anthropic
                 .list_models_with_auth(auth.as_ref().map(|auth| auth.as_request_auth()))
                 .await
@@ -157,6 +167,7 @@ impl ModelDiscoveryService {
                         ANTHROPIC_PROVIDER_ID,
                         &[ANTHROPIC_MESSAGES_API_KIND],
                         fetched_at_ms,
+                        source,
                     ),
                 )
             }
@@ -165,7 +176,8 @@ impl ModelDiscoveryService {
                 provider_failure(
                     ANTHROPIC_PROVIDER_ID,
                     &[ANTHROPIC_MESSAGES_API_KIND],
-                    error.sanitized_message(),
+                    &error,
+                    source,
                 ),
             ),
         }
@@ -221,12 +233,15 @@ fn provider_success(
     provider_id: &str,
     api_kinds: &[&str],
     fetched_at_ms: i64,
+    source: ModelProviderCredentialSource,
 ) -> ModelProviderDiscoveryView {
     ModelProviderDiscoveryView {
         provider_id: provider_id.to_owned(),
         api_kinds: api_kinds.iter().map(|kind| (*kind).to_owned()).collect(),
         fetched_at_ms: Some(fetched_at_ms),
         error: None,
+        credential: ModelProviderCredentialStatus::Configured,
+        credential_source: source,
     }
 }
 
@@ -240,13 +255,17 @@ fn discovery_now_ms() -> i64 {
 fn provider_failure(
     provider_id: &str,
     api_kinds: &[&str],
-    error: String,
+    error: &DiscoveryError,
+    source: ModelProviderCredentialSource,
 ) -> ModelProviderDiscoveryView {
+    let (credential, credential_source) = error.credential_status(source);
     ModelProviderDiscoveryView {
         provider_id: provider_id.to_owned(),
         api_kinds: api_kinds.iter().map(|kind| (*kind).to_owned()).collect(),
         fetched_at_ms: None,
-        error: Some(error),
+        error: Some(error.sanitized_message()),
+        credential,
+        credential_source,
     }
 }
 
@@ -256,6 +275,32 @@ enum DiscoveryError {
 }
 
 impl DiscoveryError {
+    /// Typed credential status for the client, derived from the failure and
+    /// the credential source that was attempted.
+    fn credential_status(
+        &self,
+        attempted: ModelProviderCredentialSource,
+    ) -> (ModelProviderCredentialStatus, ModelProviderCredentialSource) {
+        match self {
+            // A universe row exists but is disabled/legacy/unusable.
+            Self::ProviderKey(ProviderKeyError::NotUsable { .. }) => (
+                ModelProviderCredentialStatus::Invalid,
+                ModelProviderCredentialSource::Universe,
+            ),
+            // No universe row and no deployment key: the client had nothing to send.
+            Self::Provider(LlmApiError::Configuration(_)) => (
+                ModelProviderCredentialStatus::Missing,
+                ModelProviderCredentialSource::None,
+            ),
+            Self::Provider(LlmApiError::HttpStatus(error))
+                if error.status == 401 || error.status == 403 =>
+            {
+                (ModelProviderCredentialStatus::Invalid, attempted)
+            }
+            _ => (ModelProviderCredentialStatus::Configured, attempted),
+        }
+    }
+
     fn sanitized_message(&self) -> String {
         match self {
             Self::ProviderKey(ProviderKeyError::NotUsable { .. }) => {
@@ -339,6 +384,50 @@ mod tests {
         assert_eq!(
             error.sanitized_message(),
             "provider returned an invalid model list"
+        );
+    }
+
+    #[test]
+    fn credential_status_distinguishes_missing_invalid_and_configured() {
+        use ModelProviderCredentialSource as Source;
+        use ModelProviderCredentialStatus as Status;
+
+        let missing = DiscoveryError::Provider(LlmApiError::Configuration(
+            llm_clients::ConfigurationError::new("OPENAI_API_KEY must be set"),
+        ));
+        assert_eq!(
+            missing.credential_status(Source::Deployment),
+            (Status::Missing, Source::None)
+        );
+
+        let unusable = DiscoveryError::ProviderKey(ProviderKeyError::NotUsable {
+            provider_id: "openai".to_owned(),
+            message: "disabled".to_owned(),
+        });
+        assert_eq!(
+            unusable.credential_status(Source::Deployment),
+            (Status::Invalid, Source::Universe)
+        );
+
+        let rejected = DiscoveryError::Provider(LlmApiError::HttpStatus(Box::new(
+            llm_clients::ProviderHttpError::new(
+                "openai:responses",
+                reqwest::StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                Default::default(),
+            ),
+        )));
+        assert_eq!(
+            rejected.credential_status(Source::Universe),
+            (Status::Invalid, Source::Universe)
+        );
+
+        let transport = DiscoveryError::Provider(LlmApiError::Decode(
+            llm_clients::DecodeError::with_raw("invalid", "body"),
+        ));
+        assert_eq!(
+            transport.credential_status(Source::Deployment),
+            (Status::Configured, Source::Deployment)
         );
     }
 

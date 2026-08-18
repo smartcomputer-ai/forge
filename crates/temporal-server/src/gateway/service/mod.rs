@@ -1101,14 +1101,21 @@ impl GatewayAgentApi {
             config,
         );
         let session_config = self.session_config_for_start(start_config).await?;
-        if let Some(ProfileEnvironment::Provision { provider_id, .. }) = resolved_profile
+        if let Some(ProfileEnvironment::Provision {
+            provider_id,
+            credentials,
+            ..
+        }) = resolved_profile
             .as_ref()
             .and_then(|profile| profile.document.environment.as_ref())
         {
             // Fail the common misconfigurations before a session or a VM
-            // exists: the universe needs an enabled binding for the provider
-            // and the effective config must let the session use it.
+            // exists: the universe needs an enabled binding for the provider,
+            // the requested credentials must resolve here, and the effective
+            // config must let the session use it.
             self.resolve_profile_provision_binding(provider_id).await?;
+            self.validate_profile_environment_credentials(credentials)
+                .await?;
             let feature = session_config.features.environments.as_ref().ok_or_else(|| {
                 AgentApiError::rejected(
                     "profile provisions an environment but the effective session config does not grant features.environments",

@@ -6,8 +6,6 @@ pub enum AuthProviderKind {
     StaticBearer,
     McpOAuth,
     GitHubApp,
-    GitHubAppUser,
-    GitHubOAuthApp,
     CustomOAuth,
     ModelApiKey,
     ModelOAuth,
@@ -99,6 +97,11 @@ pub struct AuthGrantImportParams {
     pub audience: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at_ms: Option<i64>,
+    /// Non-secret, caller-defined metadata stored on the grant and returned
+    /// by reads (for example which product a pasted subscription token
+    /// belongs to). Must be a JSON object; never put secret material here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
 }
 
 impl std::fmt::Debug for AuthGrantImportParams {

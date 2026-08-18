@@ -41,7 +41,9 @@ pub(super) fn auth_grant_import_draft(
         access_token_secret: Some(secret_id),
         refresh_token_secret: None,
         oauth_client: None,
-        metadata: serde_json::Value::Object(Default::default()),
+        metadata: params
+            .metadata
+            .unwrap_or_else(|| serde_json::Value::Object(Default::default())),
         expires_at_ms: params.expires_at_ms,
         status: auth::AuthGrantStatus::Active,
         created_at_ms: now_ms,
@@ -191,8 +193,6 @@ pub(super) fn api_auth_provider_kind(value: auth::AuthProviderKind) -> api::Auth
         auth::AuthProviderKind::StaticBearer => api::AuthProviderKind::StaticBearer,
         auth::AuthProviderKind::McpOAuth => api::AuthProviderKind::McpOAuth,
         auth::AuthProviderKind::GitHubApp => api::AuthProviderKind::GitHubApp,
-        auth::AuthProviderKind::GitHubAppUser => api::AuthProviderKind::GitHubAppUser,
-        auth::AuthProviderKind::GitHubOAuthApp => api::AuthProviderKind::GitHubOAuthApp,
         auth::AuthProviderKind::CustomOAuth => api::AuthProviderKind::CustomOAuth,
         auth::AuthProviderKind::ModelApiKey => api::AuthProviderKind::ModelApiKey,
         auth::AuthProviderKind::ModelOAuth => api::AuthProviderKind::ModelOAuth,

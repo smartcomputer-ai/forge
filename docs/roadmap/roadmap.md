@@ -128,6 +128,14 @@
 - [ ] incremental tool discovery support (at least OAI)
 
 ## Environments & Sandboxes
+- [ ] Local process environment provider for development: a provider binary
+  implementing the environment provider protocol by spawning one
+  `lightspeed-envd` per environment on the developer machine (per-target
+  ports, relay routing, adopt/power semantics), so profile-provisioned
+  environments (P125) can be exercised on machines without Incus. The
+  provider server in `environment-provider-incus` is already generic over an
+  `IncusBackend`; today `./dev.sh full` starts one daemon that is attached as
+  an external environment instead (2026-08-18).
 - [x] [P117](p117-environment-compute-plan.md) — agreed target architecture for
   operator-registered reachable compute providers, lightweight universe
   bindings, provider-wide offering/ingress policy, stable environment
@@ -187,7 +195,10 @@
   session and workflow-tool primitives
 
 ## Security Auth
-- [ ] Provider OAuth login
+- [ ] [P127](p127-openai-oauth-login.md) — Provider OAuth login:
+  subscription credentials for Claude Code / Codex in environments
+  (Anthropic setup-token paste, OpenAI device flow), OpenAI API key via
+  sign-in
 - [ ] Send secrets to sandbox/VM/env
 - [ ] Design capability based model for agents
 

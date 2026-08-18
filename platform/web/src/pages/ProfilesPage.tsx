@@ -43,6 +43,7 @@ import {
   resourceFeatureDisableReasons,
   setupResourceFeatureError,
 } from "@/lib/sessions/resource-features";
+import { useSecretsInventory } from "@/lib/environment-credentials";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
@@ -570,12 +571,14 @@ function InitialEnvironmentSection({
         `/api/v1/universes/${universeId}/environment-templates`,
       ),
   });
+  const secrets = useSecretsInventory(universeId);
   return (
     <ProfileEnvironmentEditor
       value={draft.environment}
       environments={environments.data}
       bindings={bindings.data}
       templates={templates.data}
+      secrets={secrets.data}
       disabled={!hasSessionFeature(draft.config, "environments")}
       title="Environment"
       description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."

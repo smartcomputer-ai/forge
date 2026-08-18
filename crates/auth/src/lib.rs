@@ -158,7 +158,6 @@ pub use secrets::{
     PutSecretRecord, SECRET_KIND_MODEL_API_KEY, SECRET_KIND_STATIC_BEARER, SecretRecordMeta,
     SecretStore, SecretValue,
 };
-
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum AuthRegistryError {
     #[error("auth grant already exists: {grant_id}")]

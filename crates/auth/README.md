@@ -71,6 +71,15 @@ three deliberate inbound-plaintext paths are `auth/grants/import` (bearer
 token), `auth/clients/create` (client secret), and `auth/providers/create`
 (GitHub App private key); all encrypt on receipt and redact `Debug` output.
 
+Vendor-specific credentials that a *tool inside an environment* consumes
+(a Claude Code `setup-token`, a Codex `auth.json`, a kubeconfig) are not
+modelled in core: they are ordinary `static_bearer` grants imported through
+`auth/grants/import` with caller-defined `metadata`, and injected verbatim
+into environments through credential bindings. Parsing, validation, and any
+vendor login flow live in the client that imports them (Platform), and
+grant kinds only grow when core itself must *behave* differently (see
+`docs/roadmap/p127-openai-oauth-login.md`).
+
 ## Build & test
 
 ```bash

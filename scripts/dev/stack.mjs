@@ -51,7 +51,7 @@ if (cli.planOnly) {
   process.exit(0);
 }
 
-validateProviderCredentials(plan, cli.allowMissingApiKeys);
+validateProviderCredentials(plan, cli.requireApiKeys);
 ensureLocalTooling(plan);
 if (plan.profile !== "infra") {
   assertSupervisorStopped();
@@ -92,7 +92,11 @@ function parseCli(argv) {
   const args = [...argv];
   const help = removeFlag(args, "--help") || removeFlag(args, "-h");
   const planOnly = removeFlag(args, "--plan");
-  const allowMissingApiKeys = removeFlag(args, "--allow-missing-api-keys");
+  // Accepted for compatibility; missing keys only warn since keys can be
+  // added per universe from the Platform UI (Integrations).
+  removeFlag(args, "--allow-missing-api-keys");
+  const requireApiKeys = removeFlag(args, "--require-api-keys");
+  const noEnvd = removeFlag(args, "--no-envd");
   let action = "start";
   let profile = "full";
 
@@ -109,11 +113,14 @@ function parseCli(argv) {
   if (planOnly && action !== "start") {
     throw new TypeError("--plan is supported only for start profiles");
   }
-  if (allowMissingApiKeys && action !== "start") {
-    throw new TypeError("--allow-missing-api-keys is supported only when starting a profile");
+  if (requireApiKeys && action !== "start") {
+    throw new TypeError("--require-api-keys is supported only when starting a profile");
+  }
+  if (noEnvd && action !== "start") {
+    throw new TypeError("--no-envd is supported only when starting a profile");
   }
 
-  return { action, profile, planOnly, help, volumes, allowMissingApiKeys };
+  return { action, profile, planOnly, help, volumes, requireApiKeys, noEnvd };
 }
 
 function removeFlag(args, flag) {
@@ -170,6 +177,17 @@ function createPlan(profile, sourceEnv) {
       : runtimeRpc;
   const runtimeAuthMode =
     sourceEnv.LIGHTSPEED_AUTH_MODE ?? (profile === "full" ? "trusted-header" : "single");
+  // Local environment daemon: a directly attached `lightspeed-envd` on the
+  // developer machine (no provider; registered as an external environment).
+  const envdEnabled =
+    (profile === "runtime" || profile === "full") &&
+    !cli.noEnvd &&
+    (sourceEnv.LIGHTSPEED_DEV_ENVD ?? "on") !== "off";
+  const envdListen = sourceEnv.LIGHTSPEED_ENVD_LISTEN ?? "127.0.0.1:19091";
+  const envdPort = addressPort(envdListen, 19_091);
+  const envdWorkspace =
+    sourceEnv.LIGHTSPEED_DEV_ENVD_CWD ?? path.join(repoRoot, ".lightspeed-dev", "envd", "workspace");
+  const envdEndpoint = `ws://${envdListen.startsWith(":") ? "127.0.0.1" : envdListen.split(":")[0]}:${envdPort}/`;
   const connectorNames = profile === "full" ? parseConnectors(sourceEnv.LIGHTSPEED_CHANNELS_CONNECTORS) : [];
   if (profile !== "full" && sourceEnv.LIGHTSPEED_CHANNELS_CONNECTORS?.trim()) {
     throw new TypeError("LIGHTSPEED_CHANNELS_CONNECTORS is supported only by the full development profile");
@@ -207,6 +225,9 @@ function createPlan(profile, sourceEnv) {
     LIGHTSPEED_CONFIGURATOR_MCP_RPC_URL:
       sourceEnv.LIGHTSPEED_CONFIGURATOR_MCP_RPC_URL ?? runtimeRpc,
     TEMPORAL_ADDRESS: temporalAddress,
+    ...(envdEnabled
+      ? { LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT: envdEndpoint }
+      : {}),
     ...(healthUrls.length === 0 || sourceEnv.LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS
       ? {}
       : { LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS: healthUrls.join(",") }),
@@ -235,6 +256,23 @@ function createPlan(profile, sourceEnv) {
       cwd: repoRoot,
       env,
     });
+    if (envdEnabled) {
+      mkdirSync(envdWorkspace, { recursive: true });
+      ports.push({ name: "environment daemon", port: envdPort });
+      readiness.push({ name: "environment daemon", port: envdPort });
+      processes.push({
+        name: "envd",
+        command: "cargo",
+        args: ["run", "-p", "environment-daemon", "--bin", "lightspeed-envd"],
+        cwd: repoRoot,
+        env: {
+          ...env,
+          LIGHTSPEED_ENVD_LISTEN: envdListen,
+          LIGHTSPEED_ENVD_CWD: envdWorkspace,
+          LIGHTSPEED_ENVD_STATE_DIR: path.join(envdWorkspace, "..", "state"),
+        },
+      });
+    }
   }
 
   if (profile === "platform" || profile === "full") {
@@ -313,6 +351,7 @@ function createPlan(profile, sourceEnv) {
     ports: uniquePorts(ports),
     readiness,
     connectors: connectorNames,
+    envd: envdEnabled ? { endpoint: envdEndpoint, workspace: envdWorkspace } : null,
     tools: profile === "platform" || profile === "full" ? [tsx, vite] : [],
   };
 }
@@ -411,13 +450,10 @@ function ensureLocalTooling(plan) {
   }
 }
 
-function validateProviderCredentials(plan, allowMissingApiKeys) {
-  const usesRuntime = plan.profile === "full" || plan.profile === "runtime";
-  if (!usesRuntime) {
-    if (allowMissingApiKeys) {
-      throw new TypeError(
-        "--allow-missing-api-keys applies only to the full and runtime profiles",
-      );
+function validateProviderCredentials(plan, requireApiKeys) {
+  if (!["full", "runtime"].includes(plan.profile)) {
+    if (requireApiKeys) {
+      throw new TypeError("--require-api-keys applies only to the full and runtime profiles");
     }
     return;
   }
@@ -425,15 +461,16 @@ function validateProviderCredentials(plan, allowMissingApiKeys) {
     (value) => value?.trim() && !value.startsWith("set_your_"),
   );
   if (configured) return;
-  if (!allowMissingApiKeys) {
+  if (requireApiKeys) {
     throw new Error(
-      "no OPENAI_API_KEY or ANTHROPIC_API_KEY is configured; copy .env.example to .env and set a provider key, or pass --allow-missing-api-keys",
+      "no OPENAI_API_KEY or ANTHROPIC_API_KEY is configured; set a deployment key in .env or drop --require-api-keys and add keys per universe under Integrations",
     );
   }
   console.warn(`
-[credentials] No OPENAI_API_KEY or ANTHROPIC_API_KEY is configured.
-[credentials] Continuing because --allow-missing-api-keys was provided.
-[credentials] Provider-backed runs will fail until credentials are configured.`);
+[credentials] No deployment-wide OPENAI_API_KEY or ANTHROPIC_API_KEY is configured.
+[credentials] Starting anyway: add provider API keys per universe in the Platform UI
+[credentials] (Settings -> Integrations). Sessions fail until a key exists for their provider.
+[credentials] Pass --require-api-keys to make this fatal (for CI).`);
 }
 
 async function runDevelopmentAction(options, env) {
@@ -700,6 +737,9 @@ function printPlan(plan) {
   }
   console.log(`connectors: ${plan.connectors.length > 0 ? plan.connectors.join(", ") : "none"}`);
   console.log(`runtime auth: ${plan.env.LIGHTSPEED_AUTH_MODE}`);
+  console.log(
+    `environment daemon: ${plan.envd ? `${plan.envd.endpoint} (workspace ${plan.envd.workspace})` : "off"}`,
+  );
 }
 
 function printRunning(plan) {
@@ -708,6 +748,9 @@ function printRunning(plan) {
   console.log(`  profile       ${plan.profile}`);
   if (plan.profile === "runtime" || plan.profile === "full") {
     console.log(`  runtime       ${plan.env.LIGHTSPEED_ENDPOINT}`);
+    if (plan.envd) {
+      console.log(`  envd          ${plan.envd.endpoint}  (attach: Environments -> Register external)`);
+    }
   }
   if (platform) {
     console.log(`  platform API  http://127.0.0.1:${plan.env.PORT ?? "3000"}`);
@@ -731,8 +774,11 @@ function printHelp() {
   console.log(`Usage:
   ./dev.sh                                 Bootstrap and start the full editable product
   ./dev.sh [start] <profile>               Start full, platform, runtime, or infra
-  ./dev.sh [profile] --allow-missing-api-keys
-                                           Permit full/runtime startup without provider keys
+  ./dev.sh [profile] --require-api-keys    Fail full/runtime startup without provider keys
+                                           (default only warns; keys can be added per
+                                           universe under Settings -> Integrations)
+  ./dev.sh [profile] --no-envd             Do not start the local environment daemon
+                                           (same as LIGHTSPEED_DEV_ENVD=off)
   ./dev.sh --plan <profile>                Print a profile without starting it
   ./dev.sh status                          Show host supervisor and infrastructure
   ./dev.sh stop                            Stop host processes; keep infrastructure

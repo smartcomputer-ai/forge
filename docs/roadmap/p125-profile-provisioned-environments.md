@@ -95,9 +95,18 @@ ProfileEnvironment (tag "type"):
   applier resolves the universe's binding for that provider at apply time and
   fails with a typed error when there is none or it is disabled.
 - Absence still means "leave the session's active environment unchanged".
-- Profiles remain references-only: no credentials, no provider config, no
-  images. The provider still validates the template and applies its own
-  policy; Lightspeed still persists no quotas.
+- Profiles remain references-only: no credential *values*, no provider
+  config, no images. The provider still validates the template and applies
+  its own policy; Lightspeed still persists no quotas.
+- 2026-08-18 (P127 D5): `provision` gained an optional `credentials` list —
+  `[{ envName, source }]` with the same source shape as
+  `environments/credentials/bind` (grant / provider credential / secret
+  *references*). The applier binds them right after `create_environment`
+  and before activation, only when it actually provisioned the environment
+  (a re-apply that finds the session's environment does not resync); they
+  are ordinary environment bindings from then on. References are validated
+  at profile put and at session start (`existing` environments do not take
+  the list: they own their bindings).
 
 Rejected alternatives:
 

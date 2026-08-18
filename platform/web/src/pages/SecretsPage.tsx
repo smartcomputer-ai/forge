@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, KeyRound, Plus, ShieldOff, Trash2 } from "lucide-react";
 import {
@@ -61,9 +62,10 @@ import {
   SectionHeader,
   UniverseNotFound,
 } from "@/components/page";
+import { subscriptionProviderOf } from "@/lib/subscriptions";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 
-type SecretKind = "provider" | "bearer" | "environment";
+type SecretKind = "bearer" | "environment";
 
 export function SecretsPage({ admin }: { admin: boolean }) {
   const { universe, slug, isLoading } = useActiveUniverse();
@@ -75,10 +77,11 @@ export function SecretsPage({ admin }: { admin: boolean }) {
     return <UniverseNotFound slug={slug} />;
   }
 
-  return <SecretsList universeId={universe.id} />;
+  return <SecretsList universeId={universe.id} slug={universe.slug} />;
 }
 
-function SecretsList({ universeId }: { universeId: string }) {
+function SecretsList({ universeId, slug }: { universeId: string; slug: string }) {
+  const integrationsHref = `/u/${slug}/settings/integrations`;
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const inventory = useQuery({
@@ -124,7 +127,7 @@ function SecretsList({ universeId }: { universeId: string }) {
     <>
       <PageHeader
         title="Secrets"
-        description="Encrypted credentials owned by this universe. Secret values can be set or replaced, but never read back."
+        description="Encrypted secrets owned by this universe, never read back. Provider connections are managed under Integrations."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" />
@@ -156,6 +159,11 @@ function SecretsList({ universeId }: { universeId: string }) {
             <SectionHeader
               title="Model provider credentials"
               description="API keys and OAuth connections used by session models for discovery and inference. These are not used for MCP servers or general service authentication."
+              actions={
+                <Button variant="outline" size="sm" render={<Link to={integrationsHref} />}>
+                  Manage in Integrations
+                </Button>
+              }
             />
             {providers.some((provider) => !provider.usableForModels) && (
               <p className="mb-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
@@ -274,6 +282,11 @@ function SecretsList({ universeId }: { universeId: string }) {
                         </TableCell>
                         <TableCell className="text-muted-foreground">
                           {grantTypeLabel(grant)}
+                          {managedByIntegration(grant) && (
+                            <Badge variant="outline" className="ml-2 font-normal">
+                              {managedByIntegration(grant)}
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell>
                           <GrantStatusBadge status={grant.status} />
@@ -326,11 +339,12 @@ function SecretsList({ universeId }: { universeId: string }) {
       )}
 
       <p className="mt-6 text-sm text-muted-foreground">
-        OAuth client setup and browser authorization flows are not exposed here yet. Access
-        credentials created through those flows will appear automatically in this inventory.
+        Credentials created by integrations (GitHub App installations, coding-agent subscriptions,
+        OAuth flows) appear here automatically; revoking one here disconnects it there.
       </p>
       <CreateSecretDialog
         universeId={universeId}
+        integrationsHref={integrationsHref}
         open={createOpen}
         onOpenChange={setCreateOpen}
         onCreated={invalidate}
@@ -342,29 +356,29 @@ function SecretsList({ universeId }: { universeId: string }) {
 
 function CreateSecretDialog({
   universeId,
+  integrationsHref,
   open,
   onOpenChange,
   onCreated,
   existingGrants,
 }: {
   universeId: string;
+  integrationsHref: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onCreated: () => void;
   existingGrants: SecretGrant[];
 }) {
-  const [kind, setKind] = useState<SecretKind>("provider");
+  const [kind, setKind] = useState<SecretKind>("environment");
   const [displayName, setDisplayName] = useState("");
-  const [modelProviderId, setModelProviderId] = useState("openai");
   const [grantId, setGrantId] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [secret, setSecret] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
-    setKind("provider");
+    setKind("environment");
     setDisplayName("");
-    setModelProviderId("openai");
     setGrantId("");
     setAdvancedOpen(false);
     setSecret("");
@@ -372,19 +386,8 @@ function CreateSecretDialog({
     create.reset();
   };
 
-  const create = useMutation<SecretProvider | SecretGrant, Error, void>({
+  const create = useMutation<SecretGrant, Error, void>({
     mutationFn: () => {
-      if (kind === "provider") {
-        return api<SecretProvider>(
-          "POST",
-          `/api/v1/universes/${universeId}/secrets/providers`,
-          {
-            providerId: modelProviderId.trim(),
-            credential: secret,
-            ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-          },
-        );
-      }
       if (kind === "environment") {
         return api<SecretGrant>(
           "POST",
@@ -416,7 +419,6 @@ function CreateSecretDialog({
 
   const changeKind = (nextKind: SecretKind) => {
     setKind(nextKind);
-    setModelProviderId("openai");
     setGrantId("");
     setAdvancedOpen(false);
     setSecret("");
@@ -425,16 +427,12 @@ function CreateSecretDialog({
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!secret || (kind === "provider" && !modelProviderId.trim())) {
-      setError(
-        kind === "provider"
-          ? "a model provider ID and secret value are required"
-          : "a secret value is required",
-      );
+    if (!secret) {
+      setError("a secret value is required");
       return;
     }
     const existingGrant = existingGrants.find(
-      (candidate) => kind !== "provider" && candidate.grantId === grantId.trim(),
+      (candidate) => candidate.grantId === grantId.trim(),
     );
     if (existingGrant) {
       setError(credentialIdConflictMessage(existingGrant));
@@ -457,7 +455,12 @@ function CreateSecretDialog({
         <DialogHeader>
           <DialogTitle>Add secret</DialogTitle>
           <DialogDescription>
-            The value is sent once to Lightspeed, encrypted, and never returned by an API.
+            The value is sent once to Lightspeed, encrypted, and never returned by an API. Looking
+            for OpenAI/Anthropic API keys, GitHub, or coding-agent subscriptions? Add those under{" "}
+            <Link to={integrationsHref} className="underline">
+              Integrations
+            </Link>
+            .
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">
@@ -468,17 +471,14 @@ function CreateSecretDialog({
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="provider">Model provider API key</SelectItem>
                 <SelectItem value="environment">Environment secret</SelectItem>
                 <SelectItem value="bearer">Bearer token</SelectItem>
               </SelectContent>
             </Select>
             <FieldDescription>
-              {kind === "provider"
-                ? "Used by sessions to discover models and make inference calls. It is not used for MCP servers or general service authentication."
-                : kind === "environment"
-                  ? "Stores an opaque value for injection into an environment variable. Multiline values such as SSH private keys are preserved."
-                  : "Creates a revocable access credential that MCP servers or environments can reference."}
+              {kind === "environment"
+                ? "Stores an opaque value for injection into an environment variable. Multiline values such as SSH private keys are preserved."
+                : "Creates a revocable access credential that MCP servers or environments can reference."}
             </FieldDescription>
           </Field>
           <Field>
@@ -487,37 +487,10 @@ function CreateSecretDialog({
               id="secret-name"
               value={displayName}
               onChange={(event) => setDisplayName(event.target.value)}
-              placeholder={
-                kind === "provider"
-                  ? "OpenAI production"
-                  : kind === "environment"
-                    ? "px-dev SSH private key"
-                    : "GitHub deploy token"
-              }
+              placeholder={kind === "environment" ? "px-dev SSH private key" : "GitHub deploy token"}
               autoFocus
             />
           </Field>
-          {kind === "provider" ? (
-            <Field>
-              <FieldLabel htmlFor="secret-resource-id">Model provider ID</FieldLabel>
-              <Select
-                value={modelProviderId}
-                onValueChange={(value) => setModelProviderId(value as string)}
-              >
-                <SelectTrigger id="secret-resource-id" className="w-full" aria-label="Model provider">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="openai">OpenAI</SelectItem>
-                  <SelectItem value="anthropic">Anthropic</SelectItem>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                Sessions using this <span className="font-mono">model.providerId</span> will use
-                the stored key instead of the deployment-wide fallback key.
-              </FieldDescription>
-            </Field>
-          ) : (
             <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
               <CollapsibleTrigger className="inline-flex h-8 items-center gap-1.5 rounded-md px-2.5 text-sm font-medium text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50">
                 Advanced options
@@ -545,7 +518,6 @@ function CreateSecretDialog({
                 </Field>
               </CollapsibleContent>
             </Collapsible>
-          )}
           <Field>
             <FieldLabel htmlFor="secret-value">Secret value</FieldLabel>
             {kind === "environment" ? (
@@ -647,6 +619,15 @@ function providerTypeLabel(provider: SecretProvider): string {
   if (provider.config.type === "modelOAuth") return "OAuth connection";
   if (provider.config.type === "githubApp") return "GitHub App";
   return provider.providerKind;
+}
+
+/// Which integration owns a grant, for the inventory tag; null for plain secrets.
+function managedByIntegration(grant: SecretGrant): string | null {
+  if (grant.providerKind === "gitHubApp") return "GitHub App";
+  const subscription = subscriptionProviderOf(grant);
+  if (subscription === "anthropic") return "Claude Code";
+  if (subscription === "openAi") return "Codex";
+  return null;
 }
 
 function grantTypeLabel(grant: SecretGrant): string {

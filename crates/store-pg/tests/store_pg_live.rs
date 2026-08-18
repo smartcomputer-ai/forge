@@ -1858,6 +1858,166 @@ fn create_oauth_client_record(client_id: &OAuthClientId) -> CreateOAuthClientRec
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres env"]
+async fn pg_live_environment_credentials_round_trip() {
+    use environments::{
+        EnvironmentCredentialSource, EnvironmentCredentialStore, ListEnvironmentCredentials,
+        PutEnvironmentCredential,
+    };
+
+    let store = live_store("environment-credentials", 1024).await;
+    let provider_id = EnvironmentProviderId::new("cred-provider");
+    let environment_id = EnvironmentId::new("cred-env");
+    store
+        .put_provider(PutEnvironmentProvider {
+            provider_id: provider_id.clone(),
+            display_name: None,
+            controller_connection: EnvironmentConnectionSpec::new(
+                "ws://127.0.0.1:9000/controller",
+                EnvironmentTransport::WebSocket,
+            ),
+            metadata: Default::default(),
+            updated_at_ms: 1,
+        })
+        .await
+        .expect("register provider");
+    store
+        .put_provider_binding(PutEnvironmentProviderBinding {
+            universe_id: store.config().universe_id,
+            binding_id: EnvironmentProviderBindingId::new("primary"),
+            provider_id,
+            status: EnvironmentProviderBindingStatus::Enabled,
+            metadata: Default::default(),
+            expected_revision: None,
+            updated_at_ms: 2,
+        })
+        .await
+        .expect("provider binding");
+    store
+        .create_environment(CreateEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("cred-request"),
+            environment_id: environment_id.clone(),
+            incarnation_id: EnvironmentIncarnationId::new("cred-incarnation"),
+            binding_id: EnvironmentProviderBindingId::new("primary"),
+            template_id: EnvironmentTemplateId::new("rust-v1"),
+            display_name: None,
+            metadata: Default::default(),
+            origin_session: None,
+            idle_policy: None,
+            created_at_ms: 3,
+        })
+        .await
+        .expect("create environment");
+
+    // Two stored-secret grants (P127 subscription credentials are ordinary
+    // static_bearer grants carrying metadata).
+    for (grant_id, kind, provider) in [
+        ("authgrant_codex", AuthProviderKind::StaticBearer, "openai"),
+        (
+            "authgrant_claude",
+            AuthProviderKind::StaticBearer,
+            "anthropic",
+        ),
+    ] {
+        store
+            .create_grant(CreateAuthGrantRecord {
+                grant_id: AuthGrantId::new(grant_id),
+                provider_id: provider.to_owned(),
+                provider_kind: kind,
+                principal: PrincipalRef::universe_default(),
+                display_name: None,
+                subject_hint: None,
+                scopes: Vec::new(),
+                audience: None,
+                access_token_secret: Some(SecretId::new(format!("{grant_id}_access"))),
+                refresh_token_secret: None,
+                oauth_client: None,
+                expires_at_ms: None,
+                status: AuthGrantStatus::Active,
+                metadata: serde_json::json!({ "subscription": "codex" }),
+                created_at_ms: 4,
+            })
+            .await
+            .expect("create subscription grant");
+    }
+
+    let bound = store
+        .bind_credential(PutEnvironmentCredential {
+            environment_id: environment_id.clone(),
+            env_name: "CODEX_AUTH_JSON".to_owned(),
+            source: EnvironmentCredentialSource::AuthGrant {
+                grant_id: AuthGrantId::new("authgrant_codex"),
+            },
+            created_at_ms: 5,
+        })
+        .await
+        .expect("bind codex credential");
+    assert_eq!(
+        bound.source,
+        EnvironmentCredentialSource::AuthGrant {
+            grant_id: AuthGrantId::new("authgrant_codex"),
+        }
+    );
+    store
+        .bind_credential(PutEnvironmentCredential {
+            environment_id: environment_id.clone(),
+            env_name: "CLAUDE_CODE_OAUTH_TOKEN".to_owned(),
+            source: EnvironmentCredentialSource::AuthGrant {
+                grant_id: AuthGrantId::new("authgrant_claude"),
+            },
+            created_at_ms: 6,
+        })
+        .await
+        .expect("bind plain credential");
+
+    // Rebinding the same name replaces the source.
+    let replaced = store
+        .bind_credential(PutEnvironmentCredential {
+            environment_id: environment_id.clone(),
+            env_name: "CODEX_AUTH_JSON".to_owned(),
+            source: EnvironmentCredentialSource::AuthGrant {
+                grant_id: AuthGrantId::new("authgrant_claude"),
+            },
+            created_at_ms: 7,
+        })
+        .await
+        .expect("rebind to another grant");
+    assert_eq!(
+        replaced.source,
+        EnvironmentCredentialSource::AuthGrant {
+            grant_id: AuthGrantId::new("authgrant_claude"),
+        }
+    );
+
+    let listed = store
+        .list_credentials(ListEnvironmentCredentials {
+            environment_id: environment_id.clone(),
+        })
+        .await
+        .expect("list credentials");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|c| c.env_name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["CLAUDE_CODE_OAUTH_TOKEN", "CODEX_AUTH_JSON"]
+    );
+
+    store
+        .unbind_credential(&environment_id, "CODEX_AUTH_JSON")
+        .await
+        .expect("unbind");
+    assert_eq!(
+        store
+            .list_credentials(ListEnvironmentCredentials { environment_id })
+            .await
+            .expect("list after unbind")
+            .len(),
+        1
+    );
+}
+
 async fn live_store(test_name: &str, inline_threshold_bytes: usize) -> PgStore {
     let database_url = env_or_dotenv_var("LIGHTSPEED_TEST_POSTGRES_URL").expect(
         "LIGHTSPEED_TEST_POSTGRES_URL must be set in env or root .env to run store-pg live tests; run ./dev.sh infra and source scripts/dev/env.sh",
