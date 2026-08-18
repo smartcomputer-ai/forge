@@ -2483,6 +2483,16 @@
         {
           "description": "Stored model provider API key; the key arrives via `credential` and is\nencrypted on receipt.",
           "properties": {
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "const": "modelApiKey",
               "type": "string"
@@ -2502,6 +2512,16 @@
                 "null"
               ]
             },
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "grantId": {
               "type": "string"
             },
@@ -2513,6 +2533,23 @@
           "required": [
             "type",
             "grantId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Register an endpoint that requires no provider credential.",
+          "properties": {
+            "endpoint": {
+              "$ref": "#/definitions/ModelEndpointConfig"
+            },
+            "type": {
+              "const": "modelEndpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "endpoint"
           ],
           "type": "object"
         }
@@ -2544,6 +2581,16 @@
         {
           "description": "Stored model provider API key (`model:<provider_id>` rows). The key itself\nis the provider credential and never appears in views.",
           "properties": {
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "const": "modelApiKey",
               "type": "string"
@@ -2563,6 +2610,16 @@
                 "null"
               ]
             },
+            "endpoint": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "grantId": {
               "type": "string"
             },
@@ -2574,6 +2631,23 @@
           "required": [
             "type",
             "grantId"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Credentialless OpenAI-compatible endpoint.",
+          "properties": {
+            "endpoint": {
+              "$ref": "#/definitions/ModelEndpointConfig"
+            },
+            "type": {
+              "const": "modelEndpoint",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "endpoint"
           ],
           "type": "object"
         }
@@ -2649,7 +2723,8 @@
         "gitHubApp",
         "customOAuth",
         "modelApiKey",
-        "modelOAuth"
+        "modelOAuth",
+        "modelEndpoint"
       ],
       "type": "string"
     },
@@ -5771,6 +5846,30 @@
       ],
       "type": "object"
     },
+    "ModelEndpointConfig": {
+      "properties": {
+        "apiKinds": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "baseUrl": {
+          "type": "string"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "baseUrl",
+        "apiKinds"
+      ],
+      "type": "object"
+    },
     "ModelListParams": {
       "description": "Direct provider model discovery. Each invocation asks the supported\nprovider APIs again; clients refresh by calling this method.",
       "properties": {
@@ -5835,6 +5934,11 @@
         {
           "const": "invalid",
           "description": "A credential exists but is unusable (disabled/legacy universe row) or\nwas rejected by the provider (HTTP 401/403).",
+          "type": "string"
+        },
+        {
+          "const": "notRequired",
+          "description": "The universe provider row explicitly configures an unauthenticated\nendpoint, so no credential is expected.",
           "type": "string"
         }
       ]

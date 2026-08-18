@@ -155,10 +155,15 @@ impl OpenAiCompletionsApi for RetryingOpenAiCompletionsClient {
         &self,
         request: CreateCompletionRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<Completion>, LlmApiError> {
         let mut attempt = 0;
         loop {
-            match self.client.create_with_auth(request.clone(), auth).await {
+            match self
+                .client
+                .create_with_transport(request.clone(), auth, endpoint)
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(error) if should_retry(&error, attempt) => {
                     sleep_before_retry(&error, attempt, "openai:completions create");
@@ -215,10 +220,15 @@ impl OpenAiResponsesApi for RetryingOpenAiResponsesClient {
         &self,
         request: CreateResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<Response>, LlmApiError> {
         let mut attempt = 0;
         loop {
-            match self.client.create_with_auth(request.clone(), auth).await {
+            match self
+                .client
+                .create_with_transport(request.clone(), auth, endpoint)
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(error) if should_retry(&error, attempt) => {
                     sleep_before_retry(&error, attempt, "openai:responses create");
@@ -233,10 +243,15 @@ impl OpenAiResponsesApi for RetryingOpenAiResponsesClient {
         &self,
         request: CompactResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<CompactResponse>, LlmApiError> {
         let mut attempt = 0;
         loop {
-            match self.client.compact_with_auth(request.clone(), auth).await {
+            match self
+                .client
+                .compact_with_transport(request.clone(), auth, endpoint)
+                .await
+            {
                 Ok(response) => return Ok(response),
                 Err(error) if should_retry(&error, attempt) => {
                     sleep_before_retry(&error, attempt, "openai:responses compact");

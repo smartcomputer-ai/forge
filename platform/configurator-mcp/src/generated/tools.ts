@@ -7862,7 +7862,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "gitHubApp",
             "customOAuth",
             "modelApiKey",
-            "modelOAuth"
+            "modelOAuth",
+            "modelEndpoint"
           ],
           "type": "string"
         },
@@ -8049,6 +8050,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             {
               "description": "Stored model provider API key; the key arrives via `credential` and is\nencrypted on receipt.",
               "properties": {
+                "endpoint": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/ModelEndpointConfig"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "type": {
                   "const": "modelApiKey",
                   "type": "string"
@@ -8068,6 +8079,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                     "null"
                   ]
                 },
+                "endpoint": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/ModelEndpointConfig"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
                 "grantId": {
                   "type": "string"
                 },
@@ -8081,8 +8102,49 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "grantId"
               ],
               "type": "object"
+            },
+            {
+              "description": "Register an endpoint that requires no provider credential.",
+              "properties": {
+                "endpoint": {
+                  "$ref": "#/definitions/ModelEndpointConfig"
+                },
+                "type": {
+                  "const": "modelEndpoint",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "endpoint"
+              ],
+              "type": "object"
             }
           ]
+        },
+        "ModelEndpointConfig": {
+          "properties": {
+            "apiKinds": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "baseUrl": {
+              "type": "string"
+            },
+            "headers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            }
+          },
+          "required": [
+            "baseUrl",
+            "apiKinds"
+          ],
+          "type": "object"
         }
       }
     }

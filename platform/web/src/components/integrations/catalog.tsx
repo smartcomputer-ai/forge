@@ -1,4 +1,5 @@
 import type { ComponentType, SVGProps } from "react";
+import { Sparkles } from "lucide-react";
 import { AnthropicLogo, GitHubLogo, OpenAiLogo } from "./logos";
 
 /// Everything a universe can connect from the Integrations page. Adding an
@@ -7,6 +8,7 @@ import { AnthropicLogo, GitHubLogo, OpenAiLogo } from "./logos";
 export type IntegrationKind =
   | "githubApp"
   | "openAiApiKey"
+  | "openAiCompatible"
   | "anthropicApiKey"
   | "anthropicSubscription"
   | "openAiSubscription";
@@ -42,6 +44,13 @@ export const INTEGRATION_CATALOG: IntegrationDefinition[] = [
     tagline: "API key that Lightspeed sessions use for Anthropic models — discovery and inference.",
     Logo: AnthropicLogo,
     multiple: false,
+  },
+  {
+    kind: "openAiCompatible",
+    name: "OpenAI-compatible provider",
+    tagline: "Connect OpenRouter, vLLM, Ollama, or another compatible endpoint.",
+    Logo: Sparkles,
+    multiple: true,
   },
   {
     kind: "anthropicSubscription",

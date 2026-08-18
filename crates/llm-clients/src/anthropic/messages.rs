@@ -166,6 +166,10 @@ impl Client {
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<reqwest::RequestBuilder, LlmApiError> {
         match auth {
+            Some(crate::RequestAuth::None) => Err(ConfigurationError::new(
+                "anonymous Anthropic requests are not supported",
+            )
+            .into()),
             None | Some(crate::RequestAuth::ApiKey(_)) => {
                 let api_key = match auth {
                     Some(crate::RequestAuth::ApiKey(api_key)) => Some(api_key),

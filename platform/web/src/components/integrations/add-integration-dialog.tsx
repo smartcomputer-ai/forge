@@ -13,7 +13,7 @@ import {
 import { subscriptionBinding } from "@/lib/subscriptions";
 import { INTEGRATION_CATALOG, integrationDefinition, type IntegrationKind } from "./catalog";
 import { GitHubAppForm } from "./github-app";
-import { ModelApiKeyForm } from "./model-api-key";
+import { ModelApiKeyForm, OpenAiCompatibleForm } from "./model-api-key";
 import { SubscriptionForm } from "./subscription";
 import type { ConnectedIntegration } from "./use-integrations";
 
@@ -163,6 +163,16 @@ export function AddIntegrationDialog({
             onCreated={() => {
               onAdded();
               setDone("github");
+            }}
+            onCancel={() => setSelected(null)}
+          />
+        )}
+        {definition && !done && selected === "openAiCompatible" && (
+          <OpenAiCompatibleForm
+            universeId={universeId}
+            onSaved={() => {
+              onAdded();
+              setDone("modelKey");
             }}
             onCancel={() => setSelected(null)}
           />

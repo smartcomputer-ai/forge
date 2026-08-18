@@ -221,6 +221,13 @@ Release construction, snapshots, and tagged publication are documented in
   boundaries validate params before they enter the session log. Transport config
   (base URLs, credentials, headers) stays in runtime deployment config, not in
   `ModelSelection` or the session log.
+- Universe model-provider rows are named `model:<providerId>` and may carry an
+  OpenAI-compatible endpoint plus API-key/OAuth authentication, or a
+  credentialless endpoint for local servers. Resolve the row immediately before
+  provider I/O. Only built-in `openai` and `anthropic` ids may fall back to
+  deployment clients; a custom provider without a complete endpoint must fail
+  before network I/O. Endpoint headers are non-secret and must not override
+  transport-owned authentication/content headers.
 - Keep clients on `api`. CLIs, TUIs, editors, hosted gateways, and future
   Temporal frontends should not consume reducer internals directly.
 - Use Lightspeed-owned names for every supported product configuration key,

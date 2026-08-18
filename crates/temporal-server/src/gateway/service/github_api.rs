@@ -69,7 +69,7 @@ pub(super) fn auth_provider_create_draft(
             });
             (config, Some((secret_id, secret)))
         }
-        api::AuthProviderConfigInput::ModelApiKey {} => {
+        api::AuthProviderConfigInput::ModelApiKey { endpoint } => {
             let Some(credential) = params.credential else {
                 return Err(AgentApiError::invalid_request(
                     "model_api_key providers require the API key as credential",
@@ -89,10 +89,16 @@ pub(super) fn auth_provider_create_draft(
                 value: api_key,
                 created_at_ms: now_ms,
             };
-            let config = auth::AuthProviderConfig::ModelApiKey(auth::ModelApiKeyConfig::default());
+            let config = auth::AuthProviderConfig::ModelApiKey(auth::ModelApiKeyConfig {
+                endpoint: endpoint.map(model_endpoint_config),
+            });
             (config, Some((secret_id, secret)))
         }
-        api::AuthProviderConfigInput::ModelOAuth { grant_id, audience } => {
+        api::AuthProviderConfigInput::ModelOAuth {
+            grant_id,
+            audience,
+            endpoint,
+        } => {
             if params.credential.is_some() {
                 return Err(AgentApiError::invalid_request(
                     "model_oauth providers bind a grant and accept no credential",
@@ -101,9 +107,25 @@ pub(super) fn auth_provider_create_draft(
             let grant_id = auth::AuthGrantId::try_new(grant_id).map_err(|error| {
                 AgentApiError::invalid_request(format!("invalid auth grant id: {error}"))
             })?;
-            let config =
-                auth::AuthProviderConfig::ModelOAuth(auth::ModelOAuthConfig { grant_id, audience });
+            let config = auth::AuthProviderConfig::ModelOAuth(auth::ModelOAuthConfig {
+                grant_id,
+                audience,
+                endpoint: endpoint.map(model_endpoint_config),
+            });
             (config, None)
+        }
+        api::AuthProviderConfigInput::ModelEndpoint { endpoint } => {
+            if params.credential.is_some() {
+                return Err(AgentApiError::invalid_request(
+                    "model_endpoint providers accept no credential",
+                ));
+            }
+            (
+                auth::AuthProviderConfig::ModelEndpoint(auth::ModelEndpointOnlyConfig {
+                    endpoint: model_endpoint_config(endpoint),
+                }),
+                None,
+            )
         }
     };
 
@@ -136,11 +158,21 @@ pub(super) fn auth_provider_view(record: auth::AuthProviderRecord) -> api::AuthP
                 app_id: config.app_id,
                 api_base_url: config.api_base_url,
             },
-            auth::AuthProviderConfig::ModelApiKey(_) => api::AuthProviderConfigView::ModelApiKey {},
+            auth::AuthProviderConfig::ModelApiKey(config) => {
+                api::AuthProviderConfigView::ModelApiKey {
+                    endpoint: config.endpoint.map(model_endpoint_view),
+                }
+            }
             auth::AuthProviderConfig::ModelOAuth(config) => {
                 api::AuthProviderConfigView::ModelOAuth {
                     grant_id: config.grant_id.as_str().to_owned(),
                     audience: config.audience,
+                    endpoint: config.endpoint.map(model_endpoint_view),
+                }
+            }
+            auth::AuthProviderConfig::ModelEndpoint(config) => {
+                api::AuthProviderConfigView::ModelEndpoint {
+                    endpoint: model_endpoint_view(config.endpoint),
                 }
             }
         },
@@ -154,6 +186,22 @@ pub(super) fn auth_provider_view(record: auth::AuthProviderRecord) -> api::AuthP
         },
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+fn model_endpoint_config(endpoint: api::ModelEndpointConfig) -> auth::ModelEndpointConfig {
+    auth::ModelEndpointConfig {
+        base_url: endpoint.base_url,
+        headers: endpoint.headers,
+        api_kinds: endpoint.api_kinds,
+    }
+}
+
+fn model_endpoint_view(endpoint: auth::ModelEndpointConfig) -> api::ModelEndpointConfig {
+    api::ModelEndpointConfig {
+        base_url: endpoint.base_url,
+        headers: endpoint.headers,
+        api_kinds: endpoint.api_kinds,
     }
 }
 

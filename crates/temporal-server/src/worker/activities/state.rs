@@ -15,8 +15,8 @@ use llm_clients::{
     openai::{completions as oai_completions, responses as oai},
 };
 use llm_runtime::{
-    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, OpenAiCompletionsLlmAdapter,
-    OpenAiResponsesLlmAdapter, provider_keys::ProviderKeyResolver, secrets::SecretResolver,
+    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, ModelProviderResolver,
+    OpenAiCompletionsLlmAdapter, OpenAiResponsesLlmAdapter, secrets::SecretResolver,
 };
 use store_pg::PgStore;
 use vfs::VfsWorkspaceStore;
@@ -340,7 +340,7 @@ impl ActivityState {
 fn stored_provider_key_resolver(
     store: Arc<PgStore>,
     broker: Arc<dyn AuthTokenBroker>,
-) -> Arc<dyn ProviderKeyResolver> {
+) -> Arc<dyn ModelProviderResolver> {
     let providers: Arc<dyn AuthProviderStore> = store.clone();
     let secrets: Arc<dyn SecretStore> = store;
     Arc::new(StoredProviderKeyResolver::new(providers, secrets, broker))
@@ -391,7 +391,7 @@ fn registry_token_broker_with_clients(
 fn default_llm_runtime(
     blobs: Arc<dyn BlobStore>,
     secrets: Option<Arc<dyn SecretResolver>>,
-    provider_keys: Option<Arc<dyn ProviderKeyResolver>>,
+    provider_keys: Option<Arc<dyn ModelProviderResolver>>,
 ) -> anyhow::Result<Arc<dyn CoreAgentLlm>> {
     let openai = Arc::new(oai::Client::new(oai::Config::from_env_allow_missing_key())?);
     let openai_completions = Arc::new(oai_completions::Client::new(
@@ -411,7 +411,7 @@ fn default_llm_runtime(
 fn llm_runtime_with_clients(
     blobs: Arc<dyn BlobStore>,
     secrets: Option<Arc<dyn SecretResolver>>,
-    provider_keys: Option<Arc<dyn ProviderKeyResolver>>,
+    provider_keys: Option<Arc<dyn ModelProviderResolver>>,
     openai: Arc<oai::Client>,
     openai_completions: Arc<oai_completions::Client>,
     anthropic: Arc<am::Client>,
@@ -452,7 +452,7 @@ fn llm_runtime_with_clients(
 }
 
 fn default_audio_transcriber(
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 ) -> anyhow::Result<Arc<dyn AudioTranscriber>> {
     default_openai_audio_transcriber(provider_keys)
 }

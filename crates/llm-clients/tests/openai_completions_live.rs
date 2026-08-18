@@ -1,11 +1,11 @@
 use std::collections::BTreeMap;
 
-use llm_clients::ProviderFailureKind;
 use llm_clients::openai::completions::{
     API_KIND, Client, CompletionContent, CompletionMessage, CompletionMessageContent,
     CompletionTool, CompletionToolChoice, CompletionToolChoiceFunction, CompletionToolChoiceMode,
     CompletionToolType, Config, CreateCompletionRequest,
 };
+use llm_clients::{EndpointOverride, ProviderFailureKind, RequestAuth};
 use serde_json::json;
 
 mod support;
@@ -56,6 +56,37 @@ fn deepseek_client() -> Client {
     config.base_url = env_or_dotenv_var("DEEPSEEK_BASE_URL")
         .unwrap_or_else(|_| "https://api.deepseek.com".to_owned());
     Client::new(config).expect("DeepSeek completions client")
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_live_uses_request_time_endpoint_and_auth_override() {
+    let api_key = required_first_env_or_dotenv_var(
+        &["DEEPSEEK_API_KEY"],
+        "DEEPSEEK_API_KEY must be set in env or root .env to run DeepSeek completions live tests",
+    );
+    let base_url = env_or_dotenv_var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_owned());
+    let endpoint = EndpointOverride::from_parts(&base_url, &BTreeMap::new())
+        .expect("DeepSeek endpoint override");
+    // Keeping the shared client on OpenAI's default URL with no key makes a
+    // successful response prove both request-time overrides were honored.
+    let client = Client::new(Config::without_api_key()).expect("base OpenAI client");
+
+    let response = client
+        .create_with_transport(
+            CreateCompletionRequest::user_text(
+                deepseek_model(),
+                "Compute 14 * 6. Reply with only the integer.",
+            ),
+            Some(RequestAuth::ApiKey(&api_key)),
+            Some(&endpoint),
+        )
+        .await
+        .expect("DeepSeek request through endpoint override");
+
+    assert_eq!(response.status, 200);
+    assert!(response.parsed.output_text().contains("84"));
 }
 
 fn live_api_key() -> String {

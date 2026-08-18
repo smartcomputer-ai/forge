@@ -2,7 +2,7 @@
 
 **Status**
 
-- Proposed 2026-08-18. Phase 1 completed 2026-08-18; Phase 2 is not started.
+- Proposed 2026-08-18. Phase 1 and Phase 2 completed 2026-08-18.
 - Phase 1 shipped the native client auth/model-list additions, the generation
   and standalone-compaction adapter, hosted/eval/CLI registration, reasoning
   admission, dual-kind OpenAI model discovery, and live coverage for client
@@ -12,7 +12,7 @@
   `max` in addition to the tiers listed in the original draft. Compaction
   summaries use a Lightspeed-recognized user message so they remain valid Chat
   Completions history rather than an opaque pseudo-item.
-- Compatibility hardening completed 2026-08-18 without starting Phase 2:
+- Phase 1 compatibility hardening completed 2026-08-18 before Phase 2:
   provider dialect selection now controls instruction roles and output-token
   fields; DeepSeek V4 thinking controls and exact `reasoning_content` replay,
   OpenRouter `reasoning`/`reasoning_details` replay, provider failure finish
@@ -23,6 +23,12 @@
   web search remains Responses-only and that `stop` is unsupported for
   `gpt-5.5`, so both are rejected before Chat generation rather than
   advertised.
+- Phase 2 shipped universe-scoped OpenAI-compatible endpoints for API-key,
+  OAuth, and credentialless providers; request-time Responses/Completions
+  routing; per-provider model discovery; secure URL/header validation; strict
+  no-fallback semantics for custom provider ids; Platform management; a schema
+  migration for the new credentialless provider kind; and local-stub plus
+  DeepSeek live coverage.
 - Builds on [P50](archive/p50-agent-llm.md) (llm-runtime crate shape; listed
   `openai:completions` as step 3 and left `llm-runtime/src/openai_completions.rs`
   as a placeholder), [P69](archive/p69-generic-auth-token-broker.md) (stored
@@ -242,17 +248,21 @@ Two phases, shipped in order:
       pub base_url: String,
       /// Non-secret extra request headers (e.g. HTTP-Referer, X-Title).
       #[serde(default)] pub headers: BTreeMap<String, String>,
-      /// API kinds this endpoint may serve; validated against the
-      /// runtime's registered adapters. Empty = every kind the provider
-      /// family supports.
-      #[serde(default)] pub api_kinds: Vec<String>,
+      /// Explicit API kinds this endpoint may serve. Empty is invalid.
+      pub api_kinds: Vec<String>,
   }
   ```
 
-  Rows without `endpoint` keep today's meaning (credential override for a
-  built-in provider). A row with `endpoint` for a *new* provider id is a
-  complete provider definition. Built-in ids `openai` and `anthropic` keep
-  their env-configured URL unless the row overrides it. Rationale:
+  `ModelEndpointConfig` is also used by a credentialless `ModelEndpoint`
+  provider-row variant for local Ollama/vLLM servers. Rows without `endpoint`
+  keep today's meaning only for a built-in provider. A row with `endpoint`
+  for a *new* provider id is a complete provider definition; a custom row
+  without one fails before network I/O. Built-in `openai` keeps its
+  env-configured URL unless the row overrides it; Anthropic endpoint overrides
+  remain deferred. Public endpoints require HTTPS; HTTP is accepted only for
+  loopback hosts. URLs may not contain credentials, query strings, or
+  fragments, and transport-owned headers such as Authorization, Host,
+  Content-Type, and Cookie are rejected. Rationale:
   universe operators, not deployment operators, add OpenRouter/vLLM/Ollama
   targets; the credential and the URL belong together; there is no second
   registry to keep in sync; and `provider_id` continues to be the only
@@ -297,18 +307,17 @@ Phase 1:
 Phase 2:
 
 - `api::auth`: `AuthProviderConfig::ModelApiKey {}` / `ModelOAuth {…}` gain
-  `endpoint?: { baseUrl, headers?, apiKinds? }` (camelCase on the wire).
-  `auth/providers/create` validates `baseUrl` with the existing
-  `validate_audience_url` rules (https required except loopback/`http://`
-  when `LIGHTSPEED_ALLOW_INSECURE_MODEL_ENDPOINTS=1` is set — decide; see
-  open questions), header names as RFC 7230 tokens, `apiKinds` ⊆
+  `endpoint?: { baseUrl, headers?, apiKinds }` (camelCase on the wire), and
+  `ModelEndpoint { endpoint }` represents a credentialless target.
+  `auth/providers/create` validates `baseUrl` using HTTPS except loopback
+  HTTP, header names/values and bounded sizes, and `apiKinds` as a non-empty
+  subset of
   `{openai:responses, openai:completions}` (Anthropic-compatible endpoints
   are a follow-up: allow `anthropic:messages` only once the Anthropic
   client gets the same override).
-- `store-pg`: `auth_providers.config` is JSON; **no migration** — the new
-  optional field is additive inside the tagged config document. `crates/
-  auth` decoding stays strict for known variants; unknown extra keys are
-  rejected as today.
+- `store-pg`: the endpoint fields remain additive JSON; the still-unreleased
+  migration 009 also expands the provider-kind constraint for the new
+  `model_endpoint` row, avoiding a redundant migration revision.
 - `models/list`: `ModelProviderDiscoveryView.providerId` may now be any
   universe provider id; `source` says `universe`.
 
@@ -367,7 +376,7 @@ Phase 2:
    projection; contract regen; Platform `SecretsPage`/Integrations
    "Model provider" form gains base URL / headers / api kinds fields
    (`platform/web/src/pages/SecretsPage.tsx`, `use-integrations.ts`).
-2. `llm-runtime/provider_keys.rs` → `model_providers.rs`:
+2. `llm-runtime/provider_keys.rs` (kept to avoid a noisy module rename):
    `ModelProviderResolver`, `ResolvedModelProvider`, `ResolvedEndpoint`,
    `Static*` test resolver; keep `ProviderKeyResolver` name only if the
    diff is otherwise unwieldy — prefer the rename (greenfield).
@@ -389,16 +398,14 @@ Phase 2:
    discovery task per row bounded by the existing timeout, records for
    each declared api kind. Tests with the fake store.
 6. `docs/variables.md`: `OPENAI_BASE_URL` documented as the built-in
-   `openai` provider default only; new `LIGHTSPEED_ALLOW_INSECURE_MODEL_
-   ENDPOINTS` if adopted. `docs/design.md`/README: one paragraph on model
+   `openai` provider default only. `docs/design.md`/README: one paragraph on model
    providers and endpoints. Mark P97 table row as done.
-7. Live: `openai_completions_live` gains an `#[ignore]` case that runs the
-   whole suite against `OPENAI_COMPLETIONS_BASE_URL` through a stored
-   provider row (temporal-server live) — the check that endpoint
-   resolution, not env, drove the URL is a request-log assertion against a
-   local stub server (no HTTP-mock crate is a dependency today; add
-   `wiremock` as a dev-dependency of `llm-runtime`, or a small
-   `axum`/`hyper` stub under `tests/support`, whichever is lighter).
+7. Live and transport coverage: the client and runtime each have an ignored
+   DeepSeek test whose shared OpenAI client deliberately has neither a key nor
+   a DeepSeek URL, proving request-time resolution drove both destination and
+   authentication. A small Tokio TCP stub covers exact Completions, Responses,
+   anonymous-auth, custom-header, model-discovery, and header-isolation paths
+   without adding a mock dependency.
 
 ## Verification
 
@@ -423,25 +430,20 @@ Phase 2 done when:
   https://openrouter.ai/api/v1`, key stored) can start a session with
   `providerId: openrouter, apiKind: openai:completions` and complete a tool
   round-trip; `models/list` shows its models under `providerId: openrouter`.
-- The same with a loopback vLLM/Ollama URL under the insecure-endpoint
-  switch (or plain `http://` if allowed for loopback).
+- The same with a credentialless loopback vLLM/Ollama URL over plain HTTP.
 - Removing the row makes the next generation fail with a typed
   `ProviderKeyResolution` error, not a fall-through to `api.openai.com`.
 - `openai` sessions without a row still use `OPENAI_BASE_URL` (regression
   test in `temporal-server` unit tests with a fake resolver).
 
-## Open questions
+## Resolved questions
 
-- Insecure (`http://`) endpoints: allow loopback/RFC1918 by default (local
-  vLLM/Ollama is the main use case) or require an explicit deployment
-  switch? Proposal: allow `http://` for loopback and private ranges
-  without a switch, require `https://` otherwise, and reject credentials
-  on non-TLS public hosts at validation time.
-- Should `endpoint.headers` support a secret-valued header (e.g.
-  `api-key` for Azure-style gateways)? Proposal: not in P128; Azure needs
-  URL query versioning too and deserves its own row kind if ever wanted.
-- Streaming for UI latency is not part of this plan; the engine's
-  per-turn result model is non-streaming for every provider today.
+- Insecure HTTP is accepted only for `localhost` or loopback IP addresses;
+  RFC1918 and public hosts require HTTPS.
+- Endpoint headers are non-secret and transport-owned headers are reserved.
+  Azure-style secret headers and query-versioned endpoints remain deferred.
+- Streaming for UI latency is not part of this plan; the engine's per-turn
+  result model is non-streaming for every provider today.
 
 ## Deferred
 

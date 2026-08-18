@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use engine::{
     BlobRef, ContextEntry, ContextEntryId, ContextEntryKind, ContextEntrySource,
@@ -9,13 +9,14 @@ use engine::{
 };
 use llm_runtime::{
     LlmAdapterError, LlmGenerationAdapter, OpenAiCompletionsLlmAdapter, OpenAiCompletionsParams,
+    ResolvedEndpoint, ResolvedModelProvider, ResolvedProviderAuth, StaticModelProviders,
 };
 use serde_json::json;
 
 mod support;
 
 use support::{
-    deepseek_completions_live_client, deepseek_completions_live_model,
+    deepseek_completions_live_client, deepseek_completions_live_model, env_or_dotenv_var,
     openai_completions_live_client, openai_completions_live_model, openai_completions_params,
     retrying_openai_completions_client,
 };
@@ -773,4 +774,53 @@ async fn deepseek_completions_runtime_live_v4_reasoning_tool_round_trip() {
         assistant_text(&blobs, &second).await.contains("21"),
         "expected final DeepSeek answer to use the tool result"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_runtime_live_uses_phase2_endpoint_override() {
+    let api_key = env_or_dotenv_var("DEEPSEEK_API_KEY")
+        .expect("DEEPSEEK_API_KEY must be set in env or root .env");
+    let base_url = env_or_dotenv_var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_owned());
+    let endpoint = ResolvedEndpoint::new(
+        &base_url,
+        &BTreeMap::new(),
+        ["openai:completions".to_owned()],
+    )
+    .expect("DeepSeek endpoint");
+    let providers = StaticModelProviders::new().with_provider(
+        "deepseek",
+        ResolvedModelProvider {
+            auth: Some(ResolvedProviderAuth::api_key(api_key)),
+            endpoint: Some(endpoint),
+        },
+    );
+    // The client intentionally retains OpenAI's default URL and no key. A
+    // passing request therefore proves the universe provider override drove
+    // both destination and authentication.
+    let client = llm_clients::openai::completions::Client::new(
+        llm_clients::openai::completions::Config::without_api_key(),
+    )
+    .expect("base OpenAI client");
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let prompt_ref = text_blob(&blobs, "Compute 9 * 13. Reply with only the integer.").await;
+    let request = deepseek_generation_request(vec![entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        ContextEntrySource::RunInput {
+            run_id: RunId::new(1),
+            input_index: 0,
+        },
+        prompt_ref,
+    )]);
+    let execution =
+        OpenAiCompletionsLlmAdapter::new(retrying_openai_completions_client(client), blobs.clone())
+            .with_provider_key_resolver(Arc::new(providers))
+            .generate(request)
+            .await
+            .expect("DeepSeek generation through endpoint override");
+    assert!(assistant_text(&blobs, &execution).await.contains("117"));
 }

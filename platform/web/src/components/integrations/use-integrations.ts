@@ -31,7 +31,7 @@ export type ConnectedIntegration =
       grant: SecretGrant;
     }
   | {
-      kind: "openAiApiKey" | "anthropicApiKey";
+      kind: "openAiApiKey" | "anthropicApiKey" | "openAiCompatible";
       id: string;
       title: string;
       subtitle: string;
@@ -75,6 +75,23 @@ export function useIntegrations(universeId: string) {
             : provider.status === "disabled"
               ? "disabled"
               : "attention",
+        provider,
+      })),
+    ...(secrets.data?.providers ?? [])
+      .filter(
+        (provider) =>
+          provider.providerId !== "openai" &&
+          provider.providerId !== "anthropic" &&
+          (provider.config.type === "modelEndpoint" ||
+            (provider.config.type === "modelApiKey" && Boolean(provider.config.endpoint)) ||
+            (provider.config.type === "modelOAuth" && Boolean(provider.config.endpoint))),
+      )
+      .map((provider): ConnectedIntegration => ({
+        kind: "openAiCompatible",
+        id: `model-provider:${provider.credentialId}`,
+        title: provider.displayName ?? provider.providerId,
+        subtitle: provider.providerId,
+        status: provider.status === "active" ? "active" : provider.status === "disabled" ? "disabled" : "attention",
         provider,
       })),
     ...(github.data?.apps ?? []).map((app): ConnectedIntegration => {

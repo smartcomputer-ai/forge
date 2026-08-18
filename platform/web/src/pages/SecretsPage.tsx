@@ -617,6 +617,7 @@ function GrantStatusBadge({ status }: { status: SecretGrant["status"] }) {
 function providerTypeLabel(provider: SecretProvider): string {
   if (provider.config.type === "modelApiKey") return "API key";
   if (provider.config.type === "modelOAuth") return "OAuth connection";
+  if (provider.config.type === "modelEndpoint") return "Endpoint (no credential)";
   if (provider.config.type === "githubApp") return "GitHub App";
   return provider.providerKind;
 }

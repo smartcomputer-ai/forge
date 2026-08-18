@@ -838,7 +838,12 @@ const server = http.createServer((req, res) => {
         if (authProviders.has(key)) return conflict("auth provider exists");
         const provider = {
           providerId,
-          providerKind: params.config?.type === "modelOAuth" ? "modelOAuth" : "modelApiKey",
+          providerKind:
+            params.config?.type === "modelOAuth"
+              ? "modelOAuth"
+              : params.config?.type === "modelEndpoint"
+                ? "modelEndpoint"
+                : "modelApiKey",
           displayName: params.displayName ?? null,
           config: params.config,
           hasCredential: Boolean(params.credential) || params.config?.type === "modelOAuth",

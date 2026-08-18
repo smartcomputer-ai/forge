@@ -24,7 +24,7 @@ pub use activities::{
 };
 pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeTools};
 pub use reaper::{PromiseReaper, ReaperStats};
-pub use secrets::{BrokerSecretResolver, StoredProviderKeyResolver};
+pub use secrets::{BrokerSecretResolver, StoredModelProviderResolver, StoredProviderKeyResolver};
 pub use session_tools::{SessionTools, ToolCallExecution};
 pub use temporal_workflow::{
     ACTIVITY_APPEND_EVENTS, ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION,

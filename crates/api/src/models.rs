@@ -82,6 +82,9 @@ pub enum ModelProviderCredentialStatus {
     /// A credential exists but is unusable (disabled/legacy universe row) or
     /// was rejected by the provider (HTTP 401/403).
     Invalid,
+    /// The universe provider row explicitly configures an unauthenticated
+    /// endpoint, so no credential is expected.
+    NotRequired,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

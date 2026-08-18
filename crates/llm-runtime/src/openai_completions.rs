@@ -23,7 +23,7 @@ use crate::{
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
     params::{openai_completions_params, validate_openai_reasoning_effort},
-    provider_keys::{NoStoredProviderKeys, ProviderKeyResolver, resolve_stored_provider_key},
+    provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
     result::LlmGenerationExecution,
 };
 
@@ -81,6 +81,7 @@ pub trait OpenAiCompletionsApi: Send + Sync {
         &self,
         request: oai_c::CreateCompletionRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai_c::Completion>, llm_clients::LlmApiError>;
 }
 
@@ -90,8 +91,9 @@ impl OpenAiCompletionsApi for oai_c::Client {
         &self,
         request: oai_c::CreateCompletionRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai_c::Completion>, llm_clients::LlmApiError> {
-        oai_c::Client::create_with_auth(self, request, auth).await
+        oai_c::Client::create_with_transport(self, request, auth, endpoint).await
     }
 }
 
@@ -99,7 +101,7 @@ impl OpenAiCompletionsApi for oai_c::Client {
 pub struct OpenAiCompletionsLlmAdapter {
     client: Arc<dyn OpenAiCompletionsApi>,
     blobs: Arc<dyn BlobStore>,
-    provider_keys: Arc<dyn ProviderKeyResolver>,
+    provider_keys: Arc<dyn ModelProviderResolver>,
 }
 
 impl OpenAiCompletionsLlmAdapter {
@@ -107,13 +109,13 @@ impl OpenAiCompletionsLlmAdapter {
         Self {
             client,
             blobs,
-            provider_keys: Arc::new(NoStoredProviderKeys),
+            provider_keys: Arc::new(NoStoredModelProviders),
         }
     }
 
     pub fn with_provider_key_resolver(
         mut self,
-        provider_keys: Arc<dyn ProviderKeyResolver>,
+        provider_keys: Arc<dyn ModelProviderResolver>,
     ) -> Self {
         self.provider_keys = provider_keys;
         self
@@ -149,15 +151,18 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
             });
         }
         let provider_request = self.materialize_create_request(&request.request).await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .create(
                 provider_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
+                provider
+                    .as_ref()
+                    .and_then(|provider| provider.endpoint.as_ref())
+                    .map(|endpoint| &endpoint.transport),
             )
             .await?;
         reject_failure_finish(&response)?;
@@ -186,15 +191,18 @@ impl LlmCompactionAdapter for OpenAiCompletionsLlmAdapter {
             });
         }
         let provider_request = self.materialize_compact_request(&request.request).await?;
-        let stored_key =
-            resolve_stored_provider_key(self.provider_keys.as_ref(), &request.request.model)
-                .await?;
+        let provider =
+            resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let _provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .create(
                 provider_request,
-                stored_key.as_ref().map(|auth| auth.as_request_auth()),
+                provider.as_ref().map(|provider| provider.as_request_auth()),
+                provider
+                    .as_ref()
+                    .and_then(|provider| provider.endpoint.as_ref())
+                    .map(|endpoint| &endpoint.transport),
             )
             .await?;
         reject_failure_finish(&response)?;
@@ -1211,6 +1219,7 @@ mod tests {
     struct FakeOpenAiCompletionsApi {
         response: ApiResponse<oai_c::Completion>,
         seen_auth: Mutex<Vec<Option<String>>>,
+        seen_endpoint: Mutex<Vec<bool>>,
     }
 
     #[async_trait]
@@ -1219,14 +1228,20 @@ mod tests {
             &self,
             _request: oai_c::CreateCompletionRequest,
             auth: Option<llm_clients::RequestAuth<'_>>,
+            endpoint: Option<&llm_clients::EndpointOverride>,
         ) -> Result<ApiResponse<oai_c::Completion>, llm_clients::LlmApiError> {
             self.seen_auth
                 .lock()
                 .expect("lock")
                 .push(auth.map(|auth| match auth {
+                    llm_clients::RequestAuth::None => "none".to_owned(),
                     llm_clients::RequestAuth::ApiKey(value) => format!("api_key:{value}"),
                     llm_clients::RequestAuth::Bearer(value) => format!("bearer:{value}"),
                 }));
+            self.seen_endpoint
+                .lock()
+                .expect("lock")
+                .push(endpoint.is_some());
             Ok(self.response.clone())
         }
     }
@@ -1248,6 +1263,7 @@ mod tests {
                 headers: HeaderSnapshot::default(),
             },
             seen_auth: Mutex::new(Vec::new()),
+            seen_endpoint: Mutex::new(Vec::new()),
         })
     }
 
@@ -1356,6 +1372,40 @@ mod tests {
             api.seen_auth.lock().expect("lock").as_slice(),
             [Some("bearer:oauth-token".to_owned())]
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn custom_provider_passes_endpoint_and_explicit_anonymous_auth_to_client() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let api = fake_api();
+        let endpoint = crate::provider_keys::ResolvedEndpoint::new(
+            "http://127.0.0.1:8080/v1",
+            &BTreeMap::new(),
+            ["openai:completions".to_owned()],
+        )
+        .expect("endpoint");
+        let resolver = crate::provider_keys::StaticModelProviders::new().with_provider(
+            "ollama",
+            crate::provider_keys::ResolvedModelProvider {
+                auth: None,
+                endpoint: Some(endpoint),
+            },
+        );
+        let adapter = OpenAiCompletionsLlmAdapter::new(api.clone(), blobs)
+            .with_provider_key_resolver(Arc::new(resolver));
+        let mut request = request(Vec::new());
+        request.model.provider_id = "ollama".to_owned();
+
+        adapter
+            .generate(generation_request(request))
+            .await
+            .expect("generate");
+
+        assert_eq!(
+            api.seen_auth.lock().expect("lock").as_slice(),
+            [Some("none".to_owned())]
+        );
+        assert_eq!(api.seen_endpoint.lock().expect("lock").as_slice(), [true]);
     }
 
     #[tokio::test(flavor = "current_thread")]

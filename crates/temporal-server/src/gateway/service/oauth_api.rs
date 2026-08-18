@@ -133,6 +133,7 @@ pub(super) fn registry_auth_provider_kind(value: api::AuthProviderKind) -> auth:
         api::AuthProviderKind::CustomOAuth => auth::AuthProviderKind::CustomOAuth,
         api::AuthProviderKind::ModelApiKey => auth::AuthProviderKind::ModelApiKey,
         api::AuthProviderKind::ModelOAuth => auth::AuthProviderKind::ModelOAuth,
+        api::AuthProviderKind::ModelEndpoint => auth::AuthProviderKind::ModelEndpoint,
     }
 }
 

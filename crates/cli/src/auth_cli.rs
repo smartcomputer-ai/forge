@@ -1006,7 +1006,7 @@ async fn model_add(args: AuthModelAddArgs) -> Result<()> {
         .create_auth_provider(api::AuthProviderCreateParams {
             provider_id: Some(model_provider_row_id(&args.provider_id)),
             display_name: args.display_name.clone(),
-            config: api::AuthProviderConfigInput::ModelApiKey {},
+            config: api::AuthProviderConfigInput::ModelApiKey { endpoint: None },
             credential: Some(api_key),
         })
         .await
@@ -1029,6 +1029,7 @@ async fn model_bind(args: AuthModelBindArgs) -> Result<()> {
             config: api::AuthProviderConfigInput::ModelOAuth {
                 grant_id: args.grant_id.clone(),
                 audience: args.audience.clone(),
+                endpoint: None,
             },
             credential: None,
         })
@@ -1231,17 +1232,36 @@ fn print_provider(provider: &api::AuthProviderView) {
             println!("appId {app_id}");
             println!("apiBaseUrl {api_base_url}");
         }
-        api::AuthProviderConfigView::ModelApiKey {} => {}
-        api::AuthProviderConfigView::ModelOAuth { grant_id, audience } => {
+        api::AuthProviderConfigView::ModelApiKey { endpoint } => {
+            print_model_endpoint(endpoint.as_ref());
+        }
+        api::AuthProviderConfigView::ModelOAuth {
+            grant_id,
+            audience,
+            endpoint,
+        } => {
             println!("grantId {grant_id}");
             if let Some(audience) = audience {
                 println!("audience {audience}");
             }
+            print_model_endpoint(endpoint.as_ref());
+        }
+        api::AuthProviderConfigView::ModelEndpoint { endpoint } => {
+            print_model_endpoint(Some(endpoint));
         }
     }
     println!("hasCredential {}", provider.has_credential);
     println!("createdAtMs {}", provider.created_at_ms);
     println!("updatedAtMs {}", provider.updated_at_ms);
+}
+
+fn print_model_endpoint(endpoint: Option<&api::ModelEndpointConfig>) {
+    let Some(endpoint) = endpoint else { return };
+    println!("baseUrl {}", endpoint.base_url);
+    println!("apiKinds {}", endpoint.api_kinds.join(","));
+    for (name, value) in &endpoint.headers {
+        println!("header {name}={value}");
+    }
 }
 
 fn print_client(client: &api::OAuthClientView) {

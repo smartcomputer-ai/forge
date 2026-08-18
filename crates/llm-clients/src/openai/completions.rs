@@ -7,7 +7,9 @@ use crate::error::{
     ConfigurationError, DecodeError, LlmApiError, ProviderHttpError, StreamError, TransportError,
 };
 use crate::transport::http::{join_url, normalize_base_url};
-use crate::transport::{ApiResponse, ApiStreamEvent, HeaderSnapshot, HttpClient, HttpClientConfig};
+use crate::transport::{
+    ApiResponse, ApiStreamEvent, EndpointOverride, HeaderSnapshot, HttpClient, HttpClientConfig,
+};
 use crate::{SseEvent, SseParser};
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -134,6 +136,10 @@ impl Client {
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<HeaderValue, LlmApiError> {
         match auth {
+            Some(crate::RequestAuth::None) => Err(ConfigurationError::new(
+                "anonymous auth must be sent through an explicit endpoint override",
+            )
+            .into()),
             Some(crate::RequestAuth::ApiKey(value)) | Some(crate::RequestAuth::Bearer(value)) => {
                 bearer_auth_value(value)
             }
@@ -146,6 +152,21 @@ impl Client {
         }
     }
 
+    fn transport_auth_header(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<Option<HeaderValue>, LlmApiError> {
+        match auth {
+            Some(crate::RequestAuth::None) if endpoint.is_some() => Ok(None),
+            Some(crate::RequestAuth::None) => Err(ConfigurationError::new(
+                "anonymous auth requires an explicit endpoint override",
+            )
+            .into()),
+            other => self.auth_header(other).map(Some),
+        }
+    }
+
     pub async fn create(
         &self,
         request: CreateCompletionRequest,
@@ -155,14 +176,30 @@ impl Client {
 
     pub async fn create_with_auth(
         &self,
-        mut request: CreateCompletionRequest,
+        request: CreateCompletionRequest,
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<Completion>, LlmApiError> {
+        self.create_with_transport(request, auth, None).await
+    }
+
+    pub async fn create_with_transport(
+        &self,
+        mut request: CreateCompletionRequest,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<ApiResponse<Completion>, LlmApiError> {
         request.stream = Some(false);
-        let response = self
-            .http
-            .request(Method::POST, self.completions_url.clone())
-            .header(AUTHORIZATION, self.auth_header(auth)?)
+        let auth = self.transport_auth_header(auth, endpoint)?;
+        let mut request_builder = self.http.request_with_endpoint(
+            Method::POST,
+            self.completions_url.clone(),
+            "chat/completions",
+            endpoint,
+        )?;
+        if let Some(auth) = auth {
+            request_builder = request_builder.header(AUTHORIZATION, auth);
+        }
+        let response = request_builder
             .json(&request)
             .send()
             .await
@@ -198,13 +235,25 @@ impl Client {
         &self,
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<ModelList>, LlmApiError> {
-        let response = self
-            .http
-            .request(Method::GET, self.models_url.clone())
-            .header(AUTHORIZATION, self.auth_header(auth)?)
-            .send()
-            .await
-            .map_err(map_reqwest_error)?;
+        self.list_models_with_transport(auth, None).await
+    }
+
+    pub async fn list_models_with_transport(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<ApiResponse<ModelList>, LlmApiError> {
+        let auth = self.transport_auth_header(auth, endpoint)?;
+        let mut request_builder = self.http.request_with_endpoint(
+            Method::GET,
+            self.models_url.clone(),
+            "models",
+            endpoint,
+        )?;
+        if let Some(auth) = auth {
+            request_builder = request_builder.header(AUTHORIZATION, auth);
+        }
+        let response = request_builder.send().await.map_err(map_reqwest_error)?;
         let status = response.status();
         let headers = HeaderSnapshot::from_headermap(response.headers());
         let body = response.text().await.map_err(map_reqwest_error)?;

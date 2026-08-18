@@ -151,8 +151,8 @@ pub use oauth::{
 };
 pub use providers::{
     AuthProviderConfig, AuthProviderRecord, AuthProviderStatus, AuthProviderStore,
-    CreateAuthProviderRecord, GitHubAppConfig, ModelApiKeyConfig, ModelOAuthConfig,
-    model_auth_provider_id,
+    CreateAuthProviderRecord, GitHubAppConfig, ModelApiKeyConfig, ModelEndpointConfig,
+    ModelEndpointOnlyConfig, ModelOAuthConfig, model_auth_provider_id,
 };
 pub use secrets::{
     PutSecretRecord, SECRET_KIND_MODEL_API_KEY, SECRET_KIND_STATIC_BEARER, SecretRecordMeta,

@@ -7,7 +7,9 @@ use crate::error::{
     ConfigurationError, DecodeError, LlmApiError, ProviderHttpError, StreamError, TransportError,
 };
 use crate::transport::http::{join_url, normalize_base_url};
-use crate::transport::{ApiResponse, ApiStreamEvent, HeaderSnapshot, HttpClient, HttpClientConfig};
+use crate::transport::{
+    ApiResponse, ApiStreamEvent, EndpointOverride, HeaderSnapshot, HttpClient, HttpClientConfig,
+};
 use crate::{SseEvent, SseParser};
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
@@ -152,6 +154,10 @@ impl Client {
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<HeaderValue, LlmApiError> {
         match auth {
+            Some(crate::RequestAuth::None) => Err(ConfigurationError::new(
+                "anonymous auth must be sent through an explicit endpoint override",
+            )
+            .into()),
             Some(crate::RequestAuth::ApiKey(value)) | Some(crate::RequestAuth::Bearer(value)) => {
                 bearer_auth_value(value)
             }
@@ -161,6 +167,21 @@ impl Client {
                 )
                 .into()
             }),
+        }
+    }
+
+    fn transport_auth_header(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<Option<HeaderValue>, LlmApiError> {
+        match auth {
+            Some(crate::RequestAuth::None) if endpoint.is_some() => Ok(None),
+            Some(crate::RequestAuth::None) => Err(ConfigurationError::new(
+                "anonymous auth requires an explicit endpoint override",
+            )
+            .into()),
+            other => self.auth_header(other).map(Some),
         }
     }
 
@@ -181,11 +202,25 @@ impl Client {
         &self,
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<ModelList>, LlmApiError> {
-        let auth = self.auth_header(auth)?;
-        let response = self
-            .http
-            .request(Method::GET, self.models_url.clone())
-            .header(AUTHORIZATION, auth)
+        self.list_models_with_transport(auth, None).await
+    }
+
+    pub async fn list_models_with_transport(
+        &self,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<ApiResponse<ModelList>, LlmApiError> {
+        let auth = self.transport_auth_header(auth, endpoint)?;
+        let mut request_builder = self.http.request_with_endpoint(
+            Method::GET,
+            self.models_url.clone(),
+            "models",
+            endpoint,
+        )?;
+        if let Some(auth) = auth {
+            request_builder = request_builder.header(AUTHORIZATION, auth);
+        }
+        let response = request_builder
             .send()
             .await
             .map_err(|err| self.map_reqwest_error(err))?;
@@ -200,15 +235,30 @@ impl Client {
 
     pub async fn create_with_auth(
         &self,
-        mut request: CreateResponseRequest,
+        request: CreateResponseRequest,
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<Response>, LlmApiError> {
+        self.create_with_transport(request, auth, None).await
+    }
+
+    pub async fn create_with_transport(
+        &self,
+        mut request: CreateResponseRequest,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<ApiResponse<Response>, LlmApiError> {
         request.stream = Some(false);
-        let auth = self.auth_header(auth)?;
-        let response = self
-            .http
-            .request(Method::POST, self.responses_url.clone())
-            .header(AUTHORIZATION, auth)
+        let auth = self.transport_auth_header(auth, endpoint)?;
+        let mut request_builder = self.http.request_with_endpoint(
+            Method::POST,
+            self.responses_url.clone(),
+            "responses",
+            endpoint,
+        )?;
+        if let Some(auth) = auth {
+            request_builder = request_builder.header(AUTHORIZATION, auth);
+        }
+        let response = request_builder
             .json(&request)
             .send()
             .await
@@ -329,11 +379,26 @@ impl Client {
         request: CompactResponseRequest,
         auth: Option<crate::RequestAuth<'_>>,
     ) -> Result<ApiResponse<CompactResponse>, LlmApiError> {
-        let auth = self.auth_header(auth)?;
-        let response = self
-            .http
-            .request(Method::POST, self.compact_url.clone())
-            .header(AUTHORIZATION, auth)
+        self.compact_with_transport(request, auth, None).await
+    }
+
+    pub async fn compact_with_transport(
+        &self,
+        request: CompactResponseRequest,
+        auth: Option<crate::RequestAuth<'_>>,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<ApiResponse<CompactResponse>, LlmApiError> {
+        let auth = self.transport_auth_header(auth, endpoint)?;
+        let mut request_builder = self.http.request_with_endpoint(
+            Method::POST,
+            self.compact_url.clone(),
+            "responses/compact",
+            endpoint,
+        )?;
+        if let Some(auth) = auth {
+            request_builder = request_builder.header(AUTHORIZATION, auth);
+        }
+        let response = request_builder
             .json(&request)
             .send()
             .await

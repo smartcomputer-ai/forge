@@ -9,6 +9,7 @@ pub enum AuthProviderKind {
     CustomOAuth,
     ModelApiKey,
     ModelOAuth,
+    ModelEndpoint,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -364,7 +365,10 @@ pub enum AuthProviderConfigView {
     /// Stored model provider API key (`model:<provider_id>` rows). The key itself
     /// is the provider credential and never appears in views.
     #[serde(rename = "modelApiKey", rename_all = "camelCase")]
-    ModelApiKey {},
+    ModelApiKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<ModelEndpointConfig>,
+    },
     /// OAuth-grant-backed model provider credential: provider calls send the
     /// bound grant's access token as an OAuth bearer token.
     #[serde(rename = "modelOAuth", rename_all = "camelCase")]
@@ -372,7 +376,21 @@ pub enum AuthProviderConfigView {
         grant_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         audience: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<ModelEndpointConfig>,
     },
+    /// Credentialless OpenAI-compatible endpoint.
+    #[serde(rename = "modelEndpoint", rename_all = "camelCase")]
+    ModelEndpoint { endpoint: ModelEndpointConfig },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelEndpointConfig {
+    pub base_url: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub headers: BTreeMap<String, String>,
+    pub api_kinds: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -387,7 +405,10 @@ pub enum AuthProviderConfigInput {
     /// Stored model provider API key; the key arrives via `credential` and is
     /// encrypted on receipt.
     #[serde(rename = "modelApiKey", rename_all = "camelCase")]
-    ModelApiKey {},
+    ModelApiKey {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<ModelEndpointConfig>,
+    },
     /// Bind an existing auth grant as a model provider credential. No
     /// `credential` is accepted; the grant's tokens stay in the grant store.
     #[serde(rename = "modelOAuth", rename_all = "camelCase")]
@@ -395,7 +416,12 @@ pub enum AuthProviderConfigInput {
         grant_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         audience: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<ModelEndpointConfig>,
     },
+    /// Register an endpoint that requires no provider credential.
+    #[serde(rename = "modelEndpoint", rename_all = "camelCase")]
+    ModelEndpoint { endpoint: ModelEndpointConfig },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

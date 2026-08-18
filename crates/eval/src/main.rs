@@ -185,10 +185,14 @@ impl OpenAiResponsesApi for DiagnosticOpenAiResponsesApi {
         &self,
         request: oai::CreateResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::Response>, llm_clients::LlmApiError> {
         let request_text = serde_json::to_string(&request)
             .unwrap_or_else(|error| format!("failed to encode request: {error}"));
-        let result = self.inner.create_with_auth(request, auth).await;
+        let result = self
+            .inner
+            .create_with_transport(request, auth, endpoint)
+            .await;
         let outcome = match &result {
             Ok(response) => format!(
                 "http_status={} response_status={:?} raw={}",
@@ -209,10 +213,14 @@ impl OpenAiResponsesApi for DiagnosticOpenAiResponsesApi {
         &self,
         request: oai::CompactResponseRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai::CompactResponse>, llm_clients::LlmApiError> {
         let request_text = serde_json::to_string(&request)
             .unwrap_or_else(|error| format!("failed to encode compact request: {error}"));
-        let result = self.inner.compact_with_auth(request, auth).await;
+        let result = self
+            .inner
+            .compact_with_transport(request, auth, endpoint)
+            .await;
         let outcome = match &result {
             Ok(response) => format!(
                 "http_status={} raw={}",
@@ -235,10 +243,14 @@ impl OpenAiCompletionsApi for DiagnosticOpenAiCompletionsApi {
         &self,
         request: oai_c::CreateCompletionRequest,
         auth: Option<llm_clients::RequestAuth<'_>>,
+        endpoint: Option<&llm_clients::EndpointOverride>,
     ) -> Result<ApiResponse<oai_c::Completion>, llm_clients::LlmApiError> {
         let request_text = serde_json::to_string(&request)
             .unwrap_or_else(|error| format!("failed to encode request: {error}"));
-        let result = self.inner.create_with_auth(request, auth).await;
+        let result = self
+            .inner
+            .create_with_transport(request, auth, endpoint)
+            .await;
         let outcome = match &result {
             Ok(response) => format!(
                 "http_status={} response_id={} finish_reason={:?} raw={}",

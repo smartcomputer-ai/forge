@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub use headers::HeaderSnapshot;
-pub use http::{HttpClient, HttpClientConfig};
+pub use http::{EndpointOverride, HttpClient, HttpClientConfig};
 pub use sse::{SseEvent, SseParser};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

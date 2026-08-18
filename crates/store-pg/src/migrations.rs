@@ -91,7 +91,7 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
     },
     EmbeddedMigration {
         version: 9,
-        name: "collapse_github_oauth_kinds",
+        name: "auth_kind_cleanup_and_model_endpoints",
         sql: include_str!("../migrations/009_collapse_github_oauth_kinds.sql"),
     },
 ];

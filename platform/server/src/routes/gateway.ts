@@ -152,12 +152,35 @@ export function externalEnvironmentRequestId(endpoint: string): string {
   return `external-${slug || "envd"}`;
 }
 
-const modelKeyPutSchema = z.object({
-  provider: z.enum(["openai", "anthropic"]),
-  credential: z.string().min(1),
-  displayName: z.string().trim().min(1).max(200).optional(),
-  replace: z.boolean().optional(),
+const modelEndpointSchema = z.object({
+  baseUrl: z.string().trim().url(),
+  headers: z.record(z.string(), z.string()).optional(),
+  apiKinds: z
+    .array(z.enum(["openai:responses", "openai:completions"]))
+    .min(1)
+    .refine((kinds) => new Set(kinds).size === kinds.length, "API kinds must be unique"),
 });
+
+const modelKeyPutSchema = z
+  .object({
+    provider: z.string().trim().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/),
+    credential: z.string().min(1).optional(),
+    endpoint: modelEndpointSchema.optional(),
+    displayName: z.string().trim().min(1).max(200).optional(),
+    replace: z.boolean().optional(),
+  })
+  .refine(
+    ({ provider, endpoint }) => provider === "openai" || provider === "anthropic" || endpoint,
+    "custom model providers require an endpoint",
+  )
+  .refine(
+    ({ provider, endpoint }) => provider !== "anthropic" || !endpoint,
+    "Anthropic-compatible endpoint overrides are not supported",
+  )
+  .refine(
+    ({ credential, endpoint }) => Boolean(credential || endpoint),
+    "a model provider requires a credential or endpoint",
+  );
 
 /// Coding-agent subscription credential paste (P127): parsed and normalised
 /// here (vendor knowledge stays in Platform), then imported into the engine as
@@ -703,7 +726,9 @@ export function gatewayRoutes(ctx: AppContext) {
       return c.json({
         providers: (providers.result.providers ?? [])
           .filter((provider) =>
-            provider.config.type === "modelApiKey" || provider.config.type === "modelOAuth"
+            provider.config.type === "modelApiKey" ||
+            provider.config.type === "modelOAuth" ||
+            provider.config.type === "modelEndpoint"
           )
           .map(modelProviderCredentialView),
         grants: grants.result.grants ?? [],
@@ -771,10 +796,15 @@ export function gatewayRoutes(ctx: AppContext) {
           }
         }
       }
+      const config: AuthProviderCreateParams["config"] = body.data.endpoint
+        ? body.data.credential
+          ? { type: "modelApiKey", endpoint: body.data.endpoint }
+          : { type: "modelEndpoint", endpoint: body.data.endpoint }
+        : { type: "modelApiKey" };
       const params: AuthProviderCreateParams = {
         providerId,
         displayName: body.data.displayName,
-        config: { type: "modelApiKey" },
+        config,
         credential: body.data.credential,
       };
       const response = await client.call("auth/providers/create", params);

@@ -1,7 +1,7 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { integrationDefinition } from "./catalog";
 import { GitHubAppDetails } from "./github-app";
-import { ModelApiKeyDetails } from "./model-api-key";
+import { ModelApiKeyDetails, OpenAiCompatibleDetails } from "./model-api-key";
 import { SubscriptionDetails } from "./subscription";
 import type { ConnectedIntegration } from "./use-integrations";
 
@@ -63,6 +63,15 @@ function IntegrationDetails({
     case "anthropicApiKey":
       return (
         <ModelApiKeyDetails
+          universeId={universeId}
+          provider={integration.provider}
+          onChanged={onChanged}
+          onRemoved={removed}
+        />
+      );
+    case "openAiCompatible":
+      return (
+        <OpenAiCompatibleDetails
           universeId={universeId}
           provider={integration.provider}
           onChanged={onChanged}

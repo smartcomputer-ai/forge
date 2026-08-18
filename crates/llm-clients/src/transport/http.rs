@@ -5,7 +5,123 @@ use crate::transport::HeaderSnapshot;
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use reqwest::{Method, RequestBuilder, Url};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::time::Duration;
+
+/// Per-request endpoint override for an OpenAI-compatible provider. Header
+/// values are deliberately absent from `Debug` output.
+#[derive(Clone)]
+pub struct EndpointOverride {
+    base_url: Url,
+    headers: HeaderMap,
+}
+
+impl EndpointOverride {
+    pub fn from_parts(
+        base_url: &str,
+        headers: &BTreeMap<String, String>,
+    ) -> Result<Self, LlmApiError> {
+        let base_url = normalize_base_url(base_url)?;
+        validate_endpoint_url(&base_url)?;
+        if headers.len() > 32 {
+            return Err(ConfigurationError::new(
+                "endpoint headers must contain at most 32 entries",
+            )
+            .into());
+        }
+        let mut parsed_headers = HeaderMap::new();
+        for (name, value) in headers {
+            let name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+                ConfigurationError::new(format!("invalid endpoint header name {name:?}: {error}"))
+            })?;
+            if is_reserved_endpoint_header(&name) {
+                return Err(ConfigurationError::new(format!(
+                    "endpoint header {name:?} is transport-owned and cannot be overridden"
+                ))
+                .into());
+            }
+            if value.len() > 4096 {
+                return Err(ConfigurationError::new(format!(
+                    "endpoint header {name:?} exceeds the supported value length"
+                ))
+                .into());
+            }
+            let value = HeaderValue::from_str(value).map_err(|error| {
+                ConfigurationError::new(format!("invalid endpoint header value: {error}"))
+            })?;
+            parsed_headers.insert(name, value);
+        }
+        Ok(Self {
+            base_url,
+            headers: parsed_headers,
+        })
+    }
+
+    pub fn url(&self, path: &str) -> Result<Url, LlmApiError> {
+        join_url(&self.base_url, path)
+    }
+}
+
+fn validate_endpoint_url(url: &Url) -> Result<(), LlmApiError> {
+    if !url.username().is_empty() || url.password().is_some() {
+        return Err(
+            ConfigurationError::new("endpoint base URL must not include credentials").into(),
+        );
+    }
+    if url.query().is_some() || url.fragment().is_some() {
+        return Err(ConfigurationError::new(
+            "endpoint base URL must not include a query or fragment",
+        )
+        .into());
+    }
+    match url.scheme() {
+        "https" => Ok(()),
+        "http"
+            if url.host_str().is_some_and(|host| {
+                let host = host
+                    .strip_prefix('[')
+                    .and_then(|host| host.strip_suffix(']'))
+                    .unwrap_or(host);
+                host.eq_ignore_ascii_case("localhost")
+                    || host
+                        .parse::<std::net::IpAddr>()
+                        .is_ok_and(|address| address.is_loopback())
+            }) =>
+        {
+            Ok(())
+        }
+        "http" => Err(ConfigurationError::new(
+            "endpoint base URL must use HTTPS; HTTP is allowed only for loopback hosts",
+        )
+        .into()),
+        scheme => Err(ConfigurationError::new(format!(
+            "unsupported endpoint base URL scheme '{scheme}'"
+        ))
+        .into()),
+    }
+}
+
+fn is_reserved_endpoint_header(name: &HeaderName) -> bool {
+    matches!(
+        name.as_str(),
+        "authorization"
+            | "content-type"
+            | "host"
+            | "cookie"
+            | "set-cookie"
+            | "connection"
+            | "transfer-encoding"
+    )
+}
+
+impl std::fmt::Debug for EndpointOverride {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EndpointOverride")
+            .field("base_url", &self.base_url)
+            .field("header_count", &self.headers.len())
+            .finish()
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HttpClientConfig {
@@ -74,6 +190,25 @@ impl HttpClient {
             builder = builder.headers(self.default_headers.clone());
         }
         builder
+    }
+
+    /// Build a request against a per-provider endpoint. Overrides deliberately
+    /// do not inherit the client's OpenAI organization/project defaults.
+    pub fn request_with_endpoint(
+        &self,
+        method: Method,
+        default_url: Url,
+        endpoint_path: &str,
+        endpoint: Option<&EndpointOverride>,
+    ) -> Result<RequestBuilder, LlmApiError> {
+        let Some(endpoint) = endpoint else {
+            return Ok(self.request(method, default_url));
+        };
+        let mut builder = self.client.request(method, endpoint.url(endpoint_path)?);
+        if !endpoint.headers.is_empty() {
+            builder = builder.headers(endpoint.headers.clone());
+        }
+        Ok(builder)
     }
 
     pub fn with_header(mut self, name: HeaderName, value: HeaderValue) -> Self {
@@ -147,5 +282,21 @@ mod tests {
         let rendered = format!("{client:?}");
         assert!(!rendered.contains("secret"));
         assert!(rendered.contains("default_header_count"));
+    }
+
+    #[test]
+    fn endpoint_override_debug_redacts_header_values_and_joins_paths() {
+        let endpoint = EndpointOverride::from_parts(
+            "https://router.example/v1",
+            &BTreeMap::from([("x-title".to_owned(), "sensitive-ish".to_owned())]),
+        )
+        .expect("endpoint");
+        assert_eq!(
+            endpoint.url("chat/completions").expect("URL").as_str(),
+            "https://router.example/v1/chat/completions"
+        );
+        let debug = format!("{endpoint:?}");
+        assert!(!debug.contains("sensitive-ish"));
+        assert!(debug.contains("header_count"));
     }
 }

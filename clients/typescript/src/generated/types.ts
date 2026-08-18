@@ -681,7 +681,13 @@ export type RunAcceptedSourceView =
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
-  "staticBearer" | "mcpOAuth" | "gitHubApp" | "customOAuth" | "modelApiKey" | "modelOAuth";
+  | "staticBearer"
+  | "mcpOAuth"
+  | "gitHubApp"
+  | "customOAuth"
+  | "modelApiKey"
+  | "modelOAuth"
+  | "modelEndpoint";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEndpointAuthMethod".
@@ -716,12 +722,18 @@ export type AuthProviderConfigView =
       type: "githubApp";
     }
   | {
+      endpoint?: ModelEndpointConfig | null;
       type: "modelApiKey";
     }
   | {
       audience?: string | null;
+      endpoint?: ModelEndpointConfig | null;
       grantId: string;
       type: "modelOAuth";
+    }
+  | {
+      endpoint: ModelEndpointConfig;
+      type: "modelEndpoint";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -894,7 +906,7 @@ export type ModelSource = "provider";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelProviderCredentialStatus".
  */
-export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid";
+export type ModelProviderCredentialStatus = "configured" | "missing" | "invalid" | "notRequired";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelProviderCredentialSource".
@@ -1013,12 +1025,18 @@ export type AuthProviderConfigInput =
       type: "githubApp";
     }
   | {
+      endpoint?: ModelEndpointConfig | null;
       type: "modelApiKey";
     }
   | {
       audience?: string | null;
+      endpoint?: ModelEndpointConfig | null;
       grantId: string;
       type: "modelOAuth";
+    }
+  | {
+      endpoint: ModelEndpointConfig;
+      type: "modelEndpoint";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1918,6 +1936,17 @@ export interface AuthProviderView {
   providerKind: AuthProviderKind;
   status: AuthProviderStatus;
   updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ModelEndpointConfig".
+ */
+export interface ModelEndpointConfig {
+  apiKinds: string[];
+  baseUrl: string;
+  headers?: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

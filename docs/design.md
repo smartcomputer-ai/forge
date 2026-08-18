@@ -50,6 +50,16 @@ The main challenge is how to balance what goes into the context window each turn
 
 Lightspeed adds the _absolute minimal_ abstraction over the LLM provider data structures and APIs. Many agent SDKs (e.g. LangChain) convert the provider specific data into a unified structure and then convert it back when they pass it back to the LLM. We, on the other hand, extract only the information that is needed to decide and branch inside the deterministic core. The provider-native data is stored as blobs in content addressed storage.
 
+Model selection records only `(providerId, apiKind, model)`. Transport stays
+outside deterministic state: a universe-scoped `model:<providerId>` record is
+resolved immediately before provider I/O and can supply an encrypted API key
+or OAuth token plus an OpenAI-compatible base URL, non-secret headers, and an
+explicit API-kind allowlist. Built-in OpenAI and Anthropic routes may fall
+back to deployment configuration; custom provider ids must resolve a complete
+endpoint record and never silently fall through to OpenAI. Credentialless
+loopback records support local Ollama/vLLM servers, while public endpoints
+require HTTPS.
+
 Compaction follows the same philosophy: it is provider-native, not a homegrown summarizer. The core treats compaction as a first-class part of the session: it decides when the context window needs compacting, records a compaction-requested event, and marks the affected context pending until the compaction result event lands. The actual compaction runs through the provider's own mechanism (e.g. OpenAI Responses or Anthropic Messages compaction), so the compacted trace stays in the provider's native format.
 
 ## Offloading to CAS

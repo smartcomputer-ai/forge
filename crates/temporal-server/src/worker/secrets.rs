@@ -12,7 +12,10 @@ use auth::{
     AuthRegistryError, AuthTokenBroker, SecretStore, TokenAudience, model_auth_provider_id,
 };
 use engine::SecretRef;
-use llm_runtime::provider_keys::{ProviderKeyError, ProviderKeyResolver, ResolvedProviderAuth};
+use llm_runtime::provider_keys::{
+    ModelProviderResolver, ProviderKeyError, ResolvedEndpoint, ResolvedModelProvider,
+    ResolvedProviderAuth,
+};
 use llm_runtime::secrets::{
     EnvSecretResolver, ResolvedSecretValue, SECRET_NAMESPACE_ENV, SECRET_NAMESPACE_MCP_SERVER,
     SecretResolveError, SecretResolver,
@@ -129,13 +132,13 @@ impl SecretResolver for BrokerSecretResolver {
 /// credential secret (sent in the provider's native key header), and
 /// `model_oauth` resolves the bound grant through the token broker (refresh
 /// included) and sends it as an OAuth bearer token.
-pub struct StoredProviderKeyResolver {
+pub struct StoredModelProviderResolver {
     providers: Arc<dyn AuthProviderStore>,
     secrets: Arc<dyn SecretStore>,
     broker: Arc<dyn AuthTokenBroker>,
 }
 
-impl StoredProviderKeyResolver {
+impl StoredModelProviderResolver {
     pub fn new(
         providers: Arc<dyn AuthProviderStore>,
         secrets: Arc<dyn SecretStore>,
@@ -150,11 +153,11 @@ impl StoredProviderKeyResolver {
 }
 
 #[async_trait]
-impl ProviderKeyResolver for StoredProviderKeyResolver {
-    async fn resolve_provider_key(
+impl ModelProviderResolver for StoredModelProviderResolver {
+    async fn resolve_model_provider(
         &self,
         provider_id: &str,
-    ) -> Result<Option<ResolvedProviderAuth>, ProviderKeyError> {
+    ) -> Result<Option<ResolvedModelProvider>, ProviderKeyError> {
         let row_id =
             AuthProviderId::try_new(model_auth_provider_id(provider_id)).map_err(|error| {
                 ProviderKeyError::Backend {
@@ -179,7 +182,7 @@ impl ProviderKeyResolver for StoredProviderKeyResolver {
             });
         }
         match &record.config {
-            AuthProviderConfig::ModelApiKey(_) => {
+            AuthProviderConfig::ModelApiKey(config) => {
                 let Some(secret_id) = &record.credential_secret else {
                     return Err(ProviderKeyError::NotUsable {
                         provider_id: provider_id.to_owned(),
@@ -192,7 +195,10 @@ impl ProviderKeyResolver for StoredProviderKeyResolver {
                         message: format!("read credential secret: {error}"),
                     }
                 })?;
-                Ok(Some(ResolvedProviderAuth::api_key(value.expose())))
+                Ok(Some(ResolvedModelProvider {
+                    auth: Some(ResolvedProviderAuth::api_key(value.expose())),
+                    endpoint: resolve_endpoint(provider_id, config.endpoint.as_ref())?,
+                }))
             }
             AuthProviderConfig::ModelOAuth(config) => {
                 let audience = config
@@ -213,8 +219,15 @@ impl ProviderKeyResolver for StoredProviderKeyResolver {
                             message: other.to_string(),
                         },
                     })?;
-                Ok(Some(ResolvedProviderAuth::bearer(token.expose())))
+                Ok(Some(ResolvedModelProvider {
+                    auth: Some(ResolvedProviderAuth::bearer(token.expose())),
+                    endpoint: resolve_endpoint(provider_id, config.endpoint.as_ref())?,
+                }))
             }
+            AuthProviderConfig::ModelEndpoint(config) => Ok(Some(ResolvedModelProvider {
+                auth: None,
+                endpoint: resolve_endpoint(provider_id, Some(&config.endpoint))?,
+            })),
             other => Err(ProviderKeyError::NotUsable {
                 provider_id: provider_id.to_owned(),
                 message: format!(
@@ -225,6 +238,27 @@ impl ProviderKeyResolver for StoredProviderKeyResolver {
         }
     }
 }
+
+fn resolve_endpoint(
+    provider_id: &str,
+    endpoint: Option<&auth::ModelEndpointConfig>,
+) -> Result<Option<ResolvedEndpoint>, ProviderKeyError> {
+    endpoint
+        .map(|endpoint| {
+            ResolvedEndpoint::new(
+                &endpoint.base_url,
+                &endpoint.headers,
+                endpoint.api_kinds.clone(),
+            )
+            .map_err(|error| ProviderKeyError::NotUsable {
+                provider_id: provider_id.to_owned(),
+                message: format!("invalid model endpoint: {error}"),
+            })
+        })
+        .transpose()
+}
+
+pub type StoredProviderKeyResolver = StoredModelProviderResolver;
 
 fn broker_error_to_resolve_error(
     secret_ref: &SecretRef,
@@ -531,11 +565,12 @@ mod tests {
         let resolver = provider_key_resolver(AuthProviderStatus::Active).await;
 
         let auth = resolver
-            .resolve_provider_key("openai")
+            .resolve_model_provider("openai")
             .await
             .expect("resolve")
             .expect("auth present");
 
+        let auth = auth.auth.expect("provider auth");
         assert_eq!(auth.value.expose(), "stored-api-key");
         assert_eq!(
             auth.scheme,
@@ -548,11 +583,60 @@ mod tests {
         let resolver = provider_key_resolver(AuthProviderStatus::Active).await;
 
         let key = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect("resolve");
 
-        assert_eq!(key, None);
+        assert!(key.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn credentialless_model_provider_resolves_its_endpoint_and_api_kinds() {
+        let providers = Arc::new(auth::InMemoryAuthProviderStore::new());
+        providers
+            .create_auth_provider(auth::CreateAuthProviderRecord {
+                provider_id: AuthProviderId::new(model_auth_provider_id("ollama")),
+                display_name: Some("Local Ollama".to_owned()),
+                config: AuthProviderConfig::ModelEndpoint(auth::ModelEndpointOnlyConfig {
+                    endpoint: auth::ModelEndpointConfig {
+                        base_url: "http://127.0.0.1:11434/v1".to_owned(),
+                        headers: std::collections::BTreeMap::from([(
+                            "x-client".to_owned(),
+                            "lightspeed".to_owned(),
+                        )]),
+                        api_kinds: vec!["openai:completions".to_owned()],
+                    },
+                }),
+                credential_secret: None,
+                status: AuthProviderStatus::Active,
+                created_at_ms: 10,
+            })
+            .await
+            .expect("create provider");
+        let resolver = StoredProviderKeyResolver::new(
+            providers,
+            Arc::new(InMemorySecretStore::new()),
+            empty_broker(),
+        );
+
+        let provider = resolver
+            .resolve_model_provider("ollama")
+            .await
+            .expect("resolve")
+            .expect("provider");
+
+        assert!(provider.auth.is_none());
+        let endpoint = provider.endpoint.expect("endpoint");
+        assert!(endpoint.api_kinds.contains_key("openai:completions"));
+        assert_eq!(
+            endpoint
+                .transport
+                .url("chat/completions")
+                .expect("request URL")
+                .as_str(),
+            "http://127.0.0.1:11434/v1/chat/completions"
+        );
+        assert!(!format!("{:?}", endpoint.transport).contains("lightspeed"));
     }
 
     #[tokio::test]
@@ -560,7 +644,7 @@ mod tests {
         let resolver = provider_key_resolver(AuthProviderStatus::Disabled).await;
 
         let error = resolver
-            .resolve_provider_key("openai")
+            .resolve_model_provider("openai")
             .await
             .expect_err("disabled provider must fail");
 
@@ -597,7 +681,7 @@ mod tests {
         let resolver = StoredProviderKeyResolver::new(providers, secrets, empty_broker());
 
         let error = resolver
-            .resolve_provider_key("openai")
+            .resolve_model_provider("openai")
             .await
             .expect_err("non-llm provider row must fail");
 
@@ -649,6 +733,7 @@ mod tests {
                 config: AuthProviderConfig::ModelOAuth(auth::ModelOAuthConfig {
                     grant_id: AuthGrantId::new("authgrant_model"),
                     audience: binding_audience.map(str::to_owned),
+                    endpoint: None,
                 }),
                 credential_secret: None,
                 status: AuthProviderStatus::Active,
@@ -673,11 +758,12 @@ mod tests {
         .await;
 
         let auth = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect("resolve")
             .expect("auth present");
 
+        let auth = auth.auth.expect("provider auth");
         assert_eq!(auth.value.expose(), "oauth-access-token");
         assert_eq!(
             auth.scheme,
@@ -689,10 +775,11 @@ mod tests {
     async fn model_oauth_bindings_without_audience_only_cover_unrestricted_grants() {
         let resolver = model_oauth_resolver(None, None).await;
         let auth = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect("resolve")
             .expect("auth present");
+        let auth = auth.auth.expect("provider auth");
         assert_eq!(auth.value.expose(), "oauth-access-token");
 
         // An audience-bound grant must not resolve through an audience-less
@@ -700,7 +787,7 @@ mod tests {
         // audience can cover.
         let resolver = model_oauth_resolver(Some("https://api.anthropic.com"), None).await;
         let error = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect_err("audience-bound grant must fail without binding audience");
         assert!(matches!(error, ProviderKeyError::NotUsable { .. }));
@@ -715,7 +802,7 @@ mod tests {
         .await;
 
         let error = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect_err("mismatched audience must fail");
 

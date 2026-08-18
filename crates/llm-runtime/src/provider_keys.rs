@@ -1,4 +1,4 @@
-//! Stored model provider credential resolution (P69 G6/G7).
+//! Universe model-provider resolution (P69 G6/G7, P128 Phase 2).
 //!
 //! Mirrors the [`crate::secrets`] boundary: `llm-runtime` owns this narrow
 //! trait and stays free of auth and store dependencies; hosting runtimes adapt
@@ -6,15 +6,14 @@
 //! provider request is sent, and the credential travels as a transport header
 //! — it never enters materialized or persisted request blobs.
 //!
-//! `Ok(None)` means "no stored credential for this provider": adapters then
-//! fall back to the client's transport-configured key (typically from
-//! environment variables). A stored credential that exists but cannot be used
-//! (disabled, missing credential) is an error, never a silent fallback.
+//! `Ok(None)` permits deployment fallback only for built-in provider ids.
+//! Custom providers without a universe record fail before network I/O.
 
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use engine::ModelSelection;
+use engine::{ModelSelection, ProviderApiKind};
+use llm_clients::EndpointOverride;
 use thiserror::Error;
 
 use crate::{error::LlmAdapterError, secrets::ResolvedSecretValue};
@@ -54,6 +53,47 @@ pub struct ResolvedProviderAuth {
     pub scheme: ProviderAuthScheme,
 }
 
+/// Validated per-provider endpoint plus its admitted API kinds.
+#[derive(Clone, Debug)]
+pub struct ResolvedEndpoint {
+    pub transport: EndpointOverride,
+    pub api_kinds: BTreeMap<String, ()>,
+}
+
+impl ResolvedEndpoint {
+    pub fn new(
+        base_url: &str,
+        headers: &BTreeMap<String, String>,
+        api_kinds: impl IntoIterator<Item = String>,
+    ) -> Result<Self, llm_clients::LlmApiError> {
+        Ok(Self {
+            transport: EndpointOverride::from_parts(base_url, headers)?,
+            api_kinds: api_kinds.into_iter().map(|kind| (kind, ())).collect(),
+        })
+    }
+
+    fn supports(&self, api_kind: &ProviderApiKind) -> bool {
+        self.api_kinds
+            .contains_key(provider_api_kind_name(api_kind))
+    }
+}
+
+/// Authentication and transport selected for one model provider.
+#[derive(Clone, Debug)]
+pub struct ResolvedModelProvider {
+    pub auth: Option<ResolvedProviderAuth>,
+    pub endpoint: Option<ResolvedEndpoint>,
+}
+
+impl ResolvedModelProvider {
+    pub fn as_request_auth(&self) -> llm_clients::RequestAuth<'_> {
+        self.auth
+            .as_ref()
+            .map(ResolvedProviderAuth::as_request_auth)
+            .unwrap_or(llm_clients::RequestAuth::None)
+    }
+}
+
 impl ResolvedProviderAuth {
     pub fn api_key(value: impl Into<String>) -> Self {
         Self {
@@ -80,75 +120,143 @@ impl ResolvedProviderAuth {
 /// Resolves the stored credential for a model provider id
 /// (`ModelSelection.provider_id`) at provider-send time.
 #[async_trait]
-pub trait ProviderKeyResolver: Send + Sync {
-    async fn resolve_provider_key(
+pub trait ModelProviderResolver: Send + Sync {
+    async fn resolve_model_provider(
         &self,
         provider_id: &str,
-    ) -> Result<Option<ResolvedProviderAuth>, ProviderKeyError>;
+    ) -> Result<Option<ResolvedModelProvider>, ProviderKeyError>;
 }
 
 /// Resolve the stored credential for the request's provider, mapping failures
 /// into the adapter error space. `None` means "use the client-configured key".
-pub(crate) async fn resolve_stored_provider_key(
-    resolver: &dyn ProviderKeyResolver,
+pub(crate) async fn resolve_model_provider(
+    resolver: &dyn ModelProviderResolver,
     model: &ModelSelection,
-) -> Result<Option<ResolvedProviderAuth>, LlmAdapterError> {
-    resolver
-        .resolve_provider_key(&model.provider_id)
+) -> Result<Option<ResolvedModelProvider>, LlmAdapterError> {
+    let resolved = resolver
+        .resolve_model_provider(&model.provider_id)
         .await
         .map_err(|error| LlmAdapterError::ProviderKeyResolution {
             message: error.to_string(),
-        })
+        })?;
+    if resolved.is_none() && !is_builtin_provider(&model.provider_id) {
+        return Err(LlmAdapterError::ProviderKeyResolution {
+            message: format!(
+                "custom model provider {} has no universe model-provider record",
+                model.provider_id
+            ),
+        });
+    }
+    if !is_builtin_provider(&model.provider_id)
+        && resolved
+            .as_ref()
+            .is_some_and(|provider| provider.endpoint.is_none())
+    {
+        return Err(LlmAdapterError::ProviderKeyResolution {
+            message: format!(
+                "custom model provider {} has no endpoint configuration",
+                model.provider_id
+            ),
+        });
+    }
+    if let Some(endpoint) = resolved
+        .as_ref()
+        .and_then(|provider| provider.endpoint.as_ref())
+        && !endpoint.supports(&model.api_kind)
+    {
+        return Err(LlmAdapterError::ProviderKeyResolution {
+            message: format!(
+                "model provider {} endpoint does not admit API kind {}",
+                model.provider_id,
+                provider_api_kind_name(&model.api_kind)
+            ),
+        });
+    }
+    Ok(resolved)
+}
+
+fn is_builtin_provider(provider_id: &str) -> bool {
+    matches!(provider_id, "openai" | "anthropic")
+}
+
+fn provider_api_kind_name(api_kind: &ProviderApiKind) -> &'static str {
+    match api_kind {
+        ProviderApiKind::OpenAiResponses => "openai:responses",
+        ProviderApiKind::OpenAiCompletions => "openai:completions",
+        ProviderApiKind::AnthropicMessages => "anthropic:messages",
+    }
 }
 
 /// Default resolver: no stored credentials exist, so adapters always use the
 /// client's transport-configured key.
 #[derive(Clone, Copy, Debug, Default)]
-pub struct NoStoredProviderKeys;
+pub struct NoStoredModelProviders;
 
 #[async_trait]
-impl ProviderKeyResolver for NoStoredProviderKeys {
-    async fn resolve_provider_key(
+impl ModelProviderResolver for NoStoredModelProviders {
+    async fn resolve_model_provider(
         &self,
         _provider_id: &str,
-    ) -> Result<Option<ResolvedProviderAuth>, ProviderKeyError> {
+    ) -> Result<Option<ResolvedModelProvider>, ProviderKeyError> {
         Ok(None)
     }
 }
 
 /// Fixed-map resolver for tests.
 #[derive(Clone, Debug, Default)]
-pub struct StaticProviderKeys {
-    keys: BTreeMap<String, ResolvedProviderAuth>,
+pub struct StaticModelProviders {
+    providers: BTreeMap<String, ResolvedModelProvider>,
 }
 
-impl StaticProviderKeys {
+impl StaticModelProviders {
     pub fn new() -> Self {
         Self::default()
     }
 
     pub fn with_key(mut self, provider_id: impl Into<String>, key: impl Into<String>) -> Self {
-        self.keys
-            .insert(provider_id.into(), ResolvedProviderAuth::api_key(key));
+        self.providers.insert(
+            provider_id.into(),
+            ResolvedModelProvider {
+                auth: Some(ResolvedProviderAuth::api_key(key)),
+                endpoint: None,
+            },
+        );
         self
     }
 
     pub fn with_bearer(mut self, provider_id: impl Into<String>, token: impl Into<String>) -> Self {
-        self.keys
-            .insert(provider_id.into(), ResolvedProviderAuth::bearer(token));
+        self.providers.insert(
+            provider_id.into(),
+            ResolvedModelProvider {
+                auth: Some(ResolvedProviderAuth::bearer(token)),
+                endpoint: None,
+            },
+        );
+        self
+    }
+
+    pub fn with_provider(
+        mut self,
+        provider_id: impl Into<String>,
+        provider: ResolvedModelProvider,
+    ) -> Self {
+        self.providers.insert(provider_id.into(), provider);
         self
     }
 }
 
 #[async_trait]
-impl ProviderKeyResolver for StaticProviderKeys {
-    async fn resolve_provider_key(
+impl ModelProviderResolver for StaticModelProviders {
+    async fn resolve_model_provider(
         &self,
         provider_id: &str,
-    ) -> Result<Option<ResolvedProviderAuth>, ProviderKeyError> {
-        Ok(self.keys.get(provider_id).cloned())
+    ) -> Result<Option<ResolvedModelProvider>, ProviderKeyError> {
+        Ok(self.providers.get(provider_id).cloned())
     }
 }
+
+pub type NoStoredProviderKeys = NoStoredModelProviders;
+pub type StaticProviderKeys = StaticModelProviders;
 
 #[cfg(test)]
 mod tests {
@@ -156,42 +264,119 @@ mod tests {
 
     #[tokio::test]
     async fn no_stored_keys_resolver_returns_none() {
-        let resolver = NoStoredProviderKeys;
+        let resolver = NoStoredModelProviders;
 
         let auth = resolver
-            .resolve_provider_key("openai")
+            .resolve_model_provider("openai")
             .await
             .expect("resolve");
 
-        assert_eq!(auth, None);
+        assert!(auth.is_none());
     }
 
     #[tokio::test]
     async fn static_resolver_resolves_known_providers() {
-        let resolver = StaticProviderKeys::new()
+        let resolver = StaticModelProviders::new()
             .with_key("openai", "key-123")
             .with_bearer("anthropic", "token-456");
 
         let auth = resolver
-            .resolve_provider_key("openai")
+            .resolve_model_provider("openai")
             .await
             .expect("resolve")
             .expect("auth present");
+        let auth = auth.auth.expect("auth");
         assert_eq!(auth.value.expose(), "key-123");
         assert_eq!(auth.scheme, ProviderAuthScheme::ApiKey);
 
         let auth = resolver
-            .resolve_provider_key("anthropic")
+            .resolve_model_provider("anthropic")
             .await
             .expect("resolve")
             .expect("auth present");
+        let auth = auth.auth.expect("auth");
         assert_eq!(auth.value.expose(), "token-456");
         assert_eq!(auth.scheme, ProviderAuthScheme::Bearer);
 
         let missing = resolver
-            .resolve_provider_key("missing")
+            .resolve_model_provider("missing")
             .await
             .expect("resolve");
-        assert_eq!(missing, None);
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn custom_provider_requires_a_row_and_endpoint_admits_the_selected_api_kind() {
+        let missing = resolve_model_provider(
+            &NoStoredModelProviders,
+            &ModelSelection {
+                api_kind: ProviderApiKind::OpenAiCompletions,
+                provider_id: "openrouter".to_owned(),
+                model: "model".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            missing,
+            Err(LlmAdapterError::ProviderKeyResolution { .. })
+        ));
+
+        let key_only = StaticModelProviders::new().with_key("openrouter", "key");
+        let missing_endpoint = resolve_model_provider(
+            &key_only,
+            &ModelSelection {
+                api_kind: ProviderApiKind::OpenAiCompletions,
+                provider_id: "openrouter".to_owned(),
+                model: "model".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            missing_endpoint,
+            Err(LlmAdapterError::ProviderKeyResolution { .. })
+        ));
+
+        let endpoint = ResolvedEndpoint::new(
+            "http://127.0.0.1:8080/v1",
+            &BTreeMap::new(),
+            ["openai:completions".to_owned()],
+        )
+        .expect("endpoint");
+        let resolver = StaticModelProviders::new().with_provider(
+            "openrouter",
+            ResolvedModelProvider {
+                auth: None,
+                endpoint: Some(endpoint),
+            },
+        );
+        let accepted = resolve_model_provider(
+            &resolver,
+            &ModelSelection {
+                api_kind: ProviderApiKind::OpenAiCompletions,
+                provider_id: "openrouter".to_owned(),
+                model: "model".to_owned(),
+            },
+        )
+        .await
+        .expect("accepted")
+        .expect("provider");
+        assert!(matches!(
+            accepted.as_request_auth(),
+            llm_clients::RequestAuth::None
+        ));
+
+        let rejected = resolve_model_provider(
+            &resolver,
+            &ModelSelection {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                provider_id: "openrouter".to_owned(),
+                model: "model".to_owned(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            rejected,
+            Err(LlmAdapterError::ProviderKeyResolution { .. })
+        ));
     }
 }
