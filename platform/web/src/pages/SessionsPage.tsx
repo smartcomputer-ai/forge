@@ -600,6 +600,7 @@ function InlineSetupEditor({
         environments={environments}
         bindings={options.environmentBindings}
         templates={options.environmentTemplates}
+        secrets={options.secrets}
         disabled={!hasSessionFeature(value.config, "environments")}
         onChange={(environment) => change((next) => {
           if (environment) next.environment = environment;

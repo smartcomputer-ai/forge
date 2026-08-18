@@ -239,13 +239,19 @@ that invalidates Lightspeed's copy depends on rotation, which S3 measures
 live before choosing between "nothing needed", "report-back from the
 environment", or "accept reconnect". Do not guess.
 
-### D5. Profiles
+### D5. Profiles — done 2026-08-18
 
-A profile's environment section can declare default credential bindings so
-provisioned environments (P125) get `CLAUDE_CODE_OAUTH_TOKEN` /
-`CODEX_ACCESS_TOKEN` / `CODEX_AUTH_JSON` from the universe's connected
-subscriptions without per-environment setup. Existing per-environment
-`environments/credentials/bind` stays for ad-hoc cases.
+`ProfileEnvironment::Provision.credentials: [{ envName, source }]` (same
+source shape as `environments/credentials/bind`; references, never values).
+The applier binds them right after provisioning, before activation, so
+per-session environments get `CLAUDE_CODE_OAUTH_TOKEN` / `CODEX_AUTH_JSON`
+/ `GITHUB_TOKEN` without a manual bind; the list is validated at
+`profiles/put` and at session start (both named and inline profiles).
+Universe-wide defaults were considered and deliberately not built. The
+profile editor and the new-session setup sheet expose the list with the
+same credential picker as Environments → Assign credential (env name
+pre-filled from the credential). Existing per-environment bindings stay
+for ad-hoc cases.
 
 ### D6. Optional: Lightspeed agent on the ChatGPT Codex backend
 

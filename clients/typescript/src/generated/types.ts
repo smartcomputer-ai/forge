@@ -933,6 +933,14 @@ export type ProfileEnvironment =
       type: "existing";
     }
   | {
+      /**
+       * Credentials bound to the environment right after it is
+       * provisioned, before activation (P127 D5): references to universe
+       * grants/providers/secrets, never values. They become ordinary
+       * environment credential bindings; the profile is the initial set,
+       * not a live sync. Not available for `existing` environments.
+       */
+      credentials?: ProfileEnvironmentCredential[];
       displayName?: string | null;
       /**
        * Optional staged idle policy for the provisioned environment
@@ -3130,6 +3138,20 @@ export interface AgentProfile {
   profileId: ProfileId;
   revision: number;
   updatedAtMs: number;
+}
+/**
+ * One environment credential binding requested by a profile: the same shape
+ * as `environments/credentials/bind`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileEnvironmentCredential".
+ */
+export interface ProfileEnvironmentCredential {
+  /**
+   * Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).
+   */
+  envName: string;
+  source: EnvironmentCredentialSourceView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

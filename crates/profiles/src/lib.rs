@@ -182,6 +182,7 @@ fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), 
             metadata,
             retention: _,
             idle_policy,
+            credentials,
         } => {
             validate_nonempty_string("environment.providerId", provider_id)?;
             validate_nonempty_string("environment.templateId", template_id)?;
@@ -193,9 +194,56 @@ fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), 
             if let Some(policy) = idle_policy {
                 validate_idle_policy(policy)?;
             }
+            validate_profile_environment_credentials(credentials)?;
             Ok(())
         }
     }
+}
+
+/// Credential bindings a profile requests for its provisioned environment:
+/// valid, unique env names and non-empty source ids. Whether the referenced
+/// grant/provider/secret exists is checked by the applier in the universe.
+fn validate_profile_environment_credentials(
+    credentials: &[api::ProfileEnvironmentCredential],
+) -> Result<(), ProfileError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for credential in credentials {
+        if !is_valid_env_name(&credential.env_name) {
+            return Err(ProfileError::InvalidInput {
+                message: format!(
+                    "environment.credentials[].envName {:?} is not a valid environment variable name",
+                    credential.env_name
+                ),
+            });
+        }
+        if !seen.insert(credential.env_name.as_str()) {
+            return Err(ProfileError::InvalidInput {
+                message: format!(
+                    "environment.credentials[].envName {} is bound more than once",
+                    credential.env_name
+                ),
+            });
+        }
+        let source_id = match &credential.source {
+            api::EnvironmentCredentialSourceView::AuthGrant { grant_id } => grant_id.as_str(),
+            api::EnvironmentCredentialSourceView::AuthProviderCredential { provider_id } => {
+                provider_id.as_str()
+            }
+            api::EnvironmentCredentialSourceView::DirectSecret { secret_id } => secret_id.as_str(),
+        };
+        validate_nonempty_string("environment.credentials[].source", source_id)?;
+    }
+    Ok(())
+}
+
+fn is_valid_env_name(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && value.len() <= 128
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// Idle-policy shape rules shared with `environments/create`: every stage
@@ -326,6 +374,7 @@ mod tests {
                         metadata,
                         retention: ProfileEnvironmentRetention::default(),
                         idle_policy: None,
+                        credentials: Vec::new(),
                     }),
                     ..ProfileDocument::default()
                 }
@@ -338,6 +387,7 @@ mod tests {
                 metadata: BTreeMap::new(),
                 retention: ProfileEnvironmentRetention::default(),
                 idle_policy: Some(policy),
+                credentials: Vec::new(),
             }),
             ..ProfileDocument::default()
         };
@@ -384,6 +434,51 @@ mod tests {
             ProfileEnvironmentRetention::default(),
             ProfileEnvironmentRetention::CloseWithSession
         );
+    }
+
+    #[test]
+    fn document_validation_checks_provision_environment_credentials() {
+        let with_credentials =
+            |credentials: Vec<api::ProfileEnvironmentCredential>| ProfileDocument {
+                environment: Some(ProfileEnvironment::Provision {
+                    provider_id: "incus".to_owned(),
+                    template_id: "dev-small-v1".to_owned(),
+                    display_name: None,
+                    metadata: BTreeMap::new(),
+                    retention: ProfileEnvironmentRetention::default(),
+                    idle_policy: None,
+                    credentials,
+                }),
+                ..ProfileDocument::default()
+            };
+        let grant = |env_name: &str, grant_id: &str| api::ProfileEnvironmentCredential {
+            env_name: env_name.to_owned(),
+            source: api::EnvironmentCredentialSourceView::AuthGrant {
+                grant_id: grant_id.to_owned(),
+            },
+        };
+        assert!(
+            validate_profile_document(&with_credentials(vec![
+                grant("CLAUDE_CODE_OAUTH_TOKEN", "authgrant_1"),
+                grant("GITHUB_TOKEN", "authgrant_2"),
+            ]))
+            .is_ok()
+        );
+        assert!(matches!(
+            validate_profile_document(&with_credentials(vec![grant("1BAD", "authgrant_1")])),
+            Err(ProfileError::InvalidInput { message }) if message.contains("envName")
+        ));
+        assert!(matches!(
+            validate_profile_document(&with_credentials(vec![
+                grant("GITHUB_TOKEN", "authgrant_1"),
+                grant("GITHUB_TOKEN", "authgrant_2"),
+            ])),
+            Err(ProfileError::InvalidInput { message }) if message.contains("more than once")
+        ));
+        assert!(matches!(
+            validate_profile_document(&with_credentials(vec![grant("GITHUB_TOKEN", " ")])),
+            Err(ProfileError::InvalidInput { message }) if message.contains("credentials[].source")
+        ));
     }
 
     #[test]

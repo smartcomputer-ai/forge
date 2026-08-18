@@ -6,6 +6,7 @@ import type {
   EnvironmentTemplateView,
   EnvironmentView,
   ProfileEnvironment as ProfileEnvironmentView,
+  ProfileEnvironmentCredential as ProfileEnvironmentCredentialView,
   SessionEventView,
   SessionEventsReadResponse,
   ToolCallDisplayView,
@@ -132,6 +133,7 @@ export interface ProfileSummary {
 }
 
 export type ProfileEnvironment = ProfileEnvironmentView;
+export type ProfileEnvironmentCredential = ProfileEnvironmentCredentialView;
 
 export type ProfileDocument = {
   profileId: string;

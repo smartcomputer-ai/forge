@@ -135,6 +135,58 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentCredentialSourceView": {
+          "oneOf": [
+            {
+              "properties": {
+                "grantId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authGrant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grantId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "providerId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authProviderCredential",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "secretId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "directSecret",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "secretId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "EnvironmentIdlePolicyView": {
           "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
           "properties": {
@@ -592,6 +644,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
+                "credentials": {
+                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "items": {
+                    "$ref": "#/definitions/ProfileEnvironmentCredential"
+                  },
+                  "type": "array"
+                },
                 "displayName": {
                   "type": [
                     "string",
@@ -643,6 +702,26 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileEnvironmentCredential": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+          "properties": {
+            "envName": {
+              "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/EnvironmentCredentialSourceView"
+            }
+          },
+          "required": [
+            "envName",
+            "source"
+          ],
+          "type": "object"
         },
         "ProfileEnvironmentRetention": {
           "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
@@ -2890,6 +2969,58 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentCredentialSourceView": {
+          "oneOf": [
+            {
+              "properties": {
+                "grantId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authGrant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grantId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "providerId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authProviderCredential",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "secretId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "directSecret",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "secretId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "EnvironmentIdlePolicyView": {
           "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
           "properties": {
@@ -3347,6 +3478,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
+                "credentials": {
+                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "items": {
+                    "$ref": "#/definitions/ProfileEnvironmentCredential"
+                  },
+                  "type": "array"
+                },
                 "displayName": {
                   "type": [
                     "string",
@@ -3398,6 +3536,26 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileEnvironmentCredential": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+          "properties": {
+            "envName": {
+              "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/EnvironmentCredentialSourceView"
+            }
+          },
+          "required": [
+            "envName",
+            "source"
+          ],
+          "type": "object"
         },
         "ProfileEnvironmentRetention": {
           "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
@@ -4733,6 +4891,58 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentCredentialSourceView": {
+          "oneOf": [
+            {
+              "properties": {
+                "grantId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authGrant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grantId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "providerId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authProviderCredential",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "secretId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "directSecret",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "secretId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "EnvironmentIdlePolicyView": {
           "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
           "properties": {
@@ -5142,6 +5352,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
+                "credentials": {
+                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "items": {
+                    "$ref": "#/definitions/ProfileEnvironmentCredential"
+                  },
+                  "type": "array"
+                },
                 "displayName": {
                   "type": [
                     "string",
@@ -5193,6 +5410,26 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileEnvironmentCredential": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+          "properties": {
+            "envName": {
+              "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/EnvironmentCredentialSourceView"
+            }
+          },
+          "required": [
+            "envName",
+            "source"
+          ],
+          "type": "object"
         },
         "ProfileEnvironmentRetention": {
           "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",
@@ -5819,6 +6056,58 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentCredentialSourceView": {
+          "oneOf": [
+            {
+              "properties": {
+                "grantId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authGrant",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "grantId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "providerId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "authProviderCredential",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "providerId"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "secretId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "directSecret",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "secretId"
+              ],
+              "type": "object"
+            }
+          ]
+        },
         "EnvironmentIdlePolicyView": {
           "description": "Staged idle policy. Thresholds are milliseconds of daemon-reported idle\ntime and must be non-decreasing in the order pause, suspend, stop, close.\nStages whose power state the provider does not support are skipped.",
           "properties": {
@@ -6228,6 +6517,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
+                "credentials": {
+                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "items": {
+                    "$ref": "#/definitions/ProfileEnvironmentCredential"
+                  },
+                  "type": "array"
+                },
                 "displayName": {
                   "type": [
                     "string",
@@ -6279,6 +6575,26 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileEnvironmentCredential": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+          "properties": {
+            "envName": {
+              "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/EnvironmentCredentialSourceView"
+            }
+          },
+          "required": [
+            "envName",
+            "source"
+          ],
+          "type": "object"
         },
         "ProfileEnvironmentRetention": {
           "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",

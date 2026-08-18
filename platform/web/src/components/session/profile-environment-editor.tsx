@@ -1,4 +1,6 @@
+import { Plus, Trash2 } from "lucide-react";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
+import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
@@ -8,7 +10,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { ProfileEnvironment } from "@/api";
+import type { ProfileEnvironment, ProfileEnvironmentCredential, SecretsInventory } from "@/api";
+import {
+  environmentCredentialOptions,
+  environmentCredentialSourceFromValue,
+  environmentCredentialSourceLabel,
+  environmentCredentialSourceValue,
+} from "@/lib/environment-credentials";
 import { isTerminalEnvironmentStatus, selectableEnvironments } from "@/lib/sessions/resource-features";
 
 export type EnvironmentOption = {
@@ -47,6 +55,7 @@ export function ProfileEnvironmentEditor({
   environments: allEnvironments = [],
   bindings = [],
   templates = [],
+  secrets,
   disabled = false,
   title = "Environment",
   description = "How the session obtains its active environment when this profile is applied.",
@@ -56,6 +65,8 @@ export function ProfileEnvironmentEditor({
   environments?: EnvironmentOption[];
   bindings?: ProviderBindingOption[];
   templates?: TemplateOption[];
+  /// Universe secrets inventory for the provision credentials picker.
+  secrets?: SecretsInventory;
   disabled?: boolean;
   title?: string;
   description?: string;
@@ -129,6 +140,7 @@ export function ProfileEnvironmentEditor({
               providerIds={providerIds}
               bindings={bindings}
               templates={templates}
+              secrets={secrets}
               onChange={onChange}
             />
           )}
@@ -221,12 +233,14 @@ function ProvisionFields({
   providerIds,
   bindings,
   templates,
+  secrets,
   onChange,
 }: {
   value: Extract<ProfileEnvironment, { type: "provision" }>;
   providerIds: string[];
   bindings: ProviderBindingOption[];
   templates: TemplateOption[];
+  secrets?: SecretsInventory;
   onChange: (environment: ProfileEnvironment) => void;
 }) {
   const binding = bindings.find((candidate) => candidate.providerId === value.providerId);
@@ -344,6 +358,16 @@ function ProvisionFields({
           }}
         />
       </Field>
+      <ProvisionCredentialsField
+        credentials={value.credentials ?? []}
+        secrets={secrets}
+        onChange={(credentials) => {
+          const next = { ...value };
+          if (credentials.length) next.credentials = credentials;
+          else delete next.credentials;
+          onChange(next);
+        }}
+      />
       <IdlePolicyFields
         value={value.idlePolicy ?? undefined}
         onChange={(idlePolicy) => {
@@ -434,4 +458,132 @@ function environmentLabel(environment: EnvironmentOption): string {
     ?? environment.incarnation.templateId
     ?? environment.incarnation.providerTargetId
     ?? environment.environmentId} (${environment.environmentId})${status}`;
+}
+
+const NO_SOURCE = "__no_credential_source__";
+
+/// Credentials bound to the provisioned environment right after creation
+/// (P127 D5): references to universe secrets, never values. Suggested env
+/// names come from the credential (e.g. CLAUDE_CODE_OAUTH_TOKEN).
+function ProvisionCredentialsField({
+  credentials,
+  secrets,
+  onChange,
+}: {
+  credentials: ProfileEnvironmentCredential[];
+  secrets?: SecretsInventory;
+  onChange: (credentials: ProfileEnvironmentCredential[]) => void;
+}) {
+  const options = environmentCredentialOptions(secrets);
+  const update = (index: number, patch: Partial<ProfileEnvironmentCredential>) =>
+    onChange(credentials.map((c, i) => (i === index ? { ...c, ...patch } : c)));
+  const remove = (index: number) => onChange(credentials.filter((_, i) => i !== index));
+  const duplicates = new Set(
+    credentials
+      .map((c) => c.envName)
+      .filter((name, i, all) => name && all.indexOf(name) !== i),
+  );
+  return (
+    <Field>
+      <FieldLabel>Environment credentials</FieldLabel>
+      <div className="grid gap-2">
+        {credentials.map((credential, index) => {
+          const currentValue = environmentCredentialSourceValue(credential.source);
+          const known = options.some((option) => option.value === currentValue);
+          const invalidName =
+            credential.envName !== "" && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(credential.envName);
+          return (
+            <div key={index} className="grid grid-cols-[1fr_1fr_auto] items-start gap-2">
+              <div className="grid gap-1">
+                <Input
+                  value={credential.envName}
+                  onChange={(event) => update(index, { envName: event.target.value })}
+                  placeholder="ENV_VAR_NAME"
+                  spellCheck={false}
+                  className="font-mono text-xs"
+                  aria-label="Environment variable name"
+                />
+                {(invalidName || duplicates.has(credential.envName)) && (
+                  <span className="text-xs text-destructive">
+                    {invalidName ? "Invalid variable name." : "Bound more than once."}
+                  </span>
+                )}
+              </div>
+              <Select
+                value={known ? currentValue : NO_SOURCE}
+                onValueChange={(next) => {
+                  if (next === NO_SOURCE) return;
+                  const option = options.find((candidate) => candidate.value === next);
+                  update(index, {
+                    source: environmentCredentialSourceFromValue(next as string),
+                    ...(option?.suggestedEnvName && !credential.envName
+                      ? { envName: option.suggestedEnvName }
+                      : {}),
+                  });
+                }}
+              >
+                <SelectTrigger className="w-full" aria-label="Credential source">
+                  <SelectValue>
+                    {(current: string) =>
+                      current === NO_SOURCE
+                        ? `${environmentCredentialSourceLabel(credential.source, secrets)} (unavailable)`
+                        : options.find((option) => option.value === current)?.label ?? current}
+                  </SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  {!known && (
+                    <SelectItem value={NO_SOURCE}>
+                      {environmentCredentialSourceLabel(credential.source, secrets)} (unavailable)
+                    </SelectItem>
+                  )}
+                  {options.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Remove credential"
+                onClick={() => remove(index)}
+              >
+                <Trash2 />
+              </Button>
+            </div>
+          );
+        })}
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="xs"
+            disabled={options.length === 0}
+            onClick={() => {
+              const first = options[0];
+              if (!first) return;
+              onChange([
+                ...credentials,
+                {
+                  envName: first.suggestedEnvName ?? "",
+                  source: environmentCredentialSourceFromValue(first.value),
+                },
+              ]);
+            }}
+          >
+            <Plus data-icon="inline-start" />
+            Add credential
+          </Button>
+        </div>
+      </div>
+      <FieldDescription className="text-xs">
+        Bound to the environment right after it is provisioned, before activation. References
+        universe secrets and integrations (never values); they become ordinary environment
+        credential bindings you can change later under Environments.
+        {options.length === 0 && " No secrets or integrations are available in this universe yet."}
+      </FieldDescription>
+    </Field>
+  );
 }

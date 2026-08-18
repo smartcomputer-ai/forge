@@ -3127,6 +3127,7 @@ async fn run_profile_provision_live_client(
             metadata: BTreeMap::from([("role".to_owned(), "sandbox".to_owned())]),
             retention,
             idle_policy: None,
+            credentials: Vec::new(),
         }),
     };
     api.create_profile(ProfileCreateParams {
@@ -3158,6 +3159,7 @@ async fn run_profile_provision_live_client(
                             metadata: BTreeMap::new(),
                             retention: api::ProfileEnvironmentRetention::CloseWithSession,
                             idle_policy: None,
+                            credentials: Vec::new(),
                         }),
                         ..provision_document(api::ProfileEnvironmentRetention::CloseWithSession)
                     },

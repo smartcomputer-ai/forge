@@ -6815,6 +6815,13 @@
             "additionalProperties": false,
             "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
             "properties": {
+              "credentials": {
+                "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                "items": {
+                  "$ref": "#/components/schemas/ProfileEnvironmentCredential"
+                },
+                "type": "array"
+              },
               "displayName": {
                 "type": [
                   "string",
@@ -6866,6 +6873,24 @@
             "type": "object"
           }
         ]
+      },
+      "ProfileEnvironmentCredential": {
+        "additionalProperties": false,
+        "description": "One environment credential binding requested by a profile: the same shape\nas `environments/credentials/bind`.",
+        "properties": {
+          "envName": {
+            "description": "Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).",
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/EnvironmentCredentialSourceView"
+          }
+        },
+        "required": [
+          "envName",
+          "source"
+        ],
+        "type": "object"
       },
       "ProfileEnvironmentRetention": {
         "description": "What happens to a profile-provisioned environment when its originating\nsession closes.",

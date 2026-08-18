@@ -219,7 +219,24 @@ pub enum ProfileEnvironment {
         /// (P126). Stages the provider cannot realize are skipped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idle_policy: Option<EnvironmentIdlePolicyView>,
+        /// Credentials bound to the environment right after it is
+        /// provisioned, before activation (P127 D5): references to universe
+        /// grants/providers/secrets, never values. They become ordinary
+        /// environment credential bindings; the profile is the initial set,
+        /// not a live sync. Not available for `existing` environments.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        credentials: Vec<ProfileEnvironmentCredential>,
     },
+}
+
+/// One environment credential binding requested by a profile: the same shape
+/// as `environments/credentials/bind`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileEnvironmentCredential {
+    /// Environment variable name (`[A-Za-z_][A-Za-z0-9_]{0,127}`).
+    pub env_name: String,
+    pub source: EnvironmentCredentialSourceView,
 }
 
 /// What happens to a profile-provisioned environment when its originating
