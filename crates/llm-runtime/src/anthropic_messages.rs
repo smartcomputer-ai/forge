@@ -1007,6 +1007,9 @@ fn llm_usage(usage: &am::Usage) -> LlmUsage {
             (Some(input), Some(output)) => Some(u64_to_u32(input + output)),
             _ => None,
         },
+        cached_input_tokens: usage.cache_read_input_tokens.map(u64_to_u32),
+        cache_write_input_tokens: usage.cache_creation_input_tokens.map(u64_to_u32),
+        cache_miss_input_tokens: usage.input_tokens.map(u64_to_u32),
     }
 }
 

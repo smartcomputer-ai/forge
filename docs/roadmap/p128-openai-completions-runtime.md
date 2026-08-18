@@ -12,6 +12,17 @@
   `max` in addition to the tiers listed in the original draft. Compaction
   summaries use a Lightspeed-recognized user message so they remain valid Chat
   Completions history rather than an opaque pseudo-item.
+- Compatibility hardening completed 2026-08-18 without starting Phase 2:
+  provider dialect selection now controls instruction roles and output-token
+  fields; DeepSeek V4 thinking controls and exact `reasoning_content` replay,
+  OpenRouter `reasoning`/`reasoning_details` replay, provider failure finish
+  reasons, cache accounting, annotations, and provider capability admission
+  are covered by fixtures. OpenAI `gpt-5.5` and DeepSeek V4 live suites cover
+  reasoning, cache accounting, native dialect requests, and exact reasoning
+  replay through real tool loops. The OpenAI lives also confirmed that hosted
+  web search remains Responses-only and that `stop` is unsupported for
+  `gpt-5.5`, so both are rejected before Chat generation rather than
+  advertised.
 - Builds on [P50](archive/p50-agent-llm.md) (llm-runtime crate shape; listed
   `openai:completions` as step 3 and left `llm-runtime/src/openai_completions.rs`
   as a placeholder), [P69](archive/p69-generic-auth-token-broker.md) (stored
@@ -98,10 +109,12 @@ Two phases, shipped in order:
   `assistant` message carrying `content` *and* `tool_calls[]` (Responses
   emits separate `message` and `function_call` items); tool results are
   `role: "tool"` messages keyed by `tool_call_id`; there are no reasoning
-  items, no server-side compaction, no `previous_response_id`, no hosted
-  tools; reasoning is requested with `reasoning_effort` on supported
-  models; images and PDFs are `image_url` / `file` content parts on user
-  messages.
+  items in OpenAI output, no server-side compaction, no
+  `previous_response_id`, no current hosted tools; reasoning is requested
+  with `reasoning_effort` on supported models. Compatible providers add
+  assistant reasoning fields that must be replayed exactly. Images and PDFs
+  are `image_url` / `file` content parts on user messages when the selected
+  provider supports them.
 
 ## Design decisions
 
@@ -130,18 +143,29 @@ Two phases, shipped in order:
   `{content, tool_calls}` — the same folding rule the Responses adapter
   applies to consecutive user parts, applied to assistant turns. A `ToolCall`
   entry that is not immediately preceded by that turn's assistant message
-  still yields a valid assistant message with `content: null`.
+  still yields a valid assistant message with `content: null`, except
+  DeepSeek thinking-mode tool messages use non-null empty content as required
+  by that dialect.
   `ToolResult` entries become `role: "tool"` messages with `tool_call_id`.
+  Compatible reasoning extensions are stored independently as
+  `ReasoningState` with provider kind
+  `openai.completions.reasoning_state`: the raw assistant fields
+  `reasoning_content` (DeepSeek), `reasoning` and `reasoning_details`
+  (OpenRouter) are merged into that same assistant message before its tool
+  calls on replay. This is mandatory for DeepSeek thinking-mode tool loops
+  and preserves OpenRouter signatures/details without interpreting them.
+  Output `annotations` are retained as provider-opaque context metadata but
+  are not replayed as assistant input.
   A `ProviderOpaque` / `ReasoningState` entry with `provider_kind` starting
   `openai.completions.` is passed through raw; any other provider-native
   entry (Responses items, Anthropic blocks) is a `RequestKindMismatch`
   error — sessions are pinned to one api kind, so this cannot happen without
   a bug.
-- **D3 — Roles.** `Instructions`, `VfsCatalog`, `SkillCatalog`, and
-  `SkillActivation` entries materialize as `developer` messages at their
-  context position. This follows the current OpenAI Chat Completions contract;
-  phase 2 can add an explicit compatibility policy for servers that only
-  implement legacy `system` messages.
+- **D3 — Roles are dialect-specific.** `Instructions`, `VfsCatalog`,
+  `SkillCatalog`, and `SkillActivation` entries materialize as `developer`
+  messages for OpenAI/OpenRouter and `system` messages for DeepSeek and the
+  conservative generic compatibility dialect. This is keyed by
+  `ModelSelection.provider_id`, independent of endpoint routing.
 - **D4 — Media.** Image entries → `{ "type": "image_url", "image_url": {
   "url": "data:<mime>;base64,…" } }` user parts; PDF documents → `{ "type":
   "file", "file": { "filename", "file_data": "data:application/pdf;base64,…"
@@ -149,34 +173,51 @@ Two phases, shipped in order:
   Responses adapter uses. Consecutive user entries fold into one multi-part
   user message.
 - **D5 — Params and neutral fields.** `LlmRequest.output_limit` →
-  `max_completion_tokens`; `tool_choice` → `"none" | "auto" | "required" |
+  `max_completion_tokens` for OpenAI/OpenRouter and `max_tokens` for
+  DeepSeek/generic compatible providers (including standalone compaction);
+  `tool_choice` → `"none" | "auto" | "required" |
   {type:function,function:{name}}`; `parallel_tool_use` →
   `parallel_tool_calls` (params value wins only when the neutral field is
   unset, mirroring Responses); `reasoning_effort` → request
   `reasoning_effort` (**lift** the admission rejection: accept the OpenAI
   vocabulary `none|minimal|low|medium|high|xhigh|max`; the adapter re-validates
-  and forwards verbatim, the provider decides per model). `stream` in
+  and forwards supported values). DeepSeek additionally receives
+  `thinking: {type: enabled|disabled}` derived from the neutral reasoning
+  intent; `none` disables thinking and omits `reasoning_effort`. OpenAI
+  `gpt-5.5` rejects `minimal`/`max`, while `stop` is rejected for current
+  OpenAI reasoning model families before provider I/O. DeepSeek V4 thinking
+  mode rejects the `tool_choice` field: neutral `Auto` is represented by
+  omission, while choices that cannot be represented that way fail admission;
+  explicit choices remain available with thinking disabled. `stream` in
   params is ignored: generation is always non-streaming (`stream=false`),
   matching Responses/Anthropic; the client's stream path stays for tests
   and future UI streaming. `store` and `metadata` forward as-is;
-  `response_format`, `temperature`, `top_p`, `stop`, `extra` forward as-is.
+  `response_format`, `temperature`, `top_p`, supported `stop`, and `extra`
+  forward as-is.
 - **D6 — Facts.** `provider_response_id = completion.id`; finish:
   `tool_calls` → `ToolCalls`, `stop` → `Stop`, `length` → `Length`,
   `content_filter` → `ContentFilter` (all existing `LlmFinish` variants),
-  anything else → `Unknown`, missing → `ToolCalls` when tool calls exist
+  compatible failure reasons `insufficient_system_resource` (DeepSeek) and
+  `error` (OpenRouter) become typed retryable provider errors rather than
+  successful unknown finishes; anything else → `Unknown`, missing →
+  `ToolCalls` when tool calls exist
   else `Unknown` (same rule as the Anthropic adapter); usage: `prompt_tokens`,
-  `completion_tokens`, `total_tokens`, `cached_tokens`, `reasoning_tokens`
-  into `LlmUsage`; `context_token_estimate = prompt_tokens`
+  `completion_tokens`, `total_tokens`, cached/cache-miss tokens, and
+  `reasoning_tokens` into `LlmUsage`; provider-specific raw usage (including
+  OpenRouter cost) remains available on the retained raw response;
+  `context_token_estimate = prompt_tokens`
   (`ProviderCounted`). Only `choices[0]` is read; `n` is never sent. A
   `refusal` on the message becomes a `Message{Assistant}` entry with the
   refusal text and finish `Stop` (it is model output, not a failure).
 - **D7 — Compaction.** Enable `ProviderStandalone` for `OpenAiCompletions`
   in `engine::validate_context_config` and implement `LlmCompactionAdapter`
   as summarization-over-context, copying the Anthropic approach
-  (`COMPACTION_INSTRUCTION`, target-token budget → `max_completion_tokens`,
+  (`COMPACTION_INSTRUCTION`, target-token budget → the dialect's output-token
+  field,
   summary stored as a recognized user `Message` entry so it can be replayed
   directly as valid Chat Completions history). `ProviderTriggered` stays
-  rejected.
+  rejected. DeepSeek compaction explicitly disables thinking because the
+  result is a summary rather than an agent reasoning turn.
 - **D8 — Unsupported capabilities fail at admission.** Remote MCP tools
   (already false in `remote_mcp_supported_by_provider`), `features.web.search`
   (already Responses-only in `gateway/service/mod.rs`; make the silent skip
@@ -399,11 +440,6 @@ Phase 2 done when:
 - Should `endpoint.headers` support a secret-valued header (e.g.
   `api-key` for Azure-style gateways)? Proposal: not in P128; Azure needs
   URL query versioning too and deserves its own row kind if ever wanted.
-- `developer` vs `system` for OpenAI reasoning models: OpenAI documents
-  `developer` as preferred on o-series/gpt-5 but accepts `system`;
-  D3 picks `system` for compatibility. Revisit if a live suite shows a
-  behavioural difference; a per-row `endpoint.dialect` is the escape hatch
-  we would add, not a session param.
 - Streaming for UI latency is not part of this plan; the engine's
   per-turn result model is non-streaming for every provider today.
 

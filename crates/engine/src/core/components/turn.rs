@@ -236,6 +236,15 @@ pub struct LlmUsage {
     pub output_tokens: Option<u32>,
     pub reasoning_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
+    /// Prompt tokens served from a provider cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u32>,
+    /// Prompt tokens written into a provider cache on this request.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u32>,
+    /// Explicit uncached prompt-token count when the provider reports it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_miss_input_tokens: Option<u32>,
 }
 
 pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(), DomainError> {

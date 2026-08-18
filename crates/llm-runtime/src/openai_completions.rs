@@ -30,6 +30,8 @@ use crate::{
 pub const OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND: &str = "openai.completions.message";
 pub const OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND: &str = "openai.completions.refusal";
 pub const OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND: &str = "openai.completions.tool_call";
+pub const OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND: &str = "openai.completions.reasoning_state";
+pub const OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND: &str = "openai.completions.annotations";
 
 const MEDIA_TYPE_JSON: &str = "application/json";
 const MEDIA_TYPE_TEXT: &str = "text/plain";
@@ -38,6 +40,40 @@ const COMPACTION_INSTRUCTION: &str = "Summarize the conversation above for conte
 Capture the user's goals, decisions made, work completed, important tool results, and open \
 questions. The summary will replace the prior conversation history, so include everything needed \
 to continue seamlessly. Reply with the summary only.";
+
+/// Wire-level differences within the nominally OpenAI-compatible Chat
+/// Completions family. This deliberately derives from the selected provider,
+/// not its endpoint, so transport configuration remains outside durable model
+/// and request state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompletionDialect {
+    OpenAi,
+    DeepSeek,
+    OpenRouter,
+    Compatible,
+}
+
+impl CompletionDialect {
+    fn for_provider(provider_id: &str) -> Self {
+        match provider_id.to_ascii_lowercase().as_str() {
+            "openai" => Self::OpenAi,
+            "deepseek" => Self::DeepSeek,
+            "openrouter" => Self::OpenRouter,
+            _ => Self::Compatible,
+        }
+    }
+
+    fn instruction_role(self) -> &'static str {
+        match self {
+            Self::OpenAi | Self::OpenRouter => "developer",
+            Self::DeepSeek | Self::Compatible => "system",
+        }
+    }
+
+    fn uses_max_completion_tokens(self) -> bool {
+        matches!(self, Self::OpenAi | Self::OpenRouter)
+    }
+}
 
 #[async_trait]
 pub trait OpenAiCompletionsApi: Send + Sync {
@@ -124,6 +160,7 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
                 stored_key.as_ref().map(|auth| auth.as_request_auth()),
             )
             .await?;
+        reject_failure_finish(&response)?;
         let raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
         Ok(LlmGenerationExecution {
@@ -160,6 +197,7 @@ impl LlmCompactionAdapter for OpenAiCompletionsLlmAdapter {
                 stored_key.as_ref().map(|auth| auth.as_request_auth()),
             )
             .await?;
+        reject_failure_finish(&response)?;
         let _raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         result_from_compact_response(self.blobs.as_ref(), &request, &response).await
     }
@@ -184,24 +222,35 @@ pub async fn materialize_create_request(
         });
     }
 
+    let dialect = CompletionDialect::for_provider(&request.model.provider_id);
     let params = openai_completions_params(request.params.as_ref())?;
-    let reasoning_effort = request
-        .reasoning_effort
-        .as_deref()
-        .map(validate_openai_reasoning_effort)
-        .transpose()?;
+    validate_dialect_capabilities(request, &params, dialect)?;
+    let mut extra = params.extra;
+    let reasoning_effort = materialize_reasoning_effort(
+        request.reasoning_effort.as_deref(),
+        &request.model.model,
+        dialect,
+        &mut extra,
+    )?;
     let parallel_tool_calls = params.parallel_tool_calls.or(request.parallel_tool_use);
+
+    let tools = materialize_tools(blobs, &request.tools).await?;
+    let (max_tokens, max_completion_tokens) = if dialect.uses_max_completion_tokens() {
+        (None, request.output_limit.map(u64::from))
+    } else {
+        (request.output_limit.map(u64::from), None)
+    };
 
     Ok(oai_c::CreateCompletionRequest {
         model: request.model.model.clone(),
-        messages: materialize_messages(blobs, &request.context.entries).await?,
-        tools: materialize_tools(blobs, &request.tools).await?,
-        tool_choice: request.tool_choice.as_ref().map(openai_tool_choice),
+        messages: materialize_messages(blobs, &request.context.entries, dialect).await?,
+        tools,
+        tool_choice: materialize_tool_choice(request.tool_choice.as_ref(), dialect, &extra)?,
         response_format: params.response_format,
         temperature: optional_f64(params.temperature.as_ref(), "temperature")?,
         top_p: optional_f64(params.top_p.as_ref(), "top_p")?,
-        max_tokens: None,
-        max_completion_tokens: request.output_limit.map(u64::from),
+        max_tokens,
+        max_completion_tokens,
         stop: params.stop,
         parallel_tool_calls,
         store: params.store,
@@ -209,7 +258,7 @@ pub async fn materialize_create_request(
         stream_options: None,
         metadata: non_empty_map(params.metadata),
         reasoning_effort,
-        extra: params.extra,
+        extra,
     })
 }
 
@@ -217,19 +266,32 @@ pub async fn materialize_compact_request(
     blobs: &dyn BlobStore,
     task: &ContextCompactionTask,
 ) -> LlmAdapterResult<oai_c::CreateCompletionRequest> {
-    let mut messages = materialize_messages(blobs, &task.context.entries).await?;
+    let dialect = CompletionDialect::for_provider(&task.model.provider_id);
+    let mut messages = materialize_messages(blobs, &task.context.entries, dialect).await?;
     messages.push(oai_c::CompletionMessage::user(compaction_instruction(
         task.target_tokens,
     )));
+    let output_limit = Some(
+        task.target_tokens
+            .map(u64::from)
+            .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS),
+    );
+    let (max_tokens, max_completion_tokens) = if dialect.uses_max_completion_tokens() {
+        (None, output_limit)
+    } else {
+        (output_limit, None)
+    };
+    let mut extra = BTreeMap::new();
+    if dialect == CompletionDialect::DeepSeek {
+        extra.insert("thinking".to_owned(), json!({"type":"disabled"}));
+    }
     Ok(oai_c::CreateCompletionRequest {
         model: task.model.model.clone(),
         messages,
-        max_completion_tokens: Some(
-            task.target_tokens
-                .map(u64::from)
-                .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS),
-        ),
+        max_tokens,
+        max_completion_tokens,
         stream: Some(false),
+        extra,
         ..Default::default()
     })
 }
@@ -244,6 +306,7 @@ fn compaction_instruction(target_tokens: Option<u32>) -> String {
 async fn materialize_messages(
     blobs: &dyn BlobStore,
     entries: &[ContextEntry],
+    dialect: CompletionDialect,
 ) -> LlmAdapterResult<Vec<oai_c::CompletionMessage>> {
     let mut messages = Vec::new();
     let mut last_assistant_source: Option<ContextEntrySource> = None;
@@ -274,13 +337,58 @@ async fn materialize_messages(
                         .get_or_insert_with(Vec::new)
                         .push(tool_call);
                 } else {
-                    messages.push(oai_c::CompletionMessage {
-                        role: "assistant".to_owned(),
-                        tool_calls: Some(vec![tool_call]),
-                        ..Default::default()
-                    });
+                    let mut message = assistant_shell(dialect);
+                    message.tool_calls = Some(vec![tool_call]);
+                    messages.push(message);
                 }
                 last_assistant_source = Some(entry.source.clone());
+            }
+            ContextEntryKind::ReasoningState
+                if entry.provider_kind.as_deref()
+                    == Some(OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND) =>
+            {
+                require_completions_provider_kind(entry)?;
+                if entry.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
+                    return Err(LlmAdapterError::InvalidProviderRequest {
+                        message: format!(
+                            "Chat Completions native entry {} must contain JSON",
+                            entry.entry_id
+                        ),
+                    });
+                }
+                let raw = read_json(blobs, &entry.content_ref).await?;
+                let Some(state) = raw.as_object() else {
+                    return Err(LlmAdapterError::InvalidProviderRequest {
+                        message: format!(
+                            "Chat Completions reasoning entry {} must be a JSON object",
+                            entry.entry_id
+                        ),
+                    });
+                };
+                let can_fold = messages
+                    .last()
+                    .is_some_and(|message: &oai_c::CompletionMessage| message.role == "assistant")
+                    && last_assistant_source.as_ref() == Some(&entry.source);
+                if can_fold {
+                    messages
+                        .last_mut()
+                        .expect("assistant present")
+                        .extra
+                        .extend(state.clone());
+                } else {
+                    let mut message = assistant_shell(dialect);
+                    message.extra.extend(state.clone());
+                    messages.push(message);
+                }
+                last_assistant_source = Some(entry.source.clone());
+            }
+            ContextEntryKind::ProviderOpaque
+                if entry.provider_kind.as_deref()
+                    == Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND) =>
+            {
+                // Output citations are durable provider metadata, not valid
+                // assistant input fields. Preserve them in context but do not
+                // replay them to the model.
             }
             ContextEntryKind::ReasoningState | ContextEntryKind::ProviderOpaque => {
                 require_completions_provider_kind(entry)?;
@@ -307,7 +415,7 @@ async fn materialize_messages(
             }
             _ => {
                 reject_foreign_provider_kind(entry)?;
-                let message = materialize_message(blobs, entry).await?;
+                let message = materialize_message(blobs, entry, dialect).await?;
                 let assistant = message.role == "assistant";
                 push_message(&mut messages, message);
                 last_assistant_source = assistant.then(|| entry.source.clone());
@@ -378,6 +486,7 @@ fn take_parts(content: Option<oai_c::CompletionMessageContent>) -> Vec<oai_c::Co
 async fn materialize_message(
     blobs: &dyn BlobStore,
     entry: &ContextEntry,
+    dialect: CompletionDialect,
 ) -> LlmAdapterResult<oai_c::CompletionMessage> {
     match &entry.kind {
         ContextEntryKind::Message { role } => {
@@ -433,14 +542,14 @@ async fn materialize_message(
             })
         }
         ContextEntryKind::Instructions => Ok(text_message(
-            "developer",
+            dialect.instruction_role(),
             read_text(blobs, &entry.content_ref).await?,
         )),
         ContextEntryKind::VfsCatalog => {
             let catalog =
                 crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
             Ok(text_message(
-                "developer",
+                dialect.instruction_role(),
                 crate::environment_prompts::vfs_catalog_text(&catalog),
             ))
         }
@@ -448,12 +557,12 @@ async fn materialize_message(
             let catalog =
                 crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
             Ok(text_message(
-                "developer",
+                dialect.instruction_role(),
                 crate::skill_prompts::skill_catalog_text(&catalog),
             ))
         }
         ContextEntryKind::SkillActivation { skill_id, .. } => Ok(text_message(
-            "developer",
+            dialect.instruction_role(),
             crate::skill_prompts::skill_activation_text(
                 skill_id,
                 read_text(blobs, &entry.content_ref).await?,
@@ -478,6 +587,22 @@ fn text_message(role: &str, text: String) -> oai_c::CompletionMessage {
         role: role.to_owned(),
         content: Some(oai_c::CompletionMessageContent::Text(text)),
         ..Default::default()
+    }
+}
+
+fn assistant_shell(dialect: CompletionDialect) -> oai_c::CompletionMessage {
+    if dialect == CompletionDialect::DeepSeek {
+        oai_c::CompletionMessage {
+            role: "assistant".to_owned(),
+            content: Some(oai_c::CompletionMessageContent::Text(String::new())),
+            ..Default::default()
+        }
+    } else {
+        oai_c::CompletionMessage {
+            role: "assistant".to_owned(),
+            extra: BTreeMap::from([("content".to_owned(), Value::Null)]),
+            ..Default::default()
+        }
     }
 }
 
@@ -547,6 +672,130 @@ async fn materialize_tools(
     Ok((!materialized.is_empty()).then_some(materialized))
 }
 
+fn validate_dialect_capabilities(
+    request: &LlmRequest,
+    params: &crate::params::OpenAiCompletionsParams,
+    dialect: CompletionDialect,
+) -> LlmAdapterResult<()> {
+    if dialect == CompletionDialect::OpenAi
+        && params.stop.is_some()
+        && is_openai_reasoning_model(&request.model.model)
+    {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "OpenAI model {} does not support the stop parameter",
+                request.model.model
+            ),
+        });
+    }
+    if dialect != CompletionDialect::DeepSeek {
+        return Ok(());
+    }
+
+    for entry in &request.context.entries {
+        let is_image = crate::blob_io::image_media_type(entry.media_type.as_deref()).is_some();
+        let is_pdf =
+            crate::blob_io::document_entry(entry.media_type.as_deref(), entry.preview.as_deref())
+                .is_some_and(|document| document.is_pdf);
+        if is_image || is_pdf {
+            return Err(LlmAdapterError::InvalidProviderRequest {
+                message: format!(
+                    "DeepSeek Chat Completions accepts text input only; context entry {} is {}",
+                    entry.entry_id,
+                    entry.media_type.as_deref().unwrap_or("binary")
+                ),
+            });
+        }
+    }
+
+    if params
+        .response_format
+        .as_ref()
+        .and_then(|format| format.get("type"))
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "json_object")
+    {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: "DeepSeek Chat Completions supports response_format type json_object only"
+                .to_owned(),
+        });
+    }
+    if params.store.is_some() || !params.metadata.is_empty() {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message:
+                "DeepSeek Chat Completions does not support OpenAI store or metadata parameters"
+                    .to_owned(),
+        });
+    }
+    if request.tools.iter().any(
+        |tool| matches!(&tool.kind, ToolKind::Function(function) if function.strict == Some(true)),
+    ) {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: "DeepSeek strict function schemas require its beta API and are not portable through the standard completions dialect"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+fn materialize_reasoning_effort(
+    effort: Option<&str>,
+    model: &str,
+    dialect: CompletionDialect,
+    extra: &mut BTreeMap<String, Value>,
+) -> LlmAdapterResult<Option<String>> {
+    let Some(effort) = effort else {
+        return Ok(None);
+    };
+    validate_openai_reasoning_effort(effort)?;
+    match dialect {
+        CompletionDialect::DeepSeek => {
+            if effort == "minimal" {
+                return Err(LlmAdapterError::InvalidProviderRequest {
+                    message: "DeepSeek reasoning effort does not support minimal".to_owned(),
+                });
+            }
+            let thinking = if effort == "none" {
+                "disabled"
+            } else {
+                "enabled"
+            };
+            match extra.get("thinking") {
+                Some(existing) if existing != &json!({"type":thinking}) => {
+                    return Err(LlmAdapterError::InvalidProviderRequest {
+                        message: "DeepSeek thinking provider param conflicts with reasoning_effort"
+                            .to_owned(),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    extra.insert("thinking".to_owned(), json!({"type":thinking}));
+                }
+            }
+            Ok((effort != "none").then(|| effort.to_owned()))
+        }
+        CompletionDialect::OpenAi
+            if model.to_ascii_lowercase().starts_with("gpt-5.5")
+                && matches!(effort, "minimal" | "max") =>
+        {
+            Err(LlmAdapterError::InvalidProviderRequest {
+                message: format!(
+                    "OpenAI model {model} does not support reasoning effort {effort}; use none, low, medium, high, or xhigh"
+                ),
+            })
+        }
+        _ => Ok(Some(effort.to_owned())),
+    }
+}
+
+fn is_openai_reasoning_model(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.starts_with("gpt-5")
+        || model.starts_with("o1")
+        || model.starts_with("o3")
+        || model.starts_with("o4")
+}
+
 fn openai_tool_choice(choice: &ToolChoice) -> oai_c::CompletionToolChoice {
     match choice {
         ToolChoice::Auto => {
@@ -565,6 +814,31 @@ fn openai_tool_choice(choice: &ToolChoice) -> oai_c::CompletionToolChoice {
             },
         },
     }
+}
+
+fn materialize_tool_choice(
+    choice: Option<&ToolChoice>,
+    dialect: CompletionDialect,
+    extra: &BTreeMap<String, Value>,
+) -> LlmAdapterResult<Option<oai_c::CompletionToolChoice>> {
+    if dialect == CompletionDialect::DeepSeek && deepseek_thinking_enabled(extra) {
+        return match choice {
+            None | Some(ToolChoice::Auto) => Ok(None),
+            Some(_) => Err(LlmAdapterError::InvalidProviderRequest {
+                message: "DeepSeek thinking mode does not accept the tool_choice parameter; use auto or disable thinking"
+                    .to_owned(),
+            }),
+        };
+    }
+    Ok(choice.map(openai_tool_choice))
+}
+
+fn deepseek_thinking_enabled(extra: &BTreeMap<String, Value>) -> bool {
+    extra
+        .get("thinking")
+        .and_then(|thinking| thinking.get("type"))
+        .and_then(Value::as_str)
+        != Some("disabled")
 }
 
 pub async fn result_from_response(
@@ -614,6 +888,35 @@ pub async fn result_from_response(
                 }
                 .to_owned(),
             ),
+            provider_item_id: None,
+            token_estimate: None,
+        });
+    }
+
+    if let Some(reasoning_state) = raw_assistant_extension(
+        &response.raw_json,
+        &["reasoning_content", "reasoning", "reasoning_details"],
+    ) {
+        let content_ref = put_json(blobs, &reasoning_state).await?;
+        context_entries.push(ContextEntryInput {
+            kind: ContextEntryKind::ReasoningState,
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: None,
+            provider_kind: Some(OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND.to_owned()),
+            provider_item_id: None,
+            token_estimate: None,
+        });
+    }
+
+    if let Some(annotations) = raw_assistant_field(&response.raw_json, "annotations") {
+        let content_ref = put_json(blobs, annotations).await?;
+        context_entries.push(ContextEntryInput {
+            kind: ContextEntryKind::ProviderOpaque,
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: Some("Chat Completions output annotations".to_owned()),
+            provider_kind: Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND.to_owned()),
             provider_item_id: None,
             token_estimate: None,
         });
@@ -722,6 +1025,70 @@ fn raw_tool_call(
     })
 }
 
+fn raw_assistant_message(raw_response: &Value) -> Option<&serde_json::Map<String, Value>> {
+    raw_response
+        .get("choices")?
+        .as_array()?
+        .first()?
+        .get("message")?
+        .as_object()
+}
+
+fn raw_assistant_field<'a>(raw_response: &'a Value, key: &str) -> Option<&'a Value> {
+    raw_assistant_message(raw_response)?.get(key)
+}
+
+fn raw_assistant_extension(raw_response: &Value, keys: &[&str]) -> Option<Value> {
+    let message = raw_assistant_message(raw_response)?;
+    let extension = keys
+        .iter()
+        .filter_map(|key| {
+            message
+                .get(*key)
+                .cloned()
+                .map(|value| ((*key).to_owned(), value))
+        })
+        .collect::<serde_json::Map<_, _>>();
+    (!extension.is_empty()).then_some(Value::Object(extension))
+}
+
+/// Some compatible APIs encode provider failures as a successful HTTP
+/// response with a failure finish reason. Turn those into typed provider
+/// errors so the normal bounded retry path handles them instead of committing
+/// a successful generation with `Unknown` finish.
+fn reject_failure_finish(response: &ApiResponse<oai_c::Completion>) -> LlmAdapterResult<()> {
+    let Some(choice) = response.parsed.choices.first() else {
+        return Ok(());
+    };
+    let Some(reason @ ("insufficient_system_resource" | "error")) = choice.finish_reason.as_deref()
+    else {
+        return Ok(());
+    };
+    let details = choice
+        .extra
+        .get("error")
+        .or_else(|| response.parsed.extra.get("error"));
+    let message = details
+        .and_then(|value| value.get("message"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("provider returned completion finish_reason {reason}"));
+    let error = llm_clients::ProviderHttpError {
+        api_kind: oai_c::API_KIND.to_owned(),
+        status: 503,
+        kind: llm_clients::ProviderFailureKind::Server,
+        message,
+        error_code: Some(reason.to_owned()),
+        error_type: Some("completion_finish_reason".to_owned()),
+        retryable: true,
+        retry_after: response.headers.retry_after(),
+        raw_json: Some(response.raw_json.clone()),
+        raw_text: None,
+        headers: response.headers.clone(),
+    };
+    Err(llm_clients::LlmApiError::from(error).into())
+}
+
 async fn tool_call_context(
     blobs: &dyn BlobStore,
     call: &oai_c::CompletionToolCall,
@@ -801,6 +1168,9 @@ fn llm_usage(usage: &oai_c::CompletionUsage) -> LlmUsage {
         output_tokens: usage.completion_tokens.map(u64_to_u32),
         reasoning_tokens: usage.reasoning_tokens().map(u64_to_u32),
         total_tokens: usage.total_tokens.map(u64_to_u32),
+        cached_input_tokens: usage.cached_tokens().map(u64_to_u32),
+        cache_write_input_tokens: None,
+        cache_miss_input_tokens: usage.cache_miss_tokens().map(u64_to_u32),
     }
 }
 
@@ -829,8 +1199,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use engine::{
-        BlobRef, ContextEntryId, ContextSnapshot, ModelSelection, ProviderParams, RunId, SessionId,
-        TurnId,
+        BlobRef, ContextEntryId, ContextSnapshot, FunctionToolSpec, ModelSelection, ProviderParams,
+        RunId, SessionId, ToolParallelism, TurnId,
         storage::{BlobStore, InMemoryBlobStore},
     };
     use llm_clients::HeaderSnapshot;
@@ -886,6 +1256,14 @@ mod tests {
             api_kind: ProviderApiKind::OpenAiCompletions,
             provider_id: "openai".to_owned(),
             model: "gpt-5.1".to_owned(),
+        }
+    }
+
+    fn model_for(provider_id: &str, model: &str) -> ModelSelection {
+        ModelSelection {
+            api_kind: ProviderApiKind::OpenAiCompletions,
+            provider_id: provider_id.to_owned(),
+            model: model.to_owned(),
         }
     }
 
@@ -1038,6 +1416,172 @@ mod tests {
         assert_eq!(value["temperature"], 0.25);
         assert_eq!(value["extra_wire_field"], "kept");
         assert_eq!(value["stream"], false);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deepseek_uses_system_role_and_legacy_token_budget_for_generation_and_compaction() {
+        let blobs = InMemoryBlobStore::new();
+        let instructions = blobs.insert_text("Be precise.").await;
+        let mut deepseek_request = request(vec![entry(
+            1,
+            ContextEntryKind::Instructions,
+            ContextEntrySource::ContextEdit,
+            instructions,
+        )]);
+        deepseek_request.model = model_for("deepseek", "deepseek-v4-pro");
+        deepseek_request.output_limit = Some(321);
+        deepseek_request.reasoning_effort = Some("max".to_owned());
+
+        let materialized = materialize_create_request(&blobs, &deepseek_request)
+            .await
+            .expect("DeepSeek request");
+        assert_eq!(materialized.messages[0].role, "system");
+        assert_eq!(materialized.max_tokens, Some(321));
+        assert_eq!(materialized.max_completion_tokens, None);
+        assert_eq!(materialized.reasoning_effort.as_deref(), Some("max"));
+        assert_eq!(materialized.extra["thinking"], json!({"type":"enabled"}));
+
+        let task = ContextCompactionTask {
+            model: deepseek_request.model,
+            request_fingerprint: "sha256:deepseek-compact".to_owned(),
+            context: deepseek_request.context,
+            target_tokens: Some(128),
+            params: None,
+        };
+        let compact = materialize_compact_request(&blobs, &task)
+            .await
+            .expect("DeepSeek compact request");
+        assert_eq!(compact.messages[0].role, "system");
+        assert_eq!(compact.max_tokens, Some(128));
+        assert_eq!(compact.max_completion_tokens, None);
+        assert_eq!(compact.extra["thinking"], json!({"type":"disabled"}));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deepseek_rejects_nonportable_multimodal_schema_and_strict_features_before_io() {
+        let blobs = InMemoryBlobStore::new();
+        let image_ref = blobs.put_bytes(vec![1, 2, 3]).await.expect("image");
+        let mut image = entry(
+            1,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            ContextEntrySource::ContextEdit,
+            image_ref,
+        );
+        image.media_type = Some("image/png".to_owned());
+        let mut image_request = request(vec![image]);
+        image_request.model = model_for("deepseek", "deepseek-v4-flash");
+        assert!(matches!(
+            materialize_create_request(&blobs, &image_request).await,
+            Err(LlmAdapterError::InvalidProviderRequest { .. })
+        ));
+
+        let mut schema_request = request(Vec::new());
+        schema_request.model = model_for("deepseek", "deepseek-v4-flash");
+        schema_request.params = Some(ProviderParams::new(
+            ProviderApiKind::OpenAiCompletions,
+            json!({"response_format":{"type":"json_schema","json_schema":{"name":"x"}}}),
+        ));
+        assert!(matches!(
+            materialize_create_request(&blobs, &schema_request).await,
+            Err(LlmAdapterError::InvalidProviderRequest { .. })
+        ));
+
+        let schema_ref = put_json(&blobs, &json!({"type":"object"}))
+            .await
+            .expect("schema");
+        let mut strict_request = request(Vec::new());
+        strict_request.model = model_for("deepseek", "deepseek-v4-flash");
+        strict_request.tools.push(ToolSpec {
+            name: ToolName::new("strict_tool"),
+            kind: ToolKind::Function(FunctionToolSpec {
+                description_ref: None,
+                input_schema_ref: schema_ref,
+                output_schema_ref: None,
+                strict: Some(true),
+                provider_options_ref: None,
+            }),
+            parallelism: ToolParallelism::Exclusive,
+            execution: Default::default(),
+        });
+        assert!(matches!(
+            materialize_create_request(&blobs, &strict_request).await,
+            Err(LlmAdapterError::InvalidProviderRequest { .. })
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rejects_stop_for_openai_reasoning_models_before_io() {
+        let blobs = InMemoryBlobStore::new();
+        let mut stop_request = request(Vec::new());
+        stop_request.params = Some(ProviderParams::new(
+            ProviderApiKind::OpenAiCompletions,
+            json!({"stop":"STOP"}),
+        ));
+
+        let error = materialize_create_request(&blobs, &stop_request)
+            .await
+            .expect_err("gpt-5 stop must be rejected");
+        assert!(matches!(
+            error,
+            LlmAdapterError::InvalidProviderRequest { .. }
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deepseek_none_reasoning_disables_thinking_and_gpt_5_5_rejects_unsupported_tiers() {
+        let blobs = InMemoryBlobStore::new();
+        let mut deepseek = request(Vec::new());
+        deepseek.model = model_for("deepseek", "deepseek-v4-pro");
+        deepseek.reasoning_effort = Some("none".to_owned());
+        let materialized = materialize_create_request(&blobs, &deepseek)
+            .await
+            .expect("non-thinking DeepSeek request");
+        assert_eq!(materialized.reasoning_effort, None);
+        assert_eq!(materialized.extra["thinking"], json!({"type":"disabled"}));
+
+        for effort in ["minimal", "max"] {
+            let mut openai = request(Vec::new());
+            openai.model = model_for("openai", "gpt-5.5");
+            openai.reasoning_effort = Some(effort.to_owned());
+            assert!(matches!(
+                materialize_create_request(&blobs, &openai).await,
+                Err(LlmAdapterError::InvalidProviderRequest { .. })
+            ));
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deepseek_thinking_omits_auto_tool_choice_and_rejects_forced_choices() {
+        let blobs = InMemoryBlobStore::new();
+        let mut automatic = request(Vec::new());
+        automatic.model = model_for("deepseek", "deepseek-v4-pro");
+        automatic.tool_choice = Some(ToolChoice::Auto);
+        let automatic = materialize_create_request(&blobs, &automatic)
+            .await
+            .expect("automatic DeepSeek thinking request");
+        assert_eq!(automatic.tool_choice, None);
+
+        let mut forced = request(Vec::new());
+        forced.model = model_for("deepseek", "deepseek-v4-pro");
+        forced.tool_choice = Some(ToolChoice::RequiredAny);
+        assert!(matches!(
+            materialize_create_request(&blobs, &forced).await,
+            Err(LlmAdapterError::InvalidProviderRequest { .. })
+        ));
+
+        let mut non_thinking = forced;
+        non_thinking.reasoning_effort = Some("none".to_owned());
+        let non_thinking = materialize_create_request(&blobs, &non_thinking)
+            .await
+            .expect("forced non-thinking DeepSeek request");
+        assert!(matches!(
+            non_thinking.tool_choice,
+            Some(oai_c::CompletionToolChoice::Mode(
+                oai_c::CompletionToolChoiceMode::Required
+            ))
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1258,6 +1802,161 @@ mod tests {
             .await
             .expect("arguments");
         assert_eq!(arguments, json!({ "__raw": "not-json" }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preserves_and_exactly_replays_reasoning_extensions_with_tool_calls() {
+        let blobs = InMemoryBlobStore::new();
+        let raw = json!({
+            "id": "chatcmpl_reasoning",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "DeepSeek exact reasoning",
+                    "reasoning": "OpenRouter reasoning",
+                    "reasoning_details": [
+                        {"type":"reasoning.text","text":"exact","signature":"sig_1"}
+                    ],
+                    "tool_calls": [{
+                        "id":"call_reasoning",
+                        "type":"function",
+                        "function":{"name":"lookup","arguments":"{\"id\":1}"}
+                    }]
+                }
+            }]
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw.clone()).expect("response"),
+            raw_json: raw,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let result =
+            result_from_response(&blobs, &generation_request(request(Vec::new())), &response)
+                .await
+                .expect("result");
+        assert_eq!(result.context_entries.len(), 2);
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::ReasoningState
+        ));
+
+        let source = ContextEntrySource::AssistantOutput {
+            run_id: RunId::new(2),
+            turn_id: TurnId::new(3),
+        };
+        let entries: Vec<ContextEntry> = result
+            .context_entries
+            .into_iter()
+            .enumerate()
+            .map(|(index, input)| ContextEntry {
+                entry_id: ContextEntryId::new(index as u64 + 1),
+                key: None,
+                kind: input.kind,
+                source: source.clone(),
+                content_ref: input.content_ref,
+                media_type: input.media_type,
+                preview: input.preview,
+                provider_kind: input.provider_kind,
+                provider_item_id: input.provider_item_id,
+                token_estimate: input.token_estimate,
+            })
+            .collect();
+        let replay = serde_json::to_value(
+            materialize_create_request(&blobs, &request(entries.clone()))
+                .await
+                .expect("replay"),
+        )
+        .expect("json");
+        assert_eq!(replay["messages"].as_array().expect("messages").len(), 1);
+        let replayed = &replay["messages"][0];
+        assert!(replayed["content"].is_null());
+        assert_eq!(replayed["reasoning_content"], "DeepSeek exact reasoning");
+        assert_eq!(replayed["reasoning"], "OpenRouter reasoning");
+        assert_eq!(
+            replayed["reasoning_details"],
+            json!([{"type":"reasoning.text","text":"exact","signature":"sig_1"}])
+        );
+        assert_eq!(replayed["tool_calls"][0]["id"], "call_reasoning");
+
+        let deepseek_replay = serde_json::to_value(
+            materialize_messages(&blobs, &entries, CompletionDialect::DeepSeek)
+                .await
+                .expect("DeepSeek replay"),
+        )
+        .expect("DeepSeek JSON");
+        assert_eq!(deepseek_replay[0]["content"], "");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preserves_annotations_and_compatible_cache_accounting_without_replaying_annotations() {
+        let blobs = InMemoryBlobStore::new();
+        let raw = json!({
+            "id": "chatcmpl_web",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "A cited answer",
+                    "annotations": [{"type":"url_citation","url_citation":{"url":"https://example.com"}}]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 3,
+                "total_tokens": 13,
+                "prompt_cache_hit_tokens": 6,
+                "prompt_cache_miss_tokens": 4
+            }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw.clone()).expect("response"),
+            raw_json: raw,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let result =
+            result_from_response(&blobs, &generation_request(request(Vec::new())), &response)
+                .await
+                .expect("result");
+        let usage = result.facts.usage.expect("usage");
+        assert_eq!(usage.cached_input_tokens, Some(6));
+        assert_eq!(usage.cache_miss_input_tokens, Some(4));
+        assert_eq!(result.context_entries.len(), 2);
+        assert_eq!(
+            result.context_entries[1].provider_kind.as_deref(),
+            Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND)
+        );
+    }
+
+    #[test]
+    fn compatible_failure_finish_reenters_the_retry_path() {
+        for reason in ["insufficient_system_resource", "error"] {
+            let raw = json!({
+                "id": "chatcmpl_failed",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": reason,
+                    "message": {"role":"assistant","content":null},
+                    "error": {"message":"upstream unavailable"}
+                }]
+            });
+            let response = ApiResponse {
+                parsed: serde_json::from_value(raw.clone()).expect("response"),
+                raw_json: raw,
+                status: 200,
+                headers: HeaderSnapshot::default(),
+            };
+            let error = reject_failure_finish(&response).expect_err("failure finish");
+            let LlmAdapterError::Provider { source } = error else {
+                panic!("failure finish must become a provider error");
+            };
+            assert!(source.retryable());
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

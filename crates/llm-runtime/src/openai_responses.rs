@@ -1125,6 +1125,9 @@ fn llm_usage(usage: &oai::Usage) -> LlmUsage {
         output_tokens: usage.output_tokens.map(u64_to_u32),
         reasoning_tokens: usage.reasoning_tokens().map(u64_to_u32),
         total_tokens: usage.total_tokens.map(u64_to_u32),
+        cached_input_tokens: usage.cached_tokens().map(u64_to_u32),
+        cache_write_input_tokens: None,
+        cache_miss_input_tokens: None,
     }
 }
 

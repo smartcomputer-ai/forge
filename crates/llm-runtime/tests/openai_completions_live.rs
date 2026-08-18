@@ -15,6 +15,7 @@ use serde_json::json;
 mod support;
 
 use support::{
+    deepseek_completions_live_client, deepseek_completions_live_model,
     openai_completions_live_client, openai_completions_live_model, openai_completions_params,
     retrying_openai_completions_client,
 };
@@ -86,6 +87,26 @@ fn generation_request(entries: Vec<ContextEntry>) -> LlmGenerationRequest {
 fn live_adapter(blobs: Arc<InMemoryBlobStore>) -> OpenAiCompletionsLlmAdapter {
     OpenAiCompletionsLlmAdapter::new(
         retrying_openai_completions_client(openai_completions_live_client()),
+        blobs,
+    )
+}
+
+fn deepseek_generation_request(entries: Vec<ContextEntry>) -> LlmGenerationRequest {
+    let mut request = generation_request(entries);
+    request.request.model = ModelSelection {
+        api_kind: ProviderApiKind::OpenAiCompletions,
+        provider_id: "deepseek".to_owned(),
+        model: deepseek_completions_live_model(),
+    };
+    request.request.output_limit = Some(512);
+    request.request.reasoning_effort = Some("high".to_owned());
+    request.request.params = None;
+    request
+}
+
+fn deepseek_adapter(blobs: Arc<InMemoryBlobStore>) -> OpenAiCompletionsLlmAdapter {
+    OpenAiCompletionsLlmAdapter::new(
+        retrying_openai_completions_client(deepseek_completions_live_client()),
         blobs,
     )
 }
@@ -285,6 +306,110 @@ async fn openai_completions_runtime_live_pdf_document() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
+async fn openai_completions_runtime_live_text_document() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let document_ref = text_blob(
+        &blobs,
+        "# Project facts\n\nThe release codename is **kingfisher**.",
+    )
+    .await;
+    let question_ref = text_blob(
+        &blobs,
+        "What is the release codename? Reply with one lowercase word.",
+    )
+    .await;
+    let source = ContextEntrySource::RunInput {
+        run_id: RunId::new(1),
+        input_index: 0,
+    };
+    let mut document = entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        source.clone(),
+        document_ref,
+    );
+    document.media_type = Some("text/markdown".to_owned());
+    document.preview = Some("[document: facts.md]".to_owned());
+
+    let execution = live_adapter(blobs.clone())
+        .generate(generation_request(vec![
+            document,
+            entry(
+                2,
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::User,
+                },
+                source,
+                question_ref,
+            ),
+        ]))
+        .await
+        .expect("generate from text document");
+
+    assert!(
+        assistant_text(&blobs, &execution)
+            .await
+            .to_lowercase()
+            .contains("kingfisher")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
+async fn openai_completions_runtime_live_json_schema_output() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let prompt_ref = text_blob(
+        &blobs,
+        "Return Zurich and Switzerland using the requested JSON schema.",
+    )
+    .await;
+    let mut request = generation_request(vec![entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        ContextEntrySource::RunInput {
+            run_id: RunId::new(1),
+            input_index: 0,
+        },
+        prompt_ref,
+    )]);
+    request.request.params = Some(openai_completions_params(&OpenAiCompletionsParams {
+        response_format: Some(json!({
+            "type":"json_schema",
+            "json_schema": {
+                "name":"location",
+                "strict":true,
+                "schema": {
+                    "type":"object",
+                    "properties": {
+                        "city":{"type":"string"},
+                        "country":{"type":"string"}
+                    },
+                    "required":["city","country"],
+                    "additionalProperties":false
+                }
+            }
+        })),
+        store: Some(false),
+        stream: Some(false),
+        ..Default::default()
+    }));
+
+    let execution = live_adapter(blobs.clone())
+        .generate(request)
+        .await
+        .expect("structured generation");
+    let output = assistant_text(&blobs, &execution).await;
+    let structured: serde_json::Value = serde_json::from_str(&output).expect("JSON output");
+    assert_eq!(structured["city"], "Zurich");
+    assert_eq!(structured["country"], "Switzerland");
+}
+
 async fn weather_tool(blobs: &InMemoryBlobStore) -> ToolSpec {
     let schema_ref = llm_runtime::blob_io::put_json(
         blobs,
@@ -474,4 +599,178 @@ async fn openai_completions_runtime_live_invalid_model_is_terminal_provider_erro
         LlmAdapterError::Provider { source } => assert!(!source.retryable()),
         other => panic!("expected provider error, got {other:?}"),
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_runtime_live_v4_dialect_reasoning_and_usage() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let instructions_ref = text_blob(&blobs, "Follow exact-output requests.").await;
+    let prompt_ref = text_blob(&blobs, "Compute 37 * 19. Reply with only the integer.").await;
+    let request = deepseek_generation_request(vec![
+        entry(
+            1,
+            ContextEntryKind::Instructions,
+            ContextEntrySource::ContextEdit,
+            instructions_ref,
+        ),
+        entry(
+            2,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            ContextEntrySource::RunInput {
+                run_id: RunId::new(1),
+                input_index: 0,
+            },
+            prompt_ref,
+        ),
+    ]);
+
+    let execution = deepseek_adapter(blobs.clone())
+        .generate(request)
+        .await
+        .expect("DeepSeek generation");
+
+    assert!(assistant_text(&blobs, &execution).await.contains("703"));
+    let provider_request =
+        llm_runtime::blob_io::read_json(blobs.as_ref(), &execution.provider_request_ref)
+            .await
+            .expect("provider request");
+    assert_eq!(provider_request["messages"][0]["role"], "system");
+    assert_eq!(provider_request["max_tokens"], 512);
+    assert!(provider_request.get("max_completion_tokens").is_none());
+    assert_eq!(provider_request["thinking"], json!({"type":"enabled"}));
+
+    let reasoning = execution
+        .result
+        .context_entries
+        .iter()
+        .find(|entry| {
+            entry.provider_kind.as_deref()
+                == Some(llm_runtime::openai_completions::OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND)
+        })
+        .expect("durable DeepSeek reasoning state");
+    let reasoning = llm_runtime::blob_io::read_json(blobs.as_ref(), &reasoning.content_ref)
+        .await
+        .expect("reasoning state");
+    assert!(
+        reasoning["reasoning_content"]
+            .as_str()
+            .is_some_and(|reasoning| !reasoning.is_empty())
+    );
+    let usage = execution.result.facts.usage.expect("usage");
+    assert!(usage.input_tokens.unwrap_or_default() > 0);
+    assert!(usage.cached_input_tokens.is_some() || usage.cache_miss_input_tokens.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_runtime_live_v4_reasoning_tool_round_trip() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let prompt_ref = text_blob(
+        &blobs,
+        "Call lookup_temperature for Zurich, then report the returned temperature.",
+    )
+    .await;
+    let user_source = ContextEntrySource::RunInput {
+        run_id: RunId::new(1),
+        input_index: 0,
+    };
+    let schema_ref = llm_runtime::blob_io::put_json(
+        blobs.as_ref(),
+        &json!({
+            "type":"object",
+            "properties":{"city":{"type":"string"}},
+            "required":["city"]
+        }),
+    )
+    .await
+    .expect("schema");
+    let tool = ToolSpec {
+        name: ToolName::new("lookup_temperature"),
+        kind: ToolKind::Function(FunctionToolSpec {
+            description_ref: Some(text_blob(&blobs, "Look up a city's temperature").await),
+            input_schema_ref: schema_ref,
+            output_schema_ref: None,
+            strict: None,
+            provider_options_ref: None,
+        }),
+        parallelism: ToolParallelism::ParallelSafe,
+        execution: ToolExecutionSpec::default(),
+    };
+    let mut first_request = deepseek_generation_request(vec![entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        user_source.clone(),
+        prompt_ref.clone(),
+    )]);
+    first_request.request.tools = vec![tool.clone()];
+    first_request.request.tool_choice = Some(ToolChoice::Auto);
+    let adapter = deepseek_adapter(blobs.clone());
+    let first = adapter
+        .generate(first_request)
+        .await
+        .expect("DeepSeek tool-call generation");
+    assert_eq!(first.result.facts.finish, LlmFinish::ToolCalls);
+    assert_eq!(first.result.facts.tool_calls.len(), 1);
+    assert!(first.result.context_entries.iter().any(|entry| {
+        entry.provider_kind.as_deref()
+            == Some(llm_runtime::openai_completions::OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND)
+    }));
+    let observed = first.result.facts.tool_calls[0].clone();
+
+    let assistant_source = ContextEntrySource::AssistantOutput {
+        run_id: RunId::new(1),
+        turn_id: TurnId::new(1),
+    };
+    let mut entries = vec![entry(
+        1,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        user_source,
+        prompt_ref,
+    )];
+    for (index, output) in first.result.context_entries.iter().enumerate() {
+        let mut committed = entry(
+            index as u64 + 2,
+            output.kind.clone(),
+            assistant_source.clone(),
+            output.content_ref.clone(),
+        );
+        committed.media_type = output.media_type.clone();
+        committed.preview = output.preview.clone();
+        committed.provider_kind = output.provider_kind.clone();
+        committed.provider_item_id = output.provider_item_id.clone();
+        entries.push(committed);
+    }
+    entries.push(entry(
+        entries.len() as u64 + 1,
+        ContextEntryKind::ToolResult {
+            call_id: observed.call_id,
+            is_error: false,
+        },
+        ContextEntrySource::Tool {
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: None,
+        },
+        text_blob(&blobs, "{\"celsius\":21}").await,
+    ));
+    let mut second_request = deepseek_generation_request(entries);
+    second_request.turn_id = TurnId::new(2);
+    second_request.request.tools = vec![tool];
+    second_request.request.tool_choice = Some(ToolChoice::Auto);
+
+    let second = adapter
+        .generate(second_request)
+        .await
+        .expect("DeepSeek tool result generation with reasoning replay");
+    assert!(
+        assistant_text(&blobs, &second).await.contains("21"),
+        "expected final DeepSeek answer to use the tool result"
+    );
 }

@@ -337,6 +337,27 @@ impl CompletionMessage {
             None => String::new(),
         }
     }
+
+    /// Provider-native reasoning fields that must be replayed with an
+    /// assistant message during tool loops. DeepSeek uses
+    /// `reasoning_content`; OpenRouter may return `reasoning` and/or the
+    /// structured `reasoning_details` array.
+    pub fn reasoning_state(&self) -> BTreeMap<String, Value> {
+        ["reasoning_content", "reasoning", "reasoning_details"]
+            .into_iter()
+            .filter_map(|key| {
+                self.extra
+                    .get(key)
+                    .cloned()
+                    .map(|value| (key.to_owned(), value))
+            })
+            .collect()
+    }
+
+    /// Provider-native output annotations, including OpenAI web citations.
+    pub fn annotations(&self) -> Option<&Value> {
+        self.extra.get("annotations")
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -560,10 +581,28 @@ impl CompletionUsage {
     }
 
     pub fn cached_tokens(&self) -> Option<u64> {
-        self.prompt_tokens_details
-            .as_ref()
-            .and_then(|details| details.get("cached_tokens"))
+        self.extra
+            .get("prompt_cache_hit_tokens")
             .and_then(Value::as_u64)
+            .or_else(|| {
+                self.prompt_tokens_details
+                    .as_ref()
+                    .and_then(|details| details.get("cached_tokens"))
+                    .and_then(Value::as_u64)
+            })
+    }
+
+    /// DeepSeek reports uncached prompt tokens separately from cache hits.
+    pub fn cache_miss_tokens(&self) -> Option<u64> {
+        self.extra
+            .get("prompt_cache_miss_tokens")
+            .and_then(Value::as_u64)
+    }
+
+    /// OpenRouter reports request cost in its usage extension. The raw JSON
+    /// number is returned so callers can preserve its provider precision.
+    pub fn cost(&self) -> Option<&Value> {
+        self.extra.get("cost")
     }
 }
 
@@ -850,6 +889,52 @@ mod tests {
         let calls = completion.tool_calls().collect::<Vec<_>>();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "get_weather");
+    }
+
+    #[test]
+    fn compatible_extensions_preserve_reasoning_annotations_cache_and_cost() {
+        let completion: Completion = serde_json::from_value(json!({
+            "id": "chatcmpl_extensions",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "tool_calls",
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "private chain",
+                    "reasoning": "provider reasoning",
+                    "reasoning_details": [{"type":"reasoning.text","text":"exact"}],
+                    "annotations": [{"type":"url_citation","url_citation":{"url":"https://example.com"}}]
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 11,
+                "completion_tokens": 5,
+                "total_tokens": 16,
+                "prompt_cache_hit_tokens": 7,
+                "prompt_cache_miss_tokens": 4,
+                "cost": 0.0000123
+            }
+        }))
+        .expect("completion");
+
+        let message = completion.choices[0].message.as_ref().expect("message");
+        assert_eq!(
+            message.reasoning_state(),
+            BTreeMap::from([
+                ("reasoning".to_owned(), json!("provider reasoning")),
+                ("reasoning_content".to_owned(), json!("private chain")),
+                (
+                    "reasoning_details".to_owned(),
+                    json!([{"type":"reasoning.text","text":"exact"}]),
+                ),
+            ])
+        );
+        assert!(message.annotations().is_some());
+        let usage = completion.usage.as_ref().expect("usage");
+        assert_eq!(usage.cached_tokens(), Some(7));
+        assert_eq!(usage.cache_miss_tokens(), Some(4));
+        assert_eq!(usage.cost(), Some(&json!(0.0000123)));
     }
 
     #[test]

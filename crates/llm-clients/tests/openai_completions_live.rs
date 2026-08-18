@@ -43,6 +43,21 @@ fn live_client() -> Client {
     Client::new(config).expect("OpenAI completions client")
 }
 
+fn deepseek_model() -> String {
+    env_or_dotenv_var("DEEPSEEK_COMPLETIONS_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_owned())
+}
+
+fn deepseek_client() -> Client {
+    let api_key = required_first_env_or_dotenv_var(
+        &["DEEPSEEK_API_KEY"],
+        "DEEPSEEK_API_KEY must be set in env or root .env to run DeepSeek completions live tests",
+    );
+    let mut config = Config::new(api_key);
+    config.base_url = env_or_dotenv_var("DEEPSEEK_BASE_URL")
+        .unwrap_or_else(|_| "https://api.deepseek.com".to_owned());
+    Client::new(config).expect("DeepSeek completions client")
+}
+
 fn live_api_key() -> String {
     required_first_env_or_dotenv_var(
         &["OPENAI_COMPLETIONS_API_KEY", "OPENAI_API_KEY"],
@@ -129,6 +144,36 @@ async fn openai_completions_live_create_text() {
             .unwrap_or_default()
             > 0,
         "expected usage tokens"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires OPENAI_API_KEY (costs real money)"]
+async fn openai_completions_live_developer_instruction_role() {
+    let client = live_client();
+    let request = CreateCompletionRequest {
+        model: live_model(),
+        messages: vec![
+            CompletionMessage {
+                role: "developer".to_owned(),
+                content: Some(CompletionMessageContent::Text(
+                    "Reply to every user message with exactly: developer role".to_owned(),
+                )),
+                ..Default::default()
+            },
+            CompletionMessage::user("What should you say?"),
+        ],
+        max_completion_tokens: Some(128),
+        ..Default::default()
+    };
+
+    let response = openai_completions_create(&client, request)
+        .await
+        .expect("developer-role completion");
+
+    assert_eq!(
+        response.parsed.output_text().trim().to_lowercase(),
+        "developer role"
     );
 }
 
@@ -305,6 +350,39 @@ async fn openai_completions_live_reasoning_effort_and_usage_details() {
     assert!(usage.prompt_tokens.unwrap_or_default() > 0);
     assert!(usage.completion_tokens.unwrap_or_default() > 0);
     assert!(usage.completion_tokens_details.is_some());
+}
+
+#[tokio::test]
+#[ignore = "requires OPENAI_API_KEY and prompt caching support (costs real money)"]
+async fn openai_completions_live_reports_cached_prompt_tokens() {
+    let client = live_client();
+    let cacheable_prefix = "lightspeed-cache-prefix ".repeat(1_500);
+    let request = CreateCompletionRequest {
+        model: live_model(),
+        messages: vec![
+            CompletionMessage {
+                role: "developer".to_owned(),
+                content: Some(CompletionMessageContent::Text(cacheable_prefix)),
+                ..Default::default()
+            },
+            CompletionMessage::user("Reply with exactly: cache observed"),
+        ],
+        max_completion_tokens: Some(64),
+        ..Default::default()
+    };
+
+    openai_completions_create(&client, request.clone())
+        .await
+        .expect("prime prompt cache");
+    let cached = openai_completions_create(&client, request)
+        .await
+        .expect("reuse prompt cache");
+    let usage = cached.parsed.usage.expect("usage");
+
+    assert!(
+        usage.cached_tokens().unwrap_or_default() >= 1_024,
+        "expected a cached prompt prefix, got {usage:?}"
+    );
 }
 
 #[tokio::test]
@@ -523,4 +601,133 @@ async fn openai_completions_live_invalid_model_classifies_provider_error() {
         }
         other => panic!("expected provider HTTP error, got {other:?}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_live_v4_reasoning_and_cache_usage() {
+    let client = deepseek_client();
+    let request = CreateCompletionRequest {
+        model: deepseek_model(),
+        messages: vec![
+            CompletionMessage {
+                role: "system".to_owned(),
+                content: Some(CompletionMessageContent::Text(
+                    "Follow exact-output requests.".to_owned(),
+                )),
+                ..Default::default()
+            },
+            CompletionMessage::user("Compute 37 * 19. Reply with only the integer."),
+        ],
+        max_tokens: Some(256),
+        reasoning_effort: Some("high".to_owned()),
+        extra: BTreeMap::from([("thinking".to_owned(), json!({"type":"enabled"}))]),
+        ..Default::default()
+    };
+
+    let response = openai_completions_create(&client, request)
+        .await
+        .expect("DeepSeek reasoning completion");
+    let message = response.parsed.choices[0]
+        .message
+        .as_ref()
+        .expect("assistant message");
+    assert!(message.text().contains("703"));
+    assert!(
+        message
+            .extra
+            .get("reasoning_content")
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|reasoning| !reasoning.is_empty()),
+        "expected DeepSeek reasoning_content, got {message:?}"
+    );
+    let usage = response.parsed.usage.expect("usage");
+    assert!(usage.prompt_tokens.unwrap_or_default() > 0);
+    assert!(
+        usage.cached_tokens().is_some() || usage.cache_miss_tokens().is_some(),
+        "expected DeepSeek cache accounting, got {usage:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY (costs real money)"]
+async fn deepseek_completions_live_v4_exact_reasoning_tool_round_trip() {
+    let client = deepseek_client();
+    let tool = CompletionTool::function(
+        "lookup_temperature",
+        json!({
+            "type":"object",
+            "properties":{"city":{"type":"string"}},
+            "required":["city"]
+        }),
+    );
+    let user = CompletionMessage::user(
+        "Call lookup_temperature for Zurich, then report the returned temperature.",
+    );
+    let first_request = CreateCompletionRequest {
+        model: deepseek_model(),
+        messages: vec![user.clone()],
+        tools: Some(vec![tool.clone()]),
+        // DeepSeek V4 thinking mode supports tools but rejects the
+        // tool_choice parameter. With tools present, omission means auto.
+        tool_choice: None,
+        max_tokens: Some(512),
+        reasoning_effort: Some("high".to_owned()),
+        extra: BTreeMap::from([("thinking".to_owned(), json!({"type":"enabled"}))]),
+        ..Default::default()
+    };
+    let first = openai_completions_create(&client, first_request)
+        .await
+        .expect("DeepSeek tool call");
+    let assistant = first.parsed.choices[0]
+        .message
+        .clone()
+        .expect("assistant tool-call message");
+    assert!(
+        assistant.content.is_some(),
+        "DeepSeek tool-call assistant content must be non-null"
+    );
+    let reasoning = assistant
+        .extra
+        .get("reasoning_content")
+        .and_then(serde_json::Value::as_str)
+        .expect("reasoning_content")
+        .to_owned();
+    assert!(!reasoning.is_empty());
+    let call_id = assistant
+        .tool_calls
+        .as_ref()
+        .and_then(|calls| calls.first())
+        .and_then(|call| call.id.clone())
+        .expect("tool call id");
+    let second_request = CreateCompletionRequest {
+        model: deepseek_model(),
+        messages: vec![
+            user,
+            assistant,
+            CompletionMessage {
+                role: "tool".to_owned(),
+                content: Some(CompletionMessageContent::Text(
+                    "{\"celsius\":21}".to_owned(),
+                )),
+                tool_call_id: Some(call_id),
+                ..Default::default()
+            },
+        ],
+        tools: Some(vec![tool]),
+        tool_choice: None,
+        max_tokens: Some(512),
+        reasoning_effort: Some("high".to_owned()),
+        extra: BTreeMap::from([("thinking".to_owned(), json!({"type":"enabled"}))]),
+        ..Default::default()
+    };
+
+    let second = openai_completions_create(&client, second_request)
+        .await
+        .expect("DeepSeek tool result completion with reasoning replay");
+    assert!(
+        second.parsed.output_text().contains("21"),
+        "expected tool result in final answer, got {:?}",
+        second.parsed.choices
+    );
 }
