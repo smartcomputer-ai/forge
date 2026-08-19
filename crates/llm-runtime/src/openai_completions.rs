@@ -1149,7 +1149,7 @@ async fn tool_call_context(
             },
             content_ref: native_call_ref.clone(),
             media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-            preview: Some(format!("{tool_name}({raw_arguments})")),
+            preview: None,
             provider_kind: Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned()),
             provider_item_id: Some(id.to_owned()),
             token_estimate: None,
@@ -1855,6 +1855,16 @@ mod tests {
         assert_eq!(
             result.context_entries[0].provider_kind.as_deref(),
             Some(OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND)
+        );
+        assert!(
+            result
+                .context_entries
+                .iter()
+                .find(|entry| matches!(&entry.kind, ContextEntryKind::ToolCall { .. }))
+                .expect("tool-call context entry")
+                .preview
+                .is_none(),
+            "tool-call arguments must remain CAS-backed instead of being copied into preview",
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
         let arguments = read_json(&blobs, &result.facts.tool_calls[0].arguments_ref)

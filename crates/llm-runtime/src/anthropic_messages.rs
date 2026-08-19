@@ -908,7 +908,7 @@ async fn tool_use_context(
         },
         content_ref: native_call_ref.clone(),
         media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-        preview: Some(format!("{tool_name}({arguments})")),
+        preview: None,
         provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
         provider_item_id: block.id.clone(),
         token_estimate: None,
@@ -1999,6 +1999,16 @@ mod tests {
             "{\"path\":\"Cargo.toml\"}"
         );
         assert_eq!(result.context_entries.len(), 2);
+        assert!(
+            result
+                .context_entries
+                .iter()
+                .find(|entry| matches!(&entry.kind, ContextEntryKind::ToolCall { .. }))
+                .expect("tool-call context entry")
+                .preview
+                .is_none(),
+            "tool-call arguments must remain CAS-backed instead of being copied into preview",
+        );
 
         let retained_entries = result
             .context_entries

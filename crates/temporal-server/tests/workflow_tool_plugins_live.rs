@@ -540,7 +540,7 @@ impl WorkflowToolScriptedLlm {
                 },
                 content_ref: arguments_ref.clone(),
                 media_type: Some("application/json".to_owned()),
-                preview: Some(format!("{tool_name}({arguments})")),
+                preview: None,
                 provider_kind: Some("workflow-tool-script".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
