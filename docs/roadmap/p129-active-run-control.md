@@ -2,13 +2,16 @@
 
 **Status**
 
-- Proposed 2026-08-19. **Phase 1 implemented and live-validated 2026-08-19**
+- Proposed 2026-08-19. **Phase 1 and Phase 2 implemented and live-validated
+  2026-08-19** (Phase 1 slices 1–4, Phase 2 slice 5; slice 6 CLI polish
+  folded into Phase 1; see the slice list). Phase 1 summary:
   (slices 1–4 below): engine cancel without grace turn and engine-resolved
   cancellation of open turns/pending calls, workflow admission draining at
   every drive boundary with activity races + `TryCancel`/heartbeat abort,
   `session/runs/steer`, `session/runs/start` returning at `queued`, queued
   runs and entry sources in projections, CLI wiring, five `temporal_live`
-  scenarios. Phase 2 (platform UI) not started.
+  scenarios. Phase 2: platform web UI stop/steer/queue with authoritative
+  run state, verified in a real browser against the dev stack.
 - Follows the survey of run interactions done the same day; supersedes the
   inert "grace turn v1" note in
   [P92](archive/p92-unified-suspension.md) §3 for client-initiated cancels.
@@ -139,10 +142,29 @@ cancellation UI.
 Decisions embedded above (each is a deliberate choice; alternatives noted):
 
 - **Steering does not interrupt the in-flight turn.** It lands before the next
-  LLM call, after the current tool batch (if any) completes. This keeps the
-  engine's existing materialization semantics, wastes no provider work, and is
-  deterministic. An `interrupt: true` variant (abort generation, re-plan with
-  steering included) is a possible follow-up, not part of this P.
+  LLM call, after the current tool batch (if any) completes. This wastes no
+  provider work and is deterministic. An `interrupt: true` variant (abort
+  generation, re-plan with steering included) is a possible follow-up, not
+  part of this P. Two refinements made during implementation:
+  - Steering **materializes at the turn boundary, not mid-turn.** An
+    in-flight turn's request is frozen at its planned context/config/toolset
+    revisions and the hosted runtime re-derives it from state, so context
+    must not move under it; the engine's context planner now skips steering
+    materialization while `active_turn_id` is set. Steering admitted during
+    a turn is durable (`SteeringAccepted`) and lands right after that turn.
+  - **Unconsumed steering extends the run by one turn.** A final-output turn
+    no longer completes the run while a steering batch is unconsumed; the
+    run takes one more turn whose request carries the steering. Without this
+    a steer during a single-turn answer would silently do nothing. A steer
+    admitted before a cancel is dropped with the cancelled run (the web UI
+    says so).
+- **Run control lands mid-turn; context/config/tool mutations do not.**
+  While a turn's generation is in flight the workflow admits only cancel,
+  force-cancel, steer, run requests, messages, promise resolutions,
+  workflow-tool facts, tool-batch resumes, and close; `session/context/*`,
+  config, tool, and environment mutations stay queued (in order) until the
+  turn completes, for the same frozen-revision reason. Previously they
+  waited for the whole run, so this is strictly earlier.
 - **Client cancel skips the grace turn.** P92 already stated that
   operator/client cancels must not fan out farewell LLM turns and that grace
   v1 is inert. Once the in-flight generation is actually aborted there is
@@ -355,14 +377,12 @@ stop it, talk to it, or line up the next thing — with honest feedback.
   `runCancelled`/`runCompleted`. Queued runs get their own × control calling
   the same endpoint.
 - **Composer while a run is active.** Never silently drop input. The composer
-  stays live with an explicit mode:
-  - default action = **Steer** ("send now, into the current run"; shown in
+  stays live:
+  - Enter = **Queue as next run** (default);
+  - ⌘/Ctrl+Enter = **Steer** ("send now, into the current run"; shown in
     the transcript as a steering message attached to the run);
-  - alternative = **Queue as next run** (secondary button / modifier key);
-  - both call new platform server routes → `session/runs/steer` /
-    `session/runs/start`.
-  Which is the default is a product call; recommendation is steer, since a
-  person typing mid-run almost always means "take this into account now".
+  - both call platform server routes → `session/runs/start` /
+    `session/runs/steer`.
 - **Queued display.** A queued list under the transcript (source text, ×),
   fed by `SessionView.runs` + `runAccepted`; collapses as runs start.
 - **Transcript.** Render steering entries distinctly inside the run they
@@ -434,10 +454,27 @@ stop it, talk to it, or line up the next thing — with honest feedback.
    await (await resolves `cancelled`, child run cancelled through the promise
    cascade). Existing fake-run, parallel-batch, admission-failure, and
    await-parks scenarios still pass.
-5. Platform UI: authoritative run state + tail fixes; stop with stopping
-   state; steer/queue composer; queued list; transcript rendering; platform
-   server routes.
-6. CLI polish; `docs/design.md` run-control section; mark this file.
+5. **[DONE]** Platform UI (`platform/web`, `platform/server`): the
+   transcript reducer tracks `activeRun` (with `cancelling`), `queuedRuns`,
+   per-run phases, and a `runRevision`; `reconcileRuns` folds the
+   authoritative `SessionView.runs` into the tail forward-only (heals a
+   truncated catch-up; the page refetches `session/read` on every run
+   lifecycle change); the follow loop always advances its cursor; optimistic
+   sends are reconciled by run id (the POST result), steers by steering
+   entry on their run; the composer stays live during a run: Enter
+   queues the message as the next run, ⌘/Ctrl+Enter steers it into the
+   current run (falls back to queue while the run cannot be steered), a
+   Stop button with a stopping state,
+   and a queued-messages bar with per-item cancel; steering entries render
+   with a `steer` tag; an undelivered steer (run ended first) leaves a
+   notice instead of vanishing. Server routes: `…/runs/:id/cancel` returns
+   the run state, new `…/runs/:id/steer`. Verified in headless Chromium
+   against the dev stack: steer during a long answer → tagged entry + extra
+   turn; queue → bar → cancel-queued; stop → `run cancelled` in <1 s and the
+   queued run starts.
+6. CLI polish was folded into slice 3 (`/interrupt`, `/steer`, plain input
+   queues, steering/cancel status lines). `docs/design.md` has no run-control
+   section yet; the README feature bullet and AGENTS.md rule cover it.
 
 Known follow-ups from Phase 1:
 
@@ -450,7 +487,6 @@ Known follow-ups from Phase 1:
 
 ## Open questions
 
-- Steer default vs queue default in the web composer (recommendation: steer).
 - Whether to keep a `grace` option on `CancelRun` for fleet/child cancels
   (recommendation: drop grace entirely now; reintroduce with a real purpose
   if a farewell turn is ever needed).

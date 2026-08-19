@@ -200,7 +200,7 @@ async fn execute_call_group(
         // queued run is admitted and execution continues; a cancel that
         // ends this batch abandons every in-flight call.
         let ready = {
-            let wait = ctx.wait_condition(admissions::has_pending_admissions);
+            let wait = ctx.wait_condition(admissions::has_admissible_admissions);
             let next = first_ready_call(&mut inflight).fuse();
             pin_mut!(wait, next);
             select! {

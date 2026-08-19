@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
-import type { SessionEventsPage } from "@/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { SessionEventsPage, SessionRunView } from "@/api";
 import {
   applyEvents,
   emptyTranscript,
+  reconcileRuns,
   type TranscriptState,
 } from "./transcript";
 
@@ -18,6 +19,10 @@ export interface SessionTail {
   /// prefix and the live head was skipped so the chat can go live instead
   /// of paging forever.
   truncated: boolean;
+  /// Fold the authoritative `session/read` run list into the live state
+  /// (forward moves only). Call it whenever a fresh session view arrives;
+  /// it heals a truncated catch-up and never regresses the tail.
+  reconcileRuns: (runs: SessionRunView[]) => void;
 }
 
 const PAGE_LIMIT = 500;
@@ -30,13 +35,26 @@ const FAST_EMPTY_MS = 1_500;
 const PACING_SLEEP_MS = 2_000;
 const RETRY_SLEEP_MS = 3_000;
 
+interface TailState {
+  transcript: TranscriptState;
+  phase: "loading" | "live";
+  error: string | null;
+  truncated: boolean;
+}
+
 export function useSessionTail(universeId: string, sessionId: string): SessionTail {
-  const [tail, setTail] = useState<SessionTail>(() => ({
+  const [tail, setTail] = useState<TailState>(() => ({
     transcript: emptyTranscript(),
     phase: "loading",
     error: null,
     truncated: false,
   }));
+  // The live loop owns `transcript`; reconciliation from a snapshot has to
+  // go through it so the next event page folds onto the healed state.
+  const reconcileRef = useRef<(runs: SessionRunView[]) => void>(() => undefined);
+  const reconcile = useCallback((runs: SessionRunView[]) => {
+    reconcileRef.current(runs);
+  }, []);
 
   useEffect(() => {
     const abort = new AbortController();
@@ -44,11 +62,22 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
     let transcript = emptyTranscript();
     let cursor: number | null = null;
     let truncated = false;
+    let live = false;
     setTail({ transcript, phase: "loading", error: null, truncated: false });
 
-    const push = (patch: Partial<SessionTail>) => {
+    const push = (patch: Partial<TailState>) => {
       if (!signal.aborted) {
         setTail((prev) => ({ ...prev, ...patch }));
+      }
+    };
+    reconcileRef.current = (runs) => {
+      if (signal.aborted || !live) {
+        return;
+      }
+      const next = reconcileRuns(transcript, runs);
+      if (next !== transcript) {
+        transcript = next;
+        push({ transcript });
       }
     };
 
@@ -81,6 +110,7 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
         }
         return;
       }
+      live = true;
       push({ transcript, phase: "live", truncated });
       if (transcript.closed) {
         return;
@@ -93,9 +123,10 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
         const startedAt = Date.now();
         try {
           const response = await fetchEvents(universeId, sessionId, cursor, WAIT_MS, signal);
+          // Always advance: an empty page can still carry a newer cursor.
+          cursor = response.nextCursor?.seq ?? cursor;
           if (response.events?.length) {
             transcript = applyEvents(transcript, response.events);
-            cursor = response.nextCursor?.seq ?? cursor;
             push({ transcript, ...(hadError ? { error: null } : {}) });
             hadError = false;
             if (transcript.closed) {
@@ -121,10 +152,13 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
       }
     })();
 
-    return () => abort.abort();
+    return () => {
+      abort.abort();
+      reconcileRef.current = () => undefined;
+    };
   }, [universeId, sessionId]);
 
-  return tail;
+  return { ...tail, reconcileRuns: reconcile };
 }
 
 async function fetchEvents(

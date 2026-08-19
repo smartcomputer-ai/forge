@@ -40,7 +40,7 @@ where
     pin_mut!(activity);
     loop {
         let admissions_pending = {
-            let wait = ctx.wait_condition(admissions::has_pending_admissions);
+            let wait = ctx.wait_condition(admissions::has_admissible_admissions);
             pin_mut!(wait);
             select! {
                 result = activity => return Ok(Raced::Completed(result)),

@@ -1,9 +1,9 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P129](p129-active-run-control.md) — active-run control: make
-  cancel, steer, and queue work end to end. Phase 1 (done 2026-08-19,
-  live-validated): the session workflow
+- [x] [P129](p129-active-run-control.md) — active-run control: make
+  cancel, steer, and queue work end to end (both phases done and
+  live-validated 2026-08-19). Phase 1: the session workflow
   drains admissions at every drive boundary and races in-flight LLM/tool
   activities against them (Temporal activity cancellation + worker
   heartbeat/abort), the engine drops the inert cancellation grace turn,

@@ -466,6 +466,17 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
     Ok(vec![CoreAgentEventProposal::new(joins, kind)])
 }
 
+/// Steering the model has not seen yet: a batch no turn has consumed. A
+/// final-output turn does not end a run while such steering exists — the
+/// run gets one more turn that carries it, so "steer" never silently does
+/// nothing on a single-turn answer.
+pub(crate) fn has_unconsumed_steering(active_run: &ActiveRun) -> bool {
+    active_run
+        .steering
+        .iter()
+        .any(|steering| steering.consumed_by_turn_id.is_none())
+}
+
 fn terminal_run_proposal(
     active_run: &ActiveRun,
 ) -> Result<Option<CoreAgentEventProposal>, PlanningError> {
@@ -473,6 +484,11 @@ fn terminal_run_proposal(
         return Ok(None);
     };
     let kind = match (&turn.status, turn.outcome.as_ref()) {
+        (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { .. }))
+            if has_unconsumed_steering(active_run) =>
+        {
+            None
+        }
         (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { output_ref })) => {
             Some(CoreAgentEvent::Run(Event::Completed {
                 run_id: active_run.run_id,

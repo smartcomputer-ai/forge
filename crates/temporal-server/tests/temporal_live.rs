@@ -341,6 +341,26 @@ async fn temporal_live_steering_lands_at_next_turn_boundary() -> anyhow::Result<
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_steering_during_final_turn_adds_a_turn() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Steering while a single-turn run is generating its final answer: the
+    // steering is materialized while the call is in flight, and instead of
+    // completing on that final output the run gets one more turn whose
+    // request carries the steering — so "steer" never silently does
+    // nothing.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::from_secs(4), Duration::ZERO, 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_steering_final_turn_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_queued_runs_return_promptly_and_run_in_order() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
@@ -2599,6 +2619,87 @@ async fn run_steering_live_client(
     assert_eq!(late.kind, AgentApiErrorKind::Rejected);
 
     terminate_live_session(&client, &session_id, "steering live test cleanup").await;
+    Ok(())
+}
+
+async fn run_steering_final_turn_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    // No tools: the fake model answers in one turn.
+    let api = run_control_api(&client, task_queue, &session_id, false).await?;
+    let run = start_text_run(&api, &session_id, "answer directly").await?;
+    wait_until(
+        "the generation to start",
+        Duration::from_secs(10),
+        async || Ok(counters.generations_started() >= 1),
+    )
+    .await?;
+    let steered = api
+        .steer_run(RunSteerParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+            items: vec![InputItem::Text {
+                text: "one more thing".to_owned(),
+            }],
+        })
+        .await?
+        .result;
+    assert_eq!(steered.run.status, api::RunStatus::Running);
+
+    let terminal = wait_for_terminal_run_with_timeout(&api, &session_id, &run.id, 40).await?;
+    assert_eq!(terminal.status, api::RunStatus::Completed);
+    assert_eq!(
+        counters.generations_started(),
+        2,
+        "the run must take one more turn for the unconsumed steering"
+    );
+    let text = final_assistant_text(&terminal).expect("final answer");
+    assert!(
+        text.contains("Steering received: one more thing"),
+        "the extra turn must carry the steering: {text}"
+    );
+    // The steering materializes after the in-flight turn: it sits between
+    // the first answer and the extra turn's answer.
+    let kinds = terminal
+        .entries
+        .iter()
+        .map(|entry| match (&entry.kind, entry.source.as_ref()) {
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User,
+                },
+                Some(api::ContextEntrySourceView::Steering { .. }),
+            ) => "steer",
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User,
+                },
+                _,
+            ) => "user",
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::Assistant,
+                },
+                _,
+            ) => "assistant",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec!["user", "assistant", "steer", "assistant"],
+        "entries: {kinds:?}"
+    );
+
+    terminate_live_session(
+        &client,
+        &session_id,
+        "steering final turn live test cleanup",
+    )
+    .await;
     Ok(())
 }
 

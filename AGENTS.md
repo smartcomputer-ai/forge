@@ -243,11 +243,15 @@ Release construction, snapshots, and tagged publication are documented in
   activities against them; `session/runs/cancel` cancels the open turn or
   pending tool calls in the engine at once (no grace turn) and abandons the
   activity (`TryCancel` + worker heartbeat), `session/runs/steer` appends
-  steering that materializes at the run's next turn boundary (accepted while
-  running or parked, never waking an await), and a second `session/runs/start`
-  queues. A cancelling run never asks the runtime for work: the engine
-  resolves its own open turn/batch. Do not reintroduce "process admissions
-  only between runs" or a farewell LLM turn on cancel.
+  steering that materializes at the run's next turn boundary — never while a
+  turn is in flight, whose request is frozen at its planned revisions — and
+  a run with unconsumed steering takes one more turn instead of completing
+  on a final-output turn (accepted while running or parked, never waking an
+  await); a second `session/runs/start` queues. While a turn is in flight
+  only run-control admissions land; context/config/tool mutations wait for
+  the turn boundary. A cancelling run never asks the runtime for work: the
+  engine resolves its own open turn/batch. Do not reintroduce "process
+  admissions only between runs" or a farewell LLM turn on cancel.
 - Treat `session/managed/start` as a trusted creation boundary. Lifecycle
   ownership and caller-declared workflow tools are immutable session metadata;
   do not expose them through ordinary `session/start` or mutable session config.

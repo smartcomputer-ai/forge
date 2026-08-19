@@ -1876,7 +1876,7 @@ mod tests {
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
         SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
         ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
-        ToolSpec, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
         WorkflowToolInvocation, skill_activation_context_key,
     };
 
@@ -3580,11 +3580,16 @@ mod tests {
         assert!(drive.state().context.entries.is_empty());
     }
 
+    /// Steering admitted while a turn is generating stays unmaterialized
+    /// until that turn completes (its request is frozen at the planned
+    /// context revision and the runtime re-derives it from state); it then
+    /// lands before the next turn, in admission order.
     #[test]
-    fn steering_materializes_after_in_flight_turn_snapshot() {
+    fn steering_materializes_after_in_flight_turn_completes() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         open_session(&mut drive);
+        install_test_tool(&mut drive, "await");
         request_run(&mut drive, BlobRef::from_bytes(b"input"));
         let request = drive_until_generate(&mut drive);
         assert_eq!(openai_items(&request).len(), 1);
@@ -3608,50 +3613,55 @@ mod tests {
             .expect("steering two");
         commit_action(&mut drive, steering_two);
 
-        let materialize_steering = drive.next_action(32, 64).expect("materialize steering");
-        let entries = commit_action(&mut drive, materialize_steering);
-        let CoreAgentEvent::Context(ContextEvent::EntriesApplied {
-            entries: applied, ..
-        }) = &entries[0].event
-        else {
-            panic!("expected context entries");
+        // In flight: the drive re-issues the same generation request (the
+        // hosted runtime re-derives it from state) and nothing materializes.
+        let reissued = drive.next_action(32, 64).expect("next action");
+        let CoreAgentAction::GenerateLlm { request: again } = reissued else {
+            panic!("expected the pending generation, got {reissued:?}");
         };
-        assert_eq!(applied.len(), 2);
-        assert!(matches!(
-            applied[0].source,
-            ContextEntrySource::Steering {
-                steering_id,
-                input_index: 0,
-                ..
-            } if steering_id.as_u64() == 1
-        ));
-        assert!(matches!(
-            applied[1].source,
-            ContextEntrySource::Steering {
-                steering_id,
-                input_index: 0,
-                ..
-            } if steering_id.as_u64() == 2
-        ));
-
+        assert_eq!(
+            again.request.request_fingerprint,
+            request.request.request_fingerprint
+        );
         let active_run = drive.state().runs.active.as_ref().expect("active run");
         assert_eq!(active_run.steering.len(), 2);
-        assert_eq!(active_run.steering[0].entry_ids, vec![applied[0].entry_id]);
-        assert_eq!(active_run.steering[1].entry_ids, vec![applied[1].entry_id]);
-        assert_eq!(active_run.steering[0].consumed_by_turn_id, None);
-        assert_eq!(active_run.steering[1].consumed_by_turn_id, None);
-
-        let active_turn = active_run.turns.get(&request.turn_id).expect("active turn");
-        assert_eq!(active_turn.status, TurnStatus::GenerationPending);
-        let planned_request = active_turn
-            .planned_request
-            .as_ref()
-            .expect("planned request metadata");
-        assert_eq!(
-            planned_request.context_revision,
-            request.request.context.context_revision
+        assert!(
+            active_run
+                .steering
+                .iter()
+                .all(|steering| steering.entry_ids.is_empty())
         );
-        assert_eq!(request.request.context.entries.len(), 1);
+
+        // The turn completes with a tool call; steering materializes after
+        // the tool results, before the next turn.
+        let batch = drive_until_tool_batch_request(&mut drive, request, "await");
+        let resumed = drive
+            .resume_tool_batch(completed_tool_result(&batch), 90)
+            .expect("tool result");
+        commit_action(&mut drive, resumed);
+        let next_request = drive_until_generate(&mut drive);
+        let steering_sources = next_request
+            .request
+            .context
+            .entries
+            .iter()
+            .filter_map(|entry| match entry.source {
+                ContextEntrySource::Steering { steering_id, .. } => Some(steering_id.as_u64()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(steering_sources, vec![1, 2]);
+        let active_run = drive.state().runs.active.as_ref().expect("active run");
+        assert_eq!(active_run.steering[0].entry_ids.len(), 1);
+        assert_eq!(active_run.steering[1].entry_ids.len(), 1);
+        assert_eq!(
+            active_run.steering[0].consumed_by_turn_id,
+            Some(next_request.turn_id)
+        );
+        assert_eq!(
+            active_run.steering[1].consumed_by_turn_id,
+            Some(next_request.turn_id)
+        );
     }
 
     /// A parked run (model-chosen `await`) accepts steering without
@@ -3923,6 +3933,86 @@ mod tests {
             ContextEntryKind::ToolResult { call_id, is_error: true }
                 if call_id.as_str() == "call_wait"
         )));
+    }
+
+    /// Steering admitted during a run's final turn is not lost: the run
+    /// gets one more turn whose request carries the steering, and only then
+    /// completes.
+    #[test]
+    fn unconsumed_steering_extends_run_by_one_turn_after_final_output() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        open_session(&mut drive);
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let first = drive_until_generate(&mut drive);
+
+        let steering = drive
+            .admit_command(
+                CoreAgentCommand::RequestRunSteering {
+                    input: user_input(BlobRef::from_bytes(b"late steering")),
+                },
+                30,
+            )
+            .expect("steer");
+        commit_action(&mut drive, steering);
+
+        let final_output = |turn: &LlmGenerationRequest, text: &[u8]| LlmGenerationResult {
+            run_id: turn.run_id,
+            turn_id: turn.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant,
+                },
+                content_ref: BlobRef::from_bytes(text),
+                media_type: Some("text/plain".to_owned()),
+                preview: None,
+                provider_kind: None,
+                provider_item_id: None,
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: None,
+                finish: LlmFinish::Stop,
+                usage: None,
+                tool_calls: Vec::new(),
+                context_token_estimate: None,
+            },
+        };
+        let completed = drive
+            .resume_generation(final_output(&first, b"first answer"), 31)
+            .expect("first final");
+        commit_action(&mut drive, completed);
+
+        // Not terminal: a second turn is planned and its request carries
+        // the steering entry.
+        let second = drive_until_generate(&mut drive);
+        assert_eq!(second.run_id, first.run_id);
+        assert_ne!(second.turn_id, first.turn_id);
+        assert_eq!(
+            second
+                .request
+                .context
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry.source, ContextEntrySource::Steering { .. }))
+                .count(),
+            1
+        );
+        let active = drive.state().runs.active.as_ref().expect("active");
+        assert_eq!(active.steering[0].consumed_by_turn_id, Some(second.turn_id));
+
+        let completed = drive
+            .resume_generation(final_output(&second, b"second answer"), 32)
+            .expect("second final");
+        commit_action(&mut drive, completed);
+        drain_to_idle(&mut drive, 33);
+        assert!(drive.state().runs.active.is_none());
+        assert_eq!(
+            drive.state().runs.completed.last().expect("record").status,
+            RunStatus::Completed
+        );
     }
 
     #[test]

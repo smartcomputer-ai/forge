@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent, SessionItem } from "@/api";
-import { applyEvents, emptyTranscript, isFailedToolCall } from "./transcript";
+import {
+  applyEvents,
+  emptyTranscript,
+  isFailedToolCall,
+  reconcileRuns,
+  runInProgress,
+} from "./transcript";
+import type { SessionRunView } from "@/api";
 
 type EventKind = SessionEvent["kind"];
 type EventInput<T extends EventKind["type"]> =
@@ -191,7 +198,11 @@ describe("session transcript traces", () => {
       }),
     ]);
 
-    expect(partial.activeRun).toEqual({ runId: "5", label: "running tools" });
+    expect(partial.activeRun).toEqual({
+      runId: "5",
+      label: "running tools",
+      cancelling: false,
+    });
     expect(partial.entries[0]).toMatchObject({
       kind: "tool-group",
       status: "running",
@@ -215,7 +226,7 @@ describe("session transcript traces", () => {
       event(14, { type: "toolBatchCompleted", batchId: "batch-1" }),
     ]);
 
-    expect(complete.activeRun).toEqual({ runId: "5", label: "working" });
+    expect(complete.activeRun).toEqual({ runId: "5", label: "working", cancelling: false });
     expect(complete.entries[0]).toMatchObject({
       kind: "tool-group",
       status: "completedWithErrors",
@@ -315,5 +326,127 @@ describe("session transcript traces", () => {
       status: "succeeded",
       calls: [{ status: "succeeded" }],
     });
+  });
+});
+
+describe("session transcript run control", () => {
+  const runView = (id: string, status: SessionRunView["status"], text = ""): SessionRunView => ({
+    id,
+    status,
+    source: { type: "input", items: text ? [{ type: "text", text }] : [] },
+    entries: [],
+  });
+
+  it("queues runs accepted behind the active one and starts them in order", () => {
+    let state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, { type: "runAccepted", runId: "run_2" }),
+      event(4, { type: "runAccepted", runId: "run_3" }),
+    ]);
+    expect(state.activeRun).toEqual({ runId: "run_1", label: "running", cancelling: false });
+    expect(state.queuedRuns).toEqual([{ runId: "run_2" }, { runId: "run_3" }]);
+    expect(runInProgress(state)).toBe(true);
+
+    state = applyEvents(state, [
+      event(5, { type: "runCancelled", runId: "run_2" }),
+      event(6, { type: "runCompleted", runId: "run_1" }),
+      event(7, { type: "runStarted", runId: "run_3" }),
+    ]);
+    expect(state.activeRun).toEqual({ runId: "run_3", label: "running", cancelling: false });
+    expect(state.queuedRuns).toEqual([]);
+    expect(state.entries).toEqual([
+      { kind: "marker", key: "evt-5", text: "queued message cancelled", tone: "muted" },
+    ]);
+
+    state = applyEvents(state, [event(8, { type: "runCompleted", runId: "run_3" })]);
+    expect(state.activeRun).toBeNull();
+    expect(runInProgress(state)).toBe(false);
+  });
+
+  it("maps client submission ids to run ids on acceptance", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1", submissionId: "sub-a" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, { type: "runAccepted", runId: "run_2", submissionId: "sub-b" }),
+    ]);
+    expect(state.runBySubmission.get("sub-a")).toBe("run_1");
+    expect(state.runBySubmission.get("sub-b")).toBe("run_2");
+    expect(state.runPhases.get("run_2")).toBe("queued");
+  });
+
+  it("marks the active run cancelling until the terminal event lands", () => {
+    let state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, { type: "turnStarted", runId: "run_1" }),
+      event(4, { type: "runCancellationRequested", runId: "run_1" }),
+      // Lifecycle labels no longer override "cancelling".
+      event(5, { type: "turnCancelled", runId: "run_1" }),
+    ]);
+    expect(state.activeRun).toEqual({ runId: "run_1", label: "cancelling", cancelling: true });
+
+    state = applyEvents(state, [event(6, { type: "runCancelled", runId: "run_1" })]);
+    expect(state.activeRun).toBeNull();
+    expect(state.entries.at(-1)).toEqual({
+      kind: "marker",
+      key: "evt-6",
+      text: "run cancelled",
+      tone: "muted",
+    });
+  });
+
+  it("folds steering messages as tagged user entries on their run", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, {
+        type: "contextEntriesApplied",
+        entries: [
+          item("input", { type: "message", role: "user" }, {
+            text: "do the task",
+            source: { type: "runInput", runId: "run_1", inputIndex: 0 },
+          }),
+          item("steer", { type: "message", role: "user" }, {
+            text: "also mention the moon",
+            source: { type: "steering", runId: "run_1", steeringId: "steering_1", inputIndex: 0 },
+          }),
+        ],
+      }),
+    ]);
+    expect(state.entries).toEqual([
+      { kind: "message", key: "input", role: "user", text: "do the task", runId: "run_1" },
+      {
+        kind: "message",
+        key: "steer",
+        role: "user",
+        text: "also mention the moon",
+        runId: "run_1",
+        steering: true,
+      },
+    ]);
+  });
+
+  it("reconciles the authoritative session view forward only", () => {
+    // The tail missed the start (truncated catch-up): the snapshot seeds it.
+    let state = reconcileRuns(emptyTranscript(), [
+      runView("run_1", "completed"),
+      runView("run_2", "running"),
+      runView("run_3", "queued", "later"),
+    ]);
+    expect(state.activeRun).toEqual({ runId: "run_2", label: "running", cancelling: false });
+    expect(state.queuedRuns).toEqual([{ runId: "run_3" }]);
+
+    // A stale snapshot never regresses what the tail already knows.
+    state = applyEvents(state, [event(9, { type: "runCompleted", runId: "run_2" })]);
+    const stale = reconcileRuns(state, [runView("run_2", "running")]);
+    expect(stale).toBe(state);
+    expect(stale.activeRun).toBeNull();
+
+    // A terminal status in the snapshot heals a missed terminal event.
+    const healed = reconcileRuns(state, [runView("run_3", "cancelled")]);
+    expect(healed.queuedRuns).toEqual([]);
+    expect(runInProgress(healed)).toBe(false);
+
+    // Identity is preserved when nothing changes.
+    expect(reconcileRuns(healed, [runView("run_3", "cancelled")])).toBe(healed);
   });
 });
