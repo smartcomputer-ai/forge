@@ -169,6 +169,45 @@ export type ContextEntryKindView =
 export type ContextMessageRoleView = "user" | "assistant";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ContextEntrySourceView".
+ */
+export type ContextEntrySourceView =
+  | {
+      type: "contextEdit";
+    }
+  | {
+      inputIndex: number;
+      runId: string;
+      type: "runInput";
+    }
+  | {
+      inputIndex: number;
+      runId: string;
+      steeringId: string;
+      type: "steering";
+    }
+  | {
+      runId: string;
+      turnId: string;
+      type: "assistantOutput";
+    }
+  | {
+      batchId?: string | null;
+      runId: string;
+      turnId: string;
+      type: "tool";
+    }
+  | {
+      runId: string;
+      turnId: string;
+      type: "reasoning";
+    }
+  | {
+      label: string;
+      type: "runtime";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "TokenEstimateQualityView".
  */
 export type TokenEstimateQualityView = "exact" | "providerCounted" | "estimated";
@@ -558,6 +597,11 @@ export type SessionEventKindView =
   | {
       turnId: string;
       type: "turnCompleted";
+    }
+  | {
+      runId: string;
+      turnId: string;
+      type: "turnCancelled";
     }
   | {
       baseRevision: number;
@@ -1185,6 +1229,12 @@ export interface ContextEntryView {
   preview?: string | null;
   providerItemId?: string | null;
   providerKind?: string | null;
+  /**
+   * Where the entry came from: run input, a steering batch, model output,
+   * a tool result, reasoning state, a context edit, or the runtime. Lets
+   * transcripts render steering distinctly from the run's first input.
+   */
+  source?: ContextEntrySourceView | null;
   text?: string | null;
   tokenEstimate?: TokenEstimateView | null;
 }
@@ -3304,6 +3354,25 @@ export interface RunStartResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunSteerResponse".
+ */
+export interface AgentApiOutcomeOfRunSteerResponse {
+  notifications?: AgentNotification[];
+  result: RunSteerResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSteerResponse".
+ */
+export interface RunSteerResponse {
+  run: RunView;
+  /**
+   * Identifier of the accepted steering batch within the session.
+   */
+  steeringId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfSessionCloseResponse".
  */
 export interface AgentApiOutcomeOfSessionCloseResponse {
@@ -4536,6 +4605,25 @@ export interface RunStartParams {
  */
 export interface RunTerminalNotificationInput {
   token: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSteerParams".
+ */
+export interface RunSteerParams {
+  /**
+   * Steering input, same vocabulary as run input. Delivered to the model
+   * at the next turn boundary of the run; it does not interrupt the
+   * in-flight turn or wake a parked await.
+   */
+  items: InputItem[];
+  /**
+   * The run to steer. Must be the session's current active run (running
+   * or parked on an await); a finished or cancelling run is rejected so a
+   * late steer never lands on the next run.
+   */
+  runId: string;
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

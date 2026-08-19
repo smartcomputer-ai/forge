@@ -17,8 +17,8 @@ use engine::{
 use temporal_server::{
     pg_store_from_env,
     worker::{
-        ActivityState, AudioTranscoder, AudioTranscriber, FakeLlm, FakeTools, WorkerActivities,
-        core_runtime, worker_with_activities,
+        ActivityState, AudioTranscoder, AudioTranscriber, FakeLlm, FakeRuntimeCounters, FakeTools,
+        WorkerActivities, core_runtime, worker_with_activities,
     },
 };
 use temporal_workflow::{
@@ -155,6 +155,37 @@ pub async fn fake_worker_activities_with_transient_llm_failures(
     Ok(WorkerActivities::for_universe(
         live_universe_id()?,
         ActivityState::from_pg_store(store, llm, tools),
+    ))
+}
+
+/// Worker for active-run-control live tests: slow generations and/or
+/// slow tool calls so cancel/steer/queue can land mid-run, with shared
+/// counters to prove what the runtime actually executed or abandoned.
+pub async fn fake_worker_activities_for_run_control(
+    generation_delay: Duration,
+    tool_call_delay: Duration,
+    tool_rounds_before_final: usize,
+) -> anyhow::Result<(WorkerActivities, FakeRuntimeCounters)> {
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let counters = FakeRuntimeCounters::default();
+    let llm = Arc::new(
+        FakeLlm::new(blobs.clone())
+            .with_tool_rounds(tool_rounds_before_final)
+            .with_generation_delay(generation_delay)
+            .with_counters(counters.clone()),
+    ) as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(
+        FakeTools::new(blobs)
+            .with_call_delay(tool_call_delay)
+            .with_counters(counters.clone()),
+    ) as Arc<dyn CoreAgentTools>;
+    Ok((
+        WorkerActivities::for_universe(
+            live_universe_id()?,
+            ActivityState::from_pg_store(store, llm, tools),
+        ),
+        counters,
     ))
 }
 

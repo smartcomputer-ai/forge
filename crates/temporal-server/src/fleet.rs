@@ -3551,6 +3551,7 @@ mod tests {
             token_estimate: None,
             text: Some("/opt\n## main...origin/main".to_owned()),
             display: None,
+            source: None,
         });
         run.entries.push(api::ContextEntryView {
             id: "item_2".to_owned(),
@@ -3566,6 +3567,7 @@ mod tests {
             token_estimate: None,
             text: Some("Command completed.".to_owned()),
             display: None,
+            source: None,
         });
         runtime.sessions.lock().expect("lock").insert(
             child.clone(),

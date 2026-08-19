@@ -43,9 +43,6 @@ pub enum Event {
     CancellationRequested {
         run_id: RunId,
     },
-    CancellationGraceStarted {
-        run_id: RunId,
-    },
     Completed {
         run_id: RunId,
         output_ref: Option<BlobRef>,
@@ -110,8 +107,6 @@ pub struct ActiveRun {
     pub active_tool_batch_id: Option<ToolBatchId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_tool_batch: Option<ParkedToolBatch>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cancellation_grace_turn_id: Option<TurnId>,
     pub tool_batches: BTreeMap<ToolBatchId, ActiveToolBatch>,
     pub completed_tool_batches: BTreeMap<ToolBatchId, CompletedToolBatch>,
     pub output_ref: Option<BlobRef>,
@@ -126,7 +121,6 @@ pub enum RunStatus {
     Active,
     Parked,
     Cancelling,
-    CancellingGrace,
     Completed,
     Failed,
     Cancelled,
@@ -428,20 +422,13 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
 
     if let Some(active_run) = state.runs.active.as_ref() {
         if active_run.active_turn_id.is_none() && active_run.active_tool_batch_id.is_none() {
-            if active_run.status == RunStatus::Cancelling {
-                let joins = CoreAgentJoins {
-                    run_id: Some(active_run.run_id),
-                    ..CoreAgentJoins::default()
-                };
-                return Ok(vec![CoreAgentEventProposal::new(
-                    joins,
-                    CoreAgentEvent::Run(Event::CancellationGraceStarted {
-                        run_id: active_run.run_id,
-                    }),
-                )]);
-            }
-            if active_run.status == RunStatus::CancellingGrace
-                && active_run.cancellation_grace_turn_id.is_some()
+            // A cancelling run whose in-flight work has drained is terminal
+            // at once: client cancels never fan out a farewell LLM turn. A
+            // completed tool-call turn whose batch has not started yet is
+            // left to the tooling planner first, so its calls get cancelled
+            // results before the run ends.
+            if active_run.status == RunStatus::Cancelling
+                && !has_unstarted_tool_call_turn(active_run)
             {
                 let joins = CoreAgentJoins {
                     run_id: Some(active_run.run_id),
@@ -479,6 +466,17 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
     Ok(vec![CoreAgentEventProposal::new(joins, kind)])
 }
 
+/// Steering the model has not seen yet: a batch no turn has consumed. A
+/// final-output turn does not end a run while such steering exists — the
+/// run gets one more turn that carries it, so "steer" never silently does
+/// nothing on a single-turn answer.
+pub(crate) fn has_unconsumed_steering(active_run: &ActiveRun) -> bool {
+    active_run
+        .steering
+        .iter()
+        .any(|steering| steering.consumed_by_turn_id.is_none())
+}
+
 fn terminal_run_proposal(
     active_run: &ActiveRun,
 ) -> Result<Option<CoreAgentEventProposal>, PlanningError> {
@@ -486,6 +484,11 @@ fn terminal_run_proposal(
         return Ok(None);
     };
     let kind = match (&turn.status, turn.outcome.as_ref()) {
+        (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { .. }))
+            if has_unconsumed_steering(active_run) =>
+        {
+            None
+        }
         (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { output_ref })) => {
             Some(CoreAgentEvent::Run(Event::Completed {
                 run_id: active_run.run_id,
@@ -558,6 +561,27 @@ fn terminal_run_proposal(
             kind,
         )
     }))
+}
+
+/// True when a completed tool-call turn has no tool batch yet (active or
+/// completed); the tooling planner owns the next step for that run.
+fn has_unstarted_tool_call_turn(active_run: &ActiveRun) -> bool {
+    active_run.turns.iter().any(|(turn_id, turn)| {
+        turn.status == TurnStatus::Completed
+            && turn.outcome == Some(TurnOutcome::ToolCallsQueued)
+            && turn
+                .facts
+                .as_ref()
+                .is_some_and(|facts| !facts.tool_calls.is_empty())
+            && !active_run
+                .tool_batches
+                .values()
+                .any(|batch| batch.turn_id == *turn_id)
+            && !active_run
+                .completed_tool_batches
+                .values()
+                .any(|batch| batch.turn_id == *turn_id)
+    })
 }
 
 pub(crate) fn latest_turn_is_terminal_run_outcome(
@@ -652,7 +676,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 active_turn_id: None,
                 active_tool_batch_id: None,
                 parked_tool_batch: None,
-                cancellation_grace_turn_id: None,
                 tool_batches: BTreeMap::new(),
                 completed_tool_batches: BTreeMap::new(),
                 output_ref: None,
@@ -776,9 +799,9 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 )));
             }
             let active_run = active_run_mut(state, *run_id)?;
-            if active_run.status != RunStatus::Active {
+            if !matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
                 return Err(DomainError::InvariantViolation(
-                    "steering can only be added to active runs".into(),
+                    "steering can only be added to active or parked runs".into(),
                 ));
             }
             active_run.steering.push(SteeringBatch {
@@ -798,22 +821,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 ));
             }
             active_run.status = RunStatus::Cancelling;
-            active_run.cancellation_grace_turn_id = None;
-            Ok(())
-        }
-        Event::CancellationGraceStarted { run_id } => {
-            let active_run = active_run_mut(state, *run_id)?;
-            if active_run.status != RunStatus::Cancelling {
-                return Err(DomainError::InvariantViolation(
-                    "only cancelling runs can enter cancellation grace".into(),
-                ));
-            }
-            if active_run.active_turn_id.is_some() || active_run.active_tool_batch_id.is_some() {
-                return Err(DomainError::InvariantViolation(
-                    "cancellation grace requires drained active work".into(),
-                ));
-            }
-            active_run.status = RunStatus::CancellingGrace;
             Ok(())
         }
         Event::Completed { run_id, output_ref } => finish_active_run(
@@ -834,9 +841,14 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             let Some(active_run) = state.runs.active.as_ref() else {
                 return Err(DomainError::InvariantViolation("no active run".into()));
             };
-            if active_run.status != RunStatus::CancellingGrace {
+            if active_run.status != RunStatus::Cancelling {
                 return Err(DomainError::InvariantViolation(
-                    "only cancellation-grace runs can become cancelled".into(),
+                    "only cancelling runs can become cancelled".into(),
+                ));
+            }
+            if active_run.active_turn_id.is_some() || active_run.active_tool_batch_id.is_some() {
+                return Err(DomainError::InvariantViolation(
+                    "cancellation requires drained active work".into(),
                 ));
             }
             finish_active_run(state, *run_id, RunStatus::Cancelled, None, None)
@@ -847,10 +859,7 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             };
             if !matches!(
                 active_run.status,
-                RunStatus::Active
-                    | RunStatus::Parked
-                    | RunStatus::Cancelling
-                    | RunStatus::CancellingGrace
+                RunStatus::Active | RunStatus::Parked | RunStatus::Cancelling
             ) {
                 return Err(DomainError::InvariantViolation(
                     "only non-terminal runs can be force-cancelled".into(),

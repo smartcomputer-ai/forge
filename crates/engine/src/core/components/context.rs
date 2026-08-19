@@ -750,6 +750,12 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
         )]);
     }
 
+    // Steering materializes at turn boundaries only: an in-flight turn's
+    // request is frozen at its planned context revision and the hosted
+    // runtime re-derives it from state, so context must not move under it.
+    if active_run.active_turn_id.is_some() {
+        return Ok(Vec::new());
+    }
     let steering_entries = missing_steering_entries(state)?;
     if !steering_entries.is_empty() {
         return Ok(vec![entries_applied_proposal(

@@ -92,20 +92,27 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
                 }
             }
             RunStatus::Parked => Ok(Vec::new()),
-            // A cancelling run still finishes the bookkeeping of a batch
-            // whose calls are already terminal (e.g. a deferred wait that
-            // resumed after cancellation landed), so the run component can
-            // reach `cancelled`. No new invocations start.
+            // A cancelling run resolves its own batch: every call
+            // that is not terminal yet is recorded as cancelled with the
+            // well-known cancelled-result content, then the batch completes
+            // so the run component can reach `cancelled`. No new
+            // invocations start and the runtime is never asked for work;
+            // any in-flight call it still runs is abandoned.
             RunStatus::Cancelling => {
-                decide_active_tool_batch_completion(state, active_run, batch_id)
+                let proposals = decide_cancelling_tool_batch_calls(active_run, batch_id)?;
+                if proposals.is_empty() {
+                    decide_active_tool_batch_completion(state, active_run, batch_id)
+                } else {
+                    Ok(proposals)
+                }
             }
-            RunStatus::CancellingGrace
-            | RunStatus::Completed
-            | RunStatus::Failed
-            | RunStatus::Cancelled => Ok(Vec::new()),
+            RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled => Ok(Vec::new()),
         };
     }
-    if active_run.status != RunStatus::Active {
+    // Active runs start the batch for a completed tool-call turn; so do
+    // cancelling runs, whose batch then resolves to cancelled results above,
+    // so a cancelled run never leaves tool calls without results in context.
+    if !matches!(active_run.status, RunStatus::Active | RunStatus::Cancelling) {
         return Ok(Vec::new());
     }
 
@@ -872,6 +879,48 @@ fn decide_active_tool_batch_invocations(
     Ok(proposals)
 }
 
+/// Cancelled completions for every non-terminal call of the active batch of
+/// a cancelling run. Parked batches are resumed through the await path and
+/// are not touched here.
+fn decide_cancelling_tool_batch_calls(
+    active_run: &ActiveRun,
+    batch_id: ToolBatchId,
+) -> Result<Vec<CoreAgentEventProposal>, PlanningError> {
+    let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
+        DomainError::InvariantViolation(format!("active tool batch {} is missing", batch_id))
+    })?;
+    if active_run
+        .parked_tool_batch
+        .as_ref()
+        .is_some_and(|parked| parked.batch_id == batch_id)
+    {
+        return Ok(Vec::new());
+    }
+    let mut proposals = Vec::new();
+    for call_state in &batch.calls {
+        if call_state.status.is_terminal() {
+            continue;
+        }
+        let joins = CoreAgentJoins {
+            run_id: Some(batch.run_id),
+            turn_id: Some(batch.turn_id),
+            tool_batch_id: Some(batch.batch_id),
+            tool_call_id: Some(call_state.call.call_id.clone()),
+            ..CoreAgentJoins::default()
+        };
+        proposals.push(CoreAgentEventProposal::new(
+            joins,
+            CoreAgentEvent::Tool(Event::CallCompleted {
+                run_id: batch.run_id,
+                turn_id: batch.turn_id,
+                batch_id: batch.batch_id,
+                result: cancelled_tool_result(&call_state.call),
+            }),
+        ));
+    }
+    Ok(proposals)
+}
+
 fn decide_active_tool_batch_completion(
     state: &CoreAgentState,
     active_run: &ActiveRun,
@@ -1008,9 +1057,9 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 .collect::<Vec<_>>();
             {
                 let active_run = crate::core::components::run::active_run_mut(state, *run_id)?;
-                if active_run.status != RunStatus::Active {
+                if !matches!(active_run.status, RunStatus::Active | RunStatus::Cancelling) {
                     return Err(DomainError::InvariantViolation(
-                        "tool batches can only start for active runs".into(),
+                        "tool batches can only start for active or cancelling runs".into(),
                     ));
                 }
                 if active_run.active_tool_batch_id.is_some() {
@@ -1272,6 +1321,41 @@ pub const TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT: &str =
 
 pub fn tool_runtime_boundary_failure_ref() -> BlobRef {
     BlobRef::from_bytes(TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT.as_bytes())
+}
+
+/// Model-visible content for tool calls the engine cancelled because their
+/// run was cancelled before they completed. Like
+/// [`UNAVAILABLE_TOOL_RESULT_CONTENT`], every runtime must guarantee the
+/// matching blob exists via [`crate::storage::ensure_engine_blobs`].
+pub const CANCELLED_TOOL_RESULT_CONTENT: &str =
+    "tool call cancelled: the run was cancelled before this call completed\n";
+
+pub fn cancelled_tool_result_ref() -> BlobRef {
+    BlobRef::from_bytes(CANCELLED_TOOL_RESULT_CONTENT.as_bytes())
+}
+
+fn cancelled_tool_result(call: &ObservedToolCall) -> ToolCallResult {
+    let error_ref = cancelled_tool_result_ref();
+    let status = ToolCallStatus::Cancelled;
+    ToolCallResult {
+        call_id: call.call_id.clone(),
+        status,
+        output_ref: None,
+        model_visible_context_entries: vec![ContextEntryInput {
+            kind: ContextEntryKind::ToolResult {
+                call_id: call.call_id.clone(),
+                is_error: status.is_error(),
+            },
+            content_ref: error_ref.clone(),
+            media_type: None,
+            preview: None,
+            provider_kind: call.provider_kind.clone(),
+            provider_item_id: None,
+            token_estimate: None,
+        }],
+        error_ref: Some(error_ref),
+        effects: Vec::new(),
+    }
 }
 
 fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
@@ -1750,7 +1834,12 @@ fn complete_tool_call(
                 result.call_id
             ))
         })?;
-    if call_state.status != ToolCallStatus::Pending {
+    let cancellable = result.status == ToolCallStatus::Cancelled
+        && matches!(
+            call_state.status,
+            ToolCallStatus::Observed | ToolCallStatus::Accepted | ToolCallStatus::Pending
+        );
+    if call_state.status != ToolCallStatus::Pending && !cancellable {
         return Err(DomainError::InvariantViolation(
             "tool call completion requires a pending tool call".into(),
         ));

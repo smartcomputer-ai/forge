@@ -287,6 +287,47 @@ pub struct ContextEntryView {
     pub text: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ProviderContextDisplayView>,
+    /// Where the entry came from: run input, a steering batch, model output,
+    /// a tool result, reasoning state, a context edit, or the runtime. Lets
+    /// transcripts render steering distinctly from the run's first input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<ContextEntrySourceView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ContextEntrySourceView {
+    ContextEdit,
+    RunInput {
+        run_id: RunId,
+        input_index: u32,
+    },
+    Steering {
+        run_id: RunId,
+        steering_id: String,
+        input_index: u32,
+    },
+    AssistantOutput {
+        run_id: RunId,
+        turn_id: String,
+    },
+    Tool {
+        run_id: RunId,
+        turn_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        batch_id: Option<String>,
+    },
+    Reasoning {
+        run_id: RunId,
+        turn_id: String,
+    },
+    Runtime {
+        label: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

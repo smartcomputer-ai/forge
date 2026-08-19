@@ -2,13 +2,17 @@
 
 use std::collections::BTreeMap;
 
+use environment_client::WebSocketTransport;
 use environments::EnvironmentRecord;
-use tools::environment::EnvironmentToolContext;
+use tools::{
+    environment::EnvironmentToolContext, environment_protocol::RemoteEnvironmentConnection,
+};
 
 #[derive(Clone)]
 pub struct RuntimeEnvironment {
     resource: EnvironmentRecord,
     tool_context: EnvironmentToolContext,
+    remote_connection: Option<RemoteEnvironmentConnection<WebSocketTransport>>,
 }
 
 impl RuntimeEnvironment {
@@ -26,6 +30,21 @@ impl RuntimeEnvironment {
         Self {
             resource,
             tool_context,
+            remote_connection: None,
+        }
+    }
+
+    pub fn with_remote_connection(
+        mut self,
+        connection: RemoteEnvironmentConnection<WebSocketTransport>,
+    ) -> Self {
+        self.remote_connection = Some(connection);
+        self
+    }
+
+    pub async fn close(&self) {
+        if let Some(connection) = &self.remote_connection {
+            let _ = connection.close().await;
         }
     }
 
@@ -91,6 +110,12 @@ impl SessionEnvironmentManager {
     pub fn active_tool_context(&self, environment_id: &str) -> Option<EnvironmentToolContext> {
         self.environment(environment_id)
             .map(|environment| environment.tool_context.clone())
+    }
+
+    pub async fn close(&self) {
+        for environment in self.environments.values() {
+            environment.close().await;
+        }
     }
 }
 

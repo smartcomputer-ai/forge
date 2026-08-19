@@ -1,5 +1,7 @@
 import type {
   ContextEntryView,
+  RunStatus,
+  RunView,
   EnvironmentCredentialSourceView,
   EnvironmentCredentialView,
   EnvironmentProviderBindingView,
@@ -356,7 +358,14 @@ export interface SessionView {
   config?: Record<string, unknown> | null;
   configRevision: number;
   management?: SessionManagement | null;
+  /// Every run of the session — completed, the active one, and runs queued
+  /// behind it — straight from the engine. Authoritative for run state; the
+  /// event tail is the live, incremental view.
+  runs?: SessionRunView[];
 }
+
+export type SessionRunView = RunView;
+export type SessionRunStatus = RunStatus;
 
 export type WorkspaceLinkTarget =
   | { type: "workspace"; workspaceId: string }
@@ -400,10 +409,24 @@ export type ToolCallDisplay = ToolCallDisplayView;
 export type SessionEvent = SessionEventView;
 export type SessionEventsPage = SessionEventsReadResponse;
 
-/// POST …/sessions/:id/messages — the run was accepted; the reply
-/// arrives through the event tail.
+/// POST …/sessions/:id/messages — the run was accepted (`running`, or
+/// `queued` behind an active run); the reply arrives through the event tail.
 export interface SessionRunAccepted {
-  run: { id: string; status: string };
+  run: { id: string; status: SessionRunStatus };
+}
+
+/// POST …/runs/:runId/steer — the steering was admitted into the active run
+/// and reaches the model at its next turn boundary.
+export interface SessionRunSteered {
+  steeringId: string;
+  run: { id: string; status: SessionRunStatus };
+}
+
+/// POST …/runs/:runId/cancel — the cancel was admitted; `cancelling` for an
+/// active run (terminal `cancelled` follows on the tail), `cancelled` for a
+/// queued one.
+export interface SessionRunCancelled {
+  run: { id: string; status: SessionRunStatus };
 }
 
 /// Engine workspace view, straight from `vfs/workspaces/list`.

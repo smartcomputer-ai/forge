@@ -51,6 +51,10 @@ pub async fn ensure_engine_blobs(blobs: &dyn BlobStore) -> Result<(), BlobStoreE
         )
         .await?;
     debug_assert_eq!(blob_ref, crate::llm_runtime_boundary_failure_ref());
+    let blob_ref = blobs
+        .put_bytes(crate::CANCELLED_TOOL_RESULT_CONTENT.as_bytes().to_vec())
+        .await?;
+    debug_assert_eq!(blob_ref, crate::cancelled_tool_result_ref());
     Ok(())
 }
 

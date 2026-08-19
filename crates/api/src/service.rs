@@ -112,6 +112,11 @@ pub trait AgentApiService: Send + Sync {
         params: RunCancelParams,
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError>;
 
+    async fn steer_run(
+        &self,
+        params: RunSteerParams,
+    ) -> Result<AgentApiOutcome<RunSteerResponse>, AgentApiError>;
+
     async fn list_skills(
         &self,
         params: SkillListParams,

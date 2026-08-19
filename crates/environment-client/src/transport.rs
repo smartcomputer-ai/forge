@@ -23,6 +23,7 @@ use crate::{
 
 pub struct WebSocketTransport {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    closed: bool,
 }
 
 impl WebSocketTransport {
@@ -57,7 +58,10 @@ impl WebSocketTransport {
         let (stream, _) = connect_async(request)
             .await
             .map_err(|error| EnvironmentClientError::Transport(error.to_string()))?;
-        Ok(Self { stream })
+        Ok(Self {
+            stream,
+            closed: false,
+        })
     }
 }
 
@@ -95,5 +99,16 @@ impl JsonRpcTransport for WebSocketTransport {
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             }
         }
+    }
+
+    async fn close(&mut self) -> EnvironmentClientResult<()> {
+        if self.closed {
+            return Ok(());
+        }
+        self.closed = true;
+        self.stream
+            .close(None)
+            .await
+            .map_err(|error| EnvironmentClientError::Transport(error.to_string()))
     }
 }

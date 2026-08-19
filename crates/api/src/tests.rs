@@ -703,6 +703,28 @@ async fn dispatch_json_rpc_routes_run_cancel() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_run_steer() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_SESSION_RUNS_STEER.to_owned(),
+            params: Some(json!({
+                "sessionId": "session_1",
+                "runId": "run_1",
+                "items": [{ "type": "text", "text": "focus on the tests" }]
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["steeringId"], json!("steering_1"));
+    assert_eq!(result["result"]["run"]["status"], json!("running"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_skills_list() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -1369,6 +1391,7 @@ fn provider_context_entry_serializes_debug_metadata() {
         }),
         text: None,
         display: None,
+        source: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize provider context entry");
@@ -1418,6 +1441,7 @@ fn provider_context_entry_serializes_mcp_display() {
             output: Some("Echoing your input: simba".to_owned()),
             error: None,
         }),
+        source: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize mcp provider context entry");
@@ -1843,6 +1867,16 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(RunCancelResponse {
             run: test_run(params.run_id, RunStatus::Cancelled),
+        }))
+    }
+
+    async fn steer_run(
+        &self,
+        params: RunSteerParams,
+    ) -> Result<AgentApiOutcome<RunSteerResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunSteerResponse {
+            steering_id: "steering_1".to_owned(),
+            run: test_run(params.run_id, RunStatus::Running),
         }))
     }
 

@@ -7,10 +7,45 @@ use engine::{
 };
 use std::time::Duration;
 
-use temporalio_sdk::{ApplicationFailure, activities::ActivityError};
+use temporalio_sdk::{
+    ApplicationFailure,
+    activities::{ActivityContext, ActivityError},
+};
 
 pub(super) fn activity_error(error: impl Into<anyhow::Error>) -> ActivityError {
     ActivityError::from(error.into())
+}
+
+/// Run `work` as a cancellable, heartbeating activity body. The
+/// activity heartbeats on a ticker so Temporal can deliver a workflow-side
+/// cancellation (`TryCancel` from the session workflow); when it arrives the
+/// in-flight work is dropped — the provider request or tool execution is
+/// abandoned — and the activity completes as cancelled. Dropping the future
+/// is the abort: provider clients and tool runtimes must not hold work alive
+/// past their future.
+pub(super) async fn cancellable<T>(
+    ctx: &ActivityContext,
+    work: impl Future<Output = Result<T, ActivityError>>,
+) -> Result<T, ActivityError> {
+    let heartbeat_ctx = ctx.clone();
+    let heartbeat = async move {
+        let mut ticker =
+            tokio::time::interval(temporal_workflow::ACTIVITY_CANCELLATION_HEARTBEAT_INTERVAL);
+        loop {
+            ticker.tick().await;
+            heartbeat_ctx.record_heartbeat(Vec::new());
+        }
+    };
+    tokio::pin!(work);
+    tokio::pin!(heartbeat);
+    tokio::select! {
+        result = &mut work => result,
+        _ = &mut heartbeat => unreachable!("heartbeat ticker never completes"),
+        _ = ctx.cancelled() => {
+            tracing::info!("activity cancelled by workflow; abandoning in-flight work");
+            Err(ActivityError::cancelled())
+        }
+    }
 }
 
 /// Longest transient provider message carried in the typed activity failure;

@@ -1,13 +1,12 @@
 use super::*;
 
-/// How long a run may sit in cancellation or its grace turn before the
-/// workflow forces it to `cancelled`. A missed edge in the cancellation state
+/// How long a run may sit in cancellation before the workflow forces it to
+/// `cancelled`. A missed edge in the cancellation state
 /// machine must degrade to a forced transition, never a permanent wedge.
 pub(super) const CANCELLING_WATCHDOG_MS: u64 = 60_000;
 
 /// Keep the watchdog record in sync with core state: arm it when the active
-/// run enters cancellation, hold it through the grace turn, and drop it when
-/// that run leaves cancellation (or a different run becomes active).
+/// run enters cancellation and drop it when that run leaves cancellation (or a different run becomes active).
 pub(super) fn reconcile_cancelling_watchdog(ctx: &WorkflowContext<AgentSessionWorkflow>) {
     let now = workflow_time_ms(ctx);
     ctx.state_mut(|state| {
@@ -24,12 +23,7 @@ pub(super) fn cancelling_run_id(core_state: &CoreAgentState) -> Option<u64> {
         .runs
         .active
         .as_ref()
-        .filter(|run| {
-            matches!(
-                run.status,
-                RunStatus::Cancelling | RunStatus::CancellingGrace
-            )
-        })
+        .filter(|run| run.status == RunStatus::Cancelling)
         .map(|run| run.run_id.as_u64())
 }
 
@@ -67,11 +61,7 @@ pub(super) async fn process_cancelling_watchdog(
         state.cancelling_watchdog.and_then(|watchdog| {
             let expired = now >= watchdog.since_ms.saturating_add(CANCELLING_WATCHDOG_MS);
             let still_cancelling = state.core_state.runs.active.as_ref().is_some_and(|run| {
-                run.run_id.as_u64() == watchdog.run_id
-                    && matches!(
-                        run.status,
-                        RunStatus::Cancelling | RunStatus::CancellingGrace
-                    )
+                run.run_id.as_u64() == watchdog.run_id && run.status == RunStatus::Cancelling
             });
             (expired && still_cancelling).then_some(watchdog.run_id)
         })

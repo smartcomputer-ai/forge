@@ -3,6 +3,7 @@ mod admissions;
 mod awaits;
 mod bootstrap;
 mod clock;
+mod control;
 mod drive;
 mod errors;
 mod observability;
@@ -48,10 +49,7 @@ use crate::{
     activity_options, compose_workflow_id, default_instructions, split_workflow_id,
 };
 
-use activity_calls::{
-    call_context_compact, call_llm_generate, call_tool_invoke_batch,
-    call_tool_prepare_promise_controls,
-};
+use activity_calls::{call_context_compact, call_llm_generate, call_tool_prepare_promise_controls};
 use admissions::process_admissions;
 use bootstrap::initialize;
 use clock::workflow_time_ms;

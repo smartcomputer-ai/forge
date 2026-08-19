@@ -603,7 +603,6 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
             batch_id,
             suspension: engine::ToolBatchSuspension::AwaitTool { call_id, spec },
         }),
-        cancellation_grace_turn_id: None,
         tool_batches,
         completed_tool_batches: std::collections::BTreeMap::new(),
         output_ref: None,

@@ -394,10 +394,75 @@ impl GatewayAgentApi {
                     .project_run_by_id(session_id, RunId::new(run.run_id), run.status)
                     .await;
             }
+            // A run accepted behind an active run is returned as
+            // `queued`; callers follow events for its start.
+            if let Some(run) = status
+                .queued_runs
+                .iter()
+                .find(|run| run.submission_id.as_ref() == Some(submission_id))
+                .filter(|_| can_return_matching_run)
+            {
+                return self
+                    .project_run_by_id(session_id, RunId::new(run.run_id), RunStatus::Active)
+                    .await;
+            }
             if let Some(error) = status.last_error {
                 return Err(AgentApiError::internal(format!(
                     "agent workflow reported error: {error}"
                 )));
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
+    /// Wait for a correlated steering admission: resolved when the active
+    /// run's steering count advances past `baseline`, failed when the
+    /// workflow records a failure for `correlation_token` or the run leaves
+    /// the active slot before the steering landed.
+    pub(super) async fn wait_for_steering_accepted(
+        &self,
+        session_id: &SessionId,
+        run_id: RunId,
+        baseline: usize,
+        correlation_token: &str,
+    ) -> Result<(engine::SteeringId, RunStatus), AgentApiError> {
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for steering admission: {}",
+                    api_run_id(run_id)
+                )));
+            }
+            if let Some(status) = self.query_status_optional(session_id).await? {
+                if let Some(failure) =
+                    status.admission_failures.iter().rev().find(|failure| {
+                        failure.correlation_token.as_deref() == Some(correlation_token)
+                    })
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
+                }
+                if let Some(error) = status.last_error {
+                    return Err(AgentApiError::internal(format!(
+                        "agent workflow reported error: {error}"
+                    )));
+                }
+            }
+            let loaded = self.load_session_state(session_id).await?;
+            match loaded.state.runs.active.as_ref() {
+                Some(active) if active.run_id == run_id => {
+                    if active.steering.len() > baseline
+                        && let Some(steering) = active.steering.last()
+                    {
+                        return Ok((steering.steering_id, active.status));
+                    }
+                }
+                _ => {
+                    return Err(AgentApiError::rejected(format!(
+                        "run ended before steering was admitted: {}",
+                        api_run_id(run_id)
+                    )));
+                }
             }
             tokio::time::sleep(self.poll_interval).await;
         }
@@ -556,12 +621,14 @@ impl GatewayAgentApi {
                     .project_run_by_id(session_id, run_id, completed.status)
                     .await;
             }
+            // A parked run is still live; only `cancelling` (or a terminal
+            // record above) means the cancel landed.
             if let Some(active) = loaded
                 .state
                 .runs
                 .active
                 .as_ref()
-                .filter(|run| run.run_id == run_id && run.status != RunStatus::Active)
+                .filter(|run| run.run_id == run_id && run.status == RunStatus::Cancelling)
             {
                 return self
                     .project_run_by_id(session_id, run_id, active.status)

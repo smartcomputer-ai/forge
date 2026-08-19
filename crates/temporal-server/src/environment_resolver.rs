@@ -126,6 +126,36 @@ impl EnvironmentResolver {
         allowed_providers: Option<&BTreeSet<String>>,
         now_ms: i64,
     ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
+        let environment = self
+            .resolve_for_connection(environment_id, allowed_providers, now_ms)
+            .await?;
+        if let Some(gateway) = &self.gateway {
+            let connection = gateway.connection_for(self.universe_id, &environment);
+            if let Ok(mut client) = environment_client::EnvironmentDataClient::connect(
+                &connection.endpoint,
+                gateway.connect_options("lightspeed-environment-selection"),
+            )
+            .await
+            {
+                let _ = client.close().await;
+                return Ok(environment);
+            }
+        }
+        Err(EnvironmentResolveError::EnvironmentUnavailable {
+            environment_id: environment.environment_id.as_str().to_owned(),
+            status: "environment endpoint is not reachable".to_owned(),
+        })
+    }
+
+    /// Validate lifecycle and policy immediately before opening a real
+    /// data-plane connection. Unlike [`Self::selectable`], this does not open
+    /// a second connection merely to prove reachability.
+    pub(crate) async fn resolve_for_connection(
+        &self,
+        environment_id: &EnvironmentId,
+        allowed_providers: Option<&BTreeSet<String>>,
+        now_ms: i64,
+    ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
         let environment = self.read_allowed(environment_id, allowed_providers).await?;
         if let Some(provider_id) = environment.provider_id() {
             self.providers.read_provider(provider_id).await?;
@@ -177,22 +207,7 @@ impl EnvironmentResolver {
             | EnvironmentStatus::Offline
             | EnvironmentStatus::Unknown => {}
         }
-        if let Some(gateway) = &self.gateway {
-            let connection = gateway.connection_for(self.universe_id, &environment);
-            if environment_client::EnvironmentDataClient::connect(
-                &connection.endpoint,
-                gateway.connect_options("lightspeed-environment-selection"),
-            )
-            .await
-            .is_ok()
-            {
-                return Ok(environment);
-            }
-        }
-        Err(EnvironmentResolveError::EnvironmentUnavailable {
-            environment_id: environment.environment_id.as_str().to_owned(),
-            status: "environment endpoint is not reachable".to_owned(),
-        })
+        Ok(environment)
     }
 }
 
@@ -347,6 +362,13 @@ mod tests {
     async fn offline_environment_without_gateway_is_unavailable_but_readable() {
         let (resolver, environment_id) = resolver().await;
         assert!(resolver.read_allowed(&environment_id, None).await.is_ok());
+        assert!(
+            resolver
+                .resolve_for_connection(&environment_id, None, 111)
+                .await
+                .is_ok(),
+            "execution resolution should defer reachability to the real connection"
+        );
         assert!(matches!(
             resolver.selectable(&environment_id, None, 111).await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })

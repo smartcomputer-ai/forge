@@ -520,22 +520,28 @@ impl SessionTools {
                     continue;
                 }
             };
-            let environment = if let Some(environment) =
+            let (environment, close_after_read) = if let Some(environment) =
                 environments.environment(environment_id.as_str()).cloned()
             {
-                Ok(environment)
+                (Ok(environment), false)
             } else if let Some(store) = self.environment_store.as_ref() {
-                match store.read_environment(&environment_id).await {
-                    Ok(resource) => {
-                        self.runtime_environment_for_resource(session_id, resource)
-                            .await
-                    }
-                    Err(error) => Err(map_environments_error(error)),
-                }
+                (
+                    match store.read_environment(&environment_id).await {
+                        Ok(resource) => {
+                            self.runtime_environment_for_resource(session_id, resource)
+                                .await
+                        }
+                        Err(error) => Err(map_environments_error(error)),
+                    },
+                    true,
+                )
             } else {
-                Err(io_error(
-                    "environment store is not configured on this runtime",
-                ))
+                (
+                    Err(io_error(
+                        "environment store is not configured on this runtime",
+                    )),
+                    false,
+                )
             };
             let environment = match environment {
                 Ok(environment) => environment,
@@ -552,6 +558,9 @@ impl SessionTools {
                     Some(resolved),
                     format!("environment does not support durable jobs: {environment_id}"),
                 ));
+                if close_after_read {
+                    environment.close().await;
+                }
                 continue;
             };
             match jobs
@@ -579,6 +588,9 @@ impl SessionTools {
                 Err(error) => {
                     entries.push(model_job_error(Some(resolved), error.to_string()));
                 }
+            }
+            if close_after_read {
+                environment.close().await;
             }
         }
         Ok(EnvironmentJobRead { entries })
@@ -983,7 +995,7 @@ impl SessionTools {
         }
         let resource = if let Some(resolver) = self.environment_resolver.as_ref() {
             match resolver
-                .selectable(
+                .resolve_for_connection(
                     environment_id,
                     allowed.as_ref(),
                     i64::try_from(now_unix_ms()?)
@@ -1035,10 +1047,20 @@ impl SessionTools {
             }
             resource
         };
-        environments.insert_environment(
-            self.runtime_environment_for_resource(&request.session_id, resource)
-                .await?,
-        );
+        let environment = match self
+            .runtime_environment_for_resource(&request.session_id, resource)
+            .await
+        {
+            Ok(environment) => environment,
+            Err(error) => {
+                return Ok(environments.with_active_blocker(
+                    ActiveEnvironmentBlocker::Unavailable {
+                        message: error.to_string(),
+                    },
+                ));
+            }
+        };
+        environments.insert_environment(environment);
         Ok(environments)
     }
 
@@ -1089,21 +1111,22 @@ impl SessionTools {
             .await
             .map_err(map_environment_client_error)?;
 
-        let mut connection = RemoteEnvironmentConnection::new(client, response.capabilities);
+        let mut remote_connection = RemoteEnvironmentConnection::new(client, response.capabilities);
         if let Some(cwd) = cwd {
-            connection = connection.with_cwd(cwd);
+            remote_connection = remote_connection.with_cwd(cwd);
         }
-        let (_fs_context, mut environment_context) = connection.into_contexts(self.blobs.clone());
+        let (_fs_context, mut environment_context) =
+            remote_connection.clone().into_contexts(self.blobs.clone());
         if let Some(credentials) = &self.environment_credentials {
             environment_context =
                 credentials.wrap_context(environment_context, resource.environment_id.clone());
         }
         let environment_context =
             environment_context.with_session_id(session_id.as_str().to_owned());
-        Ok(RuntimeEnvironment::from_resource(
-            resource,
-            environment_context,
-        ))
+        Ok(
+            RuntimeEnvironment::from_resource(resource, environment_context)
+                .with_remote_connection(remote_connection),
+        )
     }
 
     fn runtime_for_domains(
@@ -1427,66 +1450,74 @@ impl CoreAgentTools for SessionTools {
         } else {
             SessionEnvironmentManager::new(self.blobs.clone())
         };
-        let runtime =
-            self.runtime_for_domains(links, &environments, request.active_environment_id.as_ref())?;
+        let outcome = async {
+            let runtime = self.runtime_for_domains(
+                links,
+                &environments,
+                request.active_environment_id.as_ref(),
+            )?;
 
-        let mut results = Vec::with_capacity(request.calls.len());
-        for call in &request.calls {
-            if duplicate_fleet_message_call_ids.contains(&call.call_id) {
-                results.push(
-                    failed_result(
-                        self.blobs.as_ref(),
-                        call.call_id.clone(),
-                        "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
-                    )
-                    .await?,
-                );
-            } else if call.workflow_tool.is_some() {
-                results.push(
-                    self.invoke_supplied_workflow_tool_call(
-                        &request,
-                        call,
-                        &mut successful_workflow_siblings,
-                    )
-                    .await?,
-                );
-            } else if is_fleet_tool(&call.tool_name) {
-                results.push(self.invoke_fleet_call(&request, call).await?);
-            } else if is_concurrency_tool(&call.tool_name) {
-                results.push(self.invoke_concurrency_call(&request, call).await?);
-            } else if is_environment_control_tool(&call.tool_name) {
-                results.push(self.invoke_environment_control_call(&request, call).await?);
-            } else if let Some(blocker) = environments.active_blocker().filter(|_| {
-                is_environment_job_query_tool_name(call.tool_name.as_str())
-                    || routing_catalog
-                        .get(&call.tool_name)
-                        .is_some_and(|binding| binding.logical_id.starts_with("env."))
-            }) {
-                // Batch-unit execution has no workflow-level readiness wait;
-                // report the blocker as an ordinary failed call.
-                results.push(
-                    failed_result(
-                        self.blobs.as_ref(),
-                        call.call_id.clone(),
-                        active_environment_blocker_message(blocker),
-                    )
-                    .await?,
-                );
-            } else if is_environment_job_query_tool_name(call.tool_name.as_str()) {
-                results.push(
-                    self.invoke_environment_job_call(&request, call, &environments)
+            let mut results = Vec::with_capacity(request.calls.len());
+            for call in &request.calls {
+                if duplicate_fleet_message_call_ids.contains(&call.call_id) {
+                    results.push(
+                        failed_result(
+                            self.blobs.as_ref(),
+                            call.call_id.clone(),
+                            "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
+                        )
                         .await?,
-                );
-            } else {
-                results.push(runtime.invoke_call(call).await?);
+                    );
+                } else if call.workflow_tool.is_some() {
+                    results.push(
+                        self.invoke_supplied_workflow_tool_call(
+                            &request,
+                            call,
+                            &mut successful_workflow_siblings,
+                        )
+                        .await?,
+                    );
+                } else if is_fleet_tool(&call.tool_name) {
+                    results.push(self.invoke_fleet_call(&request, call).await?);
+                } else if is_concurrency_tool(&call.tool_name) {
+                    results.push(self.invoke_concurrency_call(&request, call).await?);
+                } else if is_environment_control_tool(&call.tool_name) {
+                    results.push(self.invoke_environment_control_call(&request, call).await?);
+                } else if let Some(blocker) = environments.active_blocker().filter(|_| {
+                    is_environment_job_query_tool_name(call.tool_name.as_str())
+                        || routing_catalog
+                            .get(&call.tool_name)
+                            .is_some_and(|binding| binding.logical_id.starts_with("env."))
+                }) {
+                    // Batch-unit execution has no workflow-level readiness wait;
+                    // report the blocker as an ordinary failed call.
+                    results.push(
+                        failed_result(
+                            self.blobs.as_ref(),
+                            call.call_id.clone(),
+                            active_environment_blocker_message(blocker),
+                        )
+                        .await?,
+                    );
+                } else if is_environment_job_query_tool_name(call.tool_name.as_str()) {
+                    results.push(
+                        self.invoke_environment_job_call(&request, call, &environments)
+                            .await?,
+                    );
+                } else {
+                    results.push(runtime.invoke_call(call).await?);
+                }
             }
+            Ok(ToolBatchOutcome::completed(ToolInvocationBatchResult {
+                run_id: request.run_id,
+                turn_id: request.turn_id,
+                batch_id: request.batch_id,
+                results,
+            }))
         }
-        Ok(ToolBatchOutcome::completed(ToolInvocationBatchResult {
-            run_id: request.run_id,
-            turn_id: request.turn_id,
-            batch_id: request.batch_id,
-            results,
-        }))
+        .await;
+        environments.close().await;
+        outcome
     }
 
     async fn invoke_call(
@@ -1609,10 +1640,12 @@ impl SessionTools {
             SessionEnvironmentManager::new(self.blobs.clone())
         };
         if is_job_call {
-            return self
+            let outcome = self
                 .invoke_environment_job_call(&batch_request, &call, &environments)
                 .await
                 .map(ToolCallExecution::Completed);
+            environments.close().await;
+            return outcome;
         }
         let links = if is_vfs_call {
             vfs::resolve_workspace_links(
@@ -1625,15 +1658,20 @@ impl SessionTools {
         } else {
             Vec::new()
         };
-        let runtime = self.runtime_for_domains(
-            links,
-            &environments,
-            batch_request.active_environment_id.as_ref(),
-        )?;
-        runtime
-            .invoke_call(&call)
-            .await
-            .map(ToolCallExecution::Completed)
+        let outcome = async {
+            let runtime = self.runtime_for_domains(
+                links,
+                &environments,
+                batch_request.active_environment_id.as_ref(),
+            )?;
+            runtime
+                .invoke_call(&call)
+                .await
+                .map(ToolCallExecution::Completed)
+        }
+        .await;
+        environments.close().await;
+        outcome
     }
 }
 

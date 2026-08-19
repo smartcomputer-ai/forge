@@ -253,6 +253,10 @@ const sessionMessageSchema = z.object({
   submissionId: z.string().min(1).max(200),
 });
 
+const sessionSteerSchema = z.object({
+  text: z.string().min(1).max(100_000),
+});
+
 /// Loose validation (required identifiers only): the engine is the
 /// validator of record for MCP server records, like profile documents.
 const mcpServerDocumentSchema = z
@@ -608,9 +612,10 @@ export function gatewayRoutes(ctx: AppContext) {
   });
 
   /// One user message → one run from input items. Returns the accepted
-  /// run immediately — replies land in the event log, which the web
-  /// follows via the long-poll tail. No server-side await: runs can take
-  /// minutes and an HTTP request must not.
+  /// run immediately (`running`, or `queued` behind an active run) —
+  /// replies land in the event log, which the web follows via the long-poll
+  /// tail. No server-side await: runs can take minutes and an HTTP request
+  /// must not.
   app.post("/:id/sessions/:sessionId/messages", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -641,6 +646,9 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  /// Cancel a queued or active run. Returns the run's projected state right
+  /// after the cancel was admitted (`cancelling` for an active run,
+  /// `cancelled` for a queued one); the terminal event arrives on the tail.
   app.post("/:id/sessions/:sessionId/runs/:runId/cancel", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -648,11 +656,39 @@ export function gatewayRoutes(ctx: AppContext) {
     }
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
-      await client.call("session/runs/cancel", {
+      const response = await client.call("session/runs/cancel", {
         sessionId: c.req.param("sessionId"),
         runId: c.req.param("runId"),
       });
-      return c.json({ ok: true });
+      const run = response.result.run;
+      return c.json({ run: { id: run.id, status: run.status } });
+    });
+  });
+
+  /// Steer the active run: the text is admitted into the run and reaches
+  /// the model at its next turn boundary without interrupting the in-flight
+  /// turn. Rejected for queued, cancelling, or finished runs.
+  app.post("/:id/sessions/:sessionId/runs/:runId/steer", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, sessionSteerSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("session/runs/steer", {
+        sessionId: c.req.param("sessionId"),
+        runId: c.req.param("runId"),
+        items: [{ type: "text" as const, text: body.data.text }],
+      });
+      const run = response.result.run;
+      return c.json({
+        steeringId: response.result.steeringId,
+        run: { id: run.id, status: run.status },
+      });
     });
   });
 

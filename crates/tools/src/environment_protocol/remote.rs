@@ -83,6 +83,12 @@ where
         self
     }
 
+    /// Gracefully shut down the shared data-plane transport after all tool
+    /// adapters derived from this connection have finished using it.
+    pub async fn close(&self) -> Result<(), EnvironmentClientError> {
+        self.client.lock().await.close().await
+    }
+
     pub fn file_system(&self) -> RemoteEnvironmentFileSystem<T> {
         RemoteEnvironmentFileSystem {
             client: self.client.clone(),

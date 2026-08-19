@@ -180,13 +180,18 @@ async fn proxy_websocket(mut client: WebSocket, endpoint: String) {
             },
         }
     }
+    // Complete both handshakes even when either peer disappears or errors.
+    let _ = upstream.close(None).await;
+    let _ = client.send(axum::extract::ws::Message::Close(None)).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::incus::OwnedTarget;
+    use axum::{Router, extract::WebSocketUpgrade, routing::get};
     use environment_protocol::{control::targets::ProviderTargetStatus, shared::ProviderTargetId};
+    use std::time::Duration;
 
     fn target(status: ProviderTargetStatus, hostname: Option<&str>) -> OwnedTarget {
         OwnedTarget {
@@ -206,6 +211,57 @@ mod tests {
             ingress_port: Some(8080),
             location: None,
         }
+    }
+
+    #[tokio::test]
+    async fn ingress_proxy_closes_upstream_when_client_disappears() {
+        let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("upstream listener");
+        let upstream_address = upstream_listener.local_addr().expect("upstream address");
+        let upstream_observer = tokio::spawn(async move {
+            let (stream, _) = upstream_listener.accept().await.expect("upstream accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upstream websocket");
+            while let Some(message) = socket.next().await {
+                match message {
+                    Ok(UpstreamMessage::Close(_)) => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+            false
+        });
+
+        let edge_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("edge listener");
+        let edge_address = edge_listener.local_addr().expect("edge address");
+        let endpoint = format!("ws://{upstream_address}");
+        let app = Router::new().route(
+            "/",
+            get(move |upgrade: WebSocketUpgrade| {
+                let endpoint = endpoint.clone();
+                async move { upgrade.on_upgrade(move |socket| proxy_websocket(socket, endpoint)) }
+            }),
+        );
+        let edge_server =
+            tokio::spawn(
+                async move { axum::serve(edge_listener, app).await.expect("edge server") },
+            );
+
+        let (client, _) = tokio_tungstenite::connect_async(format!("ws://{edge_address}"))
+            .await
+            .expect("connect edge");
+        drop(client);
+
+        let saw_close = tokio::time::timeout(Duration::from_secs(2), upstream_observer)
+            .await
+            .expect("upstream close timeout")
+            .expect("upstream observer");
+        edge_server.abort();
+        assert!(saw_close, "edge dropped upstream without a close frame");
     }
 
     #[test]

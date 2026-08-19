@@ -1,5 +1,5 @@
 import type { ToolItemStatus } from "@lightspeed/agent-client";
-import type { SessionEvent, SessionItem, ToolCallDisplay } from "@/api";
+import type { SessionEvent, SessionItem, SessionRunView, ToolCallDisplay } from "@/api";
 
 /// Folded chat model for a session. The event log is the source of truth;
 /// this module reduces it into renderable entries plus live-run state,
@@ -10,7 +10,17 @@ import type { SessionEvent, SessionItem, ToolCallDisplay } from "@/api";
 /// and opaque engine reasoning markers are filtered out.
 
 export type TranscriptEntry =
-  | { kind: "message"; key: string; role: "user" | "assistant"; text: string }
+  | {
+      kind: "message";
+      key: string;
+      role: "user" | "assistant";
+      text: string;
+      /// The run this entry belongs to, when the engine recorded one.
+      runId?: string;
+      /// A user message injected into a running run (steering) rather than
+      /// the input that started it.
+      steering?: boolean;
+    }
   | { kind: "system"; key: string; text: string }
   | { kind: "reasoning"; key: string; text: string }
   | TranscriptToolGroup
@@ -53,17 +63,39 @@ interface ToolCallLocation {
 
 export interface ActiveRun {
   runId: string;
-  /// TUI status vocabulary: queued / running / planning / thinking /
-  /// running tools / working.
+  /// TUI status vocabulary: running / planning / thinking / running tools /
+  /// working / cancelling.
   label: string;
+  /// A cancel was admitted; the run is draining to `cancelled`.
+  cancelling: boolean;
 }
+
+export interface QueuedRun {
+  runId: string;
+}
+
+/// Monotonic per-run lifecycle knowledge: a run only ever moves forward
+/// (queued → running → terminal), which is what lets a session snapshot be
+/// reconciled into the event-derived state without going backwards.
+export type RunPhase = "queued" | "running" | "terminal";
 
 export interface TranscriptState {
   entries: TranscriptEntry[];
+  /// The run the engine is executing (running or cancelling), if any.
   activeRun: ActiveRun | null;
+  /// Runs accepted behind the active run, in start order.
+  queuedRuns: QueuedRun[];
+  /// Bumped on every run lifecycle change so the page can refresh the
+  /// authoritative session view (queued-run text, terminal statuses).
+  runRevision: number;
   closed: boolean;
   /// Entry ids already folded (context events repeat entries on replace).
   seenItems: Set<string>;
+  runPhases: Map<string, RunPhase>;
+  /// Client submission id → engine run id, from `runAccepted`. Lets an
+  /// optimistic send resolve its run before its own POST returns (the tail
+  /// is usually faster than the gateway's acceptance poll).
+  runBySubmission: Map<string, string>;
   /// Tool event metadata, context items, and results arrive separately.
   /// These indexes merge them into one stable group in the transcript.
   toolCallByCallId: Map<string, ToolCallLocation>;
@@ -74,11 +106,21 @@ export function emptyTranscript(): TranscriptState {
   return {
     entries: [],
     activeRun: null,
+    queuedRuns: [],
+    runRevision: 0,
     closed: false,
     seenItems: new Set(),
+    runPhases: new Map(),
+    runBySubmission: new Map(),
     toolCallByCallId: new Map(),
     toolGroupByBatchId: new Map(),
   };
+}
+
+/// A run is live when the engine is executing or has queued it; clients use
+/// this to offer stop/steer/queue instead of a plain send.
+export function runInProgress(state: TranscriptState): boolean {
+  return state.activeRun !== null || state.queuedRuns.length > 0;
 }
 
 /// Returns a new state object (fresh `entries` array identity for React);
@@ -90,8 +132,12 @@ export function applyEvents(
   const next: TranscriptState = {
     entries: state.entries.slice(),
     activeRun: state.activeRun,
+    queuedRuns: state.queuedRuns,
+    runRevision: state.runRevision,
     closed: state.closed,
     seenItems: state.seenItems,
+    runPhases: state.runPhases,
+    runBySubmission: state.runBySubmission,
     toolCallByCallId: state.toolCallByCallId,
     toolGroupByBatchId: state.toolGroupByBatchId,
   };
@@ -104,10 +150,24 @@ export function applyEvents(
         applyItems(next, kind.entries);
         break;
       case "runAccepted":
-        next.activeRun = { runId: String(kind.runId), label: "queued" };
+        if (kind.submissionId) {
+          next.runBySubmission.set(kind.submissionId, String(kind.runId));
+        }
+        enqueueRun(next, String(kind.runId));
         break;
       case "runStarted":
-        next.activeRun = { runId: String(kind.runId), label: "running" };
+        startRun(next, String(kind.runId));
+        break;
+      case "runCancellationRequested":
+        if (next.activeRun?.runId === String(kind.runId)) {
+          next.activeRun = { ...next.activeRun, label: "cancelling", cancelling: true };
+          next.runRevision += 1;
+        }
+        break;
+      case "runSteeringAccepted":
+        // The steering text lands as a context entry once it materializes;
+        // nothing to fold yet beyond the revision bump for the page.
+        next.runRevision += 1;
         break;
       case "turnStarted":
         setRunLabel(next, "planning");
@@ -149,10 +209,10 @@ export function applyEvents(
         setRunLabel(next, "working");
         break;
       case "runCompleted":
-        next.activeRun = null;
+        finishRun(next, String(kind.runId));
         break;
       case "runFailed":
-        next.activeRun = null;
+        finishRun(next, String(kind.runId));
         next.entries.push({
           kind: "marker",
           key: `evt-${event.cursor.seq}`,
@@ -160,15 +220,17 @@ export function applyEvents(
           tone: "error",
         });
         break;
-      case "runCancelled":
-        next.activeRun = null;
+      case "runCancelled": {
+        const wasQueued = next.queuedRuns.some((run) => run.runId === String(kind.runId));
+        finishRun(next, String(kind.runId));
         next.entries.push({
           kind: "marker",
           key: `evt-${event.cursor.seq}`,
-          text: "run cancelled",
+          text: wasQueued ? "queued message cancelled" : "run cancelled",
           tone: "muted",
         });
         break;
+      }
       case "contextCompactionFinished":
         next.entries.push({
           kind: "marker",
@@ -179,6 +241,8 @@ export function applyEvents(
         break;
       case "sessionClosed":
         next.activeRun = null;
+        next.queuedRuns = [];
+        next.runRevision += 1;
         next.closed = true;
         next.entries.push({
           kind: "marker",
@@ -195,9 +259,94 @@ export function applyEvents(
 }
 
 function setRunLabel(state: TranscriptState, label: string) {
-  if (state.activeRun) {
+  if (state.activeRun && !state.activeRun.cancelling) {
     state.activeRun = { ...state.activeRun, label };
   }
+}
+
+function enqueueRun(state: TranscriptState, runId: string) {
+  if (state.runPhases.has(runId)) {
+    return;
+  }
+  state.runPhases.set(runId, "queued");
+  state.queuedRuns = [...state.queuedRuns, { runId }];
+  state.runRevision += 1;
+}
+
+function startRun(state: TranscriptState, runId: string) {
+  const phase = state.runPhases.get(runId);
+  if (phase === "running" || phase === "terminal") {
+    return;
+  }
+  state.runPhases.set(runId, "running");
+  state.queuedRuns = state.queuedRuns.filter((run) => run.runId !== runId);
+  state.activeRun = { runId, label: "running", cancelling: false };
+  state.runRevision += 1;
+}
+
+function finishRun(state: TranscriptState, runId: string) {
+  if (state.runPhases.get(runId) === "terminal") {
+    return;
+  }
+  state.runPhases.set(runId, "terminal");
+  state.queuedRuns = state.queuedRuns.filter((run) => run.runId !== runId);
+  if (state.activeRun?.runId === runId) {
+    state.activeRun = null;
+  }
+  state.runRevision += 1;
+}
+
+/// Fold the authoritative session view into the event-derived state. Only
+/// forward moves are applied (a snapshot can be older than the tail): a run
+/// the snapshot shows terminal is cleared, a running run the tail has not
+/// seen yet becomes the active run, a queued run the tail has not seen is
+/// enqueued. This is what heals a truncated catch-up or a missed page.
+export function reconcileRuns(
+  state: TranscriptState,
+  runs: SessionRunView[],
+): TranscriptState {
+  const next: TranscriptState = { ...state, entries: state.entries };
+  let changed = false;
+  for (const run of runs) {
+    const runId = String(run.id);
+    const phase = next.runPhases.get(runId);
+    switch (run.status) {
+      case "completed":
+      case "failed":
+      case "cancelled":
+        if (phase !== "terminal") {
+          finishRun(next, runId);
+          changed = true;
+        }
+        break;
+      case "running":
+      case "cancelling":
+        if (phase === undefined || phase === "queued") {
+          startRun(next, runId);
+          if (run.status === "cancelling" && next.activeRun?.runId === runId) {
+            next.activeRun = { ...next.activeRun, label: "cancelling", cancelling: true };
+          }
+          changed = true;
+        } else if (
+          run.status === "cancelling" &&
+          next.activeRun?.runId === runId &&
+          !next.activeRun.cancelling
+        ) {
+          next.activeRun = { ...next.activeRun, label: "cancelling", cancelling: true };
+          changed = true;
+        }
+        break;
+      case "queued":
+        if (phase === undefined) {
+          enqueueRun(next, runId);
+          changed = true;
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  return changed ? next : state;
 }
 
 function applyItems(state: TranscriptState, items: SessionItem[]) {
@@ -248,11 +397,15 @@ function applyNonToolCallItem(
   switch (kind.type) {
     case "message":
       if (item.text && (kind.role === "user" || kind.role === "assistant")) {
+        const source = item.source ?? null;
+        const runId = source && "runId" in source ? String(source.runId) : undefined;
         state.entries.push({
           kind: "message",
           key: item.id,
           role: kind.role,
           text: item.text,
+          ...(runId ? { runId } : {}),
+          ...(source?.type === "steering" ? { steering: true } : {}),
         });
       }
       break;

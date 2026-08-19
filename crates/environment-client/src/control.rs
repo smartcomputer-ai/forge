@@ -44,6 +44,11 @@ where
         self.rpc
     }
 
+    /// Gracefully close the underlying transport.
+    pub async fn close(&mut self) -> EnvironmentClientResult<()> {
+        self.rpc.close().await
+    }
+
     pub async fn initialize(
         &mut self,
         params: &ControllerInitializeParams,

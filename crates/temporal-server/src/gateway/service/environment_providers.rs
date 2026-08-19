@@ -85,7 +85,8 @@ impl GatewayAgentApi {
                 .list_templates(&ListTemplatesParams {
                     binding: binding_context(&binding),
                 })
-                .await?;
+                .await;
+            let response = finish_provider_controller(controller, response).await?;
             templates.extend(
                 response
                     .templates

@@ -128,14 +128,28 @@ pub const LLM_RETRY_MAX_INTERVAL: Duration = Duration::from_secs(60);
 pub const LLM_RETRY_BACKOFF_COEFFICIENT: f64 = 2.0;
 pub const LLM_RETRY_MAX_ATTEMPTS: i32 = 15;
 
+// Active-run control. Provider and tool activities heartbeat so a
+// workflow-side `TryCancel` reaches the worker; the worker then abandons the
+// in-flight provider request or tool execution. Temporal throttles
+// heartbeats to 0.8 × the timeout, which bounds cancellation latency.
+
+/// Heartbeat timeout for cancellable provider/tool activities. Cancellation
+/// reaches the worker within ~0.8 × this value.
+pub const ACTIVITY_CANCELLATION_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Worker-side heartbeat ticker for cancellable activities (the SDK throttles
+/// to 0.8 × the heartbeat timeout regardless).
+pub const ACTIVITY_CANCELLATION_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Temporal options for the `llm_generate` and `context_compact` provider
 /// activities. Bounded in attempts and wall-clock time; never Temporal's
-/// default unlimited retries.
+/// default unlimited retries. Heartbeated so the session workflow can cancel
+/// an in-flight generation.
 pub fn llm_activity_options() -> ActivityOptions {
     ActivityOptions::with_close_timeouts(ActivityCloseTimeouts::Both {
         start_to_close: LLM_START_TO_CLOSE,
         schedule_to_close: LLM_SCHEDULE_TO_CLOSE,
     })
+    .heartbeat_timeout(ACTIVITY_CANCELLATION_HEARTBEAT_TIMEOUT)
     .retry_policy(RetryPolicy {
         initial_interval: Some(
             LLM_RETRY_INITIAL_INTERVAL
@@ -206,6 +220,7 @@ pub fn tool_call_activity_options(execution: ToolExecutionSpec) -> ActivityOptio
         start_to_close,
         schedule_to_close,
     })
+    .heartbeat_timeout(ACTIVITY_CANCELLATION_HEARTBEAT_TIMEOUT)
     .retry_policy(tool_retry_policy(max_attempts))
     .build()
 }
@@ -232,6 +247,7 @@ pub fn tool_batch_activity_options() -> ActivityOptions {
         start_to_close: DEFAULT_ACTIVITY_START_TO_CLOSE_TIMEOUT,
         schedule_to_close: DEFAULT_ACTIVITY_START_TO_CLOSE_TIMEOUT + Duration::from_secs(60),
     })
+    .heartbeat_timeout(ACTIVITY_CANCELLATION_HEARTBEAT_TIMEOUT)
     .retry_policy(tool_retry_policy(1))
     .build()
 }

@@ -379,10 +379,9 @@ fn run_record_resolution(record: &RunRecord) -> PromiseResolution {
                 .as_ref()
                 .and_then(|failure| failure.message_ref.clone()),
         },
-        RunStatus::Active
-        | RunStatus::Parked
-        | RunStatus::Cancelling
-        | RunStatus::CancellingGrace => PromiseResolution::Failed { error_ref: None },
+        RunStatus::Active | RunStatus::Parked | RunStatus::Cancelling => {
+            PromiseResolution::Failed { error_ref: None }
+        }
     }
 }
 
@@ -1112,7 +1111,6 @@ mod tests {
             turns: BTreeMap::new(),
             active_turn_id: None,
             active_tool_batch_id: None,
-            cancellation_grace_turn_id: None,
             parked_tool_batch: None,
             tool_batches: BTreeMap::new(),
             completed_tool_batches: BTreeMap::new(),

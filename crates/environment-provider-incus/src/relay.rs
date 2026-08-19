@@ -46,6 +46,10 @@ pub async fn probe_guest(config: &Config, target: &OwnedTarget) -> bool {
 
 pub async fn proxy(config: Config, mut lightspeed: WebSocket, mut guest: GuestSocket) {
     let idle = Duration::from_secs(config.relay_idle_seconds);
+    proxy_with_idle(idle, &mut lightspeed, &mut guest).await;
+}
+
+async fn proxy_with_idle(idle: Duration, lightspeed: &mut WebSocket, guest: &mut GuestSocket) {
     loop {
         let event = tokio::time::timeout(idle, async {
             tokio::select! {
@@ -55,8 +59,6 @@ pub async fn proxy(config: Config, mut lightspeed: WebSocket, mut guest: GuestSo
         })
         .await;
         let Ok(event) = event else {
-            let _ = lightspeed.send(AxumMessage::Close(None)).await;
-            let _ = guest.close(None).await;
             break;
         };
         match event {
@@ -81,6 +83,10 @@ pub async fn proxy(config: Config, mut lightspeed: WebSocket, mut guest: GuestSo
             Event::Lightspeed(_) | Event::Guest(None) | Event::Guest(Some(Err(_))) => break,
         }
     }
+    // Always close both legs. In particular, an upstream EOF or protocol
+    // error must not turn into a reset-without-close in the guest envd log.
+    let _ = guest.close(None).await;
+    let _ = lightspeed.send(AxumMessage::Close(None)).await;
 }
 
 enum Event {
@@ -106,5 +112,82 @@ fn to_lightspeed(message: TungsteniteMessage) -> Option<AxumMessage> {
         TungsteniteMessage::Pong(value) => Some(AxumMessage::Pong(value.to_vec())),
         TungsteniteMessage::Close(_) => Some(AxumMessage::Close(None)),
         TungsteniteMessage::Frame(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use axum::{Router, extract::WebSocketUpgrade, response::IntoResponse as _, routing::get};
+    use tokio::{net::TcpListener, sync::Mutex};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn relay_closes_guest_when_lightspeed_disappears_without_a_close_frame() {
+        let guest_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("guest listener");
+        let guest_address = guest_listener.local_addr().expect("guest address");
+        let guest_observer = tokio::spawn(async move {
+            let (stream, _) = guest_listener.accept().await.expect("guest accept");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("guest websocket");
+            while let Some(message) = socket.next().await {
+                match message {
+                    Ok(TungsteniteMessage::Close(_)) => return true,
+                    Ok(_) => {}
+                    Err(_) => return false,
+                }
+            }
+            false
+        });
+        let (guest, _) = connect_async(format!("ws://{guest_address}"))
+            .await
+            .expect("connect guest");
+        let guest = Arc::new(Mutex::new(Some(guest)));
+
+        let relay_listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("relay listener");
+        let relay_address = relay_listener.local_addr().expect("relay address");
+        let app = Router::new().route(
+            "/",
+            get({
+                let guest = guest.clone();
+                move |upgrade: WebSocketUpgrade| {
+                    let guest = guest.clone();
+                    async move {
+                        let guest = guest.lock().await.take().expect("one relay connection");
+                        upgrade
+                            .on_upgrade(move |mut socket| async move {
+                                let mut guest = guest;
+                                proxy_with_idle(Duration::from_secs(60), &mut socket, &mut guest)
+                                    .await;
+                            })
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let relay_server = tokio::spawn(async move {
+            axum::serve(relay_listener, app)
+                .await
+                .expect("relay server")
+        });
+
+        let (lightspeed, _) = connect_async(format!("ws://{relay_address}"))
+            .await
+            .expect("connect lightspeed");
+        drop(lightspeed);
+
+        let saw_close = tokio::time::timeout(Duration::from_secs(2), guest_observer)
+            .await
+            .expect("guest close timeout")
+            .expect("guest observer");
+        relay_server.abort();
+        assert!(saw_close, "relay dropped guest without a close frame");
     }
 }

@@ -35,6 +35,14 @@ pub enum Event {
         turn_id: TurnId,
         outcome: TurnOutcome,
     },
+    /// The run entered cancellation while this turn was still started,
+    /// planned, or waiting for its generation. The turn ends
+    /// `cancelled` without a generation result; any in-flight provider call
+    /// is abandoned by the runtime and its result discarded.
+    Cancelled {
+        turn_id: TurnId,
+        run_id: RunId,
+    },
 }
 
 pub type TurnEvent = Event;
@@ -54,14 +62,10 @@ pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, 
     if let Some(turn_id) = active_run.active_turn_id {
         return decide_active_turn_progress(state, active_run, turn_id);
     }
-    match active_run.status {
-        RunStatus::Active => {}
-        RunStatus::CancellingGrace if active_run.cancellation_grace_turn_id.is_none() => {}
-        _ => return Ok(Vec::new()),
+    if active_run.status != RunStatus::Active {
+        return Ok(Vec::new());
     }
-    if active_run.status == RunStatus::Active
-        && crate::core::components::run::latest_turn_is_terminal_run_outcome(active_run)?
-    {
+    if crate::core::components::run::latest_turn_is_terminal_run_outcome(active_run)? {
         return Ok(Vec::new());
     }
 
@@ -97,12 +101,29 @@ fn decide_active_turn_progress(
         .into());
     };
 
+    if active_run.status == RunStatus::Cancelling
+        && matches!(
+            turn.status,
+            TurnStatus::Started | TurnStatus::Planned | TurnStatus::GenerationPending
+        )
+    {
+        let joins = CoreAgentJoins {
+            run_id: Some(active_run.run_id),
+            turn_id: Some(turn_id),
+            ..CoreAgentJoins::default()
+        };
+        return Ok(vec![CoreAgentEventProposal::new(
+            joins,
+            CoreAgentEvent::Turn(Event::Cancelled {
+                turn_id,
+                run_id: active_run.run_id,
+            }),
+        )]);
+    }
+
     match turn.status {
         TurnStatus::Started => {
-            if !matches!(
-                active_run.status,
-                RunStatus::Active | RunStatus::CancellingGrace
-            ) {
+            if active_run.status != RunStatus::Active {
                 return Ok(Vec::new());
             }
             let request =
@@ -125,10 +146,7 @@ fn decide_active_turn_progress(
             )])
         }
         TurnStatus::Planned => {
-            if !matches!(
-                active_run.status,
-                RunStatus::Active | RunStatus::CancellingGrace
-            ) {
+            if active_run.status != RunStatus::Active {
                 return Ok(Vec::new());
             }
             if turn.planned_request.is_none() {
@@ -266,21 +284,10 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             }
             {
                 let active_run = crate::core::components::run::active_run_mut(state, *run_id)?;
-                if !matches!(
-                    active_run.status,
-                    RunStatus::Active | RunStatus::CancellingGrace
-                ) {
+                if active_run.status != RunStatus::Active {
                     return Err(DomainError::InvariantViolation(
-                        "turns can only start for active or cancellation-grace runs".into(),
+                        "turns can only start for active runs".into(),
                     ));
-                }
-                if active_run.status == RunStatus::CancellingGrace {
-                    if active_run.cancellation_grace_turn_id.is_some() {
-                        return Err(DomainError::InvariantViolation(
-                            "cancellation grace can only start one turn".into(),
-                        ));
-                    }
-                    active_run.cancellation_grace_turn_id = Some(*turn_id);
                 }
                 if active_run.active_turn_id.is_some() {
                     return Err(DomainError::InvariantViolation(
@@ -429,6 +436,34 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 TurnOutcome::Failed { .. } => TurnStatus::Failed,
                 TurnOutcome::Cancelled => TurnStatus::Cancelled,
             };
+            active_run.active_turn_id = None;
+            Ok(())
+        }
+        Event::Cancelled { turn_id, run_id } => {
+            let active_run = crate::core::components::run::active_run_mut(state, *run_id)?;
+            if active_run.status != RunStatus::Cancelling {
+                return Err(DomainError::InvariantViolation(
+                    "turns can only be cancelled while their run is cancelling".into(),
+                ));
+            }
+            if active_run.active_turn_id != Some(*turn_id) {
+                return Err(DomainError::InvariantViolation(
+                    "cancelled turn does not match active turn".into(),
+                ));
+            }
+            let turn = active_run.turns.get_mut(turn_id).ok_or_else(|| {
+                DomainError::InvariantViolation(format!("active turn {} is missing", turn_id))
+            })?;
+            if !matches!(
+                turn.status,
+                TurnStatus::Started | TurnStatus::Planned | TurnStatus::GenerationPending
+            ) {
+                return Err(DomainError::InvariantViolation(
+                    "only started, planned, or generation-pending turns can be cancelled".into(),
+                ));
+            }
+            turn.outcome = Some(TurnOutcome::Cancelled);
+            turn.status = TurnStatus::Cancelled;
             active_run.active_turn_id = None;
             Ok(())
         }

@@ -967,7 +967,7 @@ async fn function_call_context(
         },
         content_ref: native_call_ref.clone(),
         media_type: Some(MEDIA_TYPE_JSON.to_string()),
-        preview: Some(format!("{}({})", call.name, call.arguments)),
+        preview: None,
         provider_kind: Some(PROVIDER_KIND_FUNCTION_CALL.to_string()),
         provider_item_id: call.item_id.map(ToOwned::to_owned),
         token_estimate: None,
@@ -2106,6 +2106,16 @@ mod tests {
             "{\"path\":\"Cargo.toml\"}"
         );
         assert_eq!(result.context_entries.len(), 2);
+        assert!(
+            result
+                .context_entries
+                .iter()
+                .find(|entry| matches!(&entry.kind, ContextEntryKind::ToolCall { .. }))
+                .expect("tool-call context entry")
+                .preview
+                .is_none(),
+            "tool-call arguments must remain CAS-backed instead of being copied into preview",
+        );
         assert_eq!(
             blobs
                 .read_text(&result.context_entries[0].content_ref)

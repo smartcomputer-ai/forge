@@ -81,7 +81,12 @@ where
                     }
                     Message::Ping(bytes) => writer.send(Message::Pong(bytes)).await?,
                     Message::Pong(_) | Message::Frame(_) => {}
-                    Message::Close(_) => return Ok(()),
+                    Message::Close(_) => {
+                        // Tungstenite queues the close reply while reading the
+                        // peer's frame; flush it before dropping the socket.
+                        writer.flush().await?;
+                        return Ok(())
+                    },
                 }
             }
         }

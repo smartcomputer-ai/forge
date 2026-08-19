@@ -125,7 +125,7 @@ Runs the configured compaction policy on an open idle session and waits for the 
 
 **Start an agent run**
 
-Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
+Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
 
 - Params: `RunStartParams`
 - Result: `AgentApiOutcome<RunStartResponse>`
@@ -134,10 +134,19 @@ Accepts input or existing context keys and returns once the run is queued/accept
 
 **Cancel a run**
 
-Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.
+Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.
 
 - Params: `RunCancelParams`
 - Result: `AgentApiOutcome<RunCancelResponse>`
+
+### `session/runs/steer`
+
+**Steer the active run**
+
+Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.
+
+- Params: `RunSteerParams`
+- Result: `AgentApiOutcome<RunSteerResponse>`
 
 ### `session/skills/list`
 

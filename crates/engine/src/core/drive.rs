@@ -426,6 +426,11 @@ pub fn next_generation_request(
     let Some(active_run) = state.runs.active.as_ref() else {
         return Ok(None);
     };
+    // A cancelling run never asks the runtime for work; the turn planner
+    // cancels its open turn instead.
+    if active_run.status != crate::RunStatus::Active {
+        return Ok(None);
+    }
     let Some(turn_id) = active_run.active_turn_id else {
         return Ok(None);
     };
@@ -694,6 +699,11 @@ pub fn next_tool_batch_request(
     let Some(active_run) = state.runs.active.as_ref() else {
         return Ok(None);
     };
+    // A cancelling run never asks the runtime for work; the tooling planner
+    // cancels its pending calls instead.
+    if active_run.status != crate::RunStatus::Active {
+        return Ok(None);
+    }
     let Some(batch_id) = active_run.active_tool_batch_id else {
         return Ok(None);
     };
@@ -1162,10 +1172,7 @@ pub fn resume_tool_batch_proposals(
 pub fn await_wake(state: &CoreAgentState, now_ms: u64) -> Option<WakeReason> {
     let active_run = state.runs.active.as_ref()?;
     let parked = active_run.parked_tool_batch.as_ref()?;
-    if matches!(
-        active_run.status,
-        crate::RunStatus::Cancelling | crate::RunStatus::CancellingGrace
-    ) {
+    if active_run.status == crate::RunStatus::Cancelling {
         return Some(WakeReason::Cancelled);
     }
     let spec = parked.suspension.spec();
@@ -1869,7 +1876,7 @@ mod tests {
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
         SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
         ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
-        ToolSpec, TurnStatus, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
         WorkflowToolInvocation, skill_activation_context_key,
     };
 
@@ -3573,11 +3580,16 @@ mod tests {
         assert!(drive.state().context.entries.is_empty());
     }
 
+    /// Steering admitted while a turn is generating stays unmaterialized
+    /// until that turn completes (its request is frozen at the planned
+    /// context revision and the runtime re-derives it from state); it then
+    /// lands before the next turn, in admission order.
     #[test]
-    fn steering_materializes_after_in_flight_turn_snapshot() {
+    fn steering_materializes_after_in_flight_turn_completes() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         open_session(&mut drive);
+        install_test_tool(&mut drive, "await");
         request_run(&mut drive, BlobRef::from_bytes(b"input"));
         let request = drive_until_generate(&mut drive);
         assert_eq!(openai_items(&request).len(), 1);
@@ -3601,50 +3613,406 @@ mod tests {
             .expect("steering two");
         commit_action(&mut drive, steering_two);
 
-        let materialize_steering = drive.next_action(32, 64).expect("materialize steering");
-        let entries = commit_action(&mut drive, materialize_steering);
-        let CoreAgentEvent::Context(ContextEvent::EntriesApplied {
-            entries: applied, ..
-        }) = &entries[0].event
-        else {
-            panic!("expected context entries");
+        // In flight: the drive re-issues the same generation request (the
+        // hosted runtime re-derives it from state) and nothing materializes.
+        let reissued = drive.next_action(32, 64).expect("next action");
+        let CoreAgentAction::GenerateLlm { request: again } = reissued else {
+            panic!("expected the pending generation, got {reissued:?}");
         };
-        assert_eq!(applied.len(), 2);
-        assert!(matches!(
-            applied[0].source,
-            ContextEntrySource::Steering {
-                steering_id,
-                input_index: 0,
-                ..
-            } if steering_id.as_u64() == 1
-        ));
-        assert!(matches!(
-            applied[1].source,
-            ContextEntrySource::Steering {
-                steering_id,
-                input_index: 0,
-                ..
-            } if steering_id.as_u64() == 2
-        ));
-
+        assert_eq!(
+            again.request.request_fingerprint,
+            request.request.request_fingerprint
+        );
         let active_run = drive.state().runs.active.as_ref().expect("active run");
         assert_eq!(active_run.steering.len(), 2);
-        assert_eq!(active_run.steering[0].entry_ids, vec![applied[0].entry_id]);
-        assert_eq!(active_run.steering[1].entry_ids, vec![applied[1].entry_id]);
-        assert_eq!(active_run.steering[0].consumed_by_turn_id, None);
-        assert_eq!(active_run.steering[1].consumed_by_turn_id, None);
-
-        let active_turn = active_run.turns.get(&request.turn_id).expect("active turn");
-        assert_eq!(active_turn.status, TurnStatus::GenerationPending);
-        let planned_request = active_turn
-            .planned_request
-            .as_ref()
-            .expect("planned request metadata");
-        assert_eq!(
-            planned_request.context_revision,
-            request.request.context.context_revision
+        assert!(
+            active_run
+                .steering
+                .iter()
+                .all(|steering| steering.entry_ids.is_empty())
         );
-        assert_eq!(request.request.context.entries.len(), 1);
+
+        // The turn completes with a tool call; steering materializes after
+        // the tool results, before the next turn.
+        let batch = drive_until_tool_batch_request(&mut drive, request, "await");
+        let resumed = drive
+            .resume_tool_batch(completed_tool_result(&batch), 90)
+            .expect("tool result");
+        commit_action(&mut drive, resumed);
+        let next_request = drive_until_generate(&mut drive);
+        let steering_sources = next_request
+            .request
+            .context
+            .entries
+            .iter()
+            .filter_map(|entry| match entry.source {
+                ContextEntrySource::Steering { steering_id, .. } => Some(steering_id.as_u64()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(steering_sources, vec![1, 2]);
+        let active_run = drive.state().runs.active.as_ref().expect("active run");
+        assert_eq!(active_run.steering[0].entry_ids.len(), 1);
+        assert_eq!(active_run.steering[1].entry_ids.len(), 1);
+        assert_eq!(
+            active_run.steering[0].consumed_by_turn_id,
+            Some(next_request.turn_id)
+        );
+        assert_eq!(
+            active_run.steering[1].consumed_by_turn_id,
+            Some(next_request.turn_id)
+        );
+    }
+
+    /// A parked run (model-chosen `await`) accepts steering without
+    /// waking; the steering materializes after the batch resumes and is part
+    /// of the next generation request.
+    #[test]
+    fn steering_parked_run_is_accepted_and_materializes_on_resume() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        let deferred = drive
+            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .expect("defer tool batch");
+        commit_action(&mut drive, deferred);
+        assert_eq!(
+            drive.state().runs.active.as_ref().expect("active").status,
+            RunStatus::Parked
+        );
+
+        let steering = drive
+            .admit_command(
+                CoreAgentCommand::RequestRunSteering {
+                    input: user_input(BlobRef::from_bytes(b"steer while parked")),
+                },
+                91,
+            )
+            .expect("steer parked run");
+        commit_action(&mut drive, steering);
+        // Parked: the await is not woken and nothing materializes yet.
+        assert!(matches!(
+            drive.next_action(92, 64).expect("next action"),
+            CoreAgentAction::Idle
+        ));
+        let active_run = drive.state().runs.active.as_ref().expect("active");
+        assert_eq!(active_run.status, RunStatus::Parked);
+        assert_eq!(active_run.steering.len(), 1);
+        assert!(active_run.steering[0].entry_ids.is_empty());
+
+        let resumed = drive
+            .admit_command(resume_tool_batch_command(&request), 93)
+            .expect("resume await");
+        commit_action(&mut drive, resumed);
+        let next_request = drive_until_generate(&mut drive);
+        let steering_entries = next_request
+            .request
+            .context
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.source, ContextEntrySource::Steering { .. }))
+            .count();
+        assert_eq!(
+            steering_entries, 1,
+            "next turn must carry the steering entry"
+        );
+        let active_run = drive.state().runs.active.as_ref().expect("active");
+        assert_eq!(
+            active_run.steering[0].consumed_by_turn_id,
+            Some(next_request.turn_id)
+        );
+    }
+
+    #[test]
+    fn steering_cancelling_run_is_rejected() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        open_session(&mut drive);
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let request = drive_until_generate(&mut drive);
+        let cancel = drive
+            .admit_command(
+                CoreAgentCommand::CancelRun {
+                    run_id: request.run_id,
+                },
+                30,
+            )
+            .expect("cancel");
+        commit_action(&mut drive, cancel);
+        let error = drive
+            .admit_command(
+                CoreAgentCommand::RequestRunSteering {
+                    input: user_input(BlobRef::from_bytes(b"too late")),
+                },
+                31,
+            )
+            .expect_err("steering a cancelling run is rejected");
+        let CoreAgentDriveError::Command(CommandError::Rejected(rejection)) = error else {
+            panic!("expected command rejection, got: {error:?}");
+        };
+        assert_eq!(rejection.kind, CommandRejectionKind::ActiveWork);
+    }
+
+    /// Cancelling a run whose generation is in flight resolves the
+    /// open turn as `cancelled` in the engine itself — no grace turn, no
+    /// `failed` record, and the runtime is never asked for work again. A late
+    /// generation result for the abandoned turn is rejected.
+    #[test]
+    fn cancel_during_generation_cancels_turn_and_drains_to_cancelled() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        open_session(&mut drive);
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let request = drive_until_generate(&mut drive);
+
+        let cancel = drive
+            .admit_command(
+                CoreAgentCommand::CancelRun {
+                    run_id: request.run_id,
+                },
+                30,
+            )
+            .expect("cancel");
+        commit_action(&mut drive, cancel);
+        assert_eq!(
+            drive.state().runs.active.as_ref().expect("active").status,
+            RunStatus::Cancelling
+        );
+
+        let cancel_turn = drive.next_action(31, 64).expect("next action");
+        let entries = commit_action(&mut drive, cancel_turn);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::Turn(TurnEvent::Cancelled { turn_id, .. }) if turn_id == request.turn_id
+        ));
+        drain_to_idle(&mut drive, 32);
+
+        assert!(drive.state().runs.active.is_none());
+        let record = drive.state().runs.completed.last().expect("run record");
+        assert_eq!(record.status, RunStatus::Cancelled);
+        assert!(record.failure.is_none());
+
+        let late = drive.resume_generation(
+            LlmGenerationResult {
+                run_id: request.run_id,
+                turn_id: request.turn_id,
+                status: LlmGenerationStatus::Succeeded,
+                failure_ref: None,
+                context_entries: Vec::new(),
+                facts: LlmGenerationFacts {
+                    provider_response_id: Some("resp-late".to_owned()),
+                    finish: LlmFinish::Stop,
+                    usage: None,
+                    tool_calls: Vec::new(),
+                    context_token_estimate: None,
+                },
+            },
+            33,
+        );
+        assert!(
+            late.is_err(),
+            "late result for a cancelled turn must be rejected"
+        );
+    }
+
+    /// Cancelling a run while a tool batch executes records every
+    /// non-terminal call as cancelled with the well-known content and drains
+    /// the run to `cancelled` without runtime involvement.
+    #[test]
+    fn cancel_during_tool_batch_cancels_pending_calls_and_drains_to_cancelled() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+
+        let cancel = drive
+            .admit_command(
+                CoreAgentCommand::CancelRun {
+                    run_id: request.run_id,
+                },
+                90,
+            )
+            .expect("cancel");
+        commit_action(&mut drive, cancel);
+
+        let cancel_calls = drive.next_action(91, 64).expect("next action");
+        let entries = commit_action(&mut drive, cancel_calls);
+        let CoreAgentEvent::Tool(ToolEvent::CallCompleted { result, .. }) = &entries[0].event
+        else {
+            panic!(
+                "expected cancelled call completion, got {:?}",
+                entries[0].event
+            );
+        };
+        assert_eq!(result.call_id, request.calls[0].call_id);
+        assert_eq!(result.status, ToolCallStatus::Cancelled);
+        assert_eq!(result.error_ref, Some(crate::cancelled_tool_result_ref()));
+        drain_to_idle(&mut drive, 92);
+
+        assert!(drive.state().runs.active.is_none());
+        let record = drive.state().runs.completed.last().expect("run record");
+        assert_eq!(record.status, RunStatus::Cancelled);
+        // The model-visible cancelled tool result is part of the context so
+        // the next run's conversation stays well-formed.
+        assert!(drive.state().context.entries.iter().any(|entry| matches!(
+            &entry.kind,
+            ContextEntryKind::ToolResult { call_id, is_error: true }
+                if *call_id == request.calls[0].call_id
+        )));
+
+        let late = drive.resume_tool_batch(completed_tool_result(&request), 93);
+        assert!(
+            late.is_err(),
+            "late result for a cancelled batch must be rejected"
+        );
+    }
+
+    /// A cancel that lands after a tool-call turn completed but before
+    /// its batch started still yields cancelled tool results for every call,
+    /// so the conversation never carries tool calls without results.
+    #[test]
+    fn cancel_between_tool_call_turn_and_batch_start_records_cancelled_results() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        open_session(&mut drive);
+        install_test_tool(&mut drive, "await");
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let request = drive_until_generate(&mut drive);
+        let resumed = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: request.run_id,
+                    turn_id: request.turn_id,
+                    status: LlmGenerationStatus::Succeeded,
+                    failure_ref: None,
+                    context_entries: Vec::new(),
+                    facts: LlmGenerationFacts {
+                        provider_response_id: Some("resp-tool".to_owned()),
+                        finish: LlmFinish::ToolCalls,
+                        usage: None,
+                        tool_calls: vec![ObservedToolCall {
+                            call_id: crate::ToolCallId::new("call_wait"),
+                            tool_name: ToolName::new("await"),
+                            provider_kind: None,
+                            arguments_ref: BlobRef::from_bytes(br#"{"wait":true}"#),
+                            native_call_ref: None,
+                        }],
+                        context_token_estimate: None,
+                    },
+                },
+                80,
+            )
+            .expect("resume generation");
+        commit_action(&mut drive, resumed);
+        assert!(
+            drive
+                .state()
+                .runs
+                .active
+                .as_ref()
+                .expect("active")
+                .active_tool_batch_id
+                .is_none()
+        );
+
+        let cancel = drive
+            .admit_command(
+                CoreAgentCommand::CancelRun {
+                    run_id: request.run_id,
+                },
+                81,
+            )
+            .expect("cancel");
+        commit_action(&mut drive, cancel);
+        drain_to_idle(&mut drive, 82);
+
+        assert!(drive.state().runs.active.is_none());
+        let record = drive.state().runs.completed.last().expect("run record");
+        assert_eq!(record.status, RunStatus::Cancelled);
+        assert!(drive.state().context.entries.iter().any(|entry| matches!(
+            &entry.kind,
+            ContextEntryKind::ToolResult { call_id, is_error: true }
+                if call_id.as_str() == "call_wait"
+        )));
+    }
+
+    /// Steering admitted during a run's final turn is not lost: the run
+    /// gets one more turn whose request carries the steering, and only then
+    /// completes.
+    #[test]
+    fn unconsumed_steering_extends_run_by_one_turn_after_final_output() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        open_session(&mut drive);
+        request_run(&mut drive, BlobRef::from_bytes(b"input"));
+        let first = drive_until_generate(&mut drive);
+
+        let steering = drive
+            .admit_command(
+                CoreAgentCommand::RequestRunSteering {
+                    input: user_input(BlobRef::from_bytes(b"late steering")),
+                },
+                30,
+            )
+            .expect("steer");
+        commit_action(&mut drive, steering);
+
+        let final_output = |turn: &LlmGenerationRequest, text: &[u8]| LlmGenerationResult {
+            run_id: turn.run_id,
+            turn_id: turn.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant,
+                },
+                content_ref: BlobRef::from_bytes(text),
+                media_type: Some("text/plain".to_owned()),
+                preview: None,
+                provider_kind: None,
+                provider_item_id: None,
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: None,
+                finish: LlmFinish::Stop,
+                usage: None,
+                tool_calls: Vec::new(),
+                context_token_estimate: None,
+            },
+        };
+        let completed = drive
+            .resume_generation(final_output(&first, b"first answer"), 31)
+            .expect("first final");
+        commit_action(&mut drive, completed);
+
+        // Not terminal: a second turn is planned and its request carries
+        // the steering entry.
+        let second = drive_until_generate(&mut drive);
+        assert_eq!(second.run_id, first.run_id);
+        assert_ne!(second.turn_id, first.turn_id);
+        assert_eq!(
+            second
+                .request
+                .context
+                .entries
+                .iter()
+                .filter(|entry| matches!(entry.source, ContextEntrySource::Steering { .. }))
+                .count(),
+            1
+        );
+        let active = drive.state().runs.active.as_ref().expect("active");
+        assert_eq!(active.steering[0].consumed_by_turn_id, Some(second.turn_id));
+
+        let completed = drive
+            .resume_generation(final_output(&second, b"second answer"), 32)
+            .expect("second final");
+        commit_action(&mut drive, completed);
+        drain_to_idle(&mut drive, 33);
+        assert!(drive.state().runs.active.is_none());
+        assert_eq!(
+            drive.state().runs.completed.last().expect("record").status,
+            RunStatus::Completed
+        );
     }
 
     #[test]
@@ -4946,39 +5314,9 @@ mod tests {
             .expect("resume while cancelling");
         commit_action(&mut drive, resumed);
 
-        let grace_request = drive_until_generate(&mut drive);
-        assert_eq!(grace_request.run_id, request.run_id);
-        assert_eq!(
-            drive
-                .state()
-                .runs
-                .active
-                .as_ref()
-                .expect("active run")
-                .status,
-            RunStatus::CancellingGrace
-        );
-        let grace_completed = drive
-            .resume_generation(
-                LlmGenerationResult {
-                    run_id: grace_request.run_id,
-                    turn_id: grace_request.turn_id,
-                    status: LlmGenerationStatus::Succeeded,
-                    failure_ref: None,
-                    context_entries: Vec::new(),
-                    facts: LlmGenerationFacts {
-                        provider_response_id: Some("resp-grace".to_owned()),
-                        finish: LlmFinish::Stop,
-                        usage: None,
-                        tool_calls: Vec::new(),
-                        context_token_estimate: None,
-                    },
-                },
-                93,
-            )
-            .expect("complete grace turn");
-        commit_action(&mut drive, grace_completed);
-
+        // No grace turn: once the resumed batch has drained, the run
+        // is cancelled without another model call (`drain_to_idle` panics on
+        // any `GenerateLlm` action).
         drain_to_idle(&mut drive, 94);
         assert!(drive.state().runs.active.is_none());
         let completed = drive.state().runs.completed.last().expect("run record");

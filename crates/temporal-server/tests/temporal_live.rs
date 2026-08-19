@@ -9,9 +9,10 @@ use api::{
     McpServerListParams, McpServerPutParams, McpServerReadParams, McpServerStatus,
     ProfileApplyParams, ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId,
     ProfileInstructions, ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource,
-    RemoteMcpApprovalPolicy, RemoteMcpTransport, RunStartParams, RunStartSource, SessionConfig,
-    SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams, SessionLifecycleStatus,
-    SessionListParams, SessionReadParams, SessionStartParams, SessionStatus, TimersFeature,
+    RemoteMcpApprovalPolicy, RemoteMcpTransport, RunCancelParams, RunStartParams, RunStartSource,
+    RunSteerParams, SessionConfig, SessionConfigPutParams, SessionDeleteParams,
+    SessionEventsReadParams, SessionLifecycleStatus, SessionListParams, SessionReadParams,
+    SessionStartParams, SessionStatus, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
@@ -24,11 +25,12 @@ use engine::{
     storage::{BlobStore, ListSessionLinks, SessionLinkDirection, SessionStore},
 };
 use support::live::{
-    LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_with_parallel_tool_calls,
-    fake_worker_activities_with_tool_rounds, fake_worker_activities_with_transient_llm_failures,
-    final_assistant_text, live_workflow_handle, openai_completions_live_model, openai_live_model,
-    require_openai_live_env, require_storage_live_env, run_with_live_worker,
-    wait_for_admission_failure, wait_for_session_status, wait_for_terminal_run,
+    LIVE_TEST_LOCK, fake_worker_activities, fake_worker_activities_for_run_control,
+    fake_worker_activities_with_parallel_tool_calls, fake_worker_activities_with_tool_rounds,
+    fake_worker_activities_with_transient_llm_failures, final_assistant_text, live_workflow_handle,
+    openai_completions_live_model, openai_live_model, require_openai_live_env,
+    require_storage_live_env, run_with_live_worker, wait_for_admission_failure,
+    wait_for_session_status, wait_for_terminal_run,
 };
 use temporal_server::{
     DeploymentStores, UniverseRuntime, default_model_from_env,
@@ -281,12 +283,123 @@ async fn temporal_live_exhausted_llm_retries_fail_the_run_not_the_session() -> a
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_cancel_mid_generation_aborts_the_provider_call() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Cancel mid-generation: the fake provider sleeps inside generate. Cancelling the run
+    // while that call is in flight must cancel the turn in the engine at
+    // once (run reaches `cancelled`, no grace turn, no `failed`), abandon
+    // the worker-side provider call through activity cancellation, and
+    // leave the session serving a later run.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::from_secs(15), Duration::ZERO, 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_cancel_mid_generation_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_cancel_during_tool_batch_records_cancelled_calls() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Cancel during a tool batch: the fake tool sleeps inside the call. Cancelling the
+    // run while the batch executes records the call as cancelled with the
+    // well-known content, drains the run to `cancelled`, and abandons the
+    // worker-side tool execution.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::ZERO, Duration::from_secs(15), 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_cancel_during_tool_batch_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_steering_lands_at_next_turn_boundary() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Steering: steer while the first (slow) generation is in flight. The
+    // in-flight turn finishes untouched (its tool call runs), and the next
+    // generation request carries the steering entry — the fake model echoes
+    // it in the final answer. Steering a finished run is rejected.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::from_secs(4), Duration::ZERO, 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_steering_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_steering_during_final_turn_adds_a_turn() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Steering while a single-turn run is generating its final answer: the
+    // steering is materialized while the call is in flight, and instead of
+    // completing on that final output the run gets one more turn whose
+    // request carries the steering — so "steer" never silently does
+    // nothing.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::from_secs(4), Duration::ZERO, 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_steering_final_turn_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_queued_runs_return_promptly_and_run_in_order() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Queueing: runs started behind an active run return `queued` at
+    // once, are visible in the session view, can be cancelled while queued,
+    // and start in order after the active run ends. Cancelling the active
+    // run leaves the queued one untouched and it runs next.
+    let (activities, counters) =
+        fake_worker_activities_for_run_control(Duration::from_secs(5), Duration::ZERO, 1).await?;
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_queue_live_client(client, task_queue, session_id, counters)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_await_parks_until_child_run_completes() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
     run_with_scripted_fleet_live_worker(run_fleet_wait_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_cancel_parked_run_resolves_await_and_cascades() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // Cancel while parked: cancelling a parent run parked on `await` for a slow
+    // child resolves the await as cancelled, drains the parent to
+    // `cancelled` without a grace turn, and cascades the run-scoped spawn
+    // promise so the child's run is cancelled too.
+    run_with_scripted_fleet_live_worker(run_fleet_cancel_parked_live_client).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -391,7 +504,7 @@ impl FleetWaitScriptedLlm {
                 },
                 content_ref: arguments_ref.clone(),
                 media_type: Some("application/json".to_owned()),
-                preview: Some(format!("{tool_name}({arguments})")),
+                preview: None,
                 provider_kind: Some("fleet-wait-script".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
@@ -449,7 +562,7 @@ impl FleetWaitScriptedLlm {
                 },
                 content_ref: arguments_ref.clone(),
                 media_type: Some("application/json".to_owned()),
-                preview: Some(format!("{tool_name}({arguments})")),
+                preview: None,
                 provider_kind: Some("fleet-wait-script".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
@@ -511,7 +624,7 @@ impl FleetWaitScriptedLlm {
                 },
                 content_ref: arguments_ref.clone(),
                 media_type: Some("application/json".to_owned()),
-                preview: Some(format!("{tool_name}({arguments})")),
+                preview: None,
                 provider_kind: Some("fleet-wait-script".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
@@ -572,7 +685,7 @@ impl FleetWaitScriptedLlm {
                 },
                 content_ref: arguments_ref.clone(),
                 media_type: Some("application/json".to_owned()),
-                preview: Some(format!("{tool_name}({arguments})")),
+                preview: None,
                 provider_kind: Some("fleet-wait-script".to_owned()),
                 provider_item_id: Some(call_id.as_str().to_owned()),
                 token_estimate: None,
@@ -1907,6 +2020,112 @@ async fn run_fleet_wait_live_client(
     Ok(())
 }
 
+async fn run_fleet_cancel_parked_live_client(
+    client: Client,
+    session_id: SessionId,
+    api: Arc<GatewayAgentApi>,
+    _blobs: Arc<dyn BlobStore>,
+    sessions: Arc<dyn SessionStore>,
+    model: ModelSelection,
+) -> anyhow::Result<()> {
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(fleet_only_features()),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+
+    let parent_run = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "SPAWN_AND_AWAIT_SLOW_CHILD".to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?
+        .result
+        .run;
+    wait_for_active_waits(&client, &session_id, 1).await?;
+
+    let links = sessions
+        .list_links(ListSessionLinks {
+            session_id: session_id.clone(),
+            direction: SessionLinkDirection::Outgoing,
+            relationship: Some(FLEET_CHILD_RELATIONSHIP.to_owned()),
+            limit: 10,
+        })
+        .await?;
+    assert_eq!(links.len(), 1, "expected exactly one spawned child link");
+    let child_session_id = links[0].to_session_id.clone();
+
+    let cancel_started = std::time::Instant::now();
+    let cancelled = api
+        .cancel_run(RunCancelParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: parent_run.id.clone(),
+        })
+        .await?
+        .result
+        .run;
+    assert!(matches!(
+        cancelled.status,
+        api::RunStatus::Cancelling | api::RunStatus::Cancelled
+    ));
+    let parent_terminal = wait_for_terminal_run(api.as_ref(), &session_id, &parent_run.id).await?;
+    assert_eq!(parent_terminal.status, api::RunStatus::Cancelled);
+    assert!(
+        cancel_started.elapsed() < Duration::from_secs(10),
+        "a parked parent must not wait for the slow child before cancelling ({:?})",
+        cancel_started.elapsed()
+    );
+    // The await resolved as cancelled and its tool result is recorded.
+    let await_calls = parent_terminal
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == AWAIT_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(await_calls.len(), 1, "expected one explicit await call");
+    let await_output = await_calls[0]
+        .output
+        .as_deref()
+        .expect("await call must expose its materialized output");
+    assert!(
+        await_output.contains("cancelled"),
+        "await output must report cancellation: {await_output}"
+    );
+
+    // Cascade: the run-scoped spawn promise is cancelled, which cancels the
+    // child's run instead of letting it finish its slow turn.
+    let child_run = wait_for_terminal_run(api.as_ref(), &child_session_id, "run_1").await?;
+    assert_eq!(child_run.status, api::RunStatus::Cancelled);
+
+    let parent_status = live_workflow_handle(&client, &session_id)?
+        .query(
+            AgentSessionWorkflow::status,
+            (),
+            WorkflowQueryOptions::default(),
+        )
+        .await?;
+    assert_eq!(parent_status.active_waits, 0);
+    assert_eq!(parent_status.last_error, None);
+
+    for id in [&session_id, &child_session_id] {
+        terminate_live_session(&client, id, "fleet cancel parked live test cleanup").await;
+    }
+    Ok(())
+}
+
 async fn run_fleet_send_report_back_live_client(
     client: Client,
     session_id: SessionId,
@@ -2041,6 +2260,582 @@ async fn run_fleet_send_report_back_live_client(
             .await;
     }
     Ok(())
+}
+
+fn run_control_session_config(model: &ModelSelection) -> SessionConfig {
+    // The VFS read-only tool surface gives the fake model a function tool to
+    // call, so runs have a tool-call turn followed by a final turn.
+    SessionConfig {
+        model: Some(model_to_api(model)),
+        features: Some(api::FeaturesConfig {
+            vfs: Some(api::VfsFeature {
+                version: api::CURRENT_FEATURE_VERSION,
+                workspace_links: Vec::new(),
+                tools: Some(api::VfsToolSurface::ReadOnly),
+                prompts: None,
+                skills: None,
+            }),
+            ..api::FeaturesConfig::default()
+        }),
+        ..SessionConfig::default()
+    }
+}
+
+async fn run_control_api(
+    client: &Client,
+    task_queue: String,
+    session_id: &SessionId,
+    with_tools: bool,
+) -> anyhow::Result<GatewayAgentApi> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client.clone(), store)
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+    let config = if with_tools {
+        run_control_session_config(&model)
+    } else {
+        SessionConfig {
+            model: Some(model_to_api(&model)),
+            ..SessionConfig::default()
+        }
+    };
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(config),
+        profile: None,
+    })
+    .await?;
+    Ok(api)
+}
+
+async fn start_text_run(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+    text: &str,
+) -> anyhow::Result<api::RunView> {
+    Ok(api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: text.to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?
+        .result
+        .run)
+}
+
+async fn read_run(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+    run_id: &str,
+) -> anyhow::Result<Option<api::RunView>> {
+    let session = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+        })
+        .await?;
+    Ok(session
+        .result
+        .session
+        .runs
+        .into_iter()
+        .find(|run| run.id == run_id))
+}
+
+async fn wait_until(
+    what: &str,
+    timeout: Duration,
+    mut check: impl AsyncFnMut() -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let started = std::time::Instant::now();
+    loop {
+        if check().await? {
+            return Ok(());
+        }
+        if started.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for {what}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+async fn terminate_live_session(client: &Client, session_id: &SessionId, reason: &str) {
+    if let Ok(handle) = live_workflow_handle(client, session_id) {
+        let _ = handle
+            .terminate(WorkflowTerminateOptions::builder().reason(reason).build())
+            .await;
+    }
+}
+
+async fn run_cancel_mid_generation_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    let api = run_control_api(&client, task_queue, &session_id, false).await?;
+
+    let run = start_text_run(&api, &session_id, "take your time").await?;
+    assert_eq!(run.status, api::RunStatus::Running);
+    wait_until(
+        "the provider call to start",
+        Duration::from_secs(10),
+        async || Ok(counters.generations_started() >= 1),
+    )
+    .await?;
+
+    let cancel_started = std::time::Instant::now();
+    let cancelled = api
+        .cancel_run(RunCancelParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+        })
+        .await?
+        .result
+        .run;
+    assert!(
+        matches!(
+            cancelled.status,
+            api::RunStatus::Cancelling | api::RunStatus::Cancelled
+        ),
+        "cancel must be acknowledged while the provider call is in flight, got {:?}",
+        cancelled.status
+    );
+    assert!(
+        cancel_started.elapsed() < Duration::from_secs(10),
+        "cancel must not wait for the in-flight generation ({:?})",
+        cancel_started.elapsed()
+    );
+
+    let terminal = wait_for_terminal_run(&api, &session_id, &run.id).await?;
+    assert_eq!(terminal.status, api::RunStatus::Cancelled);
+    assert!(
+        cancel_started.elapsed() < Duration::from_secs(12),
+        "the run must reach cancelled before the abandoned generation would have finished"
+    );
+
+    // The worker abandons the in-flight provider call once the activity
+    // cancellation reaches it through the heartbeat; no second generation
+    // (no grace turn) is ever requested for the cancelled run.
+    wait_until(
+        "the provider call to be abandoned",
+        Duration::from_secs(20),
+        async || Ok(counters.generations_abandoned() >= 1),
+    )
+    .await?;
+    assert_eq!(counters.generations_started(), 1);
+    assert_eq!(counters.generations_completed(), 0);
+
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: None,
+        })
+        .await?
+        .result
+        .events;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event.kind, api::SessionEventKindView::TurnCancelled { .. }))
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event.kind, api::SessionEventKindView::RunFailed { .. }))
+    );
+
+    // The session keeps serving runs after a cancel.
+    let next = start_text_run(&api, &session_id, "and again").await?;
+    let next = wait_for_terminal_run_with_timeout(&api, &session_id, &next.id, 40).await?;
+    assert_eq!(next.status, api::RunStatus::Completed);
+    assert!(
+        final_assistant_text(&next).is_some_and(|text| text.contains("Fake agent completed run"))
+    );
+
+    terminate_live_session(
+        &client,
+        &session_id,
+        "cancel mid-generation live test cleanup",
+    )
+    .await;
+    Ok(())
+}
+
+async fn run_cancel_during_tool_batch_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    let api = run_control_api(&client, task_queue, &session_id, true).await?;
+
+    let run = start_text_run(&api, &session_id, "call a slow tool").await?;
+    wait_until(
+        "the tool call to start",
+        Duration::from_secs(15),
+        async || Ok(counters.tool_calls_started() >= 1),
+    )
+    .await?;
+
+    let cancel_started = std::time::Instant::now();
+    let cancelled = api
+        .cancel_run(RunCancelParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+        })
+        .await?
+        .result
+        .run;
+    assert!(matches!(
+        cancelled.status,
+        api::RunStatus::Cancelling | api::RunStatus::Cancelled
+    ));
+    let terminal = wait_for_terminal_run(&api, &session_id, &run.id).await?;
+    assert_eq!(terminal.status, api::RunStatus::Cancelled);
+    assert!(
+        cancel_started.elapsed() < Duration::from_secs(12),
+        "the run must reach cancelled before the abandoned tool call would have finished"
+    );
+
+    // The cancelled call has a model-visible result so the conversation
+    // stays well-formed for the next run.
+    let cancelled_results = terminal
+        .entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind,
+                ContextEntryKindView::ToolResult { is_error: true, .. }
+            ) && entry
+                .text
+                .as_deref()
+                .is_some_and(|text| text.contains("tool call cancelled"))
+        })
+        .count();
+    assert_eq!(cancelled_results, 1, "run entries: {:?}", terminal.entries);
+    assert!(
+        terminal.tool_batches.iter().any(|batch| {
+            batch
+                .calls
+                .iter()
+                .any(|call| call.status == api::ToolItemStatus::Cancelled)
+        }),
+        "tool batches: {:?}",
+        terminal.tool_batches
+    );
+
+    wait_until(
+        "the tool call to be abandoned",
+        Duration::from_secs(20),
+        async || Ok(counters.tool_calls_abandoned() >= 1),
+    )
+    .await?;
+    // Exactly one generation (the tool-call turn); no second turn ran.
+    assert_eq!(counters.generations_started(), 1);
+
+    let next = start_text_run(&api, &session_id, "now answer normally").await?;
+    let next = wait_for_terminal_run_with_timeout(&api, &session_id, &next.id, 40).await?;
+    assert_eq!(next.status, api::RunStatus::Completed);
+
+    terminate_live_session(
+        &client,
+        &session_id,
+        "cancel during tool batch live test cleanup",
+    )
+    .await;
+    Ok(())
+}
+
+async fn run_steering_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    let api = run_control_api(&client, task_queue, &session_id, true).await?;
+
+    let run = start_text_run(&api, &session_id, "do the task").await?;
+    wait_until(
+        "the first generation to start",
+        Duration::from_secs(10),
+        async || Ok(counters.generations_started() >= 1),
+    )
+    .await?;
+
+    let steered = api
+        .steer_run(RunSteerParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+            items: vec![InputItem::Text {
+                text: "also mention the moon".to_owned(),
+            }],
+        })
+        .await?
+        .result;
+    assert_eq!(steered.steering_id, "steering_1");
+    assert_eq!(steered.run.status, api::RunStatus::Running);
+    // Admitted while the first generation was still in flight.
+    assert_eq!(counters.generations_completed(), 0);
+
+    let terminal = wait_for_terminal_run_with_timeout(&api, &session_id, &run.id, 40).await?;
+    assert_eq!(terminal.status, api::RunStatus::Completed);
+    let text = final_assistant_text(&terminal).expect("final answer");
+    assert!(
+        text.contains("Steering received: also mention the moon"),
+        "final answer must reflect the steering delivered at the next turn: {text}"
+    );
+    // The in-flight turn finished untouched: its tool call ran, then the
+    // final turn saw the steering. Two generations, one tool call.
+    assert_eq!(counters.generations_started(), 2);
+    assert_eq!(counters.generations_abandoned(), 0);
+    assert_eq!(counters.tool_calls_completed(), 1);
+    assert!(terminal.entries.iter().any(|entry| matches!(
+        entry.source,
+        Some(api::ContextEntrySourceView::Steering { .. })
+    )));
+
+    let late = api
+        .steer_run(RunSteerParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+            items: vec![InputItem::Text {
+                text: "too late".to_owned(),
+            }],
+        })
+        .await
+        .expect_err("steering a finished run is rejected");
+    assert_eq!(late.kind, AgentApiErrorKind::Rejected);
+
+    terminate_live_session(&client, &session_id, "steering live test cleanup").await;
+    Ok(())
+}
+
+async fn run_steering_final_turn_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    // No tools: the fake model answers in one turn.
+    let api = run_control_api(&client, task_queue, &session_id, false).await?;
+    let run = start_text_run(&api, &session_id, "answer directly").await?;
+    wait_until(
+        "the generation to start",
+        Duration::from_secs(10),
+        async || Ok(counters.generations_started() >= 1),
+    )
+    .await?;
+    let steered = api
+        .steer_run(RunSteerParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run.id.clone(),
+            items: vec![InputItem::Text {
+                text: "one more thing".to_owned(),
+            }],
+        })
+        .await?
+        .result;
+    assert_eq!(steered.run.status, api::RunStatus::Running);
+
+    let terminal = wait_for_terminal_run_with_timeout(&api, &session_id, &run.id, 40).await?;
+    assert_eq!(terminal.status, api::RunStatus::Completed);
+    assert_eq!(
+        counters.generations_started(),
+        2,
+        "the run must take one more turn for the unconsumed steering"
+    );
+    let text = final_assistant_text(&terminal).expect("final answer");
+    assert!(
+        text.contains("Steering received: one more thing"),
+        "the extra turn must carry the steering: {text}"
+    );
+    // The steering materializes after the in-flight turn: it sits between
+    // the first answer and the extra turn's answer.
+    let kinds = terminal
+        .entries
+        .iter()
+        .map(|entry| match (&entry.kind, entry.source.as_ref()) {
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User,
+                },
+                Some(api::ContextEntrySourceView::Steering { .. }),
+            ) => "steer",
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::User,
+                },
+                _,
+            ) => "user",
+            (
+                ContextEntryKindView::Message {
+                    role: ContextMessageRoleView::Assistant,
+                },
+                _,
+            ) => "assistant",
+            _ => "other",
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec!["user", "assistant", "steer", "assistant"],
+        "entries: {kinds:?}"
+    );
+
+    terminate_live_session(
+        &client,
+        &session_id,
+        "steering final turn live test cleanup",
+    )
+    .await;
+    Ok(())
+}
+
+async fn run_queue_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    counters: temporal_server::worker::FakeRuntimeCounters,
+) -> anyhow::Result<()> {
+    let api = run_control_api(&client, task_queue, &session_id, false).await?;
+
+    let first = start_text_run(&api, &session_id, "first").await?;
+    assert_eq!(first.status, api::RunStatus::Running);
+
+    let queued_at = std::time::Instant::now();
+    let second = start_text_run(&api, &session_id, "second").await?;
+    assert_eq!(second.status, api::RunStatus::Queued);
+    assert!(
+        queued_at.elapsed() < Duration::from_secs(3),
+        "a queued run must be acknowledged without waiting for the active run ({:?})",
+        queued_at.elapsed()
+    );
+    let third = start_text_run(&api, &session_id, "third").await?;
+    assert_eq!(third.status, api::RunStatus::Queued);
+
+    // Queued runs are part of the session view with their input.
+    let queued_view = read_run(&api, &session_id, &second.id)
+        .await?
+        .expect("queued run in session view");
+    assert_eq!(queued_view.status, api::RunStatus::Queued);
+    assert!(matches!(
+        &queued_view.source,
+        api::RunViewSource::Input { items }
+            if matches!(items.first(), Some(InputItem::Text { text }) if text == "second")
+    ));
+
+    // Steering a queued run is rejected; it has no turn yet.
+    let steer_queued = api
+        .steer_run(RunSteerParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: second.id.clone(),
+            items: vec![InputItem::Text {
+                text: "nope".to_owned(),
+            }],
+        })
+        .await
+        .expect_err("steering a queued run is rejected");
+    assert_eq!(steer_queued.kind, AgentApiErrorKind::Rejected);
+
+    // Cancel a queued run: dequeued as cancelled, nothing else changes.
+    let cancelled_second = api
+        .cancel_run(RunCancelParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: second.id.clone(),
+        })
+        .await?
+        .result
+        .run;
+    assert_eq!(cancelled_second.status, api::RunStatus::Cancelled);
+    assert!(
+        read_run(&api, &session_id, &first.id)
+            .await?
+            .is_some_and(|run| run.status == api::RunStatus::Running)
+    );
+
+    // Cancel the active run while another is queued: only the active run is
+    // cancelled, the queued one starts next and completes.
+    let cancelled_first = api
+        .cancel_run(RunCancelParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: first.id.clone(),
+        })
+        .await?
+        .result
+        .run;
+    assert!(matches!(
+        cancelled_first.status,
+        api::RunStatus::Cancelling | api::RunStatus::Cancelled
+    ));
+    let first_terminal = wait_for_terminal_run(&api, &session_id, &first.id).await?;
+    assert_eq!(first_terminal.status, api::RunStatus::Cancelled);
+    let third_terminal =
+        wait_for_terminal_run_with_timeout(&api, &session_id, &third.id, 40).await?;
+    assert_eq!(third_terminal.status, api::RunStatus::Completed);
+    assert!(
+        final_assistant_text(&third_terminal).is_some_and(|text| text.contains(&format!(
+            "completed run {}",
+            third.id.trim_start_matches("run_")
+        )))
+    );
+
+    // Another queued run on an idle session starts immediately.
+    let fourth = start_text_run(&api, &session_id, "fourth").await?;
+    assert_eq!(fourth.status, api::RunStatus::Running);
+    let fourth_terminal =
+        wait_for_terminal_run_with_timeout(&api, &session_id, &fourth.id, 40).await?;
+    assert_eq!(fourth_terminal.status, api::RunStatus::Completed);
+
+    // Exactly one generation per executed run (first, third, fourth); the
+    // cancelled first run never got a second turn. Whether the worker
+    // abandoned the first generation or it completed (and was discarded)
+    // depends on heartbeat timing with this short delay and is covered by
+    // the mid-generation cancel scenario.
+    assert_eq!(counters.generations_started(), 3);
+    assert_eq!(
+        counters.generations_completed() + counters.generations_abandoned(),
+        3
+    );
+
+    terminate_live_session(&client, &session_id, "queue live test cleanup").await;
+    Ok(())
+}
+
+/// `wait_for_terminal_run` with a longer budget, for scenarios whose fake
+/// provider sleeps on purpose.
+async fn wait_for_terminal_run_with_timeout(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+    run_id: &str,
+    timeout_secs: u64,
+) -> anyhow::Result<api::RunView> {
+    let started = std::time::Instant::now();
+    loop {
+        if started.elapsed() > Duration::from_secs(timeout_secs) {
+            anyhow::bail!("timed out waiting for run {run_id} to finish");
+        }
+        if let Some(run) = read_run(api, session_id, run_id).await?
+            && matches!(
+                run.status,
+                api::RunStatus::Completed | api::RunStatus::Failed | api::RunStatus::Cancelled
+            )
+        {
+            return Ok(run);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }
 
 async fn wait_for_terminal_run_with_assistant_output(

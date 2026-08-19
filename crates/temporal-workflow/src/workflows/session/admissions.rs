@@ -6,6 +6,19 @@ pub(super) async fn process_admissions(
     admissions: Vec<AgentAdmission>,
 ) -> anyhow::Result<DriveOutcome> {
     let mut drive = drive_from_state(ctx)?;
+    admit_admissions(ctx, &mut drive, admissions).await?;
+    drive_until_idle(ctx, args, &mut drive).await
+}
+
+/// Admit a batch of client admissions against the live drive, appending the
+/// resulting events. Used by the outer loop and from inside
+/// the drive loop at every action boundary and while an activity is in
+/// flight, so cancel/steer/queue land promptly instead of after the run.
+pub(super) async fn admit_admissions(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
+    admissions: Vec<AgentAdmission>,
+) -> anyhow::Result<()> {
     for admission in admissions {
         let correlation_token = admission.correlation_token.clone();
         let mut command = admission.command;
@@ -25,16 +38,93 @@ pub(super) async fn process_admissions(
             }
         }
         if should_refresh_runtime_projection_before_admitting(drive.state(), &command) {
-            refresh_runtime_projection_before_run(ctx, &mut drive).await?;
+            refresh_runtime_projection_before_run(ctx, &mut *drive).await?;
         }
-        match admit_and_append_command(ctx, &mut drive, command, correlation_token).await? {
+        match admit_and_append_command(ctx, drive, command, correlation_token).await? {
             CommandAdmissionResult::Accepted => {}
             CommandAdmissionResult::Rejected(failure) => {
                 record_admission_failure(ctx, failure);
             }
         }
     }
-    drive_until_idle(ctx, args, &mut drive).await
+    Ok(())
+}
+
+/// Take and admit the pending admissions that may land right now against
+/// the live drive. Returns whether anything was admitted (accepted or
+/// rejected). Two classes are held back, in order, for a later drain:
+///
+/// - everything while a standalone context compaction is pending (run
+///   requests would be rejected against that transient state; compaction
+///   only runs while no run is active, so nothing time-critical waits);
+/// - context/config/tool mutations while a turn's generation is in flight.
+///   That turn's request is frozen at its planned revisions and the runtime
+///   re-derives it from state, so those revisions must not move until the
+///   turn completes. Run control (cancel, steer, queue, promise and
+///   workflow-tool facts) carries no such revision and lands immediately.
+pub(super) async fn drain_pending_admissions(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
+) -> anyhow::Result<bool> {
+    if drive.state().context.pending_compaction {
+        return Ok(false);
+    }
+    let turn_in_flight = turn_in_flight(drive.state());
+    let admissions = ctx.state_mut(|state| {
+        if !turn_in_flight {
+            return std::mem::take(&mut state.pending_admissions);
+        }
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut state.pending_admissions)
+            .into_iter()
+            .partition(|admission| admissible_during_turn(&admission.command));
+        state.pending_admissions = later;
+        now
+    });
+    if admissions.is_empty() {
+        return Ok(false);
+    }
+    admit_admissions(ctx, drive, admissions).await?;
+    Ok(true)
+}
+
+/// Pending admissions that `drain_pending_admissions` would admit now.
+pub(super) fn has_admissible_admissions(state: &AgentSessionWorkflow) -> bool {
+    if state.core_state.context.pending_compaction {
+        return false;
+    }
+    if !turn_in_flight(&state.core_state) {
+        return !state.pending_admissions.is_empty();
+    }
+    state
+        .pending_admissions
+        .iter()
+        .any(|admission| admissible_during_turn(&admission.command))
+}
+
+fn turn_in_flight(state: &CoreAgentState) -> bool {
+    state
+        .runs
+        .active
+        .as_ref()
+        .is_some_and(|run| run.active_turn_id.is_some())
+}
+
+/// Commands that do not move the config/context/toolset revisions an
+/// in-flight turn was planned against.
+fn admissible_during_turn(command: &CoreAgentCommand) -> bool {
+    matches!(
+        command,
+        CoreAgentCommand::CancelRun { .. }
+            | CoreAgentCommand::ForceCancelRun { .. }
+            | CoreAgentCommand::RequestRunSteering { .. }
+            | CoreAgentCommand::RequestRun(_)
+            | CoreAgentCommand::SubmitMessage(_)
+            | CoreAgentCommand::ResolvePromise { .. }
+            | CoreAgentCommand::FailWorkflowToolDelivery { .. }
+            | CoreAgentCommand::FailWorkflowToolStart { .. }
+            | CoreAgentCommand::ResumeToolBatch(_)
+            | CoreAgentCommand::CloseSession { .. }
+    )
 }
 
 enum RunInputPreprocessResult {

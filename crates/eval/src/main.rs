@@ -1357,6 +1357,7 @@ mod tests {
             token_estimate: None,
             text: text.map(str::to_owned),
             display: None,
+            source: None,
         }
     }
 

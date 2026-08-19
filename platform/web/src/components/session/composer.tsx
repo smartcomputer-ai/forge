@@ -1,44 +1,78 @@
 import { useState, type KeyboardEvent } from "react";
-import { ArrowUp, Square } from "lucide-react";
+import { ArrowUp, LoaderCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-/// Chat input pinned under the transcript. Enter sends, Shift+Enter adds
-/// a newline. While a run is active, submitting is blocked (engine
-/// semantics: one run at a time) and the send button becomes Stop —
-/// typing stays possible so the next message can be drafted.
-/// Closed sessions render the composer read-only for transcript inspection.
+/// How a message sent while a run is in progress is delivered.
+/// - `queue`: starts the next run once the active one (and anything
+///   already queued) has finished. Enter.
+/// - `steer`: injected into the active run; the model sees it at its next
+///   turn boundary without interrupting the in-flight turn. ⌘/Ctrl+Enter.
+export type ComposerMode = "steer" | "queue";
+
+const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform);
+const steerKeyLabel = isMac ? "⌘↵" : "Ctrl+↵";
+
+/// Chat input pinned under the transcript. Enter sends, Shift+Enter adds a
+/// newline. While a run is in progress the input stays live: Enter queues
+/// the message as the next run, ⌘/Ctrl+Enter steers it into the current
+/// run, and a Stop button cancels the active run. Closed sessions render
+/// the composer read-only for transcript inspection.
 export function SessionComposer({
   runActive,
+  canSteer,
+  stopping = false,
   disabled = false,
   disabledReason,
   error,
   onSend,
   onStop,
 }: {
+  /// A run is running, cancelling, or queued: Enter queues, ⌘/Ctrl+Enter
+  /// steers.
   runActive: boolean;
+  /// The active run accepts steering (it is running or parked, not
+  /// cancelling and not merely queued).
+  canSteer: boolean;
+  /// A cancel is in flight for the active run.
+  stopping?: boolean;
   disabled?: boolean;
   disabledReason?: string;
   error: string | null;
-  onSend: (text: string) => void;
+  onSend: (text: string, mode: ComposerMode | null) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
 
-  const submit = () => {
+  const submit = (steer: boolean) => {
     const trimmed = text.trim();
-    if (!trimmed || runActive || disabled) {
+    if (!trimmed || disabled) {
       return;
     }
-    onSend(trimmed);
-    setText("");
+    // ⌘/Ctrl+Enter while nothing can be steered is reported by the page
+    // (the text stays in the box) rather than silently queued — the
+    // difference matters to the reader.
+    const mode: ComposerMode | null = !runActive ? null : steer ? "steer" : "queue";
+    onSend(trimmed, mode);
+    if (mode !== "steer" || canSteer) {
+      setText("");
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && !event.shiftKey) {
-      event.preventDefault();
-      submit();
+    if (event.key !== "Enter" || event.shiftKey) {
+      return;
     }
+    event.preventDefault();
+    submit(event.metaKey || event.ctrlKey);
   };
+
+  const placeholder = disabled
+    ? disabledReason ?? "This session is closed"
+    : runActive
+      ? canSteer
+        ? `Enter queues the next message · ${steerKeyLabel} steers the current run…`
+        : "Enter queues the next message…"
+      : "Message the agent…";
 
   return (
     <div className="shrink-0 border-t px-4 py-3 md:px-8">
@@ -52,35 +86,36 @@ export function SessionComposer({
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={disabled
-            ? disabledReason ?? "This session is closed"
-            : runActive
-              ? "Run in progress — Stop to interrupt"
-              : "Message the agent…"}
+          placeholder={placeholder}
           aria-label="Message"
           rows={1}
           className="field-sizing-content max-h-40 min-h-9 flex-1 resize-none rounded-md border bg-background px-3 py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
         />
-        {runActive && !disabled ? (
+        {runActive && !disabled && (
           <Button
             variant="outline"
             size="icon"
             onClick={onStop}
-            aria-label="Stop run"
-            title="Stop the active run"
+            disabled={stopping}
+            aria-label={stopping ? "Stopping run" : "Stop run"}
+            title={stopping ? "Stopping the active run…" : "Stop the active run"}
           >
-            <Square />
-          </Button>
-        ) : (
-          <Button
-            size="icon"
-            onClick={submit}
-            disabled={disabled || !text.trim()}
-            aria-label="Send message"
-          >
-            <ArrowUp />
+            {stopping ? <LoaderCircle className="animate-spin" /> : <Square />}
           </Button>
         )}
+        <Button
+          size="icon"
+          onClick={() => submit(false)}
+          disabled={disabled || !text.trim()}
+          aria-label={runActive ? "Queue message" : "Send message"}
+          title={runActive
+            ? canSteer
+              ? `Queue as the next run (${steerKeyLabel} in the box steers the current run)`
+              : "Queue as the next run"
+            : "Send"}
+        >
+          <ArrowUp />
+        </Button>
       </div>
     </div>
   );
