@@ -1,6 +1,15 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P129](p129-active-run-control.md) — active-run control: make
+  cancel, steer, and queue work end to end. Phase 1: the session workflow
+  drains admissions at every drive boundary and races in-flight LLM/tool
+  activities against them (Temporal activity cancellation + worker
+  heartbeat/abort), the engine drops the inert cancellation grace turn,
+  `session/runs/steer` is added, `session/runs/start` returns at `queued`.
+  Phase 2: platform web UI (and CLI) get a working stop, a steer/queue
+  composer, queued-run display, and run state reconciled from
+  `session/read` rather than the event tail alone.
 - [ ] [P128](p128-openai-completions-runtime.md) — OpenAI Chat Completions
   runtime: phase 1 registers a full `openai:completions` adapter (native
   context round-trip, standalone compaction, admission rejection of MCP/web
