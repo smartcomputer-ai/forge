@@ -235,7 +235,7 @@
       "summary": "Compact session context"
     },
     {
-      "description": "Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
+      "description": "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
       "method": "session/runs/start",
       "params": {
         "schema": {
@@ -253,7 +253,7 @@
       "summary": "Start an agent run"
     },
     {
-      "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.",
+      "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
       "method": "session/runs/cancel",
       "params": {
         "schema": {
@@ -269,6 +269,24 @@
       },
       "scope": "universe",
       "summary": "Cancel a run"
+    },
+    {
+      "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
+      "method": "session/runs/steer",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/RunSteerParams"
+        },
+        "type": "RunSteerParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfRunSteerResponse"
+        },
+        "type": "AgentApiOutcome<RunSteerResponse>"
+      },
+      "scope": "universe",
+      "summary": "Steer the active run"
     },
     {
       "description": "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",

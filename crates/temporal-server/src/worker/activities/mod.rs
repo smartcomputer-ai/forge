@@ -500,7 +500,8 @@ impl WorkerActivities {
         request: LlmGenerateActivityRequest,
     ) -> Result<LlmGenerationResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        llm::generate(state.llm(), ctx.info().attempt, request).await
+        let attempt = ctx.info().attempt;
+        common::cancellable(&ctx, llm::generate(state.llm(), attempt, request)).await
     }
 
     #[activity(name = ACTIVITY_PREPROCESS_RUN_INPUT)]
@@ -520,7 +521,12 @@ impl WorkerActivities {
         request: ContextCompactActivityRequest,
     ) -> Result<ContextCompactionResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        compaction::compact_context(state.llm(), ctx.info().attempt, request).await
+        let attempt = ctx.info().attempt;
+        common::cancellable(
+            &ctx,
+            compaction::compact_context(state.llm(), attempt, request),
+        )
+        .await
     }
 
     #[activity(name = ACTIVITY_TOOL_INVOKE_BATCH)]
@@ -530,7 +536,7 @@ impl WorkerActivities {
         request: ToolInvokeBatchActivityRequest,
     ) -> Result<ToolBatchOutcome, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        tools::invoke_batch(state.tools(), request).await
+        common::cancellable(&ctx, tools::invoke_batch(state.tools(), request)).await
     }
 
     #[activity(name = ACTIVITY_TOOL_INVOKE_CALL)]
@@ -540,7 +546,7 @@ impl WorkerActivities {
         request: ToolInvokeCallActivityRequest,
     ) -> Result<ToolInvokeCallActivityResult, ActivityError> {
         let state = self.state_for(&ctx).await?;
-        tools::invoke_call(state.tools(), request).await
+        common::cancellable(&ctx, tools::invoke_call(state.tools(), request)).await
     }
 
     #[activity(name = ACTIVITY_AWAIT_ENVIRONMENT_READY)]

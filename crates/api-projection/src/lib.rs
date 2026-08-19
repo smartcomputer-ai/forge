@@ -8,11 +8,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use api::{
     ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
-    ContextEntryKindView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
-    EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput, MediaKind, ModelConfig, ProfileId,
-    ProviderContextDisplayView, ProviderNativeToolExecutionView, RunAcceptedSourceView,
-    RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView, SessionEventView,
-    SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
+    ContextEntryKindView, ContextEntrySourceView, ContextEntryView, ContextMessageRoleView,
+    ContextView, EventCursor, EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput,
+    MediaKind, ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
+    RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
+    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
     TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
     ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
     ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
@@ -73,6 +73,18 @@ impl<'a> CoreAgentProjector<'a> {
                     .await?,
             );
         }
+        // Queued runs are part of the session view so clients can show
+        // and cancel them before they start.
+        for queued in &params.state.runs.queued {
+            runs.push(
+                self.project_run_with_api_status(
+                    params.entries,
+                    queued.run_id,
+                    ApiRunStatus::Queued,
+                )
+                .await?,
+            );
+        }
 
         let config = match params.state.lifecycle.config.as_ref() {
             Some(config) => Some(self.project_session_config(config).await?),
@@ -112,6 +124,18 @@ impl<'a> CoreAgentProjector<'a> {
         run_id: RunId,
         status: RunStatus,
     ) -> Result<RunView, AgentApiError> {
+        self.project_run_with_api_status(entries, run_id, core_run_status_to_api_status(status))
+            .await
+    }
+
+    /// Project a run whose API status is already known — used for queued runs,
+    /// which have no engine run status until they start.
+    pub async fn project_run_with_api_status(
+        &self,
+        entries: &[CoreAgentEntry],
+        run_id: RunId,
+        status: ApiRunStatus,
+    ) -> Result<RunView, AgentApiError> {
         let projection = CoreAgentProjection::new(entries);
         let source = projection.accepted_source_for_run(run_id);
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
@@ -123,7 +147,7 @@ impl<'a> CoreAgentProjector<'a> {
 
         Ok(RunView {
             id: api_run_id(run_id),
-            status: core_run_status_to_api_status(status),
+            status,
             source: match source {
                 Some(RunSource::Input { input }) => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
@@ -193,6 +217,7 @@ impl<'a> CoreAgentProjector<'a> {
             token_estimate: entry.token_estimate.as_ref().map(token_estimate_to_api),
             text,
             display,
+            source: Some(context_entry_source_to_api(&entry.source)),
         })
     }
 
@@ -417,8 +442,7 @@ impl<'a> CoreAgentProjector<'a> {
                     steering_id: api_steering_id(*steering_id),
                     input: project_context_entry_inputs(input),
                 }),
-                RunEvent::CancellationRequested { run_id }
-                | RunEvent::CancellationGraceStarted { run_id } => {
+                RunEvent::CancellationRequested { run_id } => {
                     Ok(SessionEventKindView::RunCancellationRequested {
                         run_id: api_run_id(*run_id),
                     })
@@ -501,6 +525,12 @@ impl<'a> CoreAgentProjector<'a> {
                 TurnEvent::Completed { turn_id, .. } => Ok(SessionEventKindView::TurnCompleted {
                     turn_id: api_turn_id(*turn_id),
                 }),
+                TurnEvent::Cancelled { turn_id, run_id } => {
+                    Ok(SessionEventKindView::TurnCancelled {
+                        run_id: api_run_id(*run_id),
+                        turn_id: api_turn_id(*turn_id),
+                    })
+                }
             },
             CoreAgentEvent::Context(event) => match event {
                 ContextEvent::EntriesApplied {
@@ -766,6 +796,30 @@ impl<'a> CoreAgentProjector<'a> {
                         status: ToolItemStatus::Running,
                         calls: projected_calls,
                     });
+                }
+                // The durable per-call completion carries the engine's call
+                // status; it distinguishes `cancelled` from `failed`, which
+                // the model-visible result entry alone cannot.
+                ToolEvent::CallCompleted {
+                    run_id: event_run_id,
+                    batch_id,
+                    result,
+                    ..
+                } if *event_run_id == run_id => {
+                    let batch_id = api_tool_batch_id(*batch_id);
+                    if let Some(call) = batches
+                        .iter_mut()
+                        .find(|batch| batch.id == batch_id)
+                        .and_then(|batch| {
+                            batch
+                                .calls
+                                .iter_mut()
+                                .find(|call| call.call_id == result.call_id.as_str())
+                        })
+                    {
+                        call.status = core_tool_status_to_api_status(result.status);
+                        call.is_error = result.status.is_error();
+                    }
                 }
                 ToolEvent::BatchCompleted {
                     run_id: event_run_id,
@@ -1146,6 +1200,50 @@ pub fn started_run_id(entries: &[CoreAgentEntry]) -> Option<RunId> {
     })
 }
 
+pub fn context_entry_source_to_api(source: &ContextEntrySource) -> ContextEntrySourceView {
+    match source {
+        ContextEntrySource::ContextEdit => ContextEntrySourceView::ContextEdit,
+        ContextEntrySource::RunInput {
+            run_id,
+            input_index,
+        } => ContextEntrySourceView::RunInput {
+            run_id: api_run_id(*run_id),
+            input_index: *input_index,
+        },
+        ContextEntrySource::Steering {
+            run_id,
+            steering_id,
+            input_index,
+        } => ContextEntrySourceView::Steering {
+            run_id: api_run_id(*run_id),
+            steering_id: api_steering_id(*steering_id),
+            input_index: *input_index,
+        },
+        ContextEntrySource::AssistantOutput { run_id, turn_id } => {
+            ContextEntrySourceView::AssistantOutput {
+                run_id: api_run_id(*run_id),
+                turn_id: api_turn_id(*turn_id),
+            }
+        }
+        ContextEntrySource::Tool {
+            run_id,
+            turn_id,
+            batch_id,
+        } => ContextEntrySourceView::Tool {
+            run_id: api_run_id(*run_id),
+            turn_id: api_turn_id(*turn_id),
+            batch_id: batch_id.map(api_tool_batch_id),
+        },
+        ContextEntrySource::Reasoning { run_id, turn_id } => ContextEntrySourceView::Reasoning {
+            run_id: api_run_id(*run_id),
+            turn_id: api_turn_id(*turn_id),
+        },
+        ContextEntrySource::Runtime { label } => ContextEntrySourceView::Runtime {
+            label: label.clone(),
+        },
+    }
+}
+
 pub fn api_run_id(run_id: RunId) -> String {
     format!("run_{}", run_id.as_u64())
 }
@@ -1275,7 +1373,7 @@ pub fn core_run_status_to_api_status(status: RunStatus) -> ApiRunStatus {
     match status {
         RunStatus::Active => ApiRunStatus::Running,
         RunStatus::Parked => ApiRunStatus::Running,
-        RunStatus::Cancelling | RunStatus::CancellingGrace => ApiRunStatus::Cancelling,
+        RunStatus::Cancelling => ApiRunStatus::Cancelling,
         RunStatus::Completed => ApiRunStatus::Completed,
         RunStatus::Failed => ApiRunStatus::Failed,
         RunStatus::Cancelled => ApiRunStatus::Cancelled,
@@ -2513,6 +2611,10 @@ mod tests {
                 }),
                 text: None,
                 display: None,
+                source: Some(ContextEntrySourceView::AssistantOutput {
+                    run_id: "run_7".to_owned(),
+                    turn_id: "turn_8".to_owned(),
+                }),
             }
         );
     }
@@ -2575,6 +2677,10 @@ mod tests {
                     arguments: Some(r#"{"data":"simba"}"#.to_owned()),
                     output: Some("Echoing your input: simba".to_owned()),
                     error: None,
+                }),
+                source: Some(ContextEntrySourceView::AssistantOutput {
+                    run_id: "run_7".to_owned(),
+                    turn_id: "turn_8".to_owned(),
                 }),
             }
         );

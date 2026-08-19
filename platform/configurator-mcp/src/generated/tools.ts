@@ -2407,7 +2407,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_runs_start",
     "method": "session/runs/start",
     "summary": "Start an agent run",
-    "description": "Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
+    "description": "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
     "paramsType": "RunStartParams",
     "resultType": "AgentApiOutcome<RunStartResponse>",
     "inputSchema": {
@@ -2783,7 +2783,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_runs_cancel",
     "method": "session/runs/cancel",
     "summary": "Cancel a run",
-    "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.",
+    "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
     "paramsType": "RunCancelParams",
     "resultType": "AgentApiOutcome<RunCancelResponse>",
     "inputSchema": {
@@ -2801,6 +2801,115 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "runId"
       ],
       "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_session_runs_steer",
+    "method": "session/runs/steer",
+    "summary": "Steer the active run",
+    "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
+    "paramsType": "RunSteerParams",
+    "resultType": "AgentApiOutcome<RunSteerResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "items": {
+          "description": "Steering input, same vocabulary as run input. Delivered to the model\nat the next turn boundary of the run; it does not interrupt the\nin-flight turn or wake a parked await.",
+          "items": {
+            "$ref": "#/definitions/InputItem"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "description": "The run to steer. Must be the session's current active run (running\nor parked on an await); a finished or cancelling run is rejected so a\nlate steer never lands on the next run.",
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId",
+        "items"
+      ],
+      "type": "object",
+      "definitions": {
+        "InputItem": {
+          "oneOf": [
+            {
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "text",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "text"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "blobRef": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "textRef",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "blobRef"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "blobRef": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/definitions/MediaKind"
+                },
+                "mime": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "type": {
+                  "const": "media",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "blobRef",
+                "mime",
+                "kind"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "MediaKind": {
+          "enum": [
+            "image",
+            "audio",
+            "document"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {

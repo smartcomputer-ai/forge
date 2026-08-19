@@ -34,27 +34,29 @@ use api::{
     METHOD_MCP_SERVERS_READ, METHOD_PROFILES_DELETE, METHOD_PROFILES_LIST, METHOD_PROFILES_PUT,
     METHOD_PROFILES_READ, METHOD_SESSION_CONFIG_PUT, METHOD_SESSION_ENVIRONMENTS_ACTIVATE,
     METHOD_SESSION_ENVIRONMENTS_DEACTIVATE, METHOD_SESSION_EVENTS_READ, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_START,
-    METHOD_SESSION_SKILLS_ACTIVATE, METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE,
-    METHOD_SESSION_SKILLS_LIST, METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT,
-    METHOD_VFS_SNAPSHOTS_READ, METHOD_VFS_WORKSPACES_CREATE, METHOD_VFS_WORKSPACES_DELETE,
-    METHOD_VFS_WORKSPACES_LIST, METHOD_VFS_WORKSPACES_READ, METHOD_VFS_WORKSPACES_UPDATE,
-    McpServerDeleteParams, McpServerDeleteResponse, McpServerListParams, McpServerListResponse,
-    McpServerPutParams, McpServerPutResponse, McpServerReadParams, McpServerReadResponse,
-    ProfileApplyParams, ProfileApplyResponse, ProfileDeleteParams, ProfileDeleteResponse,
-    ProfileListParams, ProfileListResponse, ProfilePutParams, ProfilePutResponse,
-    ProfileReadParams, ProfileReadResponse, RequestId, RunStartParams, RunStartResponse,
-    SessionConfigPutParams, SessionConfigPutResponse, SessionEnvironmentActivateParams,
-    SessionEnvironmentActivateResponse, SessionEnvironmentDeactivateParams,
-    SessionEnvironmentDeactivateResponse, SessionEventsReadParams, SessionEventsReadResponse,
-    SessionListParams, SessionListResponse, SessionReadParams, SessionReadResponse,
-    SessionStartParams, SessionStartResponse, SkillActivateParams, SkillActivateResponse,
-    SkillActiveParams, SkillActiveResponse, SkillDeactivateParams, SkillDeactivateResponse,
-    SkillListParams, SkillListResponse, VfsSnapshotCommitParams, VfsSnapshotCommitResponse,
-    VfsSnapshotReadParams, VfsSnapshotReadResponse, VfsWorkspaceCreateParams,
-    VfsWorkspaceCreateResponse, VfsWorkspaceDeleteParams, VfsWorkspaceDeleteResponse,
-    VfsWorkspaceListParams, VfsWorkspaceListResponse, VfsWorkspaceReadParams,
-    VfsWorkspaceReadResponse, VfsWorkspaceUpdateParams, VfsWorkspaceUpdateResponse,
+    METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_CANCEL,
+    METHOD_SESSION_RUNS_START, METHOD_SESSION_RUNS_STEER, METHOD_SESSION_SKILLS_ACTIVATE,
+    METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE, METHOD_SESSION_SKILLS_LIST,
+    METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT, METHOD_VFS_SNAPSHOTS_READ,
+    METHOD_VFS_WORKSPACES_CREATE, METHOD_VFS_WORKSPACES_DELETE, METHOD_VFS_WORKSPACES_LIST,
+    METHOD_VFS_WORKSPACES_READ, METHOD_VFS_WORKSPACES_UPDATE, McpServerDeleteParams,
+    McpServerDeleteResponse, McpServerListParams, McpServerListResponse, McpServerPutParams,
+    McpServerPutResponse, McpServerReadParams, McpServerReadResponse, ProfileApplyParams,
+    ProfileApplyResponse, ProfileDeleteParams, ProfileDeleteResponse, ProfileListParams,
+    ProfileListResponse, ProfilePutParams, ProfilePutResponse, ProfileReadParams,
+    ProfileReadResponse, RequestId, RunCancelParams, RunCancelResponse, RunStartParams,
+    RunStartResponse, RunSteerParams, RunSteerResponse, SessionConfigPutParams,
+    SessionConfigPutResponse, SessionEnvironmentActivateParams, SessionEnvironmentActivateResponse,
+    SessionEnvironmentDeactivateParams, SessionEnvironmentDeactivateResponse,
+    SessionEventsReadParams, SessionEventsReadResponse, SessionListParams, SessionListResponse,
+    SessionReadParams, SessionReadResponse, SessionStartParams, SessionStartResponse,
+    SkillActivateParams, SkillActivateResponse, SkillActiveParams, SkillActiveResponse,
+    SkillDeactivateParams, SkillDeactivateResponse, SkillListParams, SkillListResponse,
+    VfsSnapshotCommitParams, VfsSnapshotCommitResponse, VfsSnapshotReadParams,
+    VfsSnapshotReadResponse, VfsWorkspaceCreateParams, VfsWorkspaceCreateResponse,
+    VfsWorkspaceDeleteParams, VfsWorkspaceDeleteResponse, VfsWorkspaceListParams,
+    VfsWorkspaceListResponse, VfsWorkspaceReadParams, VfsWorkspaceReadResponse,
+    VfsWorkspaceUpdateParams, VfsWorkspaceUpdateResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -199,6 +201,20 @@ impl HttpAgentApi {
         params: RunStartParams,
     ) -> Result<AgentApiOutcome<RunStartResponse>, AgentApiError> {
         self.request(METHOD_SESSION_RUNS_START, params).await
+    }
+
+    pub(crate) async fn cancel_run(
+        &self,
+        params: RunCancelParams,
+    ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError> {
+        self.request(METHOD_SESSION_RUNS_CANCEL, params).await
+    }
+
+    pub(crate) async fn steer_run(
+        &self,
+        params: RunSteerParams,
+    ) -> Result<AgentApiOutcome<RunSteerResponse>, AgentApiError> {
+        self.request(METHOD_SESSION_RUNS_STEER, params).await
     }
 
     pub(crate) async fn list_skills(

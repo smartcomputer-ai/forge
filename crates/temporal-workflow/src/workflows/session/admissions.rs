@@ -6,6 +6,19 @@ pub(super) async fn process_admissions(
     admissions: Vec<AgentAdmission>,
 ) -> anyhow::Result<DriveOutcome> {
     let mut drive = drive_from_state(ctx)?;
+    admit_admissions(ctx, &mut drive, admissions).await?;
+    drive_until_idle(ctx, args, &mut drive).await
+}
+
+/// Admit a batch of client admissions against the live drive, appending the
+/// resulting events. Used by the outer loop and from inside
+/// the drive loop at every action boundary and while an activity is in
+/// flight, so cancel/steer/queue land promptly instead of after the run.
+pub(super) async fn admit_admissions(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
+    admissions: Vec<AgentAdmission>,
+) -> anyhow::Result<()> {
     for admission in admissions {
         let correlation_token = admission.correlation_token.clone();
         let mut command = admission.command;
@@ -25,16 +38,40 @@ pub(super) async fn process_admissions(
             }
         }
         if should_refresh_runtime_projection_before_admitting(drive.state(), &command) {
-            refresh_runtime_projection_before_run(ctx, &mut drive).await?;
+            refresh_runtime_projection_before_run(ctx, &mut *drive).await?;
         }
-        match admit_and_append_command(ctx, &mut drive, command, correlation_token).await? {
+        match admit_and_append_command(ctx, drive, command, correlation_token).await? {
             CommandAdmissionResult::Accepted => {}
             CommandAdmissionResult::Rejected(failure) => {
                 record_admission_failure(ctx, failure);
             }
         }
     }
-    drive_until_idle(ctx, args, &mut drive).await
+    Ok(())
+}
+
+/// Take and admit every pending admission against the live drive. Returns
+/// whether anything was admitted (accepted or rejected). Admissions are left
+/// queued while a standalone context compaction is pending: run requests
+/// would be rejected against that transient state, and compaction only runs
+/// while no run is active, so nothing time-critical waits behind it.
+pub(super) async fn drain_pending_admissions(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
+) -> anyhow::Result<bool> {
+    if drive.state().context.pending_compaction {
+        return Ok(false);
+    }
+    let admissions = ctx.state_mut(|state| std::mem::take(&mut state.pending_admissions));
+    if admissions.is_empty() {
+        return Ok(false);
+    }
+    admit_admissions(ctx, drive, admissions).await?;
+    Ok(true)
+}
+
+pub(super) fn has_pending_admissions(state: &AgentSessionWorkflow) -> bool {
+    !state.pending_admissions.is_empty()
 }
 
 enum RunInputPreprocessResult {

@@ -316,9 +316,11 @@ api_methods! {
     METHOD_SESSION_CONTEXT_COMPACT => compact_context(ContextCompactParams) -> ContextCompactResponse =>
         ["Compact session context", "Runs the configured compaction policy on an open idle session and waits for the resulting context revision."],
     METHOD_SESSION_RUNS_START => start_run(RunStartParams) -> RunStartResponse =>
-        ["Start an agent run", "Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session."],
+        ["Start an agent run", "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session."],
     METHOD_SESSION_RUNS_CANCEL => cancel_run(RunCancelParams) -> RunCancelResponse =>
-        ["Cancel a run", "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion."],
+        ["Cancel a run", "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs."],
+    METHOD_SESSION_RUNS_STEER => steer_run(RunSteerParams) -> RunSteerResponse =>
+        ["Steer the active run", "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs."],
     METHOD_SESSION_SKILLS_LIST => list_skills(SkillListParams) -> SkillListResponse =>
         ["List available session skills", "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result."],
     METHOD_SESSION_SKILLS_ACTIVE => active_skills(SkillActiveParams) -> SkillActiveResponse =>

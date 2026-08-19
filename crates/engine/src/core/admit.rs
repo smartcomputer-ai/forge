@@ -564,10 +564,7 @@ pub fn admit_command(
             if let Some(active_run) = state.runs.active.as_ref()
                 && active_run.run_id == run_id
             {
-                if matches!(
-                    active_run.status,
-                    RunStatus::Cancelling | RunStatus::CancellingGrace
-                ) {
+                if active_run.status == RunStatus::Cancelling {
                     return Ok(Vec::new());
                 }
                 if matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
@@ -898,6 +895,10 @@ fn require_open(state: &CoreAgentState) -> Result<(), CommandError> {
     }
 }
 
+/// The run a steering command targets: the active run while it is `Active`
+/// or `Parked`. A parked run (model-chosen `await`) accepts steering without
+/// waking; the steering materializes in the first turn after it resumes
+/// A cancelling run no longer accepts commands.
 fn active_run_for_command(state: &CoreAgentState) -> Result<&crate::ActiveRun, CommandError> {
     let Some(active_run) = state.runs.active.as_ref() else {
         return reject(
@@ -905,7 +906,7 @@ fn active_run_for_command(state: &CoreAgentState) -> Result<&crate::ActiveRun, C
             "command requires an active run",
         );
     };
-    if active_run.status != RunStatus::Active {
+    if !matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
         return reject(
             CommandRejectionKind::ActiveWork,
             "active run is not accepting commands",

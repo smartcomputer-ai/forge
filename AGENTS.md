@@ -234,9 +234,20 @@ Release construction, snapshots, and tagged publication are documented in
   persisted identifier, Temporal identity, browser storage key, and deployment
   input. Do not reintroduce imported pre-release aliases;
   `npm run check:identity` enforces this boundary across the repository.
-- Treat hosted `session/runs/start` as an acceptance/start boundary, not a final-output
-  boundary. Clients should follow `session/events/read` or refresh
+- Treat hosted `session/runs/start` as an acceptance boundary, not a
+  final-output boundary: it returns once the run is `queued` (behind an active
+  run) or `running`. Clients should follow `session/events/read` or refresh
   `session/read` for progress and completion.
+- Active-run control is admitted live. The session workflow drains client
+  admissions at every drive action boundary and races in-flight model/tool
+  activities against them; `session/runs/cancel` cancels the open turn or
+  pending tool calls in the engine at once (no grace turn) and abandons the
+  activity (`TryCancel` + worker heartbeat), `session/runs/steer` appends
+  steering that materializes at the run's next turn boundary (accepted while
+  running or parked, never waking an await), and a second `session/runs/start`
+  queues. A cancelling run never asks the runtime for work: the engine
+  resolves its own open turn/batch. Do not reintroduce "process admissions
+  only between runs" or a farewell LLM turn on cancel.
 - Treat `session/managed/start` as a trusted creation boundary. Lifecycle
   ownership and caller-declared workflow tools are immutable session metadata;
   do not expose them through ordinary `session/start` or mutable session config.

@@ -20,6 +20,7 @@ export const METHODS = [
   "session/context/compact",
   "session/runs/start",
   "session/runs/cancel",
+  "session/runs/steer",
   "session/skills/list",
   "session/skills/active",
   "session/skills/activate",
@@ -166,12 +167,17 @@ export const METHOD_INFO = {
   "session/runs/start": {
     scope: "universe",
     summary: "Start an agent run",
-    description: "Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
+    description: "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
   },
   "session/runs/cancel": {
     scope: "universe",
     summary: "Cancel a run",
-    description: "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.",
+    description: "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
+  },
+  "session/runs/steer": {
+    scope: "universe",
+    summary: "Steer the active run",
+    description: "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
   },
   "session/skills/list": {
     scope: "universe",
@@ -683,7 +689,7 @@ export interface MethodMap {
   /**
    * Start an agent run
    *
-   * Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
+   * Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
    */
   "session/runs/start": {
     params: Api.RunStartParams;
@@ -692,11 +698,20 @@ export interface MethodMap {
   /**
    * Cancel a run
    *
-   * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.
+   * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.
    */
   "session/runs/cancel": {
     params: Api.RunCancelParams;
     result: Api.AgentApiOutcomeOfRunCancelResponse;
+  };
+  /**
+   * Steer the active run
+   *
+   * Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.
+   */
+  "session/runs/steer": {
+    params: Api.RunSteerParams;
+    result: Api.AgentApiOutcomeOfRunSteerResponse;
   };
   /**
    * List available session skills
@@ -1490,7 +1505,7 @@ export const rpc = {
   /**
    * Start an agent run
    *
-   * Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
+   * Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.
    */
   sessionRunsStart(client: RpcCaller, params: Api.RunStartParams): Promise<Api.AgentApiOutcomeOfRunStartResponse> {
     return client.call("session/runs/start", params);
@@ -1498,10 +1513,18 @@ export const rpc = {
   /**
    * Cancel a run
    *
-   * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.
+   * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.
    */
   sessionRunsCancel(client: RpcCaller, params: Api.RunCancelParams): Promise<Api.AgentApiOutcomeOfRunCancelResponse> {
     return client.call("session/runs/cancel", params);
+  },
+  /**
+   * Steer the active run
+   *
+   * Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.
+   */
+  sessionRunsSteer(client: RpcCaller, params: Api.RunSteerParams): Promise<Api.AgentApiOutcomeOfRunSteerResponse> {
+    return client.call("session/runs/steer", params);
   },
   /**
    * List available session skills

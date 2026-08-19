@@ -15,26 +15,37 @@ const MAX_LLM_BOUNDARY_ERROR_BYTES: usize = 16 * 1024;
 /// the run fails, the session workflow survives. Anything unrecognized
 /// (including cancellation) propagates unchanged so operational bugs stay
 /// visible.
+/// Run the generation activity while client admissions keep landing
+/// A cancel that makes the turn obsolete preempts the call; the
+/// engine has already cancelled the turn by then.
 pub(super) async fn call_llm_generate(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
     request: LlmGenerationRequest,
-) -> anyhow::Result<engine::LlmGenerationResult> {
+) -> anyhow::Result<control::Raced<engine::LlmGenerationResult>> {
     let run_id = request.run_id;
     let turn_id = request.turn_id;
-    match ctx
-        .start_activity(
-            WorkflowActivities::llm_generate,
-            LlmGenerateActivityRequest { request },
-            crate::llm_activity_options(),
-        )
-        .await
-    {
-        Ok(result) => Ok(result),
+    let activity_ctx = ctx.clone();
+    let activity = activity_ctx.start_activity(
+        WorkflowActivities::llm_generate,
+        LlmGenerateActivityRequest { request },
+        crate::llm_activity_options(),
+    );
+    let raced = control::race_activity_with_admissions(ctx, drive, activity, |state| {
+        control::generation_still_wanted(state, run_id, turn_id)
+    })
+    .await?;
+    let outcome = match raced {
+        control::Raced::Preempted => return Ok(control::Raced::Preempted),
+        control::Raced::Completed(outcome) => outcome,
+    };
+    match outcome {
+        Ok(result) => Ok(control::Raced::Completed(result)),
         Err(error) => match llm_transient_exhaustion(&error) {
             Some(details) => {
                 let failure_ref =
                     put_llm_boundary_error_blob(ctx, "LLM generation", &details).await;
-                Ok(engine::LlmGenerationResult {
+                Ok(control::Raced::Completed(engine::LlmGenerationResult {
                     run_id,
                     turn_id,
                     status: engine::LlmGenerationStatus::Failed,
@@ -47,7 +58,7 @@ pub(super) async fn call_llm_generate(
                         tool_calls: Vec::new(),
                         context_token_estimate: None,
                     },
-                })
+                }))
             }
             None => Err(anyhow::anyhow!("{error}")),
         },
@@ -146,18 +157,6 @@ async fn put_llm_boundary_error_blob(
     )
     .await
     .unwrap_or_else(|_| engine::llm_runtime_boundary_failure_ref())
-}
-
-pub(super) async fn call_tool_invoke_batch(
-    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
-    request: ToolInvocationBatchRequest,
-) -> Result<engine::ToolBatchOutcome, temporalio_sdk::ActivityExecutionError> {
-    ctx.start_activity(
-        WorkflowActivities::tool_invoke_batch,
-        ToolInvokeBatchActivityRequest { request },
-        crate::tool_batch_activity_options(),
-    )
-    .await
 }
 
 pub(super) async fn call_tool_prepare_promise_controls(

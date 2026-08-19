@@ -8,13 +8,15 @@
 //! progressive-completion engine contract.
 
 use std::pin::Pin;
+use std::task::{Context, Poll};
 
 use engine::{
     AWAIT_TOOL_NAME, ToolCallStatus, ToolExecutionSpec, ToolInvocationResult, ToolName,
     ToolParallelism,
 };
-use futures::future::select_all;
-use temporalio_sdk::ActivityExecutionError;
+use futures::FutureExt;
+use futures::future::poll_fn;
+use temporalio_sdk::{ActivityExecutionError, CancellableFuture};
 
 use crate::{
     AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
@@ -38,6 +40,11 @@ pub(super) async fn invoke_tool_batch(
         return invoke_tool_batch_as_unit(ctx, drive, request).await;
     }
     for group in execution_groups(drive.state(), &request) {
+        if !control::tool_batch_still_wanted(drive.state(), request.run_id, request.batch_id) {
+            // A cancel landed while an earlier group ran; the engine has
+            // resolved the rest of the batch itself.
+            break;
+        }
         execute_call_group(ctx, drive, &request, group).await?;
     }
     drive
@@ -59,7 +66,29 @@ async fn invoke_tool_batch_as_unit(
     drive: &mut CoreAgentDrive,
     request: ToolInvocationBatchRequest,
 ) -> anyhow::Result<CoreAgentAction> {
-    match call_tool_invoke_batch(ctx, request.clone()).await {
+    let run_id = request.run_id;
+    let batch_id = request.batch_id;
+    let activity_ctx = ctx.clone();
+    let activity = activity_ctx.start_activity(
+        WorkflowActivities::tool_invoke_batch,
+        ToolInvokeBatchActivityRequest {
+            request: request.clone(),
+        },
+        crate::tool_batch_activity_options(),
+    );
+    let outcome = match control::race_activity_with_admissions(ctx, drive, activity, |state| {
+        control::tool_batch_still_wanted(state, run_id, batch_id)
+    })
+    .await?
+    {
+        control::Raced::Completed(outcome) => outcome,
+        control::Raced::Preempted => {
+            return drive
+                .next_action_unbounded(workflow_time_ms(ctx))
+                .map_err(Into::into);
+        }
+    };
+    match outcome {
         Ok(outcome) => drive
             .resume_tool_batch_outcome(outcome, workflow_time_ms(ctx))
             .map_err(Into::into),
@@ -106,20 +135,41 @@ fn execution_groups(
     groups
 }
 
-/// A boxed in-flight call future. `select_all` polls these with the caller's
-/// context directly; combinators with internal waker machinery (e.g.
-/// `FuturesUnordered`) trip the SDK's nondeterminism detector ([TMPRL1100])
-/// and must not be used inside workflow code.
-type InflightCall = Pin<
-    Box<
-        dyn Future<
-            Output = (
-                usize,
-                Result<ToolInvokeCallActivityResult, ActivityExecutionError>,
-            ),
-        >,
-    >,
->;
+type CallActivityOutcome = Result<ToolInvokeCallActivityResult, ActivityExecutionError>;
+
+/// One in-flight call activity. The future is the SDK's cancellable activity
+/// future itself (no wrapper), so a preempting cancel can reach it; it is
+/// polled with the caller's context directly — combinators with internal
+/// waker machinery (e.g. `FuturesUnordered`) trip the SDK's nondeterminism
+/// detector ([TMPRL1100]) and must not be used inside workflow code.
+struct InflightCall<'a> {
+    index: usize,
+    activity: Pin<Box<dyn CancellableFuture<CallActivityOutcome> + 'a>>,
+}
+
+/// Resolve the first ready in-flight call, removing it from `inflight`.
+async fn first_ready_call(inflight: &mut Vec<InflightCall<'_>>) -> (usize, CallActivityOutcome) {
+    poll_fn(|cx: &mut Context<'_>| {
+        for position in 0..inflight.len() {
+            if let Poll::Ready(outcome) = inflight[position].activity.as_mut().poll(cx) {
+                let call = inflight.remove(position);
+                return Poll::Ready((call.index, outcome));
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Cancel every in-flight call (`TryCancel`) and let the futures resolve;
+/// their results are discarded — the engine already recorded the calls as
+/// cancelled.
+async fn abandon_inflight_calls(inflight: Vec<InflightCall<'_>>) {
+    for call in inflight {
+        call.activity.as_ref().get_ref().cancel();
+        let _ = call.activity.await;
+    }
+}
 
 async fn execute_call_group(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
@@ -127,48 +177,85 @@ async fn execute_call_group(
     request: &ToolInvocationBatchRequest,
     group: Vec<usize>,
 ) -> anyhow::Result<()> {
+    let activity_ctx = ctx.clone();
     let mut pending = group.into_iter();
-    let mut inflight: Vec<InflightCall> = Vec::new();
+    let mut inflight: Vec<InflightCall<'_>> = Vec::new();
     loop {
         // Topped-up window: at most MAX_CONCURRENT_TOOL_CALLS_PER_BATCH
         // activities execute at once, so one model turn cannot fan out
         // unbounded concurrent work.
         while inflight.len() < MAX_CONCURRENT_TOOL_CALLS_PER_BATCH {
             let Some(index) = pending.next() else { break };
-            inflight.push(start_call_activity(ctx, drive.state(), request, index));
+            inflight.push(start_call_activity(
+                &activity_ctx,
+                drive.state(),
+                request,
+                index,
+            ));
         }
         if inflight.is_empty() {
             return Ok(());
         }
-        let ((index, outcome), _, remaining) = select_all(inflight).await;
-        inflight = remaining;
-        resume_call(ctx, drive, request, index, outcome).await?;
+        // Race the window against client admissions: a steer or a
+        // queued run is admitted and execution continues; a cancel that
+        // ends this batch abandons every in-flight call.
+        let ready = {
+            let wait = ctx.wait_condition(admissions::has_pending_admissions);
+            let next = first_ready_call(&mut inflight).fuse();
+            pin_mut!(wait, next);
+            select! {
+                ready = next => Some(ready),
+                _ = wait => None,
+            }
+        };
+        match ready {
+            Some((index, outcome)) => {
+                resume_call(ctx, drive, request, index, outcome).await?;
+            }
+            None => {
+                admissions::drain_pending_admissions(ctx, drive).await?;
+                if !control::tool_batch_still_wanted(
+                    drive.state(),
+                    request.run_id,
+                    request.batch_id,
+                ) {
+                    abandon_inflight_calls(inflight).await;
+                    return Ok(());
+                }
+            }
+        }
     }
 }
 
-fn start_call_activity(
-    ctx: &WorkflowContext<AgentSessionWorkflow>,
+fn start_call_activity<'a>(
+    activity_ctx: &'a WorkflowContext<AgentSessionWorkflow>,
     state: &CoreAgentState,
     request: &ToolInvocationBatchRequest,
     index: usize,
-) -> InflightCall {
-    let call_ctx = ctx.clone();
+) -> InflightCall<'a> {
+    InflightCall {
+        index,
+        activity: Box::pin(call_activity(activity_ctx, state, request, index)),
+    }
+}
+
+fn call_activity<'a>(
+    activity_ctx: &'a WorkflowContext<AgentSessionWorkflow>,
+    state: &CoreAgentState,
+    request: &ToolInvocationBatchRequest,
+    index: usize,
+) -> impl CancellableFuture<CallActivityOutcome> + use<'a> {
     let execution = call_execution_spec(state, &request.calls[index].tool_name);
     let call_request = request
         .call_request(index, execution)
         .expect("group indices come from this batch request");
-    Box::pin(async move {
-        let outcome = call_ctx
-            .start_activity(
-                WorkflowActivities::tool_invoke_call,
-                ToolInvokeCallActivityRequest {
-                    request: call_request,
-                },
-                tool_call_activity_options(execution),
-            )
-            .await;
-        (index, outcome)
-    })
+    activity_ctx.start_activity(
+        WorkflowActivities::tool_invoke_call,
+        ToolInvokeCallActivityRequest {
+            request: call_request,
+        },
+        tool_call_activity_options(execution),
+    )
 }
 
 /// Accept one call outcome: an activity failure (deadline, exhausted retries,
@@ -188,8 +275,14 @@ async fn resume_call(
 ) -> anyhow::Result<()> {
     let outcome = match outcome {
         Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id }) => {
-            await_environment_then_redispatch(ctx, drive.state(), request, index, environment_id)
-                .await
+            match await_environment_then_redispatch(ctx, drive, request, index, environment_id)
+                .await?
+            {
+                Some(outcome) => outcome,
+                // Preempted by a cancel: the engine recorded the call as
+                // cancelled; nothing to resume.
+                None => return Ok(()),
+            }
         }
         Ok(ToolInvokeCallActivityResult::Completed { result }) => CallOutcome::Completed(result),
         Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
@@ -243,27 +336,43 @@ enum CallOutcome {
 /// Wait for the session's active environment, then run the call once more
 /// with its ordinary options. The wait is its own activity so tool classes
 /// keep their tight deadlines; the fast path never reaches this function.
+/// Both steps race client admissions; `None` means a cancel made the call
+/// obsolete.
 async fn await_environment_then_redispatch(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
-    state: &CoreAgentState,
+    drive: &mut CoreAgentDrive,
     request: &ToolInvocationBatchRequest,
     index: usize,
     environment_id: String,
-) -> CallOutcome {
-    let readiness = ctx
-        .start_activity(
-            WorkflowActivities::await_environment_ready,
-            AwaitEnvironmentReadyActivityRequest {
-                session_id: request.session_id.clone(),
-                environment_id: environment_id.clone(),
-                environment_policy: request.environment_policy.clone(),
-            },
-            environment_ready_activity_options(),
-        )
-        .await;
-    match readiness {
+) -> anyhow::Result<Option<CallOutcome>> {
+    let run_id = request.run_id;
+    let batch_id = request.batch_id;
+    let still_wanted =
+        |state: &CoreAgentState| control::tool_batch_still_wanted(state, run_id, batch_id);
+    let activity_ctx = ctx.clone();
+    let readiness = activity_ctx.start_activity(
+        WorkflowActivities::await_environment_ready,
+        AwaitEnvironmentReadyActivityRequest {
+            session_id: request.session_id.clone(),
+            environment_id: environment_id.clone(),
+            environment_policy: request.environment_policy.clone(),
+        },
+        environment_ready_activity_options(),
+    );
+    let readiness =
+        match control::race_activity_with_admissions(ctx, drive, readiness, still_wanted).await? {
+            control::Raced::Completed(readiness) => readiness,
+            control::Raced::Preempted => return Ok(None),
+        };
+    let outcome = match readiness {
         Ok(AwaitEnvironmentReadyActivityResult::Ready) => {
-            let (_, outcome) = start_call_activity(ctx, state, request, index).await;
+            let call = call_activity(&activity_ctx, drive.state(), request, index);
+            let outcome =
+                match control::race_activity_with_admissions(ctx, drive, call, still_wanted).await?
+                {
+                    control::Raced::Completed(outcome) => outcome,
+                    control::Raced::Preempted => return Ok(None),
+                };
             match outcome {
                 Ok(ToolInvokeCallActivityResult::Completed { result }) => {
                     CallOutcome::Completed(result)
@@ -290,7 +399,8 @@ async fn await_environment_then_redispatch(
             ))
         }
         Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
-    }
+    };
+    Ok(Some(outcome))
 }
 
 /// Cancellation remains cancellation: a cancelled activity records a terminal

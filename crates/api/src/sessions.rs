@@ -1047,6 +1047,12 @@ pub enum SessionEventKindView {
     TurnCompleted {
         turn_id: String,
     },
+    /// The run was cancelled while this turn was open; the turn ended without
+    /// a generation result.
+    TurnCancelled {
+        run_id: RunId,
+        turn_id: String,
+    },
     ContextEntriesApplied {
         base_revision: u64,
         revision: u64,

@@ -1217,6 +1217,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfRunSteerResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunSteerResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfSessionCloseResponse": {
         "properties": {
           "notifications": {
@@ -3379,6 +3396,152 @@
           }
         ]
       },
+      "ContextEntrySourceView": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "contextEdit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "inputIndex": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "runInput",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "inputIndex"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "inputIndex": {
+                "format": "uint32",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "steeringId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "steering",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "steeringId",
+              "inputIndex"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "assistantOutput",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "turnId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "batchId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "tool",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "turnId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "reasoning",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "turnId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "type": {
+                "const": "runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "label"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "ContextEntryView": {
         "description": "A session context entry, faithful to the stored engine entry: keyed,\nkind-tagged, ref-backed. Keys are a stable extension point — clients\nreconstruct derived surfaces (e.g. the prompted instruction set via the\n`prompt_instructions/` key prefix) by filtering on `key` and fetching\nbodies through `blobs/read`. `text` inlines blob content only for\nmessage and tool entries; every other kind is ref + preview.",
         "properties": {
@@ -3430,6 +3593,17 @@
               "string",
               "null"
             ]
+          },
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContextEntrySourceView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the entry came from: run input, a steering batch, model output,\na tool result, reasoning state, a context edit, or the runtime. Lets\ntranscripts render steering distinctly from the run's first input."
           },
           "text": {
             "type": [
@@ -7477,6 +7651,46 @@
         ],
         "type": "string"
       },
+      "RunSteerParams": {
+        "properties": {
+          "items": {
+            "description": "Steering input, same vocabulary as run input. Delivered to the model\nat the next turn boundary of the run; it does not interrupt the\nin-flight turn or wake a parked await.",
+            "items": {
+              "$ref": "#/components/schemas/InputItem"
+            },
+            "type": "array"
+          },
+          "runId": {
+            "description": "The run to steer. Must be the session's current active run (running\nor parked on an await); a finished or cancelling run is rejected so a\nlate steer never lands on the next run.",
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "items"
+        ],
+        "type": "object"
+      },
+      "RunSteerResponse": {
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunView"
+          },
+          "steeringId": {
+            "description": "Identifier of the accepted steering batch within the session.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "steeringId",
+          "run"
+        ],
+        "type": "object"
+      },
       "RunTerminalNotificationInput": {
         "additionalProperties": false,
         "properties": {
@@ -8491,6 +8705,27 @@
             },
             "required": [
               "type",
+              "turnId"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The run was cancelled while this turn was open; the turn ended without\na generation result.",
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "turnCancelled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
               "turnId"
             ],
             "type": "object"
@@ -11611,7 +11846,7 @@
       "summary": "Compact session context"
     },
     {
-      "description": "Accepts input or existing context keys and returns once the run is queued/accepted, not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
+      "description": "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
       "name": "session/runs/start",
       "paramStructure": "by-name",
       "params": [
@@ -11632,7 +11867,7 @@
       "summary": "Start an agent run"
     },
     {
-      "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion.",
+      "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
       "name": "session/runs/cancel",
       "paramStructure": "by-name",
       "params": [
@@ -11651,6 +11886,27 @@
         }
       },
       "summary": "Cancel a run"
+    },
+    {
+      "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
+      "name": "session/runs/steer",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunSteerParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfRunSteerResponse"
+        }
+      },
+      "summary": "Steer the active run"
     },
     {
       "description": "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",

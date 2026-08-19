@@ -76,3 +76,25 @@ pub struct RunCancelParams {
 pub struct RunCancelResponse {
     pub run: RunView,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSteerParams {
+    pub session_id: SessionId,
+    /// The run to steer. Must be the session's current active run (running
+    /// or parked on an await); a finished or cancelling run is rejected so a
+    /// late steer never lands on the next run.
+    pub run_id: RunId,
+    /// Steering input, same vocabulary as run input. Delivered to the model
+    /// at the next turn boundary of the run; it does not interrupt the
+    /// in-flight turn or wake a parked await.
+    pub items: Vec<InputItem>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSteerResponse {
+    /// Identifier of the accepted steering batch within the session.
+    pub steering_id: String,
+    pub run: RunView,
+}

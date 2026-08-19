@@ -2,7 +2,13 @@
 
 **Status**
 
-- Proposed 2026-08-19. Not started.
+- Proposed 2026-08-19. **Phase 1 implemented and live-validated 2026-08-19**
+  (slices 1–4 below): engine cancel without grace turn and engine-resolved
+  cancellation of open turns/pending calls, workflow admission draining at
+  every drive boundary with activity races + `TryCancel`/heartbeat abort,
+  `session/runs/steer`, `session/runs/start` returning at `queued`, queued
+  runs and entry sources in projections, CLI wiring, five `temporal_live`
+  scenarios. Phase 2 (platform UI) not started.
 - Follows the survey of run interactions done the same day; supersedes the
   inert "grace turn v1" note in
   [P92](archive/p92-unified-suspension.md) §3 for client-initiated cancels.
@@ -384,20 +390,63 @@ stop it, talk to it, or line up the next thing — with honest feedback.
 
 ## Slices
 
-1. Engine: remove grace turn, steering while parked, cancelled-turn drain
-   tests.
-2. Workflow: unified admission helper; drain at action boundaries; race
-   LLM/compaction/tool activities; activity cancellation + worker
-   heartbeat/abort; workflow unit tests.
-3. Gateway/API: `session/runs/steer`; `runs/start` returns at `queued`;
-   projections for queued runs and steering entries; CLI wiring; contract +
-   TS client regen.
-4. Live validation: the four `temporal_live` scenarios in 1.4.
+1. **[DONE]** Engine: grace turn removed (`CancellingGrace`,
+   `CancellationGraceStarted`, `cancellation_grace_turn_id` deleted);
+   steering accepted while `Parked`; new `Turn::Cancelled` event — a
+   cancelling run's open turn (started/planned/generation-pending) is
+   cancelled by the planner, its pending tool calls get engine-synthesized
+   cancelled results (well-known `CANCELLED_TOOL_RESULT_CONTENT` blob), a
+   completed tool-call turn whose batch has not started still gets a batch so
+   no tool call is left without a result; `next_generation_request` /
+   `next_tool_batch_request` never ask the runtime for work on a cancelling
+   run. Engine tests for each shape.
+2. **[DONE]** Workflow: `admit_admissions` / `drain_pending_admissions`
+   shared by the outer loop and `drive_until_idle` (drained before every
+   action, re-planned after); `control::race_activity_with_admissions` races
+   LLM generation, unit tool batches, per-call tool activities (own
+   `first_ready_call` poll, no `FuturesUnordered`), and the environment
+   readiness wait/re-dispatch against `wait_condition(pending_admissions)`;
+   `still_wanted` predicates decide preemption; preempted activities are
+   `cancel()`ed (`TryCancel`) and awaited, results discarded. Standalone
+   compaction is neither raced nor drained over. Worker: `llm_generate`,
+   `context_compact`, `tool_invoke_call`, `tool_invoke_batch` run through a
+   heartbeating, cancellation-aware wrapper; `heartbeat_timeout` 10 s on
+   those options (cancel reaches the worker within ~8 s). Watchdog covers
+   `Cancelling` only.
+3. **[DONE]** Gateway/API: `session/runs/steer` (`RunSteerParams {
+   sessionId, runId, items }` → `{ steeringId, run }`, correlated admission
+   wait, rejects queued/cancelling/terminal runs); `runs/start` returns at
+   `queued`; `runs/cancel` waits for `Cancelling`/terminal (a parked run no
+   longer returns `running`); `SessionView.runs` includes queued runs
+   (`status: queued`); `ContextEntryView.source` exposes run input / steering
+   / assistant / tool / reasoning / runtime provenance; tool-call views take
+   `cancelled` from the durable per-call completion; contract + TypeScript
+   client regenerated; CLI `/interrupt` → cancel (queued first, then
+   active), `/steer` → steer, plain input during a run → queued run.
+4. **[DONE]** Live validation (`temporal_live`, fake runtime with scripted
+   delays and shared counters): cancel mid-generation (engine cancels in
+   <1 s, worker abandons the provider call, no grace turn, session serves the
+   next run), cancel during a tool batch (cancelled call result with the
+   well-known content, batch view `cancelled`), steering between turns (final
+   answer echoes the steering; finished run rejects steering), queueing
+   (immediate `queued`, visible in the session view, cancel queued, cancel
+   active with one queued → queued runs next), cancel while parked on a child
+   await (await resolves `cancelled`, child run cancelled through the promise
+   cascade). Existing fake-run, parallel-batch, admission-failure, and
+   await-parks scenarios still pass.
 5. Platform UI: authoritative run state + tail fixes; stop with stopping
    state; steer/queue composer; queued list; transcript rendering; platform
    server routes.
-6. CLI polish; docs (`README.md`, `docs/design.md` run-control section);
-   mark this file.
+6. CLI polish; `docs/design.md` run-control section; mark this file.
+
+Known follow-ups from Phase 1:
+
+- Provider-call abandonment latency is bounded by the heartbeat throttle
+  (~0.8 × 10 s); the engine-side cancel is immediate regardless.
+- The runtime-projection refresh (skill/VFS catalogs) runs at admission of
+  an idle run; a queued run starts without a fresh refresh.
+- Workflow-level unit tests for the drive loop remain live-only (no replay
+  test harness); the engine and live suites carry the coverage.
 
 ## Open questions
 

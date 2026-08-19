@@ -105,6 +105,13 @@ pub(super) async fn drive_until_idle(
     }
     let mut action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
     loop {
+        // Client admissions (cancel, steer, queue, context edits) land
+        // at every action boundary against the live drive, and the plan is
+        // recomputed so a cancel stops the next turn/batch from starting and
+        // a steer is part of the next request.
+        if admissions::drain_pending_admissions(ctx, drive).await? {
+            action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
+        }
         match action {
             CoreAgentAction::AppendEvents {
                 expected_head,
@@ -117,8 +124,14 @@ pub(super) async fn drive_until_idle(
                 action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
             }
             CoreAgentAction::GenerateLlm { request } => {
-                let result = call_llm_generate(ctx, request).await?;
-                action = drive.resume_generation(result, workflow_time_ms(ctx))?;
+                action = match call_llm_generate(ctx, drive, request).await? {
+                    control::Raced::Completed(result) => {
+                        drive.resume_generation(result, workflow_time_ms(ctx))?
+                    }
+                    control::Raced::Preempted => {
+                        drive.next_action_unbounded(workflow_time_ms(ctx))?
+                    }
+                };
             }
             CoreAgentAction::CompactContext { request } => {
                 let result = call_context_compact(ctx, request).await?;

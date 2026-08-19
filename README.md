@@ -86,6 +86,10 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 **Durability & scale**
 
 - [x] **Long-running agents**: sessions that last weeks to months and survive restarts
+- [x] **Active-run control**: cancel a run (in-flight model and tool calls are
+  aborted, no farewell turn), steer it with a message the model sees at its
+  next turn, or queue the next message behind it — all admitted live, not
+  after the run
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
 - [x] **Managed sessions and workflow-backed tools**: trusted workflow
   controllers can create sessions with immutable tool bindings, durable

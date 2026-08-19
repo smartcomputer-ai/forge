@@ -81,8 +81,9 @@ use api::{
 };
 use api_projection::{
     CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, api_kind_from_str, api_run_id,
-    decode_stored_entry, event_cursor, event_page_limit, map_session_store_error, parse_api_run_id,
-    project_context_entry_inputs, read_all_session_entries, replay_core_agent_state,
+    api_steering_id, core_run_status_to_api_status, decode_stored_entry, event_cursor,
+    event_page_limit, map_session_store_error, parse_api_run_id, project_context_entry_inputs,
+    read_all_session_entries, replay_core_agent_state,
 };
 use async_trait::async_trait;
 use auth::{
@@ -1514,7 +1515,7 @@ impl GatewayAgentApi {
             .completed
             .iter()
             .find(|run| run.run_id == run_id)
-            .map(|run| run.status)
+            .map(|run| core_run_status_to_api_status(run.status))
             .or_else(|| {
                 loaded
                     .state
@@ -1522,11 +1523,20 @@ impl GatewayAgentApi {
                     .active
                     .as_ref()
                     .filter(|run| run.run_id == run_id)
-                    .map(|run| run.status)
+                    .map(|run| core_run_status_to_api_status(run.status))
             })
-            .unwrap_or(fallback_status);
+            .or_else(|| {
+                loaded
+                    .state
+                    .runs
+                    .queued
+                    .iter()
+                    .any(|run| run.run_id == run_id)
+                    .then_some(api::RunStatus::Queued)
+            })
+            .unwrap_or(core_run_status_to_api_status(fallback_status));
         self.projector()
-            .project_run(&loaded.entries, run_id, status)
+            .project_run_with_api_status(&loaded.entries, run_id, status)
             .await
     }
 }
@@ -2559,10 +2569,7 @@ impl AgentApiService for GatewayAgentApi {
                 if active.run_id == requested_run_id
                     && matches!(
                         active.status,
-                        RunStatus::Active
-                            | RunStatus::Parked
-                            | RunStatus::Cancelling
-                            | RunStatus::CancellingGrace
+                        RunStatus::Active | RunStatus::Parked | RunStatus::Cancelling
                     ) => {}
             Some(active) if active.run_id == requested_run_id => {
                 return Err(AgentApiError::rejected(format!(
@@ -2606,6 +2613,100 @@ impl AgentApiService for GatewayAgentApi {
             .wait_for_cancelled_run(&session_id, requested_run_id)
             .await?;
         Ok(AgentApiOutcome::new(RunCancelResponse { run }))
+    }
+
+    /// Steer the active run. The steering is admitted against the
+    /// live drive — between drive actions or while a model/tool activity is
+    /// in flight — and materializes at the run's next turn boundary. A
+    /// parked run accepts steering without waking.
+    async fn steer_run(
+        &self,
+        params: RunSteerParams,
+    ) -> Result<AgentApiOutcome<RunSteerResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let requested_run_id = parse_api_run_id(&params.run_id)?;
+        if params.items.is_empty() {
+            return Err(AgentApiError::invalid_request(
+                "session/runs/steer requires at least one input item",
+            ));
+        }
+        let loaded = self.load_session_state(&session_id).await?;
+        if loaded.state.lifecycle.status != CoreAgentStatus::Open {
+            return Err(AgentApiError::rejected(format!(
+                "session is not open: {session_id}"
+            )));
+        }
+        let steering_baseline = match loaded.state.runs.active.as_ref() {
+            Some(active)
+                if active.run_id == requested_run_id
+                    && matches!(active.status, RunStatus::Active | RunStatus::Parked) =>
+            {
+                active.steering.len()
+            }
+            Some(active) if active.run_id == requested_run_id => {
+                return Err(AgentApiError::rejected(format!(
+                    "run is not accepting steering: {}",
+                    params.run_id
+                )));
+            }
+            _ if loaded
+                .state
+                .runs
+                .queued
+                .iter()
+                .any(|run| run.run_id == requested_run_id) =>
+            {
+                return Err(AgentApiError::rejected(format!(
+                    "run is queued and cannot be steered yet: {}",
+                    params.run_id
+                )));
+            }
+            _ if loaded
+                .state
+                .runs
+                .completed
+                .iter()
+                .any(|run| run.run_id == requested_run_id) =>
+            {
+                return Err(AgentApiError::rejected(format!(
+                    "run is already terminal: {}",
+                    params.run_id
+                )));
+            }
+            _ => {
+                return Err(AgentApiError::not_found(format!(
+                    "run not found: {}",
+                    params.run_id
+                )));
+            }
+        };
+        let input = run_input_from_api(self.store.as_ref(), &params.items).await?;
+        let correlation_token = format!("steer_{}", uuid::Uuid::new_v4().simple());
+        self.signal_submit_admissions(
+            &session_id,
+            vec![AgentAdmission {
+                command: CoreAgentCommand::RequestRunSteering { input },
+                correlation_token: Some(correlation_token.clone()),
+            }],
+        )
+        .await?;
+        let (steering_id, status) = self
+            .wait_for_steering_accepted(
+                &session_id,
+                requested_run_id,
+                steering_baseline,
+                &correlation_token,
+            )
+            .await?;
+        let run = self
+            .project_run_by_id(&session_id, requested_run_id, status)
+            .await?;
+        Ok(AgentApiOutcome::new(RunSteerResponse {
+            steering_id: api_steering_id(steering_id),
+            run,
+        }))
     }
 
     async fn list_skills(

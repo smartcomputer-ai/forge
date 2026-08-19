@@ -27,6 +27,83 @@ pub const FAKE_TOOL_FAILURE_MARKER: &str = "fail this call";
 /// retry policy constants.
 pub const FAKE_TRANSIENT_RETRY_AFTER: Duration = Duration::from_millis(50);
 
+/// Shared counters for the fake runtime, so live tests can assert how many
+/// provider/tool calls the hosted runtime actually made and how many were
+/// abandoned by activity cancellation.
+#[derive(Clone, Default)]
+pub struct FakeRuntimeCounters {
+    generations_started: Arc<AtomicUsize>,
+    generations_completed: Arc<AtomicUsize>,
+    generations_abandoned: Arc<AtomicUsize>,
+    tool_calls_started: Arc<AtomicUsize>,
+    tool_calls_completed: Arc<AtomicUsize>,
+    tool_calls_abandoned: Arc<AtomicUsize>,
+}
+
+impl FakeRuntimeCounters {
+    pub fn generations_started(&self) -> usize {
+        self.generations_started.load(Ordering::SeqCst)
+    }
+
+    pub fn generations_completed(&self) -> usize {
+        self.generations_completed.load(Ordering::SeqCst)
+    }
+
+    /// Generate calls whose future was dropped before completing: the
+    /// worker abandoned an in-flight provider call on activity cancellation.
+    pub fn generations_abandoned(&self) -> usize {
+        self.generations_abandoned.load(Ordering::SeqCst)
+    }
+
+    pub fn tool_calls_started(&self) -> usize {
+        self.tool_calls_started.load(Ordering::SeqCst)
+    }
+
+    pub fn tool_calls_completed(&self) -> usize {
+        self.tool_calls_completed.load(Ordering::SeqCst)
+    }
+
+    pub fn tool_calls_abandoned(&self) -> usize {
+        self.tool_calls_abandoned.load(Ordering::SeqCst)
+    }
+}
+
+/// Drop guard: counts an in-flight operation as abandoned unless it was
+/// explicitly marked completed.
+struct InflightGuard {
+    completed: bool,
+    completed_counter: Arc<AtomicUsize>,
+    abandoned_counter: Arc<AtomicUsize>,
+}
+
+impl InflightGuard {
+    fn start(
+        started: &Arc<AtomicUsize>,
+        completed: &Arc<AtomicUsize>,
+        abandoned: &Arc<AtomicUsize>,
+    ) -> Self {
+        started.fetch_add(1, Ordering::SeqCst);
+        Self {
+            completed: false,
+            completed_counter: completed.clone(),
+            abandoned_counter: abandoned.clone(),
+        }
+    }
+
+    fn complete(mut self) {
+        self.completed = true;
+        self.completed_counter.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.abandoned_counter.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct FakeLlm {
     blobs: Arc<dyn BlobStore>,
@@ -34,6 +111,8 @@ pub struct FakeLlm {
     parallel_tool_calls: usize,
     failing_parallel_call: Option<usize>,
     transient_failures_remaining: Arc<AtomicUsize>,
+    generation_delay: Duration,
+    counters: FakeRuntimeCounters,
 }
 
 impl FakeLlm {
@@ -44,7 +123,27 @@ impl FakeLlm {
             parallel_tool_calls: 1,
             failing_parallel_call: None,
             transient_failures_remaining: Arc::new(AtomicUsize::new(0)),
+            generation_delay: Duration::ZERO,
+            counters: FakeRuntimeCounters::default(),
         }
+    }
+
+    /// Sleep this long inside every generate call before producing the
+    /// result, so live tests can cancel or steer a run mid-generation.
+    pub fn with_generation_delay(mut self, delay: Duration) -> Self {
+        self.generation_delay = delay;
+        self
+    }
+
+    /// Share counters with the test (and with a [`FakeTools`] built through
+    /// [`FakeTools::with_counters`]).
+    pub fn with_counters(mut self, counters: FakeRuntimeCounters) -> Self {
+        self.counters = counters;
+        self
+    }
+
+    pub fn counters(&self) -> FakeRuntimeCounters {
+        self.counters.clone()
     }
 
     pub fn with_tool_rounds(mut self, tool_rounds_before_final: usize) -> Self {
@@ -149,11 +248,25 @@ impl FakeLlm {
         })
     }
 
+    /// The final answer names the run and echoes every steering message the
+    /// request context carries, so live tests can prove steering reached the
+    /// model at the next turn boundary.
     async fn final_result(
         &self,
         request: &LlmGenerationRequest,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        let text = format!("Fake agent completed run {}.", request.run_id);
+        let mut text = format!("Fake agent completed run {}.", request.run_id);
+        for entry in &request.request.context.entries {
+            if !matches!(entry.source, engine::ContextEntrySource::Steering { .. }) {
+                continue;
+            }
+            let steering = self
+                .blobs
+                .read_text(&entry.content_ref)
+                .await
+                .map_err(io_error)?;
+            text.push_str(&format!(" Steering received: {steering}."));
+        }
         let output_ref = self
             .blobs
             .put_bytes(text.into_bytes())
@@ -198,24 +311,53 @@ impl CoreAgentLlm for FakeLlm {
                 retry_after: Some(FAKE_TRANSIENT_RETRY_AFTER),
             });
         }
-        if tool_result_count(&request) >= self.tool_rounds_before_final {
-            return self.final_result(&request).await;
+        let guard = InflightGuard::start(
+            &self.counters.generations_started,
+            &self.counters.generations_completed,
+            &self.counters.generations_abandoned,
+        );
+        if !self.generation_delay.is_zero() {
+            tokio::time::sleep(self.generation_delay).await;
         }
-        match invocable_fake_tool(&request) {
-            Some(tool_name) => self.tool_call_result(&request, tool_name).await,
-            None => self.final_result(&request).await,
-        }
+        let result = if tool_result_count(&request) >= self.tool_rounds_before_final {
+            self.final_result(&request).await
+        } else {
+            match invocable_fake_tool(&request) {
+                Some(tool_name) => self.tool_call_result(&request, tool_name).await,
+                None => self.final_result(&request).await,
+            }
+        };
+        guard.complete();
+        result
     }
 }
 
 #[derive(Clone)]
 pub struct FakeTools {
     blobs: Arc<dyn BlobStore>,
+    call_delay: Duration,
+    counters: FakeRuntimeCounters,
 }
 
 impl FakeTools {
     pub fn new(blobs: Arc<dyn BlobStore>) -> Self {
-        Self { blobs }
+        Self {
+            blobs,
+            call_delay: Duration::ZERO,
+            counters: FakeRuntimeCounters::default(),
+        }
+    }
+
+    /// Sleep this long inside every tool batch/call before producing results,
+    /// so live tests can cancel a run while its tools execute.
+    pub fn with_call_delay(mut self, delay: Duration) -> Self {
+        self.call_delay = delay;
+        self
+    }
+
+    pub fn with_counters(mut self, counters: FakeRuntimeCounters) -> Self {
+        self.counters = counters;
+        self
     }
 }
 
@@ -225,6 +367,14 @@ impl CoreAgentTools for FakeTools {
         &self,
         request: ToolInvocationBatchRequest,
     ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
+        let guard = InflightGuard::start(
+            &self.counters.tool_calls_started,
+            &self.counters.tool_calls_completed,
+            &self.counters.tool_calls_abandoned,
+        );
+        if !self.call_delay.is_zero() {
+            tokio::time::sleep(self.call_delay).await;
+        }
         let mut results = Vec::with_capacity(request.calls.len());
         for call in &request.calls {
             let args = self
@@ -284,6 +434,7 @@ impl CoreAgentTools for FakeTools {
                 effects: Vec::new(),
             });
         }
+        guard.complete();
         Ok(ToolBatchOutcome::completed(ToolInvocationBatchResult {
             run_id: request.run_id,
             turn_id: request.turn_id,

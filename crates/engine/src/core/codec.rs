@@ -122,9 +122,6 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
             RunEvent::MessageCancelled { .. } => "lightspeed.core.run.message_cancelled",
             RunEvent::SteeringAccepted { .. } => "lightspeed.core.run.steering_accepted",
             RunEvent::CancellationRequested { .. } => "lightspeed.core.run.cancellation_requested",
-            RunEvent::CancellationGraceStarted { .. } => {
-                "lightspeed.core.run.cancellation_grace_started"
-            }
             RunEvent::Completed { .. } => "lightspeed.core.run.completed",
             RunEvent::Failed { .. } => "lightspeed.core.run.failed",
             RunEvent::Cancelled { .. } => "lightspeed.core.run.cancelled",
@@ -137,6 +134,7 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
             TurnEvent::GenerationRequested { .. } => "lightspeed.core.turn.generation_requested",
             TurnEvent::GenerationCompleted { .. } => "lightspeed.core.turn.generation_completed",
             TurnEvent::Completed { .. } => "lightspeed.core.turn.completed",
+            TurnEvent::Cancelled { .. } => "lightspeed.core.turn.cancelled",
         },
         CoreAgentEvent::Context(event) => match event {
             ContextEvent::EntriesApplied { .. } => "lightspeed.core.context.entries_applied",

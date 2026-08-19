@@ -22,7 +22,7 @@ pub use activities::{
     RuntimeProjectionActivityDeps, StorageActivityDeps, ToolActivityDeps, WorkerActivities,
     default_audio_transcoder_from_env,
 };
-pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeTools};
+pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeRuntimeCounters, FakeTools};
 pub use reaper::{PromiseReaper, ReaperStats};
 pub use secrets::{BrokerSecretResolver, StoredModelProviderResolver, StoredProviderKeyResolver};
 pub use session_tools::{SessionTools, ToolCallExecution};

@@ -328,9 +328,7 @@ impl ChatSessionDriver {
                             session_id: session.id.clone(),
                             status: None,
                             lifecycle: None,
-                            updated_at_ns: Some(
-                                session.updated_at_ms.saturating_mul(1_000_000),
-                            ),
+                            updated_at_ns: Some(session.updated_at_ms.saturating_mul(1_000_000)),
                             run_count: 0,
                             provider: None,
                             model: None,
@@ -347,18 +345,8 @@ impl ChatSessionDriver {
             }
             ChatCommand::DeactivateSkill { skill_id } => self.deactivate_skill(skill_id).await,
             ChatCommand::NewSession => self.new_session().await,
-            ChatCommand::SteerRun { .. } => Ok(vec![ChatEvent::Error(ChatErrorView {
-                message:
-                    "steering an active run is not implemented by the current Lightspeed API boundary"
-                        .into(),
-                action: Some("wait for the run to finish and submit a follow-up message".into()),
-            })]),
-            ChatCommand::InterruptRun { .. } => Ok(vec![ChatEvent::Error(ChatErrorView {
-                message: "interrupt is not implemented by the current Lightspeed API boundary".into(),
-                action: Some(
-                    "cancel support belongs at the API boundary and will be added there".into(),
-                ),
-            })]),
+            ChatCommand::SteerRun { text } => self.steer_active_run(text).await,
+            ChatCommand::InterruptRun { .. } => self.cancel_active_run().await,
             ChatCommand::PauseSession | ChatCommand::ResumeSession => {
                 Ok(vec![ChatEvent::Error(ChatErrorView {
                     message: "pause/resume is not implemented for Lightspeed API sessions".into(),
@@ -440,15 +428,30 @@ impl ChatSessionDriver {
         }
     }
 
+    /// Submit a user message as a new run. While another run is active the
+    /// message is queued behind it: `session/runs/start` returns the
+    /// run as `queued`, and it starts when the active run ends.
     async fn submit_user_message(&mut self, text: String) -> Result<Vec<ChatEvent>> {
-        if !self.is_quiescent() {
+        if self.pending_run_in_flight() {
             return Ok(vec![ChatEvent::Error(ChatErrorView {
-                message: "a run is already active in this session".into(),
-                action: Some("wait for it to finish before submitting another message".into()),
+                message: "the previous message is still being submitted".into(),
+                action: Some("retry in a moment".into()),
             })]);
         }
+        if self.pending_run.is_some() {
+            let mut events = self.collect_finished_run().await?;
+            events.extend(self.submit_user_message_now(text).await?);
+            return Ok(events);
+        }
+        self.submit_user_message_now(text).await
+    }
 
-        let events = vec![self.status_event("working")];
+    async fn submit_user_message_now(&mut self, text: String) -> Result<Vec<ChatEvent>> {
+        let events = vec![self.status_event(if self.run_active() {
+            "queued"
+        } else {
+            "working"
+        })];
 
         let api = self.api.clone();
         let session_id = self.session_id.clone();
@@ -466,6 +469,87 @@ impl ChatSessionDriver {
             .await
         }));
 
+        Ok(events)
+    }
+
+    /// The run currently executing (running or parked), if any. Queued runs
+    /// do not count: they cannot be steered yet and are cancelled by id.
+    fn active_run_id(&self) -> Option<String> {
+        self.turns.iter().rev().find_map(|turn| {
+            turn.run.as_ref().and_then(|run| {
+                matches!(
+                    run.status,
+                    ChatProgressStatus::Running | ChatProgressStatus::Waiting
+                )
+                .then(|| run.id.clone())
+            })
+        })
+    }
+
+    /// The newest run that is still queued or active: what `/interrupt`
+    /// stops. Queued runs are cancelled first so a stop never lets the next
+    /// message start behind the one being stopped.
+    fn interruptible_run_id(&self) -> Option<String> {
+        self.turns
+            .iter()
+            .rev()
+            .find_map(|turn| {
+                turn.run.as_ref().and_then(|run| {
+                    (run.status == ChatProgressStatus::Queued).then(|| run.id.clone())
+                })
+            })
+            .or_else(|| self.active_run_id())
+    }
+
+    async fn cancel_active_run(&mut self) -> Result<Vec<ChatEvent>> {
+        let Some(run_id) = self.interruptible_run_id() else {
+            return Ok(vec![ChatEvent::Error(ChatErrorView {
+                message: "no run is active in this session".into(),
+                action: None,
+            })]);
+        };
+        let response = self
+            .api
+            .cancel_run(api::RunCancelParams {
+                session_id: self.session_id.clone(),
+                run_id: run_id.clone(),
+            })
+            .await
+            .map_err(api_error)?
+            .result;
+        let mut events = vec![self.status_event(match response.run.status {
+            api::RunStatus::Cancelled => "cancelled",
+            _ => "cancelling",
+        })];
+        events.extend(self.drain_event_log().await?);
+        Ok(events)
+    }
+
+    async fn steer_active_run(&mut self, text: String) -> Result<Vec<ChatEvent>> {
+        let Some(run_id) = self.active_run_id() else {
+            return Ok(vec![ChatEvent::Error(ChatErrorView {
+                message: "no run is active in this session".into(),
+                action: Some("send the message normally; it starts a new run".into()),
+            })]);
+        };
+        let response = self
+            .api
+            .steer_run(api::RunSteerParams {
+                session_id: self.session_id.clone(),
+                run_id,
+                items: vec![InputItem::Text { text }],
+            })
+            .await
+            .map_err(api_error)?
+            .result;
+        let mut events = vec![self.notice_event(
+            "steered",
+            format!(
+                "steering {} accepted; the model sees it at the next turn",
+                response.steering_id
+            ),
+        )];
+        events.extend(self.drain_event_log().await?);
         Ok(events)
     }
 
@@ -787,6 +871,12 @@ impl ChatSessionDriver {
             SessionEventKindView::ToolCallCompleted { .. } => {
                 events.push(self.status_event("tool result received"));
             }
+            SessionEventKindView::RunSteeringAccepted { .. } => {
+                events.push(self.status_event("steering accepted"));
+            }
+            SessionEventKindView::RunCancellationRequested { .. } => {
+                events.push(self.status_event("cancelling"));
+            }
             SessionEventKindView::SessionOpened { .. }
             | SessionEventKindView::SessionConfigChanged { .. }
             | SessionEventKindView::WorkflowToolsConfigured { .. }
@@ -796,8 +886,6 @@ impl ChatSessionDriver {
             | SessionEventKindView::WorkflowToolStartRequested { .. }
             | SessionEventKindView::WorkflowToolStartFailed { .. }
             | SessionEventKindView::SessionClosed
-            | SessionEventKindView::RunSteeringAccepted { .. }
-            | SessionEventKindView::RunCancellationRequested { .. }
             | SessionEventKindView::ContextEntriesApplied { .. }
             | SessionEventKindView::ContextEntriesRemoved { .. }
             | SessionEventKindView::ContextKeysRemoved { .. }
@@ -808,6 +896,7 @@ impl ChatSessionDriver {
             | SessionEventKindView::SkillCatalogSet { .. }
             | SessionEventKindView::SkillActivationsSet { .. }
             | SessionEventKindView::TurnCompleted { .. }
+            | SessionEventKindView::TurnCancelled { .. }
             | SessionEventKindView::ToolsReplaced { .. }
             | SessionEventKindView::ToolsPatched { .. }
             | SessionEventKindView::ToolBatchDeferred { .. }
@@ -1765,6 +1854,7 @@ mod tests {
             token_estimate: None,
             text: None,
             display: None,
+            source: None,
         }
     }
 
@@ -1863,6 +1953,7 @@ mod tests {
                     output: Some("Echoing your input: simba".into()),
                     error: None,
                 }),
+                source: None,
             }],
             tool_batches: Vec::new(),
         };
