@@ -55,7 +55,9 @@ use oauth_api::{
     parse_oauth_client_id,
 };
 use parse::*;
-use provider_controllers::{ProviderControllerConnector, WebSocketProviderControllerConnector};
+use provider_controllers::{
+    ProviderControllerConnector, WebSocketProviderControllerConnector, finish_provider_controller,
+};
 use session_toolset::store_tool_documents;
 use skills::{
     active_skill_catalog_ref, active_skill_ids, active_skill_ids_after_remove,

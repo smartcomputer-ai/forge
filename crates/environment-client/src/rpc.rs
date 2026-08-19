@@ -13,6 +13,12 @@ use crate::error::{EnvironmentClientError, EnvironmentClientResult};
 pub trait JsonRpcTransport: Send {
     async fn send(&mut self, message: Value) -> EnvironmentClientResult<()>;
     async fn recv(&mut self) -> EnvironmentClientResult<Option<Value>>;
+
+    /// Gracefully close the transport when it has an application-level
+    /// shutdown handshake. Stateless/in-process transports need no action.
+    async fn close(&mut self) -> EnvironmentClientResult<()> {
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -41,6 +47,10 @@ where
 
     pub fn into_inner(self) -> T {
         self.transport
+    }
+
+    pub async fn close(&mut self) -> EnvironmentClientResult<()> {
+        self.transport.close().await
     }
 
     pub async fn request<P, R>(&mut self, method: &str, params: &P) -> EnvironmentClientResult<R>

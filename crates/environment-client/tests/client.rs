@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, VecDeque};
 use async_trait::async_trait;
 use environment_client::{
     EnvironmentClientError, EnvironmentClientResult, EnvironmentDataClient,
-    EnvironmentProviderClient, JsonRpcTransport,
+    EnvironmentProviderClient, JsonRpcTransport, WebSocketConnectOptions,
 };
 use environment_protocol::{
     control::{
@@ -19,6 +19,40 @@ use environment_protocol::{
     shared::{ByteChunk, CURRENT_PROTOCOL_VERSION, EnvironmentPath, JobId},
 };
 use serde_json::{Value, json};
+
+#[tokio::test(flavor = "current_thread")]
+async fn websocket_client_close_sends_a_close_frame() {
+    use futures_util::StreamExt as _;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::{accept_async, tungstenite::Message};
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+    let address = listener.local_addr().expect("listener address");
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut websocket = accept_async(stream).await.expect("websocket handshake");
+        while let Some(message) = websocket.next().await {
+            if matches!(message.expect("websocket message"), Message::Close(_)) {
+                return true;
+            }
+        }
+        false
+    });
+
+    let mut client = EnvironmentDataClient::connect(
+        &format!("ws://{address}"),
+        WebSocketConnectOptions::default(),
+    )
+    .await
+    .expect("connect client");
+    client.close().await.expect("close client");
+
+    let saw_close = tokio::time::timeout(std::time::Duration::from_secs(2), server)
+        .await
+        .expect("server observed close before timeout")
+        .expect("server task");
+    assert!(saw_close, "client dropped without a WebSocket close frame");
+}
 
 #[derive(Default)]
 struct MockTransport {

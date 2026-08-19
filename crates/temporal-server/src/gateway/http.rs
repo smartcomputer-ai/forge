@@ -754,6 +754,10 @@ async fn proxy_provider_route(
             }
         }
     }
+    // Whichever leg ended first, complete the WebSocket closing handshake on
+    // both sides instead of dropping the opposite TCP stream abruptly.
+    let _ = provider_writer.send(ProviderMessage::Close(None)).await;
+    let _ = worker.send(Message::Close(None)).await;
 }
 
 async fn proxy_external_route(
@@ -805,6 +809,10 @@ async fn proxy_external_route(
             }
         }
     }
+    // A worker activity may be cancelled or its client may disappear without
+    // a close frame. Do not propagate that abrupt teardown to envd.
+    let _ = daemon_writer.send(ProviderMessage::Close(None)).await;
+    let _ = worker.send(Message::Close(None)).await;
 }
 
 /// Client ID Metadata Document (draft-ietf-oauth-client-id-metadata-document):

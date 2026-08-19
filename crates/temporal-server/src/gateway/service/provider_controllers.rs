@@ -32,6 +32,10 @@ use std::{
 
 #[async_trait]
 pub(crate) trait ProviderController: Send {
+    async fn close(&mut self) -> Result<(), AgentApiError> {
+        Ok(())
+    }
+
     async fn initialize(
         &mut self,
         params: &ControllerInitializeParams,
@@ -121,8 +125,16 @@ impl ProviderControllerConnector for WebSocketProviderControllerConnector {
                 protocol_version: CURRENT_PROTOCOL_VERSION,
                 client_name: "lightspeed-temporal-server".to_owned(),
             })
-            .await?;
+            .await;
+        let initialized = match initialized {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                let _ = controller.close().await;
+                return Err(error);
+            }
+        };
         if initialized.protocol_version != CURRENT_PROTOCOL_VERSION {
+            let _ = controller.close().await;
             return Err(AgentApiError::rejected(format!(
                 "environment provider protocol version {} is incompatible with {}",
                 initialized.protocol_version, CURRENT_PROTOCOL_VERSION,
@@ -381,6 +393,12 @@ impl<T> ProviderController for EnvironmentProviderClient<T>
 where
     T: environment_client::JsonRpcTransport + Send,
 {
+    async fn close(&mut self) -> Result<(), AgentApiError> {
+        EnvironmentProviderClient::close(self)
+            .await
+            .map_err(map_environment_client_error)
+    }
+
     async fn initialize(
         &mut self,
         params: &ControllerInitializeParams,
@@ -454,6 +472,17 @@ where
     }
 }
 
+/// Finish one scoped provider-controller operation and close its transport on
+/// both success and failure. A close error does not replace the operation's
+/// result: controller calls are already complete when this runs.
+pub(super) async fn finish_provider_controller<T>(
+    mut controller: Box<dyn ProviderController>,
+    result: Result<T, AgentApiError>,
+) -> Result<T, AgentApiError> {
+    let _ = controller.close().await;
+    result
+}
+
 pub(super) fn map_environment_client_error(error: EnvironmentClientError) -> AgentApiError {
     match error {
         EnvironmentClientError::Protocol(error) => {
@@ -482,7 +511,30 @@ fn unsupported_transport(transport: impl std::fmt::Display) -> AgentApiError {
 mod tests {
     use super::*;
     use ::environments::EnvironmentConnectionSpec;
+    use environment_client::{EnvironmentClientResult, JsonRpcTransport};
     use environment_protocol::control::targets::ProviderBindingContext;
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct CloseTrackingTransport {
+        closed: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl JsonRpcTransport for CloseTrackingTransport {
+        async fn send(&mut self, _message: Value) -> EnvironmentClientResult<()> {
+            Ok(())
+        }
+
+        async fn recv(&mut self) -> EnvironmentClientResult<Option<Value>> {
+            Ok(None)
+        }
+
+        async fn close(&mut self) -> EnvironmentClientResult<()> {
+            self.closed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
 
     fn connection() -> EnvironmentConnectionSpec {
         EnvironmentConnectionSpec::new(
@@ -509,6 +561,22 @@ mod tests {
             },
             template_id: "rust-v1".to_owned(),
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn finishing_a_provider_operation_closes_its_transport() {
+        let closed = Arc::new(AtomicBool::new(false));
+        let controller: Box<dyn ProviderController> =
+            Box::new(EnvironmentProviderClient::new(CloseTrackingTransport {
+                closed: closed.clone(),
+            }));
+
+        let value = finish_provider_controller(controller, Ok::<_, AgentApiError>(42))
+            .await
+            .expect("operation result");
+
+        assert_eq!(value, 42);
+        assert!(closed.load(Ordering::SeqCst));
     }
 
     #[tokio::test(flavor = "current_thread")]

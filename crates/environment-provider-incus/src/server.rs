@@ -139,6 +139,7 @@ async fn connection<B: IncusBackend>(app: App<B>, mut socket: WebSocket) {
             _ => {}
         }
     }
+    let _ = socket.send(Message::Close(None)).await;
 }
 
 async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
