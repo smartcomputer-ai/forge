@@ -31,17 +31,29 @@ const botName = z
   .string()
   .regex(/^[a-z0-9][a-z0-9-]*$/, "lowercase alphanumerics and dashes")
   .max(64);
+/// Temporal Schedules take classic 5-field crontab or an @-macro; reject
+/// Quartz-style expressions (seconds field, `?`) with a message that names
+/// the expected shape instead of Temporal's field-range error.
+const cronField = z
+  .string()
+  .trim()
+  .min(1)
+  .max(200)
+  .refine(
+    (value) => value.startsWith("@") || (!value.includes("?") && value.split(/\s+/).length === 5),
+    "expected 5-field cron (minute hour day month weekday) or an @-macro like @daily",
+  );
 const triggerCreateSchema = z.object({
   name: botName,
   kind: z.literal("schedule").default("schedule"),
-  cron: z.string().trim().min(1).max(200),
+  cron: cronField,
   timezone: z.string().trim().min(1).max(64).default("UTC"),
   summary: z.string().trim().min(1).max(2_000),
   enabled: z.boolean().default(true),
 });
 const triggerUpdateSchema = z
   .object({
-    cron: z.string().trim().min(1).max(200).optional(),
+    cron: cronField.optional(),
     timezone: z.string().trim().min(1).max(64).optional(),
     summary: z.string().trim().min(1).max(2_000).optional(),
     enabled: z.boolean().optional(),

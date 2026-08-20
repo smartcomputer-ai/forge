@@ -26,11 +26,28 @@ export class ApiError extends Error {
 }
 
 function extractMessage(body: unknown): string | null {
-  if (body && typeof body === "object" && "error" in body) {
-    const error = (body as { error: unknown }).error;
-    return typeof error === "string" ? error : null;
+  if (!body || typeof body !== "object" || !("error" in body)) return null;
+  const { error, issues, failure } = body as {
+    error: unknown;
+    issues?: unknown;
+    failure?: unknown;
+  };
+  if (typeof error !== "string") return null;
+  if (typeof failure === "string" && failure) return `${error}: ${failure}`;
+  if (Array.isArray(issues)) {
+    const details = issues
+      .slice(0, 3)
+      .map((issue) => {
+        if (!issue || typeof issue !== "object") return null;
+        const { path, message } = issue as { path?: unknown; message?: unknown };
+        if (typeof message !== "string") return null;
+        const at = Array.isArray(path) && path.length > 0 ? `${path.join(".")}: ` : "";
+        return `${at}${message}`;
+      })
+      .filter((detail): detail is string => detail !== null);
+    if (details.length > 0) return `${error} — ${details.join("; ")}`;
   }
-  return null;
+  return error;
 }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -590,5 +607,93 @@ export interface FoundryRelease {
   initiatedBy: string | null;
   smokePassed: boolean | null;
   detailsRef: string | null;
+  createdAt: string;
+}
+
+/// Bots: durable event routers that own managed sessions.
+export interface Bot {
+  id: string;
+  universeId: string;
+  name: string;
+  profileId: string;
+  brief: string | null;
+  runsPerDay: number | null;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BotTrigger {
+  id: string;
+  botId: string;
+  name: string;
+  kind: "schedule";
+  cron: string;
+  timezone: string;
+  summary: string;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BotEventRef {
+  version: 1;
+  id: string;
+  ref: string;
+}
+
+export interface BotRecentEvent {
+  id: string;
+  ref: string;
+  status: "handled" | "deferred" | "ignored" | "blocked" | "unresolved" | "run_failed";
+  runId?: string;
+  summary?: string;
+  failure?: string;
+}
+
+export interface BotState {
+  botName: string;
+  profileId: string;
+  sessionId: string;
+  controllerStatus:
+    | "initializing"
+    | "idle"
+    | "session_busy"
+    | "delivering_event"
+    | "budget_exhausted"
+    | "degraded";
+  activeEvent: BotEventRef | null;
+  activeRunId: string | null;
+  sessionReady: boolean;
+  pendingEvents: BotEventRef[];
+  pendingEventCount: number;
+  recentEvents: BotRecentEvent[];
+  eventsProcessed: number;
+  duplicateEventCount: number;
+  duplicateEmissionCount: number;
+  appliedProfileRevision: number | null;
+  runsPerDay: number | null;
+  runsToday: number;
+  lastError: string | null;
+}
+
+export interface BotEventEnvelope {
+  id: string;
+  botId: string;
+  eventId: string;
+  kind: string;
+  source: string;
+  occurredAt: string;
+  ref: string;
+  receivedAt: string;
+}
+
+export interface BotActivityEntry {
+  id: string;
+  botId: string;
+  kind: string;
+  eventId: string | null;
+  runId: string | null;
+  detail: string | null;
   createdAt: string;
 }

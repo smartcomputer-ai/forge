@@ -8,6 +8,7 @@ import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
+import { BotsPage } from "@/pages/BotsPage";
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { FoundryPage } from "@/pages/FoundryPage";
@@ -97,6 +98,8 @@ export function App() {
           path="u/:slug/workspaces/:workspaceId/files/*"
           element={<WorkspacesPage admin={admin} />}
         />
+        <Route path="u/:slug/bots" element={<BotsPage admin={admin} />} />
+        <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} />} />
         {FOUNDRY_ENABLED && (
           <>
             <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />

@@ -36,6 +36,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { BotMark } from "@/components/icons/bot";
 import { UniverseSwitcher } from "@/components/universe-switcher";
 import { UserMenu } from "@/components/user-menu";
 import type { SessionUser } from "@/auth";
@@ -161,6 +162,12 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         to={`/u/${active.slug}/profiles`}
                         icon={SlidersHorizontal}
                         label="Profiles"
+                        prefix
+                      />
+                      <NavItem
+                        to={`/u/${active.slug}/bots`}
+                        icon={BotMark}
+                        label="Bots"
                         prefix
                       />
                       {FOUNDRY_ENABLED && (
@@ -293,10 +300,10 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
           <SidebarTrigger />
           <span className="text-sm font-medium">{mobileTitle}</span>
         </header>
-        {/* Master-detail surfaces (sessions, workspaces, profiles, Foundry) manage
-            their own panes and scrolling — full-bleed. Everything else
+        {/* Master-detail surfaces (sessions, workspaces, profiles, bots, Foundry)
+            manage their own panes and scrolling — full-bleed. Everything else
             gets the centered scrolling column. */}
-        {/\/u\/[^/]+\/(sessions|workspaces|profiles|foundry)/.test(location.pathname) ? (
+        {/\/u\/[^/]+\/(sessions|workspaces|profiles|bots|foundry)/.test(location.pathname) ? (
           <main className="flex min-h-0 min-w-0 flex-1 flex-col">
             <Outlet />
           </main>

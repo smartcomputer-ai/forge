@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- The Lightspeed bot face (BotFace in src/components/icons/bot.tsx),
+       scaled up to fill the tab icon. The fill follows the OS theme; the
+       eyes are holes, so the tab background shows through. -->
+  <style>
+    path { fill: #18181b; }
+    @media (prefers-color-scheme: dark) { path { fill: #fafafa; } }
+  </style>
+  <path transform="rotate(7 24 24)" fill-rule="evenodd" d="M3 24a21 21 0 1 0 42 0 21 21 0 1 0-42 0ZM15.3 16.4a2.9 2.9 0 0 1 5.8 0v6a2.9 2.9 0 0 1-5.8 0ZM26.9 16.4a2.9 2.9 0 0 1 5.8 0v6a2.9 2.9 0 0 1-5.8 0Z"/>
+</svg>

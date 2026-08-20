@@ -28,8 +28,12 @@
   disabled), a `botScheduleFireWorkflowV1` that re-reads the trigger row and
   admits a deterministic envelope (`schedule:<triggerId>:<nominalTime>`)
   through store-then-wake, trigger CRUD routes, and integration coverage for
-  upsert idempotency, immediate trigger, pause, and delete. Remaining in
-  slice 1: the dogfood bot (stage 3).
+  upsert idempotency, immediate trigger, pause, and delete. A web UI landed
+  the same day: a Bots master-detail surface (`platform/web/src/pages/
+  BotsPage.tsx` + `components/bot/`) with the live session embedded, a
+  control panel (status, budget, triggers CRUD, event inbox, activity feed,
+  send-event), and the BotMark glyph in navigation. Remaining in slice 1:
+  the dogfood bot (stage 3).
 
 ## The proposal in one screen
 
