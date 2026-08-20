@@ -58,6 +58,8 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await migrateDb(handle);
     await requireTable(handle.pool, "universes");
     await requireTable(handle.pool, "foundry_releases");
+    await requireTable(handle.pool, "bot_triggers");
+    await requireTable(handle.pool, "bot_events");
   } finally {
     await handle.pool.end();
   }
@@ -72,8 +74,11 @@ async function checkUpgrade(
     await migrate(handle.db, { migrationsFolder: previousFolder });
     await requireTable(handle.pool, "universes");
     await requireMissingTable(handle.pool, "foundry_releases");
+    await requireMissingTable(handle.pool, "bot_triggers");
     await migrateDb(handle);
     await requireTable(handle.pool, "foundry_releases");
+    await requireTable(handle.pool, "bot_triggers");
+    await requireTable(handle.pool, "bot_events");
   } finally {
     await handle.pool.end();
   }
