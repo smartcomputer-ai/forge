@@ -17,14 +17,18 @@ import {
   BOT_EVENT_SIGNAL,
   BOT_STATE_QUERY,
   BOTS_ACTIVITY_TASK_QUEUE,
+  botDeliveryId,
   botEventSubmissionId,
   botEventTerminalToken,
   botSessionId,
   parseEventResolveArgs,
   validateBotEvent,
+  type BotCoalesceParamsV1,
   type BotEvent,
   type BotEventOutcome,
+  type BotEventSession,
   type BotStartV1,
+  type BotWhenBusyV1,
 } from "../contracts/bots.js";
 
 const EVENT_TERMINAL_TIMEOUT = "24 hours";
@@ -37,16 +41,47 @@ const RECENT_EVENT_CAP = 50;
 export interface BotRecentEventSnapshot {
   id: string;
   ref: string;
-  status: BotEventOutcome | "unresolved" | "run_failed";
+  status: BotEventOutcome | "unresolved" | "run_failed" | "appended" | "steered";
+  eventCount?: number;
   runId?: string;
   summary?: string;
   failure?: string;
+}
+
+/** One unit of work for a session: a single event or a coalesced batch. */
+export interface BotDelivery {
+  id: string;
+  events: BotEvent[];
+  session?: BotEventSession;
+  whenBusy: BotWhenBusyV1;
+}
+
+interface CoalesceBuffer {
+  params: BotCoalesceParamsV1;
+  session?: BotEventSession;
+  whenBusy: BotWhenBusyV1;
+  events: BotEvent[];
+  firstAtMs: number;
+  lastAtMs: number;
+}
+
+export interface BotBufferSnapshot {
+  key: string;
+  count: number;
+  flushAtMs: number;
+}
+
+export interface BotManagedSession {
+  sessionId: string;
+  label: string;
+  kind: "main" | "keyed" | "event";
 }
 
 export interface BotSnapshot {
   botName: string;
   profileId: string;
   sessionId: string;
+  sessions: BotManagedSession[];
   controllerStatus:
     | "initializing"
     | "idle"
@@ -54,11 +89,12 @@ export interface BotSnapshot {
     | "delivering_event"
     | "budget_exhausted"
     | "degraded";
-  activeEvent: BotEvent | null;
+  activeDelivery: { id: string; eventCount: number; sessionId: string } | null;
   activeRunId: string | null;
   sessionReady: boolean;
-  pendingEvents: BotEvent[];
   pendingEventCount: number;
+  pendingDeliveryCount: number;
+  buffers: BotBufferSnapshot[];
   recentEvents: BotRecentEventSnapshot[];
   eventsProcessed: number;
   duplicateEventCount: number;
@@ -72,7 +108,10 @@ export interface BotSnapshot {
 export interface BotCarryV1 {
   version: 1;
   config: BotStartV1;
-  pendingEvents: BotEvent[];
+  /** Legacy single-event queue; converted to deliveries on start. */
+  pendingEvents?: BotEvent[];
+  pendingDeliveries?: BotDelivery[];
+  buffers?: [string, CoalesceBuffer][];
   recentEvents: BotRecentEventSnapshot[];
   seenEventIds: string[];
   seenEmissionIds: string[];
@@ -85,7 +124,11 @@ export interface BotCarryV1 {
   duplicateEmissionCount: number;
   runDay: string;
   runsToday: number;
+  extraSessions?: BotManagedSession[];
+  sessionCursors?: Record<string, number>;
 }
+
+const EXTRA_SESSION_CAP = 200;
 
 const activities = proxyActivities<BotActivities>({
   taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
@@ -106,11 +149,29 @@ export async function botControllerWorkflowV1(
   validateConfig(initial);
   let config = carry?.config ?? initial;
   const sessionId = botSessionId(config.botName);
-  const pendingEvents = [...(carry?.pendingEvents ?? [])];
+  const pendingDeliveries: BotDelivery[] = [
+    ...(carry?.pendingEvents ?? []).map((event) => ({
+      id: event.id,
+      events: [event],
+      ...(event.session === undefined ? {} : { session: event.session }),
+      whenBusy: (event.deliver?.whenBusy ?? "queue") as BotWhenBusyV1,
+    })),
+    ...(carry?.pendingDeliveries ?? []),
+  ];
+  const buffers = new Map<string, CoalesceBuffer>(carry?.buffers ?? []);
   const recentEvents = [...(carry?.recentEvents ?? [])];
-  const seenEventIds = new Set(carry?.seenEventIds ?? pendingEvents.map((event) => event.id));
+  const seenEventIds = new Set(
+    carry?.seenEventIds ??
+      pendingDeliveries.flatMap((delivery) => delivery.events.map((event) => event.id)),
+  );
   const seenEmissionIds = new Set(carry?.seenEmissionIds ?? []);
   const emissionInbox: unknown[] = [];
+  // Sessions this controller has created beyond the main one (perKey /
+  // perEvent routing). The list is capped for carry; an evicted session's
+  // cursor restarts at zero, which only re-reads already-consumed facts.
+  const extraSessions: BotManagedSession[] = [...(carry?.extraSessions ?? [])];
+  const ensuredExtra = new Set(extraSessions.map((session) => session.sessionId));
+  const sessionCursors = new Map<string, number>(Object.entries(carry?.sessionCursors ?? {}));
   let eventCursorSeq = carry?.eventCursorSeq ?? 0;
   let appliedProfileId = carry?.appliedProfileId ?? null;
   let appliedProfileRevision = carry?.appliedProfileRevision ?? null;
@@ -121,7 +182,7 @@ export async function botControllerWorkflowV1(
   let runDay = carry?.runDay ?? utcDay();
   let runsToday = carry?.runsToday ?? 0;
   let controllerStatus: BotSnapshot["controllerStatus"] = "initializing";
-  let activeEvent: BotEvent | null = null;
+  let activeDelivery: BotDelivery | null = null;
   let activeRunId: string | null = null;
   let activeResolution: { outcome: BotEventOutcome; summary: string | null } | null = null;
   let activeTerminal:
@@ -130,6 +191,42 @@ export async function botControllerWorkflowV1(
   let configDirty = true;
   let lastError: string | null = null;
 
+  function flushBuffer(key: string): void {
+    const buffer = buffers.get(key);
+    if (buffer === undefined || buffer.events.length === 0) return;
+    buffers.delete(key);
+    pendingDeliveries.push({
+      id: botDeliveryId(buffer.events.map((event) => event.id)),
+      events: buffer.events,
+      ...(buffer.session === undefined ? {} : { session: buffer.session }),
+      whenBusy: buffer.whenBusy,
+    });
+  }
+
+  function flushRipeBuffers(): void {
+    const now = Date.now();
+    for (const [key, buffer] of [...buffers]) {
+      if (
+        now >= buffer.lastAtMs + buffer.params.debounceMs ||
+        now >= buffer.firstAtMs + buffer.params.maxWaitMs
+      ) {
+        flushBuffer(key);
+      }
+    }
+  }
+
+  function nextBufferDeadline(): number | null {
+    let earliest: number | null = null;
+    for (const buffer of buffers.values()) {
+      const deadline = Math.min(
+        buffer.lastAtMs + buffer.params.debounceMs,
+        buffer.firstAtMs + buffer.params.maxWaitMs,
+      );
+      if (earliest === null || deadline < earliest) earliest = deadline;
+    }
+    return earliest;
+  }
+
   setHandler(botEventSignal, (event) => {
     validateBotEvent(event);
     if (seenEventIds.has(event.id)) {
@@ -137,7 +234,34 @@ export async function botControllerWorkflowV1(
       return;
     }
     seenEventIds.add(event.id);
-    pendingEvents.push(event);
+    const whenBusy = event.deliver?.whenBusy ?? "queue";
+    if (event.coalesce === undefined) {
+      pendingDeliveries.push({
+        id: event.id,
+        events: [event],
+        ...(event.session === undefined ? {} : { session: event.session }),
+        whenBusy,
+      });
+      return;
+    }
+    const params = event.coalesce;
+    const now = Date.now();
+    let buffer = buffers.get(params.key);
+    if (buffer === undefined) {
+      buffer = {
+        params,
+        ...(event.session === undefined ? {} : { session: event.session }),
+        whenBusy,
+        events: [],
+        firstAtMs: now,
+        lastAtMs: now,
+      };
+      buffers.set(params.key, buffer);
+    }
+    buffer.events.push(event);
+    buffer.lastAtMs = now;
+    buffer.params = params;
+    if (buffer.events.length >= params.maxCount) flushBuffer(params.key);
   });
   setHandler(botConfigSignal, (next) => {
     validateConfig(next);
@@ -158,12 +282,33 @@ export async function botControllerWorkflowV1(
     botName: config.botName,
     profileId: config.profileId,
     sessionId,
+    sessions: [
+      { sessionId, label: "main", kind: "main" as const },
+      ...extraSessions,
+    ],
     controllerStatus,
-    activeEvent,
+    activeDelivery:
+      activeDelivery === null
+        ? null
+        : {
+            id: activeDelivery.id,
+            eventCount: activeDelivery.events.length,
+            sessionId: activeDelivery.session?.sessionId ?? sessionId,
+          },
     activeRunId,
     sessionReady,
-    pendingEvents: pendingEvents.slice(0, 100),
-    pendingEventCount: pendingEvents.length,
+    pendingEventCount:
+      pendingDeliveries.reduce((sum, delivery) => sum + delivery.events.length, 0) +
+      [...buffers.values()].reduce((sum, buffer) => sum + buffer.events.length, 0),
+    pendingDeliveryCount: pendingDeliveries.length,
+    buffers: [...buffers.entries()].map(([key, buffer]) => ({
+      key,
+      count: buffer.events.length,
+      flushAtMs: Math.min(
+        buffer.lastAtMs + buffer.params.debounceMs,
+        buffer.firstAtMs + buffer.params.maxWaitMs,
+      ),
+    })),
     recentEvents: [...recentEvents],
     eventsProcessed,
     duplicateEventCount,
@@ -243,13 +388,22 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  async function reconcileRun(runId: string): Promise<void> {
+  function cursorFor(target: string): number {
+    return target === sessionId ? eventCursorSeq : (sessionCursors.get(target) ?? 0);
+  }
+
+  function setCursor(target: string, seq: number): void {
+    if (target === sessionId) eventCursorSeq = seq;
+    else sessionCursors.set(target, seq);
+  }
+
+  async function reconcileRun(runId: string, target: string): Promise<void> {
     const pulled = await activities.readWorkflowToolInvocations({
       universeId: config.universeId,
-      sessionId,
-      afterSeq: eventCursorSeq,
+      sessionId: target,
+      afterSeq: cursorFor(target),
     });
-    eventCursorSeq = pulled.nextSeq;
+    setCursor(target, pulled.nextSeq);
     for (const invocation of pulled.invocations) {
       if (invocation.runId !== runId) continue;
       if (invocation.toolId !== BOT_EVENT_RESOLVE_TOOL_ID) continue;
@@ -258,7 +412,7 @@ export async function botControllerWorkflowV1(
         blobRef: invocation.argumentsRef,
       });
       const resolution = parseEventResolveArgs(args);
-      if (activeEvent !== null && resolution.eventId === activeEvent.id) {
+      if (activeDelivery !== null && resolution.eventId === activeDelivery.id) {
         activeResolution = { outcome: resolution.outcome, summary: resolution.summary };
       }
     }
@@ -274,17 +428,24 @@ export async function botControllerWorkflowV1(
         continue;
       }
       seenEmissionIds.add(envelope.emission_id);
-      if (
-        envelope.producer.kind === "session" &&
-        (envelope.producer.universe_id !== config.universeId ||
-          envelope.producer.session_id !== sessionId)
-      ) {
-        throw new TypeError("emission does not belong to this bot's session");
+      let producerSessionId = sessionId;
+      if (envelope.producer.kind === "session") {
+        const producer = envelope.producer;
+        if (
+          producer.universe_id !== config.universeId ||
+          (producer.session_id !== sessionId && !producer.session_id.startsWith(`${sessionId}:`))
+        ) {
+          throw new TypeError("emission does not belong to this bot's sessions");
+        }
+        producerSessionId = producer.session_id;
       }
       if (envelope.body.kind !== "run_terminal") continue;
       const terminalRunId = `run_${envelope.body.run_id}`;
-      await reconcileRun(terminalRunId);
-      if (activeEvent !== null && envelope.body.token === botEventTerminalToken(activeEvent.id)) {
+      await reconcileRun(terminalRunId, producerSessionId);
+      if (
+        activeDelivery !== null &&
+        envelope.body.token === botEventTerminalToken(activeDelivery.id)
+      ) {
         activeTerminal = {
           token: envelope.body.token,
           status: envelope.body.status,
@@ -295,12 +456,12 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  async function waitUntilSessionIdle(): Promise<void> {
+  async function waitUntilSessionIdle(target: string): Promise<void> {
     for (;;) {
       await processEmissions();
       const state = await activities.readBotSessionStatus({
         universeId: config.universeId,
-        sessionId,
+        sessionId: target,
       });
       if (state.status === "idle") {
         controllerStatus = "idle";
@@ -311,30 +472,173 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  async function deliverEvent(event: BotEvent): Promise<void> {
-    activeEvent = event;
+  /** Create a routed (perKey / perEvent) session on first use. */
+  async function ensureRoutedSession(target: {
+    sessionId: string;
+    label: string;
+  }): Promise<boolean> {
+    if (ensuredExtra.has(target.sessionId)) return true;
+    try {
+      await activities.ensureBotSession({
+        universeId: config.universeId,
+        sessionId: target.sessionId,
+        displayName: `bot ${config.botName} · ${target.label}`,
+        profileId: config.profileId,
+        botName: config.botName,
+        brief: config.brief,
+        // Routed sessions take the profile at creation; only the main
+        // session tracks profile revisions across its lifetime.
+        appliedProfileRevision: null,
+        controller: {
+          workflowId: workflowInfo().workflowId,
+          workflowKind: BOT_CONTROLLER_WORKFLOW,
+        },
+      });
+    } catch (error) {
+      lastError = errorMessage(error);
+      return false;
+    }
+    ensuredExtra.add(target.sessionId);
+    extraSessions.push({
+      sessionId: target.sessionId,
+      label: target.label,
+      kind: target.sessionId.includes(":e-") ? "event" : "keyed",
+    });
+    if (extraSessions.length > EXTRA_SESSION_CAP) {
+      const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
+      for (const session of evicted) {
+        ensuredExtra.delete(session.sessionId);
+        sessionCursors.delete(session.sessionId);
+      }
+    }
+    return true;
+  }
+
+  function finishDelivery(recent: BotRecentEventSnapshot): void {
+    recentEvents.push(recent);
+    if (recentEvents.length > RECENT_EVENT_CAP) {
+      recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
+    }
+    eventsProcessed += 1;
+    activeDelivery = null;
+    activeRunId = null;
+    activeResolution = null;
+    activeTerminal = null;
+    controllerStatus = "idle";
+  }
+
+  async function deliverDelivery(delivery: BotDelivery): Promise<void> {
+    const firstEvent = delivery.events[0];
+    if (firstEvent === undefined) return;
+    activeDelivery = delivery;
     activeResolution = null;
     activeTerminal = null;
     controllerStatus = "delivering_event";
-    await waitUntilSessionIdle();
+    const targetSessionId = delivery.session?.sessionId ?? sessionId;
+    if (delivery.session !== undefined) {
+      const ensured = await ensureRoutedSession(delivery.session);
+      if (!ensured) {
+        await record("run_failed", {
+          eventId: delivery.id,
+          detail: `failed to create session ${delivery.session.sessionId}`,
+        });
+        finishDelivery({
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "run_failed",
+          eventCount: delivery.events.length,
+          failure: `failed to create session ${delivery.session.sessionId}: ${lastError ?? "unknown"}`,
+        });
+        return;
+      }
+    }
+
+    if (delivery.whenBusy === "append") {
+      try {
+        await activities.appendBotContext({
+          universeId: config.universeId,
+          sessionId: targetSessionId,
+          deliveryId: delivery.id,
+          events: delivery.events,
+        });
+      } catch (error) {
+        lastError = errorMessage(error);
+        await record("run_failed", { eventId: delivery.id, detail: lastError });
+        finishDelivery({
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "run_failed",
+          eventCount: delivery.events.length,
+          failure: `context append failed: ${lastError}`,
+        });
+        return;
+      }
+      await record("appended", {
+        eventId: delivery.id,
+        detail: `${delivery.events.length} event(s) appended as context`,
+      });
+      lastError = null;
+      finishDelivery({
+        id: delivery.id,
+        ref: firstEvent.ref,
+        status: "appended",
+        eventCount: delivery.events.length,
+      });
+      return;
+    }
+
+    if (delivery.whenBusy === "steer") {
+      const state = await activities.readBotSessionStatus({
+        universeId: config.universeId,
+        sessionId: targetSessionId,
+      });
+      if (state.status !== "idle") {
+        const steered = await activities.steerBotRun({
+          universeId: config.universeId,
+          sessionId: targetSessionId,
+          deliveryId: delivery.id,
+          events: delivery.events,
+        });
+        if (steered.steered) {
+          await record("steered", {
+            eventId: delivery.id,
+            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+            detail: `${delivery.events.length} event(s) folded into the active run`,
+          });
+          lastError = null;
+          finishDelivery({
+            id: delivery.id,
+            ref: firstEvent.ref,
+            status: "steered",
+            eventCount: delivery.events.length,
+            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+          });
+          return;
+        }
+        // The run finished under us; fall through to an ordinary run.
+      }
+    }
+
+    await waitUntilSessionIdle(targetSessionId);
     try {
       const run = await activities.startBotRun({
         universeId: config.universeId,
-        sessionId,
-        event,
-        submissionId: botEventSubmissionId(event.id),
-        terminalToken: botEventTerminalToken(event.id),
+        sessionId: targetSessionId,
+        deliveryId: delivery.id,
+        events: delivery.events,
+        submissionId: botEventSubmissionId(delivery.id),
+        terminalToken: botEventTerminalToken(delivery.id),
       });
       activeRunId = run.runId;
       rollBudgetDay();
       runsToday += 1;
-      await record("run_started", { eventId: event.id, runId: run.runId });
+      await record("run_started", { eventId: delivery.id, runId: run.runId });
     } catch (error) {
-      // A direct run can win the narrow read/start race. Preserve the event
-      // and retry after the session becomes idle again.
+      // A direct run can win the narrow read/start race. Preserve the
+      // delivery and retry after the session becomes idle again.
       lastError = errorMessage(error);
-      pendingEvents.unshift(event);
-      activeEvent = null;
+      pendingDeliveries.unshift(delivery);
+      activeDelivery = null;
       activeRunId = null;
       controllerStatus = "session_busy";
       await sleep(BUSY_RETRY_DELAY);
@@ -360,66 +664,63 @@ export async function botControllerWorkflowV1(
       outcome: BotEventOutcome;
       summary: string | null;
     } | null;
+    const eventCount = delivery.events.length;
     let recent: BotRecentEventSnapshot;
     if (terminal === null) {
       recent = {
-        id: event.id,
-        ref: event.ref,
+        id: delivery.id,
+        ref: firstEvent.ref,
         status: "run_failed",
+        eventCount,
         ...(activeRunId === null ? {} : { runId: activeRunId }),
         failure: "timed out waiting for the run terminal",
       };
     } else if (terminal.status !== "completed") {
       recent = {
-        id: event.id,
-        ref: event.ref,
+        id: delivery.id,
+        ref: firstEvent.ref,
         status: "run_failed",
+        eventCount,
         runId: activeRunId ?? terminal.runId,
         failure: `run ended ${terminal.status}`,
       };
     } else if (resolution !== null) {
       recent = {
-        id: event.id,
-        ref: event.ref,
+        id: delivery.id,
+        ref: firstEvent.ref,
         status: resolution.outcome,
+        eventCount,
         runId: activeRunId ?? terminal.runId,
         ...(resolution.summary === null ? {} : { summary: resolution.summary }),
       };
     } else {
       recent = {
-        id: event.id,
-        ref: event.ref,
+        id: delivery.id,
+        ref: firstEvent.ref,
         status: "unresolved",
+        eventCount,
         runId: activeRunId ?? terminal.runId,
       };
     }
-    recentEvents.push(recent);
-    if (recentEvents.length > RECENT_EVENT_CAP) {
-      recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
-    }
     await record(recent.status === "run_failed" ? "run_failed" : "run_completed", {
-      eventId: event.id,
+      eventId: delivery.id,
       ...(recent.runId === undefined ? {} : { runId: recent.runId }),
       detail: recent.failure ?? recent.summary ?? recent.status,
     });
-    eventsProcessed += 1;
-    activeEvent = null;
-    activeRunId = null;
-    activeResolution = null;
-    activeTerminal = null;
     lastError = null;
-    controllerStatus = "idle";
+    finishDelivery(recent);
   }
 
   await reconcileSession();
 
   for (;;) {
     await processEmissions();
-    if (configDirty && activeEvent === null) {
-      await waitUntilSessionIdle().catch(() => undefined);
+    flushRipeBuffers();
+    if (configDirty && activeDelivery === null) {
+      await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();
     }
-    if (config.enabled && sessionReady && !configDirty && pendingEvents.length > 0) {
+    if (config.enabled && sessionReady && !configDirty && pendingDeliveries.length > 0) {
       if (budgetExhausted()) {
         if (controllerStatus !== "budget_exhausted") {
           controllerStatus = "budget_exhausted";
@@ -430,19 +731,20 @@ export async function botControllerWorkflowV1(
         await condition(() => emissionInbox.length > 0 || configDirty, msUntilNextUtcDay());
         continue;
       }
-      const event = pendingEvents.shift();
-      if (event !== undefined) await deliverEvent(event);
+      const delivery = pendingDeliveries.shift();
+      if (delivery !== undefined) await deliverDelivery(delivery);
       continue;
     }
     if (
       emissionInbox.length === 0 &&
-      activeEvent === null &&
+      activeDelivery === null &&
       eventsProcessed >= CONTINUE_AS_NEW_AFTER_RUNS
     ) {
       await continueAsNew<typeof botControllerWorkflowV1>(config, {
         version: 1,
         config,
-        pendingEvents,
+        pendingDeliveries,
+        buffers: [...buffers.entries()],
         recentEvents,
         seenEventIds: [...seenEventIds].slice(-SEEN_EVENT_CAP),
         seenEmissionIds: [...seenEmissionIds].slice(-SEEN_EMISSION_CAP),
@@ -455,14 +757,22 @@ export async function botControllerWorkflowV1(
         duplicateEmissionCount,
         runDay,
         runsToday,
+        extraSessions: [...extraSessions],
+        sessionCursors: Object.fromEntries(sessionCursors),
       } satisfies BotCarryV1);
     }
-    await condition(
-      () =>
-        emissionInbox.length > 0 ||
-        configDirty ||
-        (config.enabled && sessionReady && pendingEvents.length > 0),
-    );
+    const wake = () =>
+      emissionInbox.length > 0 ||
+      configDirty ||
+      (config.enabled && sessionReady && pendingDeliveries.length > 0);
+    const deadline = nextBufferDeadline();
+    if (deadline === null) {
+      await condition(wake);
+    } else {
+      // Wake at the earliest buffer flush time; flushRipeBuffers at the top
+      // of the loop turns ripe buffers into deliveries.
+      await condition(wake, Math.max(1, deadline - Date.now()));
+    }
   }
 }
 

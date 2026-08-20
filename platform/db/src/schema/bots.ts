@@ -3,6 +3,7 @@ import {
   boolean,
   index,
   integer,
+  jsonb,
   pgTable,
   text,
   timestamp,
@@ -32,6 +33,8 @@ export const bots = pgTable(
     brief: text("brief"),
     /** Budget: runs started per UTC day; null means unlimited. */
     runsPerDay: integer("runs_per_day"),
+    /** Per-trigger flood breaker: auto-disable a trigger exceeding this rate. */
+    breaker: jsonb("breaker").$type<{ fires: number; windowMs: number }>(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -39,10 +42,25 @@ export const bots = pgTable(
   (t) => [uniqueIndex("bots_universe_name_idx").on(t.universeId, t.name)],
 );
 
+export type BotScheduleTriggerSpec = { cron: string; timezone: string; summary: string };
+export type BotWebhookTriggerSpec = {
+  token: string;
+  verification:
+    | { scheme: "token" }
+    | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+  preset?: "github" | null;
+};
+export type BotTriggerSpec = BotScheduleTriggerSpec | BotWebhookTriggerSpec;
+export type BotTriggerRoute =
+  | { policy: "bot" }
+  | { policy: "perKey"; key?: string | null }
+  | { policy: "perEvent" };
+
 /**
  * One configured trigger per row. Schedule triggers reconcile to a Temporal
- * Schedule that starts the fire workflow; the row stays authoritative and the
- * fire activity re-reads it, so a stale schedule can never admit stale config.
+ * Schedule that starts the fire workflow; webhook triggers are addressed by
+ * per-trigger ingest URLs. The row stays authoritative and admission re-reads
+ * it, so stale external state can never admit stale config.
  */
 export const botTriggers = pgTable(
   "bot_triggers",
@@ -52,11 +70,21 @@ export const botTriggers = pgTable(
       .notNull()
       .references(() => bots.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["schedule"] }).notNull(),
-    cron: text("cron").notNull(),
-    timezone: text("timezone").default("UTC").notNull(),
-    /** What the fired event asks the session to do. */
-    summary: text("summary").notNull(),
+    kind: text("kind", { enum: ["schedule", "webhook"] }).notNull(),
+    /** Per-kind configuration document. */
+    spec: jsonb("spec").$type<BotTriggerSpec>().notNull(),
+    /** CEL over {event, data, headers}; non-matching events archive instead of delivering. */
+    filter: text("filter"),
+    /** Session routing policy; null routes to the bot's main session. */
+    route: jsonb("route").$type<BotTriggerRoute>(),
+    /** Coalescing window; events sharing a route flush as one delivery. */
+    coalesce: jsonb("coalesce").$type<{
+      debounceMs: number;
+      maxWaitMs: number;
+      maxCount: number;
+    }>(),
+    /** Delivery policy when the target session has an active run. */
+    deliver: jsonb("deliver").$type<{ whenBusy: "queue" | "steer" | "append" }>(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -77,11 +105,15 @@ export const botEvents = pgTable(
       .references(() => bots.id, { onDelete: "cascade" }),
     /** Dedupe identity: provider delivery id where known, otherwise generated. */
     eventId: text("event_id").notNull(),
+    /** Originating trigger; null for direct endpoint/manual admissions. */
+    triggerId: uuid("trigger_id").references(() => botTriggers.id, { onDelete: "set null" }),
     kind: text("kind").notNull(),
     source: text("source").notNull(),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     /** CAS blob ref of the event document. */
     ref: text("ref").notNull(),
+    /** Routed session target recorded at admission; replay reuses it. */
+    session: jsonb("session").$type<{ sessionId: string; label: string }>(),
     receivedAt: createdAt(),
   },
   (t) => [

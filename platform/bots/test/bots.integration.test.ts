@@ -10,6 +10,7 @@ import {
   BOT_STATE_QUERY,
   BOTS_ACTIVITY_TASK_QUEUE,
   BOTS_WORKFLOW_TASK_QUEUE,
+  botDeliveryId,
   botEventTerminalToken,
   botScheduleId,
   botSessionId,
@@ -117,7 +118,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
 
       await eventually(
         () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-        (state) => state.activeEvent?.id === event.id,
+        (state) => state.activeDelivery?.id === event.id,
       );
       await handle.signal(BOT_EVENT_SIGNAL, event);
       await handle.signal("deliver_emission", terminalEmission(1, botEventTerminalToken(event.id)));
@@ -210,7 +211,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await handle.signal(BOT_EVENT_SIGNAL, second);
       await eventually(
         () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-        (state) => state.activeEvent?.id === first.id,
+        (state) => state.activeDelivery?.id === first.id,
       );
       await handle.signal(
         "deliver_emission",
@@ -230,6 +231,333 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await Promise.all([workflowRun, activityRun]);
     }
   }, 60_000);
+  it("routes events into per-key sessions and reconciles their terminals", async () => {
+    const routedBotName = "routed";
+    const ensured: string[] = [];
+    const runs: { sessionId: string }[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          return { profileRevision: 1 };
+        },
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async ({ sessionId }: { sessionId: string }) => {
+          runs.push({ sessionId });
+          return { runId: `run_${runs.length}` };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: routedBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const mainSession = botSessionId(routedBotName);
+      const keyedA = `${mainSession}:k-pr-12-abcd1234`;
+      const keyedB = `${mainSession}:k-pr-13-dcba4321`;
+      const first: BotEvent = {
+        version: 1,
+        id: "routed-1",
+        ref: eventRef,
+        session: { sessionId: keyedA, label: "pr-12" },
+      };
+      const second: BotEvent = {
+        version: 1,
+        id: "routed-2",
+        ref: eventRef,
+        session: { sessionId: keyedB, label: "pr-13" },
+      };
+      const third: BotEvent = { version: 1, id: "routed-3", ref: eventRef };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, routedBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [first],
+      });
+      await handle.signal(BOT_EVENT_SIGNAL, second);
+      await handle.signal(BOT_EVENT_SIGNAL, third);
+
+      for (const [runId, sessionForRun, token] of [
+        [1, keyedA, botEventTerminalToken(first.id)],
+        [2, keyedB, botEventTerminalToken(second.id)],
+        [3, mainSession, botEventTerminalToken(third.id)],
+      ] as const) {
+        await eventually(
+          () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+          (state) => state.activeRunId === `run_${runId}`,
+        );
+        await handle.signal(
+          "deliver_emission",
+          sessionTerminalEmission(sessionForRun, runId, token),
+        );
+      }
+
+      const done = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 3,
+      );
+      // The controller created each keyed session exactly once, delivered the
+      // routed runs there, and the unrouted event went to the main session.
+      expect(ensured.filter((id) => id === keyedA)).toHaveLength(1);
+      expect(ensured.filter((id) => id === keyedB)).toHaveLength(1);
+      expect(runs.map((run) => run.sessionId)).toEqual([keyedA, keyedB, mainSession]);
+      expect(done.sessions.map((session) => session.sessionId)).toEqual([
+        mainSession,
+        keyedA,
+        keyedB,
+      ]);
+      expect(done.sessions[1]).toMatchObject({ label: "pr-12", kind: "keyed" });
+      expect(done.recentEvents.map((event) => event.status)).toEqual([
+        "unresolved",
+        "unresolved",
+        "unresolved",
+      ]);
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        botWorkflowId(universeId, routedBotName),
+      );
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("coalesces events into one batch delivery resolved by delivery id", async () => {
+    const coalesceBotName = "coalescing";
+    const runs: { deliveryId: string; eventCount: number }[] = [];
+    const expectedDeliveryId = botDeliveryId(["c-1", "c-2", "c-3"]);
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async ({
+          deliveryId,
+          events,
+        }: {
+          deliveryId: string;
+          events: unknown[];
+        }) => {
+          runs.push({ deliveryId, eventCount: events.length });
+          return { runId: `run_${runs.length}` };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations:
+            afterSeq === 0
+              ? [
+                  {
+                    invocationId: `wti:sha256:${"f".repeat(64)}`,
+                    toolId: BOT_EVENT_RESOLVE_TOOL_ID,
+                    runId: "run_1",
+                    argumentsRef: resolveRef,
+                  },
+                ]
+              : [],
+        }),
+        readJsonBlob: async () => ({
+          eventId: expectedDeliveryId,
+          outcome: "handled",
+          summary: "batch triaged",
+        }),
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: coalesceBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const coalesce = { key: "trigger-x|main", debounceMs: 60_000, maxWaitMs: 120_000, maxCount: 3 };
+      const events: BotEvent[] = ["c-1", "c-2", "c-3"].map((id) => ({
+        version: 1,
+        id,
+        ref: eventRef,
+        coalesce,
+      }));
+      const firstEvent = events[0] as BotEvent;
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, coalesceBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [firstEvent],
+      });
+      // With a 60s debounce, nothing may deliver until maxCount forces the flush.
+      const buffered = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.buffers.length === 1,
+      );
+      expect(buffered.buffers[0]).toMatchObject({ key: coalesce.key, count: 1 });
+      expect(runs).toHaveLength(0);
+      await handle.signal(BOT_EVENT_SIGNAL, events[1]);
+      await handle.signal(BOT_EVENT_SIGNAL, events[2]);
+
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDelivery?.id === expectedDeliveryId,
+      );
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(
+          botSessionId(coalesceBotName),
+          1,
+          botEventTerminalToken(expectedDeliveryId),
+        ),
+      );
+
+      const done = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 1,
+      );
+      expect(runs).toEqual([{ deliveryId: expectedDeliveryId, eventCount: 3 }]);
+      expect(done.recentEvents[0]).toMatchObject({
+        id: expectedDeliveryId,
+        eventCount: 3,
+        status: "handled",
+        summary: "batch triaged",
+      });
+      expect(done.buffers).toHaveLength(0);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("applies steer and append delivery policies on busy sessions", async () => {
+    const policyBotName = "policied";
+    const calls: string[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "active" }),
+        startBotRun: async () => {
+          calls.push("run");
+          return { runId: "run_1" };
+        },
+        steerBotRun: async ({ events }: { events: unknown[] }) => {
+          calls.push(`steer:${events.length}`);
+          return { steered: true, runId: "run_9" };
+        },
+        appendBotContext: async ({ events }: { events: unknown[] }) => {
+          calls.push(`append:${events.length}`);
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: policyBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const steered: BotEvent = {
+        version: 1,
+        id: "p-steer",
+        ref: eventRef,
+        deliver: { whenBusy: "steer" },
+      };
+      const appended: BotEvent = {
+        version: 1,
+        id: "p-append",
+        ref: eventRef,
+        deliver: { whenBusy: "append" },
+      };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, policyBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [steered],
+      });
+      await handle.signal(BOT_EVENT_SIGNAL, appended);
+
+      const done = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 2,
+      );
+      // The steer delivery folded into the busy run; the append delivery
+      // became keyed context; neither started a run or consumed budget.
+      expect(calls).toEqual(["steer:1", "append:1"]);
+      expect(done.recentEvents.map((event) => event.status)).toEqual(["steered", "appended"]);
+      expect(done.runsToday).toBe(0);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
   it("reconciles schedules and fires them through the admission activity", async () => {
     const admissions: unknown[] = [];
     const workflowWorker = await Worker.create({
@@ -298,16 +626,24 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
 });
 
 function terminalEmission(runId: number, token: string): EmissionEnvelope {
-  return budgetTerminalEmission(botName, runId, token);
+  return sessionTerminalEmission(botSessionId(botName), runId, token);
 }
 
 function budgetTerminalEmission(name: string, runId: number, token: string): EmissionEnvelope {
+  return sessionTerminalEmission(botSessionId(name), runId, token);
+}
+
+function sessionTerminalEmission(
+  sessionId: string,
+  runId: number,
+  token: string,
+): EmissionEnvelope {
   return {
-    emission_id: `emission:sha256:${runId.toString(16).padStart(64, "0")}`,
+    emission_id: `emission:sha256:${(runId + sessionId.length * 1000).toString(16).padStart(64, "0")}`,
     producer: {
       kind: "session",
       universe_id: universeId,
-      session_id: botSessionId(name),
+      session_id: sessionId,
       log_seq: runId,
     },
     body: {

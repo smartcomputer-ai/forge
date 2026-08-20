@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, Settings2, Webhook } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowUpRight, RotateCcw, Settings2, Webhook } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type Bot, type BotActivityEntry, type BotState } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -30,10 +30,19 @@ export function BotDetail({
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [eventOpen, setEventOpen] = useState(false);
+  const queryClient = useQueryClient();
   const activity = useQuery({
     queryKey: ["bot-activity", bot.id],
     queryFn: () => api<{ activity: BotActivityEntry[] }>("GET", `/api/v1/bots/${bot.id}/activity`),
     refetchInterval: 10_000,
+  });
+  const replay = useMutation({
+    mutationFn: (eventId: string) =>
+      api("POST", `/api/v1/bots/${bot.id}/events/replay`, { eventId }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["bot-state", bot.id] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-activity", bot.id] });
+    },
   });
 
   return (
@@ -90,20 +99,36 @@ export function BotDetail({
           <section className="grid gap-2">
             <PanelHeading title="Sessions" />
             {state ? (
-              <div className="flex items-center gap-2 rounded-md border p-2 text-xs">
-                <span className="min-w-0 flex-1">
-                  <code className="block truncate">{state.sessionId}</code>
-                  <span className="text-muted-foreground">Main session</span>
-                </span>
-                <Badge variant={state.sessionReady ? "secondary" : "outline"}>
-                  {state.sessionReady ? "ready" : "starting"}
-                </Badge>
-                {state.sessionReady && (
-                  <Button variant="outline" size="xs" render={<Link to={`/u/${slug}/sessions/${state.sessionId}`} />}>
-                    Open <ArrowUpRight data-icon="inline-end" />
-                  </Button>
-                )}
-              </div>
+              state.sessions.map((session) => {
+                const isMain = session.kind === "main";
+                const ready = !isMain || state.sessionReady;
+                return (
+                  <div key={session.sessionId} className="flex items-center gap-2 rounded-md border p-2 text-xs">
+                    <span className="min-w-0 flex-1">
+                      <code className="block truncate">{session.sessionId}</code>
+                      <span className="text-muted-foreground">
+                        {isMain
+                          ? "Main session"
+                          : session.kind === "keyed"
+                            ? `Key: ${session.label}`
+                            : session.label}
+                      </span>
+                    </span>
+                    <Badge variant={ready ? "secondary" : "outline"}>
+                      {ready ? "ready" : "starting"}
+                    </Badge>
+                    {ready && (
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        render={<Link to={`/u/${slug}/sessions/${session.sessionId}`} />}
+                      >
+                        Open <ArrowUpRight data-icon="inline-end" />
+                      </Button>
+                    )}
+                  </div>
+                );
+              })
             ) : (
               <p className="text-xs text-muted-foreground">Waiting for the controller…</p>
             )}
@@ -114,7 +139,18 @@ export function BotDetail({
           <section className="grid gap-2">
             <PanelHeading title="Event inbox" />
             <KeyValue label="Pending" value={String(state?.pendingEventCount ?? 0)} />
-            {state?.activeEvent && <EventRow id={state.activeEvent.id} status="active" />}
+            {state?.buffers.map((buffer) => (
+              <p key={buffer.key} className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                Coalescing {buffer.count} event(s) · flushes {flushLabel(buffer.flushAtMs)}
+              </p>
+            ))}
+            {state?.activeDelivery && (
+              <EventRow
+                id={state.activeDelivery.id}
+                status="active"
+                eventCount={state.activeDelivery.eventCount}
+              />
+            )}
             {state?.recentEvents
               .slice()
               .reverse()
@@ -124,10 +160,16 @@ export function BotDetail({
                   key={event.id}
                   id={event.id}
                   status={event.status}
+                  eventCount={event.eventCount}
                   summary={event.summary ?? event.failure}
+                  onReplay={
+                    manage && !event.id.startsWith("batch-")
+                      ? () => replay.mutate(event.id)
+                      : undefined
+                  }
                 />
               ))}
-            {state && !state.activeEvent && state.recentEvents.length === 0 && (
+            {state && !state.activeDelivery && state.recentEvents.length === 0 && (
               <p className="text-xs text-muted-foreground">No events delivered yet.</p>
             )}
           </section>
@@ -163,18 +205,45 @@ export function BotDetail({
   );
 }
 
-function EventRow({ id, status, summary }: { id: string; status: string; summary?: string }) {
+function EventRow({
+  id,
+  status,
+  eventCount,
+  summary,
+  onReplay,
+}: {
+  id: string;
+  status: string;
+  eventCount?: number;
+  summary?: string;
+  onReplay?: () => void;
+}) {
   return (
     <div className="rounded-md border p-2 text-xs">
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 truncate">{id}</code>
+        {eventCount !== undefined && eventCount > 1 && (
+          <Badge variant="outline">{eventCount} events</Badge>
+        )}
         <Badge variant={status === "run_failed" || status === "blocked" ? "destructive" : "outline"}>
           {status.replaceAll("_", " ")}
         </Badge>
+        {onReplay && (
+          <Button variant="ghost" size="icon-xs" onClick={onReplay} aria-label="Replay event">
+            <RotateCcw />
+          </Button>
+        )}
       </div>
       {summary && <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{summary}</p>}
     </div>
   );
+}
+
+function flushLabel(flushAtMs: number): string {
+  const deltaSeconds = Math.round((flushAtMs - Date.now()) / 1000);
+  if (deltaSeconds <= 0) return "now";
+  if (deltaSeconds < 120) return `in ${deltaSeconds}s`;
+  return `in ${Math.round(deltaSeconds / 60)}m`;
 }
 
 function activityVariant(kind: string): "destructive" | "secondary" | "outline" {

@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { schema } from "@lightspeed/platform-db";
 import type { AppContext, ApiVariables } from "./context.js";
 import { bindingRoutes } from "./routes/bindings.js";
+import { botHookRoutes } from "./routes/bot-hooks.js";
 import { botRoutes } from "./routes/bots.js";
 import { channelAccountRoutes } from "./routes/channel-accounts.js";
 import { foundryRoutes } from "./routes/foundry.js";
@@ -21,6 +22,10 @@ export function buildApp(ctx: AppContext) {
   // better-auth owns everything under /api/auth (sign-in, admin user
   // management, organization endpoints, bearer tokens).
   app.on(["GET", "POST"], "/api/auth/*", (c) => ctx.auth.handler(c.req.raw));
+
+  // Webhook ingress authenticates by per-trigger URL token + signature, not
+  // by platform session; it must mount before the session-authed API router.
+  app.route("/api/v1/hooks", botHookRoutes(ctx));
 
   const api = new Hono<{ Variables: ApiVariables }>();
   api.use("*", async (c, next) => {

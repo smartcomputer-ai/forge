@@ -32,8 +32,67 @@
   the same day: a Bots master-detail surface (`platform/web/src/pages/
   BotsPage.tsx` + `components/bot/`) with the live session embedded, a
   control panel (status, budget, triggers CRUD, event inbox, activity feed,
-  send-event), and the BotMark glyph in navigation. Remaining in slice 1:
-  the dogfood bot (stage 3).
+  send-event), and the BotMark glyph in navigation. Slice 1 was validated
+  live the same day (schedule fires → runs → `bot_event_resolve` outcomes on
+  the dev stack).
+- Slice 2 implemented 2026-08-20, end to end:
+  - Triggers reshaped to per-kind `spec` jsonb + `filter` (CEL) + `route`
+    columns (backfilling migration). Boot-time schedule reconcile in the
+    platform server converges Temporal Schedules to the rows.
+  - **Webhook ingress**: `POST /api/v1/hooks/bots/:triggerId/:token` outside
+    session auth; URL-token + optional generic HMAC-SHA256 verification;
+    1 MiB cap; credential headers redacted; raw payload preserved in the
+    event document. Known tradeoff: webhook secrets sit plaintext in the
+    Platform DB jsonb for now.
+  - **Filters**: `cel-js` predicates over {event, data, headers}, evaluated
+    at admission; non-matching events archive (envelope stored, activity
+    `filtered`/`filter_error`, no delivery) — fail-closed on errors.
+  - **Routing**: `bot` | `perKey` (CEL key or preset default; readable
+    slug + digest session ids) | `perEvent`, computed at admission and
+    carried on the envelope; the controller lazily creates routed managed
+    sessions (same self-receiver tools), tracks per-session cursors, and
+    reports a sessions list in its snapshot. Delivery stays strictly serial
+    across sessions for now; keyed-session idle retention/closing is open.
+  - **GitHub preset**: `X-Hub-Signature-256` verification defaults,
+    `X-GitHub-Delivery` dedupe, `event.action` naming, PR/issue/repo route
+    keys.
+  - UI: kind-aware trigger management (webhook forms with verification,
+    routing, filter; ingest-URL copy), sessions list on the bot page.
+  - Tests: webhook helper unit suite (verification, extraction, filters,
+    routing), routed-delivery Temporal integration scenario with history
+    replay, contracts coverage for routed session ids.
+- Slice 3 implemented 2026-08-20, end to end:
+  - **Coalescing**: per-trigger `{debounceMs, maxWaitMs, maxCount}` config;
+    admission stamps events with a buffer key of (trigger, routed session);
+    the controller accumulates per-key buffers, wakes at the earliest flush
+    deadline, and flushes the **entire batch as one delivery/run** —
+    debounce reset per event, bounded by maxWait, immediate on maxCount.
+  - **Per-delivery identity**: `botDeliveryId(sortedEventIds)` (single event
+    keeps its id, so pre-batch behavior and replay compatibility hold);
+    submission id, terminal token, and `bot_event_resolve` all resolve the
+    delivery, not each event. Batch runs carry all event documents plus a
+    framing that asks for exactly one resolution with the delivery id.
+  - **Busy-session delivery policies** per trigger: `queue` (default,
+    wait-for-idle), `steer` (fold the batch into the active run via
+    `session/runs/steer`, falling back to a run if it just finished), and
+    `append` (keyed `session/context/append`, never starts a run; keys
+    `bot:event:<id>` make retries idempotent). Steered/appended deliveries
+    do not consume the run budget.
+  - **Flood breaker**: per-bot `{fires, windowMs}`; webhook admission counts
+    the trigger's recent envelopes, disables the trigger on breach (429,
+    `breaker_tripped` activity), and a human re-enables it.
+  - **Replay**: `POST bots/:id/events/replay` re-admits a stored envelope
+    (same document ref, same recorded routing) as a fresh non-coalesced
+    event; envelopes now record `triggerId` and routed `session`.
+  - UI: coalescing + busy-policy fields on webhook triggers, breaker in bot
+    settings, live buffer display with flush countdown, batch size badges,
+    and per-event replay buttons.
+  - Tests: coalesced-batch and steer/append Temporal integration scenarios,
+    delivery-identity contract coverage; six integration scenarios total.
+- Next: slice 4 (`bot_*` self-configuration tools, filter test/replay,
+  remaining presets, Channels-as-trigger bridge). Still open: keyed-session
+  retention, plaintext webhook secrets, breaker coverage for schedule
+  floods.
 
 ## The proposal in one screen
 

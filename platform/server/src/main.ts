@@ -3,6 +3,7 @@ import { createDb, migrateDb } from "@lightspeed/platform-db";
 import { buildApp } from "./api.js";
 import { createAuth } from "./auth.js";
 import { bootstrapAdmin } from "./bootstrap.js";
+import { reconcileAllBotSchedules } from "./bot-schedules.js";
 import { loadEnv } from "./env.js";
 
 const env = loadEnv();
@@ -14,6 +15,12 @@ await bootstrapAdmin(db, env);
 
 const auth = createAuth(db, env);
 const app = buildApp({ db, pool, auth, env });
+
+// Background: converge Temporal Schedules to the trigger rows; the server
+// must come up even when Temporal is still starting.
+void reconcileAllBotSchedules({ db }).catch((error) => {
+  console.error(`[main] bot schedule reconcile failed: ${String(error)}`);
+});
 
 const server = serve({ fetch: app.fetch, port: env.port }, (info) => {
   console.log(`[main] Lightspeed platform listening on :${info.port}`);

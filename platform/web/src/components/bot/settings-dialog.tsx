@@ -43,6 +43,10 @@ export function BotSettingsDialog({
   const [profileId, setProfileId] = useState(bot.profileId);
   const [brief, setBrief] = useState(bot.brief ?? "");
   const [runsPerDay, setRunsPerDay] = useState(bot.runsPerDay?.toString() ?? "");
+  const [breakerFires, setBreakerFires] = useState(bot.breaker?.fires.toString() ?? "");
+  const [breakerWindow, setBreakerWindow] = useState(
+    bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "",
+  );
   const [enabled, setEnabled] = useState(bot.enabled);
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
@@ -51,6 +55,12 @@ export function BotSettingsDialog({
         profileId,
         brief: brief.trim() ? brief.trim() : null,
         runsPerDay: runsPerDay.trim() ? Number(runsPerDay) : null,
+        breaker: breakerFires.trim()
+          ? {
+              fires: Number(breakerFires),
+              windowMs: Math.round(Number(breakerWindow.trim() || "10") * 60_000),
+            }
+          : null,
         enabled,
       }),
     onSuccess: async ({ bot: updated }) => {
@@ -113,6 +123,33 @@ export function BotSettingsDialog({
             />
             <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
           </Field>
+          <div className="grid grid-cols-2 gap-3">
+            <Field>
+              <FieldLabel htmlFor="bot-breaker-fires">Breaker: events</FieldLabel>
+              <Input
+                id="bot-breaker-fires"
+                type="number"
+                min={1}
+                value={breakerFires}
+                onChange={(event) => setBreakerFires(event.target.value)}
+                placeholder="Off"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bot-breaker-window">per window (min)</FieldLabel>
+              <Input
+                id="bot-breaker-window"
+                type="number"
+                min={1}
+                value={breakerWindow}
+                onChange={(event) => setBreakerWindow(event.target.value)}
+                placeholder="10"
+              />
+            </Field>
+          </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Flood breaker: a trigger exceeding this rate is disabled until re-enabled by hand.
+          </p>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-enabled" className="text-sm">
               Enabled

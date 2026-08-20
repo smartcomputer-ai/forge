@@ -51,20 +51,26 @@ export function createBotScheduleActivities(
         .where(eq(schema.botTriggers.id, input.triggerId))
         .limit(1);
       if (!row || row.bot.id !== input.botId) return { admitted: false, reason: "trigger_missing" };
+      if (row.trigger.kind !== "schedule") return { admitted: false, reason: "trigger_missing" };
       if (!row.trigger.enabled) return { admitted: false, reason: "trigger_disabled" };
       if (!row.bot.enabled) return { admitted: false, reason: "bot_disabled" };
+      const spec = row.trigger.spec as {
+        cron: string;
+        timezone: string;
+        summary: string;
+      };
 
       const document: BotEventDocumentV1 = {
         version: 1,
         kind: "schedule",
         source: `schedule:${row.trigger.name}`,
         occurredAt: input.scheduledAt,
-        summary: row.trigger.summary,
+        summary: spec.summary,
         data: {
           triggerId: row.trigger.id,
           triggerName: row.trigger.name,
-          cron: row.trigger.cron,
-          timezone: row.trigger.timezone,
+          cron: spec.cron,
+          timezone: spec.timezone,
           scheduledAt: input.scheduledAt,
         },
       };
@@ -85,6 +91,7 @@ export function createBotScheduleActivities(
         .values({
           botId: row.bot.id,
           eventId,
+          triggerId: row.trigger.id,
           kind: "schedule",
           source: `schedule:${row.trigger.name}`,
           occurredAt: new Date(input.scheduledAt),

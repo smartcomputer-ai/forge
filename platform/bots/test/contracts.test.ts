@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentProfile } from "@lightspeed/agent-client";
 import {
+  botDeliveryId,
   botEventSubmissionId,
   botEventTerminalToken,
+  botKeyedSessionId,
+  botPerEventSessionId,
   botScheduleEventId,
   botScheduleId,
   botSessionId,
@@ -30,6 +33,43 @@ describe("bot contracts", () => {
       "schedule:trigger-1:2026-08-20T08:00:00.000Z",
     );
     expect(() => botScheduleId(universeId, "triage", "Bad_Name")).toThrow(TypeError);
+  });
+
+  it("derives routed session ids that stay readable and collision-free", () => {
+    const prSession = botKeyedSessionId("triage", "pr-12");
+    expect(prSession).toMatch(/^bot:v1:triage:k-pr-12-[0-9a-f]{8}$/);
+    expect(botKeyedSessionId("triage", "pr-12")).toBe(prSession);
+    // Keys that slug identically still get distinct sessions via the digest.
+    expect(botKeyedSessionId("triage", "a b")).not.toBe(botKeyedSessionId("triage", "a-b"));
+    expect(botKeyedSessionId("triage", "ÜÑÎ")).toMatch(/^bot:v1:triage:k-key-[0-9a-f]{8}$/);
+    expect(botPerEventSessionId("triage", "evt-1")).toMatch(/^bot:v1:triage:e-[0-9a-f]{12}$/);
+    expect(() => botKeyedSessionId("triage", "")).toThrow(TypeError);
+  });
+
+  it("derives delivery identities that keep single events stable", () => {
+    expect(botDeliveryId(["evt-1"])).toBe("evt-1");
+    const batch = botDeliveryId(["b", "a", "c"]);
+    expect(batch).toMatch(/^batch-[0-9a-f]{64}$/);
+    // Order-insensitive: retries assembling the same set converge.
+    expect(botDeliveryId(["c", "a", "b"])).toBe(batch);
+    expect(botDeliveryId(["a", "b"])).not.toBe(batch);
+    expect(() => botDeliveryId([])).toThrow(TypeError);
+  });
+
+  it("validates routed session fields on events", () => {
+    const ref = `sha256:${"a".repeat(64)}`;
+    validateBotEvent({
+      version: 1,
+      id: "evt",
+      ref,
+      session: { sessionId: "bot:v1:triage:k-x-12345678", label: "x" },
+    });
+    expect(() =>
+      validateBotEvent({ version: 1, id: "evt", ref, session: { sessionId: "", label: "x" } }),
+    ).toThrow(TypeError);
+    expect(() =>
+      validateBotEvent({ version: 1, id: "evt", ref, session: { sessionId: "s", label: "" } }),
+    ).toThrow(TypeError);
   });
 
   it("rejects invalid names and events", () => {

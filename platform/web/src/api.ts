@@ -618,19 +618,49 @@ export interface Bot {
   profileId: string;
   brief: string | null;
   runsPerDay: number | null;
+  breaker: { fires: number; windowMs: number } | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BotScheduleSpec {
+  cron: string;
+  timezone: string;
+  summary: string;
+}
+
+export type BotWebhookVerification =
+  | { scheme: "token" }
+  | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+
+export interface BotWebhookSpec {
+  token: string;
+  verification: BotWebhookVerification;
+  preset?: "github" | null;
+}
+
+export type BotRoute =
+  | { policy: "bot" }
+  | { policy: "perKey"; key?: string | null }
+  | { policy: "perEvent" };
+
+export interface BotCoalesce {
+  debounceMs: number;
+  maxWaitMs: number;
+  maxCount: number;
 }
 
 export interface BotTrigger {
   id: string;
   botId: string;
   name: string;
-  kind: "schedule";
-  cron: string;
-  timezone: string;
-  summary: string;
+  kind: "schedule" | "webhook";
+  spec: BotScheduleSpec | BotWebhookSpec;
+  filter: string | null;
+  route: BotRoute | null;
+  coalesce: BotCoalesce | null;
+  deliver: { whenBusy: "queue" | "steer" | "append" } | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -645,16 +675,32 @@ export interface BotEventRef {
 export interface BotRecentEvent {
   id: string;
   ref: string;
-  status: "handled" | "deferred" | "ignored" | "blocked" | "unresolved" | "run_failed";
+  status:
+    | "handled"
+    | "deferred"
+    | "ignored"
+    | "blocked"
+    | "unresolved"
+    | "run_failed"
+    | "appended"
+    | "steered";
+  eventCount?: number;
   runId?: string;
   summary?: string;
   failure?: string;
+}
+
+export interface BotManagedSession {
+  sessionId: string;
+  label: string;
+  kind: "main" | "keyed" | "event";
 }
 
 export interface BotState {
   botName: string;
   profileId: string;
   sessionId: string;
+  sessions: BotManagedSession[];
   controllerStatus:
     | "initializing"
     | "idle"
@@ -662,11 +708,12 @@ export interface BotState {
     | "delivering_event"
     | "budget_exhausted"
     | "degraded";
-  activeEvent: BotEventRef | null;
+  activeDelivery: { id: string; eventCount: number; sessionId: string } | null;
   activeRunId: string | null;
   sessionReady: boolean;
-  pendingEvents: BotEventRef[];
   pendingEventCount: number;
+  pendingDeliveryCount: number;
+  buffers: { key: string; count: number; flushAtMs: number }[];
   recentEvents: BotRecentEvent[];
   eventsProcessed: number;
   duplicateEventCount: number;

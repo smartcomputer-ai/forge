@@ -36,6 +36,20 @@
       "when": 1787217197505,
       "tag": "0004_bot_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787231099351,
+      "tag": "0005_bot_trigger_spec",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787232108919,
+      "tag": "0006_bot_coalescing",
+      "breakpoints": true
     }
   ]
 }
