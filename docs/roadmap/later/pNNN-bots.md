@@ -11,6 +11,10 @@
 - Builds on P100/P100b/P106 (workflow tools, emissions, self-receiver),
   P103 (managed sessions), P125/P126 (profile-provisioned environments,
   power/idle), and the Channels/Foundry controller pattern.
+- Revised same day after contrasting with a parallel proposal draft
+  (`pNNN-bots-alternative.md`): adopted the durable inbox + wake-signal
+  ingestion contract and deterministic delivery identities; recorded what was
+  deliberately not adopted at the end of the architecture section.
 
 ## The proposal in one screen
 
@@ -264,6 +268,20 @@ otherwise); every vendor surveyed delivers at-least-once and unordered, so
 idempotent admission is the ground truth, which suits an event-sourced core
 perfectly.
 
+**Store, then wake.** The envelope store in Platform Postgres is authoritative
+from day one — the activity feed, retention, and replay want it anyway — and
+the Temporal signal is a *notification*, never the system of record: ingress
+commits the envelope, then signals the controller. At v1 volumes one signal
+per envelope is fine (the Channels/Foundry pattern). For high-volume sources
+(monitoring bursts, telemetry) the same contract upgrades to a **durable
+inbox + wake signal**: ingress advances a per-trigger cursor and sends a
+small, coalescible wake (`{triggerId, cursor}` — a doorbell, in the hardware
+sense); the controller answers by reading a bounded page of pending envelopes
+through an activity and records only its decisions and compact window state
+in workflow history. History stays proportional to decisions, not to event
+volume, and the upgrade is a delivery detail rather than a data migration
+because the store was authoritative all along.
+
 **Filter.** A CEL expression over the envelope + payload (Inngest and Hatchet
 both chose CEL; Dust generates filter expressions from natural language —
 ours can too, via a `bot_filter_test` tool that replays stored events against
@@ -287,7 +305,11 @@ engine already thinks this way; the router just extends it upstream.
 **Coalesce.** Per (trigger, route key), a buffer with three knobs:
 `debounceMs` (quiet period, reset per event), `maxWaitMs` (bound on total
 delay from first event), `maxCount` (flush on size) — flushing **the entire
-accumulated batch** into one delivery. Forty emails become one run that sees
+accumulated batch** into one delivery. Each flushed delivery gets a
+**deterministic identity** derived from (trigger, route key, sorted event
+ids), used as the run submission id — so provider redeliveries, workflow
+retries, and worker restarts all converge on the same durable result instead
+of duplicate runs. Forty emails become one run that sees
 forty envelopes. This exact primitive — debounce timing with a batch
 payload — is shipped by no one: Inngest's debounce keeps only the last event
 and its issue requesting the combination is stale; Trigger.dev's keeps first
@@ -317,7 +339,11 @@ exactly this, and no surveyed product has an answer.
 A later, optional stage — *triage*, a cheap bounded model call deciding
 wake-vs-archive for ambient sources (Claude Tag's trick) — should stay out of
 v1. Deterministic filters first; spend model tokens on the work, not the
-routing.
+routing. When triage does arrive, constrain it hard: no action tools, a
+bounded structured batch in, a typed decision out
+(`ignore | accumulate | activate`), a cheap separate model/profile, and a
+visible reason code in the activity feed. The main session must never be
+woken just to decide whether it should have been woken.
 
 ## Self-configuration and oversight
 
@@ -334,7 +360,10 @@ pattern):
 - `bot_poller_propose` — submit L2 poller code + requested credentials for
   activation.
 - `bot_emit` — post a synthetic event (bots composing bots; also the loop for
-  "remind me in 3 weeks": the bot schedules itself).
+  "remind me in 3 weeks": the bot schedules itself). A self-created reminder
+  materializes as a visible, pausable schedule trigger on the record — never
+  as a hidden in-run sleep — so it is inspectable and outlives the session
+  turn that created it.
 
 So "configure by conversation" — the xAI surface everyone will expect — comes
 for free: tell the bot what to watch and it sets up its own triggers. The
@@ -392,6 +421,31 @@ implementation of this shape is the last.
   (Gumloop's ~288 credits/day per 5-minute poller is the cautionary tale;
   Anthropic's daily run caps are the crude fix; per-bot budgets + coalescing
   is the better one).
+
+**Deliberately not adopted** (contrasted with the parallel proposal draft,
+which arrives at the same architecture — platform-tier controller workflow,
+transport-not-service integrations, CEL filters + windows, the same session
+topology and admission modes — but specs it several levels deeper):
+
+- **A connector SDK + manifest + registry + certification pipeline.** That is
+  the Zapier Developer Platform — a marketplace product that only pays off
+  with a partner ecosystem. L1 presets-as-data plus the `endpoint` escape
+  hatch plus an optional vendor covers the same ground for a small team;
+  build an SDK when third parties are actually asking to write connectors.
+- **Source generations with blue/green publish** (create N+1 → prove healthy
+  → drain N). Premature: put-with-expected-revision — the repo's existing
+  registry idiom — plus stamping envelopes with the trigger revision they
+  were admitted under gets most of the value.
+- **A seven-noun vocabulary** (connector / connection / trigger type / source
+  / event / activation / route). Trigger, envelope, and route suffice until
+  they demonstrably creak; extra nouns leak into UI, API, and support.
+- **Multiple merge strategies and a K8s-style `BotSpec` YAML document.**
+  Full-batch delivery is the one merge semantic that matters (digests are a
+  prompt-side concern, provider deltas a preset concern), and Lightspeed's
+  config idiom is sparse documents put whole, not `kind`/`metadata`/`spec`.
+- **Execution adapters for Work/Flows.** Speculative dependencies — P101 was
+  never built. A route starts runs; other execution policies can slot in
+  later without being foundations now.
 
 ## Slicing (sketch, not a plan)
 
