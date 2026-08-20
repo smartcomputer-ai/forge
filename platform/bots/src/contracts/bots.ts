@@ -7,6 +7,7 @@ import type {
 } from "@lightspeed/agent-client";
 
 export const BOT_CONTROLLER_WORKFLOW = "botControllerWorkflowV1";
+export const BOT_SCHEDULE_FIRE_WORKFLOW = "botScheduleFireWorkflowV1";
 export const BOTS_WORKFLOW_TASK_QUEUE = "lightspeed-bots-workflows-v1";
 export const BOTS_ACTIVITY_TASK_QUEUE = "lightspeed-bots-activities-v1";
 export const BOT_EVENT_SIGNAL = "bot_event_v1";
@@ -71,6 +72,30 @@ export function botWorkflowId(universeId: string, botName: string): string {
 export function botSessionId(botName: string): string {
   requireName(botName);
   return `bot:v1:${botName}`;
+}
+
+export function botScheduleId(universeId: string, botName: string, triggerName: string): string {
+  requireUniverse(universeId);
+  requireName(botName);
+  requireName(triggerName);
+  return `lightspeed.bots.v1/${universeId.toLowerCase()}/${botName}/schedule/${triggerName}`;
+}
+
+/** Start argument for the schedule fire workflow; config is re-read from the record. */
+export interface BotScheduleFireInputV1 {
+  version: 1;
+  botId: string;
+  triggerId: string;
+}
+
+/**
+ * Deterministic dedupe identity for one schedule fire: retries and duplicate
+ * fires of the same nominal time converge on one envelope.
+ */
+export function botScheduleEventId(triggerId: string, scheduledAt: string): string {
+  if (!triggerId) throw new TypeError("triggerId is required");
+  if (!scheduledAt) throw new TypeError("scheduledAt is required");
+  return `schedule:${triggerId}:${scheduledAt}`;
 }
 
 /**

@@ -40,6 +40,31 @@ export const bots = pgTable(
 );
 
 /**
+ * One configured trigger per row. Schedule triggers reconcile to a Temporal
+ * Schedule that starts the fire workflow; the row stays authoritative and the
+ * fire activity re-reads it, so a stale schedule can never admit stale config.
+ */
+export const botTriggers = pgTable(
+  "bot_triggers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    botId: uuid("bot_id")
+      .notNull()
+      .references(() => bots.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind", { enum: ["schedule"] }).notNull(),
+    cron: text("cron").notNull(),
+    timezone: text("timezone").default("UTC").notNull(),
+    /** What the fired event asks the session to do. */
+    summary: text("summary").notNull(),
+    enabled: boolean("enabled").default(true).notNull(),
+    createdAt: createdAt(),
+    updatedAt: updatedAt(),
+  },
+  (t) => [uniqueIndex("bot_triggers_bot_name_idx").on(t.botId, t.name)],
+);
+
+/**
  * Authoritative event envelope store; the controller signal is a notification
  * over this table, never the system of record. Payload documents live in CAS.
  */
@@ -87,8 +112,16 @@ export const botsRelations = relations(bots, ({ one, many }) => ({
     fields: [bots.universeId],
     references: [universes.id],
   }),
+  triggers: many(botTriggers),
   events: many(botEvents),
   activity: many(botActivity),
+}));
+
+export const botTriggersRelations = relations(botTriggers, ({ one }) => ({
+  bot: one(bots, {
+    fields: [botTriggers.botId],
+    references: [bots.id],
+  }),
 }));
 
 export const botEventsRelations = relations(botEvents, ({ one }) => ({

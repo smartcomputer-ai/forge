@@ -3,6 +3,8 @@ import type { AgentProfile } from "@lightspeed/agent-client";
 import {
   botEventSubmissionId,
   botEventTerminalToken,
+  botScheduleEventId,
+  botScheduleId,
   botSessionId,
   botWorkflowId,
   parseEventResolveArgs,
@@ -21,6 +23,13 @@ describe("bot contracts", () => {
     expect(botEventSubmissionId("evt-1")).toBe(botEventSubmissionId("evt-1"));
     expect(botEventSubmissionId("evt-1")).not.toBe(botEventSubmissionId("evt-2"));
     expect(botEventTerminalToken("evt-1")).toMatch(/^bot-event-terminal-v1-[0-9a-f]{64}$/);
+    expect(botScheduleId(universeId, "triage", "nightly")).toBe(
+      `lightspeed.bots.v1/${universeId}/triage/schedule/nightly`,
+    );
+    expect(botScheduleEventId("trigger-1", "2026-08-20T08:00:00.000Z")).toBe(
+      "schedule:trigger-1:2026-08-20T08:00:00.000Z",
+    );
+    expect(() => botScheduleId(universeId, "triage", "Bad_Name")).toThrow(TypeError);
   });
 
   it("rejects invalid names and events", () => {

@@ -23,8 +23,13 @@
   trigger + state/events/activity reads, dev-stack full-profile workers, and
   a Temporal integration suite (`BOTS_TEMPORAL_INTEGRATION=1`) covering
   dedupe, resolution reconciliation, budget parking, and history replay.
-  Remaining in slice 1: schedule trigger via Temporal Schedules (stage 2) and
-  the dogfood bot (stage 3).
+  Stage 2 done same day: `bot_triggers` table, schedule triggers reconciled to
+  Temporal Schedules (overlap SKIP, 5m catchup, paused when trigger or bot is
+  disabled), a `botScheduleFireWorkflowV1` that re-reads the trigger row and
+  admits a deterministic envelope (`schedule:<triggerId>:<nominalTime>`)
+  through store-then-wake, trigger CRUD routes, and integration coverage for
+  upsert idempotency, immediate trigger, pause, and delete. Remaining in
+  slice 1: the dogfood bot (stage 3).
 
 ## The proposal in one screen
 

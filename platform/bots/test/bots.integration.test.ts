@@ -11,11 +11,17 @@ import {
   BOTS_ACTIVITY_TASK_QUEUE,
   BOTS_WORKFLOW_TASK_QUEUE,
   botEventTerminalToken,
+  botScheduleId,
   botSessionId,
   botWorkflowId,
   type BotEvent,
   type BotStartV1,
 } from "../src/contracts/bots.js";
+import {
+  deleteBotSchedule,
+  upsertBotSchedule,
+  type BotScheduleSpec,
+} from "../src/schedules.js";
 import type { BotSnapshot } from "../src/workflows/bot-controller.js";
 
 const runIntegration = process.env.BOTS_TEMPORAL_INTEGRATION === "1";
@@ -218,6 +224,71 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(parked.pendingEventCount).toBe(1);
       expect(parked.runsToday).toBe(1);
       expect(runsStarted).toBe(1);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+  it("reconciles schedules and fires them through the admission activity", async () => {
+    const admissions: unknown[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        admitScheduleEvent: async (input: unknown) => {
+          admissions.push(input);
+          return { admitted: true, eventId: "schedule:test", duplicate: false };
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    const spec: BotScheduleSpec = {
+      universeId,
+      botId,
+      botName: "scheduled",
+      triggerId: "3fbc2b1e-0f6f-4a83-b0d6-92c07d4d1333",
+      triggerName: "nightly",
+      cron: "0 3 * * *",
+      timezone: "UTC",
+      paused: false,
+    };
+    try {
+      await upsertBotSchedule(env.client, spec);
+      // Upsert must be idempotent and apply config changes in place.
+      await upsertBotSchedule(env.client, { ...spec, cron: "30 3 * * *" });
+
+      const handle = env.client.schedule.getHandle(
+        botScheduleId(universeId, spec.botName, spec.triggerName),
+      );
+      const described = await handle.describe();
+      expect(described.state.paused).toBe(false);
+
+      await handle.trigger();
+      await eventually(
+        () => Promise.resolve(admissions.length),
+        (count) => count === 1,
+      );
+      const admission = admissions[0] as { botId: string; triggerId: string; scheduledAt: string };
+      expect(admission.botId).toBe(botId);
+      expect(admission.triggerId).toBe(spec.triggerId);
+      expect(new Date(admission.scheduledAt).getTime()).not.toBeNaN();
+
+      await upsertBotSchedule(env.client, { ...spec, paused: true });
+      expect((await handle.describe()).state.paused).toBe(true);
+
+      await deleteBotSchedule(env.client, universeId, spec.botName, spec.triggerName);
+      // Deleting an absent schedule stays a no-op.
+      await deleteBotSchedule(env.client, universeId, spec.botName, spec.triggerName);
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

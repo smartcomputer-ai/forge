@@ -1,8 +1,10 @@
+import { Client, Connection } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { createDb } from "@lightspeed/platform-db";
 import {
   createBotControlPlaneActivities,
   createBotLightspeedActivities,
+  createBotScheduleActivities,
 } from "../activities/index.js";
 import { BOTS_ACTIVITY_TASK_QUEUE } from "../contracts/bots.js";
 
@@ -20,6 +22,10 @@ if (databaseUrl === undefined || databaseUrl.length === 0) {
 }
 
 const database = createDb(databaseUrl);
+const temporal = new Client({
+  connection: await Connection.connect({ address }),
+  namespace,
+});
 const connection = await NativeConnection.connect({ address });
 const worker = await Worker.create({
   connection,
@@ -28,6 +34,7 @@ const worker = await Worker.create({
   activities: {
     ...createBotLightspeedActivities({ endpoint }),
     ...createBotControlPlaneActivities(database.db),
+    ...createBotScheduleActivities({ db: database.db, endpoint, temporal }),
   },
 });
 

@@ -6,7 +6,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./contracts": "./src/contracts/index.ts",
-    "./workflows": "./src/workflows/index.ts"
+    "./workflows": "./src/workflows/index.ts",
+    "./schedules": "./src/schedules.ts"
   },
   "scripts": {
     "dev": "tsx src/runtime/main.ts",
