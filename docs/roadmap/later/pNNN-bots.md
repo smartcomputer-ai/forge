@@ -15,6 +15,16 @@
   (`pNNN-bots-alternative.md`): adopted the durable inbox + wake-signal
   ingestion contract and deterministic delivery identities; recorded what was
   deliberately not adopted at the end of the architecture section.
+- Implementation started 2026-08-20. Slice 1 stage 1 done: `platform/bots`
+  package (controller workflow with dedupe, budget, terminal reconciliation,
+  `bot_event_resolve` self-receiver tool, continue-as-new carry), `bots` /
+  `bot_events` / `bot_activity` Platform tables (envelope store authoritative,
+  store-then-wake), server CRUD + `POST /api/v1/bots/:id/events` endpoint
+  trigger + state/events/activity reads, dev-stack full-profile workers, and
+  a Temporal integration suite (`BOTS_TEMPORAL_INTEGRATION=1`) covering
+  dedupe, resolution reconciliation, budget parking, and history replay.
+  Remaining in slice 1: schedule trigger via Temporal Schedules (stage 2) and
+  the dogfood bot (stage 3).
 
 ## The proposal in one screen
 

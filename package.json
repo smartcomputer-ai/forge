@@ -4,6 +4,7 @@
   "type": "module",
   "workspaces": [
     "clients/typescript",
+    "platform/bots",
     "platform/channels",
     "platform/cli",
     "platform/configurator-mcp",
@@ -24,9 +25,10 @@
     "dev": "./dev.sh",
     "generate": "npm run generate --workspace @lightspeed/platform-db",
     "test": "npm run test --workspaces --if-present",
+    "test:integration:bots": "npm run test:integration --workspace @lightspeed/bots",
     "test:integration:channels": "npm run test:integration --workspace @lightspeed/channels",
     "test:migrations": "npm run test:migrations --workspace @lightspeed/platform-db",
-    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/foundry && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp"
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/bots && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/foundry && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

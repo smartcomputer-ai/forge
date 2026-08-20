@@ -249,6 +249,21 @@ upstream Lightspeed gateway.
 | `LIGHTSPEED_CONFIGURATOR_MCP_UPSTREAM_TIMEOUT_MS` | `60000` | Per-probe and per-tool upstream timeout. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_SHUTDOWN_TIMEOUT_MS` | `10000` | Grace period before open HTTP connections are closed. |
 
+## Bots
+
+The Bots workers (workflow and activity roles of `platform/bots`) share the
+Platform database and reach the core runtime through the public JSON-RPC
+endpoint.
+
+| Variable | Requirement/default | Purpose |
+| --- | --- | --- |
+| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
+| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
+| `LIGHTSPEED_BOTS_WORKFLOW_TASK_QUEUE` | `lightspeed-bots-workflows-v1` | Bots workflow queue override. |
+| `LIGHTSPEED_BOTS_ACTIVITY_TASK_QUEUE` | `lightspeed-bots-activities-v1` | Bots activity queue override. |
+| `LIGHTSPEED_ENDPOINT` | **Required by the activity worker** | Lightspeed JSON-RPC endpoint. |
+| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
+
 ## Foundry candidate
 
 Foundry is mechanically preserved but is not a supported release component.
@@ -338,6 +353,7 @@ fixtures. Ordinary unit tests do not require them.
 | `LIGHTSPEED_CHANNELS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Channels Temporal integration suite. |
 | `LIGHTSPEED_CHANNELS_DELIVERY_TASK_QUEUE` | Required only by the Channels fake delivery worker used in integration tests. |
 | `FOUNDRY_TEMPORAL_INTEGRATION` | Set to `1` to enable the unsupported Foundry Temporal integration test. |
+| `BOTS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Bots Temporal integration suite. |
 | `LIGHTSPEED_OPENAI_MODEL` | First-choice model override in hosted runtime live tests. |
 | `OPENAI_LIVE_MODEL` | Shared fallback model for OpenAI live suites. |
 | `OPENAI_RESPONSES_MODEL` | OpenAI Responses live-test model. |

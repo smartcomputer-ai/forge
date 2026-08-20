@@ -329,6 +329,20 @@ function createPlan(profile, sourceEnv) {
     processes.push(
       channelsProcess("channels-workflows", "workflows", 9_090, env, tsx),
       channelsProcess("channels-activities", "activities", 9_093, env, tsx),
+      {
+        name: "bots-workflows",
+        command: tsx,
+        args: ["platform/bots/src/runtime/main.ts", "workflows"],
+        cwd: repoRoot,
+        env,
+      },
+      {
+        name: "bots-activities",
+        command: tsx,
+        args: ["platform/bots/src/runtime/main.ts", "activities"],
+        cwd: repoRoot,
+        env,
+      },
     );
     for (const connector of connectorNames) {
       const metricsPort = connector === "telegram" ? 9_091 : 9_092;

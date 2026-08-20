@@ -10,6 +10,7 @@
   "dependencies": {
     "@hono/node-server": "^1.14.0",
     "@lightspeed/agent-client": "*",
+    "@lightspeed/bots": "*",
     "@lightspeed/foundry": "*",
     "@lightspeed/platform-db": "*",
     "@lightspeed/platform-shared": "*",

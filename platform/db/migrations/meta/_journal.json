@@ -22,6 +22,13 @@
       "when": 1786181368443,
       "tag": "0002_foundry_control_plane",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1787216364982,
+      "tag": "0003_bots_and_foundry_job_registry_drop",
+      "breakpoints": true
     }
   ]
 }
