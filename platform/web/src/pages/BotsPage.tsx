@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { NavLink, useParams } from "react-router-dom";
-import { api, type Bot, type BotState } from "@/api";
+import { api, type Bot, type BotListItem, type BotState } from "@/api";
 import { BotDetail } from "@/components/bot/detail";
 import { CreateBotDialog } from "@/components/bot/create-bot-dialog";
 import { BotFace } from "@/components/icons/bot";
@@ -63,7 +63,7 @@ function BotsPane({
 }) {
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: Bot[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
   });
   const [createOpen, setCreateOpen] = useState(false);
 
@@ -111,8 +111,11 @@ function BotsPane({
                     </Badge>
                     {!bot.enabled && <span className="shrink-0 text-xs text-destructive">Disabled</span>}
                   </span>
-                  <span className="mt-0.5 block truncate text-xs text-muted-foreground" title={preview}>
-                    {preview}
+                  <span className="mt-0.5 flex min-w-0 gap-2 text-xs text-muted-foreground">
+                    <span className="min-w-0 flex-1 truncate" title={preview}>{preview}</span>
+                    <span className="shrink-0">
+                      {bot.triggerCount} {bot.triggerCount === 1 ? "trigger" : "triggers"}
+                    </span>
                   </span>
                 </NavLink>
               </li>

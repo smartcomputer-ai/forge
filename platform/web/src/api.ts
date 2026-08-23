@@ -625,6 +625,10 @@ export interface Bot {
   updatedAt: string;
 }
 
+export interface BotListItem extends Bot {
+  triggerCount: number;
+}
+
 export interface BotScheduleSpec {
   cron?: string | null;
   at?: string | null;

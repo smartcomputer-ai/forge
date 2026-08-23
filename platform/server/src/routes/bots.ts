@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@lightspeed/platform-db";
 import { BOT_STATE_QUERY, botWorkflowId, type BotEventDocumentV1 } from "@lightspeed/bots/contracts";
@@ -77,9 +77,14 @@ export function botRoutes(ctx: AppContext) {
     const access = await universeForSession(ctx, c, c.req.param("id"), false);
     if (!access) return c.json({ error: "not found" }, 404);
     const rows = await ctx.db
-      .select()
+      .select({
+        ...getTableColumns(bots),
+        triggerCount: count(botTriggers.id),
+      })
       .from(bots)
+      .leftJoin(botTriggers, eq(botTriggers.botId, bots.id))
       .where(eq(bots.universeId, access.universe.id))
+      .groupBy(bots.id)
       .orderBy(bots.name);
     return c.json({ bots: rows });
   });

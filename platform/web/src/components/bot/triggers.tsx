@@ -66,7 +66,10 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
     queryKey: ["bot-triggers", botId],
     queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/bots/${botId}/triggers`),
   });
-  const invalidate = () => queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] });
+  const invalidate = () => Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] }),
+    queryClient.invalidateQueries({ queryKey: ["bots"] }),
+  ]);
   const toggle = useMutation({
     mutationFn: (trigger: BotTrigger) =>
       api("PATCH", `/api/v1/bots/${botId}/triggers/${trigger.id}`, { enabled: !trigger.enabled }),
@@ -561,7 +564,10 @@ function AddTriggerDialog({
       );
     },
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bots"] }),
+      ]);
       reset();
       onOpenChange(false);
     },
