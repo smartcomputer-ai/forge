@@ -25,16 +25,57 @@ export interface BotScheduleSpec {
   botName: string;
   triggerId: string;
   triggerName: string;
-  cron: string;
+  /** Classic cron; exclusive with `at`. */
+  cron?: string | null;
+  /** One-shot ISO-8601 instant, expressed as a single calendar spec. */
+  at?: string | null;
   timezone: string;
   paused: boolean;
+}
+
+const MONTHS = [
+  "JANUARY",
+  "FEBRUARY",
+  "MARCH",
+  "APRIL",
+  "MAY",
+  "JUNE",
+  "JULY",
+  "AUGUST",
+  "SEPTEMBER",
+  "OCTOBER",
+  "NOVEMBER",
+  "DECEMBER",
+] as const;
+
+function scheduleSpecOf(spec: BotScheduleSpec) {
+  if (spec.at) {
+    const when = new Date(spec.at);
+    if (Number.isNaN(when.getTime())) throw new TypeError("invalid one-shot instant");
+    return {
+      calendars: [
+        {
+          year: when.getUTCFullYear(),
+          month: MONTHS[when.getUTCMonth()] as (typeof MONTHS)[number],
+          dayOfMonth: when.getUTCDate(),
+          hour: when.getUTCHours(),
+          minute: when.getUTCMinutes(),
+          second: when.getUTCSeconds(),
+          comment: `one-shot ${spec.at}`,
+        },
+      ],
+      timezone: "UTC",
+    };
+  }
+  if (!spec.cron) throw new TypeError("schedule needs cron or at");
+  return { cronExpressions: [spec.cron], timezone: spec.timezone };
 }
 
 /** Create or update the Temporal Schedule for one schedule trigger. */
 export async function upsertBotSchedule(client: Client, spec: BotScheduleSpec): Promise<void> {
   const scheduleId = botScheduleId(spec.universeId, spec.botName, spec.triggerName);
   const action = fireAction(spec);
-  const scheduleSpec = { cronExpressions: [spec.cron], timezone: spec.timezone };
+  const scheduleSpec = scheduleSpecOf(spec);
   try {
     await client.schedule.create({
       scheduleId,

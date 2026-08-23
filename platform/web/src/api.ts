@@ -626,7 +626,8 @@ export interface Bot {
 }
 
 export interface BotScheduleSpec {
-  cron: string;
+  cron?: string | null;
+  at?: string | null;
   timezone: string;
   summary: string;
 }

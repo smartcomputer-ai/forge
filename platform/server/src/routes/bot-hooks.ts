@@ -9,7 +9,7 @@ import {
   extractWebhookEvent,
   verifyWebhook,
   type FilterContext,
-} from "../bot-webhooks.js";
+} from "@lightspeed/bots/webhooks";
 import type { AppContext } from "../context.js";
 import {
   admitBotEvent,

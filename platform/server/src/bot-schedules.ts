@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import { schema } from "@lightspeed/platform-db";
+import { scheduleSpecFor } from "@lightspeed/bots/config";
 import { upsertBotSchedule } from "@lightspeed/bots/schedules";
 import type { AppContext } from "./context.js";
 import { errorMessage, getTemporal } from "./routes/bot-common.js";
@@ -26,18 +27,11 @@ export async function reconcileAllBotSchedules(ctx: Pick<AppContext, "db">): Pro
   if (rows.length === 0) return;
   const temporal = await getTemporal();
   for (const row of rows) {
-    const spec = row.trigger.spec as { cron: string; timezone: string };
     try {
-      await upsertBotSchedule(temporal, {
-        universeId: row.lightspeedUniverseId,
-        botId: row.bot.id,
-        botName: row.bot.name,
-        triggerId: row.trigger.id,
-        triggerName: row.trigger.name,
-        cron: spec.cron,
-        timezone: spec.timezone,
-        paused: !(row.bot.enabled && row.trigger.enabled),
-      });
+      await upsertBotSchedule(
+        temporal,
+        scheduleSpecFor(row.bot, row.trigger, row.lightspeedUniverseId),
+      );
       reconciled += 1;
     } catch (error) {
       failed += 1;

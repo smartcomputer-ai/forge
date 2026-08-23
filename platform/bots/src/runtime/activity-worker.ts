@@ -5,6 +5,7 @@ import {
   createBotControlPlaneActivities,
   createBotLightspeedActivities,
   createBotScheduleActivities,
+  createBotToolActivities,
 } from "../activities/index.js";
 import { BOTS_ACTIVITY_TASK_QUEUE } from "../contracts/bots.js";
 
@@ -35,6 +36,12 @@ const worker = await Worker.create({
     ...createBotLightspeedActivities({ endpoint }),
     ...createBotControlPlaneActivities(database.db),
     ...createBotScheduleActivities({ db: database.db, endpoint, temporal }),
+    ...createBotToolActivities({
+      db: database.db,
+      endpoint,
+      temporal,
+      baseUrl: process.env.LIGHTSPEED_PLATFORM_BASE_URL ?? null,
+    }),
   },
 });
 

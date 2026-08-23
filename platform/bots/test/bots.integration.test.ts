@@ -1,16 +1,21 @@
 import { fileURLToPath } from "node:url";
+import { ApplicationFailure } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { EmissionEnvelope } from "../src/contracts/emissions.js";
 import {
+  BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
   BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_EVENT_SIGNAL,
+  BOT_SESSION_DECLARATION_MISMATCH,
   BOT_STATE_QUERY,
+  BOT_STATUS_TOOL_ID,
   BOTS_ACTIVITY_TASK_QUEUE,
   BOTS_WORKFLOW_TASK_QUEUE,
   botDeliveryId,
+  lightspeedSessionWorkflowId,
   botEventTerminalToken,
   botScheduleId,
   botSessionId,
@@ -658,6 +663,204 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         (state) => state.activeDeliveries.some((entry) => entry.id === second.id),
       );
       expect(ensured.filter((id) => id !== mainSession)).toEqual([keyed, `${keyed}-g2`]);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("answers pushed bot_* invocations and resolves the session's parked call", async () => {
+    const toolBotName = "selfconfig";
+    const executed: unknown[] = [];
+    const payloadRef = `sha256:${"c".repeat(64)}`;
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        executeBotTool: async (input: unknown) => {
+          executed.push(input);
+          return { ok: true, payloadRef };
+        },
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: toolBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const mainSession = botSessionId(toolBotName);
+      const controller = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, toolBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_CONFIG_SIGNAL,
+        signalArgs: [start],
+      });
+      await eventually(
+        () => controller.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessionReady,
+      );
+      // Stand in for the core session workflow that holds the parked call.
+      const session = await env.client.workflow.start("fakeSessionWorkflow", {
+        workflowId: lightspeedSessionWorkflowId(universeId, mainSession),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      });
+
+      const promiseId = `wtp:sha256:${"9".repeat(64)}`;
+      await controller.signal("deliver_emission", {
+        emission_id: `wti:sha256:${"7".repeat(64)}`,
+        producer: { kind: "session", universe_id: universeId, session_id: mainSession, log_seq: 5 },
+        body: {
+          kind: "tool_invocation",
+          invocation: {
+            invocation_id: `wti:sha256:${"7".repeat(64)}`,
+            tool_id: BOT_STATUS_TOOL_ID,
+            semantic_type: BOT_STATUS_TOOL_ID,
+            schema_revision: 2,
+            binding_fingerprint: "wtb:test",
+            session_universe_id: universeId,
+            session_id: mainSession,
+            run_id: 1,
+            turn_id: 1,
+            tool_batch_id: 1,
+            tool_call_id: "call_1",
+            arguments_ref: eventRef,
+            completion_promises: { reply: promiseId },
+          },
+        },
+      });
+
+      const received = await eventually(
+        () => session.query<unknown[]>("received"),
+        (envelopes) => envelopes.length === 1,
+      );
+      expect(received[0]).toMatchObject({
+        producer: { kind: "workflow", universe_id: universeId, workflow_id: controller.workflowId },
+        body: {
+          kind: "source_resolution",
+          promise_id: promiseId,
+          resolution: { kind: "resolved", payload_ref: payloadRef },
+        },
+      });
+      expect(executed).toHaveLength(1);
+      expect(executed[0]).toMatchObject({
+        toolId: BOT_STATUS_TOOL_ID,
+        sessionId: mainSession,
+        botName: toolBotName,
+        controller: { sessions: [{ sessionId: mainSession, kind: "main" }] },
+      });
+
+      // Redelivery of the same invocation is ignored.
+      await controller.signal("deliver_emission", {
+        emission_id: `wti:sha256:${"7".repeat(64)}`,
+        producer: { kind: "session", universe_id: universeId, session_id: mainSession, log_seq: 6 },
+        body: { kind: "run_terminal", token: "x", run_id: 9, status: "completed", output_ref: null, failure_message_ref: null },
+      });
+      const after = await eventually(
+        () => controller.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.duplicateEmissionCount === 1,
+      );
+      expect(after.duplicateEmissionCount).toBe(1);
+      expect(executed).toHaveLength(1);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("rotates the main session when its tool declaration no longer matches", async () => {
+    const rotateBotName = "rotated";
+    const ensured: string[] = [];
+    const activity: string[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          if (sessionId === botSessionId(rotateBotName)) {
+            throw ApplicationFailure.nonRetryable(
+              "created under another declaration",
+              BOT_SESSION_DECLARATION_MISMATCH,
+            );
+          }
+          return { profileRevision: 3 };
+        },
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async (input: { entries: { kind: string }[] }) => {
+          activity.push(...input.entries.map((entry) => entry.kind));
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: rotateBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, rotateBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_CONFIG_SIGNAL,
+        signalArgs: [start],
+      });
+      const ready = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessionReady,
+      );
+      const base = botSessionId(rotateBotName);
+      expect(ensured).toEqual([base, `${base}-g2`]);
+      expect(ready.sessionId).toBe(`${base}-g2`);
+      expect(ready.mainGeneration).toBe(2);
+      expect(ready.sessions[0]?.sessionId).toBe(`${base}-g2`);
+      expect(activity).toContain("session_rotated");
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

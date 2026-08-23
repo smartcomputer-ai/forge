@@ -5,7 +5,7 @@ import {
   botKeyedSessionId,
   botPerEventSessionId,
   type BotEventSession,
-} from "@lightspeed/bots/contracts";
+} from "./contracts/bots.js";
 
 /** Headers that must never be persisted into an event document. */
 const REDACTED_HEADERS = new Set(["authorization", "cookie", "set-cookie", "proxy-authorization"]);

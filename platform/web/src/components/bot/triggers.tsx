@@ -173,7 +173,13 @@ function ScheduleRowDetail({ spec }: { spec: BotScheduleSpec }) {
   return (
     <>
       <p className="mt-1 text-muted-foreground wrap-anywhere">
-        <code>{spec.cron}</code> · {spec.timezone}
+        {spec.at ? (
+          <>once at {new Date(spec.at).toLocaleString()}</>
+        ) : (
+          <>
+            <code>{spec.cron}</code> · {spec.timezone}
+          </>
+        )}
       </p>
       <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{spec.summary}</p>
     </>
@@ -504,13 +510,15 @@ function AddTriggerDialog({
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<"schedule" | "webhook">("schedule");
   const [name, setName] = useState("");
+  const [once, setOnce] = useState(false);
+  const [at, setAt] = useState("");
   const [cron, setCron] = useState("");
   const [timezone, setTimezone] = useState("UTC");
   const [summary, setSummary] = useState("");
   const [webhook, setWebhook] = useState<WebhookFormState>(defaultWebhookForm);
   const [error, setError] = useState<string | null>(null);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
-  const cronIssue = kind === "schedule" ? cronProblem(cron) : null;
+  const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
   const create = useMutation({
     mutationFn: () =>
@@ -521,7 +529,9 @@ function AddTriggerDialog({
           ? {
               name: name.trim(),
               kind,
-              spec: { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
+              spec: once
+                ? { at: new Date(at).toISOString(), timezone: "UTC", summary: summary.trim() }
+                : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
             }
           : { name: name.trim(), kind, ...webhookPayload(webhook) },
       ),
@@ -540,7 +550,8 @@ function AddTriggerDialog({
     !name.trim() ||
     nameInvalid ||
     (kind === "schedule"
-      ? !cron.trim() || cronIssue !== null || !summary.trim()
+      ? (once ? !at || Number.isNaN(new Date(at).getTime()) : !cron.trim() || cronIssue !== null) ||
+        !summary.trim()
       : webhookIssue !== null);
 
   return (
@@ -594,34 +605,63 @@ function AddTriggerDialog({
           )}
           {kind === "schedule" ? (
             <>
-              <div className="grid grid-cols-[1fr_10rem] gap-3">
+              <Field>
+                <FieldLabel>When</FieldLabel>
+                <Select value={once ? "once" : "cron"} onValueChange={(value) => setOnce(value === "once")}>
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="cron">On a recurring cron</SelectItem>
+                    <SelectItem value="once">Once, at a specific time</SelectItem>
+                  </SelectContent>
+                </Select>
+              </Field>
+              {once ? (
                 <Field>
-                  <FieldLabel htmlFor="trigger-cron">Cron</FieldLabel>
+                  <FieldLabel htmlFor="trigger-at">Fire at</FieldLabel>
                   <Input
-                    id="trigger-cron"
-                    value={cron}
-                    onChange={(event) => setCron(event.target.value)}
-                    placeholder="0 8 * * 1-5"
-                    className="font-mono"
-                    aria-invalid={cronIssue !== null || undefined}
+                    id="trigger-at"
+                    type="datetime-local"
+                    value={at}
+                    onChange={(event) => setAt(event.target.value)}
                   />
+                  <FieldDescription>
+                    Local time; the trigger disables itself after firing once.
+                  </FieldDescription>
                 </Field>
-                <Field>
-                  <FieldLabel htmlFor="trigger-timezone">Timezone</FieldLabel>
-                  <Input
-                    id="trigger-timezone"
-                    value={timezone}
-                    onChange={(event) => setTimezone(event.target.value)}
-                    placeholder="UTC"
-                  />
-                </Field>
-              </div>
-              {cronIssue ? (
-                <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
               ) : (
-                <p className="-mt-2 text-xs text-muted-foreground">
-                  5 fields: minute, hour, day, month, weekday — or a macro like @daily.
-                </p>
+                <>
+                  <div className="grid grid-cols-[1fr_10rem] gap-3">
+                    <Field>
+                      <FieldLabel htmlFor="trigger-cron">Cron</FieldLabel>
+                      <Input
+                        id="trigger-cron"
+                        value={cron}
+                        onChange={(event) => setCron(event.target.value)}
+                        placeholder="0 8 * * 1-5"
+                        className="font-mono"
+                        aria-invalid={cronIssue !== null || undefined}
+                      />
+                    </Field>
+                    <Field>
+                      <FieldLabel htmlFor="trigger-timezone">Timezone</FieldLabel>
+                      <Input
+                        id="trigger-timezone"
+                        value={timezone}
+                        onChange={(event) => setTimezone(event.target.value)}
+                        placeholder="UTC"
+                      />
+                    </Field>
+                  </div>
+                  {cronIssue ? (
+                    <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
+                  ) : (
+                    <p className="-mt-2 text-xs text-muted-foreground">
+                      5 fields: minute, hour, day, month, weekday — or a macro like @daily.
+                    </p>
+                  )}
+                </>
               )}
               <Field>
                 <FieldLabel htmlFor="trigger-summary">Task</FieldLabel>
@@ -666,6 +706,7 @@ function EditTriggerDialog({
 }) {
   const queryClient = useQueryClient();
   const scheduleSpec = trigger.kind === "schedule" ? (trigger.spec as BotScheduleSpec) : null;
+  const oneShotAt = scheduleSpec?.at ?? null;
   const [cron, setCron] = useState(scheduleSpec?.cron ?? "");
   const [timezone, setTimezone] = useState(scheduleSpec?.timezone ?? "UTC");
   const [summary, setSummary] = useState(scheduleSpec?.summary ?? "");
@@ -673,7 +714,7 @@ function EditTriggerDialog({
     trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
   );
   const [error, setError] = useState<string | null>(null);
-  const cronIssue = trigger.kind === "schedule" ? cronProblem(cron) : null;
+  const cronIssue = trigger.kind === "schedule" && !oneShotAt ? cronProblem(cron) : null;
   const webhookIssue = trigger.kind === "webhook" ? webhookFormProblem(webhook) : null;
   const save = useMutation({
     mutationFn: () =>
@@ -682,7 +723,9 @@ function EditTriggerDialog({
         `/api/v1/bots/${botId}/triggers/${trigger.id}`,
         trigger.kind === "schedule"
           ? {
-              spec: { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
+              spec: oneShotAt
+                ? { at: oneShotAt, timezone: "UTC", summary: summary.trim() }
+                : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
             }
           : webhookPayload(webhook),
       ),
@@ -695,7 +738,7 @@ function EditTriggerDialog({
   });
   const incomplete =
     trigger.kind === "schedule"
-      ? !cron.trim() || cronIssue !== null || !summary.trim()
+      ? (!oneShotAt && (!cron.trim() || cronIssue !== null)) || !summary.trim()
       : webhookIssue !== null;
 
   return (
@@ -719,7 +762,12 @@ function EditTriggerDialog({
         >
           {trigger.kind === "schedule" ? (
             <>
-              <div className="grid grid-cols-[1fr_10rem] gap-3">
+              {oneShotAt && (
+                <p className="text-xs text-muted-foreground">
+                  One-shot trigger at {new Date(oneShotAt).toLocaleString()}; only the task text is editable.
+                </p>
+              )}
+              <div className={oneShotAt ? "hidden" : "grid grid-cols-[1fr_10rem] gap-3"}>
                 <Field>
                   <FieldLabel htmlFor="edit-trigger-cron">Cron</FieldLabel>
                   <Input

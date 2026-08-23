@@ -263,6 +263,7 @@ endpoint.
 | `LIGHTSPEED_BOTS_ACTIVITY_TASK_QUEUE` | `lightspeed-bots-activities-v1` | Bots activity queue override. |
 | `LIGHTSPEED_ENDPOINT` | **Required by the activity worker** | Lightspeed JSON-RPC endpoint. |
 | `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
+| `LIGHTSPEED_PLATFORM_BASE_URL` | Optional | Public platform origin; when set, bot tools return absolute webhook ingest URLs instead of paths. |
 
 ## Foundry candidate
 

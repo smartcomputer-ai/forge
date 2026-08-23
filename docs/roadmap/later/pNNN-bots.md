@@ -111,9 +111,43 @@
     controllers must be terminated once (`temporal workflow terminate
     --query "WorkflowType='botControllerWorkflowV1'"`); they recreate on
     the next event or config change.
-- Next: slice 4 (`bot_*` self-configuration tools, filter test/replay,
-  remaining presets, Channels-as-trigger bridge). Still open: breaker
-  coverage for schedule floods, CEL save-time validation, secret sealing.
+- Slice 4 (self-configuration) implemented 2026-08-23:
+  - **`bot_*` workflow tools** bound to the controller as pushed **joined**
+    tools (60s reply deadline) over the existing self-receiver topology:
+    `bot_status`, `bot_trigger_put` (flat model-facing args → the same
+    validated create/update path the API uses; webhooks return their ingest
+    URL), `bot_trigger_delete`, `bot_filter_test` (CEL against recent stored
+    envelopes), `bot_events_read`, `bot_brief_put` (rewrites the brief and
+    signals the controller), and `bot_emit` (accepted; self-addressed events
+    tagged `bot:self`, optionally keyed). Deliberately not tools: enable,
+    budget, breaker, retention, profile, credentials — scope widening stays
+    human-only.
+  - **Controller answers invocations in their own lanes** and replies by
+    signalling the core session workflow (`<universeId>/<sessionId>`) with a
+    `source_resolution` whose payload is a CAS ref; invocations dedupe by
+    id; failures resolve `failed` with an error ref and record
+    `tool_failed`; self-configuration lands in the activity feed as
+    `self_configured`.
+  - **Session rotation**: tool declarations are immutable per session, so
+    the controller stamps a declaration revision and, on a typed
+    declaration-mismatch failure from `session/managed/start`, rotates the
+    main session to `<id>-g2`, `-g3`, … (`session_rotated` activity) —
+    the planned workaround made real.
+  - **Shared config module** (`@lightspeed/bots/config`): trigger
+    validation + create/update/delete + schedule reconcile, used by both the
+    API routes and the bot's tools — one code path. Webhook helpers moved
+    to `@lightspeed/bots/webhooks`.
+  - **One-shot schedules**: `spec.at` (ISO instant) as an alternative to
+    cron, realized as a Temporal calendar spec with explicit year; the
+    trigger disables itself and drops its schedule after firing. UI offers
+    "Once, at a specific time".
+  - Tests: tool round trip via a fake session workflow (reply observed,
+    redelivery ignored), rotation on mismatch, declaration shape, arg
+    mapping, schedule spec validation; nine Temporal integration scenarios.
+- Next: slice 5 (agent-authored pollers in provisioned environments, poll
+  primitive, email, more presets, Channels bridge). Still open: breaker
+  coverage for schedule floods, CEL save-time validation, secret sealing,
+  loop prevention via the `bot:self` provenance tag.
 
 ## The proposal in one screen
 

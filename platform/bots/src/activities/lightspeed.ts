@@ -1,11 +1,14 @@
+import { ApplicationFailure } from "@temporalio/common";
 import {
   LightspeedClient,
   LightspeedRpcError,
   type AgentProfile,
   type SessionStatus,
 } from "@lightspeed/agent-client";
+
 import {
   BOT_EVENT_RESOLVE_TOOL_ID,
+  BOT_SESSION_DECLARATION_MISMATCH,
   BOT_TOOL_DESCRIPTIONS,
   BOT_TOOL_SCHEMAS,
   botWorkflowTools,
@@ -109,16 +112,30 @@ export function createBotLightspeedActivities(
       const baseInstructions = await readProfileInstructions(client, profile);
       const resolvedProfile = resolveBotProfile(profile, baseInstructions, input);
       const refs = await putToolAssets(client);
-      await client.call("session/managed/start", {
-        sessionId: input.sessionId,
-        displayName: input.displayName,
-        profile: { kind: "inline", profile: resolvedProfile },
-        workflowTools: {
-          version: 1,
-          lifecycleController: input.controller,
-          tools: botWorkflowTools(input.controller, refs.schemas, refs.descriptions),
-        },
-      });
+      try {
+        await client.call("session/managed/start", {
+          sessionId: input.sessionId,
+          displayName: input.displayName,
+          profile: { kind: "inline", profile: resolvedProfile },
+          workflowTools: {
+            version: 1,
+            lifecycleController: input.controller,
+            tools: botWorkflowTools(input.controller, refs.schemas, refs.descriptions),
+          },
+        });
+      } catch (error) {
+        // Declarations are immutable per session: an existing session created
+        // under an older tool revision cannot be upgraded in place. Report it
+        // as a typed, non-retryable failure so the controller rotates to a
+        // successor session instead of retrying forever.
+        if (error instanceof LightspeedRpcError && /fingerprint/i.test(error.message)) {
+          throw ApplicationFailure.nonRetryable(
+            `session ${input.sessionId} was created under another tool declaration`,
+            BOT_SESSION_DECLARATION_MISMATCH,
+          );
+        }
+        throw error;
+      }
       if (input.appliedProfileRevision !== profile.revision) {
         await client.call("session/profiles/apply", {
           sessionId: input.sessionId,

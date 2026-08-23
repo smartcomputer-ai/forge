@@ -15,6 +15,22 @@ export const BOT_CONFIG_SIGNAL = "bot_config_v1";
 export const BOT_STATE_QUERY = "bot_state";
 
 export const BOT_EVENT_RESOLVE_TOOL_ID = "lightspeed.bots.event.resolve.v1";
+export const BOT_STATUS_TOOL_ID = "lightspeed.bots.status.v1";
+export const BOT_TRIGGER_PUT_TOOL_ID = "lightspeed.bots.trigger.put.v1";
+export const BOT_TRIGGER_DELETE_TOOL_ID = "lightspeed.bots.trigger.delete.v1";
+export const BOT_FILTER_TEST_TOOL_ID = "lightspeed.bots.filter.test.v1";
+export const BOT_EVENTS_READ_TOOL_ID = "lightspeed.bots.events.read.v1";
+export const BOT_BRIEF_PUT_TOOL_ID = "lightspeed.bots.brief.put.v1";
+export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
+/**
+ * Declared-tool revision stamped on every session the controller creates.
+ * Declarations are immutable per session, so a bump rotates the main session
+ * to a successor instead of editing the live one.
+ */
+export const BOT_TOOLS_REVISION = 2;
+export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
+/** ApplicationFailure type: the session exists under another tool declaration. */
+export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAME = /^[a-z0-9][a-z0-9-]*$/;
@@ -39,7 +55,10 @@ export interface BotStartV1 {
 export type BotTriggerKind = "schedule" | "webhook";
 
 export interface ScheduleTriggerSpecV1 {
-  cron: string;
+  /** Classic 5-field cron or @-macro; exclusive with `at`. */
+  cron?: string | null;
+  /** One-shot ISO-8601 instant; the trigger disables itself after firing. */
+  at?: string | null;
   timezone: string;
   /** What the fired event asks the session to do. */
   summary: string;
@@ -193,6 +212,13 @@ export function botPerEventSessionId(botName: string, eventId: string): string {
   return `bot:v1:${botName}:e-${digest(eventId).slice(0, 12)}`;
 }
 
+/** Workflow id of the core session workflow; replies to joined tools signal it directly. */
+export function lightspeedSessionWorkflowId(universeId: string, sessionId: string): string {
+  requireUniverse(universeId);
+  if (!sessionId || sessionId.includes("/")) throw new TypeError("invalid session id");
+  return `${universeId.toLowerCase()}/${sessionId}`;
+}
+
 export function botScheduleId(universeId: string, botName: string, triggerName: string): string {
   requireUniverse(universeId);
   requireName(botName);
@@ -231,8 +257,21 @@ export function botEventTerminalToken(eventId: string): string {
 
 export const BOT_TOOL_DESCRIPTIONS = {
   eventResolve:
-    "Resolve the active bot event after you have handled it. Use exactly once with handled, deferred, ignored, or blocked.",
+    "Resolve the active bot delivery after you have handled it. Use exactly once per delivery with handled, deferred, ignored, or blocked; eventId is the delivery id from the run input.",
+  status:
+    "Inspect this bot: enabled state, run budget, sessions, configured triggers, coalescing buffers, and recent deliveries.",
+  triggerPut:
+    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender. Filters and route keys are CEL over event, data, headers.",
+  triggerDelete: "Delete one of this bot's triggers by name.",
+  filterTest:
+    "Evaluate a candidate CEL filter against recent stored events and report which would match, so filters are written against real traffic.",
+  eventsRead: "Read recent events that arrived at this bot, with their summaries.",
+  briefPut: "Replace this bot's standing brief (its job description). Applied to sessions at the next idle boundary.",
+  emit: "Post an event to this bot itself (tagged as self-originated). Optionally route it to a keyed session.",
 } as const;
+
+const NULLABLE_STRING = { type: ["string", "null"] } as const;
+const NULLABLE_INTEGER = { type: ["integer", "null"] } as const;
 
 export const BOT_TOOL_SCHEMAS = {
   eventResolveInput: {
@@ -245,37 +284,172 @@ export const BOT_TOOL_SCHEMAS = {
     required: ["eventId", "outcome", "summary"],
     additionalProperties: false,
   },
+  statusInput: { type: "object", properties: {}, required: [], additionalProperties: false },
+  triggerPutInput: {
+    type: "object",
+    properties: {
+      name: { type: "string", minLength: 1 },
+      kind: { type: "string", enum: ["schedule", "webhook"] },
+      cron: NULLABLE_STRING,
+      at: NULLABLE_STRING,
+      timezone: NULLABLE_STRING,
+      summary: NULLABLE_STRING,
+      verification: { type: ["string", "null"], enum: ["token", "hmac-sha256", "github", null] },
+      secret: NULLABLE_STRING,
+      filter: NULLABLE_STRING,
+      routePolicy: { type: ["string", "null"], enum: ["bot", "perKey", "perEvent", null] },
+      routeKey: NULLABLE_STRING,
+      debounceMs: NULLABLE_INTEGER,
+      maxWaitMs: NULLABLE_INTEGER,
+      maxCount: NULLABLE_INTEGER,
+      whenBusy: { type: ["string", "null"], enum: ["queue", "steer", "append", null] },
+      enabled: { type: ["boolean", "null"] },
+    },
+    required: [
+      "name",
+      "kind",
+      "cron",
+      "at",
+      "timezone",
+      "summary",
+      "verification",
+      "secret",
+      "filter",
+      "routePolicy",
+      "routeKey",
+      "debounceMs",
+      "maxWaitMs",
+      "maxCount",
+      "whenBusy",
+      "enabled",
+    ],
+    additionalProperties: false,
+  },
+  triggerDeleteInput: {
+    type: "object",
+    properties: { name: { type: "string", minLength: 1 } },
+    required: ["name"],
+    additionalProperties: false,
+  },
+  filterTestInput: {
+    type: "object",
+    properties: { filter: { type: "string", minLength: 1 }, limit: NULLABLE_INTEGER },
+    required: ["filter", "limit"],
+    additionalProperties: false,
+  },
+  eventsReadInput: {
+    type: "object",
+    properties: { limit: NULLABLE_INTEGER },
+    required: ["limit"],
+    additionalProperties: false,
+  },
+  briefPutInput: {
+    type: "object",
+    properties: { brief: { type: "string", minLength: 1 } },
+    required: ["brief"],
+    additionalProperties: false,
+  },
+  emitInput: {
+    type: "object",
+    properties: {
+      kind: { type: "string", minLength: 1 },
+      summary: { type: "string", minLength: 1 },
+      data: { type: ["object", "null"], additionalProperties: true },
+      sessionKey: NULLABLE_STRING,
+    },
+    required: ["kind", "summary", "data", "sessionKey"],
+    additionalProperties: false,
+  },
 } as const;
 
 export type BotToolSchemaRefs = Record<keyof typeof BOT_TOOL_SCHEMAS, string>;
 export type BotToolDescriptionRefs = Record<keyof typeof BOT_TOOL_DESCRIPTIONS, string>;
+
+interface BotToolSpec {
+  toolId: string;
+  name: string;
+  schema: keyof typeof BOT_TOOL_SCHEMAS;
+  description: keyof typeof BOT_TOOL_DESCRIPTIONS;
+  completion: "accepted-pull" | "accepted-push" | "joined";
+}
+
+const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
+  {
+    toolId: BOT_EVENT_RESOLVE_TOOL_ID,
+    name: "bot_event_resolve",
+    schema: "eventResolveInput",
+    description: "eventResolve",
+    completion: "accepted-pull",
+  },
+  { toolId: BOT_STATUS_TOOL_ID, name: "bot_status", schema: "statusInput", description: "status", completion: "joined" },
+  {
+    toolId: BOT_TRIGGER_PUT_TOOL_ID,
+    name: "bot_trigger_put",
+    schema: "triggerPutInput",
+    description: "triggerPut",
+    completion: "joined",
+  },
+  {
+    toolId: BOT_TRIGGER_DELETE_TOOL_ID,
+    name: "bot_trigger_delete",
+    schema: "triggerDeleteInput",
+    description: "triggerDelete",
+    completion: "joined",
+  },
+  {
+    toolId: BOT_FILTER_TEST_TOOL_ID,
+    name: "bot_filter_test",
+    schema: "filterTestInput",
+    description: "filterTest",
+    completion: "joined",
+  },
+  {
+    toolId: BOT_EVENTS_READ_TOOL_ID,
+    name: "bot_events_read",
+    schema: "eventsReadInput",
+    description: "eventsRead",
+    completion: "joined",
+  },
+  { toolId: BOT_BRIEF_PUT_TOOL_ID, name: "bot_brief_put", schema: "briefPutInput", description: "briefPut", completion: "joined" },
+  { toolId: BOT_EMIT_TOOL_ID, name: "bot_emit", schema: "emitInput", description: "emit", completion: "accepted-push" },
+];
+
+/** Tool ids the controller answers via pushed invocations (joined or accepted). */
+export const BOT_PUSHED_TOOL_IDS: ReadonlySet<string> = new Set(
+  BOT_TOOL_SPECS.filter((spec) => spec.completion !== "accepted-pull").map((spec) => spec.toolId),
+);
 
 export function botWorkflowTools(
   receiver: WorkflowEndpointInput,
   schemas: BotToolSchemaRefs,
   descriptions: BotToolDescriptionRefs,
 ): WorkflowToolDeclarationInput[] {
-  return [
-    {
-      definition: {
-        toolId: BOT_EVENT_RESOLVE_TOOL_ID,
-        revision: 1,
-        semanticType: BOT_EVENT_RESOLVE_TOOL_ID,
-        tool: {
-          name: "bot_event_resolve",
-          parallelism: "exclusive",
-          kind: {
-            type: "function",
-            inputSchemaRef: schemas.eventResolveInput,
-            descriptionRef: descriptions.eventResolve,
-            strict: true,
-          },
+  return BOT_TOOL_SPECS.map((spec) => ({
+    definition: {
+      toolId: spec.toolId,
+      revision: BOT_TOOLS_REVISION,
+      semanticType: spec.toolId,
+      tool: {
+        name: spec.name,
+        parallelism: "exclusive",
+        kind: {
+          type: "function",
+          inputSchemaRef: schemas[spec.schema],
+          descriptionRef: descriptions[spec.description],
+          strict: true,
         },
       },
-      target: { type: "bound", receiver, dispatch: "pull" },
-      completion: { type: "accepted" },
     },
-  ];
+    target: {
+      type: "bound",
+      receiver,
+      dispatch: spec.completion === "accepted-pull" ? "pull" : "push",
+    },
+    completion:
+      spec.completion === "joined"
+        ? { type: "joined", deadlineAfterMs: BOT_TOOL_REPLY_DEADLINE_MS, replySchemaRef: null }
+        : { type: "accepted" },
+  }));
 }
 
 export type BotEventOutcome = "handled" | "deferred" | "ignored" | "blocked";

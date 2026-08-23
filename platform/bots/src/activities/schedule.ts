@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
+import { deleteBotSchedule } from "../schedules.js";
 import {
   BOT_CONTROLLER_WORKFLOW,
   BOT_EVENT_SIGNAL,
@@ -55,7 +56,8 @@ export function createBotScheduleActivities(
       if (!row.trigger.enabled) return { admitted: false, reason: "trigger_disabled" };
       if (!row.bot.enabled) return { admitted: false, reason: "bot_disabled" };
       const spec = row.trigger.spec as {
-        cron: string;
+        cron?: string | null;
+        at?: string | null;
         timezone: string;
         summary: string;
       };
@@ -69,7 +71,8 @@ export function createBotScheduleActivities(
         data: {
           triggerId: row.trigger.id,
           triggerName: row.trigger.name,
-          cron: spec.cron,
+          cron: spec.cron ?? null,
+          at: spec.at ?? null,
           timezone: spec.timezone,
           scheduledAt: input.scheduledAt,
         },
@@ -118,6 +121,20 @@ export function createBotScheduleActivities(
         signal: BOT_EVENT_SIGNAL,
         signalArgs: [event],
       });
+      if (spec.at) {
+        // One-shot: it has fired; disable the trigger and drop the schedule so
+        // it cannot fire again and reads as spent in the UI.
+        await config.db
+          .update(schema.botTriggers)
+          .set({ enabled: false })
+          .where(eq(schema.botTriggers.id, row.trigger.id));
+        await deleteBotSchedule(
+          config.temporal,
+          row.lightspeedUniverseId,
+          row.bot.name,
+          row.trigger.name,
+        ).catch(() => undefined);
+      }
       return { admitted: true, eventId, duplicate: inserted.length === 0 };
     },
   };

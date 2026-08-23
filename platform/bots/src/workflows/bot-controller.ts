@@ -1,23 +1,37 @@
 import {
+  ActivityFailure,
+  ApplicationFailure,
   condition,
   continueAsNew,
   defineQuery,
   defineSignal,
+  getExternalWorkflowHandle,
   proxyActivities,
   setHandler,
   sleep,
   workflowInfo,
 } from "@temporalio/workflow";
 import type { BotActivities } from "../activities/index.js";
-import { DELIVER_EMISSION_SIGNAL, parseEmissionEnvelope } from "../contracts/emissions.js";
+import {
+  DELIVER_EMISSION_SIGNAL,
+  parseEmissionEnvelope,
+  replyPromiseId,
+  sourceResolutionEnvelope,
+  type WorkflowToolInvocation,
+} from "../contracts/emissions.js";
 import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
+  BOT_EMIT_TOOL_ID,
   BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_EVENT_SIGNAL,
+  BOT_PUSHED_TOOL_IDS,
+  BOT_SESSION_DECLARATION_MISMATCH,
   BOT_STATE_QUERY,
+  BOT_TOOLS_REVISION,
   BOTS_ACTIVITY_TASK_QUEUE,
   botDeliveryId,
+  lightspeedSessionWorkflowId,
   botEventSubmissionId,
   botEventTerminalToken,
   botSessionId,
@@ -38,6 +52,7 @@ const SEEN_EVENT_CAP = 2_000;
 const SEEN_EMISSION_CAP = 2_000;
 const RECENT_EVENT_CAP = 50;
 const EXTRA_SESSION_CAP = 200;
+const HANDLED_INVOCATION_CAP = 2_000;
 
 export interface BotRecentEventSnapshot {
   id: string;
@@ -110,6 +125,8 @@ export interface BotSnapshot {
   appliedProfileRevision: number | null;
   runsPerDay: number | null;
   runsToday: number;
+  mainGeneration: number;
+  toolsRevision: number | null;
   lastError: string | null;
 }
 
@@ -136,6 +153,11 @@ export interface BotCarryV1 {
   sessionCursors?: Record<string, number>;
   /** Routed session id → generation, bumped each time that session closes. */
   sessionGenerations?: Record<string, number>;
+  /** Main session generation; bumped when the tool declaration rotates it. */
+  mainGeneration?: number;
+  /** Tool declaration revision the main session was created under. */
+  toolsRevision?: number | null;
+  handledInvocationIds?: string[];
 }
 
 interface ActiveDelivery {
@@ -168,7 +190,13 @@ export async function botControllerWorkflowV1(
 ): Promise<never> {
   validateConfig(initial);
   let config = carry?.config ?? initial;
-  const sessionId = botSessionId(config.botName);
+  const baseSessionId = botSessionId(config.botName);
+  let mainGeneration = carry?.mainGeneration ?? 1;
+  let toolsRevision: number | null = carry?.toolsRevision ?? null;
+  const mainSessionIdFor = (generation: number): string =>
+    generation === 1 ? baseSessionId : `${baseSessionId}-g${generation}`;
+  let sessionId = mainSessionIdFor(mainGeneration);
+  const handledInvocationIds = new Set(carry?.handledInvocationIds ?? []);
   const pendingDeliveries: BotDelivery[] = [
     ...(carry?.pendingEvents ?? []).map((event) => ({
       id: event.id,
@@ -422,6 +450,8 @@ export async function botControllerWorkflowV1(
     appliedProfileRevision,
     runsPerDay: config.runsPerDay,
     runsToday,
+    mainGeneration,
+    toolsRevision,
     lastError,
   }));
 
@@ -437,37 +467,63 @@ export async function botControllerWorkflowV1(
       .catch(() => undefined);
   }
 
+  function isDeclarationMismatch(error: unknown): boolean {
+    return (
+      error instanceof ActivityFailure &&
+      error.cause instanceof ApplicationFailure &&
+      error.cause.type === BOT_SESSION_DECLARATION_MISMATCH
+    );
+  }
+
   async function reconcileSession(): Promise<boolean> {
-    try {
-      const ensured = await activities.ensureBotSession({
-        universeId: config.universeId,
-        sessionId,
-        displayName: `bot ${config.botName}`,
-        profileId: config.profileId,
-        botName: config.botName,
-        brief: config.brief,
-        appliedProfileRevision:
-          appliedProfileId === config.profileId ? appliedProfileRevision : null,
-        controller: {
-          workflowId: workflowInfo().workflowId,
-          workflowKind: BOT_CONTROLLER_WORKFLOW,
-        },
-      });
-      sessionReady = true;
-      appliedProfileId = config.profileId;
-      appliedProfileRevision = ensured.profileRevision;
-      configDirty = false;
-      lastError = null;
-      setupStatus = "ready";
-      return true;
-    } catch (error) {
-      lastError = errorMessage(error);
-      setupStatus = "degraded";
-      configDirty = false;
-      sessionReady = false;
-      await record("degraded", { detail: lastError });
-      return false;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const ensured = await activities.ensureBotSession({
+          universeId: config.universeId,
+          sessionId,
+          displayName: `bot ${config.botName}`,
+          profileId: config.profileId,
+          botName: config.botName,
+          brief: config.brief,
+          appliedProfileRevision:
+            appliedProfileId === config.profileId ? appliedProfileRevision : null,
+          controller: {
+            workflowId: workflowInfo().workflowId,
+            workflowKind: BOT_CONTROLLER_WORKFLOW,
+          },
+        });
+        sessionReady = true;
+        appliedProfileId = config.profileId;
+        appliedProfileRevision = ensured.profileRevision;
+        toolsRevision = BOT_TOOLS_REVISION;
+        configDirty = false;
+        lastError = null;
+        setupStatus = "ready";
+        return true;
+      } catch (error) {
+        if (isDeclarationMismatch(error) && attempt === 0) {
+          // Tool declarations are immutable per session: rotate to a
+          // successor main session rather than editing the live one.
+          const previous = sessionId;
+          mainGeneration += 1;
+          sessionId = mainSessionIdFor(mainGeneration);
+          eventCursorSeq = 0;
+          appliedProfileId = null;
+          appliedProfileRevision = null;
+          await record("session_rotated", {
+            detail: `main session ${previous} rotated to ${sessionId} for tool revision ${BOT_TOOLS_REVISION}`,
+          });
+          continue;
+        }
+        lastError = errorMessage(error);
+        setupStatus = "degraded";
+        configDirty = false;
+        sessionReady = false;
+        await record("degraded", { detail: lastError });
+        return false;
+      }
     }
+    return false;
   }
 
   function cursorFor(target: string): number {
@@ -516,11 +572,23 @@ export async function botControllerWorkflowV1(
         const producer = envelope.producer;
         if (
           producer.universe_id !== config.universeId ||
-          (producer.session_id !== sessionId && !producer.session_id.startsWith(`${sessionId}:`))
+          !producer.session_id.startsWith(baseSessionId)
         ) {
           throw new TypeError("emission does not belong to this bot's sessions");
         }
         producerSessionId = producer.session_id;
+      }
+      if (envelope.body.kind === "tool_invocation") {
+        const invocation = envelope.body.invocation;
+        if (!BOT_PUSHED_TOOL_IDS.has(invocation.tool_id)) continue;
+        if (handledInvocationIds.has(invocation.invocation_id)) continue;
+        handledInvocationIds.add(invocation.invocation_id);
+        if (handledInvocationIds.size > HANDLED_INVOCATION_CAP) {
+          const first = handledInvocationIds.values().next().value;
+          if (first !== undefined) handledInvocationIds.delete(first);
+        }
+        void handleInvocation(invocation);
+        continue;
       }
       if (envelope.body.kind !== "run_terminal") continue;
       const terminalRunId = `run_${envelope.body.run_id}`;
@@ -537,6 +605,90 @@ export async function botControllerWorkflowV1(
         }
       }
     }
+  }
+
+  function controllerSummary() {
+    return {
+      sessions: [{ sessionId, label: "main", kind: "main" }, ...extraSessions].map((session) => ({
+        sessionId: session.sessionId,
+        label: session.label,
+        kind: session.kind,
+      })),
+      activeDeliveries: [...activeBySession.values()].map((active) => ({
+        id: active.delivery.id,
+        eventCount: active.delivery.events.length,
+        sessionId: active.sessionId,
+      })),
+      buffers: [...buffers.entries()].map(([key, buffer]) => ({
+        key,
+        count: buffer.events.length,
+        flushAtMs: Math.min(
+          buffer.lastAtMs + buffer.params.debounceMs,
+          buffer.firstAtMs + buffer.params.maxWaitMs,
+        ),
+      })),
+      runsToday,
+      eventsProcessed,
+    };
+  }
+
+  /**
+   * Answer a pushed bot_* invocation from the controller's own state and
+   * activities, then resolve the session's parked call by signalling the
+   * session workflow directly. Runs as its own lane, independent of delivery
+   * and terminal handling.
+   */
+  async function handleInvocation(invocation: WorkflowToolInvocation): Promise<void> {
+    const joined = invocation.tool_id !== BOT_EMIT_TOOL_ID;
+    let resolution:
+      | { kind: "resolved"; payload_ref: string | null }
+      | { kind: "failed"; error_ref: string | null };
+    try {
+      const args = await activities.readJsonBlob({
+        universeId: config.universeId,
+        blobRef: invocation.arguments_ref,
+      });
+      const result = await activities.executeBotTool({
+        universeId: config.universeId,
+        botId: config.botId,
+        botName: config.botName,
+        sessionId: invocation.session_id,
+        toolId: invocation.tool_id,
+        args,
+        controller: controllerSummary(),
+      });
+      if (result.ok) {
+        resolution = { kind: "resolved", payload_ref: result.payloadRef };
+      } else {
+        resolution = { kind: "failed", error_ref: result.errorRef };
+        await record("tool_failed", { detail: `${invocation.tool_id}: ${result.message}` });
+      }
+    } catch (error) {
+      lastError = errorMessage(error);
+      await record("tool_failed", { detail: `${invocation.tool_id}: ${lastError}` });
+      resolution = { kind: "failed", error_ref: null };
+    }
+    if (!joined) return;
+    try {
+      const holder = getExternalWorkflowHandle(
+        lightspeedSessionWorkflowId(config.universeId, invocation.session_id),
+      );
+      await holder.signal(
+        DELIVER_EMISSION_SIGNAL,
+        sourceResolutionEnvelope({
+          universeId: config.universeId,
+          producerWorkflowId: workflowInfo().workflowId,
+          promiseId: replyPromiseId(invocation),
+          resolution,
+        }),
+      );
+    } catch (error) {
+      lastError = errorMessage(error);
+      await record("tool_failed", {
+        detail: `${invocation.tool_id}: reply delivery failed: ${lastError}`,
+      });
+    }
+    laneTick += 1;
   }
 
   async function waitUntilSessionIdle(target: string): Promise<void> {
@@ -873,6 +1025,9 @@ export async function botControllerWorkflowV1(
         extraSessions: [...extraSessions],
         sessionCursors: Object.fromEntries(sessionCursors),
         sessionGenerations: Object.fromEntries(sessionGenerations),
+        mainGeneration,
+        toolsRevision,
+        handledInvocationIds: [...handledInvocationIds].slice(-HANDLED_INVOCATION_CAP),
       } satisfies BotCarryV1);
     }
     const tick = laneTick;

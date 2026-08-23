@@ -8,7 +8,7 @@ import {
   sanitizeHeaders,
   verifyWebhook,
   type FilterContext,
-} from "./bot-webhooks.js";
+} from "../src/webhooks.js";
 
 const tokenSpec: BotWebhookTriggerSpec = { token: "tok-1", verification: { scheme: "token" } };
 

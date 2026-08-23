@@ -44,7 +44,12 @@ export const bots = pgTable(
   (t) => [uniqueIndex("bots_universe_name_idx").on(t.universeId, t.name)],
 );
 
-export type BotScheduleTriggerSpec = { cron: string; timezone: string; summary: string };
+export type BotScheduleTriggerSpec = {
+  cron?: string | null;
+  at?: string | null;
+  timezone: string;
+  summary: string;
+};
 export type BotWebhookTriggerSpec = {
   token: string;
   verification:

@@ -16,7 +16,6 @@
     "@lightspeed/platform-shared": "*",
     "@temporalio/client": "1.21.1",
     "better-auth": "^1.2.0",
-    "cel-js": "^0.8.2",
     "drizzle-orm": "^0.45.0",
     "hono": "^4.7.0",
     "pg": "^8.16.0",
