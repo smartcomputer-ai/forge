@@ -224,6 +224,10 @@ export async function botControllerWorkflowV1(
     Object.entries(carry?.sessionGenerations ?? {}),
   );
   const activeBySession = new Map<string, ActiveDelivery>();
+  // A steer/append delivery may act on a session already occupied by the
+  // terminal-tracked delivery. Keep one ordered sidecar per session without
+  // replacing that delivery in activeBySession.
+  const sidecarBySession = new Set<string>();
   let eventCursorSeq = carry?.eventCursorSeq ?? 0;
   let appliedProfileId = carry?.appliedProfileId ?? null;
   let appliedProfileRevision = carry?.appliedProfileRevision ?? null;
@@ -339,7 +343,7 @@ export async function botControllerWorkflowV1(
     if (ttl === null) return null;
     let earliest: number | null = null;
     for (const session of extraSessions) {
-      if (activeBySession.has(session.sessionId)) continue;
+      if (activeBySession.has(session.sessionId) || sidecarBySession.has(session.sessionId)) continue;
       const expiry = (session.lastActiveAtMs ?? 0) + ttl;
       if (earliest === null || expiry < earliest) earliest = expiry;
     }
@@ -357,7 +361,16 @@ export async function botControllerWorkflowV1(
     if (config.runsPerDay !== null && utcDay() === runDay && reservedRuns() >= config.runsPerDay) {
       return false;
     }
-    return pendingDeliveries.some((delivery) => !activeBySession.has(targetOf(delivery)));
+    return pendingDeliveries.some((delivery) => {
+      const target = targetOf(delivery);
+      const active = activeBySession.get(target);
+      if (active === undefined) return true;
+      return (
+        active.runId !== null &&
+        delivery.whenBusy !== "queue" &&
+        !sidecarBySession.has(target)
+      );
+    });
   }
 
   setHandler(botEventSignal, (event) => {
@@ -752,7 +765,7 @@ export async function botControllerWorkflowV1(
     if (ttl === null) return;
     const now = Date.now();
     for (const session of [...extraSessions]) {
-      if (activeBySession.has(session.sessionId)) continue;
+      if (activeBySession.has(session.sessionId) || sidecarBySession.has(session.sessionId)) continue;
       if ((session.lastActiveAtMs ?? 0) + ttl > now) continue;
       let closed = false;
       try {
@@ -782,15 +795,92 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  function finishDelivery(active: ActiveDelivery, recent: BotRecentEventSnapshot): void {
+  function rememberDelivery(recent: BotRecentEventSnapshot): void {
     recentEvents.push(recent);
     if (recentEvents.length > RECENT_EVENT_CAP) {
       recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
     }
     eventsProcessed += 1;
+  }
+
+  function finishDelivery(active: ActiveDelivery, recent: BotRecentEventSnapshot): void {
+    rememberDelivery(recent);
     activeBySession.delete(active.sessionId);
     touchSession(active.sessionId);
     laneTick += 1;
+  }
+
+  async function runBusySidecar(delivery: BotDelivery, target: string): Promise<void> {
+    const firstEvent = delivery.events[0];
+    if (firstEvent === undefined) return;
+    const eventCount = delivery.events.length;
+    try {
+      if (delivery.whenBusy === "append") {
+        await activities.appendBotContext({
+          universeId: config.universeId,
+          sessionId: target,
+          deliveryId: delivery.id,
+          events: delivery.events,
+        });
+        await record("appended", {
+          eventId: delivery.id,
+          detail: `${eventCount} event(s) appended as context`,
+        });
+        rememberDelivery({
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "appended",
+          eventCount,
+        });
+        return;
+      }
+
+      const state = await activities.readBotSessionStatus({
+        universeId: config.universeId,
+        sessionId: target,
+      });
+      if (state.status !== "idle") {
+        const steered = await activities.steerBotRun({
+          universeId: config.universeId,
+          sessionId: target,
+          deliveryId: delivery.id,
+          events: delivery.events,
+        });
+        if (steered.steered) {
+          await record("steered", {
+            eventId: delivery.id,
+            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+            detail: `${eventCount} event(s) folded into the active run`,
+          });
+          rememberDelivery({
+            id: delivery.id,
+            ref: firstEvent.ref,
+            status: "steered",
+            eventCount,
+            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+          });
+          return;
+        }
+      }
+
+      // The tracked run finished (or has not started) under us. Preserve the
+      // delivery for an ordinary lane attempt once the session is available.
+      pendingDeliveries.unshift(delivery);
+    } catch (error) {
+      lastError = errorMessage(error);
+      await record("run_failed", { eventId: delivery.id, detail: lastError });
+      rememberDelivery({
+        id: delivery.id,
+        ref: firstEvent.ref,
+        status: "run_failed",
+        eventCount,
+        failure: lastError,
+      });
+    } finally {
+      sidecarBySession.delete(target);
+      touchSession(target);
+      laneTick += 1;
+    }
   }
 
   async function runDelivery(active: ActiveDelivery): Promise<void> {
@@ -886,6 +976,7 @@ export async function botControllerWorkflowV1(
         rollBudgetDay();
         runsToday += 1;
         await record("run_started", { eventId: delivery.id, runId: run.runId });
+        laneTick += 1;
       } catch (error) {
         // A direct run can win the narrow read/start race. Hold the lane
         // through a short delay, then requeue at the front for this session.
@@ -964,7 +1055,18 @@ export async function botControllerWorkflowV1(
       const delivery = pendingDeliveries[index];
       if (delivery === undefined) break;
       const target = targetOf(delivery);
-      if (activeBySession.has(target)) {
+      const occupied = activeBySession.get(target);
+      if (occupied !== undefined) {
+        if (
+          occupied.runId !== null &&
+          delivery.whenBusy !== "queue" &&
+          !sidecarBySession.has(target)
+        ) {
+          pendingDeliveries.splice(index, 1);
+          sidecarBySession.add(target);
+          void runBusySidecar(delivery, target);
+          continue;
+        }
         index += 1;
         continue;
       }
@@ -987,7 +1089,7 @@ export async function botControllerWorkflowV1(
     await processEmissions();
     flushRipeBuffers();
     await sweepRoutedSessions();
-    if (configDirty && !activeBySession.has(sessionId)) {
+    if (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) {
       await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();
     }
@@ -1003,6 +1105,7 @@ export async function botControllerWorkflowV1(
     if (
       emissionInbox.length === 0 &&
       activeBySession.size === 0 &&
+      sidecarBySession.size === 0 &&
       eventsProcessed >= CONTINUE_AS_NEW_AFTER_RUNS
     ) {
       await continueAsNew<typeof botControllerWorkflowV1>(config, {
@@ -1032,7 +1135,10 @@ export async function botControllerWorkflowV1(
     }
     const tick = laneTick;
     const wake = () =>
-      emissionInbox.length > 0 || configDirty || laneTick !== tick || dispatchable();
+      emissionInbox.length > 0 ||
+      (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) ||
+      laneTick !== tick ||
+      dispatchable();
     const deadlines = [nextBufferDeadline(), nextRetentionDeadline()];
     if (pendingDeliveries.length > 0 && config.runsPerDay !== null && budgetExhaustedView()) {
       deadlines.push(Date.now() + msUntilNextUtcDay());

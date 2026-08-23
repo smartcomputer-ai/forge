@@ -1,6 +1,16 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P130](p130-bots.md) — Bots: a proactive layer over managed sessions.
+  Bot = record (brief, profile, triggers, routing/coalescing policy, budgets)
+  plus one controller workflow owning its managed sessions. Slices 1-4
+  implemented 2026-08-20..23: controller with dedupe/budget/serial lanes,
+  schedule (Temporal Schedules) + webhook + endpoint triggers with CEL
+  filters, perKey/perEvent routed sessions, coalescing with full-batch
+  delivery, steer/append busy policies, flood breaker, replay, routed-session
+  retention, `bot_*` self-configuration tools, and a platform web UI. Open:
+  slice 5 (pollers, presets, email, Channels bridge), webhook secret sealing
+  (deferred by decision), schedule-flood breaker, CEL save-time validation.
 - [x] [P129](p129-active-run-control.md) — active-run control: make
   cancel, steer, and queue work end to end (both phases done and
   live-validated 2026-08-19). Phase 1: the session workflow

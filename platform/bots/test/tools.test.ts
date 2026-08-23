@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import { LightspeedRpcError } from "@lightspeed/agent-client";
 import { parseTriggerPutArgs } from "../src/activities/tools.js";
+import { isBotSessionDeclarationMismatch } from "../src/activities/lightspeed.js";
 import { BotConfigError, scheduleSpecInput, triggerCreateInput } from "../src/config.js";
 import {
   BOT_EMIT_TOOL_ID,
@@ -48,6 +50,10 @@ describe("bot tool declarations", () => {
     const emit = tools.find((tool) => tool.definition.toolId === BOT_EMIT_TOOL_ID);
     expect(emit?.target).toMatchObject({ dispatch: "push" });
     expect(emit?.completion).toEqual({ type: "accepted" });
+    expect(emit?.definition.tool.kind).toMatchObject({ type: "function", strict: false });
+    for (const tool of tools.filter((tool) => tool.definition.toolId !== BOT_EMIT_TOOL_ID)) {
+      expect(tool.definition.tool.kind).toMatchObject({ type: "function", strict: true });
+    }
     const joined = tools.filter((tool) => tool.completion.type === "joined");
     expect(joined).toHaveLength(6);
     for (const tool of joined) {
@@ -61,6 +67,34 @@ describe("bot tool declarations", () => {
       `${universeId}/bot:v1:triage`,
     );
     expect(() => lightspeedSessionWorkflowId(universeId, "a/b")).toThrow(TypeError);
+  });
+});
+
+describe("managed-session declaration conflicts", () => {
+  it("recognizes the typed live gateway conflict used to rotate a session", () => {
+    expect(
+      isBotSessionDeclarationMismatch(
+        new LightspeedRpcError({
+          code: -32009,
+          message:
+            "managed-session controller, receiver, or tool declaration conflicts with durable creation state",
+          data: {
+            kind: "conflict",
+            message:
+              "managed-session controller, receiver, or tool declaration conflicts with durable creation state",
+          },
+        }),
+      ),
+    ).toBe(true);
+    expect(
+      isBotSessionDeclarationMismatch(
+        new LightspeedRpcError({
+          code: -32009,
+          message: "a run is already active",
+          data: { kind: "conflict", message: "a run is already active" },
+        }),
+      ),
+    ).toBe(false);
   });
 });
 

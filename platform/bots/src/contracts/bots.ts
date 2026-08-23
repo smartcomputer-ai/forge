@@ -27,7 +27,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 2;
+export const BOT_TOOLS_REVISION = 3;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -371,6 +371,8 @@ interface BotToolSpec {
   schema: keyof typeof BOT_TOOL_SCHEMAS;
   description: keyof typeof BOT_TOOL_DESCRIPTIONS;
   completion: "accepted-pull" | "accepted-push" | "joined";
+  /** Arbitrary JSON objects cannot satisfy OpenAI's strict-schema subset. */
+  strict?: boolean;
 }
 
 const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
@@ -411,7 +413,14 @@ const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
     completion: "joined",
   },
   { toolId: BOT_BRIEF_PUT_TOOL_ID, name: "bot_brief_put", schema: "briefPutInput", description: "briefPut", completion: "joined" },
-  { toolId: BOT_EMIT_TOOL_ID, name: "bot_emit", schema: "emitInput", description: "emit", completion: "accepted-push" },
+  {
+    toolId: BOT_EMIT_TOOL_ID,
+    name: "bot_emit",
+    schema: "emitInput",
+    description: "emit",
+    completion: "accepted-push",
+    strict: false,
+  },
 ];
 
 /** Tool ids the controller answers via pushed invocations (joined or accepted). */
@@ -436,7 +445,7 @@ export function botWorkflowTools(
           type: "function",
           inputSchemaRef: schemas[spec.schema],
           descriptionRef: descriptions[spec.description],
-          strict: true,
+          strict: spec.strict ?? true,
         },
       },
     },

@@ -101,6 +101,15 @@ export interface BotLightspeedActivities {
   readJsonBlob(input: ReadJsonBlobInput): Promise<unknown>;
 }
 
+export function isBotSessionDeclarationMismatch(error: unknown): boolean {
+  return (
+    error instanceof LightspeedRpcError &&
+    error.kind === "conflict" &&
+    (/fingerprint/i.test(error.message) ||
+      /managed-session controller, receiver, or tool declaration conflicts/i.test(error.message))
+  );
+}
+
 export function createBotLightspeedActivities(
   config: BotLightspeedConfig,
 ): BotLightspeedActivities {
@@ -128,7 +137,7 @@ export function createBotLightspeedActivities(
         // under an older tool revision cannot be upgraded in place. Report it
         // as a typed, non-retryable failure so the controller rotates to a
         // successor session instead of retrying forever.
-        if (error instanceof LightspeedRpcError && /fingerprint/i.test(error.message)) {
+        if (isBotSessionDeclarationMismatch(error)) {
           throw ApplicationFailure.nonRetryable(
             `session ${input.sessionId} was created under another tool declaration`,
             BOT_SESSION_DECLARATION_MISMATCH,

@@ -2,9 +2,13 @@
 
 **Status**
 
-- Later / core robustness. Small, well-scoped fix plus one live test.
+- DONE 2026-08-23 (same day as the observation): the LLM boundary now
+  converts pure timeout chains into a failed generation/compaction result;
+  unit tests cover the recognizer against SDK-decoded failure protos and a
+  slow live test drives a real `llm_generate` through its schedule-to-close
+  budget. See "What changed" at the end.
 - Written 2026-08-23 from a live observation on the development stack
-  while dogfooding Bots; the gap is in the P116 boundary conversion, not
+  while dogfooding Bots; the gap was in the P116 boundary conversion, not
   in Bots.
 - Builds on P116 (typed `llm_provider_transient` retries, exhaustion
   converted to a run failure at the workflow boundary) and P114 (bounded
@@ -59,15 +63,18 @@ call result. The LLM path is the exception.
    cancellation; genuinely unknown application errors keep propagating, so
    the original intent (surface bugs) survives. Replay-safe: only the
    failure path changes, and histories that already hit it are terminal.
-2. **Live test** beside
-   `temporal_live_exhausted_llm_retries_fail_the_run_not_the_session` in
-   `crates/temporal-server/tests/temporal_live.rs`: a fake `llm_generate`
-   that never heartbeats under a short heartbeat timeout; assert the run
-   ends `failed` with the boundary blob, the session workflow survives, and
-   a later run on the same session succeeds. Runs under
-   `--ignored --test-threads=1` like the rest of the live suite.
+2. **Live test** next to
+   `temporal_live_exhausted_llm_retries_fail_the_run_not_the_session`: a
+   fake `llm_generate` that hangs; assert the run ends `failed`, the
+   session workflow survives as the same execution, and a later run on the
+   same session succeeds. Runs under `--ignored --test-threads=1` like the
+   rest of the live suite.
 
-Estimated at half a day including the test.
+   Caveat found while building it: the activity options are workflow
+   constants, so the timeout chain cannot be produced faster than the real
+   schedule-to-close budget (15 min) — a heartbeat-starved or hung attempt
+   is retried until that budget ends either way. The live test therefore
+   lives in its own binary so the ordinary live suite stays fast.
 
 ## Follow-ups (separate items)
 
@@ -87,3 +94,37 @@ Estimated at half a day including the test.
 - Changing retry policy or heartbeat intervals for provider activities.
 - Any Bots-side workaround; the bot controller already tolerates a failed
   session (it rotates or re-ensures), and the fix belongs in the core.
+
+## What changed (2026-08-23)
+
+- `crates/temporal-workflow/src/workflows/session/activity_calls.rs`:
+  `llm_transient_exhaustion` became `llm_boundary_failure`, returning
+  `TransientExhausted(details)` (as before, and still winning when the
+  typed failure sits under a schedule-to-close timeout) or
+  `TimedOut { timeout_type, cause }` for a chain made only of timeouts.
+  Cancellation still propagates, and a chain carrying any other application
+  failure — even under a timeout — still propagates, so the "unknown errors
+  stay visible" intent survives. The boundary blob for a timeout reads
+  `<op> failed: provider activity timed out (schedule-to-close timeout,
+  last attempt hit its heartbeat timeout); the worker was unavailable or the
+  provider call hung past its budget`. Both `call_llm_generate` and
+  `call_context_compact` use it. Unit tests decode hand-built failure
+  protos through `DefaultFailureConverter` + `ActivityExecutionDecodeHint`
+  so the recognizer is exercised against the exact shape the SDK hands
+  workflow code.
+- `FakeLlm::with_stall_switch` (`crates/temporal-server/src/worker/fake.rs`)
+  hangs generate while an `AtomicBool` is set; the stall is observable
+  through the existing started/abandoned counters.
+- `crates/temporal-server/tests/temporal_live_slow.rs`:
+  `temporal_live_llm_activity_timeout_fails_the_run_not_the_session` —
+  stalled provider, first run fails after the budget on a pure timeout
+  chain, workflow execution unchanged (`run_id` compared), stall cleared,
+  second run completes. ~17 minutes; run explicitly:
+
+  ```bash
+  source scripts/dev/env.sh
+  cargo test -p temporal-server --test temporal_live_slow -- --ignored --test-threads=1
+  ```
+
+- Follow-ups above (reaper repair / recreate-on-start, the 15-minute
+  budget) are unchanged and still open.

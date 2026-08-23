@@ -189,6 +189,30 @@ pub async fn fake_worker_activities_for_run_control(
     ))
 }
 
+/// Worker whose fake LLM hangs every generate call while `stalled` is set,
+/// so provider activities run into Temporal's timeouts instead of failing;
+/// clear the switch to let later runs succeed.
+pub async fn fake_worker_activities_with_stall_switch(
+    stalled: Arc<std::sync::atomic::AtomicBool>,
+) -> anyhow::Result<(WorkerActivities, FakeRuntimeCounters)> {
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let counters = FakeRuntimeCounters::default();
+    let llm = Arc::new(
+        FakeLlm::new(blobs.clone())
+            .with_stall_switch(stalled)
+            .with_counters(counters.clone()),
+    ) as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    Ok((
+        WorkerActivities::for_universe(
+            live_universe_id()?,
+            ActivityState::from_pg_store(store, llm, tools),
+        ),
+        counters,
+    ))
+}
+
 pub async fn fake_worker_activities_with_audio_transcriber(
     transcriber: Arc<dyn AudioTranscriber>,
 ) -> anyhow::Result<WorkerActivities> {

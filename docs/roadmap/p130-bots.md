@@ -2,8 +2,9 @@
 
 **Status**
 
-- Later / preliminary product design. Ideas and research, not an
-  implementation plan.
+- P130. Started as a preliminary product design (ideas and research, not an
+  implementation plan); slices 1-4 are now implemented on the `bots` branch —
+  see the implementation log below.
 - Written 2026-08-20 from a codebase survey (managed sessions, workflow-tool
   spine, Channels, Foundry, profiles/environments) plus industry research
   (xAI, OpenAI, Anthropic, Google, Dust, Lindy, Gumloop, Inngest, Temporal,
@@ -12,7 +13,7 @@
   P103 (managed sessions), P125/P126 (profile-provisioned environments,
   power/idle), and the Channels/Foundry controller pattern.
 - Revised same day after contrasting with a parallel proposal draft
-  (`pNNN-bots-alternative.md`): adopted the durable inbox + wake-signal
+  (`later/pNNN-bots-alternative.md`): adopted the durable inbox + wake-signal
   ingestion contract and deterministic delivery identities; recorded what was
   deliberately not adopted at the end of the architecture section.
 - Implementation started 2026-08-20. Slice 1 stage 1 done: `platform/bots`

@@ -87,6 +87,14 @@ cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
 
+`temporal_live_slow` holds live tests that wait out production activity
+budgets (the LLM schedule-to-close test takes ~17 minutes); run it on its own,
+never as part of a routine live pass:
+
+```bash
+cargo test -p temporal-server --test temporal_live_slow -- --ignored --test-threads=1
+```
+
 After changing `api` wire types, regenerate the committed contract artifacts
 under `crates/api/contract/` (`cargo test -p api` fails while they are stale):
 
