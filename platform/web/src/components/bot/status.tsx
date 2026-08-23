@@ -9,10 +9,6 @@ export function BotStatusBadge({ status }: { status?: BotState["controllerStatus
   return <Badge variant="outline">{status.replaceAll("_", " ")}</Badge>;
 }
 
-export function PanelHeading({ title }: { title: string }) {
-  return <h2 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h2>;
-}
-
 export function KeyValue({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 text-xs">

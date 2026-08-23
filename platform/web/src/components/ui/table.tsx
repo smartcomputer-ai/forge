@@ -9,7 +9,7 @@ function TableCard({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="table-card"
-      className={cn("overflow-hidden rounded-xl border", className)}
+      className={cn("min-w-0 max-w-full overflow-hidden rounded-xl border", className)}
       {...props}
     />
   )
@@ -26,8 +26,8 @@ function TableTitleCell({
 }: React.ComponentProps<"td"> & { title: React.ReactNode; subtitle?: React.ReactNode }) {
   return (
     <TableCell className={cn("max-w-72", className)} {...props}>
-      <div className="grid gap-0.5">
-        <span className="truncate font-medium">{title}</span>
+      <div className="grid min-w-0 gap-0.5">
+        <span className="block min-w-0 truncate font-medium">{title}</span>
         {subtitle != null && subtitle !== "" && (
           <IdText className="text-muted-foreground">{subtitle}</IdText>
         )}
@@ -48,7 +48,7 @@ function IdText({
     <span
       data-slot="id-text"
       title={title ?? (typeof children === "string" ? children : undefined)}
-      className={cn("block max-w-full truncate font-mono text-xs", className)}
+      className={cn("block min-w-0 max-w-full truncate font-mono text-xs", className)}
       {...props}
     >
       {children}
@@ -70,7 +70,7 @@ function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className="relative w-full min-w-0 max-w-full overflow-x-auto"
     >
       <table
         data-slot="table"

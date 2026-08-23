@@ -730,11 +730,18 @@ export interface BotEventEnvelope {
   id: string;
   botId: string;
   eventId: string;
+  triggerId: string | null;
   kind: string;
   source: string;
   occurredAt: string;
   ref: string;
+  session: { sessionId: string; label: string } | null;
   receivedAt: string;
+}
+
+export interface BotEventPage {
+  events: BotEventEnvelope[];
+  nextCursor: string | null;
 }
 
 export interface BotActivityEntry {
@@ -745,4 +752,9 @@ export interface BotActivityEntry {
   runId: string | null;
   detail: string | null;
   createdAt: string;
+}
+
+export interface BotActivityPage {
+  activity: BotActivityEntry[];
+  nextCursor: string | null;
 }

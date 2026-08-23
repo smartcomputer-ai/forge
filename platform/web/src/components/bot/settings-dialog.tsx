@@ -81,14 +81,14 @@ export function BotSettingsDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
+        <DialogHeader className="border-b p-6 pr-14">
           <DialogTitle>Bot configuration</DialogTitle>
           <DialogDescription>
             Changes are applied to the bot's session at its next idle boundary.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid gap-4">
+        <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
           <Field>
             <FieldLabel>Profile</FieldLabel>
             <Select value={profileId} onValueChange={(value) => value && setProfileId(value)}>
@@ -129,7 +129,7 @@ export function BotSettingsDialog({
             />
             <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
           </Field>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="bot-breaker-fires">Breaker: events</FieldLabel>
               <Input
@@ -180,16 +180,18 @@ export function BotSettingsDialog({
             </Label>
             <Switch id="bot-settings-enabled" checked={enabled} onCheckedChange={setEnabled} />
           </div>
-          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button onClick={() => save.mutate()} disabled={save.isPending || !profileId}>
-            {save.isPending ? "Saving…" : "Save"}
-          </Button>
-        </DialogFooter>
+        <div className="grid gap-2 border-t p-4">
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => onOpenChange(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || !profileId}>
+              {save.isPending ? "Saving…" : "Save"}
+            </Button>
+          </DialogFooter>
+        </div>
       </DialogContent>
     </Dialog>
   );

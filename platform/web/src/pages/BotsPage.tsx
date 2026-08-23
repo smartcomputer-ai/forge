@@ -5,7 +5,8 @@ import { NavLink, useParams } from "react-router-dom";
 import { api, type Bot, type BotState } from "@/api";
 import { BotDetail } from "@/components/bot/detail";
 import { CreateBotDialog } from "@/components/bot/create-bot-dialog";
-import { BotMark } from "@/components/icons/bot";
+import { BotFace } from "@/components/icons/bot";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { LoadingNote, UniverseNotFound } from "@/components/page";
 import { canManage, useActiveUniverse } from "@/lib/universes";
@@ -40,7 +41,7 @@ export function BotsPage({ admin }: { admin: boolean }) {
           <BotWorkspace key={botId} slug={slug!} botId={botId} manage={manage} />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
-            <BotMark size={40} className="text-muted-foreground/60" />
+            <BotFace size={40} className="text-muted-foreground/60" />
             Select a bot{manage ? ", or create one." : "."}
           </div>
         )}
@@ -92,26 +93,31 @@ function BotsPane({
           </p>
         )}
         <ul>
-          {bots.data?.bots.map((bot) => (
-            <li key={bot.id}>
-              <NavLink
-                to={`/u/${slug}/bots/${bot.id}`}
-                className={cn(
-                  "flex items-center gap-2.5 border-b px-4 py-2.5 text-sm hover:bg-muted/50",
-                  bot.id === activeId && "bg-muted",
-                )}
-              >
-                <BotMark size={20} className={cn("shrink-0", !bot.enabled && "opacity-40")} />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate font-medium">{bot.name}</span>
-                    {!bot.enabled && <span className="ml-auto text-xs text-destructive">Disabled</span>}
+          {bots.data?.bots.map((bot) => {
+            const preview = bot.brief?.trim() || "No standing brief";
+            return (
+              <li key={bot.id}>
+                <NavLink
+                  to={`/u/${slug}/bots/${bot.id}`}
+                  className={cn(
+                    "block min-w-0 border-b px-4 py-3 text-sm hover:bg-muted/50",
+                    bot.id === activeId && "bg-muted",
+                  )}
+                >
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="min-w-0 truncate font-medium">{bot.name}</span>
+                    <Badge variant="secondary" className="max-w-28 truncate" title={`Profile: ${bot.profileId}`}>
+                      {bot.profileId}
+                    </Badge>
+                    {!bot.enabled && <span className="shrink-0 text-xs text-destructive">Disabled</span>}
                   </span>
-                  <span className="block truncate text-xs text-muted-foreground">{bot.profileId}</span>
-                </span>
-              </NavLink>
-            </li>
-          ))}
+                  <span className="mt-0.5 block truncate text-xs text-muted-foreground" title={preview}>
+                    {preview}
+                  </span>
+                </NavLink>
+              </li>
+            );
+          })}
         </ul>
       </div>
       {manage && (

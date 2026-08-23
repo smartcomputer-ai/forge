@@ -36,7 +36,7 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
-import { BotMark } from "@/components/icons/bot";
+import { BotFaceIcon } from "@/components/icons/bot";
 import { UniverseSwitcher } from "@/components/universe-switcher";
 import { UserMenu } from "@/components/user-menu";
 import type { SessionUser } from "@/auth";
@@ -153,9 +153,9 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         prefix
                       />
                       <NavItem
-                        to={`/u/${active.slug}/workspaces`}
-                        icon={FolderGit2}
-                        label="Workspaces"
+                        to={`/u/${active.slug}/bots`}
+                        icon={BotFaceIcon}
+                        label="Bots"
                         prefix
                       />
                       <NavItem
@@ -165,9 +165,9 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         prefix
                       />
                       <NavItem
-                        to={`/u/${active.slug}/bots`}
-                        icon={BotMark}
-                        label="Bots"
+                        to={`/u/${active.slug}/workspaces`}
+                        icon={FolderGit2}
+                        label="Workspaces"
                         prefix
                       />
                       {FOUNDRY_ENABLED && (

@@ -70,8 +70,8 @@ export function CreateBotDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
+        <DialogHeader className="border-b p-6 pr-14">
           <DialogTitle>Create bot</DialogTitle>
           <DialogDescription>
             A bot owns a persistent session and turns schedules and events into runs.
@@ -83,74 +83,78 @@ export function CreateBotDialog({
             setError(null);
             create.mutate();
           }}
-          className="grid gap-4"
+          className="contents"
         >
-          <Field>
-            <FieldLabel htmlFor="bot-name">Name</FieldLabel>
-            <Input
-              id="bot-name"
-              value={name}
-              onChange={(event) => setName(event.target.value)}
-              aria-invalid={nameInvalid || undefined}
-              autoFocus
-            />
-            {nameInvalid ? (
-              <p className="text-xs text-destructive">
-                Use lowercase letters, numbers, and dashes, starting with a letter or number.
-              </p>
-            ) : (
-              <FieldDescription>Lowercase letters, numbers, and dashes.</FieldDescription>
-            )}
-          </Field>
-          <Field>
-            <FieldLabel>Profile</FieldLabel>
-            <Select value={profileId} onValueChange={(value) => value && setProfileId(value)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a profile" />
-              </SelectTrigger>
-              <SelectContent>
-                {profiles.data?.map((profile) => (
-                  <SelectItem key={profile.profileId} value={profile.profileId}>
-                    {profile.displayName ?? profile.profileId}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <FieldDescription>
-              Capabilities, instructions, and environment intent come from the profile.
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="bot-brief">Brief (optional)</FieldLabel>
-            <Textarea
-              id="bot-brief"
-              value={brief}
-              onChange={(event) => setBrief(event.target.value)}
-              rows={4}
-              placeholder="Standing instructions for this bot, appended to the profile."
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="bot-runs-per-day">Runs per day (optional)</FieldLabel>
-            <Input
-              id="bot-runs-per-day"
-              type="number"
-              min={1}
-              value={runsPerDay}
-              onChange={(event) => setRunsPerDay(event.target.value)}
-              placeholder="Unlimited"
-            />
-            <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
-          </Field>
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={create.isPending || !name.trim() || nameInvalid || !profileId}>
-              {create.isPending ? "Creating…" : "Create"}
-            </Button>
-          </DialogFooter>
+          <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
+            <Field>
+              <FieldLabel htmlFor="bot-name">Name</FieldLabel>
+              <Input
+                id="bot-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                aria-invalid={nameInvalid || undefined}
+                autoFocus
+              />
+              {nameInvalid ? (
+                <p className="text-xs text-destructive">
+                  Use lowercase letters, numbers, and dashes, starting with a letter or number.
+                </p>
+              ) : (
+                <FieldDescription>Lowercase letters, numbers, and dashes.</FieldDescription>
+              )}
+            </Field>
+            <Field>
+              <FieldLabel>Profile</FieldLabel>
+              <Select value={profileId} onValueChange={(value) => value && setProfileId(value)}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select a profile" />
+                </SelectTrigger>
+                <SelectContent>
+                  {profiles.data?.map((profile) => (
+                    <SelectItem key={profile.profileId} value={profile.profileId}>
+                      {profile.displayName ?? profile.profileId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                Capabilities, instructions, and environment intent come from the profile.
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bot-brief">Brief (optional)</FieldLabel>
+              <Textarea
+                id="bot-brief"
+                value={brief}
+                onChange={(event) => setBrief(event.target.value)}
+                rows={4}
+                placeholder="Standing instructions for this bot, appended to the profile."
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bot-runs-per-day">Runs per day (optional)</FieldLabel>
+              <Input
+                id="bot-runs-per-day"
+                type="number"
+                min={1}
+                value={runsPerDay}
+                onChange={(event) => setRunsPerDay(event.target.value)}
+                placeholder="Unlimited"
+              />
+              <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
+            </Field>
+          </div>
+          <div className="grid gap-2 border-t p-4">
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={create.isPending || !name.trim() || nameInvalid || !profileId}>
+                {create.isPending ? "Creating…" : "Create"}
+              </Button>
+            </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

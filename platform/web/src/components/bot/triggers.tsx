@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, Trash2, Webhook } from "lucide-react";
 import {
   api,
   type BotRoute,
@@ -28,7 +28,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { PanelHeading } from "./status";
+import { CronBuilder } from "./cron-builder";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -81,9 +81,12 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
   });
 
   return (
-    <section className="grid gap-2">
-      <div className="flex items-center gap-2">
-        <PanelHeading title="Triggers" />
+    <section className="grid min-w-0 max-w-full gap-2">
+      <div className="flex min-w-0 items-end gap-3">
+        <div className="grid min-w-0 gap-0.5">
+          <h2 className="text-sm font-semibold">Triggers</h2>
+          <p className="text-xs text-muted-foreground">Schedules and webhooks that wake this bot.</p>
+        </div>
         {manage && (
           <Button variant="outline" size="xs" className="ml-auto" onClick={() => setAddOpen(true)}>
             <Plus data-icon="inline-start" /> Trigger
@@ -97,8 +100,8 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
       )}
       {triggers.error && <p className="text-xs text-destructive">{triggers.error.message}</p>}
       {triggers.data?.triggers.map((trigger) => (
-        <div key={trigger.id} className="rounded-md border p-2 text-xs">
-          <div className="flex items-center gap-2">
+        <div key={trigger.id} className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs">
+          <div className="flex min-w-0 items-center gap-2">
             {trigger.kind === "schedule" ? (
               <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
             ) : (
@@ -107,7 +110,7 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
             <span className="min-w-0 flex-1 truncate font-medium">{trigger.name}</span>
             {!trigger.enabled && <Badge variant="outline">paused</Badge>}
             {manage && (
-              <span className="flex items-center">
+              <span className="flex shrink-0 items-center">
                 <Button
                   variant="ghost"
                   size="icon-sm"
@@ -192,8 +195,13 @@ function WebhookRowDetail({ trigger, manage }: { trigger: BotTrigger; manage: bo
   return (
     <>
       {manage && (
-        <div className="mt-1 flex items-center gap-1">
-          <code className="min-w-0 flex-1 truncate text-muted-foreground">{ingestUrl(trigger)}</code>
+        <div className="mt-1 flex min-w-0 max-w-full items-center gap-1 overflow-hidden">
+          <code
+            className="w-0 min-w-0 flex-1 truncate text-muted-foreground"
+            title={ingestUrl(trigger)}
+          >
+            {ingestUrl(trigger)}
+          </code>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -508,7 +516,7 @@ function AddTriggerDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState<"schedule" | "webhook">("schedule");
+  const [kind, setKind] = useState<"schedule" | "webhook" | null>(null);
   const [name, setName] = useState("");
   const [once, setOnce] = useState(false);
   const [at, setAt] = useState("");
@@ -520,9 +528,25 @@ function AddTriggerDialog({
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
+  const reset = () => {
+    setKind(null);
+    setName("");
+    setOnce(false);
+    setAt("");
+    setCron("");
+    setTimezone("UTC");
+    setSummary("");
+    setWebhook(defaultWebhookForm);
+    setError(null);
+  };
+  const changeOpen = (next: boolean) => {
+    if (!next) reset();
+    onOpenChange(next);
+  };
   const create = useMutation({
-    mutationFn: () =>
-      api(
+    mutationFn: () => {
+      if (!kind) throw new Error("Choose a trigger type.");
+      return api(
         "POST",
         `/api/v1/bots/${botId}/triggers`,
         kind === "schedule"
@@ -534,19 +558,17 @@ function AddTriggerDialog({
                 : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
             }
           : { name: name.trim(), kind, ...webhookPayload(webhook) },
-      ),
+      );
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] });
-      setName("");
-      setCron("");
-      setSummary("");
-      setWebhook(defaultWebhookForm);
-      setError(null);
+      reset();
       onOpenChange(false);
     },
     onError: (err) => setError(err.message),
   });
   const incomplete =
+    kind === null ||
     !name.trim() ||
     nameInvalid ||
     (kind === "schedule"
@@ -555,141 +577,187 @@ function AddTriggerDialog({
       : webhookIssue !== null);
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add trigger</DialogTitle>
+    <Dialog open={open} onOpenChange={changeOpen}>
+      <DialogContent
+        className={kind
+          ? "h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"
+          : "max-h-[92dvh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"}
+      >
+        <DialogHeader className="border-b p-6 pr-14">
+          <DialogTitle>{kind ? `Add ${kind}` : "Add trigger"}</DialogTitle>
           <DialogDescription>
-            Schedules fire on a cron; webhooks give this bot an ingest URL for the world to call.
+            {kind === "schedule"
+              ? "Run the bot on a recurring cron or once at a specific time."
+              : kind === "webhook"
+                ? "Give the bot a protected ingest URL for external events."
+                : "Choose how this bot should receive events."}
           </DialogDescription>
         </DialogHeader>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            setError(null);
-            create.mutate();
-          }}
-          className="grid gap-4"
-        >
-          <div className="grid grid-cols-[10rem_1fr] gap-3">
-            <Field>
-              <FieldLabel>Kind</FieldLabel>
-              <Select
-                value={kind}
-                onValueChange={(value) => value && setKind(value as "schedule" | "webhook")}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="schedule">Schedule</SelectItem>
-                  <SelectItem value="webhook">Webhook</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="trigger-name">Name</FieldLabel>
-              <Input
-                id="trigger-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                aria-invalid={nameInvalid || undefined}
-                autoFocus
+        {!kind ? (
+          <>
+            <div className="grid min-h-0 content-start gap-3 overflow-y-auto p-6 sm:grid-cols-2">
+              <TriggerKindChoice
+                icon={<CalendarClock className="size-5" />}
+                title="Schedule"
+                description="Run on a recurring cron or once at a specific time."
+                onClick={() => setKind("schedule")}
               />
-            </Field>
-          </div>
-          {nameInvalid && (
-            <p className="-mt-2 text-xs text-destructive">
-              Use lowercase letters, numbers, and dashes, starting with a letter or number.
-            </p>
-          )}
-          {kind === "schedule" ? (
-            <>
+              <TriggerKindChoice
+                icon={<Webhook className="size-5" />}
+                title="Webhook"
+                description="Receive token-protected or signed events from external systems."
+                onClick={() => setKind("webhook")}
+              />
+            </div>
+            <DialogFooter className="border-t p-4">
+              <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
+                Cancel
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              setError(null);
+              create.mutate();
+            }}
+            className="contents"
+          >
+            <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
               <Field>
-                <FieldLabel>When</FieldLabel>
-                <Select value={once ? "once" : "cron"} onValueChange={(value) => setOnce(value === "once")}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cron">On a recurring cron</SelectItem>
-                    <SelectItem value="once">Once, at a specific time</SelectItem>
-                  </SelectContent>
-                </Select>
-              </Field>
-              {once ? (
-                <Field>
-                  <FieldLabel htmlFor="trigger-at">Fire at</FieldLabel>
-                  <Input
-                    id="trigger-at"
-                    type="datetime-local"
-                    value={at}
-                    onChange={(event) => setAt(event.target.value)}
-                  />
-                  <FieldDescription>
-                    Local time; the trigger disables itself after firing once.
-                  </FieldDescription>
-                </Field>
-              ) : (
-                <>
-                  <div className="grid grid-cols-[1fr_10rem] gap-3">
-                    <Field>
-                      <FieldLabel htmlFor="trigger-cron">Cron</FieldLabel>
-                      <Input
-                        id="trigger-cron"
-                        value={cron}
-                        onChange={(event) => setCron(event.target.value)}
-                        placeholder="0 8 * * 1-5"
-                        className="font-mono"
-                        aria-invalid={cronIssue !== null || undefined}
-                      />
-                    </Field>
-                    <Field>
-                      <FieldLabel htmlFor="trigger-timezone">Timezone</FieldLabel>
-                      <Input
-                        id="trigger-timezone"
-                        value={timezone}
-                        onChange={(event) => setTimezone(event.target.value)}
-                        placeholder="UTC"
-                      />
-                    </Field>
-                  </div>
-                  {cronIssue ? (
-                    <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
-                  ) : (
-                    <p className="-mt-2 text-xs text-muted-foreground">
-                      5 fields: minute, hour, day, month, weekday — or a macro like @daily.
-                    </p>
-                  )}
-                </>
-              )}
-              <Field>
-                <FieldLabel htmlFor="trigger-summary">Task</FieldLabel>
-                <Textarea
-                  id="trigger-summary"
-                  value={summary}
-                  onChange={(event) => setSummary(event.target.value)}
-                  rows={4}
-                  placeholder="What should the bot do each time this fires?"
+                <FieldLabel htmlFor="trigger-name">Name</FieldLabel>
+                <Input
+                  id="trigger-name"
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  aria-invalid={nameInvalid || undefined}
+                  autoFocus
                 />
               </Field>
-            </>
-          ) : (
-            <WebhookFields form={webhook} setForm={setWebhook} />
-          )}
-          {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={create.isPending || incomplete}>
-              {create.isPending ? "Adding…" : "Add trigger"}
-            </Button>
-          </DialogFooter>
-        </form>
+              {nameInvalid && (
+                <p className="-mt-2 text-xs text-destructive">
+                  Use lowercase letters, numbers, and dashes, starting with a letter or number.
+                </p>
+              )}
+              {kind === "schedule" ? (
+                <>
+                  <Field>
+                    <FieldLabel>When</FieldLabel>
+                    <Select value={once ? "once" : "cron"} onValueChange={(value) => setOnce(value === "once")}>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="cron">On a recurring cron</SelectItem>
+                        <SelectItem value="once">Once, at a specific time</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  {once ? (
+                    <Field>
+                      <FieldLabel htmlFor="trigger-at">Fire at</FieldLabel>
+                      <Input
+                        id="trigger-at"
+                        type="datetime-local"
+                        value={at}
+                        onChange={(event) => setAt(event.target.value)}
+                      />
+                      <FieldDescription>
+                        Local time; the trigger disables itself after firing once.
+                      </FieldDescription>
+                    </Field>
+                  ) : (
+                    <>
+                      <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+                        <Field>
+                          <FieldLabel htmlFor="trigger-cron">Cron</FieldLabel>
+                          <Input
+                            id="trigger-cron"
+                            value={cron}
+                            onChange={(event) => setCron(event.target.value)}
+                            placeholder="0 8 * * 1-5"
+                            className="font-mono"
+                            aria-invalid={cronIssue !== null || undefined}
+                          />
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="trigger-timezone">Timezone</FieldLabel>
+                          <Input
+                            id="trigger-timezone"
+                            value={timezone}
+                            onChange={(event) => setTimezone(event.target.value)}
+                            placeholder="UTC"
+                          />
+                        </Field>
+                      </div>
+                      <CronBuilder value={cron} onChange={setCron} />
+                      {cronIssue ? (
+                        <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
+                      ) : (
+                        <p className="-mt-2 text-xs text-muted-foreground">
+                          5 fields: minute, hour, day, month, weekday — or a macro like @daily.
+                        </p>
+                      )}
+                    </>
+                  )}
+                  <Field>
+                    <FieldLabel htmlFor="trigger-summary">Task</FieldLabel>
+                    <Textarea
+                      id="trigger-summary"
+                      value={summary}
+                      onChange={(event) => setSummary(event.target.value)}
+                      rows={4}
+                      placeholder="What should the bot do each time this fires?"
+                    />
+                  </Field>
+                </>
+              ) : (
+                <WebhookFields form={webhook} setForm={setWebhook} />
+              )}
+            </div>
+            <div className="grid gap-2 border-t p-4">
+              {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
+              {error && <p className="text-sm text-destructive">{error}</p>}
+              <DialogFooter>
+                <Button type="button" variant="outline" onClick={() => setKind(null)}>
+                  <ArrowLeft data-icon="inline-start" /> Back
+                </Button>
+                <Button type="submit" disabled={create.isPending || incomplete}>
+                  {create.isPending ? "Adding…" : `Add ${kind}`}
+                </Button>
+              </DialogFooter>
+            </div>
+          </form>
+        )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+function TriggerKindChoice({
+  icon,
+  title,
+  description,
+  onClick,
+}: {
+  icon: ReactNode;
+  title: string;
+  description: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="flex items-start gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+    >
+      <span className="rounded-lg bg-muted p-2 text-foreground">{icon}</span>
+      <span className="grid gap-1">
+        <span className="font-medium">{title}</span>
+        <span className="text-xs text-muted-foreground">{description}</span>
+      </span>
+    </button>
   );
 }
 
@@ -743,8 +811,8 @@ function EditTriggerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <DialogHeader>
+      <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
+        <DialogHeader className="border-b p-6 pr-14">
           <DialogTitle>Edit {trigger.kind === "schedule" ? "schedule" : "webhook"}</DialogTitle>
           <DialogDescription>
             {trigger.kind === "schedule"
@@ -758,66 +826,71 @@ function EditTriggerDialog({
             setError(null);
             save.mutate();
           }}
-          className="grid gap-4"
+          className="contents"
         >
-          {trigger.kind === "schedule" ? (
-            <>
-              {oneShotAt && (
-                <p className="text-xs text-muted-foreground">
-                  One-shot trigger at {new Date(oneShotAt).toLocaleString()}; only the task text is editable.
-                </p>
-              )}
-              <div className={oneShotAt ? "hidden" : "grid grid-cols-[1fr_10rem] gap-3"}>
+          <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
+            {trigger.kind === "schedule" ? (
+              <>
+                {oneShotAt && (
+                  <p className="text-xs text-muted-foreground">
+                    One-shot trigger at {new Date(oneShotAt).toLocaleString()}; only the task text is editable.
+                  </p>
+                )}
+                <div className={oneShotAt ? "hidden" : "grid gap-3 sm:grid-cols-[1fr_10rem]"}>
+                  <Field>
+                    <FieldLabel htmlFor="edit-trigger-cron">Cron</FieldLabel>
+                    <Input
+                      id="edit-trigger-cron"
+                      value={cron}
+                      onChange={(event) => setCron(event.target.value)}
+                      className="font-mono"
+                      aria-invalid={cronIssue !== null || undefined}
+                      autoFocus
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="edit-trigger-timezone">Timezone</FieldLabel>
+                    <Input
+                      id="edit-trigger-timezone"
+                      value={timezone}
+                      onChange={(event) => setTimezone(event.target.value)}
+                    />
+                  </Field>
+                </div>
+                {!oneShotAt && <CronBuilder value={cron} onChange={setCron} />}
+                {cronIssue ? (
+                  <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
+                ) : (
+                  <p className="-mt-2 text-xs text-muted-foreground">
+                    5 fields: minute, hour, day, month, weekday — or a macro like @daily.
+                  </p>
+                )}
                 <Field>
-                  <FieldLabel htmlFor="edit-trigger-cron">Cron</FieldLabel>
-                  <Input
-                    id="edit-trigger-cron"
-                    value={cron}
-                    onChange={(event) => setCron(event.target.value)}
-                    className="font-mono"
-                    aria-invalid={cronIssue !== null || undefined}
-                    autoFocus
+                  <FieldLabel htmlFor="edit-trigger-summary">Task</FieldLabel>
+                  <Textarea
+                    id="edit-trigger-summary"
+                    value={summary}
+                    onChange={(event) => setSummary(event.target.value)}
+                    rows={4}
                   />
                 </Field>
-                <Field>
-                  <FieldLabel htmlFor="edit-trigger-timezone">Timezone</FieldLabel>
-                  <Input
-                    id="edit-trigger-timezone"
-                    value={timezone}
-                    onChange={(event) => setTimezone(event.target.value)}
-                  />
-                </Field>
-              </div>
-              {cronIssue ? (
-                <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
-              ) : (
-                <p className="-mt-2 text-xs text-muted-foreground">
-                  5 fields: minute, hour, day, month, weekday — or a macro like @daily.
-                </p>
-              )}
-              <Field>
-                <FieldLabel htmlFor="edit-trigger-summary">Task</FieldLabel>
-                <Textarea
-                  id="edit-trigger-summary"
-                  value={summary}
-                  onChange={(event) => setSummary(event.target.value)}
-                  rows={4}
-                />
-              </Field>
-            </>
-          ) : (
-            <WebhookFields form={webhook} setForm={setWebhook} />
-          )}
-          {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" disabled={save.isPending || incomplete}>
-              {save.isPending ? "Saving…" : "Save"}
-            </Button>
-          </DialogFooter>
+              </>
+            ) : (
+              <WebhookFields form={webhook} setForm={setWebhook} />
+            )}
+          </div>
+          <div className="grid gap-2 border-t p-4">
+            {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={save.isPending || incomplete}>
+                {save.isPending ? "Saving…" : "Save"}
+              </Button>
+            </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>

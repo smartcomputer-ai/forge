@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@lightspeed/platform-db";
 import { BOT_STATE_QUERY, botWorkflowId, type BotEventDocumentV1 } from "@lightspeed/bots/contracts";
@@ -62,6 +62,12 @@ const eventCreateSchema = z.object({
   correlationId: z.string().trim().min(1).max(200).nullable().optional(),
   links: z.array(z.string().url()).max(20).optional(),
 });
+const historyCursorSchema = z.object({
+  at: z.string().datetime({ offset: true }),
+  id: z.string().uuid(),
+});
+const DEFAULT_HISTORY_LIMIT = 50;
+const MAX_HISTORY_LIMIT = 100;
 
 export function botRoutes(ctx: AppContext) {
   const byUniverse = new Hono<{ Variables: ApiVariables }>();
@@ -339,33 +345,91 @@ export function botRoutes(ctx: AppContext) {
   byId.get("/:id/events", async (c) => {
     const found = await botForSession(c, c.req.param("id"), false);
     if (!found) return c.json({ error: "not found" }, 404);
-    const events = await ctx.db
+    const limit = historyLimit(c.req.query("limit"));
+    const cursor = decodeHistoryCursor(c.req.query("cursor"));
+    if (cursor === undefined) return c.json({ error: "invalid cursor" }, 400);
+    const rows = await ctx.db
       .select()
       .from(botEvents)
-      .where(eq(botEvents.botId, found.bot.id))
-      .orderBy(desc(botEvents.receivedAt))
-      .limit(100);
-    return c.json({ events });
+      .where(
+        cursor === null
+          ? eq(botEvents.botId, found.bot.id)
+          : and(
+              eq(botEvents.botId, found.bot.id),
+              or(
+                lt(botEvents.receivedAt, cursor.at),
+                and(eq(botEvents.receivedAt, cursor.at), lt(botEvents.id, cursor.id)),
+              ),
+            ),
+      )
+      .orderBy(desc(botEvents.receivedAt), desc(botEvents.id))
+      .limit(limit + 1);
+    const events = rows.slice(0, limit);
+    return c.json({
+      events,
+      nextCursor: rows.length > limit ? encodeHistoryCursor(events.at(-1)!.receivedAt, events.at(-1)!.id) : null,
+    });
   });
 
   byId.get("/:id/activity", async (c) => {
     const found = await botForSession(c, c.req.param("id"), false);
     if (!found) return c.json({ error: "not found" }, 404);
     const eventId = c.req.query("eventId");
-    const activity = await ctx.db
+    const limit = historyLimit(c.req.query("limit"));
+    const cursor = decodeHistoryCursor(c.req.query("cursor"));
+    if (cursor === undefined) return c.json({ error: "invalid cursor" }, 400);
+    const baseFilter = eventId === undefined
+      ? eq(botActivity.botId, found.bot.id)
+      : and(eq(botActivity.botId, found.bot.id), eq(botActivity.eventId, eventId));
+    const rows = await ctx.db
       .select()
       .from(botActivity)
       .where(
-        eventId === undefined
-          ? eq(botActivity.botId, found.bot.id)
-          : and(eq(botActivity.botId, found.bot.id), eq(botActivity.eventId, eventId)),
+        cursor === null
+          ? baseFilter
+          : and(
+              baseFilter,
+              or(
+                lt(botActivity.createdAt, cursor.at),
+                and(eq(botActivity.createdAt, cursor.at), lt(botActivity.id, cursor.id)),
+              ),
+            ),
       )
-      .orderBy(desc(botActivity.createdAt))
-      .limit(200);
-    return c.json({ activity });
+      .orderBy(desc(botActivity.createdAt), desc(botActivity.id))
+      .limit(limit + 1);
+    const activity = rows.slice(0, limit);
+    return c.json({
+      activity,
+      nextCursor: rows.length > limit
+        ? encodeHistoryCursor(activity.at(-1)!.createdAt, activity.at(-1)!.id)
+        : null,
+    });
   });
 
   return { byUniverse, byId };
+}
+
+export function historyLimit(raw: string | undefined): number {
+  const value = Number(raw ?? DEFAULT_HISTORY_LIMIT);
+  return Number.isFinite(value)
+    ? Math.min(Math.max(1, Math.floor(value)), MAX_HISTORY_LIMIT)
+    : DEFAULT_HISTORY_LIMIT;
+}
+
+export function encodeHistoryCursor(at: Date, id: string): string {
+  return Buffer.from(JSON.stringify({ at: at.toISOString(), id }), "utf8").toString("base64url");
+}
+
+/** `undefined` means the caller supplied a malformed cursor. */
+export function decodeHistoryCursor(value: string | undefined): { at: Date; id: string } | null | undefined {
+  if (value === undefined || value === "") return null;
+  try {
+    const decoded: unknown = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const parsed = historyCursorSchema.safeParse(decoded);
+    return parsed.success ? { at: new Date(parsed.data.at), id: parsed.data.id } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function configErrorResponse(
