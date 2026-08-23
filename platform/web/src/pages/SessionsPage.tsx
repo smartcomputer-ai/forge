@@ -25,6 +25,7 @@ import {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { BotFaceIcon } from "@/components/icons/bot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog,
@@ -279,6 +280,7 @@ function SessionListItem({
   slug: string;
   active: boolean;
 }) {
+  const botManaged = session.managed && session.id.startsWith("bot:v1:");
   return (
     <li>
       <NavLink
@@ -297,7 +299,12 @@ function SessionListItem({
               closed
             </span>
           )}
-          {session.managed && <Badge variant="secondary">Managed</Badge>}
+          {session.managed && (
+            <Badge variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
+              {botManaged && <BotFaceIcon />}
+              {botManaged ? "Bot Managed" : "Managed"}
+            </Badge>
+          )}
         </span>
         <span className="flex gap-2 font-mono text-xs text-muted-foreground">
           <span className="truncate">{session.id.slice(0, 14)}…</span>
