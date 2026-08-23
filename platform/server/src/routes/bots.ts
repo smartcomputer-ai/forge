@@ -113,6 +113,7 @@ const botCreateSchema = z.object({
   brief: z.string().trim().min(1).max(20_000).nullish(),
   runsPerDay: z.number().int().min(1).max(10_000).nullish(),
   breaker: breakerInput.nullish(),
+  routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullish(),
 });
 const botUpdateSchema = z
   .object({
@@ -120,6 +121,7 @@ const botUpdateSchema = z
     brief: z.string().trim().min(1).max(20_000).nullable().optional(),
     runsPerDay: z.number().int().min(1).max(10_000).nullable().optional(),
     breaker: breakerInput.nullable().optional(),
+    routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullable().optional(),
     enabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "at least one field is required");
@@ -167,6 +169,7 @@ export function botRoutes(ctx: AppContext) {
         brief: body.data.brief ?? null,
         runsPerDay: body.data.runsPerDay ?? null,
         breaker: body.data.breaker ?? null,
+        routedSessionTtlMs: body.data.routedSessionTtlMs ?? null,
       })
       .onConflictDoNothing()
       .returning();
@@ -226,6 +229,7 @@ export function botRoutes(ctx: AppContext) {
           brief: found.bot.brief,
           runsPerDay: found.bot.runsPerDay,
           breaker: found.bot.breaker,
+          routedSessionTtlMs: found.bot.routedSessionTtlMs,
           enabled: found.bot.enabled,
         })
         .where(eq(bots.id, found.bot.id));
@@ -262,7 +266,8 @@ export function botRoutes(ctx: AppContext) {
       .from(botTriggers)
       .where(eq(botTriggers.botId, found.bot.id))
       .orderBy(botTriggers.name);
-    return c.json({ triggers });
+    const manage = canManageRole(found.access.role);
+    return c.json({ triggers: manage ? triggers : triggers.map(redactTriggerSecrets) });
   });
 
   byId.post("/:id/triggers", async (c) => {
@@ -533,6 +538,32 @@ export function botRoutes(ctx: AppContext) {
   });
 
   return { byUniverse, byId };
+}
+
+function canManageRole(role: string): boolean {
+  return role === "owner" || role === "admin" || role === "platform-admin";
+}
+
+/// Members who cannot manage the bot still see trigger shapes, but never the
+/// ingest token or signing secret.
+function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
+  if (trigger.kind !== "webhook") return trigger;
+  const spec = trigger.spec as {
+    token: string;
+    verification: { scheme: string; secret?: string };
+    preset?: string | null;
+  };
+  return {
+    ...trigger,
+    spec: {
+      ...spec,
+      token: "",
+      verification:
+        spec.verification.secret === undefined
+          ? spec.verification
+          : { ...spec.verification, secret: "" },
+    } as BotTriggerRow["spec"],
+  };
 }
 
 function scheduleSpec(bot: BotRow, trigger: BotTriggerRow, universeId: string): BotScheduleSpec {

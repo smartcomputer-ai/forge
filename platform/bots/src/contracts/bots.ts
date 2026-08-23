@@ -31,6 +31,8 @@ export interface BotStartV1 {
   brief: string | null;
   /** Budget: runs started per UTC day; null means unlimited. */
   runsPerDay: number | null;
+  /** Close routed sessions idle longer than this; null keeps them open. */
+  routedSessionTtlMs?: number | null;
   enabled: boolean;
 }
 

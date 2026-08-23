@@ -118,7 +118,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
 
       await eventually(
         () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-        (state) => state.activeDelivery?.id === event.id,
+        (state) => state.activeDeliveries.some((active) => active.id === event.id),
       );
       await handle.signal(BOT_EVENT_SIGNAL, event);
       await handle.signal("deliver_emission", terminalEmission(1, botEventTerminalToken(event.id)));
@@ -211,7 +211,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await handle.signal(BOT_EVENT_SIGNAL, second);
       await eventually(
         () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-        (state) => state.activeDelivery?.id === first.id,
+        (state) => state.activeDeliveries.some((active) => active.id === first.id),
       );
       await handle.signal(
         "deliver_emission",
@@ -303,18 +303,22 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await handle.signal(BOT_EVENT_SIGNAL, second);
       await handle.signal(BOT_EVENT_SIGNAL, third);
 
-      for (const [runId, sessionForRun, token] of [
-        [1, keyedA, botEventTerminalToken(first.id)],
-        [2, keyedB, botEventTerminalToken(second.id)],
-        [3, mainSession, botEventTerminalToken(third.id)],
-      ] as const) {
-        await eventually(
-          () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-          (state) => state.activeRunId === `run_${runId}`,
-        );
+      // Three different target sessions: all three deliveries run as
+      // concurrent lanes, each with its own run, none blocking the others.
+      const inFlight = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) =>
+          state.activeDeliveries.length === 3 &&
+          state.activeDeliveries.every((active) => active.runId !== null),
+      );
+      expect(new Set(inFlight.activeDeliveries.map((active) => active.sessionId))).toEqual(
+        new Set([keyedA, keyedB, mainSession]),
+      );
+      for (const active of inFlight.activeDeliveries) {
+        const runNumber = Number(active.runId?.replace("run_", ""));
         await handle.signal(
           "deliver_emission",
-          sessionTerminalEmission(sessionForRun, runId, token),
+          sessionTerminalEmission(active.sessionId, runNumber, botEventTerminalToken(active.id)),
         );
       }
 
@@ -326,13 +330,17 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       // routed runs there, and the unrouted event went to the main session.
       expect(ensured.filter((id) => id === keyedA)).toHaveLength(1);
       expect(ensured.filter((id) => id === keyedB)).toHaveLength(1);
-      expect(runs.map((run) => run.sessionId)).toEqual([keyedA, keyedB, mainSession]);
-      expect(done.sessions.map((session) => session.sessionId)).toEqual([
-        mainSession,
-        keyedA,
-        keyedB,
-      ]);
-      expect(done.sessions[1]).toMatchObject({ label: "pr-12", kind: "keyed" });
+      expect(new Set(runs.map((run) => run.sessionId))).toEqual(
+        new Set([keyedA, keyedB, mainSession]),
+      );
+      expect(new Set(done.sessions.map((session) => session.sessionId))).toEqual(
+        new Set([mainSession, keyedA, keyedB]),
+      );
+      expect(done.sessions.find((session) => session.sessionId === keyedA)).toMatchObject({
+        label: "pr-12",
+        kind: "keyed",
+      });
+      expect(done.activeDeliveries).toHaveLength(0);
       expect(done.recentEvents.map((event) => event.status)).toEqual([
         "unresolved",
         "unresolved",
@@ -442,7 +450,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
 
       await eventually(
         () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
-        (state) => state.activeDelivery?.id === expectedDeliveryId,
+        (state) => state.activeDeliveries.some((active) => active.id === expectedDeliveryId),
       );
       await handle.signal(
         "deliver_emission",
@@ -551,6 +559,105 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(calls).toEqual(["steer:1", "append:1"]);
       expect(done.recentEvents.map((event) => event.status)).toEqual(["steered", "appended"]);
       expect(done.runsToday).toBe(0);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("closes idle routed sessions after the retention window and reopens a new generation", async () => {
+    const retentionBotName = "retained";
+    const ensured: string[] = [];
+    const closed: string[] = [];
+    let runsStarted = 0;
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          return { profileRevision: 1 };
+        },
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async () => {
+          runsStarted += 1;
+          return { runId: `run_${runsStarted}` };
+        },
+        closeBotSession: async ({ sessionId }: { sessionId: string }) => {
+          closed.push(sessionId);
+          return { closed: true };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: retentionBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        routedSessionTtlMs: 1_500,
+        enabled: true,
+      };
+      const mainSession = botSessionId(retentionBotName);
+      const keyed = `${mainSession}:k-issue-7-deadbeef`;
+      const session = { sessionId: keyed, label: "issue-7" };
+      const first: BotEvent = { version: 1, id: "r-1", ref: eventRef, session };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, retentionBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [first],
+      });
+      const inFlight = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((active) => active.runId !== null),
+      );
+      const active = inFlight.activeDeliveries[0] as { id: string; sessionId: string; runId: string };
+      expect(active.sessionId).toBe(keyed);
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(keyed, 1, botEventTerminalToken(active.id)),
+      );
+
+      // Idle past the TTL: the controller closes the routed session and
+      // drops it from its session list.
+      const swept = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessions.length === 1 && state.eventsProcessed === 1,
+      );
+      expect(closed).toEqual([keyed]);
+      expect(swept.sessions[0]?.sessionId).toBe(mainSession);
+
+      // A later event for the same key opens a fresh generation instead of
+      // reviving the closed session id.
+      const second: BotEvent = { version: 1, id: "r-2", ref: eventRef, session };
+      await handle.signal(BOT_EVENT_SIGNAL, second);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((entry) => entry.id === second.id),
+      );
+      expect(ensured.filter((id) => id !== mainSession)).toEqual([keyed, `${keyed}-g2`]);
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

@@ -1,0 +1,1 @@
+ALTER TABLE "bots" ADD COLUMN "routed_session_ttl_ms" integer;

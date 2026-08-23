@@ -89,10 +89,31 @@
     and per-event replay buttons.
   - Tests: coalesced-batch and steer/append Temporal integration scenarios,
     delivery-identity contract coverage; six integration scenarios total.
+- Hardening slice implemented 2026-08-23:
+  - **Per-session delivery lanes**: the controller dispatches one delivery
+    per target session concurrently (main + each routed session); a stalled
+    run or lost terminal blocks only its own session. Budget reservations
+    count in-flight lanes; emissions resolve to the lane by terminal token.
+  - **Routed-session retention**: per-bot `routedSessionTtlMs`; a sweep
+    closes idle routed sessions via `session/close` (non-force, busy
+    sessions retried later), records `session_closed`, and bumps a
+    per-key generation so the next event for that key opens
+    `<id>-g2`, `-g3`, … instead of reviving a closed session.
+  - **Secret redaction**: trigger reads hide the ingest token and HMAC
+    secret from members who cannot manage the bot. Sealing at rest was
+    deliberately deferred: the core's grants are write-only by design
+    (no secret reveal), webhook secrets are low-value bearer material
+    behind filters/breaker/budget, and a platform-side envelope cipher is
+    the cheap fix when multi-tenancy makes it matter.
+  - Migration `0007_bot_session_retention`; platform schema revision 8;
+    `test:migrations` now asserts the bots tables on fresh and upgrade
+    paths. Controller changes alter command sequencing, so running dev
+    controllers must be terminated once (`temporal workflow terminate
+    --query "WorkflowType='botControllerWorkflowV1'"`); they recreate on
+    the next event or config change.
 - Next: slice 4 (`bot_*` self-configuration tools, filter test/replay,
-  remaining presets, Channels-as-trigger bridge). Still open: keyed-session
-  retention, plaintext webhook secrets, breaker coverage for schedule
-  floods.
+  remaining presets, Channels-as-trigger bridge). Still open: breaker
+  coverage for schedule floods, CEL save-time validation, secret sealing.
 
 ## The proposal in one screen
 

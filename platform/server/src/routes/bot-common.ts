@@ -44,6 +44,7 @@ export function botStart(bot: BotRow, universeId: string): BotStartV1 {
     profileId: bot.profileId,
     brief: bot.brief,
     runsPerDay: bot.runsPerDay,
+    routedSessionTtlMs: bot.routedSessionTtlMs,
     enabled: bot.enabled,
   };
 }

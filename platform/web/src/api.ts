@@ -619,6 +619,7 @@ export interface Bot {
   brief: string | null;
   runsPerDay: number | null;
   breaker: { fires: number; windowMs: number } | null;
+  routedSessionTtlMs: number | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -694,6 +695,7 @@ export interface BotManagedSession {
   sessionId: string;
   label: string;
   kind: "main" | "keyed" | "event";
+  lastActiveAtMs?: number;
 }
 
 export interface BotState {
@@ -708,8 +710,7 @@ export interface BotState {
     | "delivering_event"
     | "budget_exhausted"
     | "degraded";
-  activeDelivery: { id: string; eventCount: number; sessionId: string } | null;
-  activeRunId: string | null;
+  activeDeliveries: { id: string; eventCount: number; sessionId: string; runId: string | null }[];
   sessionReady: boolean;
   pendingEventCount: number;
   pendingDeliveryCount: number;

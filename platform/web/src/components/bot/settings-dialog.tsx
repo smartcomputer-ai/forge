@@ -47,6 +47,9 @@ export function BotSettingsDialog({
   const [breakerWindow, setBreakerWindow] = useState(
     bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "",
   );
+  const [routedTtlHours, setRoutedTtlHours] = useState(
+    bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 3_600_000)) : "",
+  );
   const [enabled, setEnabled] = useState(bot.enabled);
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
@@ -60,6 +63,9 @@ export function BotSettingsDialog({
               fires: Number(breakerFires),
               windowMs: Math.round(Number(breakerWindow.trim() || "10") * 60_000),
             }
+          : null,
+        routedSessionTtlMs: routedTtlHours.trim()
+          ? Math.round(Number(routedTtlHours) * 3_600_000)
           : null,
         enabled,
       }),
@@ -150,6 +156,21 @@ export function BotSettingsDialog({
           <p className="-mt-2 text-xs text-muted-foreground">
             Flood breaker: a trigger exceeding this rate is disabled until re-enabled by hand.
           </p>
+          <Field>
+            <FieldLabel htmlFor="bot-routed-ttl">Close routed sessions after (hours)</FieldLabel>
+            <Input
+              id="bot-routed-ttl"
+              type="number"
+              min={1}
+              value={routedTtlHours}
+              onChange={(event) => setRoutedTtlHours(event.target.value)}
+              placeholder="Keep forever"
+            />
+            <FieldDescription>
+              Per-key and per-event sessions idle this long are closed; a later event for the
+              same key opens a fresh session.
+            </FieldDescription>
+          </Field>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-enabled" className="text-sm">
               Enabled

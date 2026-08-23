@@ -31,12 +31,13 @@ import {
   type BotWhenBusyV1,
 } from "../contracts/bots.js";
 
-const EVENT_TERMINAL_TIMEOUT = "24 hours";
+const EVENT_TERMINAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const BUSY_RETRY_DELAY = "5 seconds";
 const CONTINUE_AS_NEW_AFTER_RUNS = 100;
 const SEEN_EVENT_CAP = 2_000;
 const SEEN_EMISSION_CAP = 2_000;
 const RECENT_EVENT_CAP = 50;
+const EXTRA_SESSION_CAP = 200;
 
 export interface BotRecentEventSnapshot {
   id: string;
@@ -75,6 +76,14 @@ export interface BotManagedSession {
   sessionId: string;
   label: string;
   kind: "main" | "keyed" | "event";
+  lastActiveAtMs?: number;
+}
+
+export interface BotActiveDeliverySnapshot {
+  id: string;
+  eventCount: number;
+  sessionId: string;
+  runId: string | null;
 }
 
 export interface BotSnapshot {
@@ -89,8 +98,7 @@ export interface BotSnapshot {
     | "delivering_event"
     | "budget_exhausted"
     | "degraded";
-  activeDelivery: { id: string; eventCount: number; sessionId: string } | null;
-  activeRunId: string | null;
+  activeDeliveries: BotActiveDeliverySnapshot[];
   sessionReady: boolean;
   pendingEventCount: number;
   pendingDeliveryCount: number;
@@ -126,9 +134,17 @@ export interface BotCarryV1 {
   runsToday: number;
   extraSessions?: BotManagedSession[];
   sessionCursors?: Record<string, number>;
+  /** Routed session id → generation, bumped each time that session closes. */
+  sessionGenerations?: Record<string, number>;
 }
 
-const EXTRA_SESSION_CAP = 200;
+interface ActiveDelivery {
+  delivery: BotDelivery;
+  sessionId: string;
+  runId: string | null;
+  terminal: { token: string; status: string; runId: string; failureRef: string | null } | null;
+  resolution: { outcome: BotEventOutcome; summary: string | null } | null;
+}
 
 const activities = proxyActivities<BotActivities>({
   taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
@@ -141,7 +157,11 @@ export const botConfigSignal = defineSignal<[BotStartV1]>(BOT_CONFIG_SIGNAL);
 export const deliverEmissionSignal = defineSignal<[unknown]>(DELIVER_EMISSION_SIGNAL);
 export const botStateQuery = defineQuery<BotSnapshot>(BOT_STATE_QUERY);
 
-/** One durable inbox, router, and session lifecycle controller per bot. */
+/**
+ * One durable inbox, router, and session lifecycle controller per bot.
+ * Deliveries run as one lane per target session: a stalled run blocks only
+ * its own session while other sessions keep receiving work.
+ */
 export async function botControllerWorkflowV1(
   initial: BotStartV1,
   carry?: BotCarryV1,
@@ -172,6 +192,10 @@ export async function botControllerWorkflowV1(
   const extraSessions: BotManagedSession[] = [...(carry?.extraSessions ?? [])];
   const ensuredExtra = new Set(extraSessions.map((session) => session.sessionId));
   const sessionCursors = new Map<string, number>(Object.entries(carry?.sessionCursors ?? {}));
+  const sessionGenerations = new Map<string, number>(
+    Object.entries(carry?.sessionGenerations ?? {}),
+  );
+  const activeBySession = new Map<string, ActiveDelivery>();
   let eventCursorSeq = carry?.eventCursorSeq ?? 0;
   let appliedProfileId = carry?.appliedProfileId ?? null;
   let appliedProfileRevision = carry?.appliedProfileRevision ?? null;
@@ -181,15 +205,70 @@ export async function botControllerWorkflowV1(
   let duplicateEmissionCount = carry?.duplicateEmissionCount ?? 0;
   let runDay = carry?.runDay ?? utcDay();
   let runsToday = carry?.runsToday ?? 0;
-  let controllerStatus: BotSnapshot["controllerStatus"] = "initializing";
-  let activeDelivery: BotDelivery | null = null;
-  let activeRunId: string | null = null;
-  let activeResolution: { outcome: BotEventOutcome; summary: string | null } | null = null;
-  let activeTerminal:
-    | { token: string; status: string; runId: string; failureRef: string | null }
-    | null = null;
+  let budgetNotified = false;
+  // Bumped whenever a lane changes shared state outside the main loop, so a
+  // parked loop re-evaluates deadlines (retention, budget) and dispatch.
+  let laneTick = 0;
+  let setupStatus: "initializing" | "degraded" | "ready" = "initializing";
   let configDirty = true;
   let lastError: string | null = null;
+
+  function utcDay(): string {
+    return new Date(Date.now()).toISOString().slice(0, 10);
+  }
+
+  function rollBudgetDay(): void {
+    const today = utcDay();
+    if (today !== runDay) {
+      runDay = today;
+      runsToday = 0;
+      budgetNotified = false;
+    }
+  }
+
+  /** Runs already started today plus lanes about to start one. */
+  function reservedRuns(): number {
+    let reserved = runsToday;
+    for (const active of activeBySession.values()) {
+      if (active.runId === null && active.delivery.whenBusy !== "append") reserved += 1;
+    }
+    return reserved;
+  }
+
+  function budgetExhausted(): boolean {
+    rollBudgetDay();
+    return config.runsPerDay !== null && reservedRuns() >= config.runsPerDay;
+  }
+
+  /** Pure variant for the query handler, which must not mutate state. */
+  function budgetExhaustedView(): boolean {
+    if (config.runsPerDay === null) return false;
+    if (utcDay() !== runDay) return false;
+    return reservedRuns() >= config.runsPerDay;
+  }
+
+  function msUntilNextUtcDay(): number {
+    const now = Date.now();
+    const next = new Date(now);
+    next.setUTCHours(24, 0, 0, 0);
+    return Math.max(1_000, next.getTime() - now);
+  }
+
+  function routedBase(target: string): string {
+    return target.replace(/-g\d+$/, "");
+  }
+
+  /** Current session id for a routed target, accounting for closed generations. */
+  function resolveRoutedSessionId(base: string): string {
+    const generation = sessionGenerations.get(base);
+    return generation === undefined ? base : `${base}-g${generation}`;
+  }
+
+  function targetOf(delivery: BotDelivery): string {
+    return delivery.session === undefined
+      ? sessionId
+      : resolveRoutedSessionId(delivery.session.sessionId);
+  }
 
   function flushBuffer(key: string): void {
     const buffer = buffers.get(key);
@@ -225,6 +304,32 @@ export async function botControllerWorkflowV1(
       if (earliest === null || deadline < earliest) earliest = deadline;
     }
     return earliest;
+  }
+
+  function nextRetentionDeadline(): number | null {
+    const ttl = config.routedSessionTtlMs ?? null;
+    if (ttl === null) return null;
+    let earliest: number | null = null;
+    for (const session of extraSessions) {
+      if (activeBySession.has(session.sessionId)) continue;
+      const expiry = (session.lastActiveAtMs ?? 0) + ttl;
+      if (earliest === null || expiry < earliest) earliest = expiry;
+    }
+    return earliest;
+  }
+
+  function touchSession(target: string): void {
+    const session = extraSessions.find((entry) => entry.sessionId === target);
+    if (session !== undefined) session.lastActiveAtMs = Date.now();
+  }
+
+  function dispatchable(): boolean {
+    if (!config.enabled || !sessionReady || configDirty) return false;
+    if (pendingDeliveries.length === 0) return false;
+    if (config.runsPerDay !== null && utcDay() === runDay && reservedRuns() >= config.runsPerDay) {
+      return false;
+    }
+    return pendingDeliveries.some((delivery) => !activeBySession.has(targetOf(delivery)));
   }
 
   setHandler(botEventSignal, (event) => {
@@ -282,20 +387,21 @@ export async function botControllerWorkflowV1(
     botName: config.botName,
     profileId: config.profileId,
     sessionId,
-    sessions: [
-      { sessionId, label: "main", kind: "main" as const },
-      ...extraSessions,
-    ],
-    controllerStatus,
-    activeDelivery:
-      activeDelivery === null
-        ? null
-        : {
-            id: activeDelivery.id,
-            eventCount: activeDelivery.events.length,
-            sessionId: activeDelivery.session?.sessionId ?? sessionId,
-          },
-    activeRunId,
+    sessions: [{ sessionId, label: "main", kind: "main" as const }, ...extraSessions],
+    controllerStatus:
+      setupStatus !== "ready"
+        ? setupStatus
+        : activeBySession.size > 0
+          ? "delivering_event"
+          : pendingDeliveries.length > 0 && budgetExhaustedView()
+            ? "budget_exhausted"
+            : "idle",
+    activeDeliveries: [...activeBySession.values()].map((active) => ({
+      id: active.delivery.id,
+      eventCount: active.delivery.events.length,
+      sessionId: active.sessionId,
+      runId: active.runId,
+    })),
     sessionReady,
     pendingEventCount:
       pendingDeliveries.reduce((sum, delivery) => sum + delivery.events.length, 0) +
@@ -318,30 +424,6 @@ export async function botControllerWorkflowV1(
     runsToday,
     lastError,
   }));
-
-  function utcDay(): string {
-    return new Date(Date.now()).toISOString().slice(0, 10);
-  }
-
-  function rollBudgetDay(): void {
-    const today = utcDay();
-    if (today !== runDay) {
-      runDay = today;
-      runsToday = 0;
-    }
-  }
-
-  function budgetExhausted(): boolean {
-    rollBudgetDay();
-    return config.runsPerDay !== null && runsToday >= config.runsPerDay;
-  }
-
-  function msUntilNextUtcDay(): number {
-    const now = Date.now();
-    const next = new Date(now);
-    next.setUTCHours(24, 0, 0, 0);
-    return Math.max(1_000, next.getTime() - now);
-  }
 
   async function record(
     kind: string,
@@ -376,11 +458,11 @@ export async function botControllerWorkflowV1(
       appliedProfileRevision = ensured.profileRevision;
       configDirty = false;
       lastError = null;
-      controllerStatus = "idle";
+      setupStatus = "ready";
       return true;
     } catch (error) {
       lastError = errorMessage(error);
-      controllerStatus = "degraded";
+      setupStatus = "degraded";
       configDirty = false;
       sessionReady = false;
       await record("degraded", { detail: lastError });
@@ -404,6 +486,7 @@ export async function botControllerWorkflowV1(
       afterSeq: cursorFor(target),
     });
     setCursor(target, pulled.nextSeq);
+    const active = activeBySession.get(target);
     for (const invocation of pulled.invocations) {
       if (invocation.runId !== runId) continue;
       if (invocation.toolId !== BOT_EVENT_RESOLVE_TOOL_ID) continue;
@@ -412,8 +495,8 @@ export async function botControllerWorkflowV1(
         blobRef: invocation.argumentsRef,
       });
       const resolution = parseEventResolveArgs(args);
-      if (activeDelivery !== null && resolution.eventId === activeDelivery.id) {
-        activeResolution = { outcome: resolution.outcome, summary: resolution.summary };
+      if (active !== undefined && resolution.eventId === active.delivery.id) {
+        active.resolution = { outcome: resolution.outcome, summary: resolution.summary };
       }
     }
   }
@@ -442,16 +525,16 @@ export async function botControllerWorkflowV1(
       if (envelope.body.kind !== "run_terminal") continue;
       const terminalRunId = `run_${envelope.body.run_id}`;
       await reconcileRun(terminalRunId, producerSessionId);
-      if (
-        activeDelivery !== null &&
-        envelope.body.token === botEventTerminalToken(activeDelivery.id)
-      ) {
-        activeTerminal = {
-          token: envelope.body.token,
-          status: envelope.body.status,
-          runId: terminalRunId,
-          failureRef: envelope.body.failure_message_ref,
-        };
+      const token = envelope.body.token;
+      for (const active of activeBySession.values()) {
+        if (token === botEventTerminalToken(active.delivery.id)) {
+          active.terminal = {
+            token,
+            status: envelope.body.status,
+            runId: terminalRunId,
+            failureRef: envelope.body.failure_message_ref,
+          };
+        }
       }
     }
   }
@@ -463,25 +546,21 @@ export async function botControllerWorkflowV1(
         universeId: config.universeId,
         sessionId: target,
       });
-      if (state.status === "idle") {
-        controllerStatus = "idle";
-        return;
-      }
-      controllerStatus = "session_busy";
+      if (state.status === "idle") return;
       await sleep(BUSY_RETRY_DELAY);
     }
   }
 
   /** Create a routed (perKey / perEvent) session on first use. */
-  async function ensureRoutedSession(target: {
-    sessionId: string;
-    label: string;
-  }): Promise<boolean> {
-    if (ensuredExtra.has(target.sessionId)) return true;
+  async function ensureRoutedSession(
+    target: BotEventSession,
+    resolvedId: string,
+  ): Promise<boolean> {
+    if (ensuredExtra.has(resolvedId)) return true;
     try {
       await activities.ensureBotSession({
         universeId: config.universeId,
-        sessionId: target.sessionId,
+        sessionId: resolvedId,
         displayName: `bot ${config.botName} · ${target.label}`,
         profileId: config.profileId,
         botName: config.botName,
@@ -498,11 +577,12 @@ export async function botControllerWorkflowV1(
       lastError = errorMessage(error);
       return false;
     }
-    ensuredExtra.add(target.sessionId);
+    ensuredExtra.add(resolvedId);
     extraSessions.push({
-      sessionId: target.sessionId,
+      sessionId: resolvedId,
       label: target.label,
-      kind: target.sessionId.includes(":e-") ? "event" : "keyed",
+      kind: resolvedId.includes(":e-") ? "event" : "keyed",
+      lastActiveAtMs: Date.now(),
     });
     if (extraSessions.length > EXTRA_SESSION_CAP) {
       const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
@@ -514,201 +594,239 @@ export async function botControllerWorkflowV1(
     return true;
   }
 
-  function finishDelivery(recent: BotRecentEventSnapshot): void {
+  /** Close routed sessions idle past the retention window. */
+  async function sweepRoutedSessions(): Promise<void> {
+    const ttl = config.routedSessionTtlMs ?? null;
+    if (ttl === null) return;
+    const now = Date.now();
+    for (const session of [...extraSessions]) {
+      if (activeBySession.has(session.sessionId)) continue;
+      if ((session.lastActiveAtMs ?? 0) + ttl > now) continue;
+      let closed = false;
+      try {
+        closed = (
+          await activities.closeBotSession({
+            universeId: config.universeId,
+            sessionId: session.sessionId,
+          })
+        ).closed;
+      } catch (error) {
+        lastError = errorMessage(error);
+      }
+      if (!closed) {
+        // Busy or unreachable: push the expiry out and retry next sweep.
+        session.lastActiveAtMs = now;
+        continue;
+      }
+      const index = extraSessions.indexOf(session);
+      if (index >= 0) extraSessions.splice(index, 1);
+      ensuredExtra.delete(session.sessionId);
+      sessionCursors.delete(session.sessionId);
+      const base = routedBase(session.sessionId);
+      sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
+      await record("session_closed", {
+        detail: `closed idle routed session ${session.sessionId} (${session.label})`,
+      });
+    }
+  }
+
+  function finishDelivery(active: ActiveDelivery, recent: BotRecentEventSnapshot): void {
     recentEvents.push(recent);
     if (recentEvents.length > RECENT_EVENT_CAP) {
       recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
     }
     eventsProcessed += 1;
-    activeDelivery = null;
-    activeRunId = null;
-    activeResolution = null;
-    activeTerminal = null;
-    controllerStatus = "idle";
+    activeBySession.delete(active.sessionId);
+    touchSession(active.sessionId);
+    laneTick += 1;
   }
 
-  async function deliverDelivery(delivery: BotDelivery): Promise<void> {
+  async function runDelivery(active: ActiveDelivery): Promise<void> {
+    const { delivery } = active;
     const firstEvent = delivery.events[0];
-    if (firstEvent === undefined) return;
-    activeDelivery = delivery;
-    activeResolution = null;
-    activeTerminal = null;
-    controllerStatus = "delivering_event";
-    const targetSessionId = delivery.session?.sessionId ?? sessionId;
-    if (delivery.session !== undefined) {
-      const ensured = await ensureRoutedSession(delivery.session);
-      if (!ensured) {
-        await record("run_failed", {
-          eventId: delivery.id,
-          detail: `failed to create session ${delivery.session.sessionId}`,
-        });
-        finishDelivery({
-          id: delivery.id,
-          ref: firstEvent.ref,
-          status: "run_failed",
-          eventCount: delivery.events.length,
-          failure: `failed to create session ${delivery.session.sessionId}: ${lastError ?? "unknown"}`,
-        });
-        return;
-      }
-    }
-
-    if (delivery.whenBusy === "append") {
-      try {
-        await activities.appendBotContext({
-          universeId: config.universeId,
-          sessionId: targetSessionId,
-          deliveryId: delivery.id,
-          events: delivery.events,
-        });
-      } catch (error) {
-        lastError = errorMessage(error);
-        await record("run_failed", { eventId: delivery.id, detail: lastError });
-        finishDelivery({
-          id: delivery.id,
-          ref: firstEvent.ref,
-          status: "run_failed",
-          eventCount: delivery.events.length,
-          failure: `context append failed: ${lastError}`,
-        });
-        return;
-      }
-      await record("appended", {
-        eventId: delivery.id,
-        detail: `${delivery.events.length} event(s) appended as context`,
-      });
-      lastError = null;
-      finishDelivery({
-        id: delivery.id,
-        ref: firstEvent.ref,
-        status: "appended",
-        eventCount: delivery.events.length,
-      });
+    if (firstEvent === undefined) {
+      activeBySession.delete(active.sessionId);
       return;
     }
-
-    if (delivery.whenBusy === "steer") {
-      const state = await activities.readBotSessionStatus({
-        universeId: config.universeId,
-        sessionId: targetSessionId,
-      });
-      if (state.status !== "idle") {
-        const steered = await activities.steerBotRun({
-          universeId: config.universeId,
-          sessionId: targetSessionId,
-          deliveryId: delivery.id,
-          events: delivery.events,
-        });
-        if (steered.steered) {
-          await record("steered", {
+    const eventCount = delivery.events.length;
+    const target = active.sessionId;
+    try {
+      if (delivery.session !== undefined) {
+        const ensured = await ensureRoutedSession(delivery.session, target);
+        if (!ensured) {
+          await record("run_failed", {
             eventId: delivery.id,
-            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
-            detail: `${delivery.events.length} event(s) folded into the active run`,
+            detail: `failed to create session ${target}`,
           });
-          lastError = null;
-          finishDelivery({
+          finishDelivery(active, {
             id: delivery.id,
             ref: firstEvent.ref,
-            status: "steered",
-            eventCount: delivery.events.length,
-            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+            status: "run_failed",
+            eventCount,
+            failure: `failed to create session ${target}: ${lastError ?? "unknown"}`,
           });
           return;
         }
-        // The run finished under us; fall through to an ordinary run.
       }
-    }
 
-    await waitUntilSessionIdle(targetSessionId);
-    try {
-      const run = await activities.startBotRun({
-        universeId: config.universeId,
-        sessionId: targetSessionId,
-        deliveryId: delivery.id,
-        events: delivery.events,
-        submissionId: botEventSubmissionId(delivery.id),
-        terminalToken: botEventTerminalToken(delivery.id),
+      if (delivery.whenBusy === "append") {
+        await activities.appendBotContext({
+          universeId: config.universeId,
+          sessionId: target,
+          deliveryId: delivery.id,
+          events: delivery.events,
+        });
+        await record("appended", {
+          eventId: delivery.id,
+          detail: `${eventCount} event(s) appended as context`,
+        });
+        finishDelivery(active, {
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "appended",
+          eventCount,
+        });
+        return;
+      }
+
+      if (delivery.whenBusy === "steer") {
+        const state = await activities.readBotSessionStatus({
+          universeId: config.universeId,
+          sessionId: target,
+        });
+        if (state.status !== "idle") {
+          const steered = await activities.steerBotRun({
+            universeId: config.universeId,
+            sessionId: target,
+            deliveryId: delivery.id,
+            events: delivery.events,
+          });
+          if (steered.steered) {
+            await record("steered", {
+              eventId: delivery.id,
+              ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+              detail: `${eventCount} event(s) folded into the active run`,
+            });
+            finishDelivery(active, {
+              id: delivery.id,
+              ref: firstEvent.ref,
+              status: "steered",
+              eventCount,
+              ...(steered.runId === undefined ? {} : { runId: steered.runId }),
+            });
+            return;
+          }
+          // The run finished under us; fall through to an ordinary run.
+        }
+      }
+
+      await waitUntilSessionIdle(target);
+      try {
+        const run = await activities.startBotRun({
+          universeId: config.universeId,
+          sessionId: target,
+          deliveryId: delivery.id,
+          events: delivery.events,
+          submissionId: botEventSubmissionId(delivery.id),
+          terminalToken: botEventTerminalToken(delivery.id),
+        });
+        active.runId = run.runId;
+        rollBudgetDay();
+        runsToday += 1;
+        await record("run_started", { eventId: delivery.id, runId: run.runId });
+      } catch (error) {
+        // A direct run can win the narrow read/start race. Hold the lane
+        // through a short delay, then requeue at the front for this session.
+        lastError = errorMessage(error);
+        await sleep(BUSY_RETRY_DELAY);
+        activeBySession.delete(target);
+        pendingDeliveries.unshift(delivery);
+        laneTick += 1;
+        return;
+      }
+
+      await condition(() => active.terminal !== null, EVENT_TERMINAL_TIMEOUT_MS);
+
+      const terminal = active.terminal;
+      const resolution = active.resolution;
+      let recent: BotRecentEventSnapshot;
+      if (terminal === null) {
+        recent = {
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "run_failed",
+          eventCount,
+          ...(active.runId === null ? {} : { runId: active.runId }),
+          failure: "timed out waiting for the run terminal",
+        };
+      } else if (terminal.status !== "completed") {
+        recent = {
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "run_failed",
+          eventCount,
+          runId: active.runId ?? terminal.runId,
+          failure: `run ended ${terminal.status}`,
+        };
+      } else if (resolution !== null) {
+        recent = {
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: resolution.outcome,
+          eventCount,
+          runId: active.runId ?? terminal.runId,
+          ...(resolution.summary === null ? {} : { summary: resolution.summary }),
+        };
+      } else {
+        recent = {
+          id: delivery.id,
+          ref: firstEvent.ref,
+          status: "unresolved",
+          eventCount,
+          runId: active.runId ?? terminal.runId,
+        };
+      }
+      await record(recent.status === "run_failed" ? "run_failed" : "run_completed", {
+        eventId: delivery.id,
+        ...(recent.runId === undefined ? {} : { runId: recent.runId }),
+        detail: recent.failure ?? recent.summary ?? recent.status,
       });
-      activeRunId = run.runId;
-      rollBudgetDay();
-      runsToday += 1;
-      await record("run_started", { eventId: delivery.id, runId: run.runId });
+      finishDelivery(active, recent);
     } catch (error) {
-      // A direct run can win the narrow read/start race. Preserve the
-      // delivery and retry after the session becomes idle again.
       lastError = errorMessage(error);
-      pendingDeliveries.unshift(delivery);
-      activeDelivery = null;
-      activeRunId = null;
-      controllerStatus = "session_busy";
-      await sleep(BUSY_RETRY_DELAY);
-      return;
+      await record("run_failed", { eventId: delivery.id, detail: lastError });
+      finishDelivery(active, {
+        id: delivery.id,
+        ref: firstEvent.ref,
+        status: "run_failed",
+        eventCount,
+        failure: lastError,
+      });
     }
+  }
 
-    const signaled = await condition(() => emissionInbox.length > 0, EVENT_TERMINAL_TIMEOUT);
-    while (signaled && activeTerminal === null) {
-      await processEmissions();
-      if (activeTerminal === null) {
-        const more = await condition(() => emissionInbox.length > 0, EVENT_TERMINAL_TIMEOUT);
-        if (!more) break;
+  function dispatch(): void {
+    let index = 0;
+    while (index < pendingDeliveries.length) {
+      if (budgetExhausted()) return;
+      const delivery = pendingDeliveries[index];
+      if (delivery === undefined) break;
+      const target = targetOf(delivery);
+      if (activeBySession.has(target)) {
+        index += 1;
+        continue;
       }
+      pendingDeliveries.splice(index, 1);
+      const active: ActiveDelivery = {
+        delivery,
+        sessionId: target,
+        runId: null,
+        terminal: null,
+        resolution: null,
+      };
+      activeBySession.set(target, active);
+      void runDelivery(active);
     }
-
-    const terminal = activeTerminal as {
-      token: string;
-      status: string;
-      runId: string;
-      failureRef: string | null;
-    } | null;
-    const resolution = activeResolution as {
-      outcome: BotEventOutcome;
-      summary: string | null;
-    } | null;
-    const eventCount = delivery.events.length;
-    let recent: BotRecentEventSnapshot;
-    if (terminal === null) {
-      recent = {
-        id: delivery.id,
-        ref: firstEvent.ref,
-        status: "run_failed",
-        eventCount,
-        ...(activeRunId === null ? {} : { runId: activeRunId }),
-        failure: "timed out waiting for the run terminal",
-      };
-    } else if (terminal.status !== "completed") {
-      recent = {
-        id: delivery.id,
-        ref: firstEvent.ref,
-        status: "run_failed",
-        eventCount,
-        runId: activeRunId ?? terminal.runId,
-        failure: `run ended ${terminal.status}`,
-      };
-    } else if (resolution !== null) {
-      recent = {
-        id: delivery.id,
-        ref: firstEvent.ref,
-        status: resolution.outcome,
-        eventCount,
-        runId: activeRunId ?? terminal.runId,
-        ...(resolution.summary === null ? {} : { summary: resolution.summary }),
-      };
-    } else {
-      recent = {
-        id: delivery.id,
-        ref: firstEvent.ref,
-        status: "unresolved",
-        eventCount,
-        runId: activeRunId ?? terminal.runId,
-      };
-    }
-    await record(recent.status === "run_failed" ? "run_failed" : "run_completed", {
-      eventId: delivery.id,
-      ...(recent.runId === undefined ? {} : { runId: recent.runId }),
-      detail: recent.failure ?? recent.summary ?? recent.status,
-    });
-    lastError = null;
-    finishDelivery(recent);
   }
 
   await reconcileSession();
@@ -716,28 +834,23 @@ export async function botControllerWorkflowV1(
   for (;;) {
     await processEmissions();
     flushRipeBuffers();
-    if (configDirty && activeDelivery === null) {
+    await sweepRoutedSessions();
+    if (configDirty && !activeBySession.has(sessionId)) {
       await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();
     }
-    if (config.enabled && sessionReady && !configDirty && pendingDeliveries.length > 0) {
-      if (budgetExhausted()) {
-        if (controllerStatus !== "budget_exhausted") {
-          controllerStatus = "budget_exhausted";
-          await record("budget_exhausted", {
-            detail: `${runsToday}/${config.runsPerDay} runs used for ${runDay}`,
-          });
-        }
-        await condition(() => emissionInbox.length > 0 || configDirty, msUntilNextUtcDay());
-        continue;
+    if (config.enabled && sessionReady && !configDirty) {
+      dispatch();
+      if (pendingDeliveries.length > 0 && budgetExhausted() && !budgetNotified) {
+        budgetNotified = true;
+        await record("budget_exhausted", {
+          detail: `${runsToday}/${config.runsPerDay} runs used for ${runDay}`,
+        });
       }
-      const delivery = pendingDeliveries.shift();
-      if (delivery !== undefined) await deliverDelivery(delivery);
-      continue;
     }
     if (
       emissionInbox.length === 0 &&
-      activeDelivery === null &&
+      activeBySession.size === 0 &&
       eventsProcessed >= CONTINUE_AS_NEW_AFTER_RUNS
     ) {
       await continueAsNew<typeof botControllerWorkflowV1>(config, {
@@ -759,18 +872,25 @@ export async function botControllerWorkflowV1(
         runsToday,
         extraSessions: [...extraSessions],
         sessionCursors: Object.fromEntries(sessionCursors),
+        sessionGenerations: Object.fromEntries(sessionGenerations),
       } satisfies BotCarryV1);
     }
+    const tick = laneTick;
     const wake = () =>
-      emissionInbox.length > 0 ||
-      configDirty ||
-      (config.enabled && sessionReady && pendingDeliveries.length > 0);
-    const deadline = nextBufferDeadline();
+      emissionInbox.length > 0 || configDirty || laneTick !== tick || dispatchable();
+    const deadlines = [nextBufferDeadline(), nextRetentionDeadline()];
+    if (pendingDeliveries.length > 0 && config.runsPerDay !== null && budgetExhaustedView()) {
+      deadlines.push(Date.now() + msUntilNextUtcDay());
+    }
+    const deadline = deadlines.reduce<number | null>(
+      (earliest, value) => (value === null ? earliest : earliest === null ? value : Math.min(earliest, value)),
+      null,
+    );
     if (deadline === null) {
       await condition(wake);
     } else {
-      // Wake at the earliest buffer flush time; flushRipeBuffers at the top
-      // of the loop turns ripe buffers into deliveries.
+      // Wake at the earliest buffer flush, retention expiry, or budget reset;
+      // the top of the loop turns ripe state into work.
       await condition(wake, Math.max(1, deadline - Date.now()));
     }
   }
@@ -781,6 +901,10 @@ function validateConfig(config: BotStartV1): void {
   if (!config.profileId) throw new TypeError("profileId is required");
   if (config.runsPerDay !== null && (!Number.isSafeInteger(config.runsPerDay) || config.runsPerDay < 1)) {
     throw new TypeError("runsPerDay must be a positive integer or null");
+  }
+  const ttl = config.routedSessionTtlMs ?? null;
+  if (ttl !== null && (!Number.isSafeInteger(ttl) || ttl < 1_000)) {
+    throw new TypeError("routedSessionTtlMs must be at least 1000 or null");
   }
 }
 

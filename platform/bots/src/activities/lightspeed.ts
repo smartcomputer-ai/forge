@@ -1,4 +1,9 @@
-import { LightspeedClient, type AgentProfile, type SessionStatus } from "@lightspeed/agent-client";
+import {
+  LightspeedClient,
+  LightspeedRpcError,
+  type AgentProfile,
+  type SessionStatus,
+} from "@lightspeed/agent-client";
 import {
   BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_TOOL_DESCRIPTIONS,
@@ -85,6 +90,8 @@ export interface BotLightspeedActivities {
   startBotRun(input: StartBotRunInput): Promise<{ runId: string }>;
   steerBotRun(input: SteerBotRunInput): Promise<{ steered: boolean; runId?: string }>;
   appendBotContext(input: AppendBotContextInput): Promise<void>;
+  /** Close an idle routed session (non-force: a busy session is left alone). */
+  closeBotSession(input: ReadSessionInput): Promise<{ closed: boolean }>;
   readWorkflowToolInvocations(
     input: ReadWorkflowToolInvocationsInput,
   ): Promise<ReadWorkflowToolInvocationsResult>;
@@ -172,6 +179,19 @@ export function createBotLightspeedActivities(
         return { steered: false };
       }
       return { steered: true, runId: active.id };
+    },
+
+    async closeBotSession(input) {
+      const client = clientForUniverse(config, input.universeId);
+      try {
+        await client.call("session/close", { sessionId: input.sessionId });
+      } catch (error) {
+        // Active work or an already-closed session: report and let the
+        // retention sweep try again later.
+        if (error instanceof LightspeedRpcError) return { closed: false };
+        throw error;
+      }
+      return { closed: true };
     },
 
     async appendBotContext(input) {

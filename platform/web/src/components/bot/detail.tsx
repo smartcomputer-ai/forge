@@ -144,13 +144,15 @@ export function BotDetail({
                 Coalescing {buffer.count} event(s) · flushes {flushLabel(buffer.flushAtMs)}
               </p>
             ))}
-            {state?.activeDelivery && (
+            {state?.activeDeliveries.map((active) => (
               <EventRow
-                id={state.activeDelivery.id}
+                key={active.id}
+                id={active.id}
                 status="active"
-                eventCount={state.activeDelivery.eventCount}
+                eventCount={active.eventCount}
+                summary={active.sessionId === state.sessionId ? undefined : `→ ${active.sessionId}`}
               />
-            )}
+            ))}
             {state?.recentEvents
               .slice()
               .reverse()
@@ -169,7 +171,7 @@ export function BotDetail({
                   }
                 />
               ))}
-            {state && !state.activeDelivery && state.recentEvents.length === 0 && (
+            {state && state.activeDeliveries.length === 0 && state.recentEvents.length === 0 && (
               <p className="text-xs text-muted-foreground">No events delivered yet.</p>
             )}
           </section>

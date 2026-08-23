@@ -35,6 +35,8 @@ export const bots = pgTable(
     runsPerDay: integer("runs_per_day"),
     /** Per-trigger flood breaker: auto-disable a trigger exceeding this rate. */
     breaker: jsonb("breaker").$type<{ fires: number; windowMs: number }>(),
+    /** Close routed (perKey/perEvent) sessions idle longer than this; null keeps them. */
+    routedSessionTtlMs: integer("routed_session_ttl_ms"),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

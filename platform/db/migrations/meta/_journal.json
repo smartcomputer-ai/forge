@@ -50,6 +50,13 @@
       "when": 1787232108919,
       "tag": "0006_bot_coalescing",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787463967220,
+      "tag": "0007_bot_session_retention",
+      "breakpoints": true
     }
   ]
 }
