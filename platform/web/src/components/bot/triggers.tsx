@@ -1,8 +1,9 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Webhook } from "lucide-react";
 import {
   api,
+  type BotPollSpec,
   type BotRoute,
   type BotScheduleSpec,
   type BotTrigger,
@@ -155,6 +156,8 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
           </div>
           {trigger.kind === "schedule" ? (
             <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
+          ) : trigger.kind === "poll" ? (
+            <PollRowDetail trigger={trigger} />
           ) : (
             <WebhookRowDetail trigger={trigger} manage={manage} />
           )}
@@ -188,6 +191,41 @@ function ScheduleRowDetail({ spec }: { spec: BotScheduleSpec }) {
         )}
       </p>
       <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{spec.summary}</p>
+    </>
+  );
+}
+
+function PollRowDetail({ trigger }: { trigger: BotTrigger }) {
+  const spec = trigger.spec as BotPollSpec;
+  const sourceLabel =
+    spec.source.kind === "http" ? spec.source.url : `exec: ${spec.source.argv.join(" ")}`;
+  return (
+    <>
+      <p className="mt-1 text-muted-foreground wrap-anywhere">
+        <code title={sourceLabel}>{sourceLabel}</code> · every{" "}
+        {Math.round(spec.intervalMs / 60_000)}m ·{" "}
+        {spec.cursor.kind === "idSet" ? `dedupe by ${spec.cursor.id}` : `watermark ${spec.cursor.field}`}{" "}
+        → {routeLabel(trigger.route)}
+        {trigger.coalesce &&
+          ` · batches ≤${trigger.coalesce.maxCount} over ${Math.round(trigger.coalesce.debounceMs / 1000)}s`}
+        {trigger.deliver && trigger.deliver.whenBusy !== "queue" && ` · busy: ${trigger.deliver.whenBusy}`}
+      </p>
+      <p className="mt-1 text-muted-foreground">
+        {trigger.cursor == null
+          ? "Baselines on the first fire (existing items are not delivered)."
+          : trigger.cursor.consecutiveFailures > 0
+            ? `${trigger.cursor.consecutiveFailures} consecutive failure(s); last poll ${
+                trigger.cursor.lastPolledAt ? new Date(trigger.cursor.lastPolledAt).toLocaleString() : "—"
+              }`
+            : `Last poll ${
+                trigger.cursor.lastPolledAt ? new Date(trigger.cursor.lastPolledAt).toLocaleString() : "—"
+              }`}
+      </p>
+      {trigger.filter && (
+        <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">
+          filter: <code>{trigger.filter}</code>
+        </p>
+      )}
     </>
   );
 }
@@ -237,12 +275,7 @@ function WebhookRowDetail({ trigger, manage }: { trigger: BotTrigger; manage: bo
   );
 }
 
-interface WebhookFormState {
-  scheme: "token" | "hmac-sha256";
-  secret: string;
-  header: string;
-  prefix: string;
-  preset: boolean;
+interface DeliveryFormState {
   routePolicy: "bot" | "perKey" | "perEvent";
   routeKey: string;
   filter: string;
@@ -252,12 +285,23 @@ interface WebhookFormState {
   maxCount: string;
 }
 
-const defaultWebhookForm: WebhookFormState = {
-  scheme: "token",
-  secret: "",
-  header: "",
-  prefix: "",
-  preset: false,
+interface WebhookFormState extends DeliveryFormState {
+  scheme: "token" | "hmac-sha256";
+  secret: string;
+  header: string;
+  prefix: string;
+  preset: boolean;
+}
+
+interface PollFormState extends DeliveryFormState {
+  url: string;
+  intervalMinutes: string;
+  items: string;
+  dedupe: "idSet" | "watermark";
+  dedupeField: string;
+}
+
+const defaultDeliveryForm: DeliveryFormState = {
   routePolicy: "bot",
   routeKey: "",
   filter: "",
@@ -265,6 +309,105 @@ const defaultWebhookForm: WebhookFormState = {
   debounceSeconds: "",
   maxWaitSeconds: "",
   maxCount: "",
+};
+
+const defaultPollForm: PollFormState = {
+  ...defaultDeliveryForm,
+  url: "",
+  intervalMinutes: "5",
+  items: "",
+  dedupe: "idSet",
+  dedupeField: "id",
+};
+
+function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
+  const spec = trigger.spec as BotPollSpec;
+  return {
+    url: spec.source.kind === "http" ? spec.source.url : "",
+    intervalMinutes: String(Math.round(spec.intervalMs / 60_000)),
+    items: spec.items ?? "",
+    dedupe: spec.cursor.kind,
+    dedupeField: spec.cursor.kind === "idSet" ? spec.cursor.id : spec.cursor.field,
+    routePolicy: trigger.route?.policy ?? "bot",
+    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
+    filter: trigger.filter ?? "",
+    whenBusy: trigger.deliver?.whenBusy ?? "queue",
+    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
+    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
+    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+  };
+}
+
+function deliveryPayload(form: DeliveryFormState) {
+  const debounce = Number(form.debounceSeconds);
+  const coalesceOn = form.debounceSeconds.trim() !== "" && debounce > 0;
+  return {
+    route:
+      form.routePolicy === "bot"
+        ? null
+        : form.routePolicy === "perEvent"
+          ? { policy: "perEvent" as const }
+          : { policy: "perKey" as const, key: form.routeKey.trim() || null },
+    filter: form.filter.trim() || null,
+    coalesce: coalesceOn
+      ? {
+          debounceMs: Math.round(debounce * 1000),
+          maxWaitMs: Math.round(Number(form.maxWaitSeconds.trim() || form.debounceSeconds) * 1000),
+          maxCount: Math.round(Number(form.maxCount.trim() || "50")),
+        }
+      : null,
+    deliver: form.whenBusy === "queue" ? null : { whenBusy: form.whenBusy },
+  };
+}
+
+function pollPayload(form: PollFormState) {
+  return {
+    spec: {
+      source: { kind: "http" as const, url: form.url.trim() },
+      intervalMs: Math.round(Number(form.intervalMinutes) * 60_000),
+      items: form.items.trim() || null,
+      cursor:
+        form.dedupe === "idSet"
+          ? { kind: "idSet" as const, id: form.dedupeField.trim() }
+          : { kind: "watermark" as const, field: form.dedupeField.trim() },
+    },
+    ...deliveryPayload(form),
+  };
+}
+
+function pollFormProblem(form: PollFormState): string | null {
+  if (!/^https?:\/\//.test(form.url.trim())) return "The poll URL must be http(s).";
+  const minutes = Number(form.intervalMinutes);
+  if (!Number.isFinite(minutes) || minutes < 1) return "Poll at most once a minute.";
+  if (!form.dedupeField.trim()) {
+    return form.dedupe === "idSet"
+      ? "Name the item field that identifies an item (e.g. id)."
+      : "Name the item field that increases over time (e.g. updated_at).";
+  }
+  return deliveryFormProblem(form);
+}
+
+function deliveryFormProblem(form: DeliveryFormState): string | null {
+  if (form.debounceSeconds.trim() !== "") {
+    const debounce = Number(form.debounceSeconds);
+    if (!Number.isFinite(debounce) || debounce < 1) {
+      return "Debounce must be at least 1 second.";
+    }
+    const maxWait = Number(form.maxWaitSeconds.trim() || form.debounceSeconds);
+    if (!Number.isFinite(maxWait) || maxWait < debounce) {
+      return "Max wait must be at least the debounce.";
+    }
+  }
+  return null;
+}
+
+const defaultWebhookForm: WebhookFormState = {
+  ...defaultDeliveryForm,
+  scheme: "token",
+  secret: "",
+  header: "",
+  prefix: "",
+  preset: false,
 };
 
 function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
@@ -286,8 +429,6 @@ function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
 }
 
 function webhookPayload(form: WebhookFormState) {
-  const debounce = Number(form.debounceSeconds);
-  const coalesceOn = form.debounceSeconds.trim() !== "" && debounce > 0;
   return {
     spec: {
       verification:
@@ -301,21 +442,7 @@ function webhookPayload(form: WebhookFormState) {
             },
       preset: form.preset ? ("github" as const) : null,
     },
-    route:
-      form.routePolicy === "bot"
-        ? null
-        : form.routePolicy === "perEvent"
-          ? { policy: "perEvent" as const }
-          : { policy: "perKey" as const, key: form.routeKey.trim() || null },
-    filter: form.filter.trim() || null,
-    coalesce: coalesceOn
-      ? {
-          debounceMs: Math.round(debounce * 1000),
-          maxWaitMs: Math.round(Number(form.maxWaitSeconds.trim() || form.debounceSeconds) * 1000),
-          maxCount: Math.round(Number(form.maxCount.trim() || "50")),
-        }
-      : null,
-    deliver: form.whenBusy === "queue" ? null : { whenBusy: form.whenBusy },
+    ...deliveryPayload(form),
   };
 }
 
@@ -323,17 +450,7 @@ function webhookFormProblem(form: WebhookFormState): string | null {
   if (form.scheme === "hmac-sha256" && form.secret.length < 8) {
     return "The HMAC secret needs at least 8 characters.";
   }
-  if (form.debounceSeconds.trim() !== "") {
-    const debounce = Number(form.debounceSeconds);
-    if (!Number.isFinite(debounce) || debounce < 1) {
-      return "Debounce must be at least 1 second.";
-    }
-    const maxWait = Number(form.maxWaitSeconds.trim() || form.debounceSeconds);
-    if (!Number.isFinite(maxWait) || maxWait < debounce) {
-      return "Max wait must be at least the debounce.";
-    }
-  }
-  return null;
+  return deliveryFormProblem(form);
 }
 
 function WebhookFields({
@@ -403,11 +520,25 @@ function WebhookFields({
           )}
         </div>
       )}
+      <DeliveryFields form={form} setForm={setForm} />
+    </>
+  );
+}
+
+function DeliveryFields<T extends DeliveryFormState>({
+  form,
+  setForm,
+}: {
+  form: T;
+  setForm: (next: T) => void;
+}) {
+  return (
+    <>
       <Field>
         <FieldLabel>Sessions</FieldLabel>
         <Select
           value={form.routePolicy}
-          onValueChange={(value) => value && setForm({ ...form, routePolicy: value as WebhookFormState["routePolicy"] })}
+          onValueChange={(value) => value && setForm({ ...form, routePolicy: value as DeliveryFormState["routePolicy"] })}
         >
           <SelectTrigger>
             <SelectValue />
@@ -492,7 +623,7 @@ function WebhookFields({
         <Select
           value={form.whenBusy}
           onValueChange={(value) =>
-            value && setForm({ ...form, whenBusy: value as WebhookFormState["whenBusy"] })
+            value && setForm({ ...form, whenBusy: value as DeliveryFormState["whenBusy"] })
           }
         >
           <SelectTrigger>
@@ -509,6 +640,92 @@ function WebhookFields({
   );
 }
 
+function PollFields({
+  form,
+  setForm,
+}: {
+  form: PollFormState;
+  setForm: (next: PollFormState) => void;
+}) {
+  return (
+    <>
+      <Field>
+        <FieldLabel htmlFor="poll-url">URL</FieldLabel>
+        <Input
+          id="poll-url"
+          value={form.url}
+          onChange={(event) => setForm({ ...form, url: event.target.value })}
+          placeholder="https://api.example.com/issues?state=open"
+          className="font-mono"
+        />
+        <FieldDescription>
+          Fetched on the interval; the JSON response is diffed and only new items wake the bot.
+          The first fire baselines without delivering.
+        </FieldDescription>
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field>
+          <FieldLabel htmlFor="poll-interval">Every (minutes)</FieldLabel>
+          <Input
+            id="poll-interval"
+            type="number"
+            min={1}
+            value={form.intervalMinutes}
+            onChange={(event) => setForm({ ...form, intervalMinutes: event.target.value })}
+          />
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="poll-items">Items path (optional)</FieldLabel>
+          <Input
+            id="poll-items"
+            value={form.items}
+            onChange={(event) => setForm({ ...form, items: event.target.value })}
+            placeholder="data.issues"
+            className="font-mono"
+          />
+        </Field>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <Field>
+          <FieldLabel>New-item detection</FieldLabel>
+          <Select
+            value={form.dedupe}
+            onValueChange={(value) =>
+              value &&
+              setForm({
+                ...form,
+                dedupe: value as PollFormState["dedupe"],
+                dedupeField: form.dedupeField || (value === "idSet" ? "id" : "updated_at"),
+              })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="idSet">Unseen id</SelectItem>
+              <SelectItem value="watermark">Increasing field</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field>
+          <FieldLabel htmlFor="poll-dedupe-field">
+            {form.dedupe === "idSet" ? "Id field" : "Watermark field"}
+          </FieldLabel>
+          <Input
+            id="poll-dedupe-field"
+            value={form.dedupeField}
+            onChange={(event) => setForm({ ...form, dedupeField: event.target.value })}
+            placeholder={form.dedupe === "idSet" ? "id" : "updated_at"}
+            className="font-mono"
+          />
+        </Field>
+      </div>
+      <DeliveryFields form={form} setForm={setForm} />
+    </>
+  );
+}
+
 function AddTriggerDialog({
   botId,
   open,
@@ -519,7 +736,7 @@ function AddTriggerDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState<"schedule" | "webhook" | null>(null);
+  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | null>(null);
   const [name, setName] = useState("");
   const [once, setOnce] = useState(false);
   const [at, setAt] = useState("");
@@ -527,10 +744,12 @@ function AddTriggerDialog({
   const [timezone, setTimezone] = useState("UTC");
   const [summary, setSummary] = useState("");
   const [webhook, setWebhook] = useState<WebhookFormState>(defaultWebhookForm);
+  const [poll, setPoll] = useState<PollFormState>(defaultPollForm);
   const [error, setError] = useState<string | null>(null);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
+  const pollIssue = kind === "poll" ? pollFormProblem(poll) : null;
   const reset = () => {
     setKind(null);
     setName("");
@@ -540,6 +759,7 @@ function AddTriggerDialog({
     setTimezone("UTC");
     setSummary("");
     setWebhook(defaultWebhookForm);
+    setPoll(defaultPollForm);
     setError(null);
   };
   const changeOpen = (next: boolean) => {
@@ -560,7 +780,9 @@ function AddTriggerDialog({
                 ? { at: new Date(at).toISOString(), timezone: "UTC", summary: summary.trim() }
                 : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
             }
-          : { name: name.trim(), kind, ...webhookPayload(webhook) },
+          : kind === "poll"
+            ? { name: name.trim(), kind, ...pollPayload(poll) }
+            : { name: name.trim(), kind, ...webhookPayload(webhook) },
       );
     },
     onSuccess: async () => {
@@ -580,7 +802,9 @@ function AddTriggerDialog({
     (kind === "schedule"
       ? (once ? !at || Number.isNaN(new Date(at).getTime()) : !cron.trim() || cronIssue !== null) ||
         !summary.trim()
-      : webhookIssue !== null);
+      : kind === "poll"
+        ? pollIssue !== null
+        : webhookIssue !== null);
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
@@ -596,7 +820,9 @@ function AddTriggerDialog({
               ? "Run the bot on a recurring cron or once at a specific time."
               : kind === "webhook"
                 ? "Give the bot a protected ingest URL for external events."
-                : "Choose how this bot should receive events."}
+                : kind === "poll"
+                  ? "Fetch a source on an interval and wake the bot with new items."
+                  : "Choose how this bot should receive events."}
           </DialogDescription>
         </DialogHeader>
         {!kind ? (
@@ -613,6 +839,12 @@ function AddTriggerDialog({
                 title="Webhook"
                 description="Receive token-protected or signed events from external systems."
                 onClick={() => setKind("webhook")}
+              />
+              <TriggerKindChoice
+                icon={<RefreshCw className="size-5" />}
+                title="Poll"
+                description="Check an HTTP source on an interval and deliver only new items."
+                onClick={() => setKind("poll")}
               />
             </div>
             <DialogFooter className="border-t p-4">
@@ -718,12 +950,16 @@ function AddTriggerDialog({
                     />
                   </Field>
                 </>
+              ) : kind === "poll" ? (
+                <PollFields form={poll} setForm={setPoll} />
               ) : (
                 <WebhookFields form={webhook} setForm={setWebhook} />
               )}
             </div>
             <div className="grid gap-2 border-t p-4">
-              {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
+              {(webhookIssue ?? pollIssue) && (
+                <p className="text-xs text-destructive">{webhookIssue ?? pollIssue}</p>
+              )}
               {error && <p className="text-sm text-destructive">{error}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setKind(null)}>
@@ -787,9 +1023,13 @@ function EditTriggerDialog({
   const [webhook, setWebhook] = useState<WebhookFormState>(() =>
     trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
   );
+  const [poll, setPoll] = useState<PollFormState>(() =>
+    trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
+  );
   const [error, setError] = useState<string | null>(null);
   const cronIssue = trigger.kind === "schedule" && !oneShotAt ? cronProblem(cron) : null;
   const webhookIssue = trigger.kind === "webhook" ? webhookFormProblem(webhook) : null;
+  const pollIssue = trigger.kind === "poll" ? pollFormProblem(poll) : null;
   const save = useMutation({
     mutationFn: () =>
       api(
@@ -801,7 +1041,9 @@ function EditTriggerDialog({
                 ? { at: oneShotAt, timezone: "UTC", summary: summary.trim() }
                 : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
             }
-          : webhookPayload(webhook),
+          : trigger.kind === "poll"
+            ? pollPayload(poll)
+            : webhookPayload(webhook),
       ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] });
@@ -813,17 +1055,21 @@ function EditTriggerDialog({
   const incomplete =
     trigger.kind === "schedule"
       ? (!oneShotAt && (!cron.trim() || cronIssue !== null)) || !summary.trim()
-      : webhookIssue !== null;
+      : trigger.kind === "poll"
+        ? pollIssue !== null
+        : webhookIssue !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>Edit {trigger.kind === "schedule" ? "schedule" : "webhook"}</DialogTitle>
+          <DialogTitle>Edit {trigger.kind}</DialogTitle>
           <DialogDescription>
             {trigger.kind === "schedule"
               ? "Changes reconcile to the Temporal Schedule immediately; the next fire uses them."
-              : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
+              : trigger.kind === "poll"
+                ? "Spec changes reset the cursor: the next fire re-baselines against the source."
+                : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -881,12 +1127,16 @@ function EditTriggerDialog({
                   />
                 </Field>
               </>
+            ) : trigger.kind === "poll" ? (
+              <PollFields form={poll} setForm={setPoll} />
             ) : (
               <WebhookFields form={webhook} setForm={setWebhook} />
             )}
           </div>
           <div className="grid gap-2 border-t p-4">
-            {webhookIssue && <p className="text-xs text-destructive">{webhookIssue}</p>}
+            {(webhookIssue ?? pollIssue) && (
+              <p className="text-xs text-destructive">{webhookIssue ?? pollIssue}</p>
+            )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

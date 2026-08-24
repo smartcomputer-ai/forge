@@ -1177,6 +1177,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
 
   it("reconciles schedules and fires them through the admission activity", async () => {
     const admissions: unknown[] = [];
+    const polls: unknown[] = [];
     const workflowWorker = await Worker.create({
       connection: env.nativeConnection,
       namespace: env.namespace ?? "default",
@@ -1192,6 +1193,10 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           admissions.push(input);
           return { admitted: true, eventId: "schedule:test", duplicate: false };
         },
+        pollBotTrigger: async (input: unknown) => {
+          polls.push(input);
+          return { polled: true, baselined: true, admitted: 0, filtered: 0 };
+        },
       },
     });
     const workflowRun = workflowWorker.run();
@@ -1200,6 +1205,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     const spec: BotScheduleSpec = {
       universeId,
       botId,
+      fire: "schedule",
       botName: "scheduled",
       triggerId: "3fbc2b1e-0f6f-4a83-b0d6-92c07d4d1333",
       triggerName: "nightly",
@@ -1234,6 +1240,33 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await deleteBotSchedule(env.client, universeId, spec.botName, spec.triggerName);
       // Deleting an absent schedule stays a no-op.
       await deleteBotSchedule(env.client, universeId, spec.botName, spec.triggerName);
+
+      // Poll triggers ride the same schedule machinery with an interval
+      // spec and their own fire workflow + activity.
+      const pollSpec: BotScheduleSpec = {
+        universeId,
+        botId,
+        fire: "poll",
+        botName: "scheduled",
+        triggerId: "7abc2b1e-0f6f-4a83-b0d6-92c07d4d1444",
+        triggerName: "feed",
+        intervalMs: 300_000,
+        paused: false,
+      };
+      await upsertBotSchedule(env.client, pollSpec);
+      const pollHandle = env.client.schedule.getHandle(
+        botScheduleId(universeId, pollSpec.botName, pollSpec.triggerName),
+      );
+      await pollHandle.trigger();
+      await eventually(
+        () => Promise.resolve(polls.length),
+        (count) => count === 1,
+      );
+      const poll = polls[0] as { botId: string; triggerId: string; scheduledAt: string };
+      expect(poll.botId).toBe(botId);
+      expect(poll.triggerId).toBe(pollSpec.triggerId);
+      expect(new Date(poll.scheduledAt).getTime()).not.toBeNaN();
+      await deleteBotSchedule(env.client, universeId, pollSpec.botName, pollSpec.triggerName);
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

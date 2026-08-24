@@ -4,6 +4,7 @@ import { createDb } from "@lightspeed/platform-db";
 import {
   createBotControlPlaneActivities,
   createBotLightspeedActivities,
+  createBotPollActivities,
   createBotScheduleActivities,
   createBotToolActivities,
 } from "../activities/index.js";
@@ -36,6 +37,7 @@ const worker = await Worker.create({
     ...createBotLightspeedActivities({ endpoint }),
     ...createBotControlPlaneActivities(database.db),
     ...createBotScheduleActivities({ db: database.db, endpoint, temporal }),
+    ...createBotPollActivities({ db: database.db, endpoint, temporal }),
     ...createBotToolActivities({
       db: database.db,
       endpoint,

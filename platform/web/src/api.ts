@@ -582,6 +582,25 @@ export interface BotWebhookSpec {
   preset?: "github" | null;
 }
 
+export type BotPollSource =
+  | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+  | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+
+export interface BotPollSpec {
+  source: BotPollSource;
+  intervalMs: number;
+  items: string | null;
+  cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
+}
+
+export interface BotPollCursorState {
+  ids?: string[];
+  watermark?: string | number;
+  consecutiveFailures: number;
+  baselinedAt?: string;
+  lastPolledAt?: string;
+}
+
 export type BotRoute =
   | { policy: "bot" }
   | { policy: "perKey"; key?: string | null }
@@ -597,12 +616,14 @@ export interface BotTrigger {
   id: string;
   botId: string;
   name: string;
-  kind: "schedule" | "webhook";
-  spec: BotScheduleSpec | BotWebhookSpec;
+  kind: "schedule" | "webhook" | "poll";
+  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec;
   filter: string | null;
   route: BotRoute | null;
   coalesce: BotCoalesce | null;
   deliver: { whenBusy: "queue" | "steer" | "append" } | null;
+  /** Poll kind only: the advancing cursor; null until the baseline poll. */
+  cursor?: BotPollCursorState | null;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

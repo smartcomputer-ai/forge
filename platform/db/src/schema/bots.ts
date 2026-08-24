@@ -72,7 +72,24 @@ export type BotWebhookTriggerSpec = {
     | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
   preset?: "github" | null;
 };
-export type BotTriggerSpec = BotScheduleTriggerSpec | BotWebhookTriggerSpec;
+export type BotPollTriggerSpec = {
+  source:
+    | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+    | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+  intervalMs: number;
+  items?: string | null;
+  cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
+};
+export type BotTriggerSpec = BotScheduleTriggerSpec | BotWebhookTriggerSpec | BotPollTriggerSpec;
+
+/** Poll cursor state: Lightspeed-owned, operator-visible, resettable. */
+export type BotPollCursorState = {
+  ids?: string[];
+  watermark?: string | number;
+  consecutiveFailures: number;
+  baselinedAt?: string;
+  lastPolledAt?: string;
+};
 export type BotTriggerRoute =
   | { policy: "bot" }
   | { policy: "perKey"; key?: string | null }
@@ -92,7 +109,7 @@ export const botTriggers = pgTable(
       .notNull()
       .references(() => bots.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["schedule", "webhook"] }).notNull(),
+    kind: text("kind", { enum: ["schedule", "webhook", "poll"] }).notNull(),
     /** Per-kind configuration document. */
     spec: jsonb("spec").$type<BotTriggerSpec>().notNull(),
     /** CEL over {event, data, headers}; non-matching events archive instead of delivering. */
@@ -107,6 +124,8 @@ export const botTriggers = pgTable(
     }>(),
     /** Delivery policy when the target session has an active run. */
     deliver: jsonb("deliver").$type<{ whenBusy: "queue" | "steer" | "append" }>(),
+    /** Poll kind only: the advancing cursor; null until the baseline poll. */
+    cursor: jsonb("cursor").$type<BotPollCursorState>(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

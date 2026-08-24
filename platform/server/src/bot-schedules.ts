@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { schema } from "@lightspeed/platform-db";
 import { scheduleSpecFor } from "@lightspeed/bots/config";
 import { upsertBotSchedule } from "@lightspeed/bots/schedules";
@@ -23,7 +23,7 @@ export async function reconcileAllBotSchedules(ctx: Pick<AppContext, "db">): Pro
     .from(schema.botTriggers)
     .innerJoin(schema.bots, eq(schema.botTriggers.botId, schema.bots.id))
     .innerJoin(schema.universes, eq(schema.bots.universeId, schema.universes.id))
-    .where(eq(schema.botTriggers.kind, "schedule"));
+    .where(inArray(schema.botTriggers.kind, ["schedule", "poll"]));
   if (rows.length === 0) return;
   const temporal = await getTemporal();
   for (const row of rows) {

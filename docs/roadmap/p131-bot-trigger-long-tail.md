@@ -23,7 +23,22 @@ five independently shippable workstreams.
 
 ## Workstreams
 
-### 1. The `poll` primitive (L0) — recommended first
+### 1. The `poll` primitive (L0) — IMPLEMENTED 2026-08-24
+
+Shipped end to end on the `bots` branch: trigger `kind: "poll"` with
+`source: http | exec`, `intervalMs` (min 60s), optional `items` dot-path,
+and `cursor: idSet | watermark`; realized as a Temporal Schedule (interval
+spec, overlap SKIP) firing `botPollFireWorkflowV1` → `pollBotTrigger`
+activity (fetch or environment job with typed not-ready retries → diff
+against the row-owned cursor → per-item admission with filters, routing,
+coalescing, `#N` + rendered prompts). Baseline-on-enable delivers nothing;
+per-fire cap 100 with `poll_truncated`; consecutive-failure auto-disable
+(10) plus the shared flood breaker; spec edits reset the cursor; filtered
+poll items advance the cursor without being archived (deliberate volume
+choice, counted per fire). Self-config via `bot_trigger_put` (http source),
+UI form (http), API/exec via trigger CRUD. Migration
+`0002_bot_poll_triggers` (post-squash journal), platform schema revision 3.
+Original sketch follows:
 
 A third trigger kind beside `schedule` and `webhook`: call an HTTP source on
 an interval and admit what changed.

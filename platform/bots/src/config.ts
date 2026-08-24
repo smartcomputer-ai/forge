@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { parse } from "cel-js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
@@ -73,6 +73,32 @@ export const webhookSpecInput = z.object({
   verification: webhookVerificationInput.default({ scheme: "token" }),
   preset: z.enum(["github"]).nullish(),
 });
+export const pollSourceInput = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("http"),
+    url: z.string().trim().url().max(2_000).refine((value) => /^https?:/.test(value), "http(s) only"),
+    method: z.enum(["GET", "POST"]).optional(),
+    headers: z.record(z.string().max(200), z.string().max(2_000)).optional(),
+    body: z.string().max(100_000).optional(),
+  }),
+  z.object({
+    kind: z.literal("exec"),
+    environmentId: z.string().trim().min(1).max(300),
+    argv: z.array(z.string().min(1).max(10_000)).min(1).max(64),
+    cwd: z.string().trim().min(1).max(2_000).nullish(),
+    timeoutMs: z.number().int().min(1_000).max(600_000).nullish(),
+  }),
+]);
+export const pollCursorInput = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("idSet"), id: z.string().trim().min(1).max(500) }),
+  z.object({ kind: z.literal("watermark"), field: z.string().trim().min(1).max(500) }),
+]);
+export const pollSpecInput = z.object({
+  source: pollSourceInput,
+  intervalMs: z.number().int().min(60_000).max(604_800_000),
+  items: z.string().trim().min(1).max(500).nullish(),
+  cursor: pollCursorInput,
+});
 export const coalesceInput = z
   .object({
     debounceMs: z.number().int().min(1_000).max(604_800_000),
@@ -102,6 +128,16 @@ export const triggerCreateInput = z.discriminatedUnion("kind", [
     deliver: deliverInput.nullish(),
     enabled: z.boolean().default(true),
   }),
+  z.object({
+    name: botNameInput,
+    kind: z.literal("poll"),
+    spec: pollSpecInput,
+    filter: celInput.nullish(),
+    route: routeInput.nullish(),
+    coalesce: coalesceInput.nullish(),
+    deliver: deliverInput.nullish(),
+    enabled: z.boolean().default(true),
+  }),
 ]);
 export type TriggerCreateInput = z.infer<typeof triggerCreateInput>;
 export const triggerUpdateInput = z
@@ -125,6 +161,34 @@ type WebhookSpecRow = {
   preset: "github" | null;
 };
 type RouteRow = { policy: "bot" } | { policy: "perKey"; key: string | null } | { policy: "perEvent" };
+type PollSpecRow = {
+  source:
+    | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+    | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+  intervalMs: number;
+  items: string | null;
+  cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
+};
+
+function normalizePollSpec(spec: z.infer<typeof pollSpecInput>): PollSpecRow {
+  const source =
+    spec.source.kind === "http"
+      ? {
+          kind: "http" as const,
+          url: spec.source.url,
+          ...(spec.source.method === undefined ? {} : { method: spec.source.method }),
+          ...(spec.source.headers === undefined ? {} : { headers: spec.source.headers }),
+          ...(spec.source.body === undefined ? {} : { body: spec.source.body }),
+        }
+      : {
+          kind: "exec" as const,
+          environmentId: spec.source.environmentId,
+          argv: spec.source.argv,
+          cwd: spec.source.cwd ?? null,
+          timeoutMs: spec.source.timeoutMs ?? null,
+        };
+  return { source, intervalMs: spec.intervalMs, items: spec.items ?? null, cursor: spec.cursor };
+}
 
 /// Zod outputs carry `undefined` for omitted optionals; the row types do not.
 function normalizeScheduleSpec(spec: z.infer<typeof scheduleSpecInput>): ScheduleSpecRow {
@@ -167,18 +231,31 @@ export class BotConfigError extends Error {
 }
 
 export function scheduleSpecFor(bot: BotRow, trigger: BotTriggerRow, universeId: string): BotScheduleSpec {
-  const spec = trigger.spec as { cron?: string | null; at?: string | null; timezone: string };
-  return {
+  const base = {
     universeId,
     botId: bot.id,
     botName: bot.name,
     triggerId: trigger.id,
     triggerName: trigger.name,
+    paused: !(bot.enabled && trigger.enabled),
+  };
+  if (trigger.kind === "poll") {
+    const spec = trigger.spec as { intervalMs: number };
+    return { ...base, fire: "poll", intervalMs: spec.intervalMs };
+  }
+  const spec = trigger.spec as { cron?: string | null; at?: string | null; timezone: string };
+  return {
+    ...base,
+    fire: "schedule",
     cron: spec.cron ?? null,
     at: spec.at ?? null,
     timezone: spec.timezone,
-    paused: !(bot.enabled && trigger.enabled),
   };
+}
+
+/** Trigger kinds realized as a Temporal Schedule. */
+export function triggerHasSchedule(kind: string): boolean {
+  return kind === "schedule" || kind === "poll";
 }
 
 /** Path of a webhook trigger's ingest endpoint (relative to the platform origin). */
@@ -194,6 +271,20 @@ export function canManageRole(role: string): boolean {
 /// Members who cannot manage the bot still see trigger shapes, but never the
 /// ingest token or signing secret.
 export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
+  if (trigger.kind === "poll") {
+    const spec = trigger.spec as PollSpecRow;
+    if (spec.source.kind !== "http" || spec.source.headers === undefined) return trigger;
+    return {
+      ...trigger,
+      spec: {
+        ...spec,
+        source: {
+          ...spec.source,
+          headers: Object.fromEntries(Object.keys(spec.source.headers).map((name) => [name, ""])),
+        },
+      } as BotTriggerRow["spec"],
+    };
+  }
   if (trigger.kind !== "webhook") return trigger;
   const spec = trigger.spec as {
     token: string;
@@ -220,7 +311,19 @@ export async function createTrigger(
 ): Promise<BotTriggerRow> {
   const { bot, universeId, input } = args;
   const values =
-    input.kind === "schedule"
+    input.kind === "poll"
+      ? {
+          botId: bot.id,
+          name: input.name,
+          kind: input.kind,
+          spec: normalizePollSpec(input.spec),
+          filter: input.filter ?? null,
+          route: normalizeRoute(input.route),
+          coalesce: input.coalesce ?? null,
+          deliver: input.deliver ?? null,
+          enabled: input.enabled,
+        }
+      : input.kind === "schedule"
       ? {
           botId: bot.id,
           name: input.name,
@@ -249,7 +352,7 @@ export async function createTrigger(
     .onConflictDoNothing()
     .returning();
   if (!trigger) throw new BotConfigError("a trigger with that name already exists", 409);
-  if (input.kind === "schedule") {
+  if (triggerHasSchedule(input.kind)) {
     try {
       await upsertBotSchedule(deps.temporal, scheduleSpecFor(bot, trigger, universeId));
     } catch (error) {
@@ -273,7 +376,7 @@ export async function updateTrigger(
       input.deliver !== undefined)
   ) {
     throw new BotConfigError(
-      "filters, routes, coalescing, and delivery policy apply to webhook triggers",
+      "filters, routes, coalescing, and delivery policy apply to webhook and poll triggers",
       400,
     );
   }
@@ -284,7 +387,14 @@ export async function updateTrigger(
   if (input.coalesce !== undefined) changes.coalesce = input.coalesce;
   if (input.deliver !== undefined) changes.deliver = input.deliver;
   if (input.spec !== undefined) {
-    if (existing.kind === "schedule") {
+    if (existing.kind === "poll") {
+      const parsed = pollSpecInput.safeParse(input.spec);
+      if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
+      // A spec edit resets the cursor: the next fire re-baselines against
+      // the (possibly different) source instead of misapplying old state.
+      changes.spec = normalizePollSpec(parsed.data);
+      changes.cursor = null;
+    } else if (existing.kind === "schedule") {
       const parsed = scheduleSpecInput.safeParse(input.spec);
       if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
       changes.spec = normalizeScheduleSpec(parsed.data);
@@ -302,7 +412,7 @@ export async function updateTrigger(
     .where(eq(schema.botTriggers.id, existing.id))
     .returning();
   if (!trigger) throw new BotConfigError("not found", 404);
-  if (existing.kind === "schedule") {
+  if (triggerHasSchedule(existing.kind)) {
     try {
       await upsertBotSchedule(deps.temporal, scheduleSpecFor(bot, trigger, universeId));
     } catch (error) {
@@ -324,7 +434,7 @@ export async function deleteTrigger(
   args: { bot: BotRow; universeId: string; existing: BotTriggerRow },
 ): Promise<void> {
   const { bot, universeId, existing } = args;
-  if (existing.kind === "schedule") {
+  if (triggerHasSchedule(existing.kind)) {
     try {
       await deleteBotSchedule(deps.temporal, universeId, bot.name, existing.name);
     } catch (error) {
@@ -358,7 +468,7 @@ export async function reconcileBotSchedules(
   const triggers = await deps.db
     .select()
     .from(schema.botTriggers)
-    .where(and(eq(schema.botTriggers.botId, bot.id), eq(schema.botTriggers.kind, "schedule")));
+    .where(and(eq(schema.botTriggers.botId, bot.id), inArray(schema.botTriggers.kind, ["schedule", "poll"])));
   for (const trigger of triggers) {
     await upsertBotSchedule(deps.temporal, scheduleSpecFor(bot, trigger, universeId));
   }

@@ -6,9 +6,11 @@ import {
   type ScheduleOptionsAction,
 } from "@temporalio/client";
 import {
+  BOT_POLL_FIRE_WORKFLOW,
   BOT_SCHEDULE_FIRE_WORKFLOW,
   BOTS_WORKFLOW_TASK_QUEUE,
   botScheduleId,
+  type BotPollFireInputV1,
   type BotScheduleFireInputV1,
 } from "./contracts/bots.js";
 
@@ -25,11 +27,15 @@ export interface BotScheduleSpec {
   botName: string;
   triggerId: string;
   triggerName: string;
-  /** Classic cron; exclusive with `at`. */
+  /** Which fire workflow the schedule starts. */
+  fire: "schedule" | "poll";
+  /** Classic cron; exclusive with `at` (fire: schedule). */
   cron?: string | null;
   /** One-shot ISO-8601 instant, expressed as a single calendar spec. */
   at?: string | null;
-  timezone: string;
+  timezone?: string;
+  /** Poll interval (fire: poll). */
+  intervalMs?: number;
   paused: boolean;
 }
 
@@ -49,6 +55,10 @@ const MONTHS = [
 ] as const;
 
 function scheduleSpecOf(spec: BotScheduleSpec) {
+  if (spec.fire === "poll") {
+    if (!spec.intervalMs || spec.intervalMs < 1_000) throw new TypeError("poll needs intervalMs");
+    return { intervals: [{ every: spec.intervalMs }] };
+  }
   if (spec.at) {
     const when = new Date(spec.at);
     if (Number.isNaN(when.getTime())) throw new TypeError("invalid one-shot instant");
@@ -68,7 +78,7 @@ function scheduleSpecOf(spec: BotScheduleSpec) {
     };
   }
   if (!spec.cron) throw new TypeError("schedule needs cron or at");
-  return { cronExpressions: [spec.cron], timezone: spec.timezone };
+  return { cronExpressions: [spec.cron], timezone: spec.timezone ?? "UTC" };
 }
 
 /** Create or update the Temporal Schedule for one schedule trigger. */
@@ -133,14 +143,14 @@ export async function deleteBotSchedule(
 }
 
 function fireAction(spec: BotScheduleSpec): ScheduleOptionsAction {
-  const input: BotScheduleFireInputV1 = {
+  const input: BotScheduleFireInputV1 | BotPollFireInputV1 = {
     version: 1,
     botId: spec.botId,
     triggerId: spec.triggerId,
   };
   return {
     type: "startWorkflow",
-    workflowType: BOT_SCHEDULE_FIRE_WORKFLOW,
+    workflowType: spec.fire === "poll" ? BOT_POLL_FIRE_WORKFLOW : BOT_SCHEDULE_FIRE_WORKFLOW,
     args: [input],
     taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
   };

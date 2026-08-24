@@ -6,7 +6,7 @@ import {
   isBotSessionDeclarationMismatch,
   steerInputItems,
 } from "../src/activities/lightspeed.js";
-import { BotConfigError, scheduleSpecInput, triggerCreateInput } from "../src/config.js";
+import { BotConfigError, pollSpecInput, scheduleSpecInput, triggerCreateInput } from "../src/config.js";
 import {
   BOT_EMIT_TOOL_ID,
   BOT_EVENT_RESOLVE_TOOL_ID,
@@ -247,6 +247,72 @@ describe("cel save-time validation", () => {
     expect(
       triggerCreateInput.safeParse(webhook({ route: { policy: "perKey", key: "data..x" } }))
         .success,
+    ).toBe(false);
+  });
+});
+
+describe("poll trigger mapping and validation", () => {
+  it("maps a poll trigger with id-set dedupe and delivery policy", () => {
+    const flat = parseTriggerPutArgs({
+      name: "issues",
+      kind: "poll",
+      url: "https://api.example.com/issues",
+      intervalMs: 300_000,
+      items: "data.issues",
+      cursorId: "id",
+      whenBusy: "steer",
+      filter: "data.state == \"open\"",
+    });
+    const parsed = triggerCreateInput.parse(flat.create);
+    expect(parsed).toMatchObject({
+      name: "issues",
+      kind: "poll",
+      spec: {
+        source: { kind: "http", url: "https://api.example.com/issues" },
+        intervalMs: 300_000,
+        items: "data.issues",
+        cursor: { kind: "idSet", id: "id" },
+      },
+      deliver: { whenBusy: "steer" },
+    });
+  });
+
+  it("requires exactly one dedupe discipline and a sane interval", () => {
+    expect(() =>
+      parseTriggerPutArgs({ name: "x", kind: "poll", url: "https://a", intervalMs: 60_000 }),
+    ).toThrow(BotConfigError);
+    expect(() =>
+      parseTriggerPutArgs({
+        name: "x",
+        kind: "poll",
+        url: "https://a",
+        intervalMs: 60_000,
+        cursorId: "id",
+        watermarkField: "updatedAt",
+      }),
+    ).toThrow(BotConfigError);
+    // The zod layer rejects sub-minute intervals and non-http sources.
+    const flat = parseTriggerPutArgs({
+      name: "x",
+      kind: "poll",
+      url: "https://a.example.com/feed",
+      intervalMs: 5_000,
+      cursorId: "id",
+    });
+    expect(triggerCreateInput.safeParse(flat.create).success).toBe(false);
+    expect(
+      pollSpecInput.safeParse({
+        source: { kind: "exec", environmentId: "environment_1", argv: ["./check.sh"] },
+        intervalMs: 120_000,
+        cursor: { kind: "watermark", field: "updatedAt" },
+      }).success,
+    ).toBe(true);
+    expect(
+      pollSpecInput.safeParse({
+        source: { kind: "http", url: "ftp://nope" },
+        intervalMs: 120_000,
+        cursor: { kind: "idSet", id: "id" },
+      }).success,
     ).toBe(false);
   });
 });

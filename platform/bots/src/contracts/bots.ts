@@ -8,6 +8,7 @@ import type {
 
 export const BOT_CONTROLLER_WORKFLOW = "botControllerWorkflowV1";
 export const BOT_SCHEDULE_FIRE_WORKFLOW = "botScheduleFireWorkflowV1";
+export const BOT_POLL_FIRE_WORKFLOW = "botPollFireWorkflowV1";
 export const BOTS_WORKFLOW_TASK_QUEUE = "lightspeed-bots-workflows-v1";
 export const BOTS_ACTIVITY_TASK_QUEUE = "lightspeed-bots-activities-v1";
 export const BOT_EVENT_SIGNAL = "bot_event_v1";
@@ -29,7 +30,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 6;
+export const BOT_TOOLS_REVISION = 7;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -62,7 +63,7 @@ export interface BotStartV1 {
   enabled: boolean;
 }
 
-export type BotTriggerKind = "schedule" | "webhook";
+export type BotTriggerKind = "schedule" | "webhook" | "poll";
 
 export interface ScheduleTriggerSpecV1 {
   /** Classic 5-field cron or @-macro; exclusive with `at`. */
@@ -85,7 +86,33 @@ export interface WebhookTriggerSpecV1 {
   preset?: "github" | null;
 }
 
-export type BotTriggerSpecV1 = ScheduleTriggerSpecV1 | WebhookTriggerSpecV1;
+/** How a poll trigger reaches its source. */
+export type BotPollSourceV1 =
+  | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+  | {
+      kind: "exec";
+      /** Universe environment the command runs in (woken on use). */
+      environmentId: string;
+      argv: string[];
+      cwd?: string | null;
+      /** Job wall-clock budget; also bounds the fire activity's wait. */
+      timeoutMs?: number | null;
+    };
+
+/** Dedupe discipline: id-set for unordered feeds, watermark for ordered. */
+export type BotPollCursorSpecV1 =
+  | { kind: "idSet"; id: string }
+  | { kind: "watermark"; field: string };
+
+export interface PollTriggerSpecV1 {
+  source: BotPollSourceV1;
+  intervalMs: number;
+  /** Dot-path to the item array in the payload; absent = payload is the item list (or one item). */
+  items?: string | null;
+  cursor: BotPollCursorSpecV1;
+}
+
+export type BotTriggerSpecV1 = ScheduleTriggerSpecV1 | WebhookTriggerSpecV1 | PollTriggerSpecV1;
 
 /** Session routing for a trigger's events; absent means the main session. */
 export type BotRouteV1 =
@@ -253,6 +280,23 @@ export interface BotScheduleFireInputV1 {
   triggerId: string;
 }
 
+/** Start argument for the poll fire workflow; config is re-read from the record. */
+export interface BotPollFireInputV1 {
+  version: 1;
+  botId: string;
+  triggerId: string;
+}
+
+/**
+ * Deterministic identity for one polled item: retried fires and overlapping
+ * polls converge on one envelope per item.
+ */
+export function botPollEventId(triggerId: string, itemKey: string): string {
+  if (!triggerId) throw new TypeError("triggerId is required");
+  if (!itemKey) throw new TypeError("itemKey is required");
+  return `poll:${triggerId}:${digest(itemKey).slice(0, 32)}`;
+}
+
 /**
  * Deterministic dedupe identity for one schedule fire: retries and duplicate
  * fires of the same nominal time converge on one envelope.
@@ -281,7 +325,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   status:
     "Inspect this bot's state: enabled flag, run budget, sessions, coalescing buffers, active and recent deliveries.",
   triggerPut:
-    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender. Filters and route keys are CEL over event, data, headers.",
+    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks url every intervalMs and delivers new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). Filters and route keys are CEL over event, data, headers.",
   triggerDelete: "Delete one of this bot's triggers by name.",
   triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
@@ -314,7 +358,7 @@ export const BOT_TOOL_SCHEMAS = {
     type: "object",
     properties: {
       name: { type: "string", minLength: 1 },
-      kind: { type: "string", enum: ["schedule", "webhook"] },
+      kind: { type: "string", enum: ["schedule", "webhook", "poll"] },
       cron: {
         type: ["string", "null"],
         description: "5-field cron expression (schedule kind); exclusive with at",
@@ -356,6 +400,24 @@ export const BOT_TOOL_SCHEMAS = {
       },
       maxCount: NULLABLE_INTEGER,
       whenBusy: { type: ["string", "null"], enum: ["queue", "steer", "append", null] },
+      url: { type: ["string", "null"], description: "Poll kind: HTTP(S) source fetched every intervalMs" },
+      intervalMs: {
+        type: ["integer", "null"],
+        description: "Poll kind: fetch interval; minimum 60000",
+      },
+      items: {
+        type: ["string", "null"],
+        description: "Poll kind: dot-path to the item array in the response, e.g. data.issues",
+      },
+      cursorId: {
+        type: ["string", "null"],
+        description: "Poll kind: dot-path to each item's id (id-set dedupe); exclusive with watermarkField",
+      },
+      watermarkField: {
+        type: ["string", "null"],
+        description:
+          "Poll kind: dot-path to each item's monotonically increasing field (ordered feeds); exclusive with cursorId",
+      },
       enabled: { type: ["boolean", "null"] },
     },
     required: ["name", "kind"],

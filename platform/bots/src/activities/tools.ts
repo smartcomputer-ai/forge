@@ -544,10 +544,35 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
 } {
   const name = requireString(args.name, "name");
   const kind = args.kind;
-  if (kind !== "schedule" && kind !== "webhook") {
-    throw new BotConfigError("kind must be schedule or webhook", 400);
+  if (kind !== "schedule" && kind !== "webhook" && kind !== "poll") {
+    throw new BotConfigError("kind must be schedule, webhook, or poll", 400);
   }
   const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
+  if (kind === "poll") {
+    const url = requireString(args.url, "url");
+    const intervalMs = nullableInteger(args.intervalMs);
+    if (intervalMs === null) throw new BotConfigError("intervalMs is required for poll triggers", 400);
+    const cursorId = nullableString(args.cursorId);
+    const watermarkField = nullableString(args.watermarkField);
+    if ((cursorId === null) === (watermarkField === null)) {
+      throw new BotConfigError("set exactly one of cursorId or watermarkField", 400);
+    }
+    const spec = {
+      source: { kind: "http", url },
+      intervalMs,
+      items: nullableString(args.items),
+      cursor:
+        cursorId !== null
+          ? { kind: "idSet", id: cursorId }
+          : { kind: "watermark", field: watermarkField },
+    };
+    const common = pollWebhookCommon(args, enabled);
+    return {
+      name,
+      create: { name, kind, spec, ...common },
+      update: { spec, ...common },
+    };
+  }
   if (kind === "schedule") {
     const spec = {
       cron: nullableString(args.cron),
@@ -580,6 +605,19 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
   } else {
     verificationInput = { scheme: "token" };
   }
+  const common = pollWebhookCommon(args, enabled);
+  return {
+    name,
+    create: { name, kind, spec: { verification: verificationInput, preset }, ...common },
+    update: { spec: { verification: verificationInput, preset }, ...common },
+  };
+}
+
+/** Filter/route/coalesce/deliver fields shared by webhook and poll kinds. */
+function pollWebhookCommon(
+  args: Record<string, unknown>,
+  enabled: boolean | undefined,
+): Record<string, unknown> {
   const routePolicy = nullableString(args.routePolicy);
   const route =
     routePolicy === "perKey"
@@ -599,12 +637,7 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
   const whenBusy = nullableString(args.whenBusy);
   const deliver = whenBusy && whenBusy !== "queue" ? { whenBusy } : null;
   const filter = nullableString(args.filter);
-  const common = { filter, route, coalesce, deliver, ...(enabled === undefined ? {} : { enabled }) };
-  return {
-    name,
-    create: { name, kind, spec: { verification: verificationInput, preset }, ...common },
-    update: { spec: { verification: verificationInput, preset }, ...common },
-  };
+  return { filter, route, coalesce, deliver, ...(enabled === undefined ? {} : { enabled }) };
 }
 
 function requireString(value: unknown, label: string): string {

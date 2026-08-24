@@ -15,6 +15,13 @@
       "when": 1787575567674,
       "tag": "0001_many_lady_deathstrike",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787577219865,
+      "tag": "0002_bot_poll_triggers",
+      "breakpoints": true
     }
   ]
 }
