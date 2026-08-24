@@ -77,7 +77,18 @@
     validation with typed retryable tool errors is the contract on every
     provider. `BOT_TOOLS_REVISION` bumped to 4 (sessions rotate).
   - Replays re-render from the original stored document instead of a stub
-    summary. Not yet done: per-trigger CEL projections (tier 2 of the
+    summary.
+  - Tool-name alignment (2026-08-24): `bot_events_read` renamed to
+    `bot_event_list` (`lightspeed.bots.event.list.v1`) to match the core
+    `_list`/`_read` vocabulary (`profile_list`, `agent_list`,
+    `environment_list`); new `bot_trigger_list` returns the trigger views
+    (specs, filters, routing, ingest URLs), which moved out of
+    `bot_status` — status is now purely runtime state. Revision 5.
+  - Operator direct input (2026-08-24): the sessions-page composer gate on
+    managed sessions became an explicit override — a "Direct input" switch
+    (off by default, reset on navigation) with a warning that it bypasses
+    the manager's ingress, budget, and delivery policies. The engine always
+    admitted such runs; the gate was UI policy only. Not yet done: per-trigger CEL projections (tier 2 of the
     extraction design) — the generic renderer plus preset projection cover
     the current needs.
 - Slice 2 implemented 2026-08-20, end to end:

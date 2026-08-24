@@ -22,12 +22,13 @@ import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
   BOT_EMIT_TOOL_ID,
+  BOT_EVENT_LIST_TOOL_ID,
   BOT_EVENT_READ_TOOL_ID,
   BOT_EVENT_SIGNAL,
-  BOT_EVENTS_READ_TOOL_ID,
   BOT_FILTER_TEST_TOOL_ID,
   BOT_STATUS_TOOL_ID,
   BOT_TRIGGER_DELETE_TOOL_ID,
+  BOT_TRIGGER_LIST_TOOL_ID,
   BOT_TRIGGER_PUT_TOOL_ID,
   BOTS_WORKFLOW_TASK_QUEUE,
   botKeyedSessionId,
@@ -183,11 +184,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
 
     switch (input.toolId) {
       case BOT_STATUS_TOOL_ID: {
-        const triggers = await config.db
-          .select()
-          .from(schema.botTriggers)
-          .where(eq(schema.botTriggers.botId, bot.id))
-          .orderBy(schema.botTriggers.name);
         return {
           bot: {
             name: bot.name,
@@ -203,8 +199,15 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           sessions: input.controller.sessions,
           activeDeliveries: input.controller.activeDeliveries,
           buffers: input.controller.buffers,
-          triggers: triggers.map(triggerView),
         };
+      }
+      case BOT_TRIGGER_LIST_TOOL_ID: {
+        const triggers = await config.db
+          .select()
+          .from(schema.botTriggers)
+          .where(eq(schema.botTriggers.botId, bot.id))
+          .orderBy(schema.botTriggers.name);
+        return { triggers: triggers.map(triggerView) };
       }
       case BOT_TRIGGER_PUT_TOOL_ID: {
         const flat = parseTriggerPutArgs(args);
@@ -280,7 +283,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           results,
         };
       }
-      case BOT_EVENTS_READ_TOOL_ID: {
+      case BOT_EVENT_LIST_TOOL_ID: {
         const limit = typeof args.limit === "number" ? args.limit : 20;
         const samples = await recentEnvelopes(lightspeedUniverseId, bot.id, limit);
         return {

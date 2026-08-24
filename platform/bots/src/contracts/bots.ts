@@ -19,8 +19,9 @@ export const BOT_STATUS_TOOL_ID = "lightspeed.bots.status.v1";
 export const BOT_TRIGGER_PUT_TOOL_ID = "lightspeed.bots.trigger.put.v1";
 export const BOT_TRIGGER_DELETE_TOOL_ID = "lightspeed.bots.trigger.delete.v1";
 export const BOT_FILTER_TEST_TOOL_ID = "lightspeed.bots.filter.test.v1";
-export const BOT_EVENTS_READ_TOOL_ID = "lightspeed.bots.events.read.v1";
+export const BOT_EVENT_LIST_TOOL_ID = "lightspeed.bots.event.list.v1";
 export const BOT_EVENT_READ_TOOL_ID = "lightspeed.bots.event.read.v1";
+export const BOT_TRIGGER_LIST_TOOL_ID = "lightspeed.bots.trigger.list.v1";
 export const BOT_BRIEF_PUT_TOOL_ID = "lightspeed.bots.brief.put.v1";
 export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
 /**
@@ -28,7 +29,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 4;
+export const BOT_TOOLS_REVISION = 5;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -270,13 +271,14 @@ export const BOT_TOOL_DESCRIPTIONS = {
   eventResolve:
     "Record your decision for the delivery you are currently handling. Call exactly once per delivery (a batch gets one decision for the whole batch) with handled, deferred, ignored, or blocked and a short summary.",
   status:
-    "Inspect this bot: enabled state, run budget, sessions, configured triggers, coalescing buffers, and recent deliveries.",
+    "Inspect this bot's state: enabled flag, run budget, sessions, coalescing buffers, active and recent deliveries.",
   triggerPut:
     "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender. Filters and route keys are CEL over event, data, headers.",
   triggerDelete: "Delete one of this bot's triggers by name.",
+  triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
     "Evaluate a candidate CEL filter against recent stored events and report which would match, so filters are written against real traffic.",
-  eventsRead: "List recent events that arrived at this bot: #N, kind, source, and summary.",
+  eventList: "List recent events that arrived at this bot: #N, kind, source, and summary.",
   eventRead:
     "Read one stored event by its #N. Returns the full archived envelope (data, headers); narrow with path (e.g. data.pull_request.body) and cap size with maxBytes.",
   briefPut: "Replace this bot's standing brief (its job description). Applied to sessions at the next idle boundary.",
@@ -332,12 +334,13 @@ export const BOT_TOOL_SCHEMAS = {
     required: ["filter"],
     additionalProperties: false,
   },
-  eventsReadInput: {
+  eventListInput: {
     type: "object",
     properties: { limit: NULLABLE_INTEGER },
     required: [],
     additionalProperties: false,
   },
+  triggerListInput: { type: "object", properties: {}, required: [], additionalProperties: false },
   eventReadInput: {
     type: "object",
     properties: {
@@ -410,6 +413,13 @@ const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
     completion: "joined",
   },
   {
+    toolId: BOT_TRIGGER_LIST_TOOL_ID,
+    name: "bot_trigger_list",
+    schema: "triggerListInput",
+    description: "triggerList",
+    completion: "joined",
+  },
+  {
     toolId: BOT_FILTER_TEST_TOOL_ID,
     name: "bot_filter_test",
     schema: "filterTestInput",
@@ -418,10 +428,10 @@ const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
     strict: false,
   },
   {
-    toolId: BOT_EVENTS_READ_TOOL_ID,
-    name: "bot_events_read",
-    schema: "eventsReadInput",
-    description: "eventsRead",
+    toolId: BOT_EVENT_LIST_TOOL_ID,
+    name: "bot_event_list",
+    schema: "eventListInput",
+    description: "eventList",
     completion: "joined",
     strict: false,
   },

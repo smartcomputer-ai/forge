@@ -78,6 +78,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SessionComposer, type ComposerMode } from "@/components/session/composer";
+import { Switch } from "@/components/ui/switch";
 import {
   ActiveRunMarker,
   QueuedRunsBar,
@@ -889,6 +890,15 @@ export function SessionDetail({
   const foundryManaged =
     management?.lifecycleController?.workflowKind === "foundryPackWorkflowV1";
   const managerLabel = managedSessionOwnerLabel(management);
+  // Operator override: the engine happily admits direct runs on a managed
+  // session (they queue like any client run), so the gate here is policy,
+  // not capability. Off by default because direct input bypasses the
+  // manager's ingress; resets when the operator navigates away.
+  const managedGate = managed && !foundryManaged;
+  const [directInput, setDirectInput] = useState(false);
+  useEffect(() => {
+    setDirectInput(false);
+  }, [sessionId]);
 
   useEffect(() => {
     if (!sessionIdCopied) return;
@@ -1308,10 +1318,31 @@ export function SessionDetail({
         runActive={runActive}
         canSteer={canSteer}
         stopping={stopping}
-        disabled={closed || (managed && !foundryManaged)}
-        disabledReason={managed && !foundryManaged
-          ? `Managed by ${managerLabel} — send messages through the connected channel.`
+        disabled={closed || (managedGate && !directInput)}
+        disabledReason={managedGate && !directInput
+          ? `Managed by ${managerLabel} — flip Direct input to message this session anyway.`
           : undefined}
+        banner={managedGate && !closed ? (
+          <div className="flex min-w-0 items-center gap-2 pb-2 text-xs">
+            <Switch
+              className="shrink-0"
+              checked={directInput}
+              onCheckedChange={setDirectInput}
+              aria-label="Direct input"
+            />
+            <span className="shrink-0 font-medium">Direct input</span>
+            <span
+              className={`min-w-0 truncate ${directInput ? "text-foreground" : "text-muted-foreground"}`}
+              title={directInput
+                ? `Direct input bypasses ${managerLabel}'s ingress: messages are not tracked as events, skip its budget and delivery policies, and may interleave with its deliveries.`
+                : `Managed by ${managerLabel} — flip Direct input to message this session anyway.`}
+            >
+              {directInput
+                ? `Bypasses ${managerLabel}'s ingress: messages are not tracked as events, skip its budget and delivery policies, and may interleave with its deliveries.`
+                : `Managed by ${managerLabel} — flip to message this session anyway.`}
+            </span>
+          </div>
+        ) : undefined}
         error={sendError}
         onSend={(text, mode) => void send(text, mode)}
         onStop={() => void stop()}

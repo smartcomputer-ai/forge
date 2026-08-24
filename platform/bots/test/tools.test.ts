@@ -31,8 +31,9 @@ describe("bot tool declarations", () => {
         "triggerPutInput",
         "triggerDeleteInput",
         "filterTestInput",
-        "eventsReadInput",
+        "eventListInput",
         "eventReadInput",
+        "triggerListInput",
         "briefPutInput",
         "emitInput",
       ]) as never,
@@ -42,13 +43,14 @@ describe("bot tool declarations", () => {
         "triggerPut",
         "triggerDelete",
         "filterTest",
-        "eventsRead",
+        "eventList",
         "eventRead",
+        "triggerList",
         "briefPut",
         "emit",
       ]) as never,
     );
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
     for (const tool of tools) expect(tool.definition.revision).toBe(BOT_TOOLS_REVISION);
     const resolve = tools.find((tool) => tool.definition.toolId === BOT_EVENT_RESOLVE_TOOL_ID);
     expect(resolve?.target).toMatchObject({ type: "bound", dispatch: "pull" });
@@ -69,11 +71,12 @@ describe("bot tool declarations", () => {
         "lightspeed.bots.event.resolve.v1",
         "lightspeed.bots.status.v1",
         "lightspeed.bots.trigger.delete.v1",
+        "lightspeed.bots.trigger.list.v1",
         "lightspeed.bots.brief.put.v1",
       ]),
     );
     const joined = tools.filter((tool) => tool.completion.type === "joined");
-    expect(joined).toHaveLength(7);
+    expect(joined).toHaveLength(8);
     for (const tool of joined) {
       expect(tool.completion).toMatchObject({ deadlineAfterMs: BOT_TOOL_REPLY_DEADLINE_MS });
       expect(tool.target).toMatchObject({ dispatch: "push" });
