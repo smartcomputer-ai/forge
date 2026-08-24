@@ -57,9 +57,9 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
   try {
     await migrateDb(handle);
     await requireTable(handle.pool, "universes");
-    await requireTable(handle.pool, "foundry_releases");
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
+    await requireColumn(handle.pool, "bots", "self_emit");
   } finally {
     await handle.pool.end();
   }
@@ -73,12 +73,12 @@ async function checkUpgrade(
   try {
     await migrate(handle.db, { migrationsFolder: previousFolder });
     await requireTable(handle.pool, "universes");
-    await requireMissingTable(handle.pool, "foundry_releases");
-    await requireMissingTable(handle.pool, "bot_triggers");
+    await requireTable(handle.pool, "bot_triggers");
+    await requireMissingColumn(handle.pool, "bots", "self_emit");
     await migrateDb(handle);
-    await requireTable(handle.pool, "foundry_releases");
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
+    await requireColumn(handle.pool, "bots", "self_emit");
   } finally {
     await handle.pool.end();
   }
@@ -126,13 +126,31 @@ async function requireTable(pool: pg.Pool, table: string): Promise<void> {
   }
 }
 
-async function requireMissingTable(pool: pg.Pool, table: string): Promise<void> {
-  const result = await pool.query<{ relation: string | null }>(
-    "select to_regclass($1) as relation",
-    [`public.${table}`],
+async function requireColumn(pool: pg.Pool, table: string, column: string): Promise<void> {
+  const result = await pool.query<{ present: boolean }>(
+    `select exists (
+       select 1
+       from information_schema.columns
+       where table_schema = 'public' and table_name = $1 and column_name = $2
+     ) as present`,
+    [table, column],
   );
-  if (result.rows[0]?.relation !== null) {
-    throw new Error(`previous-release migration fixture unexpectedly contains public.${table}`);
+  if (result.rows[0]?.present !== true) {
+    throw new Error(`migration did not create public.${table}.${column}`);
+  }
+}
+
+async function requireMissingColumn(pool: pg.Pool, table: string, column: string): Promise<void> {
+  const result = await pool.query<{ present: boolean }>(
+    `select exists (
+       select 1
+       from information_schema.columns
+       where table_schema = 'public' and table_name = $1 and column_name = $2
+     ) as present`,
+    [table, column],
+  );
+  if (result.rows[0]?.present !== false) {
+    throw new Error(`previous-release migration fixture unexpectedly contains public.${table}.${column}`);
   }
 }
 

@@ -4,8 +4,8 @@ Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
 image, one Channels image startable in each supported role, the generated
 TypeScript client, API contracts, checksums, an SPDX SBOM, and a release
-manifest. Foundry is deliberately not a release artifact. A consumer should
-pin one manifest rather than selecting components separately.
+manifest. A consumer should pin one manifest rather than selecting components
+separately.
 
 ## Database migrations
 

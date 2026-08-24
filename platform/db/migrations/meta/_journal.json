@@ -5,78 +5,15 @@
     {
       "idx": 0,
       "version": "7",
-      "when": 1785264120219,
-      "tag": "0000_hard_rhino",
+      "when": 1787575562364,
+      "tag": "0000_equal_logan",
       "breakpoints": true
     },
     {
       "idx": 1,
       "version": "7",
-      "when": 1785852614973,
-      "tag": "0001_safe_red_skull",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "7",
-      "when": 1786181368443,
-      "tag": "0002_foundry_control_plane",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "7",
-      "when": 1787216364982,
-      "tag": "0003_bots_and_foundry_job_registry_drop",
-      "breakpoints": true
-    },
-    {
-      "idx": 4,
-      "version": "7",
-      "when": 1787217197505,
-      "tag": "0004_bot_triggers",
-      "breakpoints": true
-    },
-    {
-      "idx": 5,
-      "version": "7",
-      "when": 1787231099351,
-      "tag": "0005_bot_trigger_spec",
-      "breakpoints": true
-    },
-    {
-      "idx": 6,
-      "version": "7",
-      "when": 1787232108919,
-      "tag": "0006_bot_coalescing",
-      "breakpoints": true
-    },
-    {
-      "idx": 7,
-      "version": "7",
-      "when": 1787463967220,
-      "tag": "0007_bot_session_retention",
-      "breakpoints": true
-    },
-    {
-      "idx": 8,
-      "version": "7",
-      "when": 1787556842330,
-      "tag": "0008_bot_event_seq",
-      "breakpoints": true
-    },
-    {
-      "idx": 9,
-      "version": "7",
-      "when": 1787561092341,
-      "tag": "0009_bot_self_config",
-      "breakpoints": true
-    },
-    {
-      "idx": 10,
-      "version": "7",
-      "when": 1787562468808,
-      "tag": "0010_bot_self_emit",
+      "when": 1787575567674,
+      "tag": "0001_many_lady_deathstrike",
       "breakpoints": true
     }
   ]

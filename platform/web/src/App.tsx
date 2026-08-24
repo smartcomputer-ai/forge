@@ -11,8 +11,6 @@ import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProviders
 import { BotsPage } from "@/pages/BotsPage";
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
-import { FoundryPage } from "@/pages/FoundryPage";
-import { FOUNDRY_ENABLED } from "@/lib/features";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
 import { LoginPage } from "@/pages/LoginPage";
@@ -100,12 +98,6 @@ export function App() {
         />
         <Route path="u/:slug/bots" element={<BotsPage admin={admin} />} />
         <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} />} />
-        {FOUNDRY_ENABLED && (
-          <>
-            <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
-            <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
-          </>
-        )}
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"

@@ -19,10 +19,6 @@ import {
 } from "@lightspeed/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import { slugify, workspaceCreateSchema } from "@lightspeed/platform-shared";
-import {
-  FOUNDRY_PACK_WORKFLOW,
-  foundryDirectTerminalToken,
-} from "@lightspeed/foundry/contracts";
 import type { AppContext, ApiVariables } from "../context.js";
 import { parseBody } from "../http.js";
 import {
@@ -628,18 +624,10 @@ export function gatewayRoutes(ctx: AppContext) {
     const input = body.data;
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
-      const session = (await client.call("session/read", {
-        sessionId: c.req.param("sessionId"),
-      })).result.session;
-      const foundryManaged =
-        session.management?.lifecycleController?.workflowKind === FOUNDRY_PACK_WORKFLOW;
       const response = await client.call("session/runs/start", {
         sessionId: c.req.param("sessionId"),
         source: { type: "input" as const, items: [{ type: "text" as const, text: input.text }] },
         submissionId: input.submissionId,
-        ...(foundryManaged
-          ? { notifyOnTerminal: { token: foundryDirectTerminalToken(input.submissionId) } }
-          : {}),
       });
       const run = response.result.run;
       return c.json({ run: { id: run.id, status: run.status } });

@@ -887,14 +887,12 @@ export function SessionDetail({
   const closed = session.data?.status === "closed";
   const management = session.data?.management;
   const managed = session.data?.managed === true;
-  const foundryManaged =
-    management?.lifecycleController?.workflowKind === "foundryPackWorkflowV1";
   const managerLabel = managedSessionOwnerLabel(management);
   // Operator override: the engine happily admits direct runs on a managed
   // session (they queue like any client run), so the gate here is policy,
   // not capability. Off by default because direct input bypasses the
   // manager's ingress; resets when the operator navigates away.
-  const managedGate = managed && !foundryManaged;
+  const managedGate = managed;
   const [directInput, setDirectInput] = useState(false);
   useEffect(() => {
     setDirectInput(false);
@@ -1090,20 +1088,14 @@ export function SessionDetail({
         {managed && (
           <Tooltip>
             <TooltipTrigger
-              render={
-                foundryManaged
-                  ? <span />
-                  : <button type="button" onClick={() => setSettingsOpen(true)} />
-              }
+              render={<button type="button" onClick={() => setSettingsOpen(true)} />}
             >
               <Badge variant="secondary" className="gap-1">
                 <ShieldCheck /> Managed by {managerLabel}
               </Badge>
             </TooltipTrigger>
             <TooltipContent>
-              {foundryManaged
-                ? "Foundry owns lifecycle and event delivery; operators can chat with this manager directly."
-                : `Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
+              {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
             </TooltipContent>
           </Tooltip>
         )}
@@ -1214,16 +1206,14 @@ export function SessionDetail({
               </AlertDialogContent>
             </AlertDialog>
           )}
-          {!foundryManaged && (
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Session settings"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <SlidersHorizontal />
-            </Button>
-          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Session settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SlidersHorizontal />
+          </Button>
         </div>
         {activeRun && !activeToolGroup && (
           <span className="shrink-0 text-xs text-muted-foreground">{activeRun.label}…</span>

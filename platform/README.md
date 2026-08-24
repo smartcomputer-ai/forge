@@ -16,9 +16,6 @@ run Node commands from there.
 - `channels/` — Temporal-managed Telegram and optional WhatsApp channel roles.
 - `configurator-mcp/` — generated Streamable HTTP MCP facade over the
   universe-scoped Lightspeed API.
-- `foundry/` — mechanically imported compatibility code. Foundry is not a
-  supported P124 release component and receives no new architecture work until
-  its product future is decided.
 - `scripts/` — platform process orchestration, the stub gateway, and generated
   profile configuration reference.
 
@@ -94,5 +91,4 @@ npm run test:integration:channels
 Release construction stages one platform runtime and one Channels runtime.
 The Channels image includes every role and connector dependency and is started
 as `workflows`, `activities`, `telegram`, `whatsapp`, or `all`. The P123
-manifest records one digest for each image. Foundry has no independent release
-image.
+manifest records one digest for each image.

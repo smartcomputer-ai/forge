@@ -5,7 +5,6 @@ import { bindingRoutes } from "./routes/bindings.js";
 import { botHookRoutes } from "./routes/bot-hooks.js";
 import { botRoutes } from "./routes/bots.js";
 import { channelAccountRoutes } from "./routes/channel-accounts.js";
-import { foundryRoutes } from "./routes/foundry.js";
 import { environmentOperatorRoutes } from "./routes/environment-operators.js";
 import { gatewayRoutes } from "./routes/gateway.js";
 import { setupRoutes } from "./routes/setups.js";
@@ -67,16 +66,13 @@ export function buildApp(ctx: AppContext) {
   });
 
   const bindings = bindingRoutes(ctx);
-  const foundry = foundryRoutes(ctx);
   const botsApi = botRoutes(ctx);
   api.route("/universes", universeRoutes(ctx));
   api.route("/universes", setupRoutes(ctx));
   api.route("/universes", bindings.byUniverse);
   api.route("/universes", gatewayRoutes(ctx));
-  api.route("/universes", foundry.byUniverse);
   api.route("/universes", botsApi.byUniverse);
   api.route("/bindings", bindings.byId);
-  api.route("/foundry/packs", foundry.packs);
   api.route("/bots", botsApi.byId);
   api.route("/admin", environmentOperatorRoutes(ctx));
   api.route("/channel-accounts", channelAccountRoutes(ctx));

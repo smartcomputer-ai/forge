@@ -19,6 +19,10 @@
   core. See "Refinement: the template objection". Bot federation
   (bot→bot events and cross-bot configuration) goes to the roadmap at the
   platform tier.
+- 2026-08-24: Foundry retirement implemented as the first C′ slice: package,
+  workers, routes, gateway exception, UI/CLI surface, release staging, and
+  packs/releases storage removed. Fleet removal and the delegation kernel
+  remain follow-up work.
 
 ## The two concepts
 

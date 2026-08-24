@@ -265,20 +265,6 @@ endpoint.
 | `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
 | `LIGHTSPEED_PLATFORM_BASE_URL` | Optional | Public platform origin; when set, bot tools return absolute webhook ingest URLs instead of paths. |
 
-## Foundry candidate
-
-Foundry is mechanically preserved but is not a supported release component.
-These variables exist only for its current development workers.
-
-| Variable | Requirement/default | Purpose |
-| --- | --- | --- |
-| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
-| `FOUNDRY_WORKFLOW_TASK_QUEUE` | `lightspeed-foundry-workflows-v1` | Foundry workflow queue override. |
-| `FOUNDRY_ACTIVITY_TASK_QUEUE` | `lightspeed-foundry-activities-v1` | Foundry activity queue override. |
-| `LIGHTSPEED_ENDPOINT` | **Required by the activity worker** | Lightspeed JSON-RPC endpoint. |
-| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
-
 ## Local development
 
 `./dev.sh` and the helpers under `scripts/dev/` provide development-only defaults.
@@ -353,7 +339,6 @@ fixtures. Ordinary unit tests do not require them.
 | `LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL` | Scratch PostgreSQL URL used by the Platform empty-install and upgrade migration test. |
 | `LIGHTSPEED_CHANNELS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Channels Temporal integration suite. |
 | `LIGHTSPEED_CHANNELS_DELIVERY_TASK_QUEUE` | Required only by the Channels fake delivery worker used in integration tests. |
-| `FOUNDRY_TEMPORAL_INTEGRATION` | Set to `1` to enable the unsupported Foundry Temporal integration test. |
 | `BOTS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Bots Temporal integration suite. |
 | `LIGHTSPEED_OPENAI_MODEL` | First-choice model override in hosted runtime live tests. |
 | `OPENAI_LIVE_MODEL` | Shared fallback model for OpenAI live suites. |

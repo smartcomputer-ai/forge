@@ -1,1 +1,0 @@
-ALTER TABLE "bots" ADD COLUMN "self_config" boolean DEFAULT false NOT NULL;

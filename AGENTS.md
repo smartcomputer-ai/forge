@@ -20,8 +20,8 @@ Use these files as the index:
 - `Cargo.toml` — workspace membership.
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
-  shared inputs, database schema, Channels workers, Bots workers, Configurator
-  MCP, and the mechanically imported Foundry candidate.
+  shared inputs, database schema, Channels workers, Bots workers, and
+  Configurator MCP.
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.
 - `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware

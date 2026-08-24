@@ -156,6 +156,62 @@ CREATE TABLE "universes" (
 	CONSTRAINT "universes_lightspeed_universe_id_unique" UNIQUE("lightspeed_universe_id")
 );
 --> statement-breakpoint
+CREATE TABLE "bot_activity" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"bot_id" uuid NOT NULL,
+	"kind" text NOT NULL,
+	"event_id" text,
+	"run_id" text,
+	"detail" text,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "bot_events" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"bot_id" uuid NOT NULL,
+	"event_id" text NOT NULL,
+	"seq" bigint,
+	"trigger_id" uuid,
+	"kind" text NOT NULL,
+	"source" text NOT NULL,
+	"occurred_at" timestamp with time zone NOT NULL,
+	"ref" text NOT NULL,
+	"prompt_ref" text,
+	"session" jsonb,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "bot_triggers" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"bot_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"kind" text NOT NULL,
+	"spec" jsonb NOT NULL,
+	"filter" text,
+	"route" jsonb,
+	"coalesce" jsonb,
+	"deliver" jsonb,
+	"enabled" boolean DEFAULT true NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+CREATE TABLE "bots" (
+	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+	"universe_id" uuid NOT NULL,
+	"name" text NOT NULL,
+	"profile_id" text NOT NULL,
+	"brief" text,
+	"runs_per_day" integer,
+	"breaker" jsonb,
+	"routed_session_ttl_ms" integer,
+	"event_seq" bigint DEFAULT 0 NOT NULL,
+	"self_config" boolean DEFAULT false NOT NULL,
+	"enabled" boolean DEFAULT true NOT NULL,
+	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
+	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
 ALTER TABLE "account" ADD CONSTRAINT "account_user_id_user_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invitation" ADD CONSTRAINT "invitation_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "invitation" ADD CONSTRAINT "invitation_inviter_id_user_id_fk" FOREIGN KEY ("inviter_id") REFERENCES "public"."user"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
@@ -170,6 +226,11 @@ ALTER TABLE "pairings" ADD CONSTRAINT "pairings_binding_account_fk" FOREIGN KEY 
 ALTER TABLE "universe_setup_installations" ADD CONSTRAINT "universe_setup_installations_universe_id_universes_id_fk" FOREIGN KEY ("universe_id") REFERENCES "public"."universes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "universe_setup_installations" ADD CONSTRAINT "universe_setup_installations_installed_by_user_id_user_id_fk" FOREIGN KEY ("installed_by_user_id") REFERENCES "public"."user"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "universes" ADD CONSTRAINT "universes_organization_id_organization_id_fk" FOREIGN KEY ("organization_id") REFERENCES "public"."organization"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bot_activity" ADD CONSTRAINT "bot_activity_bot_id_bots_id_fk" FOREIGN KEY ("bot_id") REFERENCES "public"."bots"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bot_events" ADD CONSTRAINT "bot_events_bot_id_bots_id_fk" FOREIGN KEY ("bot_id") REFERENCES "public"."bots"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bot_events" ADD CONSTRAINT "bot_events_trigger_id_bot_triggers_id_fk" FOREIGN KEY ("trigger_id") REFERENCES "public"."bot_triggers"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bot_triggers" ADD CONSTRAINT "bot_triggers_bot_id_bots_id_fk" FOREIGN KEY ("bot_id") REFERENCES "public"."bots"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
+ALTER TABLE "bots" ADD CONSTRAINT "bots_universe_id_universes_id_fk" FOREIGN KEY ("universe_id") REFERENCES "public"."universes"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
 CREATE INDEX "account_userId_idx" ON "account" USING btree ("user_id");--> statement-breakpoint
 CREATE INDEX "invitation_organizationId_idx" ON "invitation" USING btree ("organization_id");--> statement-breakpoint
 CREATE INDEX "invitation_email_idx" ON "invitation" USING btree ("email");--> statement-breakpoint
@@ -184,13 +245,10 @@ CREATE UNIQUE INDEX "bindings_universe_name_idx" ON "bindings" USING btree ("uni
 CREATE UNIQUE INDEX "channel_accounts_provider_account_idx" ON "channel_accounts" USING btree ("provider","account_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "channel_identities_channel_handle_idx" ON "channel_identities" USING btree ("channel","handle");--> statement-breakpoint
 CREATE INDEX "pairings_account_chat_idx" ON "pairings" USING btree ("channel_account_id","chat_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "universe_setup_installations_universe_setup_idx" ON "universe_setup_installations" USING btree ("universe_id","setup_id");
---> statement-breakpoint
-DO $$
-BEGIN
-  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lightspeed_channels') THEN
-    GRANT SELECT ON "bindings", "universes", "channel_accounts", "channel_identities", "member" TO lightspeed_channels;
-    GRANT SELECT, INSERT, UPDATE ON "pairings" TO lightspeed_channels;
-  END IF;
-END
-$$;
+CREATE UNIQUE INDEX "universe_setup_installations_universe_setup_idx" ON "universe_setup_installations" USING btree ("universe_id","setup_id");--> statement-breakpoint
+CREATE INDEX "bot_activity_bot_created_idx" ON "bot_activity" USING btree ("bot_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "bot_events_bot_event_idx" ON "bot_events" USING btree ("bot_id","event_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "bot_events_bot_seq_idx" ON "bot_events" USING btree ("bot_id","seq");--> statement-breakpoint
+CREATE INDEX "bot_events_bot_received_idx" ON "bot_events" USING btree ("bot_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "bot_triggers_bot_name_idx" ON "bot_triggers" USING btree ("bot_id","name");--> statement-breakpoint
+CREATE UNIQUE INDEX "bots_universe_name_idx" ON "bots" USING btree ("universe_id","name");

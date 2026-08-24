@@ -9,7 +9,6 @@
     "platform/cli",
     "platform/configurator-mcp",
     "platform/db",
-    "platform/foundry",
     "platform/server",
     "platform/shared",
     "platform/web"
@@ -28,7 +27,7 @@
     "test:integration:bots": "npm run test:integration --workspace @lightspeed/bots",
     "test:integration:channels": "npm run test:integration --workspace @lightspeed/channels",
     "test:migrations": "npm run test:migrations --workspace @lightspeed/platform-db",
-    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/bots && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/foundry && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp"
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/bots && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

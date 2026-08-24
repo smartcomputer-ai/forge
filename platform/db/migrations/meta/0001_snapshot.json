@@ -1,6 +1,6 @@
 {
-  "id": "c8d9fccd-5156-480f-a6b8-bed4f45f2f76",
-  "prevId": "3a2e20eb-287f-466f-9d25-30114aeba8a2",
+  "id": "a3a2453f-a0d1-4028-908b-6d35ac32d76f",
+  "prevId": "2fe028be-7c0d-450e-9493-ffb28ed9e0a4",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1393,8 +1393,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.foundry_jobs": {
-      "name": "foundry_jobs",
+    "public.bot_activity": {
+      "name": "bot_activity",
       "schema": "",
       "columns": {
         "id": {
@@ -1404,30 +1404,23 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "pack_id": {
-          "name": "pack_id",
+        "bot_id": {
+          "name": "bot_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
         },
-        "request": {
-          "name": "request",
+        "kind": {
+          "name": "kind",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "status": {
-          "name": "status",
+        "event_id": {
+          "name": "event_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'pending'"
-        },
-        "submission_id": {
-          "name": "submission_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
         "run_id": {
           "name": "run_id",
@@ -1435,8 +1428,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "failure": {
-          "name": "failure",
+        "detail": {
+          "name": "detail",
           "type": "text",
           "primaryKey": false,
           "notNull": false
@@ -1447,21 +1440,14 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
         }
       },
       "indexes": {
-        "foundry_jobs_pack_idx": {
-          "name": "foundry_jobs_pack_idx",
+        "bot_activity_bot_created_idx": {
+          "name": "bot_activity_bot_created_idx",
           "columns": [
             {
-              "expression": "pack_id",
+              "expression": "bot_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1480,12 +1466,12 @@
         }
       },
       "foreignKeys": {
-        "foundry_jobs_pack_id_foundry_packs_id_fk": {
-          "name": "foundry_jobs_pack_id_foundry_packs_id_fk",
-          "tableFrom": "foundry_jobs",
-          "tableTo": "foundry_packs",
+        "bot_activity_bot_id_bots_id_fk": {
+          "name": "bot_activity_bot_id_bots_id_fk",
+          "tableFrom": "bot_activity",
+          "tableTo": "bots",
           "columnsFrom": [
-            "pack_id"
+            "bot_id"
           ],
           "columnsTo": [
             "id"
@@ -1495,21 +1481,13 @@
         }
       },
       "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "foundry_jobs_submission_id_unique": {
-          "name": "foundry_jobs_submission_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "submission_id"
-          ]
-        }
-      },
+      "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.foundry_packs": {
-      "name": "foundry_packs",
+    "public.bot_events": {
+      "name": "bot_events",
       "schema": "",
       "columns": {
         "id": {
@@ -1519,8 +1497,186 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "universe_id": {
-          "name": "universe_id",
+        "bot_id": {
+          "name": "bot_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "event_id": {
+          "name": "event_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "seq": {
+          "name": "seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "trigger_id": {
+          "name": "trigger_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "kind": {
+          "name": "kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "source": {
+          "name": "source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "occurred_at": {
+          "name": "occurred_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ref": {
+          "name": "ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "prompt_ref": {
+          "name": "prompt_ref",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session": {
+          "name": "session",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bot_events_bot_event_idx": {
+          "name": "bot_events_bot_event_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "event_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bot_events_bot_seq_idx": {
+          "name": "bot_events_bot_seq_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "seq",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "bot_events_bot_received_idx": {
+          "name": "bot_events_bot_received_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bot_events_bot_id_bots_id_fk": {
+          "name": "bot_events_bot_id_bots_id_fk",
+          "tableFrom": "bot_events",
+          "tableTo": "bots",
+          "columnsFrom": [
+            "bot_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "bot_events_trigger_id_bot_triggers_id_fk": {
+          "name": "bot_events_trigger_id_bot_triggers_id_fk",
+          "tableFrom": "bot_events",
+          "tableTo": "bot_triggers",
+          "columnsFrom": [
+            "trigger_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.bot_triggers": {
+      "name": "bot_triggers",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "bot_id": {
+          "name": "bot_id",
           "type": "uuid",
           "primaryKey": false,
           "notNull": true
@@ -1535,18 +1691,35 @@
           "name": "kind",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": "'workflow'"
+          "notNull": true
         },
-        "repo_url": {
-          "name": "repo_url",
-          "type": "text",
+        "spec": {
+          "name": "spec",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true
         },
-        "environment_id": {
-          "name": "environment_id",
+        "filter": {
+          "name": "filter",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "route": {
+          "name": "route",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coalesce": {
+          "name": "coalesce",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "deliver": {
+          "name": "deliver",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -1573,8 +1746,148 @@
         }
       },
       "indexes": {
-        "foundry_packs_universe_name_idx": {
-          "name": "foundry_packs_universe_name_idx",
+        "bot_triggers_bot_name_idx": {
+          "name": "bot_triggers_bot_name_idx",
+          "columns": [
+            {
+              "expression": "bot_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "name",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "bot_triggers_bot_id_bots_id_fk": {
+          "name": "bot_triggers_bot_id_bots_id_fk",
+          "tableFrom": "bot_triggers",
+          "tableTo": "bots",
+          "columnsFrom": [
+            "bot_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.bots": {
+      "name": "bots",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "universe_id": {
+          "name": "universe_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "profile_id": {
+          "name": "profile_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "brief": {
+          "name": "brief",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "runs_per_day": {
+          "name": "runs_per_day",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "breaker": {
+          "name": "breaker",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "routed_session_ttl_ms": {
+          "name": "routed_session_ttl_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "event_seq": {
+          "name": "event_seq",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
+        },
+        "self_config": {
+          "name": "self_config",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "self_emit": {
+          "name": "self_emit",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "bots_universe_name_idx": {
+          "name": "bots_universe_name_idx",
           "columns": [
             {
               "expression": "universe_id",
@@ -1596,9 +1909,9 @@
         }
       },
       "foreignKeys": {
-        "foundry_packs_universe_id_universes_id_fk": {
-          "name": "foundry_packs_universe_id_universes_id_fk",
-          "tableFrom": "foundry_packs",
+        "bots_universe_id_universes_id_fk": {
+          "name": "bots_universe_id_universes_id_fk",
+          "tableFrom": "bots",
           "tableTo": "universes",
           "columnsFrom": [
             "universe_id"
@@ -1612,127 +1925,6 @@
       },
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.foundry_reports": {
-      "name": "foundry_reports",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "job_id": {
-          "name": "job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pack_id": {
-          "name": "pack_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "invocation_id": {
-          "name": "invocation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "phase": {
-          "name": "phase",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "summary": {
-          "name": "summary",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "payload": {
-          "name": "payload",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "foundry_reports_job_idx": {
-          "name": "foundry_reports_job_idx",
-          "columns": [
-            {
-              "expression": "job_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "foundry_reports_job_id_foundry_jobs_id_fk": {
-          "name": "foundry_reports_job_id_foundry_jobs_id_fk",
-          "tableFrom": "foundry_reports",
-          "tableTo": "foundry_jobs",
-          "columnsFrom": [
-            "job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "foundry_reports_pack_id_foundry_packs_id_fk": {
-          "name": "foundry_reports_pack_id_foundry_packs_id_fk",
-          "tableFrom": "foundry_reports",
-          "tableTo": "foundry_packs",
-          "columnsFrom": [
-            "pack_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "foundry_reports_invocation_id_unique": {
-          "name": "foundry_reports_invocation_id_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "invocation_id"
-          ]
-        }
-      },
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false

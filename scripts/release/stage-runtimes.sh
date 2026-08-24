@@ -23,7 +23,6 @@ copy_workspace_manifests() {
     platform/cli \
     platform/configurator-mcp \
     platform/db \
-    platform/foundry \
     platform/server \
     platform/shared \
     platform/web; do
@@ -53,7 +52,7 @@ stage_runtime() {
       "$root/platform/configurator-mcp"
   else
     rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
-      "$root/platform/foundry" "$root/platform/server" \
+      "$root/platform/server" \
       "$root/platform/shared" "$root/platform/web"
   fi
   "$tar_command" --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
@@ -66,7 +65,6 @@ stage_runtime platform @lightspeed/platform-server \
   platform/db/src \
   platform/db/migrations \
   platform/shared/src \
-  platform/foundry/src \
   platform/web/dist
 stage_runtime channels @lightspeed/channels \
   clients/typescript/dist \

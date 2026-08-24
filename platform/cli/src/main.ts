@@ -259,60 +259,6 @@ userCmd
     ),
   );
 
-const foundry = program.command("foundry").description("manage Foundry packs and events");
-
-foundry
-  .command("packs <universeId>")
-  .description("list a universe's foundry packs")
-  .action(async (universeId: string) =>
-    printJson(await api("GET", `/api/v1/universes/${universeId}/foundry-packs`)),
-  );
-
-foundry
-  .command("create-pack <universeId> <name> <repoUrl>")
-  .description("register a pack (kind: workflow)")
-  .option("--profile <id>", "manager profile", "foundry-manager")
-  .option("--environment-id <id>", "explicit environment override")
-  .action(async (universeId: string, name: string, repoUrl: string, opts: { profile: string; environmentId?: string }) =>
-    printJson(
-      await api("POST", `/api/v1/universes/${universeId}/foundry-packs`, {
-        name,
-        repoUrl,
-        managerProfileId: opts.profile,
-        ...(opts.environmentId === undefined ? {} : { environmentId: opts.environmentId }),
-      }),
-    ),
-  );
-
-foundry
-  .command("event <packId> <summary...>")
-  .description("send a durable event to a pack manager")
-  .option("--kind <kind>", "event kind", "operator.requested")
-  .option("--data <json>", "optional JSON event data")
-  .action(async (packId: string, summary: string[], opts: { kind: string; data?: string }) =>
-    printJson(
-      await api("POST", `/api/v1/foundry/packs/${packId}/events`, {
-        kind: opts.kind,
-        summary: summary.join(" "),
-        ...(opts.data === undefined ? {} : { data: JSON.parse(opts.data) as unknown }),
-      }),
-    ),
-  );
-
-foundry
-  .command("state <packId>")
-  .description("show the pack controller and event inbox state")
-  .action(async (packId: string) =>
-    printJson(await api("GET", `/api/v1/foundry/packs/${packId}/state`)),
-  );
-
-foundry
-  .command("releases <packId>")
-  .description("list recorded pack releases")
-  .action(async (packId: string) =>
-    printJson(await api("GET", `/api/v1/foundry/packs/${packId}/releases`)),
-  );
-
 try {
   await program.parseAsync();
 } catch (error) {
