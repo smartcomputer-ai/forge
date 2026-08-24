@@ -378,7 +378,9 @@ function StoredEventRow({
   return (
     <div className="rounded-md border p-3 text-xs">
       <div className="flex min-w-0 items-center gap-2">
-        <code className="min-w-0 flex-1 truncate">{event.eventId}</code>
+        <code className="min-w-0 flex-1 truncate" title={event.eventId}>
+          {event.seq != null ? `#${event.seq}` : event.eventId}
+        </code>
         <Badge variant={eventStatusVariant(decision?.status)}>{decision?.status ?? "received"}</Badge>
         {onReplay && (
           <Button variant="ghost" size="icon-xs" onClick={onReplay} aria-label="Replay event"><RotateCcw /></Button>

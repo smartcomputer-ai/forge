@@ -323,19 +323,31 @@ export function botRoutes(ctx: AppContext) {
     if (!stored) return c.json({ error: "not found" }, 404);
 
     // A replay is a fresh envelope reusing the stored document and routing;
-    // it never coalesces, so it delivers promptly and exactly once.
+    // it never coalesces, so it delivers promptly and exactly once. The
+    // original document is read back so the replay's rendering carries the
+    // real payload, not a stub.
     const replayId = `replay-${crypto.randomUUID()}`;
+    let document: BotEventDocumentV1 = {
+      version: 1,
+      kind: stored.kind,
+      source: stored.source,
+      occurredAt: stored.occurredAt.toISOString(),
+      summary: `replay of ${stored.eventId}`,
+    };
+    try {
+      const engine = engineClientFor(ctx, found.access.universe);
+      const raw = await engine.call("blobs/read", { blobRef: stored.ref });
+      document = JSON.parse(
+        Buffer.from(raw.result.bytesBase64, "base64").toString("utf8"),
+      ) as BotEventDocumentV1;
+    } catch {
+      // Unreadable document: fall back to the envelope stub above.
+    }
     const { event } = await admitBotEvent(ctx, {
       bot: found.bot,
       universe: found.access.universe,
       eventId: replayId,
-      document: {
-        version: 1,
-        kind: stored.kind,
-        source: stored.source,
-        occurredAt: stored.occurredAt.toISOString(),
-        summary: `replay of ${stored.eventId}`,
-      },
+      document,
       ref: stored.ref,
       ...(stored.triggerId === null ? {} : { triggerId: stored.triggerId }),
       ...(stored.session === null ? {} : { session: stored.session }),

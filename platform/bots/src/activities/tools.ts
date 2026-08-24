@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
@@ -22,6 +22,7 @@ import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
   BOT_EMIT_TOOL_ID,
+  BOT_EVENT_READ_TOOL_ID,
   BOT_EVENT_SIGNAL,
   BOT_EVENTS_READ_TOOL_ID,
   BOT_FILTER_TEST_TOOL_ID,
@@ -35,6 +36,13 @@ import {
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
+import { allocateBotEventSeq, renderAdmittedEvent } from "../events.js";
+import {
+  DEFAULT_READ_BUDGET,
+  largestBranches,
+  renderValue,
+  resolvePath,
+} from "../rendering.js";
 import { evaluateFilter, type FilterContext } from "../webhooks.js";
 
 export interface BotToolActivitiesConfig {
@@ -86,6 +94,15 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
   async function putJson(universeId: string, value: unknown): Promise<string> {
     const stored = await clientFor(universeId).call("blobs/put", {
       blobs: [{ bytesBase64: Buffer.from(JSON.stringify(value), "utf8").toString("base64") }],
+    });
+    const ref = stored.result.blobs?.[0]?.blobRef;
+    if (!ref) throw new Error("blobs/put returned no ref");
+    return ref;
+  }
+
+  async function putText(universeId: string, value: string): Promise<string> {
+    const stored = await clientFor(universeId).call("blobs/put", {
+      blobs: [{ bytesBase64: Buffer.from(value, "utf8").toString("base64") }],
     });
     const ref = stored.result.blobs?.[0]?.blobRef;
     if (!ref) throw new Error("blobs/put returned no ref");
@@ -246,6 +263,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           };
           const outcome = evaluateFilter(filter, context);
           return {
+            ...(row.seq === null ? {} : { seq: row.seq }),
             eventId: row.eventId,
             kind: row.kind,
             source: row.source,
@@ -267,6 +285,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         const samples = await recentEnvelopes(lightspeedUniverseId, bot.id, limit);
         return {
           events: samples.map(({ row, document }) => ({
+            ...(row.seq === null ? {} : { seq: row.seq }),
             eventId: row.eventId,
             kind: row.kind,
             source: row.source,
@@ -275,6 +294,79 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             session: row.session,
             summary: document?.summary ?? null,
           })),
+        };
+      }
+      case BOT_EVENT_READ_TOOL_ID: {
+        const seq = args.seq;
+        if (!Number.isSafeInteger(seq) || (seq as number) < 1) {
+          throw new BotConfigError("seq must be a positive integer (the event's #N)", 400);
+        }
+        const [row] = await config.db
+          .select()
+          .from(schema.botEvents)
+          .where(and(eq(schema.botEvents.botId, bot.id), eq(schema.botEvents.seq, seq as number)))
+          .limit(1);
+        if (!row) {
+          throw new BotConfigError(
+            bot.eventSeq > 0
+              ? `no event #${seq}; this bot's events run #1..#${bot.eventSeq}`
+              : `no event #${seq}; this bot has no events yet`,
+            404,
+          );
+        }
+        let document: BotEventDocumentV1 | null = null;
+        try {
+          document = (await readJson(lightspeedUniverseId, row.ref)) as BotEventDocumentV1;
+        } catch {
+          document = null;
+        }
+        if (document === null) {
+          throw new BotConfigError(`the stored document for event #${seq} could not be read`, 502);
+        }
+        const envelope: Record<string, unknown> = {
+          seq: row.seq,
+          eventId: row.eventId,
+          kind: row.kind,
+          source: row.source,
+          occurredAt: row.occurredAt.toISOString(),
+          receivedAt: row.receivedAt.toISOString(),
+          ...(row.session === null ? {} : { session: row.session }),
+          summary: document.summary,
+          ...(document.correlationId == null ? {} : { correlationId: document.correlationId }),
+          ...(document.links === undefined ? {} : { links: document.links }),
+          ...(document.data === undefined ? {} : { data: document.data }),
+          ...(document.headers === undefined ? {} : { headers: document.headers }),
+        };
+        const path = typeof args.path === "string" && args.path.length > 0 ? args.path : null;
+        const target = path === null ? envelope : resolvePath(envelope, path);
+        if (target === undefined) {
+          throw new BotConfigError(
+            `path "${path}" not found in event #${seq}; top-level keys: ${Object.keys(envelope).join(", ")}`,
+            400,
+          );
+        }
+        const requested =
+          typeof args.maxBytes === "number" && Number.isSafeInteger(args.maxBytes)
+            ? args.maxBytes
+            : DEFAULT_READ_BUDGET;
+        const maxBytes = Math.min(Math.max(requested, 256), 65_536);
+        const json = JSON.stringify(target);
+        if (json.length <= maxBytes) {
+          return { seq: row.seq, ...(path === null ? {} : { path }), value: target };
+        }
+        // Never a silent cut: report the size, a pruned preview, and the
+        // largest branches so the narrowing follow-up call is obvious.
+        return {
+          seq: row.seq,
+          ...(path === null ? {} : { path }),
+          truncated: true,
+          bytes: json.length,
+          preview: renderValue(target, { maxBytes }).text,
+          largest: largestBranches(target).map((branch) => ({
+            ...branch,
+            path: path === null ? branch.path : `${path}.${branch.path}`,
+          })),
+          hint: "narrow with path or raise maxBytes (max 65536)",
         };
       }
       case BOT_BRIEF_PUT_TOOL_ID: {
@@ -319,7 +411,12 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           summary,
           ...(args.data === undefined || args.data === null ? {} : { data: args.data }),
         };
+        const seq = await allocateBotEventSeq(config.db, bot.id);
         const ref = await putJson(lightspeedUniverseId, document);
+        const promptRef = await putText(
+          lightspeedUniverseId,
+          renderAdmittedEvent(seq, document),
+        );
         const eventId = `self-${randomUUID()}`;
         const session =
           sessionKey === null
@@ -328,11 +425,13 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         await config.db.insert(schema.botEvents).values({
           botId: bot.id,
           eventId,
+          seq,
           triggerId: null,
           kind,
           source: "bot:self",
           occurredAt: new Date(document.occurredAt),
           ref,
+          promptRef,
           session: session ?? null,
         });
         const start: BotStartV1 = {
@@ -350,6 +449,8 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           version: 1,
           id: eventId,
           ref,
+          seq,
+          promptRef,
           ...(session === undefined ? {} : { session }),
         };
         await config.temporal.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {

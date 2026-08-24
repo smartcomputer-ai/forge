@@ -17,6 +17,11 @@ export interface WebhookExtraction {
   kind: string;
   summary: string;
   data?: unknown;
+  /**
+   * Salient projection of `data` for the model-facing rendering. The stored
+   * document always keeps the full `data`; presets narrow only the prompt.
+   */
+  promptData?: unknown;
   headers: Record<string, string>;
 }
 
@@ -89,11 +94,27 @@ export function extractWebhookEvent(
     const kind = action ? `${ghEvent}.${action}` : ghEvent;
     const repository = asRecord(body?.repository);
     const repoName = typeof repository?.full_name === "string" ? repository.full_name : null;
+    // The preset's projection: envelope grammar is shared across GitHub
+    // event types (action, repository, sender, one subject object named
+    // after the event), so picking the subject covers every kind without
+    // per-event-type extractors. Payloads without that shape (push) fall
+    // back to the full body; the generic renderer prunes either way.
+    const subject = asRecord(body?.[ghEvent]);
+    const promptData =
+      subject === undefined
+        ? data
+        : {
+            ...(action === null ? {} : { action }),
+            ...(repoName === null ? {} : { repository: repoName }),
+            ...(body?.sender === undefined ? {} : { sender: body.sender }),
+            [ghEvent]: subject,
+          };
     return {
       eventId: headers["x-github-delivery"] ?? bodyDigestId(rawBody),
       kind,
       summary: `GitHub ${kind}${repoName ? ` in ${repoName}` : ""}`,
       ...(data === undefined ? {} : { data }),
+      ...(promptData === undefined ? {} : { promptData }),
       headers,
     };
   }

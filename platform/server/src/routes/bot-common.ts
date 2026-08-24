@@ -14,6 +14,7 @@ import {
   type BotStartV1,
   type BotWhenBusyV1,
 } from "@lightspeed/bots/contracts";
+import { allocateBotEventSeq, renderAdmittedEvent } from "@lightspeed/bots/events";
 import type { AppContext } from "../context.js";
 import { engineClientFor } from "./gateway.js";
 
@@ -71,6 +72,8 @@ export async function admitBotEvent(
     universe: UniverseRow;
     eventId: string;
     document: BotEventDocumentV1;
+    /** Salient payload projection rendered instead of `document.data`. */
+    promptData?: unknown;
     triggerId?: string;
     session?: BotEventSession;
     coalesce?: BotCoalesceParamsV1;
@@ -81,38 +84,79 @@ export async function admitBotEvent(
     ref?: string;
   },
 ): Promise<{ event: BotEvent; duplicate: boolean }> {
+  const engine = engineClientFor(ctx, input.universe);
+  const seq = await allocateBotEventSeq(ctx.db, input.bot.id);
+  const prompt = renderAdmittedEvent(seq, input.document, input.promptData);
+  const promptBlob = { bytesBase64: Buffer.from(prompt, "utf8").toString("base64") };
   let ref = input.ref;
+  let promptRef: string | undefined;
   if (ref === undefined) {
-    const engine = engineClientFor(ctx, input.universe);
     const stored = await engine.call("blobs/put", {
       blobs: [
         { bytesBase64: Buffer.from(JSON.stringify(input.document), "utf8").toString("base64") },
+        promptBlob,
       ],
     });
     ref = stored.result.blobs?.[0]?.blobRef;
-    if (!ref) throw new Error("event document storage returned no ref");
+    promptRef = stored.result.blobs?.[1]?.blobRef;
+  } else {
+    const stored = await engine.call("blobs/put", { blobs: [promptBlob] });
+    promptRef = stored.result.blobs?.[0]?.blobRef;
   }
+  if (!ref || !promptRef) throw new Error("event document storage returned no ref");
 
   const inserted = await ctx.db
     .insert(schema.botEvents)
     .values({
       botId: input.bot.id,
       eventId: input.eventId,
+      seq,
       triggerId: input.triggerId ?? null,
       kind: input.document.kind,
       source: input.document.source,
       occurredAt: new Date(input.document.occurredAt),
       ref,
+      promptRef,
       session: input.session ?? null,
     })
     .onConflictDoNothing()
     .returning();
   const duplicate = inserted.length === 0;
+  if (duplicate) {
+    // Keep #N stable: a re-admitted event reuses the stored row's identity
+    // (the freshly allocated seq is wasted, which only leaves a gap).
+    const [stored] = await ctx.db
+      .select()
+      .from(schema.botEvents)
+      .where(
+        and(eq(schema.botEvents.botId, input.bot.id), eq(schema.botEvents.eventId, input.eventId)),
+      )
+      .limit(1);
+    if (stored) {
+      ref = stored.ref;
+      promptRef = stored.promptRef ?? undefined;
+      return {
+        duplicate,
+        event: {
+          version: 1,
+          id: input.eventId,
+          ref,
+          ...(stored.seq === null ? {} : { seq: stored.seq }),
+          ...(promptRef === undefined ? {} : { promptRef }),
+          ...(input.session === undefined ? {} : { session: input.session }),
+          ...(input.coalesce === undefined ? {} : { coalesce: input.coalesce }),
+          ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),
+        },
+      };
+    }
+  }
 
   const event: BotEvent = {
     version: 1,
     id: input.eventId,
     ref,
+    seq,
+    promptRef,
     ...(input.session === undefined ? {} : { session: input.session }),
     ...(input.coalesce === undefined ? {} : { coalesce: input.coalesce }),
     ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),

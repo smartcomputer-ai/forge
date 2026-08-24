@@ -84,14 +84,32 @@ describe("bot contracts", () => {
     validateBotEvent({ version: 1, id: "evt", ref: `sha256:${"a".repeat(64)}` });
   });
 
-  it("parses resolve arguments strictly", () => {
-    expect(
-      parseEventResolveArgs({ eventId: "evt", outcome: "handled", summary: null }),
-    ).toEqual({ eventId: "evt", outcome: "handled", summary: null });
+  it("validates seq and prompt refs on events", () => {
+    const ref = `sha256:${"a".repeat(64)}`;
+    validateBotEvent({ version: 1, id: "evt", ref, seq: 42, promptRef: ref });
+    expect(() => validateBotEvent({ version: 1, id: "evt", ref, seq: 0 })).toThrow(TypeError);
+    expect(() => validateBotEvent({ version: 1, id: "evt", ref, seq: 1.5 })).toThrow(TypeError);
     expect(() =>
-      parseEventResolveArgs({ eventId: "evt", outcome: "done", summary: null }),
+      validateBotEvent({ version: 1, id: "evt", ref, promptRef: "sha256:short" }),
     ).toThrow(TypeError);
-    expect(() => parseEventResolveArgs({ outcome: "handled", summary: null })).toThrow(TypeError);
+  });
+
+  it("parses resolve arguments without any id echo", () => {
+    expect(parseEventResolveArgs({ outcome: "handled", summary: null })).toEqual({
+      outcome: "handled",
+      summary: null,
+    });
+    // Absent summary reads as null; unknown extra keys are ignored.
+    expect(parseEventResolveArgs({ outcome: "deferred" })).toEqual({
+      outcome: "deferred",
+      summary: null,
+    });
+    expect(parseEventResolveArgs({ eventId: "stale", outcome: "ignored", summary: "s" })).toEqual({
+      outcome: "ignored",
+      summary: "s",
+    });
+    expect(() => parseEventResolveArgs({ outcome: "done", summary: null })).toThrow(TypeError);
+    expect(() => parseEventResolveArgs({ summary: null })).toThrow(TypeError);
   });
 
   it("combines the profile and brief into the applied inline profile", () => {
@@ -116,5 +134,9 @@ describe("bot contracts", () => {
     expect(text).toContain("bot triage");
     expect(text).toContain("Watch the queue.");
     expect(text).toContain("bot_event_resolve");
+    // The standing protocol lives here, not in per-delivery framing.
+    expect(text).toContain("bot_event_read");
+    expect(text).toContain('event #N');
+    expect(text).toContain("untrusted");
   });
 });

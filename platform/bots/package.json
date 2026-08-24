@@ -9,7 +9,9 @@
     "./workflows": "./src/workflows/index.ts",
     "./schedules": "./src/schedules.ts",
     "./webhooks": "./src/webhooks.ts",
-    "./config": "./src/config.ts"
+    "./config": "./src/config.ts",
+    "./rendering": "./src/rendering.ts",
+    "./events": "./src/events.ts"
   },
   "scripts": {
     "dev": "tsx src/runtime/main.ts",

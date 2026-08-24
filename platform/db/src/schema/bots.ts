@@ -1,5 +1,6 @@
 import { relations } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   index,
   integer,
@@ -37,6 +38,8 @@ export const bots = pgTable(
     breaker: jsonb("breaker").$type<{ fires: number; windowMs: number }>(),
     /** Close routed (perKey/perEvent) sessions idle longer than this; null keeps them. */
     routedSessionTtlMs: integer("routed_session_ttl_ms"),
+    /** Monotonic per-bot event counter; allocated at admission, shown as #N. */
+    eventSeq: bigint("event_seq", { mode: "number" }).default(0).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -112,6 +115,11 @@ export const botEvents = pgTable(
       .references(() => bots.id, { onDelete: "cascade" }),
     /** Dedupe identity: provider delivery id where known, otherwise generated. */
     eventId: text("event_id").notNull(),
+    /**
+     * Per-bot sequence number (#N): the only event handle shown to models and
+     * humans. Null only for rows that predate sequence numbering.
+     */
+    seq: bigint("seq", { mode: "number" }),
     /** Originating trigger; null for direct endpoint/manual admissions. */
     triggerId: uuid("trigger_id").references(() => botTriggers.id, { onDelete: "set null" }),
     kind: text("kind").notNull(),
@@ -119,12 +127,15 @@ export const botEvents = pgTable(
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     /** CAS blob ref of the event document. */
     ref: text("ref").notNull(),
+    /** CAS blob ref of the model-facing rendering delivered to sessions. */
+    promptRef: text("prompt_ref"),
     /** Routed session target recorded at admission; replay reuses it. */
     session: jsonb("session").$type<{ sessionId: string; label: string }>(),
     receivedAt: createdAt(),
   },
   (t) => [
     uniqueIndex("bot_events_bot_event_idx").on(t.botId, t.eventId),
+    uniqueIndex("bot_events_bot_seq_idx").on(t.botId, t.seq),
     index("bot_events_bot_received_idx").on(t.botId, t.receivedAt),
   ],
 );

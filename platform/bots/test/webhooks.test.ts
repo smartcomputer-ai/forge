@@ -60,10 +60,14 @@ describe("webhook verification", () => {
 });
 
 describe("webhook extraction", () => {
-  it("uses the github preset for identity, naming, and summary", () => {
-    const body = Buffer.from(
-      JSON.stringify({ action: "opened", repository: { full_name: "acme/widgets" } }),
-    );
+  it("uses the github preset for identity, naming, summary, and projection", () => {
+    const payload = {
+      action: "opened",
+      repository: { full_name: "acme/widgets", html_url: "https://github.com/acme/widgets" },
+      sender: { login: "lukas", avatar_url: "https://example.com/a.png", id: 7 },
+      issues: { number: 5, title: "Broken build" },
+    };
+    const body = Buffer.from(JSON.stringify(payload));
     const extraction = extractWebhookEvent(
       { name: "gh", spec: hmacSpec("s") },
       body,
@@ -72,6 +76,27 @@ describe("webhook extraction", () => {
     expect(extraction.eventId).toBe("d-123");
     expect(extraction.kind).toBe("issues.opened");
     expect(extraction.summary).toBe("GitHub issues.opened in acme/widgets");
+    // The stored document keeps the full body; only the prompt is projected
+    // to the subject object plus envelope identity.
+    expect(extraction.data).toEqual(payload);
+    expect(extraction.promptData).toEqual({
+      action: "opened",
+      repository: "acme/widgets",
+      sender: payload.sender,
+      issues: { number: 5, title: "Broken build" },
+    });
+  });
+
+  it("falls back to the full body when the payload has no subject object", () => {
+    const payload = { ref: "refs/heads/main", commits: [{ message: "fix" }] };
+    const body = Buffer.from(JSON.stringify(payload));
+    const extraction = extractWebhookEvent(
+      { name: "gh", spec: hmacSpec("s") },
+      body,
+      { "X-GitHub-Event": "push", "X-GitHub-Delivery": "d-9" },
+    );
+    expect(extraction.kind).toBe("push");
+    expect(extraction.promptData).toEqual(payload);
   });
 
   it("falls back to a body digest and generic naming without a preset", () => {

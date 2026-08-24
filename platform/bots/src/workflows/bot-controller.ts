@@ -57,6 +57,8 @@ const HANDLED_INVOCATION_CAP = 2_000;
 export interface BotRecentEventSnapshot {
   id: string;
   ref: string;
+  /** Event sequence numbers (#N) in this delivery, when known. */
+  seqs?: number[];
   status: BotEventOutcome | "unresolved" | "run_failed" | "appended" | "steered";
   eventCount?: number;
   runId?: string;
@@ -564,7 +566,10 @@ export async function botControllerWorkflowV1(
         blobRef: invocation.argumentsRef,
       });
       const resolution = parseEventResolveArgs(args);
-      if (active !== undefined && resolution.eventId === active.delivery.id) {
+      if (active !== undefined) {
+        // Run-scoped correlation: this lane runs exactly one delivery per
+        // run, so any resolve from the run decides this delivery — the model
+        // never echoes a delivery id. A repeated call's last decision wins.
         active.resolution = { outcome: resolution.outcome, summary: resolution.summary };
       }
     }
@@ -804,6 +809,10 @@ export async function botControllerWorkflowV1(
   }
 
   function finishDelivery(active: ActiveDelivery, recent: BotRecentEventSnapshot): void {
+    const seqs = active.delivery.events.flatMap((event) =>
+      event.seq === undefined ? [] : [event.seq],
+    );
+    if (seqs.length > 0) recent.seqs = seqs;
     rememberDelivery(recent);
     activeBySession.delete(active.sessionId);
     touchSession(active.sessionId);

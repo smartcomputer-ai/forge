@@ -681,6 +681,8 @@ export interface BotEventRef {
 export interface BotRecentEvent {
   id: string;
   ref: string;
+  /** Event sequence numbers (#N) in this delivery, when known. */
+  seqs?: number[];
   status:
     | "handled"
     | "deferred"
@@ -734,6 +736,9 @@ export interface BotEventEnvelope {
   id: string;
   botId: string;
   eventId: string;
+  /** Per-bot sequence number (#N); null only for pre-numbering rows. */
+  seq: number | null;
+  promptRef: string | null;
   triggerId: string | null;
   kind: string;
   source: string;

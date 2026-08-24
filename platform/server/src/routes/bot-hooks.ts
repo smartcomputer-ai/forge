@@ -101,6 +101,7 @@ export function botHookRoutes(ctx: AppContext) {
             universe: row.universe,
             eventId: extraction.eventId,
             document,
+            ...(extraction.promptData === undefined ? {} : { promptData: extraction.promptData }),
             triggerId: row.trigger.id,
             deliver: false,
           });
@@ -133,6 +134,7 @@ export function botHookRoutes(ctx: AppContext) {
         universe: row.universe,
         eventId: extraction.eventId,
         document,
+        ...(extraction.promptData === undefined ? {} : { promptData: extraction.promptData }),
         triggerId: row.trigger.id,
         ...(routed.session === undefined ? {} : { session: routed.session }),
         ...(coalesce === null

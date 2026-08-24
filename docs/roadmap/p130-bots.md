@@ -36,6 +36,50 @@
   send-event), and the BotMark glyph in navigation. Slice 1 was validated
   live the same day (schedule fires → runs → `bot_event_resolve` outcomes on
   the dev stack).
+- Event input redesign implemented 2026-08-24 (greenfield rework of what
+  sessions actually receive):
+  - **Run-scoped resolution**: `bot_event_resolve` is now `{outcome,
+    summary}` — the controller correlates a resolve by the (session, run)
+    it already tracks, so the model never echoes a delivery id and a typo
+    can no longer silently land a delivery as `unresolved`. Delivery ids,
+    submission ids, and terminal tokens stay internal.
+  - **Per-bot sequence numbers**: every admitted event gets `#N` from a
+    race-free counter on `bots.event_seq` (migration `0008_bot_event_seq`,
+    with backfill); `#N` is the only model/human handle — renderings,
+    `bot_events_read`, filter tests, snapshots (`recentEvents[].seqs`), and
+    the web event history all use it.
+  - **Envelope/rendering split**: the stored `BotEventDocumentV1` stays the
+    complete machine envelope (filters, UI, replay, reads); admission also
+    stores a compact model-facing rendering (`bot_events.prompt_ref`)
+    produced by a generic shape-based renderer (`platform/bots/src/
+    rendering.ts`): drops URL/plumbing keys, collapses identity objects,
+    caps strings/arrays/depth under a ~2 KB budget, and marks every cut
+    with a pointer to `bot_event_read #N`. Deliveries send one rendered
+    item per event — no framing item for single events; batches get one
+    header line ("N events … resolve the delivery once"). The standing
+    protocol (untrusted content, resolve semantics, pruning) moved into the
+    session instructions.
+  - **GitHub preset projects instead of forwarding**: identity + summary +
+    subject-object projection for the prompt (`promptData`); the stored
+    document keeps the full body and headers. Payloads without the
+    envelope grammar (push) fall back to the full body through the
+    renderer.
+  - **`bot_event_read`**: joined tool `{seq, path?, maxBytes?}` returning
+    the full archived envelope (data, headers, receivedAt, session), with
+    dot-path narrowing, a clamped size cap, and honest over-budget replies
+    (pruned preview + largest branches by size). Unknown `#N` fails with
+    the valid range.
+  - **Strict-mode policy**: `strict: true` only where the schema has no
+    optional fields (resolve, status, trigger delete, brief put); tools
+    with real optionals (`trigger_put`, `filter_test`, `events_read`,
+    `event_read`, `emit`) are non-strict with genuinely optional
+    properties instead of null-stuffed `required` lists — server-side
+    validation with typed retryable tool errors is the contract on every
+    provider. `BOT_TOOLS_REVISION` bumped to 4 (sessions rotate).
+  - Replays re-render from the original stored document instead of a stub
+    summary. Not yet done: per-trigger CEL projections (tier 2 of the
+    extraction design) — the generic renderer plus preset projection cover
+    the current needs.
 - Slice 2 implemented 2026-08-20, end to end:
   - Triggers reshaped to per-kind `spec` jsonb + `filter` (CEL) + `route`
     columns (backfilling migration). Boot-time schedule reconcile in the

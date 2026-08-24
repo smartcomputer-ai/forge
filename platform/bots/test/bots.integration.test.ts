@@ -89,7 +89,8 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         }),
         readJsonBlob: async ({ blobRef }: { blobRef: string }) => {
           if (blobRef === resolveRef) {
-            return { eventId: "delivery-1", outcome: "handled", summary: "queue drained" };
+            // Run-scoped resolution: no id echo in the arguments.
+            return { outcome: "handled", summary: "queue drained" };
           }
           throw new Error(`unexpected blob ${blobRef}`);
         },
@@ -112,7 +113,13 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         runsPerDay: null,
         enabled: true,
       };
-      const event: BotEvent = { version: 1, id: "delivery-1", ref: eventRef };
+      const event: BotEvent = {
+        version: 1,
+        id: "delivery-1",
+        ref: eventRef,
+        seq: 17,
+        promptRef: `sha256:${"e".repeat(64)}`,
+      };
       const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
         workflowId: botWorkflowId(universeId, botName),
         taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
@@ -135,6 +142,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(completed.duplicateEventCount).toBe(1);
       expect(completed.recentEvents[0]).toMatchObject({
         id: event.id,
+        seqs: [17],
         status: "handled",
         runId: "run_1",
         summary: "queue drained",
@@ -488,11 +496,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
                 ]
               : [],
         }),
-        readJsonBlob: async () => ({
-          eventId: expectedDeliveryId,
-          outcome: "handled",
-          summary: "batch triaged",
-        }),
+        readJsonBlob: async () => ({ outcome: "handled", summary: "batch triaged" }),
         recordBotActivity: async () => undefined,
       },
     });
@@ -511,10 +515,11 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         enabled: true,
       };
       const coalesce = { key: "trigger-x|main", debounceMs: 60_000, maxWaitMs: 120_000, maxCount: 3 };
-      const events: BotEvent[] = ["c-1", "c-2", "c-3"].map((id) => ({
+      const events: BotEvent[] = ["c-1", "c-2", "c-3"].map((id, index) => ({
         version: 1,
         id,
         ref: eventRef,
+        seq: index + 1,
         coalesce,
       }));
       const firstEvent = events[0] as BotEvent;
@@ -556,6 +561,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(done.recentEvents[0]).toMatchObject({
         id: expectedDeliveryId,
         eventCount: 3,
+        seqs: [1, 2, 3],
         status: "handled",
         summary: "batch triaged",
       });

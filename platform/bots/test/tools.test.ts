@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { LightspeedRpcError } from "@lightspeed/agent-client";
 import { parseTriggerPutArgs } from "../src/activities/tools.js";
-import { isBotSessionDeclarationMismatch } from "../src/activities/lightspeed.js";
+import {
+  deliveryInputItems,
+  isBotSessionDeclarationMismatch,
+  steerInputItems,
+} from "../src/activities/lightspeed.js";
 import { BotConfigError, scheduleSpecInput, triggerCreateInput } from "../src/config.js";
 import {
   BOT_EMIT_TOOL_ID,
@@ -28,6 +32,7 @@ describe("bot tool declarations", () => {
         "triggerDeleteInput",
         "filterTestInput",
         "eventsReadInput",
+        "eventReadInput",
         "briefPutInput",
         "emitInput",
       ]) as never,
@@ -38,11 +43,12 @@ describe("bot tool declarations", () => {
         "triggerDelete",
         "filterTest",
         "eventsRead",
+        "eventRead",
         "briefPut",
         "emit",
       ]) as never,
     );
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     for (const tool of tools) expect(tool.definition.revision).toBe(BOT_TOOLS_REVISION);
     const resolve = tools.find((tool) => tool.definition.toolId === BOT_EVENT_RESOLVE_TOOL_ID);
     expect(resolve?.target).toMatchObject({ type: "bound", dispatch: "pull" });
@@ -51,11 +57,23 @@ describe("bot tool declarations", () => {
     expect(emit?.target).toMatchObject({ dispatch: "push" });
     expect(emit?.completion).toEqual({ type: "accepted" });
     expect(emit?.definition.tool.kind).toMatchObject({ type: "function", strict: false });
-    for (const tool of tools.filter((tool) => tool.definition.toolId !== BOT_EMIT_TOOL_ID)) {
-      expect(tool.definition.tool.kind).toMatchObject({ type: "function", strict: true });
-    }
+    // Strict only where the schema has no optional fields; tools with real
+    // optionals opt out instead of null-stuffing `required`.
+    const strictIds = new Set(
+      tools
+        .filter((tool) => (tool.definition.tool.kind as { strict?: boolean }).strict === true)
+        .map((tool) => tool.definition.toolId),
+    );
+    expect(strictIds).toEqual(
+      new Set([
+        "lightspeed.bots.event.resolve.v1",
+        "lightspeed.bots.status.v1",
+        "lightspeed.bots.trigger.delete.v1",
+        "lightspeed.bots.brief.put.v1",
+      ]),
+    );
     const joined = tools.filter((tool) => tool.completion.type === "joined");
-    expect(joined).toHaveLength(6);
+    expect(joined).toHaveLength(7);
     for (const tool of joined) {
       expect(tool.completion).toMatchObject({ deadlineAfterMs: BOT_TOOL_REPLY_DEADLINE_MS });
       expect(tool.target).toMatchObject({ dispatch: "push" });
@@ -155,5 +173,36 @@ describe("schedule spec validation", () => {
     expect(scheduleSpecInput.safeParse({ summary: "s" }).success).toBe(false);
     expect(scheduleSpecInput.safeParse({ at: "2030-01-01T00:00:00Z", summary: "s" }).success).toBe(true);
     expect(scheduleSpecInput.safeParse({ at: "2020-01-01T00:00:00Z", summary: "s" }).success).toBe(false);
+  });
+});
+
+describe("delivery input items", () => {
+  const ref = `sha256:${"a".repeat(64)}`;
+  const promptRef = `sha256:${"b".repeat(64)}`;
+
+  it("delivers a single event as exactly one rendered item, no framing", () => {
+    expect(deliveryInputItems([{ ref, promptRef }])).toEqual([
+      { type: "textRef", blobRef: promptRef },
+    ]);
+    // Events without a rendering (legacy rows) fall back to the envelope.
+    expect(deliveryInputItems([{ ref }])).toEqual([{ type: "textRef", blobRef: ref }]);
+  });
+
+  it("frames a batch with one header line binding it to one decision", () => {
+    const items = deliveryInputItems([
+      { ref, promptRef },
+      { ref: promptRef, promptRef: ref },
+    ]);
+    expect(items).toHaveLength(3);
+    expect(items[0]).toMatchObject({ type: "text" });
+    expect((items[0] as { text: string }).text).toContain("2 events");
+    expect((items[0] as { text: string }).text).toContain("resolve the delivery once");
+  });
+
+  it("steers with a short note and the renderings", () => {
+    const items = steerInputItems([{ ref, promptRef }]);
+    expect(items[0]).toMatchObject({ type: "text" });
+    expect((items[0] as { text: string }).text).toContain("fold them into your current work");
+    expect(items[1]).toEqual({ type: "textRef", blobRef: promptRef });
   });
 });
