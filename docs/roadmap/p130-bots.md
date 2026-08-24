@@ -97,6 +97,25 @@
     stale pre-toggle sessions). Read-only tools, `bot_event_resolve`, and
     `bot_emit` (provenance-tagged, budget-bounded) stay always-on.
     Settings-dialog switch; `bot_status` reports the grant.
+  - Hardening round (2026-08-24): (1) routed-session declaration rotation —
+    `ensureRoutedSession` now treats a declaration mismatch like the main
+    session does: bump the key's generation, retry once, and re-key the
+    active lane, so restarts without carry no longer wedge keyed deliveries
+    (integration-tested with replay). (2) CEL save-time validation — the
+    shared `celInput`/route-key zod schemas parse expressions with cel-js at
+    write time, so broken filters fail at `bot_trigger_put`/the API instead
+    of silently archiving events; runtime evaluation still fails closed.
+    (3) The flood breaker now guards schedule fires too (trip disables the
+    trigger and drops its Temporal Schedule, recorded as `breaker_tripped`).
+    (4) `bot_emit` moved behind its own grant `bots.self_emit` (migration
+    `0010_bot_self_emit`, default off, settings switch, declaration +
+    execution enforcement like `selfConfig`), and granted bots are
+    rate-capped (bot breaker rate, else 60/hour) with a 429 tool error, so
+    self-event feedback loops break before the daily budget.
+  - Decided 2026-08-24: no dedicated operator-chat trigger. Messaging a bot
+    directly goes through the sessions page's Direct-input override (below);
+    the `chat` transport in the proposal body remains the future Channels
+    bridge (slice 5), unrelated to operator messaging.
   - Operator direct input (2026-08-24): the sessions-page composer gate on
     managed sessions became an explicit override — a "Direct input" switch
     (off by default, reset on navigation) with a warning that it bypasses
@@ -214,15 +233,10 @@
     redelivery ignored), rotation on mismatch, declaration shape, arg
     mapping, schedule spec validation; nine Temporal integration scenarios.
 - Next: slice 5 (agent-authored pollers in provisioned environments, poll
-  primitive, email, more presets, Channels bridge). Still open: breaker
-  coverage for schedule floods, CEL save-time validation, secret sealing,
-  loop prevention via the `bot:self` provenance tag, and routed-session
-  declaration rotation — `ensureRoutedSession` treats a declaration
-  mismatch as a plain failure, so after a controller restart without carry,
-  deliveries to a pre-existing keyed session wedge as `run_failed` (and the
-  rebuilt sweep list no longer closes it); fix is to catch the typed
-  mismatch, bump that key's generation, and retry once, mirroring the main
-  session's rotation.
+  primitive, email, more presets, Channels bridge). Still open: secret
+  sealing (deferred by decision). Schedule-flood breaker coverage, CEL
+  save-time validation, `bot:self` loop capping, and routed-session
+  declaration rotation were closed by the 2026-08-24 hardening round above.
 
 ## The proposal in one screen
 

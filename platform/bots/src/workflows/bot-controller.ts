@@ -501,6 +501,7 @@ export async function botControllerWorkflowV1(
           botName: config.botName,
           brief: config.brief,
           selfConfig: config.selfConfig === true,
+          selfEmit: config.selfEmit === true,
           appliedProfileRevision:
             appliedProfileId === config.profileId ? appliedProfileRevision : null,
           controller: {
@@ -722,48 +723,70 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  /** Create a routed (perKey / perEvent) session on first use. */
+  /**
+   * Create a routed (perKey / perEvent) session on first use, returning the
+   * session id actually ensured. A declaration mismatch — the session
+   * pre-exists under an older toolset, e.g. after a controller restart
+   * without carry — rotates the key to its next generation and retries
+   * once, mirroring the main session's rotation, instead of wedging the
+   * delivery.
+   */
   async function ensureRoutedSession(
     target: BotEventSession,
     resolvedId: string,
-  ): Promise<boolean> {
-    if (ensuredExtra.has(resolvedId)) return true;
-    try {
-      await activities.ensureBotSession({
-        universeId: config.universeId,
-        sessionId: resolvedId,
-        displayName: `bot ${config.botName} · ${target.label}`,
-        profileId: config.profileId,
-        botName: config.botName,
-        brief: config.brief,
-        selfConfig: config.selfConfig === true,
-        // Routed sessions take the profile at creation; only the main
-        // session tracks profile revisions across its lifetime.
-        appliedProfileRevision: null,
-        controller: {
-          workflowId: workflowInfo().workflowId,
-          workflowKind: BOT_CONTROLLER_WORKFLOW,
-        },
-      });
-    } catch (error) {
-      lastError = errorMessage(error);
-      return false;
-    }
-    ensuredExtra.add(resolvedId);
-    extraSessions.push({
-      sessionId: resolvedId,
-      label: target.label,
-      kind: resolvedId.includes(":e-") ? "event" : "keyed",
-      lastActiveAtMs: Date.now(),
-    });
-    if (extraSessions.length > EXTRA_SESSION_CAP) {
-      const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
-      for (const session of evicted) {
-        ensuredExtra.delete(session.sessionId);
-        sessionCursors.delete(session.sessionId);
+  ): Promise<string | null> {
+    let sessionIdToEnsure = resolvedId;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (ensuredExtra.has(sessionIdToEnsure)) return sessionIdToEnsure;
+      try {
+        await activities.ensureBotSession({
+          universeId: config.universeId,
+          sessionId: sessionIdToEnsure,
+          displayName: `bot ${config.botName} · ${target.label}`,
+          profileId: config.profileId,
+          botName: config.botName,
+          brief: config.brief,
+          selfConfig: config.selfConfig === true,
+          selfEmit: config.selfEmit === true,
+          // Routed sessions take the profile at creation; only the main
+          // session tracks profile revisions across its lifetime.
+          appliedProfileRevision: null,
+          controller: {
+            workflowId: workflowInfo().workflowId,
+            workflowKind: BOT_CONTROLLER_WORKFLOW,
+          },
+        });
+      } catch (error) {
+        if (isDeclarationMismatch(error) && attempt === 0) {
+          const base = routedBase(sessionIdToEnsure);
+          sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
+          const previous = sessionIdToEnsure;
+          sessionIdToEnsure = resolveRoutedSessionId(base);
+          await record("session_rotated", {
+            detail: `routed session ${previous} rotated to ${sessionIdToEnsure} after a declaration mismatch`,
+          });
+          continue;
+        }
+        lastError = errorMessage(error);
+        return null;
       }
+      ensuredExtra.add(sessionIdToEnsure);
+      extraSessions.push({
+        sessionId: sessionIdToEnsure,
+        label: target.label,
+        kind: sessionIdToEnsure.includes(":e-") ? "event" : "keyed",
+        lastActiveAtMs: Date.now(),
+      });
+      if (extraSessions.length > EXTRA_SESSION_CAP) {
+        const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
+        for (const session of evicted) {
+          ensuredExtra.delete(session.sessionId);
+          sessionCursors.delete(session.sessionId);
+        }
+      }
+      return sessionIdToEnsure;
     }
-    return true;
+    return null;
   }
 
   /** Close routed sessions idle past the retention window. */
@@ -902,11 +925,11 @@ export async function botControllerWorkflowV1(
       return;
     }
     const eventCount = delivery.events.length;
-    const target = active.sessionId;
+    let target = active.sessionId;
     try {
       if (delivery.session !== undefined) {
         const ensured = await ensureRoutedSession(delivery.session, target);
-        if (!ensured) {
+        if (ensured === null) {
           await record("run_failed", {
             eventId: delivery.id,
             detail: `failed to create session ${target}`,
@@ -919,6 +942,14 @@ export async function botControllerWorkflowV1(
             failure: `failed to create session ${target}: ${lastError ?? "unknown"}`,
           });
           return;
+        }
+        if (ensured !== target) {
+          // The routed session rotated during ensure; move this lane to the
+          // successor id so terminals and busy checks find it.
+          activeBySession.delete(target);
+          active.sessionId = ensured;
+          activeBySession.set(ensured, active);
+          target = ensured;
         }
       }
 

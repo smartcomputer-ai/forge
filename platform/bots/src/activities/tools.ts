@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq } from "drizzle-orm";
+import { and, count, desc, eq, gte } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
@@ -196,6 +196,12 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         403,
       );
     }
+    if (!bot.selfEmit && input.toolId === BOT_EMIT_TOOL_ID) {
+      throw new BotConfigError(
+        "self-emitted events are disabled for this bot; an operator can enable them in the bot's settings",
+        403,
+      );
+    }
     switch (input.toolId) {
       case BOT_STATUS_TOOL_ID: {
         return {
@@ -209,6 +215,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             breaker: bot.breaker,
             routedSessionTtlMs: bot.routedSessionTtlMs,
             selfConfig: bot.selfConfig,
+            selfEmit: bot.selfEmit,
             eventsProcessed: input.controller.eventsProcessed,
           },
           sessions: input.controller.sessions,
@@ -420,6 +427,27 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
       case BOT_EMIT_TOOL_ID: {
         const kind = requireString(args.kind, "kind");
         const summary = requireString(args.summary, "summary");
+        // Loop breaker: even a granted bot cannot feed itself unbounded
+        // events. The bot's breaker rate applies when set; otherwise a
+        // fixed ceiling. The refusal is a tool error the model reads.
+        const cap = bot.breaker ?? { fires: 60, windowMs: 60 * 60 * 1000 };
+        const since = new Date(Date.now() - cap.windowMs);
+        const [recentSelf] = await config.db
+          .select({ value: count() })
+          .from(schema.botEvents)
+          .where(
+            and(
+              eq(schema.botEvents.botId, bot.id),
+              eq(schema.botEvents.source, "bot:self"),
+              gte(schema.botEvents.receivedAt, since),
+            ),
+          );
+        if (Number(recentSelf?.value ?? 0) >= cap.fires) {
+          throw new BotConfigError(
+            `self-emission rate exceeded (${cap.fires} events in ${Math.round(cap.windowMs / 1000)}s); wait before emitting again`,
+            429,
+          );
+        }
         const sessionKey = typeof args.sessionKey === "string" && args.sessionKey ? args.sessionKey : null;
         const document: BotEventDocumentV1 = {
           version: 1,

@@ -46,6 +46,12 @@ export const bots = pgTable(
      * default — self-modification is opted into per bot, never assumed.
      */
     selfConfig: boolean("self_config").default(false).notNull(),
+    /**
+     * Capability grant: whether the bot's sessions get `bot_emit`
+     * (self-originated events). Off by default; enabled bots are further
+     * rate-capped to break feedback loops.
+     */
+    selfEmit: boolean("self_emit").default(false).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

@@ -57,6 +57,8 @@ export interface BotStartV1 {
    * as false — self-modification is opt-in.
    */
   selfConfig?: boolean;
+  /** Capability grant: declare `bot_emit` (self-originated events). */
+  selfEmit?: boolean;
   enabled: boolean;
 }
 
@@ -518,12 +520,13 @@ export function botWorkflowTools(
   receiver: WorkflowEndpointInput,
   schemas: BotToolSchemaRefs,
   descriptions: BotToolDescriptionRefs,
-  options?: { selfConfig?: boolean },
+  options?: { selfConfig?: boolean; selfEmit?: boolean },
 ): WorkflowToolDeclarationInput[] {
-  const specs =
-    options?.selfConfig === true
-      ? BOT_TOOL_SPECS
-      : BOT_TOOL_SPECS.filter((spec) => !BOT_SELF_CONFIG_TOOL_IDS.has(spec.toolId));
+  const specs = BOT_TOOL_SPECS.filter((spec) => {
+    if (BOT_SELF_CONFIG_TOOL_IDS.has(spec.toolId)) return options?.selfConfig === true;
+    if (spec.toolId === BOT_EMIT_TOOL_ID) return options?.selfEmit === true;
+    return true;
+  });
   return specs.map((spec) => ({
     definition: {
       toolId: spec.toolId,

@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { parse } from "cel-js";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { schema, type Db } from "@lightspeed/platform-db";
@@ -24,10 +25,27 @@ export const cronInput = z
     (value) => value.startsWith("@") || (!value.includes("?") && value.split(/\s+/).length === 5),
     "expected 5-field cron (minute hour day month weekday) or an @-macro like @daily",
   );
-export const celInput = z.string().trim().min(1).max(2_000);
+/// CEL expressions are validated at save time: a filter or route key that
+/// cannot parse would otherwise only surface as silently archived events
+/// (filters fail closed) or fallback routing. Runtime evaluation errors
+/// still fail closed; this catches the syntax class where it was written.
+const celExpression = (maxLength: number) =>
+  z
+    .string()
+    .trim()
+    .min(1)
+    .max(maxLength)
+    .superRefine((expression, ctx) => {
+      const result = parse(expression);
+      if (!result.isSuccess) {
+        const detail = result.errors?.join("; ") ?? "parse error";
+        ctx.addIssue({ code: "custom", message: `invalid CEL: ${detail}` });
+      }
+    });
+export const celInput = celExpression(2_000);
 export const routeInput = z.discriminatedUnion("policy", [
   z.object({ policy: z.literal("bot") }),
-  z.object({ policy: z.literal("perKey"), key: celInput.max(500).nullish() }),
+  z.object({ policy: z.literal("perKey"), key: celExpression(500).nullish() }),
   z.object({ policy: z.literal("perEvent") }),
 ]);
 export const scheduleSpecInput = z
@@ -140,7 +158,7 @@ export interface BotConfigDeps {
 export class BotConfigError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 403 | 404 | 409 | 502,
+    readonly status: 400 | 403 | 404 | 409 | 429 | 502,
     readonly issues?: unknown,
   ) {
     super(message);

@@ -42,6 +42,7 @@ const botCreateSchema = z.object({
   breaker: breakerInput.nullish(),
   routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullish(),
   selfConfig: z.boolean().optional(),
+  selfEmit: z.boolean().optional(),
 });
 const botUpdateSchema = z
   .object({
@@ -51,6 +52,7 @@ const botUpdateSchema = z
     breaker: breakerInput.nullable().optional(),
     routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullable().optional(),
     selfConfig: z.boolean().optional(),
+    selfEmit: z.boolean().optional(),
     enabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "at least one field is required");
@@ -111,6 +113,7 @@ export function botRoutes(ctx: AppContext) {
         breaker: body.data.breaker ?? null,
         routedSessionTtlMs: body.data.routedSessionTtlMs ?? null,
         selfConfig: body.data.selfConfig ?? false,
+        selfEmit: body.data.selfEmit ?? false,
       })
       .onConflictDoNothing()
       .returning();
@@ -172,6 +175,7 @@ export function botRoutes(ctx: AppContext) {
           breaker: found.bot.breaker,
           routedSessionTtlMs: found.bot.routedSessionTtlMs,
           selfConfig: found.bot.selfConfig,
+          selfEmit: found.bot.selfEmit,
           enabled: found.bot.enabled,
         })
         .where(eq(bots.id, found.bot.id));
@@ -454,7 +458,7 @@ export function decodeHistoryCursor(value: string | undefined): { at: Date; id: 
 }
 
 function configErrorResponse(
-  c: { json: (body: unknown, status: 400 | 403 | 404 | 409 | 502) => Response },
+  c: { json: (body: unknown, status: 400 | 403 | 404 | 409 | 429 | 502) => Response },
   error: unknown,
 ): Response {
   if (error instanceof BotConfigError) {

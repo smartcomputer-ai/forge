@@ -865,6 +865,118 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     }
   }, 60_000);
 
+  it("rotates a routed session whose declaration no longer matches", async () => {
+    const rotatedRoutedBotName = "routed-rotated";
+    const ensured: string[] = [];
+    const runs: string[] = [];
+    const activity: string[] = [];
+    const mainSession = botSessionId(rotatedRoutedBotName);
+    const keyed = `${mainSession}:k-pr-9-cafecafe`;
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          if (sessionId === keyed) {
+            // The routed session pre-exists under an older declaration.
+            throw ApplicationFailure.nonRetryable(
+              "created under another declaration",
+              BOT_SESSION_DECLARATION_MISMATCH,
+            );
+          }
+          return { profileRevision: 1 };
+        },
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async ({ sessionId }: { sessionId: string }) => {
+          runs.push(sessionId);
+          return { runId: `run_${runs.length}` };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async (input: { entries: { kind: string }[] }) => {
+          activity.push(...input.entries.map((entry) => entry.kind));
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: rotatedRoutedBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const event: BotEvent = {
+        version: 1,
+        id: "rr-1",
+        ref: eventRef,
+        session: { sessionId: keyed, label: "pr-9" },
+      };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, rotatedRoutedBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [event],
+      });
+
+      // Instead of wedging as run_failed, the delivery lands on the key's
+      // next generation.
+      const inFlight = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) =>
+          state.activeDeliveries.some(
+            (active) => active.sessionId === `${keyed}-g2` && active.runId !== null,
+          ),
+      );
+      expect(inFlight.activeDeliveries[0]?.id).toBe(event.id);
+      expect(ensured).toContain(keyed);
+      expect(ensured).toContain(`${keyed}-g2`);
+      expect(runs).toEqual([`${keyed}-g2`]);
+      expect(activity).toContain("session_rotated");
+      expect(
+        inFlight.sessions.some((session) => session.sessionId === `${keyed}-g2`),
+      ).toBe(true);
+
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(`${keyed}-g2`, 1, botEventTerminalToken(event.id)),
+      );
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 1 && state.activeDeliveries.length === 0,
+      );
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        botWorkflowId(universeId, rotatedRoutedBotName),
+      );
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
   it("answers pushed bot_* invocations and resolves the session's parked call", async () => {
     const toolBotName = "selfconfig";
     const executed: unknown[] = [];

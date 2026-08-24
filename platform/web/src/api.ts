@@ -622,6 +622,8 @@ export interface Bot {
   routedSessionTtlMs: number | null;
   /** Whether this bot's sessions get the mutating self-configuration tools. */
   selfConfig: boolean;
+  /** Whether this bot's sessions get bot_emit (rate-capped self events). */
+  selfEmit: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

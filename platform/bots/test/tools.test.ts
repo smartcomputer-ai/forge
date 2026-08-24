@@ -51,6 +51,7 @@ describe("bot tool declarations", () => {
     };
     const tools = botWorkflowTools(receiver, toolRefs.schemas, toolRefs.descriptions, {
       selfConfig: true,
+      selfEmit: true,
     });
     expect(tools).toHaveLength(10);
     for (const tool of tools) expect(tool.definition.revision).toBe(BOT_TOOLS_REVISION);
@@ -113,21 +114,30 @@ describe("bot tool declarations", () => {
       "briefPut",
       "emit",
     ]) as never;
-    // Default (no options) is the ungated set: self-modification is opt-in.
+    // Default (no options) is the fully ungated set: self-modification and
+    // self-emission are both opt-in.
     for (const tools of [
       botWorkflowTools(receiver, schemas, descriptions),
-      botWorkflowTools(receiver, schemas, descriptions, { selfConfig: false }),
+      botWorkflowTools(receiver, schemas, descriptions, { selfConfig: false, selfEmit: false }),
     ]) {
       const ids = new Set(tools.map((tool) => tool.definition.toolId));
-      expect(tools).toHaveLength(7);
+      expect(tools).toHaveLength(6);
       expect(ids.has("lightspeed.bots.trigger.put.v1")).toBe(false);
       expect(ids.has("lightspeed.bots.trigger.delete.v1")).toBe(false);
       expect(ids.has("lightspeed.bots.brief.put.v1")).toBe(false);
+      expect(ids.has("lightspeed.bots.emit.v1")).toBe(false);
       // Read-only and event tools stay: inspect yes, mutate no.
       expect(ids.has("lightspeed.bots.trigger.list.v1")).toBe(true);
       expect(ids.has("lightspeed.bots.event.resolve.v1")).toBe(true);
-      expect(ids.has("lightspeed.bots.emit.v1")).toBe(true);
     }
+    // The grants are independent.
+    const emitOnly = new Set(
+      botWorkflowTools(receiver, schemas, descriptions, { selfEmit: true }).map(
+        (tool) => tool.definition.toolId,
+      ),
+    );
+    expect(emitOnly.has("lightspeed.bots.emit.v1")).toBe(true);
+    expect(emitOnly.has("lightspeed.bots.trigger.put.v1")).toBe(false);
   });
 
   it("derives the core session workflow id for replies", () => {
@@ -213,6 +223,31 @@ describe("bot_trigger_put argument mapping", () => {
       parseTriggerPutArgs({ name: "x", kind: "webhook", verification: "hmac-sha256", secret: null }),
     ).toThrow(BotConfigError);
     expect(() => parseTriggerPutArgs({ name: "x", kind: "poll" })).toThrow(BotConfigError);
+  });
+});
+
+describe("cel save-time validation", () => {
+  it("rejects unparseable filters and route keys where they are written", () => {
+    const webhook = (extra: Record<string, unknown>) => ({
+      name: "hook",
+      kind: "webhook",
+      ...extra,
+    });
+    expect(triggerCreateInput.safeParse(webhook({ filter: 'event.kind == "x"' })).success).toBe(
+      true,
+    );
+    const broken = triggerCreateInput.safeParse(webhook({ filter: 'event.kind == ' }));
+    expect(broken.success).toBe(false);
+    expect(JSON.stringify(broken.error?.issues)).toContain("invalid CEL");
+    expect(
+      triggerCreateInput.safeParse(
+        webhook({ route: { policy: "perKey", key: "data.pr.number" } }),
+      ).success,
+    ).toBe(true);
+    expect(
+      triggerCreateInput.safeParse(webhook({ route: { policy: "perKey", key: "data..x" } }))
+        .success,
+    ).toBe(false);
   });
 });
 

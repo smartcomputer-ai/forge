@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, count, eq, gte } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
@@ -30,7 +30,10 @@ export interface AdmitScheduleEventInput {
 
 export type AdmitScheduleEventResult =
   | { admitted: true; eventId: string; duplicate: boolean }
-  | { admitted: false; reason: "trigger_missing" | "trigger_disabled" | "bot_disabled" };
+  | {
+      admitted: false;
+      reason: "trigger_missing" | "trigger_disabled" | "bot_disabled" | "breaker_tripped";
+    };
 
 export interface BotScheduleActivities {
   admitScheduleEvent(input: AdmitScheduleEventInput): Promise<AdmitScheduleEventResult>;
@@ -56,6 +59,43 @@ export function createBotScheduleActivities(
       if (row.trigger.kind !== "schedule") return { admitted: false, reason: "trigger_missing" };
       if (!row.trigger.enabled) return { admitted: false, reason: "trigger_disabled" };
       if (!row.bot.enabled) return { admitted: false, reason: "bot_disabled" };
+      // The flood breaker guards schedules exactly like webhooks: a trigger
+      // firing beyond the bot's rate is disabled (and its Temporal Schedule
+      // dropped) until a human re-enables it. Misconfigured or runaway
+      // schedules must not burn the run budget unattended.
+      const breaker = row.bot.breaker;
+      if (breaker) {
+        const since = new Date(Date.now() - breaker.windowMs);
+        const [recent] = await config.db
+          .select({ value: count() })
+          .from(schema.botEvents)
+          .where(
+            and(
+              eq(schema.botEvents.triggerId, row.trigger.id),
+              gte(schema.botEvents.receivedAt, since),
+            ),
+          );
+        if (Number(recent?.value ?? 0) >= breaker.fires) {
+          await config.db
+            .update(schema.botTriggers)
+            .set({ enabled: false })
+            .where(eq(schema.botTriggers.id, row.trigger.id));
+          await deleteBotSchedule(
+            config.temporal,
+            row.lightspeedUniverseId,
+            row.bot.name,
+            row.trigger.name,
+          ).catch(() => undefined);
+          await config.db.insert(schema.botActivity).values({
+            botId: row.bot.id,
+            kind: "breaker_tripped",
+            eventId: null,
+            runId: null,
+            detail: `schedule trigger ${row.trigger.name} exceeded ${breaker.fires} fires in ${Math.round(breaker.windowMs / 1000)}s and was disabled`,
+          });
+          return { admitted: false, reason: "breaker_tripped" };
+        }
+      }
       const spec = row.trigger.spec as {
         cron?: string | null;
         at?: string | null;
