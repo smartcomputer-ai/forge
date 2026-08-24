@@ -1,0 +1,198 @@
+# Fleet vs Bots: One Delegation Story
+
+**Status**
+
+- Design review, 2026-08-24. Written from a full-codebase survey (core fleet
+  control plane, engine primitives, API contract, platform usage, docs
+  history P82–P92) triggered by the question: now that the product is
+  coalescing around Bots (P130), should Fleet move out of core — or go?
+- Recommendation at the end: remove the fleet control plane from core, keep
+  the generic substrate it was built on, and re-grow delegation at the bot
+  tier when a use case demands it. This is a decision doc, not a plan;
+  slices follow once the direction is agreed.
+
+## The two concepts
+
+**Fleet** (P82–P85, P92): model-initiated, mid-run delegation. A session's
+model calls `agent_spawn` (clone/fork/profile), `agent_send`/`agent_request`,
+and parks on `await` until child runs resolve promises. Authority lives in
+the model: it decides what to spawn, when to wait, what to do with results.
+
+**Bots** (P130): a deterministic platform controller above sessions. Events
+in, routing/coalescing/budgets/breakers applied by code, managed sessions
+driven as workers, everything observable in an activity feed. Authority
+lives in the controller; models reason inside the sessions it runs.
+
+These are the same shape at different tiers — a bot controller *is* a
+"manager agent" whose management layer is deterministic code instead of a
+prompted model.
+
+## What the survey found
+
+**1. The engine is already clean.** Core's fleet-specific footprint is three
+policy items: the `FleetFeature` config block, `FeaturesConfig.fleet`, and a
+`fleet_policy` field on tool-batch requests. Everything fleets run on —
+promises, `await`/`cancel`/`detach`/`sleep`, `RunTerminalNotifyIntent`, the
+P100 emission spine, session clone/fork, the `session_links` table — is
+generic substrate shared with workflow tools, environment jobs, timers, and
+managed sessions. Environment jobs pull in the concurrency tools with no
+fleet involvement. "Fleet primitives in the engine" turn out to be one
+relationship string (`"fleet_child"`) written into a generic link table.
+
+**2. The control plane is real but tenantless.** ~5,400 lines
+(`temporal-server/src/fleet.rs` 4.3k, `tools/fleet` 1.1k) of well-built,
+digest-deterministic spawn/send/request machinery — with exactly one
+consumer: the Foundry manager profile, whose delegation is entirely
+model-driven (no Foundry code ever observes or bounds the children it
+prompts the model to create). Bots, Channels, CLI, eval, test-support, and
+every fixture in the repo grant fleet zero times. Foundry is the frozen
+proto-bot whose product future is Bots; when it goes, fleet's consumer count
+is zero.
+
+**3. The grant is exposed; the graph is not.** Clients can *enable* fleet
+through config/UI/configurator-MCP, but `SessionView` has no parent/child/
+lineage fields, the TS client has no link types, `session_links` is
+unenforced ("nothing enforces them yet") and unexposed, `api-reference.md`
+never mentions fleets, and the sessions UI TODOs the sub-agent tree. A user
+can create a fleet and then cannot see it. The model sees more of the graph
+than the human does.
+
+**4. The safety layer was scoped and never built.** P92's follow-up
+`p93-fleet-safety.md` (spawn budgets, tree/active-work index, tree
+observability) does not exist — while the incident that motivated P92 (a
+WhatsApp-bound assistant recursively spawning subagents, one child wedged
+unclosable in `cancelling`) is exactly what it would have prevented. Foundry
+grants `spawn.bases: ["self","session","profile"]` — everything, unbounded.
+Meanwhile the bot tier *already has* the equivalents: run budgets, flood
+breakers, self-emission caps, activity trail, capability grants
+(`selfConfig`/`selfEmit`), generation rotation.
+
+**5. Drift is shipping.** The `FleetFeature` description in seven generated
+artifacts (OpenRPC, TS client, configurator, web reference) advertises
+`agent_cancel`, which no longer exists, and omits `agent_request`, which
+does. The README markets "a fleet of agents that build, test, and critique
+your next feature"; the roadmap still describes the removed `agent_wait`.
+P129 carries fleet-only special cases (`MessageBuffered` mailbox delivery,
+steering-vs-await interactions, a cancel-grace open question).
+
+**6. The one forward-looking use is outbound.** The A2A adapter idea
+(`pNNN-a2a-protocol-adapter.md`) wants fleet's *vocabulary* —
+spawn/send/read/cancel mapping onto `message/send`/`tasks/get`/`tasks/cancel`
+— for calling remote agents. That is a platform adapter concern; it needs
+the verbs, not the in-core control plane.
+
+## The real tension
+
+Not mechanism — the substrate composes fine. The tension is that Lightspeed
+currently tells two stories for "more than one session's worth of work":
+
+- *Fleet story*: trust the model to be the manager. Evidence: one incident,
+  no observability, no budgets, no adoption.
+- *Bot story*: deterministic controller manages; models reason. Evidence:
+  the entire P130 arc, dogfooded, observable, budgeted, self-configuring
+  within grants.
+
+The industry converged the same way (the P130 research): every shipping
+"ambient agent" product is a deterministic trigger/route/budget layer around
+model sessions, not a model-run org chart. And the repo's own prior writing
+already picked the winner: **"Bots own admission and lifecycle. Sessions own
+reasoning"** (bots-alternative, adopted into P130's boundary).
+
+What fleet *uniquely* offers and bots do not (yet):
+
+1. **Mid-run structured concurrency** — spawn N, `await all/any`, join
+   results inside one reasoning loop. Routed bot sessions are fire-and-
+   forget; their terminals report to the controller, not into another
+   session's turn.
+2. **Clone/fork lineage** — children that share the parent's context.
+   (Note: managed sessions are banned as clone/fork sources, so *bot*
+   sessions could never use this half anyway; profile spawning is the only
+   base that composes with bots today.)
+3. A ready vocabulary for A2A.
+
+(1) is the load-bearing one, and critically it is *not* fleet code — it is
+the promise/await substrate plus P100 joined workflow tools, all of which
+stay regardless.
+
+## Options
+
+**A. Status quo** — keep both, ship P93 someday. Cost: two delegation
+stories forever, a headline capability with no consumer, contract surface
+and UI cards to maintain, safety debt in the tier with the least
+observability. Rejected: this is the option the last two months already
+voted against.
+
+**B. Bots adopt fleet as-is** — keep the core control plane, but expose
+`features.fleet` only through bot profiles (a `selfDelegate` grant beside
+`selfConfig`/`selfEmit`), bases restricted to `profile`, and implement P93's
+budgets as bot policy. Cheapest path to "governed fleets"; but core still
+carries a 5.4k-line control plane, the contract still exposes a grant whose
+graph no client can see, and every fleet fix happens in the slow tier.
+Viable fallback if mid-run delegation is needed *soon*.
+
+**C. Remove the control plane; keep the substrate; re-grow at the bot tier
+(recommended).**
+
+Remove from core:
+- `temporal-server/src/fleet.rs`, `tools/src/fleet/`, the `*_for_fleet`
+  gateway entry points, fleet toolset derivation, and the fleet-only
+  dispatch/dedup paths in `session_tools.rs`;
+- `FleetFeature`/`FleetProfilesConfig`/`FleetSpawnConfig` from engine + api
+  (+ regenerate the contract; breaking, and we are greenfield);
+- the web/config-editor Fleet card, configurator exposure, profile
+  reference entry;
+- the `session_links` table and link store traits (fleet is its only
+  writer; recreate under whatever concept next needs edges);
+- the P129 fleet-only `MessageBuffered` special case if nothing else uses
+  it after removal (audit at implementation time).
+
+Keep in core (all generic, all load-bearing elsewhere):
+- promises, `await`/`cancel`/`detach`/`sleep` (environment jobs and P100b
+  joined tools depend on them);
+- `RunTerminalNotifyIntent` + emission spine (bots' terminal tracking is
+  built on it);
+- session clone/fork + `source_session_id` lineage (real debugging value;
+  cheap; also the P130 friction list wants branching someday).
+
+Retire Foundry into Bots on its own track (already the stated direction);
+its manager/worker packs become a bot whose delivery policy fans work to
+routed profile sessions.
+
+When a real use case wants mid-run delegation again, build it where the
+governance already lives: **bot-tier workflow tools** — e.g. `bot_delegate`
+(joined, promise-backed via the existing P100 machinery): the model asks,
+the controller spawns a managed profile session it fully owns — budgeted,
+breaker-guarded, in the activity feed, retention-swept, visible in the bot
+UI — and the reply resolves the parent's parked call. That is P93's safety
+layer for free, at the tier that iterates weekly. The A2A adapter later
+lands in the same place as another delegate target.
+
+**D. Radical unification** — make "bot" the only nucleus: every session
+belongs to a bot, fleets/Foundry/Channels all become bot policies. Directionally
+where the product may end, but it forces a core rewrite (sessions without
+controllers are the API's whole surface) for no near-term gain. Revisit
+after bots have earned that gravity in production.
+
+## Consequences of C
+
+- **Wins**: one delegation story; ~5.4k lines and a whole contract feature
+  gone; the README claim becomes honest ("bots run fleets of sessions" —
+  which is what the code will actually do); the P93 debt dissolves into
+  bot-tier guardrails that already exist; P129's fleet special cases can
+  simplify; the engine loses its last product-flavored grant.
+- **Losses**: mid-run `await`-join of *model-chosen* children until
+  `bot_delegate` exists (no current consumer loses anything real); clone/
+  fork loses its only caller (kept as a store capability); the A2A doc's
+  "tools already exist" shortcut becomes "tools to be recreated at the
+  adapter tier".
+- **Risks**: none operational (nothing in production grants fleet); the
+  main cost is Foundry's fallback profile, which hard-requires the fleet
+  grant — Foundry retirement or a profile fix must land in the same change.
+
+## Non-goals
+
+- Deleting the promise/await/emission substrate — it is the best part of
+  the fleet work and everything else stands on it.
+- Building `bot_delegate` speculatively. It waits for a concrete bot that
+  needs mid-run fan-out; the design above is enough to start when it does.
+- An agent-type/manifest/graph system (docs/spec/03 stays deferred).
