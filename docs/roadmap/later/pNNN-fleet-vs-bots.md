@@ -10,6 +10,15 @@
   the generic substrate it was built on, and re-grow delegation at the bot
   tier when a use case demands it. This is a decision doc, not a plan;
   slices follow once the direction is agreed.
+- 2026-08-24, after review discussion: Lukas leans option C, with one
+  correction that stands — the template objection (profiles are stamped
+  many times; bots are named singletons; workflow tools require managed
+  sessions, so bot-tier delegation can never serve ordinary or
+  profile-templated sessions). Adopted direction is therefore **C′**: C's
+  removals plus a slim, governed, profile-grantable delegation kernel in
+  core. See "Refinement: the template objection". Bot federation
+  (bot→bot events and cross-bot configuration) goes to the roadmap at the
+  platform tier.
 
 ## The two concepts
 
@@ -173,6 +182,62 @@ where the product may end, but it forces a core rewrite (sessions without
 controllers are the API's whole surface) for no near-term gain. Revisit
 after bots have earned that gravity in production.
 
+## Refinement: the template objection (C′, adopted direction)
+
+Pure C has a hole: **profiles are Lightspeed's template mechanism — one
+profile, many stamped instances — while bots are named singletons.** And
+workflow tools exist only on *managed* sessions, so a bot-tier
+`bot_delegate` can never serve an ordinary interactive session or a
+profile meant to be instantiated many times. Within a bot the objection
+does not bite (one bot's grant covers every session it routes); outside
+bots it does: "wrap it in a bot" per spawning use case is the wrong
+economics for a capability that wants to be a profile line.
+
+Resolution: delegation stays a **profile-expressible core capability**,
+rebuilt at roughly a quarter of the old control plane's size and governed
+from day one:
+
+- **One tool**: `delegate { profile, input }` — spawn an ordinary profile
+  child (digest-deterministic ids as before), start its run, return a
+  promise; the generic `await` joins it. No clone/fork bases, no
+  send/read/list graph surface, no link table — children are plain
+  sessions with `source_session_id` lineage.
+- **The grant**: `features.delegation { profiles: allowlist, maxChildren,
+  maxDepth, runBudget }`. Depth rides on the child session record so the
+  engine enforces `maxDepth`; budget and child-count are grant-local.
+  This is P93's safety layer folded into the capability instead of
+  deferred behind it.
+- **Observability is part of the kernel, not a follow-up**: lineage
+  (`sourceSessionId`, depth) exposed on session views and the sessions UI,
+  closing the "model sees more of the graph than the human" gap.
+- **Nesting**: a child's profile may itself grant `delegation` — trees of
+  templated agents, bounded by depth, cancelled by the existing generic
+  cascade (run-scoped promises → child `CancelRun`).
+- **Bots compose, not replace**: a bot's worker profiles may carry the
+  grant, giving the bot fan-out with two budget layers (controller budget
+  above, delegation budget below). `bot_delegate` as a separate workflow
+  tool is superseded by this kernel.
+
+What C′ changes about C's ledger: `agent_spawn`'s profile base and the
+promise plumbing survive in miniature; everything else in the removal list
+still goes. The A2A adapter later targets the same `delegate` verb with a
+remote target instead of needing the old seven-tool vocabulary.
+
+## Bot federation (platform tier, roadmap)
+
+Wanted, cheap, and independent of the core kernel — neither item ever
+needed fleet:
+
+- **Bot → bot events**: `bot_emit` grows a `targetBot`; the event keeps
+  `source: bot:<sender>` so provenance, loop caps, and the receiver's
+  filters/breaker all apply unchanged.
+- **Bot → bot configuration**: the `bot_trigger_put` / `bot_brief_put`
+  family grows a target-bot form behind a new operator grant
+  (`manageBots` — the `selfConfig` pattern pointed outward), enabling an
+  ops-bot that tunes other bots without new machinery.
+
+Tracked as a P131 workstream.
+
 ## Consequences of C
 
 - **Wins**: one delegation story; ~5.4k lines and a whole contract feature
@@ -193,6 +258,7 @@ after bots have earned that gravity in production.
 
 - Deleting the promise/await/emission substrate — it is the best part of
   the fleet work and everything else stands on it.
-- Building `bot_delegate` speculatively. It waits for a concrete bot that
-  needs mid-run fan-out; the design above is enough to start when it does.
+- Rebuilding the seven-tool fleet surface. C′'s kernel is one verb plus
+  the existing `await`; send/read/list graph tools return only if a real
+  consumer demands them.
 - An agent-type/manifest/graph system (docs/spec/03 stays deferred).

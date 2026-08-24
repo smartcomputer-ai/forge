@@ -96,6 +96,19 @@ Channels-side emitter into the existing bot ingest — no new bot-side
 machinery expected. (Distinct from operator chat, which P130 resolved via
 the sessions page's Direct-input override.)
 
+### 6. Bot federation (from the fleet-vs-bots review)
+
+Two small platform-tier items, independent of the rest of this doc (see
+`later/pNNN-fleet-vs-bots.md`):
+
+- **Bot → bot events**: `bot_emit` grows a `targetBot`; the event keeps
+  `source: bot:<sender>`, so provenance tagging, the self-emission cap,
+  and the receiver's filters and breaker apply unchanged.
+- **Bot → bot configuration**: target-bot forms of `bot_trigger_put` /
+  `bot_brief_put` behind a new `manageBots` operator grant (the
+  `selfConfig` pattern pointed outward) — an ops-bot that tunes other
+  bots.
+
 ## Order and shape
 
 1 (`poll`) is the smallest and load-bearing for 3; do it first. 2, 4, 5 are
