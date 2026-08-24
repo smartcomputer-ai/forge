@@ -163,9 +163,15 @@ Keep in core (all generic, all load-bearing elsewhere):
 - session clone/fork + `source_session_id` lineage (real debugging value;
   cheap; also the P130 friction list wants branching someday).
 
-Retire Foundry into Bots on its own track (already the stated direction);
-its manager/worker packs become a bot whose delivery policy fans work to
-routed profile sessions.
+Retire Foundry outright (decided 2026-08-24): bots supersede all of it, so
+nothing folds — packs/releases tables, routes, workers, the
+`foundryDirectTerminalToken` gateway special case, and the web surface all
+delete. The manager-profile delegation story is covered by this doc's C′
+kernel; `foundry_release_record` goes without replacement (a future
+"deployments" platform primitive is the anticipated successor if
+structured deployment outcomes are wanted again). Verified: core Rust,
+including the workflow-tool plugin live suite, has zero Foundry
+dependencies — the removal is platform-only.
 
 When a real use case wants mid-run delegation again, build it where the
 governance already lives: **bot-tier workflow tools** — e.g. `bot_delegate`
@@ -250,9 +256,10 @@ Tracked as a P131 workstream.
   fork loses its only caller (kept as a store capability); the A2A doc's
   "tools already exist" shortcut becomes "tools to be recreated at the
   adapter tier".
-- **Risks**: none operational (nothing in production grants fleet); the
-  main cost is Foundry's fallback profile, which hard-requires the fleet
-  grant — Foundry retirement or a profile fix must land in the same change.
+- **Risks**: none operational (nothing in production grants fleet).
+  Foundry's fallback profile hard-requires the fleet grant, but Foundry
+  retirement (decided, above) removes that consumer; sequencing is Foundry
+  removal first, then fleet removal + kernel.
 
 ## Non-goals
 
