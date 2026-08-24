@@ -25,12 +25,7 @@ impl GatewayAgentApi {
             .activatable(environment_id, allowed.as_ref(), now_ms()?)
             .await
             .map(|(environment, _ready)| environment)
-            .map_err(|error| match error {
-                crate::environment_resolver::EnvironmentResolveError::Store(error) => {
-                    map_environments_error(error)
-                }
-                other => AgentApiError::rejected(other.to_string()),
-            })
+            .map_err(map_environment_resolve_error)
     }
 
     pub(super) async fn wait_for_active_environment(
@@ -64,6 +59,25 @@ impl GatewayAgentApi {
             }
             tokio::time::sleep(self.poll_interval).await;
         }
+    }
+}
+
+/// One API mapping for resolver failures everywhere the gateway resolves an
+/// environment on a caller's behalf. `NotReady` is typed so wake-on-use is
+/// distinguishable from rejection: the resolver has already set desired
+/// power to `running` where that applies, and the caller's correct move is
+/// retry-with-backoff, not failure.
+pub(super) fn map_environment_resolve_error(
+    error: crate::environment_resolver::EnvironmentResolveError,
+) -> AgentApiError {
+    match error {
+        crate::environment_resolver::EnvironmentResolveError::Store(error) => {
+            map_environments_error(error)
+        }
+        not_ready @ crate::environment_resolver::EnvironmentResolveError::NotReady { .. } => {
+            AgentApiError::environment_not_ready(not_ready.to_string())
+        }
+        other => AgentApiError::rejected(other.to_string()),
     }
 }
 

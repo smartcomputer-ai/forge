@@ -66,7 +66,8 @@ export type AgentApiErrorKind =
       | "transcription_failure"
       | "internal"
     )
-  | "session_bootstrap_failed";
+  | "session_bootstrap_failed"
+  | "environment_not_ready";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentNotification".

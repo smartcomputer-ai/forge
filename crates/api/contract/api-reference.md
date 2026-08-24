@@ -350,7 +350,7 @@ Returns one immutable template version from the selected bound provider controll
 
 **Create environment jobs**
 
-Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
+Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.
 
 - Params: `EnvironmentJobCreateParams`
 - Result: `AgentApiOutcome<EnvironmentJobCreateResponse>`

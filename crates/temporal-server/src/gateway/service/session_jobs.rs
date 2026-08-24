@@ -394,13 +394,21 @@ impl GatewayAgentApi {
             .ok_or_else(|| "provider returned no job result".to_owned())
     }
 
+    /// Resolve the environment through the shared status-aware resolver so
+    /// job calls participate in wake-on-use (P126): a powered-down
+    /// provisioned environment gets its desired power set to `running` and
+    /// the call fails typed `environment_not_ready` for the caller to retry
+    /// — the shape polling automations lean on. Plain record reads would
+    /// dial a sleeping data plane and fail generically, waking nothing.
     async fn read_job_instance(
         &self,
         environment_id: &EnvironmentId,
     ) -> Result<EnvironmentRecord, AgentApiError> {
-        ::environments::EnvironmentStore::read_environment(self.store.as_ref(), environment_id)
+        crate::environment_resolver::EnvironmentResolver::from_pg_store(self.store.clone())
+            .with_gateway(self.environment_gateway.clone())
+            .resolve_for_connection(environment_id, None, super::now_ms()?)
             .await
-            .map_err(map_environments_error)
+            .map_err(super::environments::map_environment_resolve_error)
     }
 
     async fn connect_client_for_job_handle(

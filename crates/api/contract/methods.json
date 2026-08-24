@@ -685,7 +685,7 @@
       "summary": "Read an environment template"
     },
     {
-      "description": "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.",
+      "description": "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.",
       "method": "environments/jobs/create",
       "params": {
         "schema": {

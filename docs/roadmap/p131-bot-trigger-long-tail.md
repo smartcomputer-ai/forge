@@ -60,13 +60,18 @@ an interval and admit what changed.
     path (paused/suspended/offline + provider power support → set desired
     power `running` → typed `NotReady`) that session tool dispatch uses.
     Against a suspended environment, jobs/create just fails with a generic
-    connect rejection and wakes nothing. **Prerequisite core patch (small,
-    generically valuable)**: route the jobs create/read paths through the
-    resolver and surface `NotReady` as a typed API error, so the
-    platform's poll-fire activity can lean on Temporal activity retries:
-    fire → wake → retry until ready → run job → idle reaper puts the
-    environment back to sleep. That makes exec polls the power-friendly
-    shape: environments sleep between fires and wake per poll.
+    connect rejection and wakes nothing. **Prerequisite core patch: DONE 2026-08-24.** The jobs
+    create/read/cancel paths now resolve through
+    `environment_resolver::resolve_for_connection`, so a powered-down
+    environment gets desired power `running` set and the call fails with
+    the new typed `environment_not_ready` API error kind (JSON-RPC
+    -32012, mapped in the TS client) instead of a generic connect
+    rejection. Poll-fire activities lean on Temporal retries: fire → wake
+    → retry until ready → run job → idle reaper re-sleeps the
+    environment. Live-validated in
+    `temporal_live_environment_power_intent_converges_and_wakes_on_use`
+    (jobs/create against a suspended environment: typed error + desired
+    power flip observed).
   Resident in-environment poller daemons remain workstream 3: they fight
   the idle policy (a daemon either pins the environment awake or gets
   suspended mid-watch), so they must earn residency — websockets, log

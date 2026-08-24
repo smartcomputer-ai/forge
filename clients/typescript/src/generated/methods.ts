@@ -292,7 +292,7 @@ export const METHOD_INFO = {
   "environments/jobs/create": {
     scope: "universe",
     summary: "Create environment jobs",
-    description: "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.",
+    description: "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.",
   },
   "environments/jobs/read": {
     scope: "universe",
@@ -914,7 +914,7 @@ export interface MethodMap {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.
    */
   "environments/jobs/create": {
     params: Api.EnvironmentJobCreateParams;
@@ -1705,7 +1705,7 @@ export const rpc = {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.
    */
   environmentsJobsCreate(client: RpcCaller, params: Api.EnvironmentJobCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobCreateResponse> {
     return client.call("environments/jobs/create", params);

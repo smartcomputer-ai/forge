@@ -4436,6 +4436,45 @@ async fn run_environment_power_live_client(
         api::EnvironmentLifecycleStatusView::Suspended,
     )
     .await?;
+    // Wake-on-use through the jobs API: creating a job against the
+    // suspended environment fails typed `environment_not_ready` (never a
+    // generic rejection) and flips desired power back to running — the
+    // retry-with-backoff contract polling automations lean on.
+    let job_not_ready = api
+        .create_environment_jobs(api::EnvironmentJobCreateParams {
+            environment_id: environment_id.clone(),
+            request_id: format!("wake-probe-{suffix}"),
+            jobs: vec![api::SessionJobStartSpecInput {
+                name: Some("wake-probe".to_owned()),
+                job_id: None,
+                argv: vec!["true".to_owned()],
+                cwd: None,
+                env: BTreeMap::new(),
+                stdin: None,
+                timeout_ms: None,
+                depends_on: Vec::new(),
+                dependency_policy: api::SessionJobDependencyPolicyView::default(),
+                queue_key: None,
+            }],
+        })
+        .await
+        .expect_err("jobs/create against a suspended environment is not ready");
+    assert_eq!(
+        job_not_ready.kind,
+        api::AgentApiErrorKind::EnvironmentNotReady
+    );
+    let waking = api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: environment_id.clone(),
+        })
+        .await?
+        .result
+        .environment;
+    assert_eq!(
+        waking.desired_power,
+        api::EnvironmentPowerStateView::Running
+    );
+
     api.put_environment_power(api::EnvironmentPowerPutParams {
         environment_id: environment_id.clone(),
         power: api::EnvironmentPowerStateView::Stopped,

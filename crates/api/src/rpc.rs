@@ -18,6 +18,12 @@ pub enum AgentApiErrorKind {
     /// workflow) so clients/bridges treat it as a session recovery problem
     /// rather than an ordinary "answer this message" failure.
     SessionBootstrapFailed,
+    /// The environment exists but is not reachable yet: it is still
+    /// provisioning/booting, or it was powered down and a wake (desired
+    /// power `running`) has been initiated by this request. Distinct from
+    /// `Rejected` so clients retry with backoff instead of failing —
+    /// polling and automation callers lean on this for wake-on-use.
+    EnvironmentNotReady,
     Internal,
 }
 
@@ -81,6 +87,10 @@ impl AgentApiError {
         Self::new(AgentApiErrorKind::SessionBootstrapFailed, message)
     }
 
+    pub fn environment_not_ready(message: impl Into<String>) -> Self {
+        Self::new(AgentApiErrorKind::EnvironmentNotReady, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(AgentApiErrorKind::Internal, message)
     }
@@ -98,6 +108,7 @@ impl AgentApiError {
             | AgentApiErrorKind::TranscodeFailure
             | AgentApiErrorKind::TranscriptionFailure => -32010,
             AgentApiErrorKind::SessionBootstrapFailed => -32011,
+            AgentApiErrorKind::EnvironmentNotReady => -32012,
             AgentApiErrorKind::Internal => -32603,
         }
     }
@@ -366,7 +377,7 @@ api_methods! {
     METHOD_ENVIRONMENTS_TEMPLATES_READ => read_environment_template(EnvironmentTemplateReadParams) -> EnvironmentTemplateReadResponse =>
         ["Read an environment template", "Returns one immutable template version from the selected bound provider controller."],
     METHOD_ENVIRONMENTS_JOBS_CREATE => create_environment_jobs(EnvironmentJobCreateParams) -> EnvironmentJobCreateResponse =>
-        ["Create environment jobs", "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session."],
+        ["Create environment jobs", "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff."],
     METHOD_ENVIRONMENTS_JOBS_READ => read_environment_jobs(EnvironmentJobReadParams) -> EnvironmentJobReadResponse =>
         ["Read environment jobs", "Reads selected job handles with bounded output, optional sequence continuation, and optional artifacts; use returned status/sequence data for polling."],
     METHOD_ENVIRONMENTS_JOBS_CANCEL => cancel_environment_jobs(EnvironmentJobCancelParams) -> EnvironmentJobCancelResponse =>
