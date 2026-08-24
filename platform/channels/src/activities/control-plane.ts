@@ -22,32 +22,32 @@ export function createControlPlaneActivities(db: Db): ControlPlaneActivities {
 async function bindingIsActive(db: Db, input: AssertBindingActiveInput): Promise<boolean> {
   const [row] = await db
     .select({
-      enabled: schema.bindings.enabled,
-      matchScope: schema.bindings.matchScope,
-      pairingCode: schema.bindings.pairingCode,
+      enabled: schema.channelBindings.enabled,
+      matchScope: schema.channelBindings.matchScope,
+      pairingCode: schema.channelBindings.pairingCode,
       universeStatus: schema.universes.status,
       accountEnabled: schema.channelAccounts.enabled,
-      pairingKey: schema.pairings.key,
+      pairingKey: schema.channelPairings.key,
     })
-    .from(schema.bindings)
-    .innerJoin(schema.universes, eq(schema.universes.id, schema.bindings.universeId))
+    .from(schema.channelBindings)
+    .innerJoin(schema.universes, eq(schema.universes.id, schema.channelBindings.universeId))
     .innerJoin(
       schema.channelAccounts,
       and(
-        eq(schema.channelAccounts.id, schema.bindings.channelAccountId),
+        eq(schema.channelAccounts.id, schema.channelBindings.channelAccountId),
         eq(schema.channelAccounts.provider, input.route.provider),
         eq(schema.channelAccounts.accountId, input.route.accountId),
       ),
     )
     .leftJoin(
-      schema.pairings,
+      schema.channelPairings,
       and(
-        eq(schema.pairings.bindingId, schema.bindings.id),
-        eq(schema.pairings.channelAccountId, schema.channelAccounts.id),
-        eq(schema.pairings.chatId, input.route.chatId),
+        eq(schema.channelPairings.bindingId, schema.channelBindings.id),
+        eq(schema.channelPairings.channelAccountId, schema.channelAccounts.id),
+        eq(schema.channelPairings.chatId, input.route.chatId),
       ),
     )
-    .where(eq(schema.bindings.id, input.bindingId))
+    .where(eq(schema.channelBindings.id, input.bindingId))
     .limit(1);
   if (row === undefined) {
     return false;

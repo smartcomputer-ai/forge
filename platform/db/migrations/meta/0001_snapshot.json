@@ -1,6 +1,6 @@
 {
-  "id": "a3a2453f-a0d1-4028-908b-6d35ac32d76f",
-  "prevId": "2fe028be-7c0d-450e-9493-ffb28ed9e0a4",
+  "id": "655d2862-704c-4e25-8b24-f42175060fd6",
+  "prevId": "4f4d3a4d-7e7e-4317-9e62-3192cd0ac97e",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -692,485 +692,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.bindings": {
-      "name": "bindings",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "universe_id": {
-          "name": "universe_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "channel_account_id": {
-          "name": "channel_account_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "match_scope": {
-          "name": "match_scope",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "profile_id": {
-          "name": "profile_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "session_key": {
-          "name": "session_key",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "activation": {
-          "name": "activation",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "access": {
-          "name": "access",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pairing_code": {
-          "name": "pairing_code",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "priority": {
-          "name": "priority",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 100
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "bindings_universe_idx": {
-          "name": "bindings_universe_idx",
-          "columns": [
-            {
-              "expression": "universe_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "bindings_channel_account_idx": {
-          "name": "bindings_channel_account_idx",
-          "columns": [
-            {
-              "expression": "channel_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "bindings_universe_name_idx": {
-          "name": "bindings_universe_name_idx",
-          "columns": [
-            {
-              "expression": "universe_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "name",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "bindings_universe_id_universes_id_fk": {
-          "name": "bindings_universe_id_universes_id_fk",
-          "tableFrom": "bindings",
-          "tableTo": "universes",
-          "columnsFrom": [
-            "universe_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "bindings_channel_account_id_channel_accounts_id_fk": {
-          "name": "bindings_channel_account_id_channel_accounts_id_fk",
-          "tableFrom": "bindings",
-          "tableTo": "channel_accounts",
-          "columnsFrom": [
-            "channel_account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "bindings_id_account_unique": {
-          "name": "bindings_id_account_unique",
-          "nullsNotDistinct": false,
-          "columns": [
-            "id",
-            "channel_account_id"
-          ]
-        }
-      },
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.channel_accounts": {
-      "name": "channel_accounts",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "account_id": {
-          "name": "account_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "credential_ref": {
-          "name": "credential_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "state_ref": {
-          "name": "state_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "settings": {
-          "name": "settings",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "'{}'::jsonb"
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": true
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "channel_accounts_provider_account_idx": {
-          "name": "channel_accounts_provider_account_idx",
-          "columns": [
-            {
-              "expression": "provider",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.channel_identities": {
-      "name": "channel_identities",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "user_id": {
-          "name": "user_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "channel": {
-          "name": "channel",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "handle": {
-          "name": "handle",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "display_name": {
-          "name": "display_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "channel_identities_channel_handle_idx": {
-          "name": "channel_identities_channel_handle_idx",
-          "columns": [
-            {
-              "expression": "channel",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "handle",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "channel_identities_user_id_user_id_fk": {
-          "name": "channel_identities_user_id_user_id_fk",
-          "tableFrom": "channel_identities",
-          "tableTo": "user",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.pairings": {
-      "name": "pairings",
-      "schema": "",
-      "columns": {
-        "key": {
-          "name": "key",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "binding_id": {
-          "name": "binding_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "channel_account_id": {
-          "name": "channel_account_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "chat_id": {
-          "name": "chat_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "paired_at": {
-          "name": "paired_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "pairings_account_chat_idx": {
-          "name": "pairings_account_chat_idx",
-          "columns": [
-            {
-              "expression": "channel_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "chat_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "pairings_channel_account_id_channel_accounts_id_fk": {
-          "name": "pairings_channel_account_id_channel_accounts_id_fk",
-          "tableFrom": "pairings",
-          "tableTo": "channel_accounts",
-          "columnsFrom": [
-            "channel_account_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "pairings_binding_account_fk": {
-          "name": "pairings_binding_account_fk",
-          "tableFrom": "pairings",
-          "tableTo": "bindings",
-          "columnsFrom": [
-            "binding_id",
-            "channel_account_id"
-          ],
-          "columnsTo": [
-            "id",
-            "channel_account_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
     "public.universe_setup_installations": {
       "name": "universe_setup_installations",
       "schema": "",
@@ -1393,8 +914,8 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.bot_activity": {
-      "name": "bot_activity",
+    "public.channel_accounts": {
+      "name": "channel_accounts",
       "schema": "",
       "columns": {
         "id": {
@@ -1404,324 +925,42 @@
           "notNull": true,
           "default": "gen_random_uuid()"
         },
-        "bot_id": {
-          "name": "bot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
+        "provider": {
+          "name": "provider",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
-        "event_id": {
-          "name": "event_id",
+        "account_id": {
+          "name": "account_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "credential_ref": {
+          "name": "credential_ref",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "run_id": {
-          "name": "run_id",
+        "state_ref": {
+          "name": "state_ref",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "detail": {
-          "name": "detail",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
+        "settings": {
+          "name": "settings",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "bot_activity_bot_created_idx": {
-          "name": "bot_activity_bot_created_idx",
-          "columns": [
-            {
-              "expression": "bot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "bot_activity_bot_id_bots_id_fk": {
-          "name": "bot_activity_bot_id_bots_id_fk",
-          "tableFrom": "bot_activity",
-          "tableTo": "bots",
-          "columnsFrom": [
-            "bot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.bot_events": {
-      "name": "bot_events",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "bot_id": {
-          "name": "bot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "event_id": {
-          "name": "event_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "seq": {
-          "name": "seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "trigger_id": {
-          "name": "trigger_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "occurred_at": {
-          "name": "occurred_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "ref": {
-          "name": "ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prompt_ref": {
-          "name": "prompt_ref",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "session": {
-          "name": "session",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true,
-          "default": "now()"
-        }
-      },
-      "indexes": {
-        "bot_events_bot_event_idx": {
-          "name": "bot_events_bot_event_idx",
-          "columns": [
-            {
-              "expression": "bot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "event_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "bot_events_bot_seq_idx": {
-          "name": "bot_events_bot_seq_idx",
-          "columns": [
-            {
-              "expression": "bot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "seq",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "bot_events_bot_received_idx": {
-          "name": "bot_events_bot_received_idx",
-          "columns": [
-            {
-              "expression": "bot_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "created_at",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        }
-      },
-      "foreignKeys": {
-        "bot_events_bot_id_bots_id_fk": {
-          "name": "bot_events_bot_id_bots_id_fk",
-          "tableFrom": "bot_events",
-          "tableTo": "bots",
-          "columnsFrom": [
-            "bot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "bot_events_trigger_id_bot_triggers_id_fk": {
-          "name": "bot_events_trigger_id_bot_triggers_id_fk",
-          "tableFrom": "bot_events",
-          "tableTo": "bot_triggers",
-          "columnsFrom": [
-            "trigger_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {},
-      "isRLSEnabled": false
-    },
-    "public.bot_triggers": {
-      "name": "bot_triggers",
-      "schema": "",
-      "columns": {
-        "id": {
-          "name": "id",
-          "type": "uuid",
-          "primaryKey": true,
-          "notNull": true,
-          "default": "gen_random_uuid()"
-        },
-        "bot_id": {
-          "name": "bot_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "name": {
-          "name": "name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "kind": {
-          "name": "kind",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "spec": {
-          "name": "spec",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "filter": {
-          "name": "filter",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "route": {
-          "name": "route",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "coalesce": {
-          "name": "coalesce",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deliver": {
-          "name": "deliver",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
+          "default": "'{}'::jsonb"
         },
         "enabled": {
           "name": "enabled",
@@ -1746,17 +985,17 @@
         }
       },
       "indexes": {
-        "bot_triggers_bot_name_idx": {
-          "name": "bot_triggers_bot_name_idx",
+        "channel_accounts_provider_account_idx": {
+          "name": "channel_accounts_provider_account_idx",
           "columns": [
             {
-              "expression": "bot_id",
+              "expression": "provider",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
             },
             {
-              "expression": "name",
+              "expression": "account_id",
               "isExpression": false,
               "asc": true,
               "nulls": "last"
@@ -1768,29 +1007,15 @@
           "with": {}
         }
       },
-      "foreignKeys": {
-        "bot_triggers_bot_id_bots_id_fk": {
-          "name": "bot_triggers_bot_id_bots_id_fk",
-          "tableFrom": "bot_triggers",
-          "tableTo": "bots",
-          "columnsFrom": [
-            "bot_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
+      "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.bots": {
-      "name": "bots",
+    "public.channel_bindings": {
+      "name": "channel_bindings",
       "schema": "",
       "columns": {
         "id": {
@@ -1806,62 +1031,60 @@
           "primaryKey": false,
           "notNull": true
         },
+        "channel_account_id": {
+          "name": "channel_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
         "name": {
           "name": "name",
           "type": "text",
           "primaryKey": false,
           "notNull": true
         },
+        "match_scope": {
+          "name": "match_scope",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "profile_id": {
           "name": "profile_id",
           "type": "text",
           "primaryKey": false,
-          "notNull": true
+          "notNull": false
         },
-        "brief": {
-          "name": "brief",
+        "session_key": {
+          "name": "session_key",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
-        "runs_per_day": {
-          "name": "runs_per_day",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "breaker": {
-          "name": "breaker",
+        "activation": {
+          "name": "activation",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "routed_session_ttl_ms": {
-          "name": "routed_session_ttl_ms",
-          "type": "integer",
+        "access": {
+          "name": "access",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
-        "event_seq": {
-          "name": "event_seq",
-          "type": "bigint",
+        "pairing_code": {
+          "name": "pairing_code",
+          "type": "text",
           "primaryKey": false,
-          "notNull": true,
-          "default": 0
+          "notNull": false
         },
-        "self_config": {
-          "name": "self_config",
-          "type": "boolean",
+        "priority": {
+          "name": "priority",
+          "type": "integer",
           "primaryKey": false,
           "notNull": true,
-          "default": false
-        },
-        "self_emit": {
-          "name": "self_emit",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
+          "default": 100
         },
         "enabled": {
           "name": "enabled",
@@ -1886,8 +1109,38 @@
         }
       },
       "indexes": {
-        "bots_universe_name_idx": {
-          "name": "bots_universe_name_idx",
+        "channel_bindings_universe_idx": {
+          "name": "channel_bindings_universe_idx",
+          "columns": [
+            {
+              "expression": "universe_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "channel_bindings_channel_account_idx": {
+          "name": "channel_bindings_channel_account_idx",
+          "columns": [
+            {
+              "expression": "channel_account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "channel_bindings_universe_name_idx": {
+          "name": "channel_bindings_universe_name_idx",
           "columns": [
             {
               "expression": "universe_id",
@@ -1909,15 +1162,226 @@
         }
       },
       "foreignKeys": {
-        "bots_universe_id_universes_id_fk": {
-          "name": "bots_universe_id_universes_id_fk",
-          "tableFrom": "bots",
+        "channel_bindings_universe_id_universes_id_fk": {
+          "name": "channel_bindings_universe_id_universes_id_fk",
+          "tableFrom": "channel_bindings",
           "tableTo": "universes",
           "columnsFrom": [
             "universe_id"
           ],
           "columnsTo": [
             "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "channel_bindings_channel_account_id_channel_accounts_id_fk": {
+          "name": "channel_bindings_channel_account_id_channel_accounts_id_fk",
+          "tableFrom": "channel_bindings",
+          "tableTo": "channel_accounts",
+          "columnsFrom": [
+            "channel_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "channel_bindings_id_account_unique": {
+          "name": "channel_bindings_id_account_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "id",
+            "channel_account_id"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.channel_identities": {
+      "name": "channel_identities",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel": {
+          "name": "channel",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "handle": {
+          "name": "handle",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "channel_identities_channel_handle_idx": {
+          "name": "channel_identities_channel_handle_idx",
+          "columns": [
+            {
+              "expression": "channel",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "handle",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "channel_identities_user_id_user_id_fk": {
+          "name": "channel_identities_user_id_user_id_fk",
+          "tableFrom": "channel_identities",
+          "tableTo": "user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.channel_pairings": {
+      "name": "channel_pairings",
+      "schema": "",
+      "columns": {
+        "key": {
+          "name": "key",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "binding_id": {
+          "name": "binding_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "channel_account_id": {
+          "name": "channel_account_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "chat_id": {
+          "name": "chat_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "paired_at": {
+          "name": "paired_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "channel_pairings_account_chat_idx": {
+          "name": "channel_pairings_account_chat_idx",
+          "columns": [
+            {
+              "expression": "channel_account_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "chat_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "channel_pairings_channel_account_id_channel_accounts_id_fk": {
+          "name": "channel_pairings_channel_account_id_channel_accounts_id_fk",
+          "tableFrom": "channel_pairings",
+          "tableTo": "channel_accounts",
+          "columnsFrom": [
+            "channel_account_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "channel_pairings_binding_account_fk": {
+          "name": "channel_pairings_binding_account_fk",
+          "tableFrom": "channel_pairings",
+          "tableTo": "channel_bindings",
+          "columnsFrom": [
+            "binding_id",
+            "channel_account_id"
+          ],
+          "columnsTo": [
+            "id",
+            "channel_account_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"

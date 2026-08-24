@@ -153,7 +153,7 @@ export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
         return plan;
       }
       await db
-        .insert(schema.pairings)
+        .insert(schema.channelPairings)
         .values({
           key: channelPairingKey(inbound.route),
           bindingId: plan.candidate.bindingId,
@@ -161,7 +161,7 @@ export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
           chatId: inbound.route.chatId,
         })
         .onConflictDoUpdate({
-          target: schema.pairings.key,
+          target: schema.channelPairings.key,
           set: {
             bindingId: plan.candidate.bindingId,
             channelAccountId: plan.candidate.channelAccountId,
@@ -200,41 +200,41 @@ async function readCandidates(
   const route = inbound.route;
   const rows = await db
     .select({
-      bindingId: schema.bindings.id,
-      bindingName: schema.bindings.name,
+      bindingId: schema.channelBindings.id,
+      bindingName: schema.channelBindings.name,
       channelAccountId: schema.channelAccounts.id,
       accountProvider: schema.channelAccounts.provider,
       accountId: schema.channelAccounts.accountId,
       universeId: schema.universes.lightspeedUniverseId,
       universeName: schema.universes.name,
       universeStatus: schema.universes.status,
-      enabled: schema.bindings.enabled,
-      matchScope: schema.bindings.matchScope,
-      profileId: schema.bindings.profileId,
-      sessionKey: schema.bindings.sessionKey,
-      pairingCode: schema.bindings.pairingCode,
-      pairingKey: schema.pairings.key,
-      activation: schema.bindings.activation,
-      access: schema.bindings.access,
+      enabled: schema.channelBindings.enabled,
+      matchScope: schema.channelBindings.matchScope,
+      profileId: schema.channelBindings.profileId,
+      sessionKey: schema.channelBindings.sessionKey,
+      pairingCode: schema.channelBindings.pairingCode,
+      pairingKey: schema.channelPairings.key,
+      activation: schema.channelBindings.activation,
+      access: schema.channelBindings.access,
       memberRole: schema.member.role,
     })
-    .from(schema.bindings)
-    .innerJoin(schema.universes, eq(schema.universes.id, schema.bindings.universeId))
+    .from(schema.channelBindings)
+    .innerJoin(schema.universes, eq(schema.universes.id, schema.channelBindings.universeId))
     .innerJoin(
       schema.channelAccounts,
       and(
-        eq(schema.channelAccounts.id, schema.bindings.channelAccountId),
+        eq(schema.channelAccounts.id, schema.channelBindings.channelAccountId),
         eq(schema.channelAccounts.provider, route.provider),
         eq(schema.channelAccounts.accountId, route.accountId),
         eq(schema.channelAccounts.enabled, true),
       ),
     )
     .leftJoin(
-      schema.pairings,
+      schema.channelPairings,
       and(
-        eq(schema.pairings.bindingId, schema.bindings.id),
-        eq(schema.pairings.channelAccountId, schema.channelAccounts.id),
-        eq(schema.pairings.chatId, route.chatId),
+        eq(schema.channelPairings.bindingId, schema.channelBindings.id),
+        eq(schema.channelPairings.channelAccountId, schema.channelAccounts.id),
+        eq(schema.channelPairings.chatId, route.chatId),
       ),
     )
     .leftJoin(
@@ -251,8 +251,8 @@ async function readCandidates(
         eq(schema.member.organizationId, schema.universes.organizationId),
       ),
     )
-    .where(eq(schema.bindings.enabled, true))
-    .orderBy(asc(schema.bindings.priority), asc(schema.bindings.createdAt));
+    .where(eq(schema.channelBindings.enabled, true))
+    .orderBy(asc(schema.channelBindings.priority), asc(schema.channelBindings.createdAt));
   return rows.map((row) => ({
     bindingId: row.bindingId,
     bindingName: row.bindingName,

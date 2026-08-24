@@ -1,1 +1,0 @@
-ALTER TABLE "bots" ADD COLUMN "self_emit" boolean DEFAULT false NOT NULL;

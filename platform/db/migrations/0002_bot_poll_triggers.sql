@@ -1,1 +1,0 @@
-ALTER TABLE "bot_triggers" ADD COLUMN "cursor" jsonb;

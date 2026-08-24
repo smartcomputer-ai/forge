@@ -41,8 +41,21 @@ try {
   await createDatabase(admin, upgradeName);
 
   await checkEmptyInstall(databaseUrl(baseUrl, emptyName));
-  await preparePreviousMigrations(previousMigrations);
-  await checkUpgrade(databaseUrl(baseUrl, upgradeName), previousMigrations);
+  const journal = await readJournal();
+  if (journal.entries.length !== schemaRevision) {
+    throw new Error("platform schema revision does not match the migration journal");
+  }
+  if (journal.entries.length === 1) {
+    // A freshly rebased ledger has no earlier baseline to upgrade from; the
+    // empty-install check is the whole gate until the next migration lands.
+    if (journal.entries[0]?.tag !== upgradeFrom) {
+      throw new Error("platform upgrade baseline must be the single ledger entry");
+    }
+    console.log("platform migrations: single baseline; upgrade check starts with the next migration");
+  } else {
+    await preparePreviousMigrations(previousMigrations, journal);
+    await checkUpgrade(databaseUrl(baseUrl, upgradeName), previousMigrations, journal);
+  }
 } finally {
   if (adminConnected) {
     await dropDatabase(admin, emptyName);
@@ -65,36 +78,54 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
   }
 }
 
+interface Journal {
+  entries: Array<{ tag?: string }>;
+}
+
+async function readJournal(): Promise<Journal> {
+  const journalFile = path.join(migrationsFolder, "meta", "_journal.json");
+  const journal = JSON.parse(await readFile(journalFile, "utf8")) as { entries?: unknown };
+  if (!Array.isArray(journal.entries) || journal.entries.length === 0) {
+    throw new Error("migration journal has no entries");
+  }
+  return { entries: journal.entries as Journal["entries"] };
+}
+
+/// Upgrade check, generic over what the migrations contain: the baseline
+/// ledger applies cleanly, then the remaining migrations apply on top and
+/// the ledger ends at the current head. Table assertions stay for the
+/// load-bearing tables; column-level drift belongs to the migrations.
 async function checkUpgrade(
   connectionString: string,
   previousFolder: string,
+  journal: Journal,
 ): Promise<void> {
   const handle = createDb(connectionString);
   try {
     await migrate(handle.db, { migrationsFolder: previousFolder });
     await requireTable(handle.pool, "universes");
-    await requireTable(handle.pool, "bot_triggers");
-    await requireMissingColumn(handle.pool, "bots", "self_emit");
+    const baselineIndex = journal.entries.findIndex((entry) => entry.tag === upgradeFrom);
+    await requireLedgerLength(handle.pool, baselineIndex + 1);
     await migrateDb(handle);
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
-    await requireColumn(handle.pool, "bots", "self_emit");
+    await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();
   }
 }
 
-async function preparePreviousMigrations(destination: string): Promise<void> {
-  const journalFile = path.join(migrationsFolder, "meta", "_journal.json");
-  const journal = JSON.parse(await readFile(journalFile, "utf8")) as {
-    entries?: Array<{ tag?: string }>;
-  };
-  if (!Array.isArray(journal.entries) || journal.entries.length < 2) {
-    throw new Error("migration upgrade check requires at least two ledger entries");
+async function requireLedgerLength(pool: pg.Pool, expected: number): Promise<void> {
+  const result = await pool.query<{ count: string }>(
+    "select count(*)::text as count from drizzle.__drizzle_migrations",
+  );
+  const actual = Number(result.rows[0]?.count ?? "0");
+  if (actual !== expected) {
+    throw new Error(`migration ledger has ${actual} entries, expected ${expected}`);
   }
-  if (journal.entries.length !== schemaRevision) {
-    throw new Error("platform schema revision does not match the migration journal");
-  }
+}
+
+async function preparePreviousMigrations(destination: string, journal: Journal): Promise<void> {
   const baselineIndex = journal.entries.findIndex((entry) => entry.tag === upgradeFrom);
   if (baselineIndex < 0 || baselineIndex === journal.entries.length - 1) {
     throw new Error("platform upgrade baseline must exist before the current migration");
@@ -137,20 +168,6 @@ async function requireColumn(pool: pg.Pool, table: string, column: string): Prom
   );
   if (result.rows[0]?.present !== true) {
     throw new Error(`migration did not create public.${table}.${column}`);
-  }
-}
-
-async function requireMissingColumn(pool: pg.Pool, table: string, column: string): Promise<void> {
-  const result = await pool.query<{ present: boolean }>(
-    `select exists (
-       select 1
-       from information_schema.columns
-       where table_schema = 'public' and table_name = $1 and column_name = $2
-     ) as present`,
-    [table, column],
-  );
-  if (result.rows[0]?.present !== false) {
-    throw new Error(`previous-release migration fixture unexpectedly contains public.${table}.${column}`);
   }
 }
 

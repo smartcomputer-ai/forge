@@ -10,7 +10,7 @@ import type { AppContext, ApiVariables } from "../context.js";
 import { parseBody } from "../http.js";
 import { universeForSession } from "./universes.js";
 
-const { bindings, channelAccounts } = schema;
+const { channelBindings: bindings, channelAccounts } = schema;
 
 /// Binding routes are universe-scoped: /universes/:id/bindings for
 /// list/create, /bindings/:id for update/delete (access derived from the
