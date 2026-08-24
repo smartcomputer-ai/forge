@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowUpRight,
@@ -20,6 +20,7 @@ import {
   type BotEventPage,
   type BotRecentEvent,
   type BotState,
+  type ProfileDocument,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,7 +28,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BotSettingsDialog } from "./settings-dialog";
 import { SendEventDialog } from "./send-event-dialog";
 import { BotStatusBadge, KeyValue } from "./status";
-import { TriggersSection } from "./triggers";
+import { TriggersSection, type BotEnvStatus } from "./triggers";
 
 type BotView = "overview" | "events" | "activity";
 
@@ -176,6 +177,30 @@ function BotOverview({
   stateError?: string;
   manage: boolean;
 }) {
+  // The profile's environment intent decides whether exec pollers (and
+  // environment tools) have a stable machine to run on; surface it here so
+  // an operator learns about the gap before a trigger fails.
+  const profile = useQuery({
+    queryKey: ["profile", bot.universeId, bot.profileId],
+    // The route returns the profile document directly (not wrapped).
+    queryFn: () =>
+      api<ProfileDocument>(
+        "GET",
+        `/api/v1/universes/${bot.universeId}/profiles/${encodeURIComponent(bot.profileId)}`,
+      ),
+    staleTime: 60_000,
+    retry: false,
+  });
+  // Unreadable profile (e.g. a viewer without write access) stays
+  // "unknown": no warning banner, and the exec-poll card explains itself.
+  const env: BotEnvStatus =
+    profile.isLoading || profile.isError || profile.data === undefined
+      ? { kind: "unknown" }
+      : profile.data.environment == null
+        ? { kind: "none" }
+        : profile.data.environment.type === "existing"
+          ? { kind: "existing", environmentId: profile.data.environment.environmentId }
+          : { kind: "provision" };
   return (
     <div className="grid gap-10">
       <div className="grid min-w-0 gap-10 lg:grid-cols-2">
@@ -198,6 +223,20 @@ function BotOverview({
           )}
           {state?.lastError && (
             <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">{state.lastError}</p>
+          )}
+          {env.kind === "none" && (
+            <p className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+              Profile <code>{bot.profileId}</code> has no environment: environment tools and
+              command (exec) pollers are unavailable to this bot.
+            </p>
+          )}
+          {env.kind === "provision" && (
+            <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
+              Profile <code>{bot.profileId}</code> provisions a fresh environment per session.
+              Command (exec) pollers need a stable environment id — a per-session machine closes
+              with its session and would strand the trigger. Point the profile at an existing
+              environment to author pollers.
+            </p>
           )}
         </DetailSection>
 
@@ -264,7 +303,7 @@ function BotOverview({
           );
         }) : <p className="text-xs text-muted-foreground">Waiting for the controller…</p>}
       </DetailSection>
-      <TriggersSection botId={bot.id} manage={manage} />
+      <TriggersSection botId={bot.id} manage={manage} env={env} />
     </div>
   );
 }

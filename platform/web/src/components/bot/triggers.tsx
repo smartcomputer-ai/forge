@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, RefreshCw, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, RefreshCw, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
   type BotPollSpec,
@@ -58,7 +58,22 @@ function routeLabel(route: BotRoute | null): string {
   return route.key ? `session per key: ${route.key}` : "session per key";
 }
 
-export function TriggersSection({ botId, manage }: { botId: string; manage: boolean }) {
+/** The bot profile's environment intent, as it affects exec pollers. */
+export type BotEnvStatus =
+  | { kind: "unknown" }
+  | { kind: "none" }
+  | { kind: "provision" }
+  | { kind: "existing"; environmentId: string };
+
+export function TriggersSection({
+  botId,
+  manage,
+  env,
+}: {
+  botId: string;
+  manage: boolean;
+  env: BotEnvStatus;
+}) {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
   const [editing, setEditing] = useState<BotTrigger | null>(null);
@@ -163,7 +178,7 @@ export function TriggersSection({ botId, manage }: { botId: string; manage: bool
           )}
         </div>
       ))}
-      {manage && <AddTriggerDialog botId={botId} open={addOpen} onOpenChange={setAddOpen} />}
+      {manage && <AddTriggerDialog botId={botId} env={env} open={addOpen} onOpenChange={setAddOpen} />}
       {manage && editing && (
         <EditTriggerDialog
           botId={botId}
@@ -294,7 +309,12 @@ interface WebhookFormState extends DeliveryFormState {
 }
 
 interface PollFormState extends DeliveryFormState {
+  sourceKind: "http" | "exec";
   url: string;
+  environmentId: string;
+  /** One argv entry per line. */
+  argvText: string;
+  cwd: string;
   intervalMinutes: string;
   items: string;
   dedupe: "idSet" | "watermark";
@@ -313,7 +333,11 @@ const defaultDeliveryForm: DeliveryFormState = {
 
 const defaultPollForm: PollFormState = {
   ...defaultDeliveryForm,
+  sourceKind: "http",
   url: "",
+  environmentId: "",
+  argvText: "",
+  cwd: "",
   intervalMinutes: "5",
   items: "",
   dedupe: "idSet",
@@ -323,7 +347,11 @@ const defaultPollForm: PollFormState = {
 function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
   const spec = trigger.spec as BotPollSpec;
   return {
+    sourceKind: spec.source.kind,
     url: spec.source.kind === "http" ? spec.source.url : "",
+    environmentId: spec.source.kind === "exec" ? spec.source.environmentId : "",
+    argvText: spec.source.kind === "exec" ? spec.source.argv.join("\n") : "",
+    cwd: spec.source.kind === "exec" ? (spec.source.cwd ?? "") : "",
     intervalMinutes: String(Math.round(spec.intervalMs / 60_000)),
     items: spec.items ?? "",
     dedupe: spec.cursor.kind,
@@ -360,10 +388,25 @@ function deliveryPayload(form: DeliveryFormState) {
   };
 }
 
+function pollArgv(form: PollFormState): string[] {
+  return form.argvText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
 function pollPayload(form: PollFormState) {
   return {
     spec: {
-      source: { kind: "http" as const, url: form.url.trim() },
+      source:
+        form.sourceKind === "http"
+          ? { kind: "http" as const, url: form.url.trim() }
+          : {
+              kind: "exec" as const,
+              environmentId: form.environmentId.trim(),
+              argv: pollArgv(form),
+              ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
+            },
       intervalMs: Math.round(Number(form.intervalMinutes) * 60_000),
       items: form.items.trim() || null,
       cursor:
@@ -376,7 +419,12 @@ function pollPayload(form: PollFormState) {
 }
 
 function pollFormProblem(form: PollFormState): string | null {
-  if (!/^https?:\/\//.test(form.url.trim())) return "The poll URL must be http(s).";
+  if (form.sourceKind === "http") {
+    if (!/^https?:\/\//.test(form.url.trim())) return "The poll URL must be http(s).";
+  } else {
+    if (!form.environmentId.trim()) return "Name the environment the command runs in.";
+    if (pollArgv(form).length === 0) return "Give the command to run (one argv entry per line).";
+  }
   const minutes = Number(form.intervalMinutes);
   if (!Number.isFinite(minutes) || minutes < 1) return "Poll at most once a minute.";
   if (!form.dedupeField.trim()) {
@@ -649,20 +697,63 @@ function PollFields({
 }) {
   return (
     <>
-      <Field>
-        <FieldLabel htmlFor="poll-url">URL</FieldLabel>
-        <Input
-          id="poll-url"
-          value={form.url}
-          onChange={(event) => setForm({ ...form, url: event.target.value })}
-          placeholder="https://api.example.com/issues?state=open"
-          className="font-mono"
-        />
-        <FieldDescription>
-          Fetched on the interval; the JSON response is diffed and only new items wake the bot.
-          The first fire baselines without delivering.
-        </FieldDescription>
-      </Field>
+      {form.sourceKind === "http" ? (
+        <Field>
+          <FieldLabel htmlFor="poll-url">URL</FieldLabel>
+          <Input
+            id="poll-url"
+            value={form.url}
+            onChange={(event) => setForm({ ...form, url: event.target.value })}
+            placeholder="https://api.example.com/issues?state=open"
+            className="font-mono"
+          />
+          <FieldDescription>
+            Fetched on the interval; the JSON response is diffed and only new items wake the bot.
+            The first fire baselines without delivering.
+          </FieldDescription>
+        </Field>
+      ) : (
+        <>
+          <Field>
+            <FieldLabel htmlFor="poll-environment">Environment</FieldLabel>
+            <Input
+              id="poll-environment"
+              value={form.environmentId}
+              onChange={(event) => setForm({ ...form, environmentId: event.target.value })}
+              placeholder="environment_…"
+              className="font-mono"
+            />
+            <FieldDescription>
+              The command runs as a one-shot job here with the environment's credentials; a
+              sleeping environment wakes for the poll and idles back down after.
+            </FieldDescription>
+          </Field>
+          <div className="grid grid-cols-[2fr_1fr] gap-3">
+            <Field>
+              <FieldLabel htmlFor="poll-argv">Command</FieldLabel>
+              <Textarea
+                id="poll-argv"
+                value={form.argvText}
+                onChange={(event) => setForm({ ...form, argvText: event.target.value })}
+                rows={3}
+                placeholder={"./poll-orders.sh\n--json"}
+                className="font-mono"
+              />
+              <FieldDescription>One argv entry per line; stdout must be JSON.</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="poll-cwd">Working dir (optional)</FieldLabel>
+              <Input
+                id="poll-cwd"
+                value={form.cwd}
+                onChange={(event) => setForm({ ...form, cwd: event.target.value })}
+                placeholder="/srv/app"
+                className="font-mono"
+              />
+            </Field>
+          </div>
+        </>
+      )}
       <div className="grid grid-cols-2 gap-3">
         <Field>
           <FieldLabel htmlFor="poll-interval">Every (minutes)</FieldLabel>
@@ -728,10 +819,12 @@ function PollFields({
 
 function AddTriggerDialog({
   botId,
+  env,
   open,
   onOpenChange,
 }: {
   botId: string;
+  env: BotEnvStatus;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -814,7 +907,15 @@ function AddTriggerDialog({
           : "max-h-[92dvh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"}
       >
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>{kind ? `Add ${kind}` : "Add trigger"}</DialogTitle>
+          <DialogTitle>
+            {kind === "poll"
+              ? poll.sourceKind === "exec"
+                ? "Add command poll"
+                : "Add HTTP/API poll"
+              : kind
+                ? `Add ${kind}`
+                : "Add trigger"}
+          </DialogTitle>
           <DialogDescription>
             {kind === "schedule"
               ? "Run the bot on a recurring cron or once at a specific time."
@@ -842,9 +943,35 @@ function AddTriggerDialog({
               />
               <TriggerKindChoice
                 icon={<RefreshCw className="size-5" />}
-                title="Poll"
-                description="Check an HTTP source on an interval and deliver only new items."
-                onClick={() => setKind("poll")}
+                title="HTTP/API poll"
+                description="Check an HTTP endpoint on an interval and deliver only new items."
+                onClick={() => {
+                  setPoll({ ...defaultPollForm, sourceKind: "http" });
+                  setKind("poll");
+                }}
+              />
+              <TriggerKindChoice
+                icon={<Terminal className="size-5" />}
+                title="Command poll"
+                description="Run a command in the bot's environment on an interval; its JSON output is diffed."
+                disabled={env.kind !== "existing"}
+                disabledReason={
+                  env.kind === "none"
+                    ? "The bot's profile has no environment attached."
+                    : env.kind === "provision"
+                      ? "The profile provisions per-session environments; pollers need a stable existing environment."
+                      : env.kind === "unknown"
+                        ? "Checking the profile's environment…"
+                        : undefined
+                }
+                onClick={() => {
+                  setPoll({
+                    ...defaultPollForm,
+                    sourceKind: "exec",
+                    environmentId: env.kind === "existing" ? env.environmentId : "",
+                  });
+                  setKind("poll");
+                }}
               />
             </div>
             <DialogFooter className="border-t p-4">
@@ -982,22 +1109,30 @@ function TriggerKindChoice({
   title,
   description,
   onClick,
+  disabled = false,
+  disabledReason,
 }: {
   icon: ReactNode;
   title: string;
   description: string;
   onClick: () => void;
+  disabled?: boolean;
+  disabledReason?: string;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className="flex items-start gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      disabled={disabled}
+      className="flex items-start gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
     >
       <span className="rounded-lg bg-muted p-2 text-foreground">{icon}</span>
       <span className="grid gap-1">
         <span className="font-medium">{title}</span>
         <span className="text-xs text-muted-foreground">{description}</span>
+        {disabled && disabledReason && (
+          <span className="text-xs text-amber-700 dark:text-amber-400">{disabledReason}</span>
+        )}
       </span>
     </button>
   );
