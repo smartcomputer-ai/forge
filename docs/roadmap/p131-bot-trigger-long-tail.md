@@ -44,6 +44,34 @@ an interval and admit what changed.
   parallel secret store.
 - Fits the existing surface: `bot_trigger_put` grows `kind: "poll"` fields;
   the flood breaker and CEL validation already generalize.
+- **Two sources, one primitive.** The spec carries a `source` discriminator
+  from day one:
+  - `source: http` — the bots activity worker fetches directly (v1).
+  - `source: exec` — the fire activity runs a one-shot command in an
+    environment via the existing `environments/jobs/create`/`read` API
+    (jobs are instance-owned, credential-injected, session-independent —
+    no core change needed) and treats the job output as the item feed.
+    Same cursor/diff/admission downstream. Covers internal databases,
+    CLIs, and filesystems with no public API.
+    **Verified 2026-08-24: the jobs API does not wake sleeping
+    environments today.** `environments/jobs/create` loads the record and
+    dials the data plane directly (`session_jobs.rs`), bypassing
+    `environment_resolver::resolve_for_connection` — the P126 wake-on-use
+    path (paused/suspended/offline + provider power support → set desired
+    power `running` → typed `NotReady`) that session tool dispatch uses.
+    Against a suspended environment, jobs/create just fails with a generic
+    connect rejection and wakes nothing. **Prerequisite core patch (small,
+    generically valuable)**: route the jobs create/read paths through the
+    resolver and surface `NotReady` as a typed API error, so the
+    platform's poll-fire activity can lean on Temporal activity retries:
+    fire → wake → retry until ready → run job → idle reaper puts the
+    environment back to sleep. That makes exec polls the power-friendly
+    shape: environments sleep between fires and wake per poll.
+  Resident in-environment poller daemons remain workstream 3: they fight
+  the idle policy (a daemon either pins the environment awake or gets
+  suspended mid-watch), so they must earn residency — websockets, log
+  tailing, warm scraping sessions — and need the power-interplay design
+  first.
 
 ### 2. Email trigger (L0)
 
