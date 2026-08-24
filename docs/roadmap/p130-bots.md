@@ -84,6 +84,10 @@
     `environment_list`); new `bot_trigger_list` returns the trigger views
     (specs, filters, routing, ingest URLs), which moved out of
     `bot_status` — status is now purely runtime state. Revision 5.
+    Selected schema properties then got `description` annotations (cron/at
+    exclusivity, CEL fields, coalescing semantics, secret coupling,
+    event-read path/cap, emit sessionKey) — only where the name and type
+    cannot carry the rule, so the tool definitions stay lean. Revision 6.
   - Operator direct input (2026-08-24): the sessions-page composer gate on
     managed sessions became an explicit override — a "Direct input" switch
     (off by default, reset on navigation) with a warning that it bypasses

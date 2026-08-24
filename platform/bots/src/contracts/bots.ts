@@ -29,7 +29,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 5;
+export const BOT_TOOLS_REVISION = 6;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -299,22 +299,53 @@ export const BOT_TOOL_SCHEMAS = {
     additionalProperties: false,
   },
   statusInput: { type: "object", properties: {}, required: [], additionalProperties: false },
+  // Annotated only where a field carries semantics the name and type cannot:
+  // cross-field rules, expression languages, defaults. Everything else stays
+  // bare so the tool definition does not bloat the context.
   triggerPutInput: {
     type: "object",
     properties: {
       name: { type: "string", minLength: 1 },
       kind: { type: "string", enum: ["schedule", "webhook"] },
-      cron: NULLABLE_STRING,
-      at: NULLABLE_STRING,
-      timezone: NULLABLE_STRING,
-      summary: NULLABLE_STRING,
+      cron: {
+        type: ["string", "null"],
+        description: "5-field cron expression (schedule kind); exclusive with at",
+      },
+      at: {
+        type: ["string", "null"],
+        description:
+          "One-shot ISO-8601 instant in the future (schedule kind); exclusive with cron; the trigger disables itself after firing",
+      },
+      timezone: { type: ["string", "null"], description: "IANA timezone for cron (default UTC)" },
+      summary: {
+        type: ["string", "null"],
+        description: "Schedule kind: what the fired event asks the session to do",
+      },
       verification: { type: ["string", "null"], enum: ["token", "hmac-sha256", "github", null] },
-      secret: NULLABLE_STRING,
-      filter: NULLABLE_STRING,
+      secret: {
+        type: ["string", "null"],
+        description: "Required for hmac-sha256 and github verification",
+      },
+      filter: {
+        type: ["string", "null"],
+        description:
+          "CEL over {event, data, headers}; non-matching events archive instead of delivering",
+      },
       routePolicy: { type: ["string", "null"], enum: ["bot", "perKey", "perEvent", null] },
-      routeKey: NULLABLE_STRING,
-      debounceMs: NULLABLE_INTEGER,
-      maxWaitMs: NULLABLE_INTEGER,
+      routeKey: {
+        type: ["string", "null"],
+        description:
+          "perKey only: CEL over {event, data, headers} yielding the session key; omit to use the preset's key",
+      },
+      debounceMs: {
+        type: ["integer", "null"],
+        description:
+          "Enables coalescing: events on the same route batch until this quiet period elapses",
+      },
+      maxWaitMs: {
+        type: ["integer", "null"],
+        description: "Cap on total coalescing delay (default debounceMs)",
+      },
       maxCount: NULLABLE_INTEGER,
       whenBusy: { type: ["string", "null"], enum: ["queue", "steer", "append", null] },
       enabled: { type: ["boolean", "null"] },
@@ -345,8 +376,14 @@ export const BOT_TOOL_SCHEMAS = {
     type: "object",
     properties: {
       seq: { type: "integer", minimum: 1 },
-      path: NULLABLE_STRING,
-      maxBytes: NULLABLE_INTEGER,
+      path: {
+        type: ["string", "null"],
+        description: "Dot path into the envelope, e.g. data.pull_request.body or headers",
+      },
+      maxBytes: {
+        type: ["integer", "null"],
+        description: "Response size cap (default 8192, max 65536)",
+      },
     },
     required: ["seq"],
     additionalProperties: false,
@@ -363,7 +400,10 @@ export const BOT_TOOL_SCHEMAS = {
       kind: { type: "string", minLength: 1 },
       summary: { type: "string", minLength: 1 },
       data: { type: ["object", "null"], additionalProperties: true },
-      sessionKey: NULLABLE_STRING,
+      sessionKey: {
+        type: ["string", "null"],
+        description: "Route to the keyed session for this key; omit for the main session",
+      },
     },
     required: ["kind", "summary"],
     additionalProperties: false,
