@@ -1,6 +1,13 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P131](p131-bot-trigger-long-tail.md) — bot trigger long tail: `poll`
+  primitive (interval + cursor over the schedule machinery), inbound email
+  trigger, guardrailed agent-authored pollers as daemon jobs in the bot's
+  provisioned environment (Gumloop guardrail set, approval-gated), thin
+  webhook presets (Slack, Linear, Stripe, Sentry), and the Channels bridge
+  (chat platforms as event sources). Extracted from P130's slice 5;
+  recommended order: poll first, pollers after real usage.
 - [ ] [P130](p130-bots.md) — Bots: a proactive layer over managed sessions.
   Bot = record (brief, profile, triggers, routing/coalescing policy, budgets)
   plus one controller workflow owning its managed sessions. Slices 1-4
@@ -8,9 +15,13 @@
   schedule (Temporal Schedules) + webhook + endpoint triggers with CEL
   filters, perKey/perEvent routed sessions, coalescing with full-batch
   delivery, steer/append busy policies, flood breaker, replay, routed-session
-  retention, `bot_*` self-configuration tools, and a platform web UI. Open:
-  slice 5 (pollers, presets, email, Channels bridge), webhook secret sealing
-  (deferred by decision), schedule-flood breaker, CEL save-time validation.
+  retention, `bot_*` self-configuration tools, and a platform web UI. Later
+  additions (2026-08-24): event-input redesign (#N seqs, rendered prompts,
+  run-scoped resolve, bot_event_read), `selfConfig`/`selfEmit` capability
+  grants, schedule-flood breaker, CEL save-time validation, `bot:self` rate
+  cap, routed-session declaration rotation. Open: webhook secret sealing
+  (deferred by decision), tier-2 per-trigger prompt projections; the
+  trigger long tail moved to P131.
 - [x] [P129](p129-active-run-control.md) — active-run control: make
   cancel, steer, and queue work end to end (both phases done and
   live-validated 2026-08-19). Phase 1: the session workflow

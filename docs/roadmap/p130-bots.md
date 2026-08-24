@@ -232,11 +232,13 @@
   - Tests: tool round trip via a fake session workflow (reply observed,
     redelivery ignored), rotation on mismatch, declaration shape, arg
     mapping, schedule spec validation; nine Temporal integration scenarios.
-- Next: slice 5 (agent-authored pollers in provisioned environments, poll
-  primitive, email, more presets, Channels bridge). Still open: secret
-  sealing (deferred by decision). Schedule-flood breaker coverage, CEL
-  save-time validation, `bot:self` loop capping, and routed-session
-  declaration rotation were closed by the 2026-08-24 hardening round above.
+- Next: the trigger long tail — poll primitive, agent-authored pollers,
+  email, more presets, Channels bridge — extracted 2026-08-24 into its own
+  doc, [P131](p131-bot-trigger-long-tail.md). Still open here: secret
+  sealing (deferred by decision) and tier-2 per-trigger CEL projections.
+  Schedule-flood breaker coverage, CEL save-time validation, `bot:self`
+  loop capping, and routed-session declaration rotation were closed by the
+  2026-08-24 hardening round above.
 
 ## The proposal in one screen
 
@@ -419,16 +421,9 @@ id, payload shape.
   (generic HMAC / basic / API-key / token-in-URL, à la Svix Ingest and
   Hatchet), raw headers+body preserved to CAS, ack-fast-then-process
   (Temporal is the queue, as Channels already proves with `signalWithStart`).
-- **`poll`** — interval + cursor (id-set or `updatedAt` watermark, Zapier's
-  dedup discipline) for the many sources with no webhooks. The first-party
-  form is a thin config record; the extensible form is the L2 agent-authored
-  poller below, which runs on the same primitive.
-- **`chat`** — Channels as an event source: a binding that forwards
-  (account, conversation) activity into a bot instead of, or alongside, its
-  own session. This unifies the two systems over time without rewriting
-  Channels.
-- **`email`** — an inbound address per trigger, thread id as the natural
-  route key (later; Windmill-style, or via the chat/connector machinery).
+- **`poll`**, **`chat`** (Channels as an event source), and **`email`** —
+  the unshipped transports; scoped in
+  [P131](p131-bot-trigger-long-tail.md).
 
 One note on the intake plumbing itself: the verification zoo, retry/DLQ, and
 replay archive are exactly what Svix Ingest and Hookdeck sell for
@@ -442,30 +437,17 @@ A preset is a small record over an L0 webhook: which verification scheme and
 secret header, where the event name lives (`X-GitHub-Event` + `action`),
 where the dedupe id lives (`X-GitHub-Delivery`), sensible default route keys
 (PR number, Slack thread, Stripe object id). Svix ships exactly this as a
-per-provider scheme table; Hookdeck maintains 180+ of them. Start with
-GitHub, Slack, Linear, Stripe, Sentry/PagerDuty — each is an afternoon,
-because the transport underneath is shared. The GitHub App story (deferred:
-`pNNN-platform-github-app-installations.md`) slots here as the one preset
-that needs real credential plumbing.
+per-provider scheme table; Hookdeck maintains 180+ of them. GitHub shipped
+with slice 2; the further catalog (Slack, Linear, Stripe, Sentry/PagerDuty,
+the GitHub App credential story) moved to
+[P131](p131-bot-trigger-long-tail.md).
 
 ### L2 — Agent-authored triggers (the self-writing layer)
 
-For everything without a webhook — internal dashboards, weird vendor APIs,
-scraping — the bot writes its own **poller**: a small program that checks a
-source on an interval, keeps a cursor, and POSTs new findings to the bot's
-own L0 endpoint. Gumloop proved this works in production, and their guardrail
-set is the right one to copy: *read-only credentials, sandbox-tested against
-live data before activation, dedupe cursor, minimum interval, circuit breaker
-(auto-disable on N fires in M minutes), metered*.
-
-Lightspeed's structural advantage here is real: **the sandbox already
-exists**. A poller is a daemon job in the bot's provisioned environment
-(P125/P126) — same lifecycle, same idle policy, same credential brokering
-through auth grants, same provider isolation. Gumloop had to build a bespoke
-trigger runtime; Lightspeed gets it from the environment system. The bot
-proposes a poller through a tool; first activation (and any scope increase)
-requires human approval; thereafter it runs, metered, until the circuit
-breaker or the human stops it.
+The bot writes its own guardrailed poller for sources with no webhook. The
+design (Gumloop guardrail set, daemon jobs in the bot's provisioned
+environment, approval-gated activation) moved to
+[P131](p131-bot-trigger-long-tail.md).
 
 ### The integration option space
 
@@ -683,11 +665,10 @@ topology and admission modes — but specs it several levels deeper):
    full-batch delivery, busy-session delivery policies, circuit breakers,
    envelope retention + replay. (The differentiator ships here.)
 4. **Self-configuration.** `bot_*` tools, filter test/replay,
-   configure-by-conversation onboarding. Plus Slack/Linear/Stripe presets and
-   the Channels-as-trigger bridge.
-5. **Agent-authored pollers.** Poller jobs in provisioned environments with
-   the Gumloop guardrail set; email trigger; Composio evaluation for the long
-   tail; revisit in-place tool-declaration evolution with real usage data.
+   configure-by-conversation onboarding.
+5. **The trigger long tail.** Moved to
+   [P131](p131-bot-trigger-long-tail.md): poll primitive, agent-authored
+   pollers, email, further presets, Channels bridge.
 
 Each slice is independently shippable and each earlier slice is load-bearing
 for real use — the classic reason trigger systems die is shipping the catalog
