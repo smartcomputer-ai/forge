@@ -500,6 +500,7 @@ export async function botControllerWorkflowV1(
           profileId: config.profileId,
           botName: config.botName,
           brief: config.brief,
+          selfConfig: config.selfConfig === true,
           appliedProfileRevision:
             appliedProfileId === config.profileId ? appliedProfileRevision : null,
           controller: {
@@ -735,6 +736,7 @@ export async function botControllerWorkflowV1(
         profileId: config.profileId,
         botName: config.botName,
         brief: config.brief,
+        selfConfig: config.selfConfig === true,
         // Routed sessions take the profile at creation; only the main
         // session tracks profile revisions across its lifetime.
         appliedProfileRevision: null,

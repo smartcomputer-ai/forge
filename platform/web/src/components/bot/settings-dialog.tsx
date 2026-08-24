@@ -50,6 +50,7 @@ export function BotSettingsDialog({
   const [routedTtlHours, setRoutedTtlHours] = useState(
     bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 3_600_000)) : "",
   );
+  const [selfConfig, setSelfConfig] = useState(bot.selfConfig);
   const [enabled, setEnabled] = useState(bot.enabled);
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
@@ -67,6 +68,7 @@ export function BotSettingsDialog({
         routedSessionTtlMs: routedTtlHours.trim()
           ? Math.round(Number(routedTtlHours) * 3_600_000)
           : null,
+        selfConfig,
         enabled,
       }),
     onSuccess: async ({ bot: updated }) => {
@@ -171,6 +173,20 @@ export function BotSettingsDialog({
               same key opens a fresh session.
             </FieldDescription>
           </Field>
+          <div className="flex items-center justify-between rounded-md border p-3">
+            <Label htmlFor="bot-settings-self-config" className="text-sm">
+              Self-configuration
+              <span className="block text-xs font-normal text-muted-foreground">
+                Lets the bot create and delete its own triggers and rewrite its brief. Off: it
+                can only inspect them.
+              </span>
+            </Label>
+            <Switch
+              id="bot-settings-self-config"
+              checked={selfConfig}
+              onCheckedChange={setSelfConfig}
+            />
+          </div>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-enabled" className="text-sm">
               Enabled

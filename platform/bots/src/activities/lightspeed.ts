@@ -30,6 +30,8 @@ export interface EnsureBotSessionInput {
   profileId: string;
   botName: string;
   brief: string | null;
+  /** Declare the mutating self-configuration tools (default false). */
+  selfConfig?: boolean;
   appliedProfileRevision?: number | null;
   controller: { workflowId: string; workflowKind: string };
 }
@@ -129,7 +131,9 @@ export function createBotLightspeedActivities(
           workflowTools: {
             version: 1,
             lifecycleController: input.controller,
-            tools: botWorkflowTools(input.controller, refs.schemas, refs.descriptions),
+            tools: botWorkflowTools(input.controller, refs.schemas, refs.descriptions, {
+              selfConfig: input.selfConfig === true,
+            }),
           },
         });
       } catch (error) {

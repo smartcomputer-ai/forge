@@ -23,9 +23,8 @@ describe("bot tool declarations", () => {
     const receiver = { workflowId: "wf", workflowKind: "botControllerWorkflowV1" };
     const refs = (names: readonly string[]) =>
       Object.fromEntries(names.map((name) => [name, `sha256:${"a".repeat(64)}`]));
-    const tools = botWorkflowTools(
-      receiver,
-      refs([
+    const toolRefs = {
+      schemas: refs([
         "eventResolveInput",
         "statusInput",
         "triggerPutInput",
@@ -37,7 +36,7 @@ describe("bot tool declarations", () => {
         "briefPutInput",
         "emitInput",
       ]) as never,
-      refs([
+      descriptions: refs([
         "eventResolve",
         "status",
         "triggerPut",
@@ -49,7 +48,10 @@ describe("bot tool declarations", () => {
         "briefPut",
         "emit",
       ]) as never,
-    );
+    };
+    const tools = botWorkflowTools(receiver, toolRefs.schemas, toolRefs.descriptions, {
+      selfConfig: true,
+    });
     expect(tools).toHaveLength(10);
     for (const tool of tools) expect(tool.definition.revision).toBe(BOT_TOOLS_REVISION);
     const resolve = tools.find((tool) => tool.definition.toolId === BOT_EVENT_RESOLVE_TOOL_ID);
@@ -80,6 +82,51 @@ describe("bot tool declarations", () => {
     for (const tool of joined) {
       expect(tool.completion).toMatchObject({ deadlineAfterMs: BOT_TOOL_REPLY_DEADLINE_MS });
       expect(tool.target).toMatchObject({ dispatch: "push" });
+    }
+  });
+
+  it("withholds the mutating tools without the self-configuration grant", () => {
+    const receiver = { workflowId: "wf", workflowKind: "botControllerWorkflowV1" };
+    const refs = (names: readonly string[]) =>
+      Object.fromEntries(names.map((name) => [name, `sha256:${"a".repeat(64)}`]));
+    const schemas = refs([
+      "eventResolveInput",
+      "statusInput",
+      "triggerPutInput",
+      "triggerDeleteInput",
+      "filterTestInput",
+      "eventListInput",
+      "eventReadInput",
+      "triggerListInput",
+      "briefPutInput",
+      "emitInput",
+    ]) as never;
+    const descriptions = refs([
+      "eventResolve",
+      "status",
+      "triggerPut",
+      "triggerDelete",
+      "filterTest",
+      "eventList",
+      "eventRead",
+      "triggerList",
+      "briefPut",
+      "emit",
+    ]) as never;
+    // Default (no options) is the ungated set: self-modification is opt-in.
+    for (const tools of [
+      botWorkflowTools(receiver, schemas, descriptions),
+      botWorkflowTools(receiver, schemas, descriptions, { selfConfig: false }),
+    ]) {
+      const ids = new Set(tools.map((tool) => tool.definition.toolId));
+      expect(tools).toHaveLength(7);
+      expect(ids.has("lightspeed.bots.trigger.put.v1")).toBe(false);
+      expect(ids.has("lightspeed.bots.trigger.delete.v1")).toBe(false);
+      expect(ids.has("lightspeed.bots.brief.put.v1")).toBe(false);
+      // Read-only and event tools stay: inspect yes, mutate no.
+      expect(ids.has("lightspeed.bots.trigger.list.v1")).toBe(true);
+      expect(ids.has("lightspeed.bots.event.resolve.v1")).toBe(true);
+      expect(ids.has("lightspeed.bots.emit.v1")).toBe(true);
     }
   });
 

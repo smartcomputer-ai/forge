@@ -620,6 +620,8 @@ export interface Bot {
   runsPerDay: number | null;
   breaker: { fires: number; windowMs: number } | null;
   routedSessionTtlMs: number | null;
+  /** Whether this bot's sessions get the mutating self-configuration tools. */
+  selfConfig: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;

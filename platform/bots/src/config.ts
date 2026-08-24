@@ -140,7 +140,7 @@ export interface BotConfigDeps {
 export class BotConfigError extends Error {
   constructor(
     message: string,
-    readonly status: 400 | 404 | 409 | 502,
+    readonly status: 400 | 403 | 404 | 409 | 502,
     readonly issues?: unknown,
   ) {
     super(message);

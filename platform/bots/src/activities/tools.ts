@@ -182,6 +182,20 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
     const deps = { db: config.db, temporal: config.temporal };
     const args = (input.args ?? {}) as Record<string, unknown>;
 
+    // Defense in depth: the gated tools are not declared to sessions of a
+    // bot without the grant, but the fresh row is authoritative — a stale
+    // pre-toggle session must not mutate configuration either.
+    if (
+      !bot.selfConfig &&
+      (input.toolId === BOT_TRIGGER_PUT_TOOL_ID ||
+        input.toolId === BOT_TRIGGER_DELETE_TOOL_ID ||
+        input.toolId === BOT_BRIEF_PUT_TOOL_ID)
+    ) {
+      throw new BotConfigError(
+        "self-configuration is disabled for this bot; an operator can enable it in the bot's settings",
+        403,
+      );
+    }
     switch (input.toolId) {
       case BOT_STATUS_TOOL_ID: {
         return {
@@ -194,6 +208,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             runsToday: input.controller.runsToday,
             breaker: bot.breaker,
             routedSessionTtlMs: bot.routedSessionTtlMs,
+            selfConfig: bot.selfConfig,
             eventsProcessed: input.controller.eventsProcessed,
           },
           sessions: input.controller.sessions,

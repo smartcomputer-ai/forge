@@ -51,6 +51,12 @@ export interface BotStartV1 {
   runsPerDay: number | null;
   /** Close routed sessions idle longer than this; null keeps them open. */
   routedSessionTtlMs?: number | null;
+  /**
+   * Capability grant: declare the mutating self-configuration tools
+   * (trigger put/delete, brief put) to this bot's sessions. Absent reads
+   * as false — self-modification is opt-in.
+   */
+  selfConfig?: boolean;
   enabled: boolean;
 }
 
@@ -499,12 +505,26 @@ export const BOT_PUSHED_TOOL_IDS: ReadonlySet<string> = new Set(
   BOT_TOOL_SPECS.filter((spec) => spec.completion !== "accepted-pull").map((spec) => spec.toolId),
 );
 
+/** Tool ids that let a bot modify its own configuration; declared only when
+ * the bot's `selfConfig` grant is on. Read-only tools and event tools are
+ * always declared. */
+export const BOT_SELF_CONFIG_TOOL_IDS: ReadonlySet<string> = new Set([
+  BOT_TRIGGER_PUT_TOOL_ID,
+  BOT_TRIGGER_DELETE_TOOL_ID,
+  BOT_BRIEF_PUT_TOOL_ID,
+]);
+
 export function botWorkflowTools(
   receiver: WorkflowEndpointInput,
   schemas: BotToolSchemaRefs,
   descriptions: BotToolDescriptionRefs,
+  options?: { selfConfig?: boolean },
 ): WorkflowToolDeclarationInput[] {
-  return BOT_TOOL_SPECS.map((spec) => ({
+  const specs =
+    options?.selfConfig === true
+      ? BOT_TOOL_SPECS
+      : BOT_TOOL_SPECS.filter((spec) => !BOT_SELF_CONFIG_TOOL_IDS.has(spec.toolId));
+  return specs.map((spec) => ({
     definition: {
       toolId: spec.toolId,
       revision: BOT_TOOLS_REVISION,

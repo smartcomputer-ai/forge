@@ -40,6 +40,12 @@ export const bots = pgTable(
     routedSessionTtlMs: integer("routed_session_ttl_ms"),
     /** Monotonic per-bot event counter; allocated at admission, shown as #N. */
     eventSeq: bigint("event_seq", { mode: "number" }).default(0).notNull(),
+    /**
+     * Capability grant: whether the bot's sessions get the mutating
+     * self-configuration tools (trigger put/delete, brief put). Off by
+     * default — self-modification is opted into per bot, never assumed.
+     */
+    selfConfig: boolean("self_config").default(false).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),

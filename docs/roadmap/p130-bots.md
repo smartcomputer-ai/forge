@@ -88,6 +88,15 @@
     exclusivity, CEL fields, coalescing semantics, secret coupling,
     event-read path/cap, emit sessionKey) — only where the name and type
     cannot carry the rule, so the tool definitions stay lean. Revision 6.
+  - Self-configuration grant (2026-08-24): `bots.self_config` (migration
+    `0009_bot_self_config`, default **off**) gates the mutating tools —
+    `bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put` are not even
+    declared to sessions without the grant (a toggle flip changes the
+    declaration fingerprint, so the existing rotation path applies it), and
+    the tool activity re-checks the fresh row as defense in depth (403 for
+    stale pre-toggle sessions). Read-only tools, `bot_event_resolve`, and
+    `bot_emit` (provenance-tagged, budget-bounded) stay always-on.
+    Settings-dialog switch; `bot_status` reports the grant.
   - Operator direct input (2026-08-24): the sessions-page composer gate on
     managed sessions became an explicit override — a "Direct input" switch
     (off by default, reset on navigation) with a warning that it bypasses
@@ -207,7 +216,13 @@
 - Next: slice 5 (agent-authored pollers in provisioned environments, poll
   primitive, email, more presets, Channels bridge). Still open: breaker
   coverage for schedule floods, CEL save-time validation, secret sealing,
-  loop prevention via the `bot:self` provenance tag.
+  loop prevention via the `bot:self` provenance tag, and routed-session
+  declaration rotation — `ensureRoutedSession` treats a declaration
+  mismatch as a plain failure, so after a controller restart without carry,
+  deliveries to a pre-existing keyed session wedge as `run_failed` (and the
+  rebuilt sweep list no longer closes it); fix is to catch the typed
+  mismatch, bump that key's generation, and retry once, mirroring the main
+  session's rotation.
 
 ## The proposal in one screen
 

@@ -64,6 +64,13 @@
       "when": 1787556842330,
       "tag": "0008_bot_event_seq",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1787561092341,
+      "tag": "0009_bot_self_config",
+      "breakpoints": true
     }
   ]
 }
