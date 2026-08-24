@@ -30,7 +30,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 7;
+export const BOT_TOOLS_REVISION = 8;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -325,7 +325,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   status:
     "Inspect this bot's state: enabled flag, run budget, sessions, coalescing buffers, active and recent deliveries.",
   triggerPut:
-    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks url every intervalMs and delivers new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). Filters and route keys are CEL over event, data, headers.",
+    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks a source every intervalMs and delivers only new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). The poll source is url (HTTP JSON) or environmentId+argv (run a command in that environment; its stdout must be JSON). Filters and route keys are CEL over event, data, headers.",
   triggerDelete: "Delete one of this bot's triggers by name.",
   triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
@@ -400,7 +400,20 @@ export const BOT_TOOL_SCHEMAS = {
       },
       maxCount: NULLABLE_INTEGER,
       whenBusy: { type: ["string", "null"], enum: ["queue", "steer", "append", null] },
-      url: { type: ["string", "null"], description: "Poll kind: HTTP(S) source fetched every intervalMs" },
+      url: {
+        type: ["string", "null"],
+        description: "Poll kind: HTTP(S) source fetched every intervalMs; exclusive with environmentId/argv",
+      },
+      environmentId: {
+        type: ["string", "null"],
+        description: "Poll kind, exec source: environment the command runs in (woken on use); requires argv",
+      },
+      argv: {
+        type: ["array", "null"],
+        items: { type: "string" },
+        description: "Poll kind, exec source: command argv; stdout must be JSON (the item list, or use items)",
+      },
+      cwd: { type: ["string", "null"], description: "Poll kind, exec source: working directory" },
       intervalMs: {
         type: ["integer", "null"],
         description: "Poll kind: fetch interval; minimum 60000",

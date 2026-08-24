@@ -102,7 +102,20 @@ a real infrastructure dependency. Parsing: envelope → event (`kind:
 "email"`, summary from subject, body + attachments to CAS, sender/thread as
 route-key candidates). Defer attachments-as-VFS until wanted.
 
-### 3. Agent-authored pollers (L2) — the headline, most design-heavy
+### 3. Agent-authored pollers (L2) — largely collapsed by workstream 1
+
+Update 2026-08-24: with exec polls shipped and `bot_trigger_put` accepting
+`environmentId`+`argv` (revision 8), a bot with the `selfConfig` grant and
+environment tools can already author a poller end to end — write and test
+the script in its environment, then register the exec trigger itself.
+Lukas explicitly accepted this without an extra approval gate; the standing
+guardrails apply (grant-gated trigger_put, 60s minimum interval, breaker,
+10-failure auto-disable, budgets, visible cursor, `self_configured`
+activity trail). Best with a stable `existing`-environment profile —
+per-session provisioned environments close with their session and would
+strand the trigger. What remains of this workstream is only: an approval
+gate if operator policy ever wants one, and resident daemons (below).
+Original sketch:
 
 For sources with no API shape at all: the bot writes its own poller — a
 small program checking a source on an interval, keeping a cursor, POSTing

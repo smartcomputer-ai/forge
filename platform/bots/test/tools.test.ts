@@ -277,6 +277,45 @@ describe("poll trigger mapping and validation", () => {
     });
   });
 
+  it("maps an exec poll so a bot can register its own authored poller", () => {
+    const flat = parseTriggerPutArgs({
+      name: "orders",
+      kind: "poll",
+      environmentId: "environment_1",
+      argv: ["./poll-orders.sh", "--json"],
+      cwd: "/srv/app",
+      intervalMs: 300_000,
+      watermarkField: "updated_at",
+    });
+    const parsed = triggerCreateInput.parse(flat.create);
+    expect(parsed).toMatchObject({
+      kind: "poll",
+      spec: {
+        source: {
+          kind: "exec",
+          environmentId: "environment_1",
+          argv: ["./poll-orders.sh", "--json"],
+          cwd: "/srv/app",
+        },
+        cursor: { kind: "watermark", field: "updated_at" },
+      },
+    });
+    expect(() =>
+      parseTriggerPutArgs({
+        name: "x",
+        kind: "poll",
+        url: "https://a.example.com",
+        environmentId: "environment_1",
+        argv: ["./x"],
+        intervalMs: 60_000,
+        cursorId: "id",
+      }),
+    ).toThrow(/not both/);
+    expect(() =>
+      parseTriggerPutArgs({ name: "x", kind: "poll", environmentId: "environment_1", intervalMs: 60_000, cursorId: "id" }),
+    ).toThrow(/needs url/);
+  });
+
   it("requires exactly one dedupe discipline and a sane interval", () => {
     expect(() =>
       parseTriggerPutArgs({ name: "x", kind: "poll", url: "https://a", intervalMs: 60_000 }),

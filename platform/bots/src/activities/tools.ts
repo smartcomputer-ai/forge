@@ -549,7 +549,11 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
   }
   const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
   if (kind === "poll") {
-    const url = requireString(args.url, "url");
+    const url = nullableString(args.url);
+    const environmentId = nullableString(args.environmentId);
+    const argv = Array.isArray(args.argv)
+      ? args.argv.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : null;
     const intervalMs = nullableInteger(args.intervalMs);
     if (intervalMs === null) throw new BotConfigError("intervalMs is required for poll triggers", 400);
     const cursorId = nullableString(args.cursorId);
@@ -557,8 +561,24 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
     if ((cursorId === null) === (watermarkField === null)) {
       throw new BotConfigError("set exactly one of cursorId or watermarkField", 400);
     }
+    let source: Record<string, unknown>;
+    if (url !== null) {
+      if (environmentId !== null || argv !== null) {
+        throw new BotConfigError("set url (http) or environmentId+argv (exec), not both", 400);
+      }
+      source = { kind: "http", url };
+    } else {
+      if (environmentId === null || argv === null || argv.length === 0) {
+        throw new BotConfigError(
+          "a poll source needs url (http) or environmentId plus argv (exec)",
+          400,
+        );
+      }
+      const cwd = nullableString(args.cwd);
+      source = { kind: "exec", environmentId, argv, ...(cwd === null ? {} : { cwd }) };
+    }
     const spec = {
-      source: { kind: "http", url },
+      source,
       intervalMs,
       items: nullableString(args.items),
       cursor:
