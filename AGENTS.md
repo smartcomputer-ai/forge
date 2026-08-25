@@ -275,6 +275,17 @@ Release construction, snapshots, and tagged publication are documented in
   immutable bindings, emissions, keyed Promises, workflow starts, replies,
   deadlines, and cancellation. Do not add feature-specific transports or
   compile external plugin workflow types into the stable session worker.
+- Sub-agents (P134) are attached delegation on that protocol, distinct from
+  bots' durable orchestration. `features.subagents` is the authority: an
+  allowlisted agent menu plus root-scoped, attenuating limits. `agent_run`
+  (joined) and `agent_spawn` (promise) are system start-on-call bindings
+  whose `SubagentExecutionWorkflow` creates the child from the pinned
+  profile revision, records typed lineage (`SessionOrigin` — provenance,
+  never ownership), resolves the parent's `reply` promise, and closes the
+  child. Children are one-shot; cancellation from any direction closes the
+  child. Do not add a parent-side delegation transport, child↔parent
+  messaging, an agent graph surface, or an enum menu in the tool schema —
+  the menu is a refreshed catalog context entry.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry

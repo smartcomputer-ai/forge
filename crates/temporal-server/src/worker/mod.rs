@@ -34,6 +34,7 @@ pub use temporal_workflow::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_SUBAGENT_CLOSE, ACTIVITY_SUBAGENT_PREPARE, ACTIVITY_SUBAGENT_RESOLVE,
     ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
     ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AgentSessionWorkflow, AppendEventsRequest,
     ContextCompactActivityRequest, CreateOrLoadSessionRequest, CreateOrLoadSessionResult,
@@ -41,6 +42,7 @@ pub use temporal_workflow::{
     EnvironmentJobCancelActivityRequest, EnvironmentJobPollActivityRequest,
     EnvironmentJobPollActivityResult, EnvironmentJobStartActivityRequest,
     EnvironmentJobStartActivityResult, EnvironmentJobWorkflow, EnvironmentJobWorkflowArgs,
+    SubagentExecutionWorkflow,
     FAKE_TOOL_NAME, LlmGenerateActivityRequest, PreprocessRunInputActivityRequest,
     PreprocessRunInputActivityResult, PutBlobRequest, ReadBlobRequest, ReadBlobResult,
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
@@ -78,6 +80,7 @@ pub fn worker_with_activities(
     let worker_options = WorkerOptions::new(task_queue)
         .register_workflow::<AgentSessionWorkflow>()
         .register_workflow::<EnvironmentJobWorkflow>()
+        .register_workflow::<SubagentExecutionWorkflow>()
         .register_activities(activities)
         .task_types(WorkerTaskTypes::all())
         .build();

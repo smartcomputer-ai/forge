@@ -5069,20 +5069,20 @@
               }
             ]
           },
-          "fleet": {
+          "mcp": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/FleetFeature"
+                "$ref": "#/components/schemas/McpFeature"
               },
               {
                 "type": "null"
               }
             ]
           },
-          "mcp": {
+          "subagents": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/McpFeature"
+                "$ref": "#/components/schemas/SubagentsFeature"
               },
               {
                 "type": "null"
@@ -5117,92 +5117,6 @@
               {
                 "type": "null"
               }
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "FleetFeature": {
-        "additionalProperties": false,
-        "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-        "properties": {
-          "profiles": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FleetProfilesConfig"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "spawn": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/FleetSpawnConfig"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "version": {
-            "default": 1,
-            "format": "uint32",
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "type": "object"
-      },
-      "FleetProfilesConfig": {
-        "additionalProperties": false,
-        "properties": {
-          "allow": {
-            "description": "Absent means all named profiles are visible/readable/spawnable.",
-            "items": {
-              "$ref": "#/components/schemas/ProfileId"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "deny": {
-            "items": {
-              "$ref": "#/components/schemas/ProfileId"
-            },
-            "type": "array"
-          },
-          "inline": {
-            "description": "Defaults to true when omitted.",
-            "type": [
-              "boolean",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "FleetSpawnBase": {
-        "enum": [
-          "self",
-          "session",
-          "profile"
-        ],
-        "type": "string"
-      },
-      "FleetSpawnConfig": {
-        "additionalProperties": false,
-        "properties": {
-          "bases": {
-            "description": "Absent means all bases are allowed.",
-            "items": {
-              "$ref": "#/components/schemas/FleetSpawnBase"
-            },
-            "type": [
-              "array",
-              "null"
             ]
           }
         },
@@ -9909,6 +9823,20 @@
               "integer",
               "null"
             ]
+          },
+          "parentSessionId": {
+            "description": "Only sub-agent sessions delegated directly by this session.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rootSessionId": {
+            "description": "Only sub-agent sessions whose lineage root is this session.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "type": "object"
@@ -9930,6 +9858,57 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "SessionOriginKind": {
+        "enum": [
+          "subagent"
+        ],
+        "type": "string"
+      },
+      "SessionOriginView": {
+        "description": "Typed provenance of a delegated (sub-agent) session: who created it,\nunder which root, at what depth, and the effective limits it was spawned\nwith. Provenance, never ownership — the child is an ordinary session.",
+        "properties": {
+          "agent": {
+            "$ref": "#/components/schemas/SubagentAgentPin"
+          },
+          "depth": {
+            "description": "Absolute depth from the root; a root's direct child is 1.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "invocationId": {
+            "description": "The workflow-tool invocation that created the child.",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SessionOriginKind"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SubagentLimitsView"
+          },
+          "parentRunId": {
+            "type": "string"
+          },
+          "parentSessionId": {
+            "type": "string"
+          },
+          "rootSessionId": {
+            "description": "Nearest ancestor without an origin; root-scoped limits count every\nsession naming this root.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "parentSessionId",
+          "parentRunId",
+          "rootSessionId",
+          "depth",
+          "invocationId",
+          "agent",
+          "limits"
+        ],
         "type": "object"
       },
       "SessionReadParams": {
@@ -10065,6 +10044,17 @@
             "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
             "type": "boolean"
           },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionOriginView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sub-agent lineage; absent for root sessions."
+          },
           "updatedAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -10147,6 +10137,17 @@
               }
             ],
             "description": "Immutable workflow-backed tool declaration. A lifecycle controller\nindicates external session ownership; tool-only declarations do not."
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionOriginView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Sub-agent lineage; absent for root sessions."
           },
           "runs": {
             "default": [],
@@ -10426,6 +10427,118 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "SubagentAgentPin": {
+        "description": "The profile a sub-agent was spawned from, pinned at its revision.",
+        "properties": {
+          "profileId": {
+            "$ref": "#/components/schemas/ProfileId"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "profileId",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "SubagentAgentRef": {
+        "additionalProperties": false,
+        "properties": {
+          "profileId": {
+            "$ref": "#/components/schemas/ProfileId"
+          }
+        },
+        "required": [
+          "profileId"
+        ],
+        "type": "object"
+      },
+      "SubagentLimitsView": {
+        "properties": {
+          "deadlineMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxConcurrent": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxDepth": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxDescendants": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxDepth",
+          "maxDescendants",
+          "maxConcurrent",
+          "deadlineMs"
+        ],
+        "type": "object"
+      },
+      "SubagentsFeature": {
+        "additionalProperties": false,
+        "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+        "properties": {
+          "agents": {
+            "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+            "items": {
+              "$ref": "#/components/schemas/SubagentAgentRef"
+            },
+            "type": "array"
+          },
+          "deadlineMs": {
+            "default": 3600000,
+            "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxConcurrent": {
+            "default": 4,
+            "description": "Open sessions under the root at any time, excluding the root.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxDepth": {
+            "default": 2,
+            "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxDescendants": {
+            "default": 16,
+            "description": "Lifetime total of sessions ever created under the root.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "default": 1,
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agents"
+        ],
         "type": "object"
       },
       "TimersFeature": {

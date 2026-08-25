@@ -14,6 +14,7 @@ impl GatewayAgentApi {
             .environments
             .as_ref()
             .is_some_and(|environments| environments.jobs);
+        let subagents_granted = session_config.features.subagents.is_some();
         let environments_granted = session_config.features.environments.is_some();
         let mut refreshed = None;
         if jobs_granted && !super::has_all_core_environment_job_bindings(&loaded.state) {
@@ -21,11 +22,20 @@ impl GatewayAgentApi {
                 .await?;
             refreshed = Some(self.load_session_state(session_id).await?);
         }
+        if subagents_granted {
+            let current = refreshed.as_ref().unwrap_or(loaded);
+            if !super::has_all_core_subagent_bindings(&current.state) {
+                self.ensure_core_subagent_workflow_tools(session_id, &current.state)
+                    .await?;
+                refreshed = Some(self.load_session_state(session_id).await?);
+            }
+        }
         let loaded = refreshed.as_ref().unwrap_or(loaded);
         let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
             AgentApiError::invalid_request(format!("session is missing config: {session_id}"))
         })?;
         let expose_environment_jobs = jobs_granted;
+        let expose_subagents = subagents_granted;
         let target = ToolTarget::from(&session_config.model);
         let mut config =
             self.session_toolset_config(session_config, environments_granted, jobs_granted);
@@ -35,7 +45,8 @@ impl GatewayAgentApi {
             .bindings
             .values()
             .filter(|binding| {
-                expose_environment_jobs || !super::is_core_environment_job_binding(binding)
+                (expose_environment_jobs || !super::is_core_environment_job_binding(binding))
+                    && (expose_subagents || !super::is_core_subagent_binding(binding))
             })
             .collect::<Vec<_>>();
         enable_concurrency_for_workflow_tools(

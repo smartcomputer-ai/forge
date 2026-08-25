@@ -9,7 +9,7 @@ pub mod concurrency;
 pub mod environment;
 pub mod environment_protocol;
 pub mod error;
-pub mod fleet;
+pub mod subagents;
 pub mod fs;
 pub mod limits;
 pub mod prompts;

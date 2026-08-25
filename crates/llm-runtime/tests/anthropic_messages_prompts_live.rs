@@ -205,6 +205,7 @@ async fn anthropic_messages_live_uses_vfs_prompt_instructions() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await

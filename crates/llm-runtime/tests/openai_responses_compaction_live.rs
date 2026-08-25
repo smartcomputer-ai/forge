@@ -100,6 +100,7 @@ async fn openai_responses_live_engine_prunes_and_reuses_provider_compaction() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await
@@ -380,6 +381,7 @@ async fn live_runner(session_id: &SessionId) -> (SessionRunner, Arc<InMemoryBlob
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await

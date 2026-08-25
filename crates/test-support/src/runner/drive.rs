@@ -1265,6 +1265,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1361,6 +1362,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1431,6 +1433,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: source_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1511,6 +1514,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1598,6 +1602,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1858,6 +1863,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1976,6 +1982,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await

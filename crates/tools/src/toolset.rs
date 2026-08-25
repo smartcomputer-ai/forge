@@ -9,7 +9,6 @@ use crate::{
     concurrency::{ConcurrencyToolsetConfig, concurrency_tool_bindings, concurrency_tool_bundles},
     environment::control::{environment_control_tool_bindings, environment_control_tool_bundles},
     error::{ToolError, ToolResult},
-    fleet::{FleetToolsetConfig, fleet_tool_bindings, fleet_tool_bundles},
     runtime::{ToolCatalog, ToolDispatchMode, ToolDocument, ToolSpecBundle, ToolTarget},
     web::fetch::{WebFetchToolConfig, web_fetch_tool_binding, web_fetch_tool_bundle},
     web::search::{
@@ -24,7 +23,6 @@ pub struct ToolsetConfig {
     pub builtin: BuiltinToolsetConfig,
     pub openai_web_search: OpenAiResponsesWebSearchConfig,
     pub web_fetch: WebFetchToolConfig,
-    pub fleet: FleetToolsetConfig,
     pub concurrency: ConcurrencyToolsetConfig,
     pub environment_read: bool,
     pub environment_selection: bool,
@@ -36,7 +34,6 @@ impl ToolsetConfig {
             builtin: BuiltinToolsetConfig::disabled(),
             openai_web_search: OpenAiResponsesWebSearchConfig::default(),
             web_fetch: WebFetchToolConfig::default(),
-            fleet: FleetToolsetConfig::default(),
             concurrency: ConcurrencyToolsetConfig::default(),
             environment_read: false,
             environment_selection: false,
@@ -453,15 +450,11 @@ pub fn resolve_toolset(
     }
 
     let mut concurrency = config.concurrency.clone();
-    if config.fleet.enabled || config.builtin.environment.jobs_enabled() {
+    if config.builtin.environment.jobs_enabled() {
         concurrency.enabled = true;
     }
     if concurrency.enabled_or_timer() {
         builder.add_concurrency(&concurrency)?;
-    }
-
-    if config.fleet.enabled {
-        builder.add_fleet(fleet_tool_bundles(&config.fleet)?);
     }
 
     Ok(builder.finish())
@@ -550,15 +543,6 @@ impl ToolsetBuilder {
         Ok(())
     }
 
-    fn add_fleet(&mut self, bundles: Vec<ToolSpecBundle>) {
-        for bundle in bundles {
-            self.add_bundle(bundle);
-        }
-        for binding in fleet_tool_bindings(ToolDispatchMode::Local) {
-            self.catalog.insert(binding);
-        }
-    }
-
     fn add_bundle(&mut self, bundle: ToolSpecBundle) {
         let tool_name = bundle.spec.name.clone();
         if !self.seen_tools.insert(tool_name.clone()) {
@@ -591,7 +575,7 @@ mod tests {
 
     use super::*;
     use crate::concurrency::{AWAIT_TOOL_NAME, CANCEL_TOOL_NAME, SLEEP_TOOL_NAME};
-    use crate::fleet::AGENT_SPAWN_TOOL_NAME;
+    use crate::subagents::AGENT_SPAWN_TOOL_NAME;
     use crate::web::fetch::WEB_FETCH_TOOL_NAME;
     use crate::web::search::{WebSearchContextSize, WebSearchMode};
 
@@ -688,7 +672,7 @@ mod tests {
     }
 
     #[test]
-    fn job_toolset_adds_suspension_tools_without_fleet_tools() {
+    fn job_toolset_adds_suspension_tools_without_subagent_tools() {
         let target = target(ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
         config.builtin.environment = EnvironmentToolsetConfig::jobs();

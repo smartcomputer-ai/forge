@@ -1457,7 +1457,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),

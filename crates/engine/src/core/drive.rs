@@ -764,11 +764,11 @@ pub fn next_tool_batch_request(
             .as_ref()
             .and_then(|config| config.features.environments.as_ref())
             .map(|feature| crate::EnvironmentPolicyRuntime::v1(feature.providers.clone())),
-        fleet_policy: state
+        subagents_policy: state
             .lifecycle
             .config
             .as_ref()
-            .and_then(|config| config.features.fleet.clone()),
+            .and_then(|config| config.features.subagents.clone()),
         calls,
     }))
 }
@@ -2208,7 +2208,7 @@ mod tests {
             selection_tools: true,
             ..crate::EnvironmentsFeature::default()
         });
-        session_config.features.fleet = Some(crate::FleetFeature::default());
+        session_config.features.subagents = Some(test_subagents_feature());
         open_session_with_config(&mut drive, session_config);
         let set_active = drive
             .admit_command(
@@ -2235,7 +2235,16 @@ mod tests {
                 "provider-b".to_owned(),
             ])))
         );
-        assert_eq!(request.fleet_policy, Some(crate::FleetFeature::default()));
+        assert_eq!(request.subagents_policy, Some(test_subagents_feature()));
+    }
+
+    fn test_subagents_feature() -> crate::SubagentsFeature {
+        crate::SubagentsFeature {
+            agents: vec![crate::SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            ..crate::SubagentsFeature::default()
+        }
     }
 
     fn completed_tool_result(request: &ToolInvocationBatchRequest) -> ToolInvocationBatchResult {
@@ -5448,9 +5457,8 @@ mod tests {
         let mut result = completed_tool_result(request);
         result.results[0].effects = vec![crate::promise_create_effect(
             &crate::PromiseId::new(promise_id),
-            &crate::PromiseSource::Run {
-                target_session_id: "child_session".to_owned(),
-                target_run_id: 1,
+            &crate::PromiseSource::Timer {
+                fire_at_ms: u64::MAX,
             },
             None,
         )];
@@ -6639,9 +6647,8 @@ mod tests {
             promise_id.clone(),
             crate::Promise {
                 promise_id: promise_id.clone(),
-                source: crate::PromiseSource::Run {
-                    target_session_id: "child_session".to_owned(),
-                    target_run_id: 1,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
                 },
                 scope: crate::PromiseScope::Run { run_id },
                 ownership: crate::PromiseOwnership::Model,
@@ -6682,9 +6689,8 @@ mod tests {
             promise_id.clone(),
             crate::Promise {
                 promise_id: promise_id.clone(),
-                source: crate::PromiseSource::Run {
-                    target_session_id: "child_session".to_owned(),
-                    target_run_id: 1,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
                 },
                 scope: crate::PromiseScope::Session,
                 ownership: crate::PromiseOwnership::Model,
@@ -6737,7 +6743,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             calls: vec![
                 ToolInvocationRequest {
                     call_id: crate::ToolCallId::new("cancel"),

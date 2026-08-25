@@ -30,6 +30,9 @@ pub struct SessionView {
     /// indicates external session ownership; tool-only declarations do not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management: Option<SessionManagementView>,
+    /// Sub-agent lineage; absent for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOriginView>,
 }
 
 /// Managed-session reads use the same immutable declaration document accepted

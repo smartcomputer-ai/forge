@@ -21,6 +21,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
         .create_session(CreateSession {
             session_id: parent.clone(),
             display_name: Some("Lifecycle parent".to_owned()),
+            origin: None,
             created_at_ms: 1,
         })
         .await
@@ -78,6 +79,8 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
         .list_sessions(ListSessions {
             cursor: None,
             limit: 10,
+            root_session_id: None,
+            parent_session_id: None,
         })
         .await
         .expect("list sessions");
@@ -125,6 +128,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
         .create_session(CreateSession {
             session_id: tool_only.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 30,
         })
         .await
@@ -190,6 +194,7 @@ async fn pg_live_delete_is_closed_only_and_preserves_fork_history() {
         .create_session(CreateSession {
             session_id: parent.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await

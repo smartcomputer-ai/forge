@@ -1207,12 +1207,20 @@ fn promise(id: &str, status: PromiseStatus) -> engine::Promise {
     promise_with_source(
         id,
         status,
-        PromiseSource::Run {
-            target_session_id: "child".to_owned(),
-            target_run_id: 1,
-        },
+        bound_workflow_source("child"),
         PromiseScope::Session,
     )
+}
+
+/// A bound-receiver workflow promise: resolved only by pushed emission, so
+/// it never enters the recovery poll set.
+fn bound_workflow_source(peer: &str) -> PromiseSource {
+    PromiseSource::Workflow {
+        producer_workflow_id: format!("universe/{peer}"),
+        producer_workflow_kind: "bound_receiver".to_owned(),
+        invocation_id: engine::WorkflowToolInvocationId::new(format!("wti_{peer}")).to_string(),
+        completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
+    }
 }
 
 fn promise_with_source(
@@ -1426,10 +1434,7 @@ fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
         promise_with_source(
             "p_child",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "child".to_owned(),
-                target_run_id: 10,
-            },
+            bound_workflow_source("child"),
             PromiseScope::Run {
                 run_id: RunId::new(1),
             },
@@ -1437,10 +1442,7 @@ fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
         promise_with_source(
             "p_request",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "peer".to_owned(),
-                target_run_id: 11,
-            },
+            bound_workflow_source("peer"),
             PromiseScope::Run {
                 run_id: RunId::new(1),
             },
@@ -1456,10 +1458,7 @@ fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
         promise_with_source(
             "p_detached",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "detached_child".to_owned(),
-                target_run_id: 12,
-            },
+            bound_workflow_source("detached_child"),
             PromiseScope::Session,
         ),
     ];
@@ -1500,19 +1499,13 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
         promise_with_source(
             "p_child",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "child".to_owned(),
-                target_run_id: 10,
-            },
+            bound_workflow_source("child"),
             PromiseScope::Session,
         ),
         promise_with_source(
             "p_request",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "peer".to_owned(),
-                target_run_id: 11,
-            },
+            bound_workflow_source("peer"),
             PromiseScope::Session,
         ),
     ];

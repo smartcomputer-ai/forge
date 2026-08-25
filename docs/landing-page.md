@@ -5,9 +5,9 @@
 
 **Run thousands of agents for months. Not thousands of VMs.**
 
-**The agent fleet for the enterprise.**
+**Long-lived agents for the enterprise.**
 
-Lightspeed is open-source infrastructure for running long-lived agent fleets
+Lightspeed is open-source infrastructure for running long-lived agents and their sub-agents
 in production. Claude-Code-class agents run as durable workflows on your
 engine, borrow real machines only when a task needs one, and stay auditable,
 tenant-isolated, and cheap when idle.
@@ -17,7 +17,7 @@ Rust core. Temporal runtime. Postgres and S3. Apache 2.0.
 [Get started] [GitHub]
 
 [Visual: platform web UI screenshot. Prefer a view that backs the headline —
-the session/fleet list showing many long-lived sessions with ages, statuses,
+the session list showing many long-lived sessions with ages, statuses,
 and attached environments. Browser frame, dark mode.]
 
 ---
@@ -85,22 +85,22 @@ auth, agent profiles.*
 
 A planner agent spawns builders, testers, and reviewers. Each sub-agent
 provisions its own VM from a profile, clones the repository, runs the suite,
-and critiques the others' work. The fleet keeps going for days and picks up
+and critiques the others' work. The tree keeps going for days and picks up
 where it left off after a worker restart. Fork a session to try two
 approaches from the same state without paying for the shared prefix twice.
 
-*Built on: sub-agents (fleets), per-session provisioned environments, session
+*Built on: sub-agents, per-session provisioned environments, session
 fork and clone, idle power policy.*
 
 ### Mapping and documenting the enterprise
 
-Point a fleet at an undocumented landscape: dozens of repositories, servers,
+Point a coordinator and its sub-agents at an undocumented landscape: dozens of repositories, servers,
 schemas, and cron jobs nobody fully understands. Agents explore machines and
 codebases in parallel, reconstruct how the pieces talk to each other, write
 the documentation that never existed, and keep it accurate as they continue to
 observe. Sub-agents split the estate; a coordinator merges what they find.
 
-*Built on: sub-agents (fleets), environment file and process tools, virtual
+*Built on: sub-agents, environment file and process tools, virtual
 file system for the resulting docs, session fork and clone, secret credential injection, idle power
 policy.*
 

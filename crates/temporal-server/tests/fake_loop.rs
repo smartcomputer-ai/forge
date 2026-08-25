@@ -32,6 +32,7 @@ async fn runner() -> (
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await

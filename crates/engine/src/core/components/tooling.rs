@@ -321,7 +321,7 @@ pub enum ToolExecutionClass {
     /// Bounded interactive operation (filesystem, control, concurrency).
     #[default]
     Interactive,
-    /// Bounded network-shaped call (web, environment jobs, fleet messaging).
+    /// Bounded network-shaped call (web, environment jobs).
     RemoteInteractive,
     /// Environment process execution; its deadline derives from the validated
     /// process timeout clamped to the deployment-owned ceiling.

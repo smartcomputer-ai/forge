@@ -2033,6 +2033,7 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
 
         let settings = ChatDraftSettings {
@@ -2129,6 +2130,7 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),
@@ -2175,6 +2177,7 @@ mod tests {
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),

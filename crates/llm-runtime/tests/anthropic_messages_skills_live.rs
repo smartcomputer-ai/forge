@@ -212,6 +212,7 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await

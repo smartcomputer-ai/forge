@@ -8,7 +8,7 @@ pub(crate) mod credential_injection;
 pub mod environment;
 pub mod environment_gateway;
 pub(crate) mod environment_resolver;
-pub mod fleet;
+pub mod subagents;
 pub mod gateway;
 pub(crate) mod transcript;
 pub mod universe;

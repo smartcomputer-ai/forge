@@ -10,7 +10,7 @@ use api::{
     ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
     ContextEntryKindView, ContextEntrySourceView, ContextEntryView, ContextMessageRoleView,
     ContextView, EventCursor, EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput,
-    MediaKind, ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
+    MediaKind, ModelConfig, ProviderContextDisplayView, ProviderNativeToolExecutionView,
     RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
     SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
     TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
@@ -115,6 +115,12 @@ impl<'a> CoreAgentProjector<'a> {
                 .as_ref()
                 .map(|id| id.as_str().to_owned()),
             management: session_management_to_api(params.state),
+            origin: params
+                .record
+                .origin
+                .as_ref()
+                .map(session_origin_to_api)
+                .transpose()?,
         })
     }
 
@@ -1250,7 +1256,6 @@ pub fn api_run_id(run_id: RunId) -> String {
 
 fn promise_source_name(source: &engine::PromiseSource) -> &'static str {
     match source {
-        engine::PromiseSource::Run { .. } => "run",
         engine::PromiseSource::Timer { .. } => "timer",
         engine::PromiseSource::Workflow { .. } => "workflow",
     }
@@ -1456,10 +1461,10 @@ fn features_config_to_api(
     Ok(api::FeaturesConfig {
         vfs: features.vfs.as_ref().map(vfs_feature_to_api),
         web: features.web.as_ref().map(web_feature_to_api),
-        fleet: features
-            .fleet
+        subagents: features
+            .subagents
             .as_ref()
-            .map(fleet_feature_to_api)
+            .map(subagents_feature_to_api)
             .transpose()?,
         timers: features.timers.as_ref().map(|timers| api::TimersFeature {
             version: timers.version,
@@ -1527,38 +1532,67 @@ fn web_feature_to_api(web: &engine::WebFeature) -> api::WebFeature {
     }
 }
 
-fn fleet_feature_to_api(fleet: &engine::FleetFeature) -> Result<api::FleetFeature, AgentApiError> {
-    let profiles = if fleet.profiles.is_default() {
-        None
-    } else {
-        Some(api::FleetProfilesConfig {
-            allow: fleet
-                .profiles
-                .allow
-                .as_ref()
-                .map(|allow| profile_ids_to_api(allow))
-                .transpose()?,
-            deny: profile_ids_to_api(&fleet.profiles.deny)?,
-            inline: (!fleet.profiles.inline).then_some(false),
-        })
-    };
-    let spawn = (!fleet.spawn.is_default()).then(|| api::FleetSpawnConfig {
-        bases: fleet.spawn.bases.as_ref().map(|bases| {
-            bases
-                .iter()
-                .map(|base| match base {
-                    engine::FleetSpawnBase::Self_ => api::FleetSpawnBase::Self_,
-                    engine::FleetSpawnBase::Session => api::FleetSpawnBase::Session,
-                    engine::FleetSpawnBase::Profile => api::FleetSpawnBase::Profile,
+fn subagents_feature_to_api(
+    subagents: &engine::SubagentsFeature,
+) -> Result<api::SubagentsFeature, AgentApiError> {
+    Ok(api::SubagentsFeature {
+        version: subagents.version,
+        agents: subagents
+            .agents
+            .iter()
+            .map(|agent| {
+                Ok(api::SubagentAgentRef {
+                    profile_id: api::ProfileId::try_new(agent.profile_id.clone()).map_err(
+                        |error| {
+                            AgentApiError::internal(format!(
+                                "invalid subagent profile id {}: {error}",
+                                agent.profile_id
+                            ))
+                        },
+                    )?,
                 })
-                .collect()
-        }),
-    });
-    Ok(api::FleetFeature {
-        version: fleet.version,
-        profiles,
-        spawn,
+            })
+            .collect::<Result<Vec<_>, AgentApiError>>()?,
+        max_depth: subagents.limits.max_depth,
+        max_descendants: subagents.limits.max_descendants,
+        max_concurrent: subagents.limits.max_concurrent,
+        deadline_ms: subagents.limits.deadline_ms,
     })
+}
+
+/// Project a session record's delegation provenance for API views.
+pub fn session_origin_to_api(
+    origin: &engine::storage::SessionOrigin,
+) -> Result<api::SessionOriginView, AgentApiError> {
+    Ok(api::SessionOriginView {
+        kind: match origin.kind {
+            engine::storage::SessionOriginKind::Subagent => api::SessionOriginKind::Subagent,
+        },
+        parent_session_id: origin.parent_session_id.as_str().to_owned(),
+        parent_run_id: format!("run_{}", origin.parent_run_id),
+        root_session_id: origin.root_session_id.as_str().to_owned(),
+        depth: origin.depth,
+        invocation_id: origin.invocation_id.clone(),
+        agent: api::SubagentAgentPin {
+            profile_id: api::ProfileId::try_new(origin.profile_id.clone()).map_err(|error| {
+                AgentApiError::internal(format!(
+                    "invalid subagent origin profile id {}: {error}",
+                    origin.profile_id
+                ))
+            })?,
+            revision: origin.profile_revision,
+        },
+        limits: subagent_limits_to_api(origin.limits),
+    })
+}
+
+pub fn subagent_limits_to_api(limits: engine::SubagentLimits) -> api::SubagentLimitsView {
+    api::SubagentLimitsView {
+        max_depth: limits.max_depth,
+        max_descendants: limits.max_descendants,
+        max_concurrent: limits.max_concurrent,
+        deadline_ms: limits.deadline_ms,
+    }
 }
 
 fn mcp_feature_to_api(mcp: &engine::McpFeature) -> api::McpFeature {
@@ -1587,19 +1621,6 @@ fn remote_mcp_approval_to_api(
         engine::RemoteMcpApprovalPolicy::Always => api::RemoteMcpApprovalPolicy::Always,
         engine::RemoteMcpApprovalPolicy::Never => api::RemoteMcpApprovalPolicy::Never,
     }
-}
-
-fn profile_ids_to_api(profile_ids: &[String]) -> Result<Vec<ProfileId>, AgentApiError> {
-    profile_ids
-        .iter()
-        .map(|profile_id| {
-            ProfileId::try_new(profile_id.clone()).map_err(|error| {
-                AgentApiError::internal(format!(
-                    "stored fleet profile policy contains invalid profile id {profile_id:?}: {error}"
-                ))
-            })
-        })
-        .collect()
 }
 
 fn active_tools_to_api(
@@ -1795,10 +1816,10 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::InvalidLimit { limit } => {
             AgentApiError::invalid_request(format!("invalid page limit: {limit}"))
         }
-        SessionStoreError::InvalidForkPoint { .. }
-        | SessionStoreError::InvalidRelationship { .. } => {
+        SessionStoreError::InvalidForkPoint { .. } => {
             AgentApiError::invalid_request(error.to_string())
         }
+        SessionStoreError::OriginLimitExceeded { .. } => AgentApiError::rejected(error.to_string()),
         SessionStoreError::SessionNotClosed { .. } => AgentApiError::rejected(error.to_string()),
         SessionStoreError::ManagedSessionCannotBranch { .. } => {
             AgentApiError::rejected(error.to_string())
@@ -2275,6 +2296,7 @@ mod tests {
             head: None,
             source_session_id: None,
             source_seq: None,
+            origin: None,
             created_at_ms: 1,
             updated_at_ms: 2,
         };
@@ -2763,18 +2785,16 @@ mod tests {
                         blocked_domains: vec!["blocked.example".to_owned()],
                     }),
                 }),
-                fleet: Some(engine::FleetFeature {
+                subagents: Some(engine::SubagentsFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
-                    profiles: engine::FleetProfilesConfig {
-                        allow: Some(vec!["researcher".to_owned()]),
-                        deny: vec!["admin".to_owned()],
-                        inline: false,
-                    },
-                    spawn: engine::FleetSpawnConfig {
-                        bases: Some(vec![
-                            engine::FleetSpawnBase::Self_,
-                            engine::FleetSpawnBase::Profile,
-                        ]),
+                    agents: vec![engine::SubagentAgentConfig {
+                        profile_id: "researcher".to_owned(),
+                    }],
+                    limits: engine::SubagentLimits {
+                        max_depth: 3,
+                        max_descendants: 10,
+                        max_concurrent: 2,
+                        deadline_ms: 120_000,
                     },
                 }),
                 timers: Some(engine::TimersFeature::default()),
@@ -2838,24 +2858,16 @@ mod tests {
                             blocked_domains: vec!["blocked.example".to_owned()],
                         }),
                     }),
-                    fleet: Some(api::FleetFeature {
+                    subagents: Some(api::SubagentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
-                        profiles: Some(api::FleetProfilesConfig {
-                            allow: Some(vec![
-                                ProfileId::try_new("researcher".to_owned())
-                                    .expect("valid profile id")
-                            ]),
-                            deny: vec![
-                                ProfileId::try_new("admin".to_owned()).expect("valid profile id")
-                            ],
-                            inline: Some(false),
-                        }),
-                        spawn: Some(api::FleetSpawnConfig {
-                            bases: Some(vec![
-                                api::FleetSpawnBase::Self_,
-                                api::FleetSpawnBase::Profile,
-                            ]),
-                        }),
+                        agents: vec![api::SubagentAgentRef {
+                            profile_id: api::ProfileId::try_new("researcher".to_owned())
+                                .expect("valid profile id"),
+                        }],
+                        max_depth: 3,
+                        max_descendants: 10,
+                        max_concurrent: 2,
+                        deadline_ms: 120_000,
                     }),
                     timers: Some(api::TimersFeature {
                         version: api::CURRENT_FEATURE_VERSION,
@@ -2881,17 +2893,29 @@ mod tests {
     }
 
     #[test]
-    fn fleet_feature_with_default_sub_sections_projects_sparse() {
-        let projected =
-            fleet_feature_to_api(&engine::FleetFeature::default()).expect("project fleet feature");
-
+    fn session_origin_projects_lineage_and_pinned_limits() {
+        let origin = engine::storage::SessionOrigin {
+            kind: engine::storage::SessionOriginKind::Subagent,
+            parent_session_id: engine::SessionId::new("parent"),
+            parent_run_id: 7,
+            root_session_id: engine::SessionId::new("root"),
+            depth: 2,
+            invocation_id: "wti_1".to_owned(),
+            profile_id: "reviewer".to_owned(),
+            profile_revision: 4,
+            limits: engine::SubagentLimits::default(),
+        };
+        let projected = session_origin_to_api(&origin).expect("project origin");
+        assert_eq!(projected.kind, api::SessionOriginKind::Subagent);
+        assert_eq!(projected.parent_session_id, "parent");
+        assert_eq!(projected.parent_run_id, "run_7");
+        assert_eq!(projected.root_session_id, "root");
+        assert_eq!(projected.depth, 2);
+        assert_eq!(projected.agent.profile_id.as_str(), "reviewer");
+        assert_eq!(projected.agent.revision, 4);
         assert_eq!(
-            projected,
-            api::FleetFeature {
-                version: api::CURRENT_FEATURE_VERSION,
-                profiles: None,
-                spawn: None,
-            }
+            projected.limits,
+            subagent_limits_to_api(engine::SubagentLimits::default())
         );
     }
 

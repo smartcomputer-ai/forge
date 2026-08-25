@@ -102,10 +102,11 @@ pub struct ToolInvocationBatchRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_environment_id: Option<EnvironmentId>,
     pub environment_policy: Option<EnvironmentPolicyRuntime>,
-    /// Admitted Fleet policy for this tool batch. Runtime executors consume
-    /// this projection directly instead of reconstructing the owning session.
+    /// Admitted sub-agent grant for this tool batch. Runtime executors pin
+    /// it into sub-agent invocations instead of reconstructing the owning
+    /// session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet_policy: Option<crate::FleetFeature>,
+    pub subagents_policy: Option<crate::SubagentsFeature>,
     pub calls: Vec<ToolInvocationRequest>,
 }
 
@@ -268,7 +269,7 @@ impl ToolInvocationBatchRequest {
 /// The record carries the stable session/run/turn/batch/call identity plus the
 /// batch-scoped runtime facts the call needs. Sibling summaries let the
 /// execution boundary enforce cross-call batch rules (environment-selection
-/// exclusivity, duplicate fleet messages) without a batch-level activity.
+/// exclusivity) without a batch-level activity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvocationCallRequest {
     pub session_id: SessionId,
@@ -281,7 +282,7 @@ pub struct ToolInvocationCallRequest {
     pub active_environment_id: Option<EnvironmentId>,
     pub environment_policy: Option<EnvironmentPolicyRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet_policy: Option<crate::FleetFeature>,
+    pub subagents_policy: Option<crate::SubagentsFeature>,
     pub call: ToolInvocationRequest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sibling_calls: Vec<ToolCallSummary>,
@@ -310,7 +311,7 @@ impl ToolInvocationCallRequest {
             workspace_links: self.workspace_links,
             active_environment_id: self.active_environment_id,
             environment_policy: self.environment_policy,
-            fleet_policy: self.fleet_policy,
+            subagents_policy: self.subagents_policy,
             calls: vec![self.call],
         }
     }
@@ -344,7 +345,7 @@ impl ToolInvocationBatchRequest {
             workspace_links: self.workspace_links.clone(),
             active_environment_id: self.active_environment_id.clone(),
             environment_policy: self.environment_policy.clone(),
-            fleet_policy: self.fleet_policy.clone(),
+            subagents_policy: self.subagents_policy.clone(),
             call,
             sibling_calls,
             execution,
@@ -509,7 +510,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-a")),
             environment_policy: Some(EnvironmentPolicyRuntime::v1(None)),
-            fleet_policy: None,
+            subagents_policy: None,
             calls: call_ids
                 .iter()
                 .map(|call_id| ToolInvocationRequest {

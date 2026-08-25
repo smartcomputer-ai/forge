@@ -27,7 +27,7 @@ One caveat we take seriously: frontier models are optimized to the hilt (via RL)
 **What you can build with Lightspeed**:
 
 - An insanely **scalable OpenClaw-style personal assistant**: thousands of users, very low cost (besides tokens)
-- A fully **autonomous software factory**: a fleet of agents that build, test, and critique your next feature — and keep running for weeks
+- A fully **autonomous software factory**: a coordinator that runs sub-agents to build, test, and critique your next feature — and keeps running for weeks
 - **Research agents** that spin up compute for long-running experiments, stay live for days, and supervise progress
 - ...and much more!
 
@@ -79,8 +79,8 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
   shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
-- [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
-- [x] **Agent profiles**: reusable session setups, shared across clients and fleets;
+- [x] **Sub-agents**: `agent_run` / `agent_spawn` over allowlisted profiles, supervised by an execution workflow, with root-scoped limits and typed lineage
+- [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;
   a profile can activate an existing environment or provision a fresh one per session
 
 **Durability & scale**

@@ -501,7 +501,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             calls,
         }
     }

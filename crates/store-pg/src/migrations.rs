@@ -34,7 +34,6 @@ const LIGHTSPEED_TABLES: &[&str] = &[
     "environments",
     "mcp_servers",
     "session_events",
-    "session_links",
     "sessions",
     "universes",
     "vfs_snapshots",
@@ -99,9 +98,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "grant_exposure",
         sql: include_str!("../migrations/010_grant_exposure.sql"),
     },
+    EmbeddedMigration {
+        version: 11,
+        name: "subagent_origin",
+        sql: include_str!("../migrations/011_subagent_origin.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 10;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 11;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {
@@ -370,11 +374,20 @@ mod tests {
                 .all(|migration| checksum(migration.sql).len() == 64)
         );
         assert!(LIGHTSPEED_TABLES.windows(2).all(|pair| pair[0] < pair[1]));
+        // Relations the ledger owns: created by some migration and not
+        // dropped by a later one (`session_links` was retired by 011).
+        let dropped_tables: BTreeSet<_> = MIGRATIONS
+            .iter()
+            .flat_map(|migration| migration.sql.lines())
+            .filter_map(|line| line.trim().strip_prefix("DROP TABLE IF EXISTS "))
+            .map(|remainder| remainder.trim_end_matches(';').to_owned())
+            .collect();
         let migrated_tables: BTreeSet<_> = MIGRATIONS
             .iter()
             .flat_map(|migration| migration.sql.lines())
             .filter_map(|line| line.trim().strip_prefix("CREATE TABLE IF NOT EXISTS "))
             .map(|remainder| remainder.trim_end_matches(" (").to_owned())
+            .filter(|table| !dropped_tables.contains(table))
             .collect();
         assert_eq!(
             migrated_tables,

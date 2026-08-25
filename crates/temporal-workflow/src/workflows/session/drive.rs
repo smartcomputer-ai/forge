@@ -447,10 +447,7 @@ mod tests {
             promise_id.clone(),
             engine::Promise {
                 promise_id: promise_id.clone(),
-                source: engine::PromiseSource::Run {
-                    target_session_id: "child".to_owned(),
-                    target_run_id: 1,
-                },
+                source: engine::PromiseSource::Timer { fire_at_ms: 1 },
                 scope: engine::PromiseScope::Session,
                 ownership: engine::PromiseOwnership::Model,
                 status: engine::PromiseStatus::Resolved,

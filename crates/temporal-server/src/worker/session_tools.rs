@@ -8,7 +8,7 @@ use engine::{
     BlobRef, CoreAgentIoError, CoreAgentTools, PromiseId, PromiseSource, ProviderApiKind,
     SessionId, ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest,
     ToolInvocationBatchResult, ToolInvocationResult, promise_create_effect,
-    storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, SessionStore},
+    storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError},
 };
 use environment_client::{EnvironmentClientError, EnvironmentDataClient, WebSocketConnectOptions};
 use environment_protocol::{
@@ -41,11 +41,11 @@ use tools::{
         NormalizeJobResultInput, is_environment_job_query_tool_name, normalize_job_result,
     },
     environment_protocol::RemoteEnvironmentConnection,
-    fleet::is_fleet_tool,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
     limits::ToolLimits,
     runtime::InlineToolRuntime,
     runtime::{ToolCatalog, ToolTarget},
+    subagents::{AgentCallArgs, SubagentExecutionContextV1, SubagentToolKind},
     toolset::{EnvironmentToolsetConfig, ToolsetConfig, ToolsetEnvironment, resolve_toolset},
     web::fetch::WebFetchToolConfig,
     workflow_tool::invoke_workflow_tool,
@@ -55,7 +55,7 @@ use vfs::{ResolvedWorkspaceLink, VfsCatalogError, VfsWorkspaceStore};
 use crate::{
     credential_injection::EnvironmentCredentialResolver,
     environment::{ActiveEnvironmentBlocker, RuntimeEnvironment, SessionEnvironmentManager},
-    fleet::{FleetChildRuntime, FleetService, FleetToolExecutor, await_spec_from_args},
+    subagents::await_spec_from_args,
 };
 
 #[derive(Clone)]
@@ -68,7 +68,6 @@ pub struct SessionTools {
     environment_resolver: Option<crate::environment_resolver::EnvironmentResolver>,
     environment_credentials: Option<EnvironmentCredentialResolver>,
     environment_gateway: Option<crate::environment_gateway::EnvironmentGatewayClientConfig>,
-    fleet: Option<FleetToolExecutor>,
 }
 
 impl SessionTools {
@@ -83,19 +82,7 @@ impl SessionTools {
             environment_resolver: None,
             environment_credentials: None,
             environment_gateway: None,
-            fleet: None,
         }
-    }
-
-    pub fn with_fleet_runtime(
-        mut self,
-        sessions: Arc<dyn SessionStore>,
-        runtime: Arc<dyn FleetChildRuntime>,
-    ) -> Self {
-        let service =
-            FleetService::new(sessions, runtime).with_vfs_stores(self.workspace_store.clone());
-        self.fleet = Some(FleetToolExecutor::new(self.blobs.clone(), service));
-        self
     }
 
     pub fn with_environment_store(mut self, environments: Arc<dyn EnvironmentStore>) -> Self {
@@ -153,43 +140,6 @@ impl SessionTools {
     fn with_blob_graph(mut self, blob_graph: Arc<dyn BlobGraphStore>) -> Self {
         self.blob_graph = Some(blob_graph);
         self
-    }
-
-    pub fn from_pg_store_with_fleet_runtime(
-        store: Arc<PgStore>,
-        runtime: Arc<dyn FleetChildRuntime>,
-    ) -> Self {
-        let sessions: Arc<dyn engine::storage::SessionStore> = store.clone();
-        Self::from_pg_store(store).with_fleet_runtime(sessions, runtime)
-    }
-
-    async fn invoke_fleet_call(
-        &self,
-        request: &ToolInvocationBatchRequest,
-        call: &engine::ToolInvocationRequest,
-    ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        let Some(executor) = &self.fleet else {
-            return failed_result(
-                self.blobs.as_ref(),
-                call.call_id.clone(),
-                "Fleet tools are not configured on this runtime",
-            )
-            .await;
-        };
-        executor
-            .invoke(
-                crate::fleet::FleetInvocationContext {
-                    parent_session_id: request.session_id.clone(),
-                    parent_run_id: request.run_id,
-                    turn_id: request.turn_id,
-                    batch_id: request.batch_id,
-                    call_id: call.call_id.clone(),
-                    observed_at_ms: now_unix_ms()?,
-                    fleet_policy: request.fleet_policy.clone(),
-                },
-                call,
-            )
-            .await
     }
 
     async fn invoke_concurrency_call(
@@ -299,22 +249,6 @@ impl SessionTools {
             .first()
             .cloned()
             .ok_or_else(|| io_error("await batch had no calls after planner invocation"))?;
-        if let Some(executor) = &self.fleet {
-            return executor
-                .invoke_await_batch(
-                    crate::fleet::FleetInvocationContext {
-                        parent_session_id: request.session_id.clone(),
-                        parent_run_id: request.run_id,
-                        turn_id: request.turn_id,
-                        batch_id: request.batch_id,
-                        call_id: call.call_id.clone(),
-                        observed_at_ms: now_unix_ms()?,
-                        fleet_policy: request.fleet_policy.clone(),
-                    },
-                    &call,
-                )
-                .await;
-        }
         self.invoke_store_backed_await_batch(request, &call).await
     }
 
@@ -323,20 +257,8 @@ impl SessionTools {
         request: ToolInvocationBatchRequest,
         call: &engine::ToolInvocationRequest,
     ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
-        let context = crate::fleet::FleetInvocationContext {
-            parent_session_id: request.session_id.clone(),
-            parent_run_id: request.run_id,
-            turn_id: request.turn_id,
-            batch_id: request.batch_id,
-            call_id: call.call_id.clone(),
-            observed_at_ms: now_unix_ms()?,
-            fleet_policy: request.fleet_policy.clone(),
-        };
         let args: AwaitArgs = self.read_tool_args(call).await?;
-        match self
-            .await_promises_from_session(&context, call.call_id.clone(), args)
-            .await
-        {
+        match await_spec_from_args(args, now_unix_ms()?).map_err(io_error) {
             Ok(spec) => Ok(ToolBatchOutcome::Deferred {
                 batch_id: request.batch_id,
                 call_id: call.call_id.clone(),
@@ -355,15 +277,6 @@ impl SessionTools {
                 }))
             }
         }
-    }
-
-    async fn await_promises_from_session(
-        &self,
-        context: &crate::fleet::FleetInvocationContext,
-        _call_id: engine::ToolCallId,
-        args: AwaitArgs,
-    ) -> Result<engine::AwaitSpec, CoreAgentIoError> {
-        await_spec_from_args(args, context.observed_at_ms).map_err(io_error)
     }
 
     async fn invoke_mixed_await_batch(
@@ -658,6 +571,67 @@ impl SessionTools {
             let context = JobSubmitExecutionContextV1::new(
                 environment_id.as_str().to_owned(),
                 allowed_provider_ids,
+            );
+            Some(
+                self.blobs
+                    .put_bytes(serde_json::to_vec(&context).map_err(io_error)?)
+                    .await
+                    .map_err(map_blob_error)?,
+            )
+        } else if SubagentToolKind::from_binding(
+            binding.definition.tool_id.as_str(),
+            binding.definition.semantic_type.as_str(),
+        )
+        .is_some()
+        {
+            // Sub-agent admission (P134): the grant on the batch request is
+            // the authority. Validate the agent against its allowlist here,
+            // pin the grant limits and parent identity for the execution,
+            // and let the generic start-on-call path do the rest.
+            let Some(policy) = request.subagents_policy.as_ref() else {
+                return failed_result(
+                    self.blobs.as_ref(),
+                    call.call_id.clone(),
+                    format!(
+                        "{} requires the subagents grant",
+                        binding.definition.tool.name
+                    ),
+                )
+                .await;
+            };
+            let args: AgentCallArgs = match self.read_tool_args(call).await {
+                Ok(args) => args,
+                Err(error) => {
+                    return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
+                        .await;
+                }
+            };
+            if let Err(error) = args.validate() {
+                return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
+                    .await;
+            }
+            if !policy.agent_allowed(&args.agent) {
+                let allowed = policy
+                    .agents
+                    .iter()
+                    .map(|agent| agent.profile_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return failed_result(
+                    self.blobs.as_ref(),
+                    call.call_id.clone(),
+                    format!(
+                        "agent {} is not in this session's sub-agent catalog (allowed: {allowed})",
+                        args.agent
+                    ),
+                )
+                .await;
+            }
+            let context = SubagentExecutionContextV1::new(
+                request.session_id.as_str().to_owned(),
+                request.run_id.as_u64(),
+                args.agent,
+                policy.limits,
             );
             Some(
                 self.blobs
@@ -1376,29 +1350,18 @@ impl CoreAgentTools for SessionTools {
         if has_await_call {
             return self.invoke_mixed_await_batch(request).await;
         }
-        let duplicate_fleet_message_call_ids =
-            self.duplicate_fleet_message_call_ids(&request).await?;
         let has_generic_runtime_call = request.calls.iter().any(|call| {
-            !is_fleet_tool(&call.tool_name)
-                && !is_concurrency_tool(&call.tool_name)
+            !is_concurrency_tool(&call.tool_name)
                 && !is_environment_control_tool(&call.tool_name)
                 && call.workflow_tool.is_none()
         });
         let mut successful_workflow_siblings = BTreeMap::new();
         if !has_generic_runtime_call {
-            // Fleet/concurrency-only batches skip generic VFS/runtime setup entirely.
+            // Workflow-tool/concurrency-only batches skip generic VFS/runtime
+            // setup entirely.
             let mut results = Vec::with_capacity(request.calls.len());
             for call in &request.calls {
-                if duplicate_fleet_message_call_ids.contains(&call.call_id) {
-                    results.push(
-                        failed_result(
-                            self.blobs.as_ref(),
-                            call.call_id.clone(),
-                            "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
-                        )
-                        .await?,
-                    );
-                } else if call.workflow_tool.is_some() {
+                if call.workflow_tool.is_some() {
                     results.push(
                         self.invoke_supplied_workflow_tool_call(
                             &request,
@@ -1407,8 +1370,6 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_fleet_tool(&call.tool_name) {
-                    results.push(self.invoke_fleet_call(&request, call).await?);
                 } else if is_environment_control_tool(&call.tool_name) {
                     results.push(self.invoke_environment_control_call(&request, call).await?);
                 } else {
@@ -1459,16 +1420,7 @@ impl CoreAgentTools for SessionTools {
 
             let mut results = Vec::with_capacity(request.calls.len());
             for call in &request.calls {
-                if duplicate_fleet_message_call_ids.contains(&call.call_id) {
-                    results.push(
-                        failed_result(
-                            self.blobs.as_ref(),
-                            call.call_id.clone(),
-                            "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
-                        )
-                        .await?,
-                    );
-                } else if call.workflow_tool.is_some() {
+                if call.workflow_tool.is_some() {
                     results.push(
                         self.invoke_supplied_workflow_tool_call(
                             &request,
@@ -1477,8 +1429,6 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_fleet_tool(&call.tool_name) {
-                    results.push(self.invoke_fleet_call(&request, call).await?);
                 } else if is_concurrency_tool(&call.tool_name) {
                     results.push(self.invoke_concurrency_call(&request, call).await?);
                 } else if is_environment_control_tool(&call.tool_name) {
@@ -1586,12 +1536,6 @@ impl SessionTools {
                 .map(ToolCallExecution::Completed);
         }
         let batch_request = request.into_batch_request();
-        if is_fleet_tool(&call.tool_name) {
-            return self
-                .invoke_fleet_call(&batch_request, &call)
-                .await
-                .map(ToolCallExecution::Completed);
-        }
         if is_concurrency_tool(&call.tool_name) {
             return self
                 .invoke_concurrency_call(&batch_request, &call)
@@ -1801,55 +1745,7 @@ fn per_call_batch_rule_violation(
             "environment activation/deactivation cannot share a batch with another selection or an environment-dependent tool",
         );
     }
-    let is_fleet_message = |tool_name: &engine::ToolName| {
-        matches!(
-            tool_name.as_str(),
-            tools::fleet::AGENT_SEND_TOOL_NAME | tools::fleet::AGENT_REQUEST_TOOL_NAME
-        )
-    };
-    // Argument refs are content-addressed, so ref equality is content
-    // equality; this matches the batch path's byte comparison.
-    if is_fleet_message(&call.tool_name)
-        && request.sibling_calls.iter().any(|sibling| {
-            is_fleet_message(&sibling.tool_name) && sibling.arguments_ref == call.arguments_ref
-        })
-    {
-        return Some(
-            "duplicate agent_send/agent_request calls with identical arguments in one tool batch are rejected",
-        );
-    }
     None
-}
-
-impl SessionTools {
-    async fn duplicate_fleet_message_call_ids(
-        &self,
-        request: &ToolInvocationBatchRequest,
-    ) -> Result<BTreeSet<engine::ToolCallId>, CoreAgentIoError> {
-        let mut by_arguments = BTreeMap::<Vec<u8>, Vec<engine::ToolCallId>>::new();
-        for call in &request.calls {
-            if !matches!(
-                call.tool_name.as_str(),
-                tools::fleet::AGENT_SEND_TOOL_NAME | tools::fleet::AGENT_REQUEST_TOOL_NAME
-            ) {
-                continue;
-            }
-            let bytes = self
-                .blobs
-                .read_bytes(&call.arguments_ref)
-                .await
-                .map_err(map_blob_error)?;
-            by_arguments
-                .entry(bytes)
-                .or_default()
-                .push(call.call_id.clone());
-        }
-        Ok(by_arguments
-            .into_values()
-            .filter(|call_ids| call_ids.len() > 1)
-            .flatten()
-            .collect())
-    }
 }
 
 fn linked_vfs_cwd(links: &[ResolvedWorkspaceLink]) -> Result<FsPath, CoreAgentIoError> {
@@ -1999,7 +1895,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call_self"),
                 tool_name: ToolName::new(tool_name),
@@ -2069,29 +1965,6 @@ mod tests {
             per_call_batch_rule_violation(
                 &catalog,
                 &per_call_request("environment_activate", b"{}", &[("web_fetch", b"{}")]),
-            )
-            .is_none()
-        );
-        // Duplicate fleet messages are content-addressed duplicates.
-        assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request(
-                    "agent_send",
-                    b"{\"to\":\"a\"}",
-                    &[("agent_request", b"{\"to\":\"a\"}")]
-                ),
-            )
-            .is_some()
-        );
-        assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request(
-                    "agent_send",
-                    b"{\"to\":\"a\"}",
-                    &[("agent_send", b"{\"to\":\"b\"}")]
-                ),
             )
             .is_none()
         );
@@ -2201,6 +2074,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -2325,7 +2199,7 @@ mod tests {
             batch_id: ToolBatchId::new(1),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             workspace_links: Vec::new(),
             calls,
         };
@@ -2401,6 +2275,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: SessionId::new("unrelated-session-created-after-scheduling"),
                 display_name: None,
+                origin: None,
                 created_at_ms: 10,
             })
             .await
@@ -2488,7 +2363,7 @@ mod tests {
                 "provider-b".to_owned(),
                 "provider-a".to_owned(),
             ]))),
-            fleet_policy: None,
+            subagents_policy: None,
             workspace_links: Vec::new(),
             calls: vec![call.clone()],
         };
@@ -2542,7 +2417,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![call],
             })
@@ -2572,127 +2447,6 @@ mod tests {
     #[derive(Default)]
     struct RecordingProcessExecutor {
         requests: Mutex<Vec<ProcessRequest>>,
-    }
-
-    #[derive(Default)]
-    struct FakeFleetRuntime {
-        started_runs: Mutex<Vec<(SessionId, Vec<api::InputItem>, engine::SubmissionId)>>,
-    }
-
-    #[async_trait]
-    impl FleetChildRuntime for FakeFleetRuntime {
-        async fn start_session(
-            &self,
-            _session_id: &SessionId,
-            _close_on_terminal: bool,
-            _profile: Option<api::ProfileSource>,
-        ) -> Result<(), api::AgentApiError> {
-            Ok(())
-        }
-
-        async fn list_profiles(&self) -> Result<Vec<api::AgentProfileSummary>, api::AgentApiError> {
-            Ok(Vec::new())
-        }
-
-        async fn read_profile(
-            &self,
-            profile_id: api::ProfileId,
-        ) -> Result<api::AgentProfile, api::AgentApiError> {
-            Err(api::AgentApiError::not_found(format!(
-                "agent profile not found: {profile_id}"
-            )))
-        }
-
-        async fn start_run(
-            &self,
-            session_id: &SessionId,
-            input: Vec<api::InputItem>,
-            submission_id: engine::SubmissionId,
-            _notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
-        ) -> Result<String, api::AgentApiError> {
-            self.started_runs.lock().expect("fleet lock").push((
-                session_id.clone(),
-                input,
-                submission_id,
-            ));
-            Ok("run_1".to_owned())
-        }
-
-        async fn enqueue_run(
-            &self,
-            session_id: &SessionId,
-            input: Vec<api::InputItem>,
-            submission_id: engine::SubmissionId,
-            _notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
-        ) -> Result<String, api::AgentApiError> {
-            self.started_runs.lock().expect("fleet lock").push((
-                session_id.clone(),
-                input,
-                submission_id,
-            ));
-            Ok("run_1".to_owned())
-        }
-
-        async fn deliver_message(
-            &self,
-            session_id: &SessionId,
-            input: Vec<api::InputItem>,
-            submission_id: engine::SubmissionId,
-        ) -> Result<(), api::AgentApiError> {
-            self.started_runs.lock().expect("fleet lock").push((
-                session_id.clone(),
-                input,
-                submission_id,
-            ));
-            Ok(())
-        }
-
-        async fn holder_workflow_id(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<String, api::AgentApiError> {
-            Ok(format!("test-universe/{session_id}"))
-        }
-
-        async fn read_session(
-            &self,
-            session_id: &SessionId,
-        ) -> Result<api::SessionView, api::AgentApiError> {
-            Ok(fleet_test_session(session_id, api::SessionStatus::Idle))
-        }
-
-        async fn read_session_events(
-            &self,
-            _session_id: &SessionId,
-            _after: Option<u64>,
-            _limit: u32,
-        ) -> Result<api::SessionEventsReadResponse, api::AgentApiError> {
-            Ok(api::SessionEventsReadResponse {
-                events: Vec::new(),
-                next_cursor: None,
-                head_cursor: None,
-                complete: true,
-                gap: None,
-            })
-        }
-    }
-
-    fn fleet_test_session(session_id: &SessionId, status: api::SessionStatus) -> api::SessionView {
-        api::SessionView {
-            id: session_id.as_str().to_owned(),
-            status,
-            display_name: None,
-            managed: false,
-            config_revision: 0,
-            config: None,
-            active_environment_id: None,
-            created_at_ms: 1,
-            updated_at_ms: 1,
-            runs: Vec::new(),
-            active_context: api::ContextView::default(),
-            active_tools: api::ActiveToolsView::default(),
-            management: None,
-        }
     }
 
     #[async_trait]
@@ -2992,7 +2746,7 @@ mod tests {
             environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
                 "allowed".to_owned(),
             ]))),
-            fleet_policy: None,
+            subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-environment-list"),
                 tool_name: ToolName::new(ENVIRONMENT_LIST_TOOL_NAME),
@@ -3059,7 +2813,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-pending")),
             environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
-            fleet_policy: None,
+            subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-read-file"),
                 tool_name: ToolName::new("read_file"),
@@ -3174,7 +2928,7 @@ mod tests {
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-await"),
                 tool_name: ToolName::new(AWAIT_TOOL_NAME),
@@ -3223,7 +2977,7 @@ mod tests {
             environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
                 "allowed".to_owned(),
             ]))),
-            fleet_policy: None,
+            subagents_policy: None,
             workspace_links: Vec::new(),
             calls: vec![engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-environment-list"),
@@ -3301,7 +3055,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
@@ -3340,7 +3094,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
@@ -3385,7 +3139,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: Some(EnvironmentId::new("test")),
                 environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links,
                 calls: vec![
                     engine::ToolInvocationRequest {
@@ -3439,176 +3193,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn fleet_tools_spawn_without_generic_vfs_runtime_setup() {
-        let sessions = Arc::new(InMemorySessionStore::new());
-        let parent = SessionId::new("parent");
-        sessions
-            .create_session(CreateSession {
-                session_id: parent.clone(),
-                display_name: None,
-                created_at_ms: 1,
-            })
-            .await
-            .expect("create parent");
-        let mut state = engine::CoreAgentState::new();
-        let mut config = crate::worker::default_session_config(engine::ModelSelection {
-            api_kind: engine::ProviderApiKind::OpenAiResponses,
-            provider_id: "test".to_owned(),
-            model: "test-model".to_owned(),
-        });
-        // Fleet spawning requires the fleet feature grant on the parent.
-        config.features.fleet = Some(engine::FleetFeature::default());
-        state.lifecycle.config = Some(config);
-        let opening_events =
-            engine::core_agent_clone_opening_events(&state, 2).expect("opening events");
-        sessions
-            .append(engine::storage::AppendSessionEvents {
-                session_id: parent.clone(),
-                expected_head: None,
-                events: opening_events,
-            })
-            .await
-            .expect("open parent");
-
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let catalog = Arc::new(TestCatalog::default());
-        let fleet_runtime = Arc::new(FakeFleetRuntime::default());
-        let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone())
-            .with_fleet_runtime(session_store, fleet_runtime.clone());
-        let arguments_ref = blobs
-            .put_bytes(br#"{"input":"do child work"}"#.to_vec())
-            .await
-            .expect("arguments");
-
-        let result = tools
-            .invoke_batch(ToolInvocationBatchRequest {
-                session_id: parent,
-                run_id: RunId::new(9),
-                turn_id: TurnId::new(1),
-                batch_id: ToolBatchId::new(1),
-                active_environment_id: None,
-                environment_policy: None,
-                fleet_policy: Some(engine::FleetFeature::default()),
-                workspace_links: Vec::new(),
-                calls: vec![engine::ToolInvocationRequest {
-                    call_id: ToolCallId::new("call_spawn"),
-                    tool_name: ToolName::new(::tools::fleet::AGENT_SPAWN_TOOL_NAME),
-                    arguments_ref,
-                    workflow_tool: None,
-                    promise_control: None,
-                }],
-            })
-            .await
-            .expect("invoke")
-            .completed_result()
-            .expect("completed batch");
-
-        assert_eq!(result.results[0].status, ToolCallStatus::Succeeded);
-        let output_ref = result.results[0].output_ref.as_ref().expect("output");
-        let output: ::tools::fleet::AgentSpawnOutput =
-            serde_json::from_slice(&blobs.read_bytes(output_ref).await.expect("read output"))
-                .expect("decode output");
-        assert!(output.child_session_id.starts_with("agent_"));
-        assert_eq!(
-            fleet_runtime.started_runs.lock().expect("fleet lock")[0].1,
-            vec![api::InputItem::Text {
-                text: "do child work".to_owned()
-            }]
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn duplicate_agent_send_calls_in_one_batch_are_rejected() {
-        let sessions = Arc::new(InMemorySessionStore::new());
-        let parent = SessionId::new("parent");
-        sessions
-            .create_session(CreateSession {
-                session_id: parent.clone(),
-                display_name: None,
-                created_at_ms: 1,
-            })
-            .await
-            .expect("create parent");
-        let mut state = engine::CoreAgentState::new();
-        state.lifecycle.config = Some(crate::worker::default_session_config(
-            engine::ModelSelection {
-                api_kind: engine::ProviderApiKind::OpenAiResponses,
-                provider_id: "test".to_owned(),
-                model: "test-model".to_owned(),
-            },
-        ));
-        let opening_events =
-            engine::core_agent_clone_opening_events(&state, 2).expect("opening events");
-        sessions
-            .append(engine::storage::AppendSessionEvents {
-                session_id: parent.clone(),
-                expected_head: None,
-                events: opening_events,
-            })
-            .await
-            .expect("open parent");
-
-        let blobs = Arc::new(InMemoryBlobStore::new());
-        let catalog = Arc::new(TestCatalog::default());
-        let fleet_runtime = Arc::new(FakeFleetRuntime::default());
-        let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone())
-            .with_fleet_runtime(session_store, fleet_runtime.clone());
-        let arguments_ref = blobs
-            .put_bytes(br#"{"to":{"kind":"parent"},"text":"same"}"#.to_vec())
-            .await
-            .expect("arguments");
-
-        let result = tools
-            .invoke_batch(ToolInvocationBatchRequest {
-                session_id: parent,
-                run_id: RunId::new(9),
-                turn_id: TurnId::new(1),
-                batch_id: ToolBatchId::new(1),
-                active_environment_id: None,
-                environment_policy: None,
-                fleet_policy: None,
-                workspace_links: Vec::new(),
-                calls: vec![
-                    engine::ToolInvocationRequest {
-                        call_id: ToolCallId::new("call_send_1"),
-                        tool_name: ToolName::new(::tools::fleet::AGENT_SEND_TOOL_NAME),
-                        arguments_ref: arguments_ref.clone(),
-                        workflow_tool: None,
-                        promise_control: None,
-                    },
-                    engine::ToolInvocationRequest {
-                        call_id: ToolCallId::new("call_send_2"),
-                        tool_name: ToolName::new(::tools::fleet::AGENT_SEND_TOOL_NAME),
-                        arguments_ref,
-                        workflow_tool: None,
-                        promise_control: None,
-                    },
-                ],
-            })
-            .await
-            .expect("invoke")
-            .completed_result()
-            .expect("completed batch");
-
-        assert_eq!(result.results.len(), 2);
-        assert!(
-            result
-                .results
-                .iter()
-                .all(|result| result.status == ToolCallStatus::Failed)
-        );
-        assert!(
-            fleet_runtime
-                .started_runs
-                .lock()
-                .expect("fleet lock")
-                .is_empty()
-        );
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn await_in_mixed_batch_defers_with_completed_non_await_results() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
@@ -3618,6 +3202,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: parent.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -3660,10 +3245,7 @@ mod tests {
             })
             .await
             .expect("open parent with promise");
-        let fleet_runtime = Arc::new(FakeFleetRuntime::default());
-        let session_store: Arc<dyn SessionStore> = sessions;
-        let tools = SessionTools::new(blobs.clone(), catalog.clone())
-            .with_fleet_runtime(session_store, fleet_runtime);
+        let tools = SessionTools::new(blobs.clone(), catalog.clone());
         let wait_args = blobs
             .put_bytes(br#"{"promises":["promise_child"]}"#.to_vec())
             .await
@@ -3681,7 +3263,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![
                     engine::ToolInvocationRequest {
@@ -3721,7 +3303,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn await_defers_without_fleet_runtime() {
+    async fn await_defers_without_session_store() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let sessions = Arc::new(InMemorySessionStore::new());
@@ -3730,6 +3312,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: parent.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -3775,7 +3358,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_wait"),
@@ -3821,7 +3404,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_cancel"),
@@ -3872,7 +3455,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_detach"),
@@ -3914,7 +3497,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn sleep_emits_timer_promise_effect_without_fleet_runtime() {
+    async fn sleep_emits_timer_promise_effect_without_session_store() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let catalog = Arc::new(TestCatalog::default());
         let tools = SessionTools::new(blobs.clone(), catalog);
@@ -3931,7 +3514,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_sleep"),
@@ -3969,7 +3552,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),
@@ -4010,7 +3593,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 active_environment_id: None,
                 environment_policy: None,
-                fleet_policy: None,
+                subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
                     call_id: ToolCallId::new("call_1"),

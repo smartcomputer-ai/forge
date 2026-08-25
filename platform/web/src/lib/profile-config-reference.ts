@@ -23,21 +23,6 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
       "selectionTools": true | false,
       "version": 0,
     },
-    // Grants the Fleet subagent control plane (agent_spawn/send/read/list/cancel and profile_list/read).
-    "fleet": {
-      "profiles": {
-        // Absent means all named profiles are visible/readable/spawnable.
-        "allow": ["string"],
-        "deny": ["string"],
-        // Defaults to true when omitted.
-        "inline": true | false,
-      },
-      "spawn": {
-        // Absent means all bases are allowed.
-        "bases": ["self" | "session" | "profile"],
-      },
-      "version": 0,
-    },
     // Grants remote MCP tools by declaring linked servers from the universe MCP catalog; must link at least one server, with unique server ids.
     "mcp": {
       "servers": [{
@@ -47,6 +32,24 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
         // (required when this object is present)
         "serverId": "string",
       }],
+      "version": 0,
+    },
+    // Grants sub-agent delegation: \`agent_run\` (joined, result inline) and \`agent_spawn\` (promise, joined with \`await\`) over the listed agent profiles. Limits are root-scoped and attenuating: every descendant of a root session counts against the root, and a nested grant can narrow but never widen the limits pinned on its origin.
+    "subagents": {
+      // The agent menu. Every id must name an existing profile; the model picks by id and reads descriptions from the sub-agent catalog.
+      // (required when this object is present)
+      "agents": [{
+        // (required when this object is present)
+        "profileId": "string",
+      }],
+      // Per-child run deadline in milliseconds; at most the execution ceiling of four hours.
+      "deadlineMs": 0,
+      // Open sessions under the root at any time, excluding the root.
+      "maxConcurrent": 0,
+      // A child at depth \`d\` may spawn only while \`d + 1 <= maxDepth\`.
+      "maxDepth": 0,
+      // Lifetime total of sessions ever created under the root.
+      "maxDescendants": 0,
       "version": 0,
     },
     // Grants timer promises through the sleep tool plus the base concurrency tools (await/cancel/detach).

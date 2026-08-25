@@ -1,7 +1,7 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P134](p134-subagents.md) — sub-agents: the fleet control plane is
+- [ ] [P134](p134-subagents.md) — sub-agents (slices 1–3 done 2026-08-25; catalog, `inherit`, mailbox open): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
   a start-on-call `SubagentExecutionWorkflow`, so the session workflow and

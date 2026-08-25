@@ -9,7 +9,6 @@ use temporalio_common::error::ApplicationFailure;
 use temporalio_macros::activities;
 use temporalio_sdk::activities::{ActivityContext, ActivityError};
 
-use crate::fleet::FleetChildRuntime;
 use crate::universe::{UniverseError, UniverseRuntime};
 use crate::worker::{
     ACTIVITY_APPEND_EVENTS, ACTIVITY_AWAIT_ENVIRONMENT_READY,
@@ -19,6 +18,7 @@ use crate::worker::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_SUBAGENT_CLOSE, ACTIVITY_SUBAGENT_PREPARE, ACTIVITY_SUBAGENT_RESOLVE,
     ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
     ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, AppendEventsRequest,
     AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
@@ -41,6 +41,7 @@ mod preprocess;
 mod runtime_projection;
 mod state;
 mod storage;
+mod subagents;
 mod tools;
 mod workflow_tools;
 
@@ -109,17 +110,6 @@ impl WorkerActivities {
         Ok(Self::for_universe(
             universe_id,
             ActivityState::from_pg_store_with_default_runtime(store)?,
-        ))
-    }
-
-    pub fn from_pg_store_with_default_runtime_and_fleet(
-        store: Arc<PgStore>,
-        fleet_runtime: Arc<dyn FleetChildRuntime>,
-    ) -> anyhow::Result<Self> {
-        let universe_id = store.config().universe_id;
-        Ok(Self::for_universe(
-            universe_id,
-            ActivityState::from_pg_store_with_default_runtime_and_fleet(store, fleet_runtime)?,
         ))
     }
 
@@ -282,6 +272,18 @@ mod tests {
             WorkerActivities::cancel_workflow_tool_execution.name(),
             temporal_workflow::WorkflowActivities::cancel_workflow_tool_execution.name()
         );
+        assert_eq!(
+            WorkerActivities::subagent_prepare.name(),
+            temporal_workflow::WorkflowActivities::subagent_prepare.name()
+        );
+        assert_eq!(
+            WorkerActivities::subagent_resolve.name(),
+            temporal_workflow::WorkflowActivities::subagent_resolve.name()
+        );
+        assert_eq!(
+            WorkerActivities::subagent_close.name(),
+            temporal_workflow::WorkflowActivities::subagent_close.name()
+        );
     }
 
     #[test]
@@ -327,7 +329,7 @@ mod tests {
                     batch_id: ToolBatchId::new(1),
                     active_environment_id: None,
                     environment_policy: None,
-                    fleet_policy: None,
+                    subagents_policy: None,
                     workspace_links: Vec::new(),
                     calls: vec![ToolInvocationRequest {
                         call_id: tool_call.call_id.clone(),
@@ -659,5 +661,35 @@ impl WorkerActivities {
     ) -> Result<(), ActivityError> {
         let state = self.state_for(&ctx).await?;
         workflow_tools::cancel_execution(state.workflow_tool_executions(), request).await
+    }
+
+    #[activity(name = ACTIVITY_SUBAGENT_PREPARE)]
+    pub async fn subagent_prepare(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        request: temporal_workflow::SubagentPrepareActivityRequest,
+    ) -> Result<temporal_workflow::SubagentPrepareActivityResult, ActivityError> {
+        let state = self.state_for_universe(request.start.universe_id).await?;
+        subagents::prepare(state.subagents(), request).await
+    }
+
+    #[activity(name = ACTIVITY_SUBAGENT_RESOLVE)]
+    pub async fn subagent_resolve(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        request: temporal_workflow::SubagentResolveActivityRequest,
+    ) -> Result<engine::PromiseResolution, ActivityError> {
+        let state = self.state_for_universe(request.universe_id).await?;
+        subagents::resolve(state.subagents(), request).await
+    }
+
+    #[activity(name = ACTIVITY_SUBAGENT_CLOSE)]
+    pub async fn subagent_close(
+        self: Arc<Self>,
+        _ctx: ActivityContext,
+        request: temporal_workflow::SubagentCloseActivityRequest,
+    ) -> Result<(), ActivityError> {
+        let state = self.state_for_universe(request.universe_id).await?;
+        subagents::close(state.subagents(), request).await
     }
 }

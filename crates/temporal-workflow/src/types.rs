@@ -476,6 +476,81 @@ impl From<EnvironmentJobWorkflowArgs> for EnvironmentJobWorkflowInput {
     }
 }
 
+/// Sub-agent execution (P134): one delegation supervised by
+/// `SubagentExecutionWorkflow`, started on call by the parent session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentPrepareActivityRequest {
+    pub start: WorkflowToolStartArgs,
+}
+
+/// Outcome of preparing a delegation. `Rejected` is a terminal, expected
+/// failure (limit exceeded, unlisted agent, missing profile) that resolves
+/// the parent's `reply` promise as failed without a child ever existing.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SubagentPrepareActivityResult {
+    Prepared {
+        child: SubagentChildRef,
+        /// Grant deadline for the child's run, in milliseconds.
+        deadline_ms: u64,
+    },
+    Rejected {
+        error_ref: BlobRef,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentChildRef {
+    pub session_id: String,
+    pub run_id: u64,
+    pub agent_profile_id: String,
+}
+
+/// How the child's run ended, as observed by the execution.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum SubagentTerminal {
+    Run {
+        status: engine::RunStatus,
+        output_ref: Option<BlobRef>,
+        failure_message_ref: Option<BlobRef>,
+    },
+    Deadline,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentResolveActivityRequest {
+    pub universe_id: Uuid,
+    pub child: SubagentChildRef,
+    pub terminal: SubagentTerminal,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentCloseActivityRequest {
+    pub universe_id: Uuid,
+    pub session_id: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubagentExecutionPhase {
+    #[default]
+    Starting,
+    Preparing,
+    Running,
+    Resolved,
+    Cancelled,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentExecutionSnapshot {
+    pub phase: SubagentExecutionPhase,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub child: Option<SubagentChildRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<engine::PromiseResolution>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentJobPrepareWorkflowToolRequest {
     pub start: WorkflowToolStartArgs,

@@ -236,11 +236,6 @@ export type CompactionPolicy =
 export type ProfileId = string;
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetSpawnBase".
- */
-export type FleetSpawnBase = "self" | "session" | "profile";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "VfsToolSurface".
  */
 export type VfsToolSurface = "readOnly" | "edit";
@@ -367,6 +362,11 @@ export type WorkflowToolTargetInput =
  * via the `definition` "BoundWorkflowToolDispatchInput".
  */
 export type BoundWorkflowToolDispatchInput = "pull" | "push";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionOriginKind".
+ */
+export type SessionOriginKind = "subagent";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
@@ -1202,6 +1202,10 @@ export interface SessionView {
    * indicates external session ownership; tool-only declarations do not.
    */
   management?: ManagedSessionWorkflowToolsInput | null;
+  /**
+   * Sub-agent lineage; absent for root sessions.
+   */
+  origin?: SessionOriginView | null;
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
@@ -1314,8 +1318,8 @@ export interface ContextConfig {
  */
 export interface FeaturesConfig {
   environments?: EnvironmentsFeature | null;
-  fleet?: FleetFeature | null;
   mcp?: McpFeature | null;
+  subagents?: SubagentsFeature | null;
   timers?: TimersFeature | null;
   vfs?: VfsFeature | null;
   web?: WebFeature | null;
@@ -1349,43 +1353,6 @@ export interface EnvironmentsFeature {
   version?: number;
 }
 /**
- * Grants the Fleet subagent control plane
- * (agent_spawn/send/read/list/cancel and profile_list/read).
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetFeature".
- */
-export interface FleetFeature {
-  profiles?: FleetProfilesConfig | null;
-  spawn?: FleetSpawnConfig | null;
-  version?: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetProfilesConfig".
- */
-export interface FleetProfilesConfig {
-  /**
-   * Absent means all named profiles are visible/readable/spawnable.
-   */
-  allow?: ProfileId[] | null;
-  deny?: ProfileId[];
-  /**
-   * Defaults to true when omitted.
-   */
-  inline?: boolean | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetSpawnConfig".
- */
-export interface FleetSpawnConfig {
-  /**
-   * Absent means all bases are allowed.
-   */
-  bases?: FleetSpawnBase[] | null;
-}
-/**
  * Grants remote MCP tools by declaring linked servers from the universe MCP
  * catalog; must link at least one server, with unique server ids.
  *
@@ -1408,6 +1375,48 @@ export interface McpServerLink {
   approval?: RemoteMcpApprovalPolicy | null;
   deferLoading?: boolean | null;
   serverId: string;
+}
+/**
+ * Grants sub-agent delegation: `agent_run` (joined, result inline) and
+ * `agent_spawn` (promise, joined with `await`) over the listed agent
+ * profiles. Limits are root-scoped and attenuating: every descendant of a
+ * root session counts against the root, and a nested grant can narrow but
+ * never widen the limits pinned on its origin.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentsFeature".
+ */
+export interface SubagentsFeature {
+  /**
+   * The agent menu. Every id must name an existing profile; the model
+   * picks by id and reads descriptions from the sub-agent catalog.
+   */
+  agents: SubagentAgentRef[];
+  /**
+   * Per-child run deadline in milliseconds; at most the execution
+   * ceiling of four hours.
+   */
+  deadlineMs?: number;
+  /**
+   * Open sessions under the root at any time, excluding the root.
+   */
+  maxConcurrent?: number;
+  /**
+   * A child at depth `d` may spawn only while `d + 1 <= maxDepth`.
+   */
+  maxDepth?: number;
+  /**
+   * Lifetime total of sessions ever created under the root.
+   */
+  maxDescendants?: number;
+  version?: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentAgentRef".
+ */
+export interface SubagentAgentRef {
+  profileId: ProfileId;
 }
 /**
  * Grants timer promises through the sleep tool plus the base concurrency
@@ -1614,6 +1623,54 @@ export interface WorkflowStartRefInput {
   recipeFormat: number;
   recipeRef: string;
   revision: number;
+}
+/**
+ * Typed provenance of a delegated (sub-agent) session: who created it,
+ * under which root, at what depth, and the effective limits it was spawned
+ * with. Provenance, never ownership — the child is an ordinary session.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionOriginView".
+ */
+export interface SessionOriginView {
+  agent: SubagentAgentPin;
+  /**
+   * Absolute depth from the root; a root's direct child is 1.
+   */
+  depth: number;
+  /**
+   * The workflow-tool invocation that created the child.
+   */
+  invocationId: string;
+  kind: SessionOriginKind;
+  limits: SubagentLimitsView;
+  parentRunId: string;
+  parentSessionId: string;
+  /**
+   * Nearest ancestor without an origin; root-scoped limits count every
+   * session naming this root.
+   */
+  rootSessionId: string;
+}
+/**
+ * The profile a sub-agent was spawned from, pinned at its revision.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentAgentPin".
+ */
+export interface SubagentAgentPin {
+  profileId: ProfileId;
+  revision: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentLimitsView".
+ */
+export interface SubagentLimitsView {
+  deadlineMs: number;
+  maxConcurrent: number;
+  maxDepth: number;
+  maxDescendants: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3457,6 +3514,10 @@ export interface SessionSummaryView {
    * lifecycle controller at managed-session creation.
    */
   managed: boolean;
+  /**
+   * Sub-agent lineage; absent for root sessions.
+   */
+  origin?: SessionOriginView | null;
   updatedAtMs: number;
 }
 /**
@@ -4747,6 +4808,14 @@ export interface SessionListParams {
    */
   cursor?: string | null;
   limit?: number | null;
+  /**
+   * Only sub-agent sessions delegated directly by this session.
+   */
+  parentSessionId?: string | null;
+  /**
+   * Only sub-agent sessions whose lineage root is this session.
+   */
+  rootSessionId?: string | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

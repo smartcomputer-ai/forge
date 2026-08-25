@@ -16,6 +16,7 @@ pub use activities::{
     ACTIVITY_ENVIRONMENT_JOB_START, ACTIVITY_LLM_GENERATE, ACTIVITY_MATERIALIZE_AWAIT_RESULT,
     ACTIVITY_PREPROCESS_RUN_INPUT, ACTIVITY_PUT_BLOB, ACTIVITY_READ_BLOB,
     ACTIVITY_RUNTIME_PROJECTION_REFRESH, ACTIVITY_START_WORKFLOW_TOOL_EXECUTION,
+    ACTIVITY_SUBAGENT_CLOSE, ACTIVITY_SUBAGENT_PREPARE, ACTIVITY_SUBAGENT_RESOLVE,
     ACTIVITY_TOOL_INVOKE_BATCH, ACTIVITY_TOOL_INVOKE_CALL, ACTIVITY_TOOL_PREPARE_PROMISE_CONTROLS,
     ACTIVITY_VALIDATE_WORKFLOW_TOOL_REPLY, WorkflowActivities,
 };
@@ -54,7 +55,10 @@ pub use types::{
     PreprocessRunInputFailureKind, PreprocessRunInputOutcome, PromiseSourcePoll, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, SessionBootstrapPayloadTooLarge,
-    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
+    SubagentChildRef, SubagentCloseActivityRequest, SubagentExecutionPhase,
+    SubagentExecutionSnapshot, SubagentPrepareActivityRequest, SubagentPrepareActivityResult,
+    SubagentResolveActivityRequest, SubagentTerminal, ToolInvokeBatchActivityRequest,
+    ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
     ToolPreparePromiseControlsActivityRequest, WORKFLOW_TOOL_RECIPE_FINGERPRINT_PREFIX,
     WORKFLOW_TOOL_RECIPE_FORMAT_V1, WORKFLOW_TOOL_RECOVERY_QUERY,
     WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest, WorkflowToolRecipeV1,
@@ -63,4 +67,4 @@ pub use types::{
     WorkflowToolStartActivityResult, WorkflowToolStartArgs, compose_environment_job_workflow_id,
     compose_workflow_id, split_workflow_id, workflow_tool_recipe_fingerprint,
 };
-pub use workflows::{AgentSessionWorkflow, EnvironmentJobWorkflow};
+pub use workflows::{AgentSessionWorkflow, EnvironmentJobWorkflow, SubagentExecutionWorkflow};

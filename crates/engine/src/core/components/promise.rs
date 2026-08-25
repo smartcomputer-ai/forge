@@ -34,13 +34,6 @@ impl std::fmt::Display for PromiseId {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PromiseSource {
-    /// A run in another session; resolved by that run's terminal
-    /// notification (push transport). The creating tool decides whether that
-    /// run came from spawn or request.
-    Run {
-        target_session_id: String,
-        target_run_id: u64,
-    },
     /// A durable timer owned by the session workflow.
     Timer { fire_at_ms: u64 },
     /// One keyed completion promise of a workflow-tool invocation (P100b).
@@ -267,11 +260,8 @@ pub const PROMISE_DETACH_EFFECT_KIND: &str = "lightspeed.core.promise.detach";
 
 pub const PROMISE_EFFECT_ID: &str = "promise_id";
 pub const PROMISE_EFFECT_SOURCE: &str = "source";
-pub const PROMISE_EFFECT_TARGET_SESSION_ID: &str = "target_session_id";
-pub const PROMISE_EFFECT_TARGET_RUN_ID: &str = "target_run_id";
 pub const PROMISE_EFFECT_FIRE_AT_MS: &str = "fire_at_ms";
 pub const PROMISE_EFFECT_DEADLINE_MS: &str = "deadline_ms";
-pub const PROMISE_EFFECT_SOURCE_RUN: &str = "run";
 pub const PROMISE_EFFECT_SOURCE_TIMER: &str = "timer";
 pub const PROMISE_EFFECT_SOURCE_WORKFLOW: &str = "workflow";
 pub const PROMISE_EFFECT_PRODUCER_WORKFLOW_ID: &str = "producer_workflow_id";
@@ -288,23 +278,6 @@ pub fn promise_create_effect(
     let mut data = BTreeMap::new();
     data.insert(PROMISE_EFFECT_ID.to_owned(), promise_id.as_str().to_owned());
     match source {
-        PromiseSource::Run {
-            target_session_id,
-            target_run_id,
-        } => {
-            data.insert(
-                PROMISE_EFFECT_SOURCE.to_owned(),
-                PROMISE_EFFECT_SOURCE_RUN.to_owned(),
-            );
-            data.insert(
-                PROMISE_EFFECT_TARGET_SESSION_ID.to_owned(),
-                target_session_id.clone(),
-            );
-            data.insert(
-                PROMISE_EFFECT_TARGET_RUN_ID.to_owned(),
-                target_run_id.to_string(),
-            );
-        }
         PromiseSource::Timer { fire_at_ms } => {
             data.insert(
                 PROMISE_EFFECT_SOURCE.to_owned(),
@@ -399,13 +372,6 @@ pub(crate) fn promise_from_create_effect(
         })
     };
     let source = match source_kind.as_str() {
-        PROMISE_EFFECT_SOURCE_RUN => PromiseSource::Run {
-            target_session_id: field(PROMISE_EFFECT_TARGET_SESSION_ID)?,
-            target_run_id: parse_u64(
-                PROMISE_EFFECT_TARGET_RUN_ID,
-                field(PROMISE_EFFECT_TARGET_RUN_ID)?,
-            )?,
-        },
         PROMISE_EFFECT_SOURCE_TIMER => PromiseSource::Timer {
             fire_at_ms: parse_u64(PROMISE_EFFECT_FIRE_AT_MS, field(PROMISE_EFFECT_FIRE_AT_MS)?)?,
         },

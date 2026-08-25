@@ -35,7 +35,7 @@ use uuid::Uuid;
 use crate::{
     config::DeploymentStores,
     environment_gateway::EnvironmentGatewayClientConfig,
-    fleet::AgentApiFleetRuntime,
+    subagents::AgentApiSubagentRuntime,
     gateway::GatewayAgentApi,
     worker::{ActivityState, AudioTranscoder},
 };
@@ -119,9 +119,9 @@ impl DeploymentClients {
 }
 
 /// Everything the runtime holds for one universe: the universe-bound store,
-/// the gateway service instance (also used by fleet spawns), and the worker
-/// activity dependencies. Child sessions spawned through fleet inherit the
-/// universe because the fleet runtime wraps this universe's `api`.
+/// the gateway service instance (also used by sub-agent spawns), and the
+/// worker activity dependencies. Sub-agent children inherit the universe
+/// because the sub-agent runtime wraps this universe's `api`.
 pub struct UniverseState {
     pub universe_id: Uuid,
     pub store: Arc<PgStore>,
@@ -318,10 +318,10 @@ impl UniverseRuntime {
             api = api.with_public_base_url(public_base_url.clone());
         }
         let api = Arc::new(api.build());
-        let fleet_runtime = Arc::new(AgentApiFleetRuntime::new(api.clone()));
+        let subagent_runtime = Arc::new(AgentApiSubagentRuntime::new(api.clone()));
         let activities = Arc::new(ActivityState::from_pg_store_with_shared_clients(
             store.clone(),
-            Some(fleet_runtime),
+            Some(subagent_runtime),
             &self.clients,
             self.client.clone(),
             self.environment_gateway.clone(),

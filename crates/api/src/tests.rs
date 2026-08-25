@@ -1781,6 +1781,7 @@ impl AgentApiService for TestService {
                 display_name: Some("Test session".to_owned()),
                 lifecycle_status: SessionLifecycleStatus::Open,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             }],
@@ -1798,6 +1799,7 @@ impl AgentApiService for TestService {
                 display_name: params.display_name,
                 lifecycle_status: SessionLifecycleStatus::Open,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -1830,6 +1832,7 @@ impl AgentApiService for TestService {
                 display_name: None,
                 lifecycle_status: SessionLifecycleStatus::Closed,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -2566,10 +2569,15 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
         document: ProfileDocument {
             config: Some(SessionConfig {
                 features: Some(FeaturesConfig {
-                    fleet: Some(FleetFeature {
+                    subagents: Some(SubagentsFeature {
                         version: CURRENT_FEATURE_VERSION,
-                        profiles: None,
-                        spawn: None,
+                        agents: vec![SubagentAgentRef {
+                            profile_id: ProfileId::new("reviewer"),
+                        }],
+                        max_depth: 2,
+                        max_descendants: 16,
+                        max_concurrent: 4,
+                        deadline_ms: 3_600_000,
                     }),
                     ..FeaturesConfig::default()
                 }),
@@ -2614,6 +2622,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_context: ContextView::default(),
         active_tools: ActiveToolsView::default(),
         management: None,
+        origin: None,
     }
 }
 

@@ -2,6 +2,17 @@
 
 **Status**
 
+- Slices 1–3 implemented 2026-08-25: migration 011 (`session_links` dropped,
+  `origin_json` + two indexed keys, transactional root-scoped reservation), `SessionOrigin`
+  on views and `session/list` filters, `features.subagents` replacing the
+  fleet family across engine/api/projection/contract/TS/web,
+  `SubagentExecutionWorkflow` with prepare/resolve/close activities, the
+  `agent_run`/`agent_spawn` system bindings with admission-time context
+  pinning, fleet control plane and `PromiseSource::Run` removed, live
+  scenarios (inline result, three-way fan-out, root-limit refusal,
+  parent-cancel closes child) replacing the fleet suite. Open: slice 4
+  (catalog context entry — until then the tool description points the model
+  at the grant's profile ids), slice 5 (`inherit`), slice 7 (mailbox).
 - Proposed 2026-08-25, from the fleet-vs-bots review
   (`later/pNNN-fleet-vs-bots.md`, direction C′) and a design discussion with
   Lukas the same day. Decisions taken there and fixed here: the agent menu is
@@ -257,11 +268,13 @@ SessionOrigin {
 }
 ```
 
-- Store: `sessions.origin_*` columns with a shape CHECK (all null or all
-  present), indexed by `(universe_id, origin_root_session_id)` and
-  `(universe_id, origin_parent_session_id)`; `session_links` dropped.
-  Migration `011_subagent_origin.sql`. `source_session_id` / `source_seq`
-  stay what they are: clone/fork content ancestry, empty for profile spawns.
+- Store: one `sessions.origin_json` document (the serialized
+  `SessionOrigin`) plus the two facts queries need, denormalized and
+  indexed — `origin_root_session_id` (reservation counts, `rootSessionId`
+  filter) and `origin_parent_session_id` (`parentSessionId` filter) — with a
+  shape CHECK (all null or all present); `session_links` dropped. Migration
+  `011_subagent_origin.sql`. `source_session_id` / `source_seq` stay what
+  they are: clone/fork content ancestry, empty for profile spawns.
 - API: `SessionView.origin?` and `SessionSummaryView.origin?`;
   `session/list` gains `rootSessionId?` and `parentSessionId?` filters.
   Origin is set at creation and never changed; it is provenance, not
@@ -369,11 +382,10 @@ said the same).
 ## Migration (greenfield)
 
 `crates/store-pg/migrations/011_subagent_origin.sql`: `DROP TABLE
-session_links`; `ALTER TABLE sessions ADD origin_kind, origin_parent_session_id,
-origin_parent_run_id, origin_root_session_id, origin_depth,
-origin_invocation_id, origin_profile_id, origin_profile_revision,
-origin_limits_json` with the shape CHECK and the two partial indexes.
-Existing dev databases are reset (`./dev.sh reset`); nothing is backfilled.
+session_links`; `ALTER TABLE sessions ADD origin_json jsonb,
+origin_root_session_id text, origin_parent_session_id text` with the shape
+CHECK and the two partial indexes. Existing dev databases are reset
+(`./dev.sh reset`); nothing is backfilled.
 
 ## Slices
 
