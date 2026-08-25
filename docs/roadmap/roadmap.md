@@ -36,10 +36,10 @@
   run-scoped resolve, bot_event_read), `selfConfig`/`selfEmit` capability
   grants, schedule-flood breaker, CEL save-time validation, `bot:self` rate
   cap, routed-session declaration rotation. Open: webhook secret sealing
-  (deferred by decision; P133), tier-2 per-trigger prompt projections, and two
-  2026-08-25 review findings — non-durable admission (stranded event on
-  signal failure) and a model-supplied trigger secret; the trigger long
-  tail moved to P131.
+  (deferred by decision; P133), tier-2 per-trigger prompt projections, and a
+  model-supplied trigger secret (2026-08-25 review; the same review's
+  non-durable-admission finding was fixed that day); the trigger long tail
+  moved to P131.
 - [x] [P129](p129-active-run-control.md) — active-run control: make
   cancel, steer, and queue work end to end (both phases done and
   live-validated 2026-08-19). Phase 1: the session workflow

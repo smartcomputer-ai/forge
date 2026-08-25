@@ -4,7 +4,6 @@ import { schema } from "@lightspeed/platform-db";
 import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
-  BOT_EVENT_SIGNAL,
   BOTS_WORKFLOW_TASK_QUEUE,
   botWorkflowId,
   type BotCoalesceParamsV1,
@@ -14,7 +13,7 @@ import {
   type BotStartV1,
   type BotWhenBusyV1,
 } from "@lightspeed/bots/contracts";
-import { allocateBotEventSeq, renderAdmittedEvent } from "@lightspeed/bots/events";
+import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "@lightspeed/bots/events";
 import type { AppContext } from "../context.js";
 import { engineClientFor } from "./gateway.js";
 
@@ -65,7 +64,10 @@ export async function signalBotConfig(config: BotStartV1): Promise<void> {
 
 /**
  * Store, then wake: the document goes to CAS, the envelope row into the
- * authoritative store, and only then is the controller notified.
+ * authoritative store, and only then is the controller notified. A duplicate
+ * admission wakes the controller again on purpose — the row may exist because
+ * an earlier wake failed after the insert — and the controller dedupes by
+ * event id.
  */
 export async function admitBotEvent(
   ctx: AppContext,
@@ -124,6 +126,7 @@ export async function admitBotEvent(
     .onConflictDoNothing()
     .returning();
   const duplicate = inserted.length === 0;
+  let eventSeq: number | null = seq;
   if (duplicate) {
     // Keep #N stable: a re-admitted event reuses the stored row's identity
     // (the freshly allocated seq is wasted, which only leaves a gap).
@@ -137,19 +140,7 @@ export async function admitBotEvent(
     if (stored) {
       ref = stored.ref;
       promptRef = stored.promptRef ?? undefined;
-      return {
-        duplicate,
-        event: {
-          version: 1,
-          id: input.eventId,
-          ref,
-          ...(stored.seq === null ? {} : { seq: stored.seq }),
-          ...(promptRef === undefined ? {} : { promptRef }),
-          ...(input.session === undefined ? {} : { session: input.session }),
-          ...(input.coalesce === undefined ? {} : { coalesce: input.coalesce }),
-          ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),
-        },
-      };
+      eventSeq = stored.seq;
     }
   }
 
@@ -157,21 +148,19 @@ export async function admitBotEvent(
     version: 1,
     id: input.eventId,
     ref,
-    seq,
-    promptRef,
+    ...(eventSeq === null ? {} : { seq: eventSeq }),
+    ...(promptRef === undefined ? {} : { promptRef }),
     ...(input.session === undefined ? {} : { session: input.session }),
     ...(input.coalesce === undefined ? {} : { coalesce: input.coalesce }),
     ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),
   };
   if (input.deliver !== false) {
-    const config = botStart(input.bot, input.universe.lightspeedUniverseId);
-    const temporal = await getTemporal();
-    await temporal.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
-      workflowId: botWorkflowId(config.universeId, config.botName),
-      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
-      args: [config],
-      signal: BOT_EVENT_SIGNAL,
-      signalArgs: [event],
+    await wakeBotController({
+      db: ctx.db,
+      temporal: await getTemporal(),
+      start: botStart(input.bot, input.universe.lightspeedUniverseId),
+      event,
+      stored: !duplicate,
     });
   }
   return { event, duplicate };

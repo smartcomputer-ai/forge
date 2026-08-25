@@ -24,7 +24,6 @@ import {
   BOT_EMIT_TOOL_ID,
   BOT_EVENT_LIST_TOOL_ID,
   BOT_EVENT_READ_TOOL_ID,
-  BOT_EVENT_SIGNAL,
   BOT_FILTER_TEST_TOOL_ID,
   BOT_STATUS_TOOL_ID,
   BOT_TRIGGER_DELETE_TOOL_ID,
@@ -37,7 +36,7 @@ import {
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
-import { allocateBotEventSeq, renderAdmittedEvent } from "../events.js";
+import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "../events.js";
 import {
   DEFAULT_READ_BUDGET,
   largestBranches,
@@ -499,12 +498,12 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           promptRef,
           ...(session === undefined ? {} : { session }),
         };
-        await config.temporal.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
-          workflowId: botWorkflowId(start.universeId, start.botName),
-          taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
-          args: [start],
-          signal: BOT_EVENT_SIGNAL,
-          signalArgs: [event],
+        await wakeBotController({
+          db: config.db,
+          temporal: config.temporal,
+          start,
+          event,
+          stored: true,
         });
         await recordSelfConfig(bot.id, `emitted ${kind}: ${summary.slice(0, 120)}`, eventId);
         return { eventId };

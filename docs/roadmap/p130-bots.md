@@ -237,15 +237,21 @@
   doc, [P131](p131-bot-trigger-long-tail.md). Still open here: secret
   sealing (deferred by decision; now
   [P133](p133-retrievable-grant-leases.md)) and tier-2 per-trigger CEL projections.
-  Two defects from the 2026-08-25 external review, both open:
-  **admission is not durable** — `admitBotEvent` inserts the row and then
-  signals the controller; if the signal fails, the sender's retry hits the
-  duplicate path and returns without signalling, and no controller cursor
-  over `bot_events` recovers it (fix: on wake/boot, deliver everything
-  after the controller's per-bot `seq` cursor); and **`bot_trigger_put`
-  accepts a raw `secret` from the model**, which then transits
-  tool-argument CAS, Temporal history, and the activity feed (P133 removes
-  the field).
+  Two defects from the 2026-08-25 external review: **admission was not
+  durable** — `admitBotEvent` inserted the row and then signalled the
+  controller; if the signal failed, the sender's retry hit the duplicate
+  path and returned without signalling, stranding the event. FIXED
+  2026-08-25 with one shared `wakeBotController` (`@lightspeed/bots/events`)
+  used by the server route, schedule fires, polls, and `bot_emit`: a
+  duplicate admission wakes the controller again (it dedupes by event id),
+  and a wake that fails right after this call stored the row deletes the
+  row before rethrowing, so the retry admits from scratch. Deliberately no
+  outbox column or boot scan — a crash between insert and wake still heals
+  on the next redelivery of the same event id; add an `admitted_at`
+  reconcile only if crash-stranded rows show up or a V2 controller needs
+  to drain V1. Still open: **`bot_trigger_put` accepts a raw `secret` from
+  the model**, which then transits tool-argument CAS, Temporal history, and
+  the activity feed (P133 removes the field).
   Schedule-flood breaker coverage, CEL save-time validation, `bot:self`
   loop capping, and routed-session declaration rotation were closed by the
   2026-08-24 hardening round above.

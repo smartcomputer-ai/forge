@@ -5,16 +5,12 @@ import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
 import { deleteBotSchedule } from "../schedules.js";
 import {
-  BOT_CONTROLLER_WORKFLOW,
-  BOT_EVENT_SIGNAL,
-  BOTS_WORKFLOW_TASK_QUEUE,
   botPollEventId,
-  botWorkflowId,
   type BotEvent,
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
-import { allocateBotEventSeq, renderAdmittedEvent } from "../events.js";
+import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "../events.js";
 import {
   MAX_POLL_CONSECUTIVE_FAILURES,
   MAX_POLL_ITEMS_PER_FIRE,
@@ -392,12 +388,12 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
               }),
           ...(row.trigger.deliver === null ? {} : { deliver: { whenBusy: row.trigger.deliver.whenBusy } }),
         };
-        await config.temporal.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
-          workflowId: botWorkflowId(start.universeId, start.botName),
-          taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
-          args: [start],
-          signal: BOT_EVENT_SIGNAL,
-          signalArgs: [event],
+        await wakeBotController({
+          db: config.db,
+          temporal: config.temporal,
+          start,
+          event,
+          stored: inserted.length > 0,
         });
         admitted += 1;
       }

@@ -4,16 +4,12 @@ import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
 import { deleteBotSchedule } from "../schedules.js";
 import {
-  BOT_CONTROLLER_WORKFLOW,
-  BOT_EVENT_SIGNAL,
-  BOTS_WORKFLOW_TASK_QUEUE,
   botScheduleEventId,
-  botWorkflowId,
   type BotEvent,
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
-import { allocateBotEventSeq, renderAdmittedEvent } from "../events.js";
+import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "../events.js";
 
 export interface BotScheduleActivitiesConfig {
   db: Db;
@@ -184,12 +180,12 @@ export function createBotScheduleActivities(
         ...(eventSeq === null ? {} : { seq: eventSeq }),
         ...(promptRef === undefined ? {} : { promptRef }),
       };
-      await config.temporal.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
-        workflowId: botWorkflowId(start.universeId, start.botName),
-        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
-        args: [start],
-        signal: BOT_EVENT_SIGNAL,
-        signalArgs: [event],
+      await wakeBotController({
+        db: config.db,
+        temporal: config.temporal,
+        start,
+        event,
+        stored: inserted.length > 0,
       });
       if (spec.at) {
         // One-shot: it has fired; disable the trigger and drop the schedule so
