@@ -2,13 +2,14 @@
 
 ## Work
 - [ ] [P135](p135-bot-federation.md) — bot federation (proposed 2026-08-26,
-  recommendation-first): bot ↔ bot as events through admission — a `bot`
-  subscription trigger kind, `bot_emit { to, reply }` fan-out, deterministic
-  replies from the receiver's delivery outcome (no joined cross-bot call,
-  sessions never park on bots), causation + hop bound; a `manage` grant
-  pointing the `selfConfig` tools at allowlisted bots; bot creation by bots
-  designed (profile allowlist, attenuation, `maxBots`, provenance) and
-  deferred until an ops-bot needs it.
+  recommendation-first): bot ↔ bot as events through admission only — a
+  `bot` subscription trigger kind, `bot_emit { to, reply }` fan-out,
+  deterministic replies from the receiver's delivery outcome (no joined
+  cross-bot call, sessions never park on bots), causation + hop bound,
+  `bot_list`. No cross-bot authority: neither configuring nor creating
+  other bots; a bot reshapes only itself (`selfConfig`), neighbours ask,
+  humans set scope. A `manage` grant (configure + create, one grant) is
+  recorded as the alternative if authority is ever demanded.
 - [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over

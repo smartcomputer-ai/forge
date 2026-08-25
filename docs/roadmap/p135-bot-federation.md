@@ -1,4 +1,4 @@
-# P135 — Bot Federation: Events Between Bots, Bots Configuring Bots
+# P135 — Bot Federation: Events Between Bots
 
 **Status**
 
@@ -6,13 +6,25 @@
   plan. Written after P134 landed, from the question "now that sub-agents
   are simple, what makes bots a powerful coordination system — how do bots
   talk to each other, and can a bot create and set up another bot?"
-- Absorbs P131 workstream 6 (bot → bot events, bot → bot configuration)
-  and the "Bot federation" note in `later/pNNN-fleet-vs-bots.md`.
+- Revised the same day after review. The first draft allowed bot → bot
+  *configuration* behind a `manage` grant while deferring bot → bot
+  *creation*; Lukas asked why one and not the other. The asymmetry does not
+  hold: a poll trigger put on a neighbour is as durable and as costly as a
+  new bot, and `selfConfig` already lets a bot mint such triggers on itself.
+  The real question is whether any bot has authority over another bot, and
+  configuration and creation are the same answer to it. Adopted position:
+  **neither** — bot ↔ bot is events only; authority over a bot belongs to
+  the bot itself (`selfConfig`) and to humans. The `manage` grant
+  (configure *and* create, one grant) is kept below as the alternative to
+  reach for if an ops-bot use case ever demands authority.
+- Absorbs P131 workstream 6 (bot → bot events; its bot → bot configuration
+  item is withdrawn by the position above) and the "Bot federation" note in
+  `later/pNNN-fleet-vs-bots.md`.
 - Builds on P130 (controller, store-then-wake admission, `#N` events,
-  CEL filters, routing, coalescing, breakers, `selfConfig` / `selfEmit`),
-  P134 (the two-tier rule: durable orchestration above, attached
-  delegation below; provenance not ownership; root-scoped attenuating
-  limits; catalog menus), and the shared `@lightspeed/bots/config` path.
+  CEL filters, routing, coalescing, breakers, `selfConfig` / `selfEmit`)
+  and P134 (the two-tier rule: durable orchestration above, attached
+  delegation below; provenance not ownership; deterministic identities;
+  no new transports).
 - Greenfield: no wire, schema, or event back-compat; `bot:self` and
   `self-<uuid>` event ids go away rather than being kept.
 
@@ -31,22 +43,25 @@ worth of work done, and they no longer overlap:
 
 The second story stops at the edge of one bot. A bot today is an island: it
 can receive from the world and emit to itself, but it cannot address
-another bot, hear from one, or configure one. Every real deployment wants a
-*team* — a triage bot that hands incidents to an infra bot, a comms bot that
-narrates what the others decide, an ops bot that tunes filters and
-breakers when a bot misbehaves — and the only way to build one today is to
-route everything through webhooks the operator wires by hand.
+another bot or hear from one. Every real deployment wants a *team* — a
+triage bot that hands incidents to an infra bot, a comms bot that narrates
+what the others decide, an ops bot that notices when a bot misbehaves — and
+the only way to build one today is to route everything through webhooks the
+operator wires by hand.
 
 The design insight that keeps this small is the same one that made P134
 small: **do not add a transport**. Sessions already speak one protocol to
 durable work that finishes later (a promise); bots already speak one
 protocol to the world (an event through admission). Bot ↔ bot is events
 through admission, with three additions the existing machinery lacks:
-subscriptions, a deterministic return path, and a loop bound. Bot → bot
-configuration is the existing `selfConfig` tools pointed outward behind a
-grant. Bot creation is the same grant with a profile allowlist — the
-`features.subagents.agents[]` idea one tier up — and is the one piece this
-doc recommends deferring.
+subscriptions, a deterministic return path, and a loop bound. Nothing else.
+
+What this deliberately does *not* add is authority: no bot configures,
+enables, or creates another bot. Coordination needs communication and
+per-bot policy, not a manager; the deterministic layer (breakers, budgets,
+auto-disable) already plays the manager, and P130 chose it over a prompted
+one for exactly this reason. A bot that wants a neighbour to change asks;
+the neighbour's human-written brief decides whether to listen.
 
 ## The shape
 
@@ -128,6 +143,11 @@ all, self or otherwise; receivers protect themselves with subscriptions.
 The emission rate cap stays (breaker rate, else 60/hour) and counts every
 emit by the sender, not only self-addressed ones.
 
+`bot_list` (name, enabled, whether it accepts bot events, first line of its
+brief) becomes an always-on read tool so a sender knows whom it can
+address; the universe is the trust boundary and the listing carries no
+authority.
+
 ### 2. Replies are deterministic: the delivery outcome is the return path
 
 The question "can bot A ask bot B and get an answer" is where the P134
@@ -188,79 +208,66 @@ do not stop them (P131's own note). Two additions close that:
   the sender's rate cap and the receiver's breaker, a runaway exchange
   ends within one hop budget instead of one daily budget.
 
-### 4. Cross-bot configuration: the `manage` grant
+### 4. Influence without authority
 
-The `selfConfig` pattern pointed outward, as P131 ws6 sketched. One nullable
-jsonb column on the bot record:
+How an "ops bot" works when no bot may configure another:
+
+- It **subscribes** to what it cares about — replies with `status:
+  dropped`, `loop_cut`, `blocked` outcomes, budget exhaustion — cheap for
+  the controller to publish as events on the bus (a small, fixed
+  vocabulary of `bot.*` system kinds, rendered like any event).
+- It **asks**: `bot_emit { to: "comms", kind: "tuning.request", summary:
+  "your incident filter admits every comment; suggest …", reply: true }`.
+- The receiver **decides**. The event is untrusted data like every event;
+  `comms`'s brief, written by a human, says "honour tuning requests from
+  bot `ops`" — or does not. With `selfConfig`, `comms` applies the change
+  itself and its activity feed records `self_configured` with the causing
+  event, so the trail reads "ops asked, comms agreed". The reply tells
+  `ops` what happened.
+- The **hard stops stay deterministic**: the flood breaker, `runsPerDay`,
+  poll auto-disable, and the hop cut act without any model in the loop,
+  and re-enabling stays human. An ops bot that wants a neighbour stopped
+  tells a human — through a reply, a Channels receiver later, or the UI —
+  it does not pull the plug.
+
+Each bot stays sovereign over its own configuration and the human stays
+sovereign over every bot's scope. Coordination is by messages and
+per-bot policy, which is also how teams of people work.
+
+### 5. Alternative, not adopted: a `manage` grant
+
+Recorded so the decision can be revisited with evidence rather than
+re-derived. If a real use case demands cross-bot *authority* — an ops bot
+that must act on neighbours without waiting for their briefs to agree, or
+must stand up bots on demand — the grant is one document and covers both
+halves at once, because they are the same question:
 
 ```text
 manage: {
-  bots: string[],                          // names this bot may configure
-  ops: ("trigger" | "brief" | "enable")[]  // what it may do to them
+  bots: string[],                             // names this bot may configure
+  ops: ("trigger" | "brief" | "enable")[],
+  create?: { profiles: string[], maxBots: number }
 } | null
 ```
 
-- The existing tools grow an optional `bot?: string` (target name; absent
-  is self): `bot_status`, `bot_trigger_list`, `bot_trigger_put`,
-  `bot_trigger_delete`, `bot_brief_put`. `bot_enable { bot, enabled }` is
-  new and **target-only** — self-enable stays human (a bot must not
-  un-pause itself), but disabling a flapping neighbour is the core ops-bot
-  move. `bot_list` (name, enabled, profile, whether it accepts bot events,
-  first line of its brief) is always-on and read-only; the universe is the
-  trust boundary.
-- Execution: target == self → `selfConfig`; else target ∈ `manage.bots`
-  and op ∈ `manage.ops`, re-checked on the fresh row (the same defense in
-  depth as `selfConfig`). The declaration fingerprint changes when
-  `manage` flips, so the existing rotation path applies it.
-- Both sides record it: the manager's feed gets `managed b: put trigger
-  x`, the target's gets `configured_by a: put trigger x`, and the target's
-  controller receives the config signal exactly as after a UI edit.
-- Still human-only everywhere: budget, breaker, retention, profile,
-  credentials, grants, delete. Scope widening stays a human act.
+- Configure: the `selfConfig` tools grow an optional `bot?` target;
+  `bot_enable { bot, enabled }` is target-only (a bot never un-pauses
+  itself); both feeds record `managed` / `configured_by`; the target's
+  controller gets the config signal as after a UI edit.
+- Create: `bot_create { name, profileId, brief?, runsPerDay?,
+  acceptsBotEvents? }` with `profileId` ∈ `create.profiles` (the profile
+  is the capability container, so the allowlist is the authority — the
+  `features.subagents.agents[]` idea one tier up); attenuation fixed at
+  one level (created bots get `selfConfig` / `emit` only if the creator
+  has them, `runsPerDay` ≤ the creator's, `manage: null` always);
+  `maxBots` counts *live* bots whose origin is the creator, because a bot
+  is standing cost; `bots.origin = { botId, botName, seq, sessionId,
+  runId }` as provenance never ownership (deleting the creator nulls it);
+  management authority = `manage.bots ∪ { bots whose origin is me }`;
+  deletion stays human.
 
-This is the entire "orchestrate each other" surface for tuning. It needs
-no new machinery because `@lightspeed/bots/config` is already the one code
-path the API and the tools share.
-
-### 5. Bots creating bots — designed, recommended deferred
-
-The grant shape is ready and mirrors `features.subagents`:
-
-```text
-manage.create?: { profiles: string[], maxBots: number }
-
-bot_create { name, profileId, brief?, runsPerDay?, acceptsBotEvents?: boolean }
-```
-
-- `profileId` ∈ `create.profiles` — the profile is the capability container
-  (tools, environment intent, sub-agent grant), so allowlisting it is
-  exactly as safe as allowlisting an `agent`. Rendered to the model the way
-  the sub-agent menu is: a catalog, never an enum in the schema.
-- **Attenuation, fixed at one level**: a created bot gets `selfConfig` /
-  `emit` only if its creator has them, `runsPerDay` ≤ the creator's, and
-  `manage: null` always — no transitive creation (the `maxDepth: 1` of this
-  tier, hard-coded because nothing has asked for more).
-- **Count-bounded**: `maxBots` counts live bots whose origin is the creator.
-  A bot is standing cost (schedules and pollers burn money unattended),
-  which is why the bound is on *existing* bots, not lifetime creations.
-- **Provenance, not ownership**: `bots.origin = { botId, botName, seq,
-  sessionId, runId }`, set at creation, never changed; the UI shows
-  "created by `ops` from event #12". Deleting the creator nulls the
-  reference and leaves the bot. Management authority is
-  `manage.bots ∪ { bots whose origin is me }`, so a creator can tune and
-  disable what it created without listing names it did not know in
-  advance; deletion stays human.
-- `acceptsBotEvents` creates the `inbox` trigger so the creator can address
-  the bot it just made.
-
-Why defer: no current use case needs it, "wrap it in a bot" per entity is
-wrong (perKey routing already gives one session per PR, customer, or
-incident inside one bot), and the human-creates-the-shell workflow — one
-click for name + profile, then the ops bot fills in triggers and brief
-through §4 — keeps the P130 trust line ("anything that widens scope goes
-through a human") intact with almost no UX cost. Build it when an ops-bot
-is actually asked to set up bots on demand; everything it needs is
-specified above.
+Build it whole or not at all. Half of it — configuration without creation,
+or the reverse — has no principled boundary.
 
 ### 6. Observability across bots
 
@@ -285,16 +292,18 @@ specified above.
    sessions; a child is created from the pinned profile without them. The
    bot session emits after `agent_run` returns. Every bot event's sender is
    a bot session, so provenance is never ambiguous.
-3. **Budgets stay in their tiers.** Run budget per bot, tree limits per root
+3. **No cross-bot authority.** A bot reshapes itself within `selfConfig`
+   and nothing else; humans set every bot's scope. Neighbours ask.
+4. **Budgets stay in their tiers.** Run budget per bot, tree limits per root
    (P134), hop bound and emit rate per exchange. No cross-bot budget; an
    operator who wants a team ceiling sets each bot's `runsPerDay`.
-4. **Provenance, never ownership**, in all three places it now appears:
-   `SessionOrigin`, `environment.origin_session`, `bots.origin`. No cascade
-   deletes, no lifecycle trees, no parent controlling a child's runs.
-5. **Deterministic identities everywhere**: per-receiver event id from
+5. **Provenance, never ownership**: `SessionOrigin`,
+   `environment.origin_session`, and — if the alternative is ever built —
+   `bots.origin`. No cascades, no lifecycle trees.
+6. **Deterministic identities everywhere**: per-receiver event id from
    (sender, invocation), reply id from (receiver, delivery, original event
-   id), created bot name chosen by the model but unique per universe.
-6. **A child is never a bot and a bot is never a child** (P134 §8) —
+   id).
+7. **A child is never a bot and a bot is never a child** (P134 §8) —
    unchanged; federation adds bot ↔ bot only.
 
 ## Worked example: an incident team
@@ -313,27 +322,29 @@ specified above.
   false }` with filter `event.kind.startsWith("incident.")` and a 30 s
   coalescing window, so a burst of incident events becomes one Slack
   digest (once the Channels receiver exists; until then a webhook to
-  Slack).
-- `ops` — `manage: { bots: ["triage", "infra", "comms"], ops: ["trigger",
-  "enable"] }`, subscribed to `bot.delivery.resolved`-style events with
-  outcome `blocked` or to `loop_cut` (both cheap to publish from the
-  controller). When `comms` floods, `ops` tightens its filter or disables
-  it, and the activity feeds on both sides show who did what.
+  Slack). `selfConfig` on; its brief says tuning requests from `ops` are
+  to be applied when they narrow, never when they widen.
+- `ops` — subscribed to `bot.*` system events (`dropped` replies,
+  `loop_cut`, `blocked` outcomes). When `comms` floods, `ops` asks it to
+  tighten its filter; `comms` does and replies; if the flood continues the
+  breaker trips deterministically and a human re-enables. Both feeds show
+  who asked, who agreed, and what stopped it.
 
-Nothing in this example touches the core, and every arrow is an event
-through admission or a promise through P134.
+Nothing in this example touches the core, no bot holds authority over
+another, and every arrow is an event through admission or a promise
+through P134.
 
 ## What is deliberately not built
 
+- **Cross-bot authority** — no configuring, enabling, or creating another
+  bot. The `manage` alternative in §5 is the whole of it, if ever.
 - **`bot_ask` / any joined cross-bot call** — deadlock between singletons,
   lane starvation, unbounded latency. Replies are events (§2); synchronous
   answers are `agent_run` on a profile (§7.1).
 - **Bot-per-entity spawning** — that is `perKey` routing inside one bot.
-- **Ownership trees, cascades, transitive creation** — provenance only,
-  depth fixed at one.
-- **Cross-bot session or event access** — `bot_event_read`, `bot_event_list`,
-  `bot_filter_test` stay self-only; a bot's outputs are its events. `bot_status`
-  and `bot_trigger_list` on a target exist only under `manage`.
+- **Cross-bot session or event access** — `bot_status`, `bot_event_read`,
+  `bot_event_list`, `bot_trigger_list`, `bot_filter_test` stay self-only;
+  a bot's outputs are its events.
 - **A universe-wide message bus product** (topics, retention, consumers).
   Subscriptions are triggers; the "bus" is admission fan-out over trigger
   rows, nothing more.
@@ -348,37 +359,32 @@ through admission or a promise through P134.
 1. **Bus** (1.5 d): `bot` trigger kind (spec, validation, UI form, create
    dialog checkbox), `bot_emit { to, reply }` with fan-out admission over
    trigger rows, envelope fields and the two columns, deterministic
-   per-receiver ids, `emit` grant rename, `emitted` / `loop_cut` activity,
-   `hops` cut, event chips. Migration replaces `self_emit` and adds the
-   columns; dev databases reset.
+   per-receiver ids, `emit` grant rename, `bot_list`, `emitted` /
+   `loop_cut` activity, `hops` cut, event chips. Migration replaces
+   `self_emit` and adds the columns; dev databases reset.
 2. **Replies** (1 d): controller-side reply admission on delivery finish,
    admission-side dropped replies, return-address routing to the asking
-   session, per-session reply coalescing, `replied` activity, reply chip.
-3. **Manage** (1 d): `manage` column and settings UI, `bot?` on the five
-   tools, `bot_enable`, `bot_list`, two-sided activity, config signal to the
-   target.
-4. **Create** (1 d, **deferred**): `manage.create`, `bot_create`, `bots.origin`,
-   attenuation and `maxBots`, provenance in the bot detail.
-5. Later: reply timeouts, wiring view, directory catalog entry, A2A target.
+   session, per-session reply coalescing, `replied` activity, reply chip,
+   the `bot.*` system event vocabulary published on the bus.
+3. Later: reply timeouts, wiring view, directory catalog entry, A2A target;
+   the `manage` alternative only on demonstrated demand.
 
-1 → 2 → 3 in order; 4 only on demand; each is independently shippable and
-dogfoodable (a two-bot exchange is visible after slice 1, useful after 2).
+1 → 2 in order; each is independently shippable and dogfoodable (a two-bot
+exchange is visible after slice 1, useful after 2).
 
 ## Tests
 
 - **Unit** (`platform/bots/test`): subscription matching (published vs
   addressed, `from` allowlist, disabled trigger, self-subscription);
   deterministic per-receiver ids across a retried invocation; `hops`
-  propagation and the cut; reply document shape for each status; manage
-  authorization (self vs target, op allowlist, origin-derived authority);
-  attenuation on create.
+  propagation and the cut; reply document shape for each status;
+  `bot_list` output shape.
 - **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`): `a` addresses `b` with
   `reply: true` from a keyed session → `b` runs and resolves → the reply
   lands in `a`'s same keyed session as one delivery; `b`'s filter rejects
   → `a` receives `dropped: filtered` without a run on `b`; `a`→`b`→`a`
   ping-pong stops at `MAX_BOT_HOPS` with `loop_cut` on the sender;
-  `ops` puts a trigger on `b` → `b`'s controller reconciles and both feeds
-  record it; history replay for the controller changes.
+  history replay for the controller changes.
 - **Platform**: `test:migrations` asserts the new columns; `npm run check`
   and `check:identity` green; the bots integration suite keeps its nine
   scenarios.
@@ -396,8 +402,7 @@ often it has already bitten:
 3. **Tier-2 per-trigger CEL projections** — the generic renderer covers
    current needs; revisit when a preset is not enough.
 4. **Declaration rotation cost** — every grant flip or tool revision rotates
-   the main session. If federation lands, the flips get more frequent
-   (`emit`, `manage`); in-place add-only declaration admission in core is
+   the main session. In-place add-only declaration admission in core is
    the one core change worth its price, still "decide after v1 contact".
 5. **Email trigger, more presets, Channels bridge** — P131 ws2/4/5, parked
    or deferred by decision.
