@@ -13,6 +13,9 @@ const RESERVED_RUN_CONTEXT_KEY_PREFIX: &str = "run";
 const INSTRUCTIONS_KEY_PREFIX: &str = "instructions.";
 pub const VFS_CATALOG_CONTEXT_KEY: &str = "environment.vfs_catalog";
 pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
+/// The sub-agent catalog (P134): the grant's agent menu with profile
+/// descriptions, refreshed like the skill catalog.
+pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
 pub const SKILL_ACTIVATION_CONTEXT_KEY_PREFIX: &str = "skills.activation.";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_RUN: &str = "lightspeed.skill.activation.run";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activation.session";
@@ -209,6 +212,7 @@ pub enum ContextEntryKind {
     Instructions,
     VfsCatalog,
     SkillCatalog,
+    SubagentCatalog,
     SkillActivation {
         catalog_id: String,
         skill_id: SkillId,
@@ -317,6 +321,7 @@ pub(crate) fn planned_context_entry_ids(state: &CoreAgentState) -> Vec<ContextEn
         match &entry.kind {
             ContextEntryKind::Instructions
             | ContextEntryKind::SkillCatalog
+            | ContextEntryKind::SubagentCatalog
             | ContextEntryKind::VfsCatalog => {}
             _ => {
                 entry_ids.push(entry.entry_id);
@@ -369,6 +374,7 @@ pub(crate) fn compactable_context_entry_ids(state: &CoreAgentState) -> Vec<Conte
                     entry.kind,
                     ContextEntryKind::Instructions
                         | ContextEntryKind::SkillCatalog
+                        | ContextEntryKind::SubagentCatalog
                         | ContextEntryKind::SkillActivation { .. }
                         | ContextEntryKind::VfsCatalog
                 )
@@ -654,6 +660,15 @@ fn validate_external_context_edit_entry(
         };
     }
 
+    if key.as_str() == SUBAGENT_CATALOG_CONTEXT_KEY {
+        return match &entry.kind {
+            ContextEntryKind::SubagentCatalog => Ok(()),
+            _ => Err(DomainError::InvariantViolation(format!(
+                "subagent catalog context key {} cannot supply context entry kind {:?}",
+                key, entry.kind
+            ))),
+        };
+    }
     if key.as_str() == SKILL_CATALOG_CONTEXT_KEY {
         return match &entry.kind {
             ContextEntryKind::SkillCatalog => Ok(()),
@@ -997,6 +1012,7 @@ fn is_provider_compaction_prunable_entry(state: &CoreAgentState, entry: &Context
     match entry.kind {
         ContextEntryKind::Instructions
         | ContextEntryKind::SkillCatalog
+        | ContextEntryKind::SubagentCatalog
         | ContextEntryKind::SkillActivation { .. }
         | ContextEntryKind::VfsCatalog => false,
         ContextEntryKind::Message { .. }

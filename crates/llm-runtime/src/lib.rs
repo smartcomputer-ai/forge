@@ -16,6 +16,7 @@ pub mod provider_keys;
 pub mod result;
 pub mod secrets;
 mod skill_prompts;
+mod subagent_prompts;
 pub mod testing;
 
 pub use anthropic_messages::{

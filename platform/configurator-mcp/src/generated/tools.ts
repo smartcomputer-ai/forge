@@ -570,6 +570,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
@@ -3537,6 +3553,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
@@ -5406,6 +5438,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
@@ -6559,6 +6607,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "required": [
                 "type",
                 "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },

@@ -1218,7 +1218,7 @@ fn bound_workflow_source(peer: &str) -> PromiseSource {
     PromiseSource::Workflow {
         producer_workflow_id: format!("universe/{peer}"),
         producer_workflow_kind: "bound_receiver".to_owned(),
-        invocation_id: engine::WorkflowToolInvocationId::new(format!("wti_{peer}")).to_string(),
+        invocation_id: format!("wti_{peer}"),
         completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
     }
 }

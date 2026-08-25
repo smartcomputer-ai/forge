@@ -10,9 +10,16 @@
   `agent_run`/`agent_spawn` system bindings with admission-time context
   pinning, fleet control plane and `PromiseSource::Run` removed, live
   scenarios (inline result, three-way fan-out, root-limit refusal,
-  parent-cancel closes child) replacing the fleet suite. Open: slice 4
-  (catalog context entry — until then the tool description points the model
-  at the grant's profile ids), slice 5 (`inherit`), slice 7 (mailbox).
+  parent-cancel closes child) replacing the fleet suite.
+- Slices 4 and 5 implemented 2026-08-25: `SubagentCatalog` context entry
+  (`subagents.catalog`) built from the grant and current profile records,
+  published by the runtime projection before each run and on idle reads,
+  rendered by every provider adapter; `ProfileEnvironment::Inherit` resolved
+  from the child's origin at apply time (rejected off a delegation origin or
+  when the parent has no active environment), in the profile editor and CLI
+  validation; live scenarios assert the catalog entry and that an inherited
+  provisioned environment stays open after the child closes. Open: slice 7
+  (mailbox removal).
 - Proposed 2026-08-25, from the fleet-vs-bots review
   (`later/pNNN-fleet-vs-bots.md`, direction C′) and a design discussion with
   Lukas the same day. Decisions taken there and fixed here: the agent menu is

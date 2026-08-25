@@ -3426,6 +3426,18 @@
           },
           {
             "properties": {
+              "type": {
+                "const": "subagentCatalog",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
               "catalogId": {
                 "type": "string"
               },
@@ -7142,6 +7154,20 @@
             "required": [
               "type",
               "environmentId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+            "properties": {
+              "type": {
+                "const": "inherit",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
             ],
             "type": "object"
           },

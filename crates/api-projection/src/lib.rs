@@ -1761,6 +1761,7 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
+        ContextEntryKind::SubagentCatalog => ContextEntryKindView::SubagentCatalog,
         ContextEntryKind::SkillActivation {
             catalog_id,
             skill_id,

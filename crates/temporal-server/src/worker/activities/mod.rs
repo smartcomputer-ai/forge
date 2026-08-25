@@ -39,6 +39,7 @@ mod environment_jobs;
 mod llm;
 mod preprocess;
 mod runtime_projection;
+pub use runtime_projection::subagent_catalog_snapshot;
 mod state;
 mod storage;
 mod subagents;

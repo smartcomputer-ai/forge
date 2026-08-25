@@ -224,6 +224,7 @@ pub enum ContextEntryKindView {
     Instructions,
     VfsCatalog,
     SkillCatalog,
+    SubagentCatalog,
     SkillActivation {
         catalog_id: String,
         skill_id: SkillId,

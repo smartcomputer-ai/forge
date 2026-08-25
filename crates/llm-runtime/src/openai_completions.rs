@@ -575,6 +575,14 @@ async fn materialize_message(
                 crate::skill_prompts::skill_catalog_text(&catalog),
             ))
         }
+        ContextEntryKind::SubagentCatalog => {
+            let catalog =
+                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
+            Ok(text_message(
+                dialect.instruction_role(),
+                crate::subagent_prompts::subagent_catalog_text(&catalog),
+            ))
+        }
         ContextEntryKind::SkillActivation { skill_id, .. } => Ok(text_message(
             dialect.instruction_role(),
             crate::skill_prompts::skill_activation_text(

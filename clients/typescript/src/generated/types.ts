@@ -143,6 +143,9 @@ export type ContextEntryKindView =
       type: "skillCatalog";
     }
   | {
+      type: "subagentCatalog";
+    }
+  | {
       catalogId: string;
       skillId: string;
       type: "skillActivation";
@@ -1000,6 +1003,9 @@ export type ProfileEnvironment =
   | {
       environmentId: string;
       type: "existing";
+    }
+  | {
+      type: "inherit";
     }
   | {
       /**

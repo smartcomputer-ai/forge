@@ -419,6 +419,7 @@ function applyNonToolCallItem(
     case "instructions":
     case "vfsCatalog":
     case "skillCatalog":
+    case "subagentCatalog":
     case "skillActivation":
       if (displayableSystemText(item.preview ?? "")) {
         state.entries.push({ kind: "system", key: item.id, text: item.preview ?? "" });

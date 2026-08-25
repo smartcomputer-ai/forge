@@ -458,6 +458,17 @@ async fn materialize_input_item(
                 extra: Default::default(),
             }))
         }
+        ContextEntryKind::SubagentCatalog => {
+            let catalog =
+                crate::subagent_prompts::read_subagent_catalog(blobs, &item.content_ref).await?;
+            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
+                role: oai::MessageRole::Developer,
+                content: oai::InputMessageContent::Text(
+                    crate::subagent_prompts::subagent_catalog_text(&catalog),
+                ),
+                extra: Default::default(),
+            }))
+        }
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &item.content_ref).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {

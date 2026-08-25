@@ -24,6 +24,7 @@ mod provider_controllers;
 mod session_jobs;
 mod session_toolset;
 mod skills;
+mod subagents_api;
 mod vfs_api;
 mod workflow;
 

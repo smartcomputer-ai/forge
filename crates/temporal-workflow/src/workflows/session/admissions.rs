@@ -353,6 +353,17 @@ async fn refresh_runtime_projection_before_run(
                     VFS_CATALOG_CONTEXT_KEY,
                     ContextEntryKind::VfsCatalog,
                 ),
+                subagents: drive
+                    .state()
+                    .lifecycle
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.features.subagents.clone()),
+                active_subagent_catalog_ref: active_context_ref(
+                    drive.state(),
+                    engine::SUBAGENT_CATALOG_CONTEXT_KEY,
+                    ContextEntryKind::SubagentCatalog,
+                ),
             },
             activity_options(),
         )

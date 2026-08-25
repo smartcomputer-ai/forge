@@ -63,6 +63,9 @@ pub struct ToolActivityDeps {
 pub struct RuntimeProjectionActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     pub(super) workspace_store: Arc<dyn VfsWorkspaceStore>,
+    /// Profile registry for the sub-agent catalog; absent in minimal test
+    /// states, where the catalog lists ids without descriptions.
+    pub(super) profiles: Option<Arc<dyn ::profiles::ProfileStore>>,
 }
 
 #[derive(Clone)]
@@ -153,7 +156,15 @@ impl ActivityState {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
             blobs: self.storage.blobs.clone(),
             workspace_store,
+            profiles: None,
         });
+        self
+    }
+
+    pub fn with_profile_store(mut self, profiles: Arc<dyn ::profiles::ProfileStore>) -> Self {
+        if let Some(projection) = self.runtime_projection.as_mut() {
+            projection.profiles = Some(profiles);
+        }
         self
     }
 
@@ -197,8 +208,10 @@ impl ActivityState {
         let environment_job_credentials =
             EnvironmentCredentialResolver::from_pg_store(store.clone());
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
-        let mut state =
-            Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(workspace_store);
+        let profile_store: Arc<dyn ::profiles::ProfileStore> = store.clone();
+        let mut state = Self::new(sessions, blobs, llm, tools)
+            .with_runtime_projection_deps(workspace_store)
+            .with_profile_store(profile_store);
         state.storage.blob_graph = Some(blob_graph.clone());
         state.environment_jobs = Some(EnvironmentJobActivityDeps {
             blobs: environment_job_blobs,

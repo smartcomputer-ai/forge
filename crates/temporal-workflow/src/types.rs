@@ -823,6 +823,11 @@ pub struct RuntimeProjectionRefreshActivityRequest {
     pub vfs_skill_roots: Option<Vec<String>>,
     pub active_catalog_ref: Option<BlobRef>,
     pub active_vfs_catalog_ref: Option<BlobRef>,
+    /// The admitted sub-agent grant; the catalog entry follows it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subagents: Option<engine::SubagentsFeature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_subagent_catalog_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

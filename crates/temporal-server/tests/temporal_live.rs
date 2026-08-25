@@ -367,6 +367,18 @@ async fn temporal_live_agent_spawn_await_and_parent_cancel_closes_child() -> any
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_agent_run_inherits_parent_environment() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // `environment: { type: "inherit" }` on the child profile activates the
+    // parent's provisioned environment in the child and never closes it.
+    run_with_scripted_subagent_live_worker(run_agent_run_inherit_environment_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra, Postgres, Temporal, and OPENAI_API_KEY (costs real money)"]
 async fn temporal_live_session_start_then_run_start_completes_openai_run() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
@@ -940,6 +952,18 @@ async fn run_agent_run_inline_live_client(
         })
         .await?;
     assert!(parent_view.result.session.origin.is_none());
+    // The grant publishes the sub-agent catalog as a context entry (P134
+    // slice 4); the model reads the menu from there, not from the schema.
+    assert!(
+        parent_view
+            .result
+            .session
+            .active_context
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.kind, ContextEntryKindView::SubagentCatalog)),
+        "expected a sub-agent catalog context entry on the parent"
+    );
 
     let child_ids = children.iter().map(|child| child.session_id.clone()).collect::<Vec<_>>();
     let mut all = vec![session_id];
@@ -1050,6 +1074,193 @@ async fn run_agent_run_limit_live_client(
     let mut all = vec![session_id];
     all.extend(children.iter().map(|child| child.session_id.clone()));
     cleanup_subagent_test(&client, api.as_ref(), profile_id, &all).await;
+    Ok(())
+}
+
+async fn run_agent_run_inherit_environment_live_client(
+    client: Client,
+    session_id: SessionId,
+    api: Arc<GatewayAgentApi>,
+    _blobs: Arc<dyn BlobStore>,
+    sessions: Arc<dyn SessionStore>,
+    model: ModelSelection,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+
+    use environment_protocol::shared::EnvironmentTransport;
+    use environments::{
+        EnvironmentConnectionSpec, EnvironmentProviderBindingId, EnvironmentProviderBindingStatus,
+        EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderStore,
+        PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    };
+
+    let store = pg_store_from_env().await?;
+    let suffix = uuid::Uuid::new_v4().simple().to_string();
+    let provider_id = format!("fake-inherit-{suffix}");
+    let binding_id = format!("binding-inherit-{suffix}");
+    store
+        .put_provider(PutEnvironmentProvider {
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            display_name: Some("Live fake provider".to_owned()),
+            controller_connection: EnvironmentConnectionSpec::new(
+                "in-process",
+                EnvironmentTransport::Provider {
+                    provider_type: "fake".to_owned(),
+                },
+            ),
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+    store
+        .put_provider_binding(PutEnvironmentProviderBinding {
+            universe_id: store.config().universe_id,
+            binding_id: EnvironmentProviderBindingId::new(binding_id.clone()),
+            provider_id: EnvironmentProviderId::new(provider_id.clone()),
+            status: EnvironmentProviderBindingStatus::Enabled,
+            expected_revision: None,
+            metadata: BTreeMap::new(),
+            updated_at_ms: 1,
+        })
+        .await?;
+    let environments_feature = api::EnvironmentsFeature {
+        version: api::CURRENT_FEATURE_VERSION,
+        providers: None,
+        selection_tools: false,
+        jobs: false,
+    };
+
+    // Child profile: inherits whatever environment its parent has active.
+    let child_profile_id = ProfileId::new(format!("live_inherit_child_{suffix}"));
+    api.create_profile(ProfileCreateParams {
+        profile: AgentProfileInput {
+            profile_id: child_profile_id.clone(),
+            display_name: Some("Inheriting child".to_owned()),
+            description: Some("Answers CHILD_TASK briefs on the parent\'s environment".to_owned()),
+            document: ProfileDocument {
+                config: Some(SessionConfig {
+                    features: Some(api::FeaturesConfig {
+                        environments: Some(environments_feature.clone()),
+                        ..api::FeaturesConfig::default()
+                    }),
+                    ..SessionConfig::default()
+                }),
+                instructions: Some(ProfileInstructions::Text {
+                    text: "You are a scripted live sub-agent.".to_owned(),
+                }),
+                environment: Some(api::ProfileEnvironment::Inherit {}),
+            },
+        },
+    })
+    .await?;
+
+    // Parent: provisions its own environment and may run the child.
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: None,
+        profile: Some(ProfileSource::Inline {
+            profile: Box::new(api::InlineAgentProfile {
+                display_name: None,
+                description: None,
+                document: ProfileDocument {
+                    config: Some(SessionConfig {
+                        model: Some(model_to_api(&model)),
+                        features: Some(api::FeaturesConfig {
+                            environments: Some(environments_feature),
+                            ..subagents_features(&child_profile_id, 16)
+                        }),
+                        ..SessionConfig::default()
+                    }),
+                    instructions: None,
+                    environment: Some(api::ProfileEnvironment::Provision {
+                        provider_id: provider_id.clone(),
+                        template_id: "rust-v1".to_owned(),
+                        display_name: None,
+                        metadata: BTreeMap::new(),
+                        retention: api::ProfileEnvironmentRetention::CloseWithSession,
+                        idle_policy: None,
+                        credentials: Vec::new(),
+                    }),
+                },
+            }),
+        }),
+    })
+    .await?;
+    let parent_environment = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+        })
+        .await?
+        .result
+        .session
+        .active_environment_id
+        .expect("parent should have a provisioned environment");
+
+    let run = api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: format!("AGENT_RUN {child_profile_id}"),
+                }],
+            },
+            config: None,
+        })
+        .await?;
+    let parent_run = wait_for_terminal_run(api.as_ref(), &session_id, &run.result.run.id).await?;
+    assert_eq!(parent_run.status, api::RunStatus::Completed);
+    let parent_output = final_assistant_text(&parent_run).expect("parent assistant output");
+    assert!(
+        parent_output.contains("child completed 0"),
+        "expected the child result inline, got: {parent_output}"
+    );
+
+    let children = wait_for_children_closed(&sessions, &session_id, 1).await?;
+    // The closed child no longer projects an active environment; its log
+    // records the activation of exactly the parent's environment.
+    let child_events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: children[0].session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: Some(0),
+        })
+        .await?
+        .result
+        .events;
+    let inherited = child_events.iter().any(|event| {
+        serde_json::to_string(&event.kind).is_ok_and(|json| {
+            json.contains("activeEnvironmentChanged") && json.contains(parent_environment.as_str())
+        })
+    });
+    assert!(
+        inherited,
+        "child should have activated the parent\'s environment {parent_environment}; events: {}",
+        serde_json::to_string(&child_events)?
+    );
+    // The child never closes an inherited environment.
+    let environment = api
+        .read_environment(api::EnvironmentReadParams {
+            environment_id: parent_environment.clone(),
+        })
+        .await?
+        .result
+        .environment;
+    assert!(
+        !matches!(
+            environment.status,
+            api::EnvironmentLifecycleStatusView::Closing | api::EnvironmentLifecycleStatusView::Closed
+        ),
+        "inherited environment must stay open after the child closes, got {:?}",
+        environment.status
+    );
+
+    let mut all = vec![session_id];
+    all.extend(children.iter().map(|child| child.session_id.clone()));
+    cleanup_subagent_test(&client, api.as_ref(), child_profile_id, &all).await;
     Ok(())
 }
 

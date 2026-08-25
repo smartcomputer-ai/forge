@@ -491,6 +491,16 @@ async fn materialize_block(
                 am::ContentBlockParam::text(crate::skill_prompts::skill_catalog_text(&catalog)),
             ))
         }
+        ContextEntryKind::SubagentCatalog => {
+            let catalog =
+                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
+            Ok((
+                am::MessageRole::User,
+                am::ContentBlockParam::text(crate::subagent_prompts::subagent_catalog_text(
+                    &catalog,
+                )),
+            ))
+        }
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &entry.content_ref).await?;
             Ok((

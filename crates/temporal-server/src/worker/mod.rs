@@ -16,6 +16,7 @@ use temporalio_sdk_core::{CoreRuntime, RuntimeOptions};
 use crate::{config::DeploymentStores, universe::UniverseRuntime};
 
 pub use activities::{
+    subagent_catalog_snapshot,
     ActivityState, AudioTranscodeError, AudioTranscodeOutput, AudioTranscodeRequest,
     AudioTranscoder, AudioTranscriber, AudioTranscription, AudioTranscriptionError,
     AudioTranscriptionRequest, FfmpegAudioTranscoder, LlmActivityDeps, PreprocessActivityDeps,

@@ -289,7 +289,12 @@ impl SubagentService {
         }
         // The profile is applied inline so the child runs the revision that
         // was pinned on its origin, not whatever the registry holds later.
-        self.runtime
+        // A profile that cannot be applied (an `inherit` without a parent
+        // environment, a missing binding, ...) is a rejected delegation the
+        // parent must see, not an activity retry: a retried start finds the
+        // child workflow already running and would skip the profile.
+        if let Err(error) = self
+            .runtime
             .start_session(
                 &child_session_id,
                 ProfileSource::Inline {
@@ -300,7 +305,16 @@ impl SubagentService {
                     }),
                 },
             )
-            .await?;
+            .await
+        {
+            if is_caller_error(&error) {
+                let _ = self.close(child_session_id.as_str()).await;
+                return self
+                    .rejected(format!("agent {profile_id} could not be started: {error}"))
+                    .await;
+            }
+            return Err(error);
+        }
         let submission_id =
             SubmissionId::new(format!("subagent_run_{}", digest_suffix(&start.execution_id)));
         let run_id = self
@@ -518,6 +532,18 @@ fn truncate_utf8(mut text: String, max_bytes: usize) -> String {
 
 fn is_not_found(error: &AgentApiError) -> bool {
     matches!(error.kind, api::AgentApiErrorKind::NotFound)
+}
+
+/// Errors that describe the request rather than the runtime: surfaced to
+/// the parent as a rejected delegation instead of retried.
+fn is_caller_error(error: &AgentApiError) -> bool {
+    matches!(
+        error.kind,
+        api::AgentApiErrorKind::NotFound
+            | api::AgentApiErrorKind::InvalidRequest
+            | api::AgentApiErrorKind::Rejected
+            | api::AgentApiErrorKind::Conflict
+    )
 }
 
 fn is_already_closed(error: &AgentApiError) -> bool {

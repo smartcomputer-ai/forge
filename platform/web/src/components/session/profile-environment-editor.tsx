@@ -43,7 +43,7 @@ export type TemplateOption = {
   deprecated: boolean;
 };
 
-type Mode = "none" | "existing" | "provision";
+type Mode = "none" | "existing" | "provision" | "inherit";
 
 const NONE = "__no_profile_environment__";
 
@@ -97,6 +97,7 @@ export function ProfileEnvironmentEditor({
               onValueChange={(next) => {
                 const nextMode = next as Mode;
                 if (nextMode === "none") onChange(undefined);
+                else if (nextMode === "inherit") onChange({ type: "inherit" });
                 else if (nextMode === "existing") {
                   onChange({ type: "existing", environmentId: environments[0]?.environmentId ?? "" });
                 } else {
@@ -120,6 +121,7 @@ export function ProfileEnvironmentEditor({
                 <SelectItem value="none">{modeLabel("none")}</SelectItem>
                 <SelectItem value="existing">{modeLabel("existing")}</SelectItem>
                 <SelectItem value="provision">{modeLabel("provision")}</SelectItem>
+                <SelectItem value="inherit">{modeLabel("inherit")}</SelectItem>
               </SelectContent>
             </Select>
           </Field>
@@ -132,6 +134,13 @@ export function ProfileEnvironmentEditor({
                 onChange(environmentId ? { type: "existing", environmentId } : undefined)
               }
             />
+          )}
+
+          {value?.type === "inherit" && (
+            <FieldDescription className="text-xs">
+              Applied only when this profile runs as a sub-agent: the child activates the delegating
+              parent's environment (shared, never copied, never closed by the child).
+            </FieldDescription>
           )}
 
           {value?.type === "provision" && (
@@ -158,6 +167,8 @@ function modeLabel(mode: Mode): string {
       return "Activate an existing environment";
     case "provision":
       return "Provision a new environment for the session";
+    case "inherit":
+      return "Inherit the parent's active environment (sub-agents only)";
   }
 }
 

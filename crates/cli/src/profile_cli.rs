@@ -580,6 +580,8 @@ async fn validate_environments(
             validate_provision_credentials(api, credentials, report).await;
             return;
         }
+        // Resolved at spawn from the delegating parent; nothing to check here.
+        Some(api::ProfileEnvironment::Inherit {}) => return,
         Some(api::ProfileEnvironment::Existing { environment_id }) => environment_id,
     };
     let environment = match api
