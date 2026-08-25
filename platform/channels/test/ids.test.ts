@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { sessionWorkflowId } from "@lightspeed/agent-client/workflow";
 import {
   channelSessionIdentity,
   channelPairingKey,
   channelDeliveryTaskQueue,
   channelTurnIdentity,
-  lightspeedSessionWorkflowId,
 } from "../src/identity/ids.js";
 
 const universeId = "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f";
@@ -56,18 +56,16 @@ describe("Channels identities", () => {
       sessionKey: "family",
     });
     expect(identity.workflowId).toContain(`/${defaultUniverseId}/telegram/`);
-    expect(lightspeedSessionWorkflowId(defaultUniverseId, identity.sessionId)).toBe(
+    expect(sessionWorkflowId(defaultUniverseId, identity.sessionId)).toBe(
       `${defaultUniverseId}/${identity.sessionId}`,
     );
   });
 
   it("composes the Lightspeed holder workflow id", () => {
-    expect(lightspeedSessionWorkflowId(universeId, "channel:v1:telegram:test")).toBe(
+    expect(sessionWorkflowId(universeId, "channel:v1:telegram:test")).toBe(
       `${universeId}/channel:v1:telegram:test`,
     );
-    expect(() => lightspeedSessionWorkflowId(universeId, "bad/session")).toThrow(
-      /must not contain/,
-    );
+    expect(() => sessionWorkflowId(universeId, "bad/session")).toThrow(/invalid session id/);
   });
 
   it("derives stable submission and terminal notification ids", () => {

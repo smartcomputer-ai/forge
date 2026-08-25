@@ -11,6 +11,7 @@ const SHA256_REF_LEN: usize = SHA256_PREFIX.len() + SHA256_HEX_LEN;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct BlobRef(String);
 
 #[derive(Clone, Debug, PartialEq, Eq, Error)]

@@ -30,10 +30,10 @@ import {
   type EmissionEnvelope,
   type PromiseResolution,
   type WorkflowToolInvocation,
-  joinedReplyPromiseId,
   parseEmissionEnvelope,
+  replyPromiseId as joinedReplyPromiseId,
   sourceResolutionEnvelope,
-} from "../contracts/emissions.js";
+} from "@lightspeed/agent-client/workflow";
 import type { LightspeedActivities } from "../contracts/managed-session.js";
 import type { ChannelInputItem, ChannelMediaActivities } from "../contracts/media.js";
 import type { ChannelPresenceActivities } from "../contracts/presence.js";
@@ -41,7 +41,6 @@ import type { ControlPlaneActivities } from "../contracts/control-plane.js";
 import {
   channelContextKey,
   channelTurnIdentity,
-  lightspeedSessionWorkflowId,
 } from "../identity/ids.js";
 import { classifyInbound, formatInboundEnvelope } from "../policy/activation.js";
 import {
@@ -384,6 +383,7 @@ export async function channelSessionWorkflowV1(
           void CancellationScope.nonCancellable(async () => {
             entry.resolutionEmissionIds = await resolvePromises(
               start,
+              entry.holderWorkflowId,
               info.workflowId,
               [replyPromiseId],
               { kind: "cancelled" },
@@ -409,6 +409,7 @@ export async function channelSessionWorkflowV1(
               start,
               info.workflowId,
               entry.invocation,
+              entry.holderWorkflowId,
               replyPromiseId,
               deliverChannelMessage,
             ),
@@ -422,7 +423,13 @@ export async function channelSessionWorkflowV1(
             if (isCancellation(error)) {
               entry.status = "cancelled";
               entry.resolutionEmissionIds = await CancellationScope.nonCancellable(() =>
-                resolvePromises(start, info.workflowId, [replyPromiseId], { kind: "cancelled" }),
+                resolvePromises(
+                  start,
+                  entry.holderWorkflowId,
+                  info.workflowId,
+                  [replyPromiseId],
+                  { kind: "cancelled" },
+                ),
               );
               promiseMetric.add(1, { outcome: "cancelled" });
               return;
@@ -736,6 +743,7 @@ export async function channelSessionWorkflowV1(
     workflowStart: ChannelSessionStartV1,
     producerWorkflowId: string,
     invocation: WorkflowToolInvocation,
+    holderWorkflowId: string,
     replyPromiseId: string,
     deliver: ChannelDeliveryActivities["deliverChannelMessage"],
   ): Promise<{ messageIds: string[]; resolutionEmissionIds: string[] }> {
@@ -763,6 +771,7 @@ export async function channelSessionWorkflowV1(
       });
       const resolutionEmissionIds = await resolvePromises(
         workflowStart,
+        holderWorkflowId,
         producerWorkflowId,
         [replyPromiseId],
         { kind: "resolved", payload_ref: receipt.blobRef },
@@ -774,7 +783,7 @@ export async function channelSessionWorkflowV1(
         throw error;
       }
       const errorRef = await putErrorBlob(workflowStart.universeId, error);
-      await resolvePromises(workflowStart, producerWorkflowId, [replyPromiseId], {
+      await resolvePromises(workflowStart, holderWorkflowId, producerWorkflowId, [replyPromiseId], {
         kind: "failed",
         error_ref: errorRef,
       });
@@ -824,13 +833,12 @@ export async function channelSessionWorkflowV1(
 
   async function resolvePromises(
     workflowStart: ChannelSessionStartV1,
+    holderWorkflowId: string,
     producerWorkflowId: string,
     promiseIds: string[],
     resolution: PromiseResolution,
   ): Promise<string[]> {
-    const holder = getExternalWorkflowHandle(
-      lightspeedSessionWorkflowId(workflowStart.universeId, workflowStart.sessionId),
-    );
+    const holder = getExternalWorkflowHandle(holderWorkflowId);
     const emissionIds: string[] = [];
     for (const promiseId of promiseIds) {
       const envelope = sourceResolutionEnvelope({

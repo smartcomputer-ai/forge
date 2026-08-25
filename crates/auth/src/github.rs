@@ -300,6 +300,12 @@ impl GitHubAppRuntime {
         {
             Ok(token) => {
                 let value = token.token.clone();
+                self.grants
+                    .record_grant_mint_expiry(&grant_id, token.expires_at_ms, now_ms)
+                    .await
+                    .map_err(|error| AuthBrokerError::Store {
+                        message: format!("record github app token expiry: {error}"),
+                    })?;
                 self.store_token(&grant_id, token);
                 Ok(value)
             }
@@ -708,6 +714,7 @@ mod tests {
                 grant_id: AuthGrantId::new("authgrant_install"),
                 provider_id: "lightspeed-github".to_owned(),
                 provider_kind: AuthProviderKind::GitHubApp,
+                exposure: crate::AuthGrantExposure::Brokered,
                 principal: PrincipalRef::universe_default(),
                 display_name: None,
                 subject_hint: Some("acme".to_owned()),

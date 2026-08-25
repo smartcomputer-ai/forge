@@ -216,19 +216,25 @@ impl From<AgentApiError> for JsonRpcError {
     }
 }
 
-/// Authorization scope of a JSON-RPC method: universe-scoped methods act
-/// inside the request's resolved universe; operator-scoped methods address
-/// the deployment itself and never resolve one.
+/// Authorization scope of a JSON-RPC method. Service methods resolve a
+/// universe like ordinary universe methods, but are admitted only for trusted
+/// service callers at the HTTP edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodScope {
     Universe,
+    Service,
     Operator,
+}
+
+pub fn is_service_method(method: &str) -> bool {
+    method == METHOD_AUTH_GRANTS_LEASE
 }
 
 impl MethodScope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Universe => "universe",
+            Self::Service => "service",
             Self::Operator => "operator",
         }
     }
@@ -283,7 +289,11 @@ macro_rules! api_methods {
                 $(
                     MethodSpec {
                         method: $method_const,
-                        scope: MethodScope::Universe,
+                        scope: if $method_const == METHOD_AUTH_GRANTS_LEASE {
+                            MethodScope::Service
+                        } else {
+                            MethodScope::Universe
+                        },
                         summary: $summary,
                         description: $description,
                         params_type: stringify!($params),
@@ -423,7 +433,9 @@ api_methods! {
     METHOD_MCP_SERVERS_DELETE => delete_mcp_server(McpServerDeleteParams) -> McpServerDeleteResponse =>
         ["Delete an MCP server record", "Deletes the catalog document. Existing session configs that reference it are not silently rewritten and may need explicit reconfiguration."],
     METHOD_AUTH_GRANTS_IMPORT => import_auth_grant(AuthGrantImportParams) -> AuthGrantImportResponse =>
-        ["Import a static bearer grant", "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API."],
+        ["Import a static bearer grant", "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases."],
+    METHOD_AUTH_GRANTS_LEASE => lease_auth_grant(AuthGrantLeaseParams) -> AuthGrantLeaseResponse =>
+        ["Lease a retrievable authentication grant", "Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads."],
     METHOD_AUTH_GRANTS_READ => read_auth_grant(AuthGrantReadParams) -> AuthGrantReadResponse =>
         ["Read authentication grant metadata", "Returns principal, provider binding, scopes, audience, expiry, status, and token-presence flags; access and refresh token values are never returned."],
     METHOD_AUTH_GRANTS_LIST => list_auth_grants(AuthGrantListParams) -> AuthGrantListResponse =>
@@ -439,7 +451,7 @@ api_methods! {
     METHOD_AUTH_CLIENTS_DELETE => delete_auth_client(AuthClientDeleteParams) -> AuthClientDeleteResponse =>
         ["Delete an OAuth client", "Deletes the client registration and its stored client secret; grants already created from it remain separate records."],
     METHOD_AUTH_FLOWS_START => start_auth_flow(AuthFlowStartParams) -> AuthFlowStartResponse =>
-        ["Start an OAuth authorization flow", "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion."],
+        ["Start an OAuth authorization flow", "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion."],
     METHOD_AUTH_FLOWS_READ => read_auth_flow_status(AuthFlowStatusParams) -> AuthFlowStatusResponse =>
         ["Read OAuth flow status", "Polls a flow's pending/completed/failed/expired state and returns the resulting grant id when authorization succeeds; no token value is exposed."],
     METHOD_AUTH_PROVIDERS_CREATE => create_auth_provider(AuthProviderCreateParams) -> AuthProviderCreateResponse =>

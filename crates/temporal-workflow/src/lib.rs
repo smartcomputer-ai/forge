@@ -5,6 +5,7 @@ mod config;
 mod rehydrate;
 mod temporal_helpers;
 mod types;
+pub mod workflow_contract;
 mod workflows;
 
 pub use activities::{
@@ -54,12 +55,12 @@ pub use types::{
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
     RuntimeProjectionRefreshActivityResult, SessionBootstrapPayloadTooLarge,
     ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
-    ToolPreparePromiseControlsActivityRequest, WORKFLOW_TOOL_RECIPE_FORMAT_V1,
-    WORKFLOW_TOOL_RECOVERY_QUERY, WorkflowToolExecutionCancelRequest,
-    WorkflowToolExecutionCheckRequest, WorkflowToolRecipeV1, WorkflowToolRecoveryResult,
-    WorkflowToolReplyValidationRequest, WorkflowToolReplyValidationResult,
-    WorkflowToolStartActivityRequest, WorkflowToolStartActivityResult, WorkflowToolStartArgs,
-    compose_environment_job_workflow_id, compose_workflow_id, split_workflow_id,
-    workflow_tool_recipe_fingerprint,
+    ToolPreparePromiseControlsActivityRequest, WORKFLOW_TOOL_RECIPE_FINGERPRINT_PREFIX,
+    WORKFLOW_TOOL_RECIPE_FORMAT_V1, WORKFLOW_TOOL_RECOVERY_QUERY,
+    WorkflowToolExecutionCancelRequest, WorkflowToolExecutionCheckRequest, WorkflowToolRecipeV1,
+    WorkflowToolRecoveryResult, WorkflowToolReplyValidationRequest,
+    WorkflowToolReplyValidationResult, WorkflowToolStartActivityRequest,
+    WorkflowToolStartActivityResult, WorkflowToolStartArgs, compose_environment_job_workflow_id,
+    compose_workflow_id, split_workflow_id, workflow_tool_recipe_fingerprint,
 };
 pub use workflows::{AgentSessionWorkflow, EnvironmentJobWorkflow};

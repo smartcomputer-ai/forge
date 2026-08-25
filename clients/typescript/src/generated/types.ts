@@ -752,6 +752,11 @@ export type TokenEndpointAuthMethod = "clientSecretBasic" | "clientSecretPost" |
 export type AuthFlowStatus = "pending" | "completed" | "failed" | "expired";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantExposure".
+ */
+export type AuthGrantExposure = "brokered" | "retrievable";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "PrincipalKind".
  */
 export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
@@ -1856,9 +1861,12 @@ export interface AuthGrantView {
   createdAtMs: number;
   displayName?: string | null;
   expiresAtMs?: number | null;
+  exposure: AuthGrantExposure;
   grantId: string;
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
+  lastLeasedAtMs?: number | null;
+  leaseCount: number;
   /**
    * Non-secret provider-specific metadata (for GitHub App installation
    * grants: installation id, account, permissions, repository selection).
@@ -1926,6 +1934,24 @@ export interface AgentApiOutcomeOfAuthGrantImportResponse {
  */
 export interface AuthGrantImportResponse {
   grant: AuthGrantView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfAuthGrantLeaseResponse".
+ */
+export interface AgentApiOutcomeOfAuthGrantLeaseResponse {
+  notifications?: AgentNotification[];
+  result: AuthGrantLeaseResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantLeaseResponse".
+ */
+export interface AuthGrantLeaseResponse {
+  expiresAtMs?: number | null;
+  grantId: string;
+  providerKind: AuthProviderKind;
+  token: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3843,6 +3869,7 @@ export interface AuthClientReadParams {
 export interface AuthFlowStartParams {
   audience?: string | null;
   clientId: string;
+  exposure?: AuthGrantExposure & string;
   scopes?: string[] | null;
 }
 /**
@@ -3858,6 +3885,7 @@ export interface AuthFlowStatusParams {
  */
 export interface AuthGitHubInstallationGrantParams {
   displayName?: string | null;
+  exposure?: AuthGrantExposure & string;
   grantId?: string | null;
   installationId: number;
   providerId: string;
@@ -3882,6 +3910,7 @@ export interface AuthGrantImportParams {
   audience?: string | null;
   displayName?: string | null;
   expiresAtMs?: number | null;
+  exposure?: AuthGrantExposure & string;
   grantId?: string | null;
   /**
    * Non-secret, caller-defined metadata stored on the grant and returned
@@ -3895,6 +3924,19 @@ export interface AuthGrantImportParams {
   scopes?: string[];
   subjectHint?: string | null;
   token: string;
+}
+/**
+ * Request a current access-token lease for a retrievable grant. Callers must
+ * cache only in memory until shortly before `expiresAtMs` (or for at most
+ * five minutes when it is absent), re-lease after target 401/403 responses,
+ * and never persist the token or place it in a workflow payload.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantLeaseParams".
+ */
+export interface AuthGrantLeaseParams {
+  audience?: string | null;
+  grantId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

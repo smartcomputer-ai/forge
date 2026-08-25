@@ -557,10 +557,25 @@ Deletes the catalog document. Existing session configs that reference it are not
 
 **Import a static bearer grant**
 
-Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.
+Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.
 
 - Params: `AuthGrantImportParams`
 - Result: `AgentApiOutcome<AuthGrantImportResponse>`
+
+
+## Service methods
+
+### `auth/grants/lease`
+
+**Lease a retrievable authentication grant**
+
+Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads.
+
+- Params: `AuthGrantLeaseParams`
+- Result: `AgentApiOutcome<AuthGrantLeaseResponse>`
+
+
+## Universe methods
 
 ### `auth/grants/read`
 
@@ -629,7 +644,7 @@ Deletes the client registration and its stored client secret; grants already cre
 
 **Start an OAuth authorization flow**
 
-Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
+Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
 
 - Params: `AuthFlowStartParams`
 - Result: `AgentApiOutcome<AuthFlowStartResponse>`

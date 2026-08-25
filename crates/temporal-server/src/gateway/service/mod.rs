@@ -31,8 +31,9 @@ use api_config::engine_session_config_from_api;
 #[cfg(test)]
 use api_config::*;
 use auth_api::{
-    api_auth_provider_kind, auth_grant_import_draft, auth_grant_view, map_auth_error,
-    parse_auth_grant_id, registry_auth_grant_status_for_filter,
+    api_auth_provider_kind, auth_grant_import_draft, auth_grant_view, map_auth_broker_error,
+    map_auth_error, parse_auth_grant_id, registry_auth_grant_exposure,
+    registry_auth_grant_status_for_filter, require_retrievable_grant,
 };
 use blobs::{has_blobs, put_blobs, read_blob};
 use common::now_ms;
@@ -87,9 +88,11 @@ use api_projection::{
 };
 use async_trait::async_trait;
 use auth::{
-    AuthFlowStore, AuthGrantStore, AuthProviderStore, GitHubApiClient, HttpGitHubApiClient,
-    HttpOAuthMetadataClient, HttpOAuthTokenClient, McpOAuthDriver, OAuthClientStore,
-    OAuthFlowService, OAuthMetadataClient, OAuthTokenClient, SecretStore, StartAuthFlow,
+    AuthFlowStore, AuthGrantStore, AuthProviderStore, AuthTokenBroker, GitHubApiClient,
+    GitHubAppRuntime, GrantRefreshLock, HttpGitHubApiClient, HttpOAuthMetadataClient,
+    HttpOAuthTokenClient, McpOAuthDriver, OAuthClientStore, OAuthFlowService, OAuthMetadataClient,
+    OAuthRefreshRuntime, OAuthTokenClient, RegistryTokenBroker, SecretStore, StartAuthFlow,
+    TokenAudience,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
@@ -612,6 +615,29 @@ impl GatewayAgentApiBuilder {
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
         });
+        let grants: Arc<dyn AuthGrantStore> = self.store.clone();
+        let secrets: Arc<dyn SecretStore> = self.store.clone();
+        let providers: Arc<dyn AuthProviderStore> = self.store.clone();
+        let auth_token_broker: Arc<dyn AuthTokenBroker> = Arc::new(
+            RegistryTokenBroker::new(
+                grants.clone(),
+                secrets.clone(),
+                self.store.clone() as Arc<dyn GrantRefreshLock>,
+            )
+            .with_oauth_refresh(OAuthRefreshRuntime::new(
+                self.store.clone() as Arc<dyn OAuthClientStore>,
+                token_client.clone(),
+            ))
+            .with_token_source(
+                auth::AuthProviderKind::GitHubApp,
+                Arc::new(GitHubAppRuntime::new(
+                    providers,
+                    github_api.clone(),
+                    grants,
+                    secrets,
+                )),
+            ),
+        );
         let discovery_openai = self.model_discovery_openai.unwrap_or_else(|| {
             Arc::new(
                 openai::Client::new(openai::Config::from_env_allow_missing_key())
@@ -645,6 +671,7 @@ impl GatewayAgentApiBuilder {
             events_wait_cap: self.events_wait_cap,
             public_base_url: self.public_base_url,
             oauth_flows,
+            auth_token_broker,
             mcp_oauth,
             github_api,
             model_discovery,
@@ -665,6 +692,7 @@ pub struct GatewayAgentApi {
     events_wait_cap: Duration,
     public_base_url: String,
     oauth_flows: OAuthFlowService,
+    auth_token_broker: Arc<dyn AuthTokenBroker>,
     mcp_oauth: McpOAuthDriver,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
@@ -3286,6 +3314,61 @@ impl AgentApiService for GatewayAgentApi {
         }
     }
 
+    async fn lease_auth_grant(
+        &self,
+        params: AuthGrantLeaseParams,
+    ) -> Result<AgentApiOutcome<AuthGrantLeaseResponse>, AgentApiError> {
+        let grant_id = parse_auth_grant_id(params.grant_id)?;
+        let grant = self
+            .store
+            .read_grant(&grant_id)
+            .await
+            .map_err(map_auth_error)?;
+        require_retrievable_grant(&grant)?;
+
+        let audience = match grant.provider_kind {
+            auth::AuthProviderKind::McpOAuth => {
+                TokenAudience::McpResource(params.audience.ok_or_else(|| {
+                    AgentApiError::rejected("mcp_oauth grant leases require an audience")
+                })?)
+            }
+            auth::AuthProviderKind::GitHubApp => {
+                TokenAudience::GitHubApi(params.audience.ok_or_else(|| {
+                    AgentApiError::rejected("github_app grant leases require an audience")
+                })?)
+            }
+            _ => TokenAudience::ServiceLease(
+                params
+                    .audience
+                    .or_else(|| grant.audience.clone())
+                    .unwrap_or_else(|| "service:lease".to_owned()),
+            ),
+        };
+        let token = self
+            .auth_token_broker
+            .bearer_token(&grant_id, &audience)
+            .await
+            .map_err(map_auth_broker_error)?;
+        let leased = self
+            .store
+            .record_grant_lease(&grant_id, now_ms()?)
+            .await
+            .map_err(map_auth_error)?;
+        let principal = crate::gateway::principal::request_principal();
+        tracing::info!(
+            grant_id = %grant_id,
+            principal_kind = ?principal.kind,
+            principal_id = principal.id.as_deref().unwrap_or(""),
+            "auth grant leased"
+        );
+        Ok(AgentApiOutcome::new(AuthGrantLeaseResponse {
+            token: token.expose().to_owned(),
+            expires_at_ms: leased.expires_at_ms,
+            grant_id: grant_id.as_str().to_owned(),
+            provider_kind: api_auth_provider_kind(leased.provider_kind),
+        }))
+    }
+
     async fn list_auth_grants(
         &self,
         params: AuthGrantListParams,
@@ -3423,6 +3506,7 @@ impl AgentApiService for GatewayAgentApi {
                 redirect_uri: oauth_redirect_uri(&self.public_base_url),
                 scopes: params.scopes,
                 audience: params.audience,
+                grant_exposure: registry_auth_grant_exposure(params.exposure),
                 principal: crate::gateway::principal::request_principal(),
             })
             .await
@@ -3592,6 +3676,7 @@ impl AgentApiService for GatewayAgentApi {
             installation,
             params.grant_id,
             params.display_name,
+            registry_auth_grant_exposure(params.exposure),
             now_ms()?,
         )?;
         let record = self

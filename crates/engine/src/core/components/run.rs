@@ -117,6 +117,7 @@ pub struct ActiveRun {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum RunStatus {
     Active,
     Parked,

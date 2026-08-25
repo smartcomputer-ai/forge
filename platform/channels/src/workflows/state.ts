@@ -3,10 +3,11 @@ import type {
   EmissionEnvelope,
   RunStatus,
   WorkflowToolInvocation,
-} from "../contracts/emissions.js";
+} from "@lightspeed/agent-client/workflow";
 
 export interface ReceivedInvocation {
   invocation: WorkflowToolInvocation;
+  holderWorkflowId: string;
   producerSessionId: string;
   status: "received" | "delivering" | "resolved" | "failed" | "cancelled";
   providerMessageIds?: string[];
@@ -254,9 +255,10 @@ export function applyEmission(
         state.snapshot.protocolErrors.push("tool invocation producer is not a session");
         return { type: "none" };
       }
-      const { invocation } = envelope.body;
+      const { holder_workflow_id: holderWorkflowId, invocation } = envelope.body;
       state.snapshot.invocations[invocation.invocation_id] = {
         invocation,
+        holderWorkflowId,
         producerSessionId: envelope.producer.session_id,
         status: "received",
       };

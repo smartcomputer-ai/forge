@@ -56,6 +56,23 @@ fn auth_grant_import_params_redact_token_in_debug_output() {
     assert!(!debug.contains("super-secret-token"), "{debug}");
     assert!(debug.contains("<redacted>"));
     assert_eq!(params.token, "super-secret-token");
+    assert_eq!(params.exposure, AuthGrantExposure::Brokered);
+}
+
+#[test]
+fn auth_grant_lease_response_redacts_token_in_debug_output() {
+    let response = AuthGrantLeaseResponse {
+        token: "super-secret-leased-token".to_owned(),
+        expires_at_ms: Some(1234),
+        grant_id: "authgrant_1".to_owned(),
+        provider_kind: AuthProviderKind::StaticBearer,
+    };
+
+    let debug = format!("{response:?}");
+
+    assert!(!debug.contains("super-secret-leased-token"), "{debug}");
+    assert!(debug.contains("<redacted>"));
+    assert!(debug.contains("authgrant_1"));
 }
 
 #[test]
@@ -1038,6 +1055,27 @@ async fn dispatch_json_rpc_routes_mcp_server_put() {
         response.result.expect("result")["result"]["server"]["serverId"],
         json!("echo")
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_auth_grant_lease() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_AUTH_GRANTS_LEASE.to_owned(),
+            params: Some(json!({
+                "grantId": "authgrant_1",
+                "audience": "https://api.example.com"
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["grantId"], json!("authgrant_1"));
+    assert_eq!(result["result"]["token"], json!("leased-token"));
 }
 
 #[test]
@@ -2289,6 +2327,18 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn lease_auth_grant(
+        &self,
+        params: AuthGrantLeaseParams,
+    ) -> Result<AgentApiOutcome<AuthGrantLeaseResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(AuthGrantLeaseResponse {
+            token: "leased-token".to_owned(),
+            expires_at_ms: None,
+            grant_id: params.grant_id,
+            provider_kind: AuthProviderKind::StaticBearer,
+        }))
+    }
+
     async fn list_auth_grants(
         &self,
         _params: AuthGrantListParams,
@@ -2489,6 +2539,7 @@ fn test_auth_grant(grant_id: String, status: AuthGrantStatus) -> AuthGrantView {
         grant_id,
         provider_id: "static".to_owned(),
         provider_kind: AuthProviderKind::StaticBearer,
+        exposure: AuthGrantExposure::Brokered,
         principal: PrincipalRefView::default(),
         display_name: None,
         subject_hint: None,
@@ -2499,6 +2550,8 @@ fn test_auth_grant(grant_id: String, status: AuthGrantStatus) -> AuthGrantView {
         expires_at_ms: None,
         status,
         metadata: serde_json::Value::Object(Default::default()),
+        last_leased_at_ms: None,
+        lease_count: 0,
         created_at_ms: 1,
         updated_at_ms: 2,
     }

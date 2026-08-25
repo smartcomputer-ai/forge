@@ -565,6 +565,7 @@ fn test_auth_grant_record(
         grant_id: auth::AuthGrantId::new(grant_id),
         provider_id: "static".to_owned(),
         provider_kind,
+        exposure: auth::AuthGrantExposure::Brokered,
         principal: auth::PrincipalRef::universe_default(),
         display_name: None,
         subject_hint: None,
@@ -579,6 +580,22 @@ fn test_auth_grant_record(
         created_at_ms: 1,
     }
     .into_record()
+}
+
+#[test]
+fn grant_leases_require_creation_time_retrievable_exposure() {
+    let brokered = test_auth_grant_record(
+        "authgrant_brokered",
+        auth::AuthProviderKind::StaticBearer,
+        auth::AuthGrantStatus::Active,
+        None,
+    );
+    let mut retrievable = brokered.clone();
+    retrievable.exposure = auth::AuthGrantExposure::Retrievable;
+
+    let error = require_retrievable_grant(&brokered).expect_err("brokered grant must reject");
+    assert_eq!(error.kind, AgentApiErrorKind::Rejected);
+    require_retrievable_grant(&retrievable).expect("retrievable grant accepted");
 }
 
 fn mcp_config_link() -> engine::McpServerLink {
@@ -2222,6 +2239,7 @@ fn auth_flow_views_carry_derived_status() {
         client_id: auth::OAuthClientId::new("crm"),
         provider_id: "crm".to_owned(),
         provider_kind: auth::AuthProviderKind::McpOAuth,
+        grant_exposure: auth::AuthGrantExposure::Brokered,
         principal: auth::PrincipalRef::universe_default(),
         state_hash: auth::state_hash("state-1"),
         pkce_verifier_secret: auth::SecretId::new("authsec_pkce"),

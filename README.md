@@ -92,7 +92,9 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
 - [x] **Managed sessions and workflow-backed tools**: trusted workflow
   controllers can create sessions with immutable tool bindings, durable
-  emissions, keyed completions, deadlines, and cancellation
+  emissions, keyed completions, deadlines, and cancellation; receiver
+  implementers use the generated
+  [workflow contract](crates/temporal-workflow/contract/workflow-contract.md)
 - [x] **Eval harness** for regression-testing agent and tool workflows
 - [ ] **Timers, schedules, wake-ups**
 

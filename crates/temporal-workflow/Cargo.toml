@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-engine = { path = "../engine" }
+engine = { path = "../engine", features = ["contract"] }
+schemars = { version = "1", features = ["uuid1"] }
 sha2 = "0.10"
 hex = "0.4"
 environment-protocol = { path = "../environment-protocol" }
@@ -20,3 +21,6 @@ temporalio-sdk = "0.4.0"
 temporalio-sdk-core = "0.4.0"
 tracing = "0.1"
 uuid = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+jsonschema = { version = "0.33", default-features = false }

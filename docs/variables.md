@@ -54,6 +54,16 @@ They do not configure the TypeScript Platform server.
 universes explicitly through the operator API or `lightspeed-server universe
 create`.
 
+In `trusted-header` mode, the upstream gateway must send
+`x-lightspeed-universe: <uuid>` on universe-scoped calls. It may also send
+`x-lightspeed-principal: user:<id>` or
+`x-lightspeed-principal: service_account:<id>`; a bare value is treated as a
+user id and an absent value as `universe_default`. The principal is recorded
+for audit, and the `service_account` kind is additionally required for
+service-scoped methods such as `auth/grants/lease`. These headers are rejected
+in `single` and `api-key` modes; API-key mode derives both universe and
+principal from the key record.
+
 ### Default model and provider transport
 
 Provider keys in the environment are deployment-wide fallback credentials.

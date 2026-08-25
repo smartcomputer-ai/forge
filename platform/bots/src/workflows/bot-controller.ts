@@ -18,7 +18,7 @@ import {
   replyPromiseId,
   sourceResolutionEnvelope,
   type WorkflowToolInvocation,
-} from "../contracts/emissions.js";
+} from "@lightspeed/agent-client/workflow";
 import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
@@ -31,7 +31,6 @@ import {
   BOT_TOOLS_REVISION,
   BOTS_ACTIVITY_TASK_QUEUE,
   botDeliveryId,
-  lightspeedSessionWorkflowId,
   botEventSubmissionId,
   botEventTerminalToken,
   botSessionId,
@@ -607,7 +606,7 @@ export async function botControllerWorkflowV1(
           const first = handledInvocationIds.values().next().value;
           if (first !== undefined) handledInvocationIds.delete(first);
         }
-        void handleInvocation(invocation);
+        void handleInvocation(invocation, envelope.body.holder_workflow_id);
         continue;
       }
       if (envelope.body.kind !== "run_terminal") continue;
@@ -620,7 +619,7 @@ export async function botControllerWorkflowV1(
             token,
             status: envelope.body.status,
             runId: terminalRunId,
-            failureRef: envelope.body.failure_message_ref,
+            failureRef: envelope.body.failure_message_ref ?? null,
           };
         }
       }
@@ -658,7 +657,10 @@ export async function botControllerWorkflowV1(
    * session workflow directly. Runs as its own lane, independent of delivery
    * and terminal handling.
    */
-  async function handleInvocation(invocation: WorkflowToolInvocation): Promise<void> {
+  async function handleInvocation(
+    invocation: WorkflowToolInvocation,
+    holderWorkflowId: string,
+  ): Promise<void> {
     const joined = invocation.tool_id !== BOT_EMIT_TOOL_ID;
     let resolution:
       | { kind: "resolved"; payload_ref: string | null }
@@ -690,9 +692,7 @@ export async function botControllerWorkflowV1(
     }
     if (!joined) return;
     try {
-      const holder = getExternalWorkflowHandle(
-        lightspeedSessionWorkflowId(config.universeId, invocation.session_id),
-      );
+      const holder = getExternalWorkflowHandle(holderWorkflowId);
       await holder.signal(
         DELIVER_EMISSION_SIGNAL,
         sourceResolutionEnvelope({

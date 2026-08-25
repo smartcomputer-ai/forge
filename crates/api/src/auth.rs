@@ -24,6 +24,14 @@ pub enum AuthGrantStatus {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub enum AuthGrantExposure {
+    #[default]
+    Brokered,
+    Retrievable,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub enum PrincipalKind {
     User,
     ServiceAccount,
@@ -46,6 +54,7 @@ pub struct AuthGrantView {
     pub grant_id: String,
     pub provider_id: String,
     pub provider_kind: AuthProviderKind,
+    pub exposure: AuthGrantExposure,
     pub principal: PrincipalRefView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -64,6 +73,9 @@ pub struct AuthGrantView {
     /// grants: installation id, account, permissions, repository selection).
     #[serde(default, skip_serializing_if = "metadata_is_empty")]
     pub metadata: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_leased_at_ms: Option<i64>,
+    pub lease_count: u64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -87,6 +99,8 @@ pub struct AuthGrantImportParams {
     pub grant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
+    #[serde(default)]
+    pub exposure: AuthGrantExposure,
     pub token: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
@@ -110,6 +124,7 @@ impl std::fmt::Debug for AuthGrantImportParams {
         f.debug_struct("AuthGrantImportParams")
             .field("grant_id", &self.grant_id)
             .field("provider_id", &self.provider_id)
+            .field("exposure", &self.exposure)
             .field("token", &"<redacted>")
             .field("display_name", &self.display_name)
             .field("subject_hint", &self.subject_hint)
@@ -124,6 +139,39 @@ impl std::fmt::Debug for AuthGrantImportParams {
 #[serde(rename_all = "camelCase")]
 pub struct AuthGrantImportResponse {
     pub grant: AuthGrantView,
+}
+
+/// Request a current access-token lease for a retrievable grant. Callers must
+/// cache only in memory until shortly before `expiresAtMs` (or for at most
+/// five minutes when it is absent), re-lease after target 401/403 responses,
+/// and never persist the token or place it in a workflow payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthGrantLeaseParams {
+    pub grant_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthGrantLeaseResponse {
+    pub token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    pub grant_id: String,
+    pub provider_kind: AuthProviderKind,
+}
+
+impl std::fmt::Debug for AuthGrantLeaseResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthGrantLeaseResponse")
+            .field("token", &"<redacted>")
+            .field("expires_at_ms", &self.expires_at_ms)
+            .field("grant_id", &self.grant_id)
+            .field("provider_kind", &self.provider_kind)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -303,6 +351,8 @@ pub struct AuthFlowStartParams {
     pub scopes: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    #[serde(default)]
+    pub exposure: AuthGrantExposure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -544,6 +594,8 @@ pub struct AuthGitHubInstallationGrantParams {
     pub grant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub exposure: AuthGrantExposure,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

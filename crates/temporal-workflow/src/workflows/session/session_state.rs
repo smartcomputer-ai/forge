@@ -53,7 +53,7 @@ impl AgentSessionWorkflow {
                     });
                 return;
             }
-            engine::EmissionBody::ToolInvocation { invocation } => {
+            engine::EmissionBody::ToolInvocation { invocation, .. } => {
                 self.last_error = Some(format!(
                     "session workflow cannot receive workflow tool invocation {}",
                     invocation.invocation_id
@@ -122,6 +122,7 @@ impl AgentSessionWorkflow {
                                 session_id.clone(),
                                 entry.position.seq,
                                 invocation.clone(),
+                                crate::compose_workflow_id(universe_id, &session_id),
                             ),
                         ));
                         continue;
@@ -347,7 +348,7 @@ async fn terminal_tool_invocation_delivery_failure(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     pending: &PendingEmission,
 ) -> anyhow::Result<()> {
-    let engine::EmissionBody::ToolInvocation { invocation } = &pending.envelope.body else {
+    let engine::EmissionBody::ToolInvocation { invocation, .. } = &pending.envelope.body else {
         return Ok(());
     };
     let message = format!(

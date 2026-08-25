@@ -55,8 +55,8 @@ const tools = methods.map((entry) => {
 });
 
 for (const entry of manifest.methods ?? []) {
-  if (entry.scope === "operator" && tools.some((tool) => tool.method === entry.method)) {
-    throw new Error(`operator method leaked into MCP tools: ${entry.method}`);
+  if (entry.scope !== "universe" && tools.some((tool) => tool.method === entry.method)) {
+    throw new Error(`${entry.scope} method leaked into MCP tools: ${entry.method}`);
   }
 }
 

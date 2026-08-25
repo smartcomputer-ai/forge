@@ -1,0 +1,410 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "EmissionBody": {
+      "description": "Closed internal vocabulary carried by the shared delivery signal.\n\nWorkflow-tool invocation bodies join this enum when the durable tool\ncontracts land. This first slice folds the two existing transports.",
+      "oneOf": [
+        {
+          "properties": {
+            "failure_message_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "run_terminal",
+              "type": "string"
+            },
+            "output_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "run_id": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "status": {
+              "$ref": "#/definitions/RunStatus"
+            },
+            "token": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "token",
+            "run_id",
+            "status"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "source_resolution",
+              "type": "string"
+            },
+            "promise_id": {
+              "$ref": "#/definitions/PromiseId"
+            },
+            "resolution": {
+              "$ref": "#/definitions/PromiseResolution"
+            }
+          },
+          "required": [
+            "kind",
+            "promise_id",
+            "resolution"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "holder_workflow_id": {
+              "description": "Workflow id of the session that emitted the invocation — the\nendpoint a receiver signals its reply to. Supplied by the\nsubstrate adapter; the engine treats it as opaque.",
+              "type": "string"
+            },
+            "invocation": {
+              "$ref": "#/definitions/WorkflowToolInvocation"
+            },
+            "kind": {
+              "const": "tool_invocation",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "invocation",
+            "holder_workflow_id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Best-effort notice to a bound receiver that the session already\nresolved one keyed completion promise as cancelled. The receiver may\nstop the domain work behind that key; a later reply is ignored\nbecause the promise is terminal.",
+          "properties": {
+            "completion_key": {
+              "type": "string"
+            },
+            "invocation_id": {
+              "$ref": "#/definitions/WorkflowToolInvocationId"
+            },
+            "kind": {
+              "const": "invocation_cancellation",
+              "type": "string"
+            },
+            "promise_id": {
+              "$ref": "#/definitions/PromiseId"
+            }
+          },
+          "required": [
+            "kind",
+            "invocation_id",
+            "completion_key",
+            "promise_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "EmissionEnvelope": {
+      "description": "Bounded cross-workflow fact delivered through the fixed\n`deliver_emission` signal.",
+      "properties": {
+        "body": {
+          "$ref": "#/definitions/EmissionBody"
+        },
+        "emission_id": {
+          "$ref": "#/definitions/EmissionId"
+        },
+        "producer": {
+          "$ref": "#/definitions/EmissionProducer"
+        }
+      },
+      "required": [
+        "emission_id",
+        "producer",
+        "body"
+      ],
+      "type": "object"
+    },
+    "EmissionId": {
+      "description": "Stable identity for one cross-workflow emission.\n\nIds are deterministic digests over a domain-separated, length-prefixed\nproducer/source identity. They are safe to recompute after activity retry,\nworker restart, or workflow continue-as-new.",
+      "type": "string"
+    },
+    "EmissionProducer": {
+      "description": "Durable producer identity carried with every emission.",
+      "oneOf": [
+        {
+          "description": "A session-log-backed emission. `log_seq` is the exact sequence of the\nevent that produced the fact.",
+          "properties": {
+            "kind": {
+              "const": "session",
+              "type": "string"
+            },
+            "log_seq": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "session_id": {
+              "$ref": "#/definitions/SessionId"
+            },
+            "universe_id": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "universe_id",
+            "session_id",
+            "log_seq"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "An emission backed by another durable workflow's state.\n`universe_id` scopes this communication edge; it does not imply that\nthe producing workflow itself is universe-owned. A deployment-global\nworkflow may emit independently authorized facts for multiple\nuniverses.",
+          "properties": {
+            "kind": {
+              "const": "workflow",
+              "type": "string"
+            },
+            "universe_id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "workflow_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "universe_id",
+            "workflow_id"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PromiseId": {
+      "description": "Stable identifier for a promise. Minted by the tool executor that creates\nthe promise (a deterministic digest of the creating call context) and\ncarried in the creation event, so replay re-derives identical ids.",
+      "type": "string"
+    },
+    "PromiseResolution": {
+      "description": "How a promise reached a terminal state. Used by `ResolvePromise`\nadmission; all transports (push notifications, poll results, timers,\ncancellation) converge on this one funnel.",
+      "oneOf": [
+        {
+          "properties": {
+            "kind": {
+              "const": "resolved",
+              "type": "string"
+            },
+            "payload_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "error_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "failed",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "cancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunStatus": {
+      "enum": [
+        "active",
+        "parked",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled"
+      ],
+      "type": "string"
+    },
+    "SessionId": {
+      "type": "string"
+    },
+    "ToolCallId": {
+      "type": "string"
+    },
+    "WorkflowToolId": {
+      "type": "string"
+    },
+    "WorkflowToolInvocation": {
+      "description": "Bounded durable record of one successful workflow-tool tool call.\n\nThe model arguments remain in CAS and are referenced by `arguments_ref`.\nReceiver-specific interpretation belongs to the receiving workflow.",
+      "properties": {
+        "arguments_ref": {
+          "type": "string"
+        },
+        "binding_fingerprint": {
+          "type": "string"
+        },
+        "completion_promises": {
+          "additionalProperties": {
+            "$ref": "#/definitions/PromiseId"
+          },
+          "description": "Keyed promise set created atomically with this invocation; `None`\nfor notify (`Accepted`) completion. Request/reply is the single\nreserved key `reply`.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "execution_context_ref": {
+          "description": "Opaque, runtime-supplied context for the receiving workflow. This is\nseparate from model-authored arguments so runtime state can be pinned\nwithout changing the tool's declared argument schema.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "invocation_id": {
+          "$ref": "#/definitions/WorkflowToolInvocationId"
+        },
+        "run_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "schema_revision": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "semantic_type": {
+          "type": "string"
+        },
+        "session_id": {
+          "$ref": "#/definitions/SessionId"
+        },
+        "session_universe_id": {
+          "format": "uuid",
+          "type": "string"
+        },
+        "tool_batch_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_id": {
+          "$ref": "#/definitions/ToolCallId"
+        },
+        "tool_id": {
+          "$ref": "#/definitions/WorkflowToolId"
+        },
+        "turn_id": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "invocation_id",
+        "tool_id",
+        "semantic_type",
+        "schema_revision",
+        "binding_fingerprint",
+        "session_universe_id",
+        "session_id",
+        "run_id",
+        "turn_id",
+        "tool_batch_id",
+        "tool_call_id",
+        "arguments_ref"
+      ],
+      "type": "object"
+    },
+    "WorkflowToolInvocationId": {
+      "type": "string"
+    },
+    "WorkflowToolRecipeV1": {
+      "properties": {
+        "taskQueue": {
+          "type": "string"
+        },
+        "workflowType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflowType",
+        "taskQueue"
+      ],
+      "type": "object"
+    },
+    "WorkflowToolRecoveryResult": {
+      "description": "Result shape of [`WORKFLOW_TOOL_RECOVERY_QUERY`].",
+      "properties": {
+        "resolutions": {
+          "additionalProperties": {
+            "$ref": "#/definitions/PromiseResolution"
+          },
+          "default": {},
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
+    "WorkflowToolStartArgs": {
+      "description": "Start arguments every start-on-call plugin workflow receives. The plugin\nresolves each keyed completion promise by emitting `SourceResolution`\nbodies to the holder workflow through the fixed `deliver_emission`\nsignal, using its own execution id as the producer workflow id.",
+      "properties": {
+        "execution_id": {
+          "type": "string"
+        },
+        "holder_workflow_id": {
+          "type": "string"
+        },
+        "invocation": {
+          "$ref": "#/definitions/WorkflowToolInvocation"
+        },
+        "universe_id": {
+          "format": "uuid",
+          "type": "string"
+        }
+      },
+      "required": [
+        "universe_id",
+        "holder_workflow_id",
+        "execution_id",
+        "invocation"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Envelope and start-on-call types of the fixed deliver_emission transport between sessions and receiver workflows.",
+  "title": "Lightspeed Workflow Contract"
+}

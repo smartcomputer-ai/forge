@@ -2,8 +2,10 @@
 
 **Status**
 
-- Proposed / not started. Extracted 2026-08-24 from P130's slice 5 so each
-  piece can be scoped and shipped on its own; P130 carries the running
+- Extracted 2026-08-24 from P130's slice 5 so each piece can be scoped and
+  shipped on its own. Workstream 1 (`poll`) shipped 2026-08-24 and
+  collapsed most of 3; 2, 4, 6 are parked until after P132, P133, and the
+  fleet simplification; 5 is deferred (2026-08-25, not needed for now). P130 carries the running
   implementation log for slices 1–4 plus the event-input redesign,
   capability grants, and hardening round this builds on.
 - Builds on P130 (controller, store-then-wake admission, `#N` events with
@@ -148,7 +150,7 @@ the transport is shared. The GitHub App installation story
 (`later/pNNN-platform-github-app-installations.md`) slots here as the one
 preset needing real credential plumbing.
 
-### 5. Channels bridge
+### 5. Channels bridge — DEFERRED 2026-08-25
 
 Chat platforms as an event *source*: a Channels binding that forwards
 messages into a bot (`kind: "chat"`, thread-based route key, coalescing for

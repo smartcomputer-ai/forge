@@ -10,9 +10,12 @@ use crate::{
     WorkflowToolInvocation, WorkflowToolInvocationId,
 };
 
-const EMISSION_ID_PREFIX: &str = "emission:sha256:";
+/// Prefix of every digest-derived emission id (tool-invocation emissions
+/// reuse the invocation id verbatim instead).
+pub const EMISSION_ID_PREFIX: &str = "emission:sha256:";
 const EMISSION_ID_HEX_LEN: usize = 64;
-const EMISSION_HASH_DOMAIN: &[u8] = b"lightspeed.emission.v1";
+/// Domain-separation tag hashed first into every derived emission id.
+pub const EMISSION_HASH_DOMAIN: &str = "lightspeed.emission.v1";
 
 /// Stable identity for one cross-workflow emission.
 ///
@@ -20,6 +23,7 @@ const EMISSION_HASH_DOMAIN: &[u8] = b"lightspeed.emission.v1";
 /// producer/source identity. They are safe to recompute after activity retry,
 /// worker restart, or workflow continue-as-new.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct EmissionId(String);
 
 impl EmissionId {
@@ -38,7 +42,7 @@ impl EmissionId {
 
     fn from_parts(kind: &[u8], parts: &[&[u8]]) -> Self {
         let mut digest = Sha256::new();
-        update_digest_part(&mut digest, EMISSION_HASH_DOMAIN);
+        update_digest_part(&mut digest, EMISSION_HASH_DOMAIN.as_bytes());
         update_digest_part(&mut digest, kind);
         for part in parts {
             update_digest_part(&mut digest, part);
@@ -139,6 +143,7 @@ pub enum EmissionIdError {
 /// Durable producer identity carried with every emission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum EmissionProducer {
     /// A session-log-backed emission. `log_seq` is the exact sequence of the
     /// event that produced the fact.
@@ -172,6 +177,7 @@ impl EmissionProducer {
 /// contracts land. This first slice folds the two existing transports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum EmissionBody {
     RunTerminal {
         token: String,
@@ -186,6 +192,10 @@ pub enum EmissionBody {
     },
     ToolInvocation {
         invocation: WorkflowToolInvocation,
+        /// Workflow id of the session that emitted the invocation — the
+        /// endpoint a receiver signals its reply to. Supplied by the
+        /// substrate adapter; the engine treats it as opaque.
+        holder_workflow_id: String,
     },
     /// Best-effort notice to a bound receiver that the session already
     /// resolved one keyed completion promise as cancelled. The receiver may
@@ -201,6 +211,7 @@ pub enum EmissionBody {
 /// Bounded cross-workflow fact delivered through the fixed
 /// `deliver_emission` signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct EmissionEnvelope {
     pub emission_id: EmissionId,
     pub producer: EmissionProducer,
@@ -286,6 +297,7 @@ impl EmissionEnvelope {
         session_id: SessionId,
         log_seq: EventSeq,
         invocation: WorkflowToolInvocation,
+        holder_workflow_id: String,
     ) -> Self {
         let emission_id = EmissionId::for_tool_invocation(&invocation.invocation_id);
         Self {
@@ -295,7 +307,10 @@ impl EmissionEnvelope {
                 session_id,
                 log_seq,
             },
-            body: EmissionBody::ToolInvocation { invocation },
+            body: EmissionBody::ToolInvocation {
+                invocation,
+                holder_workflow_id,
+            },
         }
     }
 }

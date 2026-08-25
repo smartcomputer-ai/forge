@@ -27,6 +27,9 @@ pub enum TokenAudience {
     /// request a non-URL `model:<provider_id>` sentinel, which only
     /// audience-unrestricted grants cover.
     ModelProvider(String),
+    /// Resource asserted by a trusted service requesting a retrievable-grant
+    /// lease. Provider-specific callers still use the variants above.
+    ServiceLease(String),
 }
 
 impl TokenAudience {
@@ -35,6 +38,7 @@ impl TokenAudience {
             Self::McpResource(resource) => resource,
             Self::GitHubApi(resource) => resource,
             Self::ModelProvider(resource) => resource,
+            Self::ServiceLease(resource) => resource,
         }
     }
 }
@@ -592,6 +596,7 @@ mod tests {
             grant_id: AuthGrantId::new(grant_id),
             provider_id: "static".to_owned(),
             provider_kind: AuthProviderKind::StaticBearer,
+            exposure: crate::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: None,
             subject_hint: None,
@@ -841,6 +846,7 @@ mod tests {
                 grant_id: AuthGrantId::new("authgrant_oauth"),
                 provider_id: "crm".to_owned(),
                 provider_kind: AuthProviderKind::McpOAuth,
+                exposure: crate::AuthGrantExposure::Brokered,
                 principal: PrincipalRef::universe_default(),
                 display_name: None,
                 subject_hint: None,

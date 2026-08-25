@@ -55,17 +55,6 @@ export function channelDeliveryTaskQueue(
   return `lightspeed-channels-delivery-v1-${provider}-${accountHash}`;
 }
 
-export function lightspeedSessionWorkflowId(universeId: string, sessionId: string): string {
-  if (!UUID.test(universeId)) {
-    throw new TypeError("universeId must be a UUID");
-  }
-  requirePart(sessionId, "sessionId");
-  if (sessionId.includes("/")) {
-    throw new TypeError("sessionId must not contain '/'");
-  }
-  return `${universeId.toLowerCase()}/${sessionId}`;
-}
-
 export function channelTurnIdentity(workflowId: string, providerMessageId: string): ChannelTurnIdentity {
   requirePart(workflowId, "workflowId");
   requirePart(providerMessageId, "providerMessageId");

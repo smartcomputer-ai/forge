@@ -9,7 +9,7 @@
   browser sessions), lease audit counters, and an in-memory caching
   contract; bots poll/webhook credentials and Channels move onto grant ids
   and the platform's plaintext secret fields are removed.
-- [ ] [P132](p132-workflow-contract-export.md) — workflow contract export:
+- [x] [P132](p132-workflow-contract-export.md) — workflow contract export:
   publish the `deliver_emission` protocol (envelope, producer types, id
   derivations with known-answer vectors, workflow-id scheme, start-on-call
   recipe/recovery types) from `temporal-workflow` as committed artifacts

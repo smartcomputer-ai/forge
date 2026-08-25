@@ -219,6 +219,23 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfAuthGrantLeaseResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/AuthGrantLeaseResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfAuthGrantListResponse": {
       "properties": {
         "notifications": {
@@ -2071,6 +2088,14 @@
         "clientId": {
           "type": "string"
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "scopes": {
           "items": {
             "type": "string"
@@ -2196,6 +2221,14 @@
             "null"
           ]
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "grantId": {
           "type": [
             "string",
@@ -2250,6 +2283,13 @@
       },
       "type": "object"
     },
+    "AuthGrantExposure": {
+      "enum": [
+        "brokered",
+        "retrievable"
+      ],
+      "type": "string"
+    },
     "AuthGrantImportParams": {
       "description": "Import a static bearer credential as an auth grant. This is the one\ndeliberate inbound-plaintext path: `token` is encrypted on receipt and is\nnever returned by any method. `Debug` output redacts the token; request\nlogging must never echo these params.",
       "properties": {
@@ -2271,6 +2311,14 @@
             "integer",
             "null"
           ]
+        },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
         },
         "grantId": {
           "type": [
@@ -2316,6 +2364,50 @@
       },
       "required": [
         "grant"
+      ],
+      "type": "object"
+    },
+    "AuthGrantLeaseParams": {
+      "description": "Request a current access-token lease for a retrievable grant. Callers must\ncache only in memory until shortly before `expiresAtMs` (or for at most\nfive minutes when it is absent), re-lease after target 401/403 responses,\nand never persist the token or place it in a workflow payload.",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grantId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "grantId"
+      ],
+      "type": "object"
+    },
+    "AuthGrantLeaseResponse": {
+      "properties": {
+        "expiresAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grantId": {
+          "type": "string"
+        },
+        "providerKind": {
+          "$ref": "#/definitions/AuthProviderKind"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "grantId",
+        "providerKind"
       ],
       "type": "object"
     },
@@ -2424,6 +2516,9 @@
             "null"
           ]
         },
+        "exposure": {
+          "$ref": "#/definitions/AuthGrantExposure"
+        },
         "grantId": {
           "type": "string"
         },
@@ -2432,6 +2527,18 @@
         },
         "hasRefreshToken": {
           "type": "boolean"
+        },
+        "lastLeasedAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "leaseCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "metadata": {
           "description": "Non-secret provider-specific metadata (for GitHub App installation\ngrants: installation id, account, permissions, repository selection)."
@@ -2469,10 +2576,12 @@
         "grantId",
         "providerId",
         "providerKind",
+        "exposure",
         "principal",
         "hasAccessToken",
         "hasRefreshToken",
         "status",
+        "leaseCount",
         "createdAtMs",
         "updatedAtMs"
       ],

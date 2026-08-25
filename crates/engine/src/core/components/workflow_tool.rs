@@ -380,6 +380,7 @@ pub struct WorkflowToolBinding {
 /// The model arguments remain in CAS and are referenced by `arguments_ref`.
 /// Receiver-specific interpretation belongs to the receiving workflow.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct WorkflowToolInvocation {
     pub invocation_id: WorkflowToolInvocationId,
     pub tool_id: WorkflowToolId,

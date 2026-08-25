@@ -126,8 +126,8 @@ pub use github::{
     validate_github_app_private_key,
 };
 pub use grants::{
-    AuthGrantRecord, AuthGrantStatus, AuthGrantStore, AuthGrantTokenRefresh, AuthProviderKind,
-    CreateAuthGrantRecord, ListAuthGrants, PrincipalKind, PrincipalRef,
+    AuthGrantExposure, AuthGrantRecord, AuthGrantStatus, AuthGrantStore, AuthGrantTokenRefresh,
+    AuthProviderKind, CreateAuthGrantRecord, ListAuthGrants, PrincipalKind, PrincipalRef,
 };
 pub use locks::{GrantLockGuard, GrantRefreshLock, InMemoryGrantLocks};
 pub use mcp_oauth::{

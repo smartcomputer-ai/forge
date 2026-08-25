@@ -54,5 +54,10 @@ npm install
 npm run check --workspace @lightspeed/agent-client
 ```
 
-`npm run check:generated` regenerates `src/generated/*` and fails if the
-committed generated output is stale.
+`npm run check:generated` regenerates `src/generated/*` and the packaged
+schemas, and fails if the committed generated output is stale.
+
+Workflow receivers import `@lightspeed/agent-client/workflow`. That subpath
+contains generated emission/start-on-call types and manifest-owned constants,
+plus Temporal-sandbox-safe parsing, id derivation, workflow-id, recipe, and
+reply helpers. It has no Temporal package dependency.

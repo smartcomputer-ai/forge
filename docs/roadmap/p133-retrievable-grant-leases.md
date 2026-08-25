@@ -2,6 +2,13 @@
 
 **Status**
 
+- In progress 2026-08-25. Slice 1 (core) is implemented: migration 010,
+  immutable exposure on grants and OAuth flows, lease audit counters,
+  `auth/grants/lease` through the existing refresh/mint broker, service method
+  scope and HTTP-edge caller gating, generated Rust/TypeScript contracts,
+  Configurator exclusion, and principal-header documentation. Existing CLI
+  creation paths explicitly remain brokered. Platform consumers, UI, bot
+  credential bindings, and the later CLI commands remain open.
 - Proposed 2026-08-24 from the bots secret-sealing discussion. P130 deferred
   sealing webhook secrets; P131 ruled "broker-backed credentials … do not
   build a parallel secret store" for poll auth. Direction from Lukas: a

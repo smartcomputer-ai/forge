@@ -100,12 +100,17 @@ under `crates/api/contract/` (`cargo test -p api` fails while they are stale):
 
 ```bash
 cargo run -p api --bin export-schema
+cargo run -p temporal-workflow --bin export-workflow-contract
 ```
 
 The export includes JSON Schema, the method manifest, OpenRPC, and the generated
 human reference at `crates/api/contract/api-reference.md`. Method-level summaries
 and descriptions belong in the Rust method manifest; parameter/field docs
 belong on the Rust wire DTOs so every generated consumer stays aligned.
+The workflow export includes the receiver-side emission schema, constants and
+derivation vectors, and its generated integrator reference under
+`crates/temporal-workflow/contract/`; `cargo test -p temporal-workflow` fails
+while those committed artifacts are stale.
 
 After changing the API contract, regenerate and verify every TypeScript
 consumer from the repository root:

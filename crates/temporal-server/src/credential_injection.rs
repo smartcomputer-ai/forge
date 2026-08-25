@@ -417,6 +417,7 @@ mod tests {
             grant_id: auth::AuthGrantId::new("grant_1"),
             provider_id: "static".to_owned(),
             provider_kind: AuthProviderKind::StaticBearer,
+            exposure: auth::AuthGrantExposure::Brokered,
             principal: auth::PrincipalRef::universe_default(),
             display_name: None,
             subject_hint: None,
@@ -428,6 +429,8 @@ mod tests {
             expires_at_ms: None,
             status: auth::AuthGrantStatus::Active,
             metadata: serde_json::Value::Object(Default::default()),
+            last_leased_at_ms: None,
+            lease_count: 0,
             created_at_ms: 1,
             updated_at_ms: 1,
         };

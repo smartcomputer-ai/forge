@@ -18,8 +18,8 @@ use sqlx::Row;
 
 use crate::PgStore;
 use crate::auth::{
-    auth_sql_error, auth_store_error, principal_kind_from_str, principal_kind_to_str,
-    provider_kind_from_str, provider_kind_to_str,
+    auth_sql_error, auth_store_error, grant_exposure_from_str, grant_exposure_to_str,
+    principal_kind_from_str, principal_kind_to_str, provider_kind_from_str, provider_kind_to_str,
 };
 
 const OAUTH_CLIENT_COLUMNS: &str = r#"
@@ -43,6 +43,7 @@ const AUTH_FLOW_COLUMNS: &str = r#"
     client_id,
     provider_id,
     provider_kind,
+    grant_exposure,
     principal_kind,
     principal_id,
     state_hash,
@@ -210,6 +211,7 @@ impl AuthFlowStore for PgStore {
                 client_id,
                 provider_id,
                 provider_kind,
+                grant_exposure,
                 principal_kind,
                 principal_id,
                 state_hash,
@@ -221,7 +223,7 @@ impl AuthFlowStore for PgStore {
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
             ON CONFLICT (universe_id, flow_id) DO NOTHING
             RETURNING {AUTH_FLOW_COLUMNS}
             "#
@@ -232,6 +234,7 @@ impl AuthFlowStore for PgStore {
             .bind(record.client_id.as_str())
             .bind(&record.provider_id)
             .bind(provider_kind_to_str(record.provider_kind))
+            .bind(grant_exposure_to_str(record.grant_exposure))
             .bind(principal_kind_to_str(record.principal.kind))
             .bind(record.principal.id.as_deref())
             .bind(&record.state_hash)
@@ -491,6 +494,9 @@ fn auth_flow_from_row(row: &sqlx::postgres::PgRow) -> Result<AuthFlowRecord, Aut
     let provider_kind: String = row
         .try_get("provider_kind")
         .map_err(|error| auth_sql_error("decode auth flow provider kind", error))?;
+    let grant_exposure: String = row
+        .try_get("grant_exposure")
+        .map_err(|error| auth_sql_error("decode auth flow grant exposure", error))?;
     let principal_kind: String = row
         .try_get("principal_kind")
         .map_err(|error| auth_sql_error("decode auth flow principal kind", error))?;
@@ -512,6 +518,7 @@ fn auth_flow_from_row(row: &sqlx::postgres::PgRow) -> Result<AuthFlowRecord, Aut
             .try_get("provider_id")
             .map_err(|error| auth_sql_error("decode auth flow provider id", error))?,
         provider_kind: provider_kind_from_str(&provider_kind)?,
+        grant_exposure: grant_exposure_from_str(&grant_exposure)?,
         principal: PrincipalRef {
             kind: principal_kind_from_str(&principal_kind)?,
             id: row

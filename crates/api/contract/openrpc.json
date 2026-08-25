@@ -219,6 +219,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfAuthGrantLeaseResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/AuthGrantLeaseResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfAuthGrantListResponse": {
         "properties": {
           "notifications": {
@@ -2071,6 +2088,14 @@
           "clientId": {
             "type": "string"
           },
+          "exposure": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuthGrantExposure"
+              }
+            ],
+            "default": "brokered"
+          },
           "scopes": {
             "items": {
               "type": "string"
@@ -2196,6 +2221,14 @@
               "null"
             ]
           },
+          "exposure": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuthGrantExposure"
+              }
+            ],
+            "default": "brokered"
+          },
           "grantId": {
             "type": [
               "string",
@@ -2250,6 +2283,13 @@
         },
         "type": "object"
       },
+      "AuthGrantExposure": {
+        "enum": [
+          "brokered",
+          "retrievable"
+        ],
+        "type": "string"
+      },
       "AuthGrantImportParams": {
         "description": "Import a static bearer credential as an auth grant. This is the one\ndeliberate inbound-plaintext path: `token` is encrypted on receipt and is\nnever returned by any method. `Debug` output redacts the token; request\nlogging must never echo these params.",
         "properties": {
@@ -2271,6 +2311,14 @@
               "integer",
               "null"
             ]
+          },
+          "exposure": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/AuthGrantExposure"
+              }
+            ],
+            "default": "brokered"
           },
           "grantId": {
             "type": [
@@ -2316,6 +2364,50 @@
         },
         "required": [
           "grant"
+        ],
+        "type": "object"
+      },
+      "AuthGrantLeaseParams": {
+        "description": "Request a current access-token lease for a retrievable grant. Callers must\ncache only in memory until shortly before `expiresAtMs` (or for at most\nfive minutes when it is absent), re-lease after target 401/403 responses,\nand never persist the token or place it in a workflow payload.",
+        "properties": {
+          "audience": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "grantId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "grantId"
+        ],
+        "type": "object"
+      },
+      "AuthGrantLeaseResponse": {
+        "properties": {
+          "expiresAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "grantId": {
+            "type": "string"
+          },
+          "providerKind": {
+            "$ref": "#/components/schemas/AuthProviderKind"
+          },
+          "token": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "token",
+          "grantId",
+          "providerKind"
         ],
         "type": "object"
       },
@@ -2424,6 +2516,9 @@
               "null"
             ]
           },
+          "exposure": {
+            "$ref": "#/components/schemas/AuthGrantExposure"
+          },
           "grantId": {
             "type": "string"
           },
@@ -2432,6 +2527,18 @@
           },
           "hasRefreshToken": {
             "type": "boolean"
+          },
+          "lastLeasedAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "leaseCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "metadata": {
             "description": "Non-secret provider-specific metadata (for GitHub App installation\ngrants: installation id, account, permissions, repository selection)."
@@ -2469,10 +2576,12 @@
           "grantId",
           "providerId",
           "providerKind",
+          "exposure",
           "principal",
           "hasAccessToken",
           "hasRefreshToken",
           "status",
+          "leaseCount",
           "createdAtMs",
           "updatedAtMs"
         ],
@@ -12859,7 +12968,7 @@
       "summary": "Delete an MCP server record"
     },
     {
-      "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.",
+      "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.",
       "name": "auth/grants/import",
       "paramStructure": "by-name",
       "params": [
@@ -12878,6 +12987,27 @@
         }
       },
       "summary": "Import a static bearer grant"
+    },
+    {
+      "description": "Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads.",
+      "name": "auth/grants/lease",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/AuthGrantLeaseParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfAuthGrantLeaseResponse"
+        }
+      },
+      "summary": "Lease a retrievable authentication grant"
     },
     {
       "description": "Returns principal, provider binding, scopes, audience, expiry, status, and token-presence flags; access and refresh token values are never returned.",
@@ -13027,7 +13157,7 @@
       "summary": "Delete an OAuth client"
     },
     {
-      "description": "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
+      "description": "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
       "name": "auth/flows/start",
       "paramStructure": "by-name",
       "params": [

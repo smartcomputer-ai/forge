@@ -9,6 +9,7 @@ use crate::{BlobRef, CoreAgentState, DomainError, RunId};
 /// carried in the creation event, so replay re-derives identical ids.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct PromiseId(String);
 
 impl PromiseId {
@@ -129,6 +130,7 @@ impl PromiseComponentState {
 /// cancellation) converge on this one funnel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum PromiseResolution {
     Resolved { payload_ref: Option<BlobRef> },
     Failed { error_ref: Option<BlobRef> },

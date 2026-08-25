@@ -2,6 +2,10 @@ import { fileURLToPath } from "node:url";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+  sessionWorkflowId,
+  type EmissionEnvelope,
+} from "@lightspeed/agent-client/workflow";
 import { createFakeDeliveryActivities } from "../src/activities/fake-delivery.js";
 import {
   CHANNEL_INBOUND_SIGNAL,
@@ -11,10 +15,9 @@ import {
   CHANNELS_WORKFLOW_TASK_QUEUE,
   type ChannelSessionStartV1,
 } from "../src/contracts/channel.js";
-import type { EmissionEnvelope } from "../src/contracts/emissions.js";
 import type { ChannelDeliveryCommandV1 } from "../src/contracts/delivery.js";
 import type { ChannelInputItem, PrepareChannelMediaInput } from "../src/contracts/media.js";
-import { channelSessionIdentity, lightspeedSessionWorkflowId } from "../src/identity/ids.js";
+import { channelSessionIdentity } from "../src/identity/ids.js";
 import type { ChannelSessionSnapshot } from "../src/workflows/state.js";
 
 const runIntegration = process.env.LIGHTSPEED_CHANNELS_TEMPORAL_INTEGRATION === "1";
@@ -119,7 +122,7 @@ describe.runIf(runIntegration)("Channels self-receiver", () => {
         deliveryTaskQueue: CHANNELS_ACTIVITY_TASK_QUEUE,
       };
       const holder = await env.client.workflow.start("testHolderWorkflow", {
-        workflowId: lightspeedSessionWorkflowId(universeId, start.sessionId),
+        workflowId: sessionWorkflowId(universeId, start.sessionId),
         taskQueue: CHANNELS_WORKFLOW_TASK_QUEUE,
       });
       const channel = await env.client.workflow.signalWithStart(CHANNEL_SESSION_WORKFLOW, {
@@ -166,6 +169,7 @@ describe.runIf(runIntegration)("Channels self-receiver", () => {
         },
         body: {
           kind: "tool_invocation",
+          holder_workflow_id: sessionWorkflowId(universeId, start.sessionId),
           invocation: {
             invocation_id: invocationId,
             tool_id: "channels.message_send.v1",
@@ -280,6 +284,7 @@ describe.runIf(runIntegration)("Channels self-receiver", () => {
         },
         body: {
           kind: "tool_invocation",
+          holder_workflow_id: sessionWorkflowId(universeId, start.sessionId),
           invocation: {
             ...(pushed.body.kind === "tool_invocation"
               ? pushed.body.invocation

@@ -9,10 +9,10 @@
 use std::sync::Arc;
 
 use crate::{
-    AuthFlowId, AuthFlowRecord, AuthFlowStore, AuthGrantId, AuthGrantStatus, AuthGrantStore,
-    AuthRegistryError, CreateAuthFlowRecord, CreateAuthGrantRecord, FinishAuthFlow, OAuthClientId,
-    OAuthClientStore, OAuthTokenClient, OAuthTokenGrant, OAuthTokenRequest, PrincipalRef,
-    PutSecretRecord, SECRET_KIND_OAUTH_ACCESS_TOKEN, SECRET_KIND_OAUTH_PKCE_VERIFIER,
+    AuthFlowId, AuthFlowRecord, AuthFlowStore, AuthGrantExposure, AuthGrantId, AuthGrantStatus,
+    AuthGrantStore, AuthRegistryError, CreateAuthFlowRecord, CreateAuthGrantRecord, FinishAuthFlow,
+    OAuthClientId, OAuthClientStore, OAuthTokenClient, OAuthTokenGrant, OAuthTokenRequest,
+    PrincipalRef, PutSecretRecord, SECRET_KIND_OAUTH_ACCESS_TOKEN, SECRET_KIND_OAUTH_PKCE_VERIFIER,
     SECRET_KIND_OAUTH_REFRESH_TOKEN, SecretId, SecretStore, SecretValue, build_authorization_url,
     generate_pkce_verifier, generate_state, pkce_challenge_s256, random_auth_id, state_hash,
     validate_audience_url,
@@ -32,6 +32,7 @@ pub struct StartAuthFlow {
     pub scopes: Option<Vec<String>>,
     /// Overrides the client's default audience when set.
     pub audience: Option<String>,
+    pub grant_exposure: AuthGrantExposure,
     pub principal: PrincipalRef,
 }
 
@@ -142,6 +143,7 @@ impl OAuthFlowService {
             client_id: client.client_id.clone(),
             provider_id: client.provider_id.clone(),
             provider_kind: client.provider_kind,
+            grant_exposure: request.grant_exposure,
             principal: request.principal,
             state_hash: state_hash(&state),
             pkce_verifier_secret: verifier_secret_id.clone(),
@@ -307,6 +309,7 @@ impl OAuthFlowService {
             grant_id: grant_id.clone(),
             provider_id: flow.provider_id.clone(),
             provider_kind: flow.provider_kind,
+            exposure: flow.grant_exposure,
             principal: flow.principal.clone(),
             display_name: client.display_name.clone(),
             subject_hint: None,
@@ -491,6 +494,7 @@ mod tests {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: None,
             audience: None,
+            grant_exposure: AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
         }
     }
@@ -517,6 +521,7 @@ mod tests {
         assert_eq!(started.flow.state_hash, state_hash(&state));
         assert_ne!(started.flow.state_hash, state);
         assert_eq!(started.flow.status(1_001), AuthFlowStatus::Pending);
+        assert_eq!(started.flow.grant_exposure, AuthGrantExposure::Brokered);
         assert_eq!(started.flow.expires_at_ms, 1_000 + DEFAULT_AUTH_FLOW_TTL_MS);
         let (meta, _) = harness
             .secrets
@@ -535,9 +540,11 @@ mod tests {
     #[tokio::test]
     async fn callbacks_exchange_codes_and_create_grants() {
         let harness = harness(vec![Ok(token_response(Some("rt-1")))]).await;
+        let mut request = start_request();
+        request.grant_exposure = AuthGrantExposure::Retrievable;
         let started = harness
             .service
-            .start_flow(start_request())
+            .start_flow(request)
             .await
             .expect("start flow");
         let state = state_from_url(&started.authorize_url);
@@ -557,6 +564,7 @@ mod tests {
         let grant_id = finished.grant_id.expect("grant id");
         let grant = harness.grants.read_grant(&grant_id).await.expect("grant");
         assert_eq!(grant.provider_kind, AuthProviderKind::McpOAuth);
+        assert_eq!(grant.exposure, AuthGrantExposure::Retrievable);
         assert_eq!(
             grant.audience.as_deref(),
             Some("https://crm.example.com/mcp")

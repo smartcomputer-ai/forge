@@ -11,7 +11,13 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./workflow": {
+      "types": "./dist/workflow.d.ts",
+      "default": "./dist/workflow.js"
+    },
     "./schema/api.schema.json": "./schema/api.schema.json",
+    "./schema/workflow.schema.json": "./schema/workflow.schema.json",
+    "./schema/workflow.json": "./schema/workflow.json",
     "./release.json": "./release.json"
   },
   "files": [
@@ -31,11 +37,14 @@
   "scripts": {
     "prepare": "npm run build",
     "generate": "node scripts/generate.mjs",
-    "check:generated": "npm run generate && git diff --exit-code -- src/generated",
+    "check:generated": "npm run generate && git diff --exit-code -- src/generated schema",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.build.json",
     "test": "vitest run",
     "check": "npm run check:generated && npm run typecheck && npm run test && npm run build"
+  },
+  "dependencies": {
+    "@noble/hashes": "2.2.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

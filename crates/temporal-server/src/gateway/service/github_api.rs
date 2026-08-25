@@ -224,6 +224,7 @@ pub(super) fn github_installation_grant_draft(
     installation: &auth::GitHubInstallation,
     grant_id: Option<String>,
     display_name: Option<String>,
+    exposure: auth::AuthGrantExposure,
     now_ms: i64,
 ) -> Result<auth::CreateAuthGrantRecord, AgentApiError> {
     let grant_id = match grant_id {
@@ -244,6 +245,7 @@ pub(super) fn github_installation_grant_draft(
         grant_id,
         provider_id: provider.provider_id.as_str().to_owned(),
         provider_kind: auth::AuthProviderKind::GitHubApp,
+        exposure,
         principal: crate::gateway::principal::request_principal(),
         display_name,
         subject_hint: installation.account_login.clone(),

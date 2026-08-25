@@ -3,7 +3,10 @@ import { ApplicationFailure } from "@temporalio/common";
 import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { Worker } from "@temporalio/worker";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { EmissionEnvelope } from "../src/contracts/emissions.js";
+import {
+  sessionWorkflowId,
+  type EmissionEnvelope,
+} from "@lightspeed/agent-client/workflow";
 import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
@@ -15,7 +18,6 @@ import {
   BOTS_ACTIVITY_TASK_QUEUE,
   BOTS_WORKFLOW_TASK_QUEUE,
   botDeliveryId,
-  lightspeedSessionWorkflowId,
   botEventTerminalToken,
   botScheduleId,
   botSessionId,
@@ -1034,7 +1036,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       );
       // Stand in for the core session workflow that holds the parked call.
       const session = await env.client.workflow.start("fakeSessionWorkflow", {
-        workflowId: lightspeedSessionWorkflowId(universeId, mainSession),
+        workflowId: sessionWorkflowId(universeId, mainSession),
         taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
       });
 
@@ -1044,6 +1046,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         producer: { kind: "session", universe_id: universeId, session_id: mainSession, log_seq: 5 },
         body: {
           kind: "tool_invocation",
+          holder_workflow_id: sessionWorkflowId(universeId, mainSession),
           invocation: {
             invocation_id: `wti:sha256:${"7".repeat(64)}`,
             tool_id: BOT_STATUS_TOOL_ID,

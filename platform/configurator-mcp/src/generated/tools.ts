@@ -7868,7 +7868,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_auth_grants_import",
     "method": "auth/grants/import",
     "summary": "Import a static bearer grant",
-    "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.",
+    "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.",
     "paramsType": "AuthGrantImportParams",
     "resultType": "AgentApiOutcome<AuthGrantImportResponse>",
     "inputSchema": {
@@ -7893,6 +7893,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "integer",
             "null"
           ]
+        },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
         },
         "grantId": {
           "type": [
@@ -7928,7 +7936,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "required": [
         "token"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -8163,7 +8180,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_auth_flows_start",
     "method": "auth/flows/start",
     "summary": "Start an OAuth authorization flow",
-    "description": "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
+    "description": "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
     "paramsType": "AuthFlowStartParams",
     "resultType": "AgentApiOutcome<AuthFlowStartResponse>",
     "inputSchema": {
@@ -8178,6 +8195,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "clientId": {
           "type": "string"
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "scopes": {
           "items": {
             "type": "string"
@@ -8191,7 +8216,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "required": [
         "clientId"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -8466,6 +8500,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "grantId": {
           "type": [
             "string",
@@ -8484,7 +8526,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "providerId",
         "installationId"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   }
 ];

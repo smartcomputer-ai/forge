@@ -6,6 +6,7 @@ use thiserror::Error;
 macro_rules! string_id {
     ($name:ident, $validator:ident) => {
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
         pub struct $name(String);
 
         impl $name {
@@ -87,6 +88,7 @@ macro_rules! numeric_id {
             Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
         )]
         #[serde(transparent)]
+        #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
         pub struct $name(u64);
 
         impl $name {

@@ -94,9 +94,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "auth_kind_cleanup_and_model_endpoints",
         sql: include_str!("../migrations/009_collapse_github_oauth_kinds.sql"),
     },
+    EmbeddedMigration {
+        version: 10,
+        name: "grant_exposure",
+        sql: include_str!("../migrations/010_grant_exposure.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

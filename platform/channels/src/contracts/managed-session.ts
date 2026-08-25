@@ -72,7 +72,7 @@ export interface ReconcileTerminalRunInput {
   universeId: string;
   sessionId: string;
   runId: number;
-  status: import("./emissions.js").RunStatus;
+  status: import("@lightspeed/agent-client/workflow").RunStatus;
 }
 
 export type ReconcileTerminalRunResult =

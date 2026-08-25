@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { EmissionEnvelope } from "@lightspeed/agent-client/workflow";
 import type { ChannelSessionStartV1, NormalizedInboundV1 } from "../src/contracts/channel.js";
-import type { EmissionEnvelope } from "../src/contracts/emissions.js";
 import {
   applyEmission,
   applyInbound,
@@ -62,6 +62,7 @@ function invocation(): EmissionEnvelope {
     },
     body: {
       kind: "tool_invocation",
+      holder_workflow_id: `${universeId}/${start.sessionId}`,
       invocation: {
         invocation_id: invocationId,
         tool_id: "channels.message_send.v1",

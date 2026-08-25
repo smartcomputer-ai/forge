@@ -2,7 +2,6 @@ export * from "./channel.js";
 export * from "./connector.js";
 export * from "./control-plane.js";
 export * from "./delivery.js";
-export * from "./emissions.js";
 export * from "./managed-session.js";
 export * from "./media.js";
 export * from "./presence.js";

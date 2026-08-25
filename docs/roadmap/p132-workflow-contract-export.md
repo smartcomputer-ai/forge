@@ -2,8 +2,12 @@
 
 **Status**
 
-- Proposed 2026-08-24, out of the fleet-vs-bots follow-up review of how the
-  platform tier reaches core. Not started.
+- Implemented 2026-08-25. Rust now exports and staleness-checks the schema,
+  manifest/vectors, and integrator reference; the TypeScript client ships the
+  pure `@lightspeed/agent-client/workflow` subpath; Bots and Channels consume
+  it and their handwritten emission contracts and workflow-id ports are gone.
+  The client vector suite, both platform unit suites, and the Bots/Channels
+  Temporal integration suites pass after cutover.
 - Builds on P100/P100b/P106 (emission spine, producer authorization,
   push/pull dispatch, start-on-call recipes) and P124 (generated contract
   enforcement across languages). P124 already asked for this in one line —

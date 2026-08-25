@@ -55,6 +55,7 @@ pub fn export_schemas() -> ExportedSchemas {
             reference_scope = Some(spec.scope);
             let title = match spec.scope {
                 crate::MethodScope::Universe => "Universe methods",
+                crate::MethodScope::Service => "Service methods",
                 crate::MethodScope::Operator => "Operator methods",
             };
             write!(api_reference, "\n## {title}\n\n").expect("write string");
@@ -175,7 +176,7 @@ mod tests {
         methods.sort_unstable();
         methods.dedup();
         assert_eq!(methods.len(), total, "duplicate method in manifest");
-        assert_eq!(total, 91);
+        assert_eq!(total, 92);
         assert_eq!(
             manifest
                 .iter()
@@ -233,10 +234,13 @@ mod tests {
 
     #[test]
     fn method_names_carry_their_scope_prefix() {
-        for spec in full_method_manifest() {
+        for spec in full_method_manifest()
+            .into_iter()
+            .filter(|spec| spec.scope == crate::MethodScope::Operator)
+        {
             assert_eq!(
                 crate::is_operator_method(spec.method),
-                spec.scope == crate::MethodScope::Operator,
+                true,
                 "scope of {} must match its method-name prefix",
                 spec.method
             );

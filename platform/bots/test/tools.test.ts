@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { LightspeedRpcError } from "@lightspeed/agent-client";
+import { sessionWorkflowId } from "@lightspeed/agent-client/workflow";
 import { parseTriggerPutArgs } from "../src/activities/tools.js";
 import {
   deliveryInputItems,
@@ -13,7 +14,6 @@ import {
   BOT_TOOL_REPLY_DEADLINE_MS,
   BOT_TOOLS_REVISION,
   botWorkflowTools,
-  lightspeedSessionWorkflowId,
 } from "../src/contracts/bots.js";
 
 const universeId = "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f";
@@ -141,10 +141,10 @@ describe("bot tool declarations", () => {
   });
 
   it("derives the core session workflow id for replies", () => {
-    expect(lightspeedSessionWorkflowId(universeId, "bot:v1:triage")).toBe(
+    expect(sessionWorkflowId(universeId, "bot:v1:triage")).toBe(
       `${universeId}/bot:v1:triage`,
     );
-    expect(() => lightspeedSessionWorkflowId(universeId, "a/b")).toThrow(TypeError);
+    expect(() => sessionWorkflowId(universeId, "a/b")).toThrow(TypeError);
   });
 });
 

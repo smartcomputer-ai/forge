@@ -242,7 +242,7 @@ pub struct PendingSourceResolution {
 pub const WORKFLOW_TOOL_RECOVERY_QUERY: &str = "workflow_tool_recovery";
 
 /// Result shape of [`WORKFLOW_TOOL_RECOVERY_QUERY`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkflowToolRecoveryResult {
     #[serde(default)]
     pub resolutions: BTreeMap<String, engine::PromiseResolution>,
@@ -252,13 +252,16 @@ pub struct WorkflowToolRecoveryResult {
 /// resolves each keyed completion promise by emitting `SourceResolution`
 /// bodies to the holder workflow through the fixed `deliver_emission`
 /// signal, using its own execution id as the producer workflow id.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct WorkflowToolStartArgs {
     pub universe_id: uuid::Uuid,
     pub holder_workflow_id: String,
     pub execution_id: String,
     pub invocation: engine::WorkflowToolInvocation,
 }
+
+/// Prefix of every start-on-call recipe fingerprint.
+pub const WORKFLOW_TOOL_RECIPE_FINGERPRINT_PREFIX: &str = "wtr:sha256:";
 
 /// Canonical fingerprint over the raw recipe bytes; trusted managed-session
 /// creators compute it when declaring a start binding and the start
@@ -267,14 +270,17 @@ pub fn workflow_tool_recipe_fingerprint(recipe_bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(recipe_bytes);
-    format!("wtr:sha256:{}", hex::encode(hasher.finalize()))
+    format!(
+        "{WORKFLOW_TOOL_RECIPE_FINGERPRINT_PREFIX}{}",
+        hex::encode(hasher.finalize())
+    )
 }
 
 /// Recipe format 1: a JSON object naming the plugin workflow type and task
 /// queue. `recipe_format` identifies this codec, never a feature or plugin.
 pub const WORKFLOW_TOOL_RECIPE_FORMAT_V1: u32 = 1;
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkflowToolRecipeV1 {
     pub workflow_type: String,

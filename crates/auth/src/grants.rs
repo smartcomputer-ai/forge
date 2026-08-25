@@ -35,6 +35,17 @@ pub enum AuthGrantStatus {
     Failed,
 }
 
+/// Whether a grant may only be resolved inside trusted runtime adapters or
+/// may also be leased to an authenticated first-party service worker.
+/// Exposure is immutable for the lifetime of a grant.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthGrantExposure {
+    #[default]
+    Brokered,
+    Retrievable,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrincipalKind {
@@ -81,6 +92,8 @@ pub struct AuthGrantRecord {
     pub grant_id: AuthGrantId,
     pub provider_id: String,
     pub provider_kind: AuthProviderKind,
+    #[serde(default)]
+    pub exposure: AuthGrantExposure,
     pub principal: PrincipalRef,
     pub display_name: Option<String>,
     pub subject_hint: Option<String>,
@@ -104,6 +117,10 @@ pub struct AuthGrantRecord {
     /// repository selection. Must be a JSON object; never secret values.
     #[serde(default = "empty_metadata")]
     pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub last_leased_at_ms: Option<i64>,
+    #[serde(default)]
+    pub lease_count: u64,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -130,6 +147,9 @@ impl AuthGrantRecord {
                 message: "grant metadata must be a JSON object".to_owned(),
             });
         }
+        if let Some(last_leased_at_ms) = self.last_leased_at_ms {
+            validate_nonnegative_i64(last_leased_at_ms, "last_leased_at_ms")?;
+        }
         validate_nonnegative_i64(self.created_at_ms, "created_at_ms")?;
         validate_nonnegative_i64(self.updated_at_ms, "updated_at_ms")?;
         if self.updated_at_ms < self.created_at_ms {
@@ -149,6 +169,8 @@ pub struct CreateAuthGrantRecord {
     pub grant_id: AuthGrantId,
     pub provider_id: String,
     pub provider_kind: AuthProviderKind,
+    #[serde(default)]
+    pub exposure: AuthGrantExposure,
     pub principal: PrincipalRef,
     pub display_name: Option<String>,
     pub subject_hint: Option<String>,
@@ -170,6 +192,7 @@ impl CreateAuthGrantRecord {
             grant_id: self.grant_id,
             provider_id: self.provider_id,
             provider_kind: self.provider_kind,
+            exposure: self.exposure,
             principal: self.principal,
             display_name: self.display_name,
             subject_hint: self.subject_hint,
@@ -181,6 +204,8 @@ impl CreateAuthGrantRecord {
             expires_at_ms: self.expires_at_ms,
             status: self.status,
             metadata: self.metadata,
+            last_leased_at_ms: None,
+            lease_count: 0,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.created_at_ms,
         }
@@ -235,6 +260,22 @@ pub trait AuthGrantStore: Send + Sync {
         refresh: AuthGrantTokenRefresh,
     ) -> Result<AuthGrantRecord, AuthRegistryError>;
 
+    /// Record the expiry of a token minted on demand without persisting the
+    /// token itself (for example a GitHub App installation token).
+    async fn record_grant_mint_expiry(
+        &self,
+        grant_id: &AuthGrantId,
+        expires_at_ms: i64,
+        updated_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError>;
+
+    /// Atomically record one successful service lease.
+    async fn record_grant_lease(
+        &self,
+        grant_id: &AuthGrantId,
+        leased_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError>;
+
     async fn delete_grant(
         &self,
         grant_id: &AuthGrantId,
@@ -250,6 +291,7 @@ mod tests {
             grant_id: AuthGrantId::new(grant_id),
             provider_id: "static".to_owned(),
             provider_kind: AuthProviderKind::StaticBearer,
+            exposure: AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: Some("CRM token".to_owned()),
             subject_hint: None,
@@ -270,6 +312,22 @@ mod tests {
         let record = create_request("authgrant_1").into_record();
 
         record.validate().expect("valid grant record");
+    }
+
+    #[test]
+    fn legacy_grant_records_default_to_brokered_without_lease_audit() {
+        let record = create_request("authgrant_1").into_record();
+        let mut value = serde_json::to_value(record).expect("serialize grant");
+        let object = value.as_object_mut().expect("grant object");
+        object.remove("exposure");
+        object.remove("last_leased_at_ms");
+        object.remove("lease_count");
+
+        let decoded: AuthGrantRecord = serde_json::from_value(value).expect("decode legacy grant");
+
+        assert_eq!(decoded.exposure, AuthGrantExposure::Brokered);
+        assert_eq!(decoded.last_leased_at_ms, None);
+        assert_eq!(decoded.lease_count, 0);
     }
 
     #[test]

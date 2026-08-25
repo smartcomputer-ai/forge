@@ -41,7 +41,7 @@ use temporal_server::{
 use temporal_workflow::{
     AgentSessionWorkflow, DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET,
     WORKFLOW_TOOL_RECOVERY_QUERY, WorkflowToolRecipeV1, WorkflowToolRecoveryResult,
-    WorkflowToolStartArgs, connect_temporal, workflow_tool_recipe_fingerprint,
+    WorkflowToolStartArgs, compose_workflow_id, connect_temporal, workflow_tool_recipe_fingerprint,
 };
 use temporalio_client::{Client, WorkflowStartOptions, WorkflowTerminateOptions};
 use temporalio_common::worker::WorkerTaskTypes;
@@ -98,7 +98,7 @@ impl TestBoundPluginWorkflow {
             let envelopes = ctx.state_mut(|state| std::mem::take(&mut state.inbox));
             for envelope in envelopes {
                 match envelope.body {
-                    EmissionBody::ToolInvocation { invocation } => {
+                    EmissionBody::ToolInvocation { invocation, .. } => {
                         // Receiver dedup is invocation-id keying of the
                         // plugin's own state: a duplicate push is a no-op.
                         let fresh = ctx.state_mut(|state| {
@@ -216,7 +216,7 @@ impl TestSelfReceiverControllerWorkflow {
             let envelopes = ctx.state_mut(|state| std::mem::take(&mut state.inbox));
             for envelope in envelopes {
                 match envelope.body {
-                    EmissionBody::ToolInvocation { invocation } => {
+                    EmissionBody::ToolInvocation { invocation, .. } => {
                         let invocation_id = invocation.invocation_id.as_str().to_owned();
                         let fresh = ctx.state_mut(|state| {
                             if let std::collections::btree_map::Entry::Vacant(e) =
@@ -1199,6 +1199,7 @@ async fn workflow_tool_controller_self_receiver_resolves_before_run_terminal() -
                     session_id.clone(),
                     engine::EventSeq::new(999),
                     invocation,
+                    compose_workflow_id(universe_id, &session_id),
                 ),
                 temporalio_client::WorkflowSignalOptions::default(),
             )
@@ -1673,6 +1674,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
             session_id.clone(),
             engine::EventSeq::new(999),
             synthetic_invocation,
+            compose_workflow_id(universe_id, &session_id),
         );
         for _ in 0..2 {
             plugin_handle

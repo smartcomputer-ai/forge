@@ -1,5 +1,5 @@
 import { defineQuery, defineSignal, setHandler, condition } from "@temporalio/workflow";
-import type { EmissionEnvelope } from "../src/contracts/emissions.js";
+import type { EmissionEnvelope } from "@lightspeed/agent-client/workflow";
 
 export { channelSessionWorkflowV1 } from "../src/workflows/channel-session.js";
 

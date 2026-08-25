@@ -259,13 +259,6 @@ export function botPerEventSessionId(botName: string, eventId: string): string {
   return `bot:v1:${botName}:e-${digest(eventId).slice(0, 12)}`;
 }
 
-/** Workflow id of the core session workflow; replies to joined tools signal it directly. */
-export function lightspeedSessionWorkflowId(universeId: string, sessionId: string): string {
-  requireUniverse(universeId);
-  if (!sessionId || sessionId.includes("/")) throw new TypeError("invalid session id");
-  return `${universeId.toLowerCase()}/${sessionId}`;
-}
-
 export function botScheduleId(universeId: string, botName: string, triggerName: string): string {
   requireUniverse(universeId);
   requireName(botName);

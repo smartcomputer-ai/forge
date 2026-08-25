@@ -817,7 +817,10 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
     );
     assert!(matches!(
         &pending.envelope.body,
-        engine::EmissionBody::ToolInvocation { invocation: delivered }
+        engine::EmissionBody::ToolInvocation {
+            invocation: delivered,
+            ..
+        }
             if delivered == &invocation
     ));
 
