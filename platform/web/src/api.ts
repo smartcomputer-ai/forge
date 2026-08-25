@@ -339,6 +339,19 @@ export type EnvironmentTemplate = EnvironmentTemplateView;
 export type EnvironmentCredentialSource = EnvironmentCredentialSourceView;
 export type EnvironmentCredential = EnvironmentCredentialView;
 
+/// Sub-agent lineage (P134): who delegated the session, under which root,
+/// at what depth, from which pinned profile revision. Provenance only.
+export interface SessionOrigin {
+  kind: "subagent";
+  parentSessionId: string;
+  parentRunId: string;
+  rootSessionId: string;
+  depth: number;
+  invocationId: string;
+  agent: { profileId: string; revision: number };
+  limits: { maxDepth: number; maxDescendants: number; maxConcurrent: number; deadlineMs: number };
+}
+
 export interface SessionSummary {
   id: string;
   displayName?: string | null;
@@ -346,6 +359,7 @@ export interface SessionSummary {
   updatedAtMs: number;
   lifecycleStatus: "new" | "open" | "closed";
   managed: boolean;
+  origin?: SessionOrigin | null;
 }
 
 export interface SessionManagement {
@@ -378,6 +392,7 @@ export interface SessionView {
   config?: Record<string, unknown> | null;
   configRevision: number;
   management?: SessionManagement | null;
+  origin?: SessionOrigin | null;
   /// Every run of the session — completed, the active one, and runs queued
   /// behind it — straight from the engine. Authoritative for run state; the
   /// event tail is the live, incremental view.
@@ -671,6 +686,23 @@ export interface BotManagedSession {
   kind: "main" | "keyed" | "event";
   lastActiveAtMs?: number;
 }
+
+/// Sub-agent descendants of one bot session (P134 lineage), read from core by
+/// the platform server beside the controller state.
+export interface BotSessionLineage {
+  open: number;
+  total: number;
+  children: Array<{
+    id: string;
+    displayName: string | null;
+    lifecycleStatus: "new" | "open" | "closed";
+    profileId: string | null;
+    depth: number;
+    updatedAtMs: number;
+  }>;
+}
+
+export type BotLineage = Record<string, BotSessionLineage>;
 
 export interface BotState {
   botName: string;

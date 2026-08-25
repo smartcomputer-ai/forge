@@ -304,12 +304,17 @@ export function botRoutes(ctx: AppContext) {
     const handle = temporal.workflow.getHandle(
       botWorkflowId(found.access.universe.lightspeedUniverseId, found.bot.name),
     );
+    let state: BotSnapshot;
     try {
-      const state = await handle.query<BotSnapshot>(BOT_STATE_QUERY);
-      return c.json({ state });
+      state = await handle.query<BotSnapshot>(BOT_STATE_QUERY);
     } catch (error) {
       return c.json({ error: "bot controller unavailable", failure: errorMessage(error) }, 503);
     }
+    // Sub-agent lineage (P134): the controller sees only its own sessions;
+    // their delegated descendants are read from core by root. Best effort —
+    // a core outage must not hide the controller state.
+    const lineage = await botSessionLineage(engineClientFor(ctx, found.access.universe), state);
+    return c.json({ state, lineage });
   });
 
   byId.post("/:id/events", async (c) => {
@@ -490,3 +495,52 @@ function configErrorResponse(
   }
   return c.json({ error: "bot configuration failed", failure: errorMessage(error) }, 502);
 }
+
+/// Descendant sessions per bot session, keyed by the bot session id: open and
+/// lifetime counts plus a bounded child list for the UI.
+export interface BotSessionLineage {
+  open: number;
+  total: number;
+  children: Array<{
+    id: string;
+    displayName: string | null;
+    lifecycleStatus: "new" | "open" | "closed";
+    profileId: string | null;
+    depth: number;
+    updatedAtMs: number;
+  }>;
+}
+
+async function botSessionLineage(
+  engine: ReturnType<typeof engineClientFor>,
+  state: BotSnapshot,
+): Promise<Record<string, BotSessionLineage>> {
+  const entries = await Promise.all(
+    state.sessions.map(async (session) => {
+      try {
+        const response = await engine.call("session/list", {
+          rootSessionId: session.sessionId,
+          limit: 200,
+        });
+        const sessions = response.result.sessions ?? [];
+        const lineage: BotSessionLineage = {
+          open: sessions.filter((child) => child.lifecycleStatus !== "closed").length,
+          total: sessions.length,
+          children: sessions.slice(0, 50).map((child) => ({
+            id: child.id,
+            displayName: child.displayName ?? null,
+            lifecycleStatus: child.lifecycleStatus,
+            profileId: child.origin?.agent.profileId ?? null,
+            depth: child.origin?.depth ?? 1,
+            updatedAtMs: child.updatedAtMs,
+          })),
+        };
+        return [session.sessionId, lineage] as const;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null));
+}
+

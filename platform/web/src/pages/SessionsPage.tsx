@@ -16,6 +16,7 @@ import {
   type ProfileSource,
   type ProfileSummary,
   type SessionListPage,
+  type SessionOrigin,
   type SessionRunAccepted,
   SessionRunCancelled,
   SessionRunSteered,
@@ -175,11 +176,13 @@ function SessionList({
   });
   const [createOpen, setCreateOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(true);
+  const [showSubagents, setShowSubagents] = useState(true);
 
   const allSessions = pages.data?.pages.flatMap((page) => page.sessions) ?? [];
-  const sessions = showClosed
-    ? allSessions
-    : allSessions.filter((session) => session.lifecycleStatus !== "closed");
+  const sessions = allSessions
+    .filter((session) => showClosed || session.lifecycleStatus !== "closed")
+    .filter((session) => showSubagents || !session.origin);
+  const tree = buildSessionTree(sessions);
 
   return (
     <>
@@ -211,6 +214,12 @@ function SessionList({
               >
                 Show closed sessions
               </DropdownMenuCheckboxItem>
+              <DropdownMenuCheckboxItem
+                checked={showSubagents}
+                onCheckedChange={(checked) => setShowSubagents(checked === true)}
+              >
+                Show sub-agent sessions
+              </DropdownMenuCheckboxItem>
             </DropdownMenuGroup>
           </DropdownMenuContent>
         </DropdownMenu>
@@ -239,13 +248,8 @@ function SessionList({
           </p>
         )}
         <ul>
-          {sessions.map((session) => (
-            <SessionListItem
-              key={session.id}
-              session={session}
-              slug={slug}
-              active={session.id === activeId}
-            />
+          {tree.map((node) => (
+            <SessionTreeItem key={node.session.id} node={node} slug={slug} activeId={activeId} depth={0} />
           ))}
         </ul>
         {pages.hasNextPage && (
@@ -272,16 +276,63 @@ function SessionList({
   );
 }
 
+type SessionNode = { session: SessionSummary; children: SessionNode[] };
+
+/// Group sub-agent sessions under their parent when the parent is in the
+/// loaded page set (P134 lineage). Children whose parent is not loaded stay
+/// at the top level and still carry their sub-agent badge; list order (most
+/// recently updated first) is preserved at every level.
+function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
+  const byId = new Map(sessions.map((session) => [session.id, { session, children: [] as SessionNode[] }]));
+  const roots: SessionNode[] = [];
+  for (const node of byId.values()) {
+    const parentId = node.session.origin?.parentSessionId;
+    const parent = parentId ? byId.get(parentId) : undefined;
+    if (parent && parent !== node) parent.children.push(node);
+    else roots.push(node);
+  }
+  return roots;
+}
+
+function SessionTreeItem({
+  node,
+  slug,
+  activeId,
+  depth,
+}: {
+  node: SessionNode;
+  slug: string;
+  activeId: string | undefined;
+  depth: number;
+}) {
+  return (
+    <>
+      <SessionListItem
+        session={node.session}
+        slug={slug}
+        active={node.session.id === activeId}
+        depth={depth}
+      />
+      {node.children.map((child) => (
+        <SessionTreeItem key={child.session.id} node={child} slug={slug} activeId={activeId} depth={depth + 1} />
+      ))}
+    </>
+  );
+}
+
 function SessionListItem({
   session,
   slug,
   active,
+  depth = 0,
 }: {
   session: SessionSummary;
   slug: string;
   active: boolean;
+  depth?: number;
 }) {
   const botManaged = session.managed && session.id.startsWith("bot:v1:");
+  const origin = session.origin ?? null;
   return (
     <li>
       <NavLink
@@ -290,11 +341,21 @@ function SessionListItem({
           "flex flex-col gap-0.5 border-b px-4 py-2.5 text-sm hover:bg-muted/50",
           active && "bg-muted",
         )}
+        style={depth > 0 ? { paddingLeft: `${1 + depth * 1.25}rem` } : undefined}
       >
         <span className="flex min-w-0 items-center gap-2">
+          {depth > 0 && <span className="shrink-0 text-muted-foreground">↳</span>}
           <span className="truncate font-medium">
             {session.displayName ?? session.id.slice(0, 18)}
           </span>
+          {origin && (
+            <Badge
+              variant="outline"
+              title={`Sub-agent of ${origin.parentSessionId} (depth ${origin.depth}, profile ${origin.agent.profileId} rev ${origin.agent.revision})`}
+            >
+              sub-agent
+            </Badge>
+          )}
           {session.lifecycleStatus === "closed" && (
             <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
               closed
@@ -1235,6 +1296,13 @@ export function SessionDetail({
           {sessionIdCopied ? <Check /> : <Copy />}
         </Button>
       </header>
+      <SessionLineage
+        universeId={universeId}
+        slug={slug}
+        sessionId={sessionId}
+        origin={session.data?.origin ?? null}
+        runRevision={runRevision}
+      />
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
@@ -1418,6 +1486,69 @@ function SessionScrollFollower({
   }, [ready, entries, pending, activeRun, scrollable.end, scrollToEnd]);
 
   return null;
+}
+
+/// Sub-agent lineage strip (P134): where this session came from and the
+/// children it delegated to. Children are re-read whenever the run revision
+/// moves, since delegations appear and close mid-run.
+function SessionLineage({
+  universeId,
+  slug,
+  sessionId,
+  origin,
+  runRevision,
+}: {
+  universeId: string;
+  slug: string;
+  sessionId: string;
+  origin: SessionOrigin | null;
+  runRevision: number;
+}) {
+  const children = useQuery({
+    queryKey: ["session-children", universeId, sessionId, runRevision],
+    queryFn: () =>
+      api<SessionListPage>(
+        "GET",
+        `/api/v1/universes/${universeId}/sessions?limit=50&parentSessionId=${encodeURIComponent(sessionId)}`,
+      ),
+  });
+  const list = children.data?.sessions ?? [];
+  if (!origin && list.length === 0) return null;
+  return (
+    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
+      {origin && (
+        <span className="flex min-w-0 items-center gap-1">
+          <span>Sub-agent of</span>
+          <NavLink to={`/u/${slug}/sessions/${origin.parentSessionId}`} className="truncate font-mono text-foreground hover:underline">
+            {origin.parentSessionId.slice(0, 18)}…
+          </NavLink>
+          <span>
+            · {origin.agent.profileId} (rev {origin.agent.revision}) · depth {origin.depth}
+            {origin.rootSessionId !== origin.parentSessionId ? ` · root ${origin.rootSessionId.slice(0, 12)}…` : ""}
+          </span>
+        </span>
+      )}
+      {list.length > 0 && (
+        <span className="flex min-w-0 flex-wrap items-center gap-1">
+          <span>Sub-agents ({list.length}{children.data?.nextCursor ? "+" : ""}):</span>
+          {list.map((child) => (
+            <NavLink
+              key={child.id}
+              to={`/u/${slug}/sessions/${child.id}`}
+              className={cn(
+                "rounded-full border px-2 py-0.5 font-mono text-foreground hover:bg-muted",
+                child.lifecycleStatus === "closed" && "text-muted-foreground",
+              )}
+              title={`${child.id} · ${child.origin?.agent.profileId ?? "sub-agent"} · ${child.lifecycleStatus}`}
+            >
+              {child.displayName ?? child.id.slice(0, 14)}
+              {child.lifecycleStatus !== "closed" ? " ●" : ""}
+            </NavLink>
+          ))}
+        </span>
+      )}
+    </div>
+  );
 }
 
 function relativeTime(ms: number): string {

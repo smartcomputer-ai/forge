@@ -2,7 +2,8 @@ import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { NavLink, useParams } from "react-router-dom";
-import { api, type Bot, type BotListItem, type BotState } from "@/api";
+import { api, type Bot, type BotListItem, type BotLineage,
+  type BotState } from "@/api";
 import { BotDetail } from "@/components/bot/detail";
 import { CreateBotDialog } from "@/components/bot/create-bot-dialog";
 import { BotFace } from "@/components/icons/bot";
@@ -150,7 +151,7 @@ function BotWorkspace({
   });
   const state = useQuery({
     queryKey: ["bot-state", botId],
-    queryFn: () => api<{ state: BotState }>("GET", `/api/v1/bots/${botId}/state`),
+    queryFn: () => api<{ state: BotState; lineage?: BotLineage }>("GET", `/api/v1/bots/${botId}/state`),
     refetchInterval: 3_000,
     retry: true,
   });
@@ -165,6 +166,7 @@ function BotWorkspace({
       slug={slug}
       bot={bot.data.bot}
       state={state.data?.state}
+      {...(state.data?.lineage ? { lineage: state.data.lineage } : {})}
       {...(state.error ? { stateError: state.error.message } : {})}
       manage={manage}
     />

@@ -19,10 +19,12 @@ import {
   type BotEventEnvelope,
   type BotEventPage,
   type BotRecentEvent,
+  type BotLineage,
   type BotState,
   type ProfileDocument,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { BotSettingsDialog } from "./settings-dialog";
@@ -37,12 +39,14 @@ export function BotDetail({
   slug,
   bot,
   state,
+  lineage,
   stateError,
   manage,
 }: {
   slug: string;
   bot: Bot;
   state?: BotState;
+  lineage?: BotLineage;
   stateError?: string;
   manage: boolean;
 }) {
@@ -126,6 +130,7 @@ export function BotDetail({
           {view === "overview" ? (
             <BotOverview
               slug={slug}
+              lineage={lineage}
               bot={bot}
               state={state}
               stateError={stateError}
@@ -168,12 +173,14 @@ function BotOverview({
   slug,
   bot,
   state,
+  lineage,
   stateError,
   manage,
 }: {
   slug: string;
   bot: Bot;
   state?: BotState;
+  lineage?: BotLineage;
   stateError?: string;
   manage: boolean;
 }) {
@@ -278,26 +285,57 @@ function BotOverview({
         </DetailSection>
       )}
 
-      <DetailSection title="Sessions" description="Runtime sessions currently managed by this bot.">
+      <DetailSection
+        title="Sessions"
+        description="Runtime sessions currently managed by this bot, with the sub-agents they delegated to."
+      >
         {state ? state.sessions.map((session) => {
           const isMain = session.kind === "main";
           const ready = !isMain || state.sessionReady;
+          const descendants = lineage?.[session.sessionId];
           return (
             <div
               key={session.sessionId}
-              className="flex min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-md border p-2 text-xs"
+              className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs"
             >
-              <span className="min-w-0 flex-1">
-                <code className="block truncate">{session.sessionId}</code>
-                <span className="text-muted-foreground">
-                  {isMain ? "Main session" : session.kind === "keyed" ? `Key: ${session.label}` : session.label}
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="min-w-0 flex-1">
+                  <code className="block truncate">{session.sessionId}</code>
+                  <span className="text-muted-foreground">
+                    {isMain ? "Main session" : session.kind === "keyed" ? `Key: ${session.label}` : session.label}
+                  </span>
                 </span>
-              </span>
-              <Badge variant={ready ? "secondary" : "outline"}>{ready ? "ready" : "starting"}</Badge>
-              {ready && (
-                <Button variant="outline" size="xs" render={<Link to={`/u/${slug}/sessions/${session.sessionId}`} />}>
-                  Open <ArrowUpRight data-icon="inline-end" />
-                </Button>
+                {descendants && descendants.total > 0 && (
+                  <Badge variant="outline" title="Sub-agent sessions under this session: open / lifetime">
+                    {descendants.open}/{descendants.total} sub-agents
+                  </Badge>
+                )}
+                <Badge variant={ready ? "secondary" : "outline"}>{ready ? "ready" : "starting"}</Badge>
+                {ready && (
+                  <Button variant="outline" size="xs" render={<Link to={`/u/${slug}/sessions/${session.sessionId}`} />}>
+                    Open <ArrowUpRight data-icon="inline-end" />
+                  </Button>
+                )}
+              </div>
+              {descendants && descendants.children.length > 0 && (
+                <ul className="mt-2 flex flex-wrap gap-1 border-t pt-2">
+                  {descendants.children.map((child) => (
+                    <li key={child.id}>
+                      <Link
+                        to={`/u/${slug}/sessions/${child.id}`}
+                        className={cn(
+                          "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono hover:bg-muted",
+                          child.lifecycleStatus === "closed" && "text-muted-foreground",
+                        )}
+                        title={`${child.id} · ${child.profileId ?? "sub-agent"} · depth ${child.depth} · ${child.lifecycleStatus}`}
+                      >
+                        {"↳ ".repeat(Math.max(0, child.depth - 1))}
+                        {child.displayName ?? child.id.slice(0, 14)}
+                        {child.lifecycleStatus !== "closed" ? " ●" : ""}
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
               )}
             </div>
           );

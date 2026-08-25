@@ -23,7 +23,21 @@
   `SubmitMessage`, the `MessageBuffered`/`MessageConsumedByAwait`/
   `MessagePromotedToRun`/`MessageCancelled` events, `WakeReason::MailboxMessage`,
   `RunOrigin`, and the buffered-message state. The detached-promise follow-up
-  wakes an idle session with an ordinary `RequestRun`. Nothing open.
+  wakes an idle session with an ordinary `RequestRun`.
+- Lineage surfaces done 2026-08-25: the sessions list groups sub-agents
+  under their parent (badge, indent, "show sub-agent sessions" toggle) and
+  the session view carries a lineage strip (parent link, pinned profile,
+  depth; live children chips re-read on every run revision); the platform
+  session proxy forwards `rootSessionId`/`parentSessionId`. Bots: the
+  retention sweep closes a routed session's open descendants first (a busy
+  descendant defers the close), the activity feed records how many, and
+  `GET /bots/:id/state` returns per-session `lineage` (open/total counts and
+  a bounded child list) that the bot detail renders. The bot budget stays an
+  activation budget: descendants are visible, not yet counted.
+- Still open: the unit-level tests the Tests section lists that the live
+  suite does not cover (execution-workflow deadline, holder cancellation, and
+  recovery query; in-memory reservation limits; admission rejections;
+  `maxDescendants` live). Everything under Non-goals stays deferred by design.
 - Proposed 2026-08-25, from the fleet-vs-bots review
   (`later/pNNN-fleet-vs-bots.md`, direction C′) and a design discussion with
   Lukas the same day. Decisions taken there and fixed here: the agent menu is

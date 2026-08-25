@@ -97,8 +97,12 @@ export interface BotLightspeedActivities {
   startBotRun(input: StartBotRunInput): Promise<{ runId: string }>;
   steerBotRun(input: SteerBotRunInput): Promise<{ steered: boolean; runId?: string }>;
   appendBotContext(input: AppendBotContextInput): Promise<void>;
-  /** Close an idle routed session (non-force: a busy session is left alone). */
-  closeBotSession(input: ReadSessionInput): Promise<{ closed: boolean }>;
+  /**
+   * Close an idle routed session (non-force: a busy session is left alone)
+   * together with its open sub-agent descendants (P134 lineage). A busy
+   * descendant blocks the close; the sweep retries later.
+   */
+  closeBotSession(input: ReadSessionInput): Promise<{ closed: boolean; descendantsClosed?: number }>;
   readWorkflowToolInvocations(
     input: ReadWorkflowToolInvocationsInput,
   ): Promise<ReadWorkflowToolInvocationsResult>;
@@ -201,15 +205,33 @@ export function createBotLightspeedActivities(
 
     async closeBotSession(input) {
       const client = clientForUniverse(config, input.universeId);
+      // Descendants first: the bot cannot see below its own sessions except
+      // through lineage, and a routed session's sub-agents have no other
+      // owner once it goes.
+      let descendantsClosed = 0;
+      const descendants = await client.call("session/list", {
+        rootSessionId: input.sessionId,
+        limit: 200,
+      });
+      for (const child of descendants.result.sessions ?? []) {
+        if (child.lifecycleStatus === "closed") continue;
+        try {
+          await client.call("session/close", { sessionId: child.id });
+          descendantsClosed += 1;
+        } catch (error) {
+          if (error instanceof LightspeedRpcError) return { closed: false, descendantsClosed };
+          throw error;
+        }
+      }
       try {
         await client.call("session/close", { sessionId: input.sessionId });
       } catch (error) {
         // Active work or an already-closed session: report and let the
         // retention sweep try again later.
-        if (error instanceof LightspeedRpcError) return { closed: false };
+        if (error instanceof LightspeedRpcError) return { closed: false, descendantsClosed };
         throw error;
       }
-      return { closed: true };
+      return { closed: true, descendantsClosed };
     },
 
     async appendBotContext(input) {

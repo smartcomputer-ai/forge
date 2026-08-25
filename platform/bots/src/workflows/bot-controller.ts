@@ -798,13 +798,14 @@ export async function botControllerWorkflowV1(
       if (activeBySession.has(session.sessionId) || sidecarBySession.has(session.sessionId)) continue;
       if ((session.lastActiveAtMs ?? 0) + ttl > now) continue;
       let closed = false;
+      let descendantsClosed = 0;
       try {
-        closed = (
-          await activities.closeBotSession({
-            universeId: config.universeId,
-            sessionId: session.sessionId,
-          })
-        ).closed;
+        const result = await activities.closeBotSession({
+          universeId: config.universeId,
+          sessionId: session.sessionId,
+        });
+        closed = result.closed;
+        descendantsClosed = result.descendantsClosed ?? 0;
       } catch (error) {
         lastError = errorMessage(error);
       }
@@ -820,7 +821,9 @@ export async function botControllerWorkflowV1(
       const base = routedBase(session.sessionId);
       sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
       await record("session_closed", {
-        detail: `closed idle routed session ${session.sessionId} (${session.label})`,
+        detail:
+          `closed idle routed session ${session.sessionId} (${session.label})` +
+          (descendantsClosed > 0 ? ` and ${descendantsClosed} sub-agent session(s)` : ""),
       });
     }
   }
