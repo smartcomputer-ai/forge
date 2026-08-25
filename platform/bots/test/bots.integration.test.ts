@@ -192,6 +192,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           runsStarted += 1;
           return { runId: `run_${runsStarted}` };
         },
+        countBotDescendantSessions: async () => ({ count: 0 }),
         readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
           nextSeq: afterSeq + 10,
           invocations: [],
@@ -239,7 +240,95 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(parked.eventsProcessed).toBe(1);
       expect(parked.pendingEventCount).toBe(1);
       expect(parked.runsToday).toBe(1);
+      expect(parked.descendantsToday).toBe(0);
       expect(runsStarted).toBe(1);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("counts sub-agent descendants against the daily run budget", async () => {
+    const budgetBotName = "budgeted-descendants";
+    let runsStarted = 0;
+    const counted: { sessionIds: string[]; sinceMs: number }[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async () => {
+          runsStarted += 1;
+          return { runId: `run_${runsStarted}` };
+        },
+        // The bot's first run delegated two sub-agents (lineage read from
+        // core); together with the run itself that spends the budget of 3.
+        countBotDescendantSessions: async (input: { sessionIds: string[]; sinceMs: number }) => {
+          counted.push(input);
+          return { count: runsStarted === 0 ? 0 : 2 };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: budgetBotName,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: 3,
+        enabled: true,
+      };
+      const first: BotEvent = { version: 1, id: "descendants-1", ref: eventRef };
+      const second: BotEvent = { version: 1, id: "descendants-2", ref: eventRef };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, budgetBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [first],
+      });
+      await handle.signal(BOT_EVENT_SIGNAL, second);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((active) => active.id === first.id),
+      );
+      await handle.signal(
+        "deliver_emission",
+        budgetTerminalEmission(budgetBotName, 1, botEventTerminalToken(first.id)),
+      );
+      const parked = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.controllerStatus === "budget_exhausted",
+      );
+      expect(parked.eventsProcessed).toBe(1);
+      expect(parked.pendingEventCount).toBe(1);
+      expect(parked.runsToday).toBe(1);
+      expect(parked.descendantsToday).toBe(2);
+      expect(runsStarted).toBe(1);
+      // The count is scoped to the bot's own sessions and to today.
+      const last = counted.at(-1);
+      expect(last?.sessionIds).toContain(parked.sessionId);
+      expect(new Date(last?.sinceMs ?? 0).toISOString().endsWith("T00:00:00.000Z")).toBe(true);
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

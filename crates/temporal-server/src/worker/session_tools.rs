@@ -2439,6 +2439,234 @@ mod tests {
         assert!(error.contains("requires an active environment"));
     }
 
+    /// The `agent_run` system binding as the gateway admits it: a
+    /// start-on-call recipe with joined completion.
+    async fn agent_run_binding(blobs: &InMemoryBlobStore) -> engine::WorkflowToolBinding {
+        let kind = tools::subagents::SubagentToolKind::Run;
+        let bundle = tools::subagents::subagent_tool_bundle(kind).expect("agent_run bundle");
+        for document in &bundle.documents {
+            blobs
+                .put_bytes(document.bytes.clone())
+                .await
+                .expect("put tool document");
+        }
+        let recipe = b"test subagent recipe".to_vec();
+        let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe);
+        let recipe_ref = blobs.put_bytes(recipe).await.expect("put subagent recipe");
+        engine::WorkflowToolBinding::admit(
+            uuid::Uuid::from_u128(1),
+            WorkflowToolDefinition {
+                tool_id: WorkflowToolId::new(kind.workflow_tool_id()),
+                revision: 1,
+                semantic_type: kind.semantic_type().to_owned(),
+                tool: bundle.spec,
+            },
+            engine::WorkflowToolTarget::Start {
+                start: engine::WorkflowStartRef {
+                    recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                    revision: 1,
+                    recipe_ref,
+                    recipe_fingerprint,
+                },
+            },
+            engine::WorkflowToolCompletion::Joined {
+                reply_schema_ref: None,
+                deadline_after_ms: engine::SUBAGENT_DEADLINE_CEILING_MS,
+            },
+        )
+        .expect("admit agent_run binding")
+    }
+
+    fn subagents_policy(agents: &[&str], limits: engine::SubagentLimits) -> engine::SubagentsFeature {
+        engine::SubagentsFeature {
+            agents: agents
+                .iter()
+                .map(|profile_id| engine::SubagentAgentConfig {
+                    profile_id: (*profile_id).to_owned(),
+                })
+                .collect(),
+            limits,
+            ..engine::SubagentsFeature::default()
+        }
+    }
+
+    async fn agent_run_batch(
+        blobs: &InMemoryBlobStore,
+        binding: &engine::WorkflowToolBinding,
+        arguments: &[u8],
+        policy: Option<engine::SubagentsFeature>,
+    ) -> ToolInvocationBatchRequest {
+        let arguments_ref = blobs
+            .put_bytes(arguments.to_vec())
+            .await
+            .expect("put agent arguments");
+        ToolInvocationBatchRequest {
+            session_id: SessionId::new("session-parent"),
+            run_id: RunId::new(7),
+            turn_id: TurnId::new(2),
+            batch_id: ToolBatchId::new(1),
+            active_environment_id: None,
+            environment_policy: None,
+            subagents_policy: policy,
+            workspace_links: Vec::new(),
+            calls: vec![engine::ToolInvocationRequest {
+                call_id: ToolCallId::new("call-agent-run"),
+                tool_name: binding.definition.tool.name.clone(),
+                arguments_ref,
+                workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
+                promise_control: None,
+            }],
+        }
+    }
+
+    async fn failure_text(blobs: &InMemoryBlobStore, result: &ToolInvocationResult) -> String {
+        assert_eq!(result.status, ToolCallStatus::Failed);
+        assert!(result.effects.is_empty(), "a refused call must not emit");
+        blobs
+            .read_text(result.error_ref.as_ref().expect("error ref"))
+            .await
+            .expect("read error")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_run_requires_the_subagents_grant() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let binding = agent_run_binding(&blobs).await;
+        let tools = SessionTools::new(blobs.clone(), Arc::new(TestCatalog::default()));
+        let request = agent_run_batch(
+            &blobs,
+            &binding,
+            br#"{"agent":"reviewer","input":"review PR 1"}"#,
+            None,
+        )
+        .await;
+
+        let outcome = tools
+            .invoke_batch(request)
+            .await
+            .expect("invoke agent_run")
+            .completed_result()
+            .expect("completed batch");
+        let error = failure_text(&blobs, &outcome.results[0]).await;
+        assert!(error.contains("requires the subagents grant"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_run_rejects_agents_outside_the_catalog_and_invalid_briefs() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let binding = agent_run_binding(&blobs).await;
+        let tools = SessionTools::new(blobs.clone(), Arc::new(TestCatalog::default()));
+        let policy = subagents_policy(&["reviewer", "planner"], engine::SubagentLimits::default());
+
+        let unlisted = tools
+            .invoke_batch(
+                agent_run_batch(
+                    &blobs,
+                    &binding,
+                    br#"{"agent":"intruder","input":"review PR 1"}"#,
+                    Some(policy.clone()),
+                )
+                .await,
+            )
+            .await
+            .expect("invoke unlisted agent")
+            .completed_result()
+            .expect("completed batch");
+        let error = failure_text(&blobs, &unlisted.results[0]).await;
+        assert!(
+            error.contains("intruder is not in this session's sub-agent catalog")
+                && error.contains("allowed: reviewer, planner"),
+            "{error}"
+        );
+
+        let blank = tools
+            .invoke_batch(
+                agent_run_batch(
+                    &blobs,
+                    &binding,
+                    br#"{"agent":"reviewer","input":"   "}"#,
+                    Some(policy),
+                )
+                .await,
+            )
+            .await
+            .expect("invoke blank brief")
+            .completed_result()
+            .expect("completed batch");
+        let error = failure_text(&blobs, &blank.results[0]).await;
+        assert!(error.contains("input must be a non-empty brief"), "{error}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn agent_run_pins_the_grant_and_parent_identity_in_the_execution_context() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let binding = agent_run_binding(&blobs).await;
+        let tools = SessionTools::new(blobs.clone(), Arc::new(TestCatalog::default()));
+        let limits = engine::SubagentLimits {
+            max_depth: 1,
+            max_descendants: 3,
+            max_concurrent: 2,
+            deadline_ms: 45_000,
+        };
+        let request = agent_run_batch(
+            &blobs,
+            &binding,
+            br#"{"agent":"reviewer","input":"review PR 1","label":"reviewer: PR 1"}"#,
+            Some(subagents_policy(&["reviewer"], limits)),
+        )
+        .await;
+
+        let first = tools
+            .invoke_batch(request.clone())
+            .await
+            .expect("invoke agent_run")
+            .completed_result()
+            .expect("completed batch");
+        assert_eq!(first.results[0].status, ToolCallStatus::Succeeded);
+        let effect = &first.results[0].effects[0];
+        assert_eq!(
+            effect.data.get("arguments_ref").map(String::as_str),
+            Some(request.calls[0].arguments_ref.as_str()),
+            "the model arguments stay in CAS untouched"
+        );
+        let context_ref = BlobRef::parse(
+            effect
+                .data
+                .get("execution_context_ref")
+                .expect("execution context ref")
+                .clone(),
+        )
+        .expect("valid execution context ref");
+        let context: SubagentExecutionContextV1 = serde_json::from_slice(
+            &blobs
+                .read_bytes(&context_ref)
+                .await
+                .expect("read execution context"),
+        )
+        .expect("decode execution context");
+        assert_eq!(
+            context,
+            SubagentExecutionContextV1::new("session-parent".to_owned(), 7, "reviewer".to_owned(), limits)
+        );
+        assert_eq!(context.version, SubagentExecutionContextV1::VERSION);
+
+        // Admission is idempotent per call identity; only the joined
+        // completion's wall-clock deadline moves between attempts.
+        let mut retried = tools
+            .invoke_batch(request)
+            .await
+            .expect("retry agent_run")
+            .completed_result()
+            .expect("completed retry");
+        let mut first = first;
+        for result in [&mut first, &mut retried] {
+            for effect in &mut result.results[0].effects {
+                assert!(effect.data.remove("completion_deadline_ms").is_some());
+            }
+        }
+        assert_eq!(retried, first);
+    }
+
     #[derive(Default)]
     struct TestCatalog {
         workspaces: Mutex<BTreeMap<VfsWorkspaceId, VfsWorkspaceRecord>>,

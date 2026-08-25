@@ -167,6 +167,10 @@ change, and not co-management — two controllers is a P100 non-goal.
 
 ### 6. Bot federation (from the fleet-vs-bots review)
 
+Specified 2026-08-26 in [P135](p135-bot-federation.md): both items below plus
+subscription triggers, deterministic replies, loop bounds, and a deferred
+bot-creation grant. The sketch stays as history.
+
 Two small platform-tier items, independent of the rest of this doc (see
 `later/pNNN-fleet-vs-bots.md`):
 

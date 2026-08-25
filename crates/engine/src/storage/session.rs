@@ -1195,6 +1195,252 @@ mod tests {
         ));
     }
 
+    fn subagent_origin(parent: &str, root: &str, depth: u32, limits: SubagentLimits) -> SessionOrigin {
+        SessionOrigin {
+            kind: SessionOriginKind::Subagent,
+            parent_session_id: SessionId::new(parent),
+            parent_run_id: 1,
+            root_session_id: SessionId::new(root),
+            depth,
+            invocation_id: format!("wti:sha256:{}", "a".repeat(64)),
+            profile_id: "reviewer".to_owned(),
+            profile_revision: 1,
+            limits,
+        }
+    }
+
+    async fn create_delegated(
+        store: &InMemorySessionStore,
+        session_id: &str,
+        origin: SessionOrigin,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new(session_id),
+                display_name: None,
+                origin: Some(origin),
+                created_at_ms: 1,
+            })
+            .await
+    }
+
+    async fn close_session(store: &InMemorySessionStore, session_id: &str) {
+        store
+            .append(AppendSessionEvents {
+                session_id: SessionId::new(session_id),
+                expected_head: None,
+                events: vec![lifecycle_opened_event(10), lifecycle_closed_event(11)],
+            })
+            .await
+            .expect("close session");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_reserves_delegated_sessions_against_root_limits() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let limits = SubagentLimits {
+            max_depth: 2,
+            max_descendants: 3,
+            max_concurrent: 2,
+            deadline_ms: 1_000,
+        };
+
+        create_delegated(&store, "child-a", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect("first child");
+        create_delegated(&store, "child-b", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect("second child");
+        // Two open descendants: the concurrency limit refuses a third even
+        // though the lifetime limit still has room.
+        let concurrent = create_delegated(&store, "child-c", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect_err("third open child");
+        assert_eq!(
+            concurrent,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxConcurrent,
+                max: 2,
+                actual: 2,
+            }
+        );
+
+        // Closing one frees its concurrency slot but not its lifetime slot.
+        close_session(&store, "child-a").await;
+        create_delegated(&store, "child-c", subagent_origin("child-b", "root", 2, limits))
+            .await
+            .expect("grandchild after a close");
+        let descendants = create_delegated(&store, "child-d", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect_err("fourth lifetime child");
+        assert_eq!(
+            descendants,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxDescendants,
+                max: 3,
+                actual: 3,
+            }
+        );
+        assert!(
+            store
+                .load_session(&SessionId::new("child-d"))
+                .await
+                .expect("load")
+                .is_none(),
+            "a refused reservation leaves no row"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_refuses_delegation_past_max_depth() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let limits = SubagentLimits {
+            max_depth: 1,
+            ..SubagentLimits::default()
+        };
+        create_delegated(&store, "child", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect("depth-1 child");
+        let too_deep = create_delegated(&store, "grandchild", subagent_origin("child", "root", 2, limits))
+            .await
+            .expect_err("depth-2 child");
+        assert_eq!(
+            too_deep,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxDepth,
+                max: 1,
+                actual: 2,
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_requires_the_parent_and_root_of_a_delegated_session() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let missing_parent = create_delegated(
+            &store,
+            "child",
+            subagent_origin("ghost", "root", 1, SubagentLimits::default()),
+        )
+        .await
+        .expect_err("missing parent");
+        assert_eq!(
+            missing_parent,
+            SessionStoreError::SessionNotFound {
+                session_id: SessionId::new("ghost"),
+            }
+        );
+        let missing_root = create_delegated(
+            &store,
+            "child",
+            subagent_origin("root", "ghost-root", 1, SubagentLimits::default()),
+        )
+        .await
+        .expect_err("missing root");
+        assert_eq!(
+            missing_root,
+            SessionStoreError::SessionNotFound {
+                session_id: SessionId::new("ghost-root"),
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_lists_by_root_and_by_parent() {
+        let store = InMemorySessionStore::new();
+        for root in ["root-a", "root-b"] {
+            store
+                .create_session(CreateSession {
+                    session_id: SessionId::new(root),
+                    display_name: None,
+                    origin: None,
+                    created_at_ms: 1,
+                })
+                .await
+                .expect("create root");
+        }
+        let limits = SubagentLimits::default();
+        create_delegated(&store, "a-child", subagent_origin("root-a", "root-a", 1, limits))
+            .await
+            .expect("a child");
+        create_delegated(&store, "a-grandchild", subagent_origin("a-child", "root-a", 2, limits))
+            .await
+            .expect("a grandchild");
+        create_delegated(&store, "b-child", subagent_origin("root-b", "root-b", 1, limits))
+            .await
+            .expect("b child");
+
+        let ids = |page: SessionListPage| {
+            let mut ids = page
+                .sessions
+                .iter()
+                .map(|record| record.session_id.as_str().to_owned())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let under_a = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: Some(SessionId::new("root-a")),
+                parent_session_id: None,
+            })
+            .await
+            .expect("list by root");
+        assert_eq!(ids(under_a), vec!["a-child", "a-grandchild"]);
+        let children_of_a = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: None,
+                parent_session_id: Some(SessionId::new("root-a")),
+            })
+            .await
+            .expect("list by parent");
+        assert_eq!(ids(children_of_a), vec!["a-child"]);
+        let everything = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: None,
+                parent_session_id: None,
+            })
+            .await
+            .expect("list all");
+        assert_eq!(everything.sessions.len(), 5, "roots have no origin and are listed only unfiltered");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn in_memory_session_store_sets_and_clears_display_name() {
         let store = InMemorySessionStore::new();

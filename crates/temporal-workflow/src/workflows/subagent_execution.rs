@@ -167,69 +167,22 @@ impl SubagentExecutionWorkflow {
         _ctx: &mut SyncWorkflowContext<Self>,
         envelope: engine::EmissionEnvelope,
     ) {
-        match envelope.body {
-            engine::EmissionBody::RunTerminal {
-                token,
-                run_id,
-                status,
-                output_ref,
-                failure_message_ref,
-            } => {
-                // The token is the reply promise id, unique to this
-                // invocation, so it identifies the child's run on its own.
-                // The child may finish before the prepare activity's result
-                // is recorded here, so the terminal must be accepted even
-                // when the child ref is not known yet; when it is known, the
-                // producer must be that child.
-                let expected_token = self
-                    .reply_promise_id
-                    .as_ref()
-                    .map(|promise| promise.as_str().to_owned());
-                let from_child = match (&envelope.producer, self.snapshot.child.as_ref()) {
-                    (engine::EmissionProducer::Session { session_id, .. }, Some(child)) => {
-                        session_id.as_str() == child.session_id && run_id.as_u64() == child.run_id
-                    }
-                    (engine::EmissionProducer::Session { .. }, None) => true,
-                    (engine::EmissionProducer::Workflow { .. }, _) => false,
-                };
-                if expected_token.as_deref() == Some(token.as_str())
-                    && from_child
-                    && self.pending_terminal.is_none()
-                {
-                    self.pending_terminal = Some(SubagentTerminal::Run {
-                        status,
-                        output_ref,
-                        failure_message_ref,
-                    });
-                    self.nudged = true;
-                }
+        let identity = SignalIdentity {
+            reply_promise_id: self.reply_promise_id.as_ref(),
+            holder_workflow_id: self.holder_workflow_id.as_deref(),
+            invocation_id: self.invocation_id.as_ref(),
+            child: self.snapshot.child.as_ref(),
+        };
+        match classify_emission(&identity, envelope) {
+            Some(SignalEffect::Terminal(terminal)) if self.pending_terminal.is_none() => {
+                self.pending_terminal = Some(terminal);
+                self.nudged = true;
             }
-            engine::EmissionBody::InvocationCancellation {
-                invocation_id,
-                completion_key,
-                ..
-            } => {
-                let from_holder = match &envelope.producer {
-                    engine::EmissionProducer::Session {
-                        universe_id,
-                        session_id,
-                        ..
-                    } => {
-                        self.holder_workflow_id.as_deref()
-                            == Some(crate::compose_workflow_id(*universe_id, session_id).as_str())
-                    }
-                    engine::EmissionProducer::Workflow { .. } => false,
-                };
-                if from_holder
-                    && self.invocation_id.as_ref() == Some(&invocation_id)
-                    && completion_key == engine::REPLY_COMPLETION_KEY
-                {
-                    self.holder_cancelled = true;
-                    self.nudged = true;
-                }
+            Some(SignalEffect::HolderCancelled) => {
+                self.holder_cancelled = true;
+                self.nudged = true;
             }
-            engine::EmissionBody::SourceResolution { .. }
-            | engine::EmissionBody::ToolInvocation { .. } => {}
+            Some(SignalEffect::Terminal(_)) | None => {}
         }
     }
 
@@ -240,15 +193,95 @@ impl SubagentExecutionWorkflow {
 
     #[query(name = "workflow_tool_recovery")]
     pub fn workflow_tool_recovery(&self, _ctx: &WorkflowContextView) -> WorkflowToolRecoveryResult {
-        let mut resolutions = std::collections::BTreeMap::new();
-        if let Some(resolution) = &self.snapshot.resolution {
-            resolutions.insert(
-                engine::REPLY_COMPLETION_KEY.to_owned(),
-                resolution.clone(),
-            );
-        }
-        WorkflowToolRecoveryResult { resolutions }
+        recovery_result(&self.snapshot)
     }
+}
+
+/// What the signal handler matches incoming emissions against. Everything
+/// but `child` is fixed at start; `child` is known only once the prepare
+/// activity's result has been recorded.
+pub(crate) struct SignalIdentity<'a> {
+    pub reply_promise_id: Option<&'a engine::PromiseId>,
+    pub holder_workflow_id: Option<&'a str>,
+    pub invocation_id: Option<&'a engine::WorkflowToolInvocationId>,
+    pub child: Option<&'a SubagentChildRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SignalEffect {
+    Terminal(SubagentTerminal),
+    HolderCancelled,
+}
+
+/// Pure acceptance rule for `deliver_emission`; `None` means the envelope
+/// is not addressed to this execution and is dropped.
+pub(crate) fn classify_emission(
+    identity: &SignalIdentity<'_>,
+    envelope: engine::EmissionEnvelope,
+) -> Option<SignalEffect> {
+    match envelope.body {
+        engine::EmissionBody::RunTerminal {
+            token,
+            run_id,
+            status,
+            output_ref,
+            failure_message_ref,
+        } => {
+            // The token is the reply promise id, unique to this invocation,
+            // so it identifies the child's run on its own. The child may
+            // finish before the prepare activity's result is recorded here,
+            // so the terminal must be accepted even when the child ref is
+            // not known yet; when it is known, the producer must be that
+            // child.
+            let expected_token = identity.reply_promise_id.map(|promise| promise.as_str());
+            let from_child = match (&envelope.producer, identity.child) {
+                (engine::EmissionProducer::Session { session_id, .. }, Some(child)) => {
+                    session_id.as_str() == child.session_id && run_id.as_u64() == child.run_id
+                }
+                (engine::EmissionProducer::Session { .. }, None) => true,
+                (engine::EmissionProducer::Workflow { .. }, _) => false,
+            };
+            (expected_token == Some(token.as_str()) && from_child).then_some(
+                SignalEffect::Terminal(SubagentTerminal::Run {
+                    status,
+                    output_ref,
+                    failure_message_ref,
+                }),
+            )
+        }
+        engine::EmissionBody::InvocationCancellation {
+            invocation_id,
+            completion_key,
+            ..
+        } => {
+            let from_holder = match &envelope.producer {
+                engine::EmissionProducer::Session {
+                    universe_id,
+                    session_id,
+                    ..
+                } => {
+                    identity.holder_workflow_id
+                        == Some(crate::compose_workflow_id(*universe_id, session_id).as_str())
+                }
+                engine::EmissionProducer::Workflow { .. } => false,
+            };
+            (from_holder
+                && identity.invocation_id == Some(&invocation_id)
+                && completion_key == engine::REPLY_COMPLETION_KEY)
+                .then_some(SignalEffect::HolderCancelled)
+        }
+        engine::EmissionBody::SourceResolution { .. }
+        | engine::EmissionBody::ToolInvocation { .. } => None,
+    }
+}
+
+/// The holder-side recovery view: the `reply` resolution once produced.
+pub(crate) fn recovery_result(snapshot: &SubagentExecutionSnapshot) -> WorkflowToolRecoveryResult {
+    let mut resolutions = std::collections::BTreeMap::new();
+    if let Some(resolution) = &snapshot.resolution {
+        resolutions.insert(engine::REPLY_COMPLETION_KEY.to_owned(), resolution.clone());
+    }
+    WorkflowToolRecoveryResult { resolutions }
 }
 
 enum WaitOutcome {
@@ -293,4 +326,182 @@ async fn close_child(
             activity_options(),
         )
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use engine::{
+        BlobRef, EmissionEnvelope, EventSeq, PromiseId, PromiseResolution, REPLY_COMPLETION_KEY,
+        RunId, RunStatus, SessionId, WorkflowToolInvocationId,
+    };
+
+    use super::*;
+
+    const UNIVERSE: uuid::Uuid = uuid::Uuid::from_u128(7);
+
+    fn parent() -> SessionId {
+        SessionId::new("parent-session")
+    }
+
+    fn holder_workflow_id() -> String {
+        crate::compose_workflow_id(UNIVERSE, &parent())
+    }
+
+    fn reply_promise() -> PromiseId {
+        PromiseId::new("promise_reply_1")
+    }
+
+    fn invocation_id() -> WorkflowToolInvocationId {
+        WorkflowToolInvocationId::new(format!("wti:sha256:{}", "a".repeat(64)))
+    }
+
+    fn child() -> SubagentChildRef {
+        SubagentChildRef {
+            session_id: "agent_child".to_owned(),
+            run_id: 1,
+            agent_profile_id: "reviewer".to_owned(),
+        }
+    }
+
+    fn run_terminal(session_id: &str, run_id: u64, token: &str) -> EmissionEnvelope {
+        EmissionEnvelope::run_terminal(
+            UNIVERSE,
+            SessionId::new(session_id),
+            EventSeq::new(9),
+            token.to_owned(),
+            RunId::new(run_id),
+            RunStatus::Completed,
+            Some(BlobRef::from_bytes(b"\"done\"")),
+            None,
+        )
+    }
+
+    fn cancellation(
+        session_id: &str,
+        invocation_id: WorkflowToolInvocationId,
+        key: &str,
+    ) -> EmissionEnvelope {
+        EmissionEnvelope::invocation_cancellation(
+            UNIVERSE,
+            SessionId::new(session_id),
+            EventSeq::new(10),
+            invocation_id,
+            key.to_owned(),
+            reply_promise(),
+        )
+    }
+
+    fn classify(child: Option<&SubagentChildRef>, envelope: EmissionEnvelope) -> Option<SignalEffect> {
+        let reply = reply_promise();
+        let holder = holder_workflow_id();
+        let invocation = invocation_id();
+        classify_emission(
+            &SignalIdentity {
+                reply_promise_id: Some(&reply),
+                holder_workflow_id: Some(holder.as_str()),
+                invocation_id: Some(&invocation),
+                child,
+            },
+            envelope,
+        )
+    }
+
+    fn expected_terminal() -> SignalEffect {
+        SignalEffect::Terminal(SubagentTerminal::Run {
+            status: RunStatus::Completed,
+            output_ref: Some(BlobRef::from_bytes(b"\"done\"")),
+            failure_message_ref: None,
+        })
+    }
+
+    #[test]
+    fn run_terminal_is_accepted_on_the_reply_token_before_the_child_is_known() {
+        let effect = classify(None, run_terminal("agent_child", 1, reply_promise().as_str()));
+        assert_eq!(effect, Some(expected_terminal()));
+    }
+
+    #[test]
+    fn run_terminal_requires_the_known_child_session_and_run() {
+        let known = child();
+        assert_eq!(
+            classify(Some(&known), run_terminal("agent_child", 1, reply_promise().as_str())),
+            Some(expected_terminal())
+        );
+        assert_eq!(
+            classify(Some(&known), run_terminal("agent_other", 1, reply_promise().as_str())),
+            None,
+            "another session's terminal must be dropped"
+        );
+        assert_eq!(
+            classify(Some(&known), run_terminal("agent_child", 2, reply_promise().as_str())),
+            None,
+            "another run of the child must be dropped"
+        );
+    }
+
+    #[test]
+    fn run_terminal_with_a_foreign_token_or_workflow_producer_is_dropped() {
+        assert_eq!(classify(None, run_terminal("agent_child", 1, "some-other-token")), None);
+        let mut from_workflow = run_terminal("agent_child", 1, reply_promise().as_str());
+        from_workflow.producer = engine::EmissionProducer::Workflow {
+            universe_id: UNIVERSE,
+            workflow_id: "wte:other".to_owned(),
+        };
+        assert_eq!(classify(None, from_workflow), None);
+    }
+
+    #[test]
+    fn holder_cancellation_of_the_reply_key_is_accepted_only_from_the_holder() {
+        assert_eq!(
+            classify(None, cancellation("parent-session", invocation_id(), REPLY_COMPLETION_KEY)),
+            Some(SignalEffect::HolderCancelled)
+        );
+        assert_eq!(
+            classify(None, cancellation("other-session", invocation_id(), REPLY_COMPLETION_KEY)),
+            None,
+            "a cancellation from a session that is not the holder must be dropped"
+        );
+        assert_eq!(
+            classify(None, cancellation("parent-session", invocation_id(), "job-0")),
+            None,
+            "only the reply key cancels this execution"
+        );
+        let other_invocation =
+            WorkflowToolInvocationId::new(format!("wti:sha256:{}", "b".repeat(64)));
+        assert_eq!(
+            classify(None, cancellation("parent-session", other_invocation, REPLY_COMPLETION_KEY)),
+            None,
+            "another invocation's cancellation must be dropped"
+        );
+    }
+
+    #[test]
+    fn unrelated_emission_bodies_are_dropped() {
+        assert_eq!(
+            classify(
+                None,
+                EmissionEnvelope::source_resolution(
+                    UNIVERSE,
+                    "wte:other".to_owned(),
+                    reply_promise(),
+                    PromiseResolution::Resolved { payload_ref: None },
+                )
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn recovery_exposes_the_reply_resolution_once_produced() {
+        let mut snapshot = SubagentExecutionSnapshot::default();
+        assert!(recovery_result(&snapshot).resolutions.is_empty());
+        let resolution = PromiseResolution::Failed {
+            error_ref: Some(BlobRef::from_bytes(b"{\"error\":\"deadline\"}")),
+        };
+        snapshot.phase = SubagentExecutionPhase::Resolved;
+        snapshot.resolution = Some(resolution.clone());
+        let recovery = recovery_result(&snapshot);
+        assert_eq!(recovery.resolutions.len(), 1);
+        assert_eq!(recovery.resolutions.get(REPLY_COMPLETION_KEY), Some(&resolution));
+    }
 }

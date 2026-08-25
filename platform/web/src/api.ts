@@ -728,6 +728,8 @@ export interface BotState {
   appliedProfileRevision: number | null;
   runsPerDay: number | null;
   runsToday: number;
+  /** Sub-agent sessions delegated under the bot's sessions today; counted against `runsPerDay`. */
+  descendantsToday: number;
   lastError: string | null;
 }
 

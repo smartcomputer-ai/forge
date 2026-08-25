@@ -379,6 +379,19 @@ async fn temporal_live_agent_run_inherits_parent_environment() -> anyhow::Result
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_agent_run_deadline_fails_the_reply_and_closes_the_child() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    // The grant's `deadlineMs` is enforced inside the execution: a child
+    // that outlives it is closed and the parent's joined call fails with a
+    // `deadline` envelope.
+    run_with_scripted_subagent_live_worker(run_agent_run_deadline_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra, Postgres, Temporal, and OPENAI_API_KEY (costs real money)"]
 async fn temporal_live_session_start_then_run_start_completes_openai_run() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
@@ -409,7 +422,8 @@ struct SubagentScriptedLlm {
 
 /// Scripted parent/child model for the sub-agent live scenarios. Parent
 /// scripts are user messages: `AGENT_RUN <profile> [<count>]` emits that many
-/// `agent_run` calls in one batch; `AGENT_SPAWN_SLOW <profile>` emits one
+/// `agent_run` calls in one batch; `AGENT_RUN_SLOW <profile>` emits one
+/// joined `agent_run` of the slow child; `AGENT_SPAWN_SLOW <profile>` emits one
 /// `agent_spawn` and then awaits its promise. Children answer their briefs:
 /// `CHILD_TASK <n>` completes at once, `SLOW_CHILD` completes after 12 s.
 impl SubagentScriptedLlm {
@@ -634,6 +648,21 @@ impl CoreAgentLlm for SubagentScriptedLlm {
                 .collect();
             return self.tool_calls_result(&request, calls).await;
         }
+        if let Some(profile) = user_text.strip_prefix("AGENT_RUN_SLOW ") {
+            return self
+                .tool_calls_result(
+                    &request,
+                    vec![(
+                        AGENT_RUN_TOOL_NAME,
+                        serde_json::json!({
+                            "agent": profile.trim(),
+                            "input": "SLOW_CHILD",
+                            "label": "slow child"
+                        }),
+                    )],
+                )
+                .await;
+        }
         if let Some(profile) = user_text.strip_prefix("AGENT_SPAWN_SLOW ") {
             return self
                 .tool_calls_result(
@@ -752,6 +781,14 @@ fn io_error(error: impl std::fmt::Display) -> CoreAgentIoError {
 
 /// `features.subagents` granting exactly one agent profile.
 fn subagents_features(profile_id: &ProfileId, max_descendants: u32) -> api::FeaturesConfig {
+    subagents_features_with_deadline(profile_id, max_descendants, 120_000)
+}
+
+fn subagents_features_with_deadline(
+    profile_id: &ProfileId,
+    max_descendants: u32,
+    deadline_ms: u64,
+) -> api::FeaturesConfig {
     api::FeaturesConfig {
         subagents: Some(api::SubagentsFeature {
             version: api::CURRENT_FEATURE_VERSION,
@@ -761,7 +798,7 @@ fn subagents_features(profile_id: &ProfileId, max_descendants: u32) -> api::Feat
             max_depth: 2,
             max_descendants,
             max_concurrent: 4,
-            deadline_ms: 120_000,
+            deadline_ms,
         }),
         ..api::FeaturesConfig::default()
     }
@@ -799,12 +836,29 @@ async fn start_subagent_parent(
     max_descendants: u32,
     script: &str,
 ) -> anyhow::Result<String> {
+    start_subagent_parent_with_features(
+        api,
+        session_id,
+        model,
+        subagents_features(profile_id, max_descendants),
+        script,
+    )
+    .await
+}
+
+async fn start_subagent_parent_with_features(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+    model: &ModelSelection,
+    features: api::FeaturesConfig,
+    script: &str,
+) -> anyhow::Result<String> {
     api.start_session(SessionStartParams {
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
             model: Some(model_to_api(model)),
-            features: Some(subagents_features(profile_id, max_descendants)),
+            features: Some(features),
             ..SessionConfig::default()
         }),
         profile: None,
@@ -1070,6 +1124,56 @@ async fn run_agent_run_limit_live_client(
         "expected the refusal to name the limit, got: {parent_output}"
     );
     let children = wait_for_children_closed(&sessions, &session_id, 1).await?;
+
+    let mut all = vec![session_id];
+    all.extend(children.iter().map(|child| child.session_id.clone()));
+    cleanup_subagent_test(&client, api.as_ref(), profile_id, &all).await;
+    Ok(())
+}
+
+async fn run_agent_run_deadline_live_client(
+    client: Client,
+    session_id: SessionId,
+    api: Arc<GatewayAgentApi>,
+    _blobs: Arc<dyn BlobStore>,
+    sessions: Arc<dyn SessionStore>,
+    model: ModelSelection,
+) -> anyhow::Result<()> {
+    let profile_id = create_child_profile(api.as_ref()).await?;
+    // The slow child takes 12 s; a 3 s grant deadline must cut it off.
+    let run_id = start_subagent_parent_with_features(
+        api.as_ref(),
+        &session_id,
+        &model,
+        subagents_features_with_deadline(&profile_id, 16, 3_000),
+        &format!("AGENT_RUN_SLOW {profile_id}"),
+    )
+    .await?;
+
+    let parent_run = wait_for_terminal_run(api.as_ref(), &session_id, &run_id).await?;
+    assert_eq!(parent_run.status, api::RunStatus::Completed);
+    let agent_calls = parent_run
+        .tool_batches
+        .iter()
+        .flat_map(|batch| &batch.calls)
+        .filter(|call| call.tool_name == AGENT_RUN_TOOL_NAME)
+        .collect::<Vec<_>>();
+    assert_eq!(agent_calls.len(), 1, "expected one joined agent_run call");
+    assert_eq!(
+        agent_calls[0].status,
+        api::ToolItemStatus::Failed,
+        "a deadline resolves the joined call as failed"
+    );
+    let parent_output = final_assistant_text(&parent_run).expect("parent assistant output");
+    assert!(
+        parent_output.contains("\"status\":\"deadline\"")
+            && !parent_output.contains("slow child completed"),
+        "expected a deadline envelope without the child's output, got: {parent_output}"
+    );
+
+    // The execution closed the child well before its 12 s script finished.
+    let children = wait_for_children_closed(&sessions, &session_id, 1).await?;
+    assert_eq!(children[0].display_name.as_deref(), Some("slow child"));
 
     let mut all = vec![session_id];
     all.extend(children.iter().map(|child| child.session_id.clone()));

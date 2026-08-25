@@ -1123,12 +1123,15 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         })
         .await
         .expect("register provider");
-    assert_eq!(
+    // Providers are global rows shared by every test universe on this
+    // database, so assert membership rather than equality.
+    assert!(
         store
             .list_providers(ListEnvironmentProviders::default())
             .await
-            .expect("list providers"),
-        vec![provider.clone()]
+            .expect("list providers")
+            .contains(&provider),
+        "registered provider must be listed"
     );
 
     store

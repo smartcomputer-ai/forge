@@ -32,12 +32,24 @@
   retention sweep closes a routed session's open descendants first (a busy
   descendant defers the close), the activity feed records how many, and
   `GET /bots/:id/state` returns per-session `lineage` (open/total counts and
-  a bounded child list) that the bot detail renders. The bot budget stays an
-  activation budget: descendants are visible, not yet counted.
-- Still open: the unit-level tests the Tests section lists that the live
-  suite does not cover (execution-workflow deadline, holder cancellation, and
-  recovery query; in-memory reservation limits; admission rejections;
-  `maxDescendants` live). Everything under Non-goals stays deferred by design.
+  a bounded child list) that the bot detail renders.
+- Budget and tests done 2026-08-26: the bot's `runsPerDay` now counts
+  sub-agent descendants like runs — the controller re-reads today's
+  descendants by lineage root (`countBotDescendantSessions`, after every
+  finished delivery and once a minute while a run is in flight; best effort,
+  the last count stands during a core outage), keeps them in `reservedRuns`,
+  the snapshot (`descendantsToday`), the continue-as-new carry, and the
+  `budget_exhausted` detail; the bot detail shows the split. Unit tests
+  landed for the execution workflow's pure signal/recovery logic
+  (`classify_emission`, `recovery_result`), `SubagentService`
+  prepare/resolve/close against a counting fake runtime, the in-memory
+  store's root-scoped reservation and lineage list filters, and `agent_run`
+  admission (grant required, catalog allowlist, pinned context, idempotent
+  retry). A live deadline scenario
+  (`temporal_live_agent_run_deadline_fails_the_reply_and_closes_the_child`)
+  joins the sub-agent live suite; `maxDescendants` live was already covered
+  by the root-limit scenario. Nothing in this document remains open;
+  everything under Non-goals stays deferred by design.
 - Proposed 2026-08-25, from the fleet-vs-bots review
   (`later/pNNN-fleet-vs-bots.md`, direction C′) and a design discussion with
   Lukas the same day. Decisions taken there and fixed here: the agent menu is
@@ -479,6 +491,7 @@ each other after 3; 7 is independent throughout.
   inline entries in `agents[]` are a possible later addition.
 - Per-child environment isolation.
 - Tree-level token budgets; run limits remain per session (`limits`) and
-  per bot (activation budget).
+  per bot (`runsPerDay`, spent by bot runs and by the sub-agent sessions
+  they delegate).
 - An A2A remote target. When that adapter lands it is another recipe behind
   the same two tools, not a new tool family.

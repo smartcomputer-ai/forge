@@ -91,6 +91,14 @@ export interface ReadJsonBlobInput {
   blobRef: string;
 }
 
+export interface CountBotDescendantSessionsInput {
+  universeId: string;
+  /** Bot sessions whose sub-agent trees are counted (lineage roots). */
+  sessionIds: string[];
+  /** Only descendants created at or after this instant count. */
+  sinceMs: number;
+}
+
 export interface BotLightspeedActivities {
   ensureBotSession(input: EnsureBotSessionInput): Promise<EnsureBotSessionResult>;
   readBotSessionStatus(input: ReadSessionInput): Promise<{ status: SessionStatus }>;
@@ -103,11 +111,20 @@ export interface BotLightspeedActivities {
    * descendant blocks the close; the sweep retries later.
    */
   closeBotSession(input: ReadSessionInput): Promise<{ closed: boolean; descendantsClosed?: number }>;
+  /**
+   * Sub-agent sessions delegated under the bot's sessions since `sinceMs`
+   * (P134 lineage). Every descendant counts against the bot's daily run
+   * budget like a run the controller started itself.
+   */
+  countBotDescendantSessions(input: CountBotDescendantSessionsInput): Promise<{ count: number }>;
   readWorkflowToolInvocations(
     input: ReadWorkflowToolInvocationsInput,
   ): Promise<ReadWorkflowToolInvocationsResult>;
   readJsonBlob(input: ReadJsonBlobInput): Promise<unknown>;
 }
+
+/** Bound on lineage pages read per root when counting descendants. */
+const DESCENDANT_COUNT_MAX_PAGES = 10;
 
 export function isBotSessionDeclarationMismatch(error: unknown): boolean {
   return (
@@ -232,6 +249,28 @@ export function createBotLightspeedActivities(
         throw error;
       }
       return { closed: true, descendantsClosed };
+    },
+
+    async countBotDescendantSessions(input) {
+      const client = clientForUniverse(config, input.universeId);
+      let count = 0;
+      for (const rootSessionId of input.sessionIds) {
+        let cursor: string | null = null;
+        for (let page = 0; page < DESCENDANT_COUNT_MAX_PAGES; page += 1) {
+          const params: { rootSessionId: string; limit: number; cursor?: string } = {
+            rootSessionId,
+            limit: 200,
+          };
+          if (cursor !== null) params.cursor = cursor;
+          const response = await client.call("session/list", params);
+          for (const child of response.result.sessions ?? []) {
+            if (child.createdAtMs >= input.sinceMs) count += 1;
+          }
+          cursor = response.result.nextCursor ?? null;
+          if (cursor === null) break;
+        }
+      }
+      return { count };
     },
 
     async appendBotContext(input) {

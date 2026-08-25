@@ -47,6 +47,8 @@ import {
 const EVENT_TERMINAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const BUSY_RETRY_DELAY = "5 seconds";
 const CONTINUE_AS_NEW_AFTER_RUNS = 100;
+/** How often a busy bot re-counts its sub-agent descendants against the budget. */
+const DESCENDANT_REFRESH_INTERVAL_MS = 60_000;
 const SEEN_EVENT_CAP = 2_000;
 const SEEN_EMISSION_CAP = 2_000;
 const RECENT_EVENT_CAP = 50;
@@ -126,6 +128,8 @@ export interface BotSnapshot {
   appliedProfileRevision: number | null;
   runsPerDay: number | null;
   runsToday: number;
+  /** Sub-agent sessions delegated under the bot's sessions today; they count against `runsPerDay`. */
+  descendantsToday: number;
   mainGeneration: number;
   toolsRevision: number | null;
   lastError: string | null;
@@ -150,6 +154,9 @@ export interface BotCarryV1 {
   duplicateEmissionCount: number;
   runDay: string;
   runsToday: number;
+  descendantsToday?: number;
+  /** Bot sessions whose sub-agent trees are counted for `runDay`. */
+  budgetRoots?: string[];
   extraSessions?: BotManagedSession[];
   sessionCursors?: Record<string, number>;
   /** Routed session id → generation, bumped each time that session closes. */
@@ -238,6 +245,13 @@ export async function botControllerWorkflowV1(
   let duplicateEmissionCount = carry?.duplicateEmissionCount ?? 0;
   let runDay = carry?.runDay ?? utcDay();
   let runsToday = carry?.runsToday ?? 0;
+  // Sub-agent sessions under the bot's sessions (P134 lineage) count like
+  // runs. The count is read from core: the controller never sees the
+  // delegations themselves, only their sessions by root.
+  let descendantsToday = carry?.descendantsToday ?? 0;
+  const budgetRoots = new Set<string>(carry?.budgetRoots ?? []);
+  let descendantsRefreshedAtMs = 0;
+  let descendantsRefreshedProcessed = -1;
   let budgetNotified = false;
   // Bumped whenever a lane changes shared state outside the main loop, so a
   // parked loop re-evaluates deadlines (retention, budget) and dispatch.
@@ -255,13 +269,50 @@ export async function botControllerWorkflowV1(
     if (today !== runDay) {
       runDay = today;
       runsToday = 0;
+      descendantsToday = 0;
+      budgetRoots.clear();
+      descendantsRefreshedAtMs = 0;
+      descendantsRefreshedProcessed = -1;
       budgetNotified = false;
     }
   }
 
-  /** Runs already started today plus lanes about to start one. */
+  function descendantsRefreshDue(): boolean {
+    if (config.runsPerDay === null) return false;
+    if (eventsProcessed !== descendantsRefreshedProcessed) return true;
+    return (
+      activeBySession.size > 0 &&
+      Date.now() - descendantsRefreshedAtMs >= DESCENDANT_REFRESH_INTERVAL_MS
+    );
+  }
+
+  /**
+   * Re-count today's sub-agent descendants: after every finished delivery
+   * and, while a run is in flight, once a minute. Best effort — a core
+   * outage keeps the last count rather than blocking dispatch.
+   */
+  async function refreshDescendantsToday(): Promise<void> {
+    rollBudgetDay();
+    if (!descendantsRefreshDue()) return;
+    budgetRoots.add(sessionId);
+    for (const session of extraSessions) budgetRoots.add(session.sessionId);
+    descendantsRefreshedAtMs = Date.now();
+    descendantsRefreshedProcessed = eventsProcessed;
+    try {
+      const counted = await activities.countBotDescendantSessions({
+        universeId: config.universeId,
+        sessionIds: [...budgetRoots],
+        sinceMs: Date.parse(`${runDay}T00:00:00.000Z`),
+      });
+      descendantsToday = counted.count;
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+  }
+
+  /** Runs already started today, sub-agent sessions delegated today, and lanes about to start a run. */
   function reservedRuns(): number {
-    let reserved = runsToday;
+    let reserved = runsToday + descendantsToday;
     for (const active of activeBySession.values()) {
       if (active.runId === null && active.delivery.whenBusy !== "append") reserved += 1;
     }
@@ -464,6 +515,7 @@ export async function botControllerWorkflowV1(
     appliedProfileRevision,
     runsPerDay: config.runsPerDay,
     runsToday,
+    descendantsToday,
     mainGeneration,
     toolsRevision,
     lastError,
@@ -1134,6 +1186,7 @@ export async function botControllerWorkflowV1(
     await processEmissions();
     flushRipeBuffers();
     await sweepRoutedSessions();
+    await refreshDescendantsToday();
     if (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) {
       await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();
@@ -1143,7 +1196,11 @@ export async function botControllerWorkflowV1(
       if (pendingDeliveries.length > 0 && budgetExhausted() && !budgetNotified) {
         budgetNotified = true;
         await record("budget_exhausted", {
-          detail: `${runsToday}/${config.runsPerDay} runs used for ${runDay}`,
+          detail:
+            `${runsToday + descendantsToday}/${config.runsPerDay} runs used for ${runDay}` +
+            (descendantsToday > 0
+              ? ` (${runsToday} bot runs, ${descendantsToday} sub-agent sessions)`
+              : ""),
         });
       }
     }
@@ -1170,6 +1227,8 @@ export async function botControllerWorkflowV1(
         duplicateEmissionCount,
         runDay,
         runsToday,
+        descendantsToday,
+        budgetRoots: [...budgetRoots],
         extraSessions: [...extraSessions],
         sessionCursors: Object.fromEntries(sessionCursors),
         sessionGenerations: Object.fromEntries(sessionGenerations),
@@ -1187,6 +1246,10 @@ export async function botControllerWorkflowV1(
     const deadlines = [nextBufferDeadline(), nextRetentionDeadline()];
     if (pendingDeliveries.length > 0 && config.runsPerDay !== null && budgetExhaustedView()) {
       deadlines.push(Date.now() + msUntilNextUtcDay());
+    }
+    if (config.runsPerDay !== null && activeBySession.size > 0) {
+      // A run in flight may be delegating; re-count against the budget.
+      deadlines.push(descendantsRefreshedAtMs + DESCENDANT_REFRESH_INTERVAL_MS);
     }
     const deadline = deadlines.reduce<number | null>(
       (earliest, value) => (value === null ? earliest : earliest === null ? value : Math.min(earliest, value)),

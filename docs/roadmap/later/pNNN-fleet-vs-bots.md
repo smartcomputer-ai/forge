@@ -296,7 +296,8 @@ needed fleet:
   (`manageBots` — the `selfConfig` pattern pointed outward), enabling an
   ops-bot that tunes other bots without new machinery.
 
-Tracked as a P131 workstream.
+Tracked as a P131 workstream; specified 2026-08-26 in
+[P135](../p135-bot-federation.md).
 
 ## Consequences of C
 

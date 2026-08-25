@@ -213,10 +213,7 @@ function BotOverview({
       <div className="grid min-w-0 gap-10 lg:grid-cols-2">
         <DetailSection title="Bot" description="Configuration and current controller health.">
           <KeyValue label="Profile" value={bot.profileId} />
-          <KeyValue
-            label="Budget"
-            value={bot.runsPerDay === null ? "Unlimited" : `${state?.runsToday ?? 0} / ${bot.runsPerDay} runs today`}
-          />
+          <KeyValue label="Budget" value={budgetLabel(bot.runsPerDay, state)} />
           <KeyValue label="Processed" value={String(state?.eventsProcessed ?? 0)} />
           {!bot.enabled && (
             <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
@@ -541,4 +538,14 @@ function timeLabel(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return iso;
   return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+
+/** `runsPerDay` is spent by bot runs and by sub-agent sessions the runs delegate. */
+function budgetLabel(runsPerDay: number | null, state: BotState | null | undefined): string {
+  if (runsPerDay === null) return "Unlimited";
+  const runs = state?.runsToday ?? 0;
+  const descendants = state?.descendantsToday ?? 0;
+  const used = `${runs + descendants} / ${runsPerDay} today`;
+  return descendants > 0 ? `${used} (${runs} runs, ${descendants} sub-agents)` : `${used}`;
 }
