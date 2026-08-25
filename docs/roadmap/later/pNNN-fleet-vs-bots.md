@@ -23,6 +23,13 @@
   workers, routes, gateway exception, UI/CLI surface, release staging, and
   packs/releases storage removed. Fleet removal and the delegation kernel
   remain follow-up work.
+- 2026-08-25: the kernel is specified as [P134](../p134-subagents.md).
+  Two changes to C′ made there: the tools are `agent_run` / `agent_spawn`
+  (the `job_run` / `job_submit` shape) over a start-on-call execution
+  workflow instead of a parent-side `delegate` on `PromiseSource::Run`, and
+  the agent menu is a refreshed catalog context entry rather than tool
+  schema. The "shrink `fleet.rs` in place" note holds for the spawn body,
+  which becomes the execution's prepare activity.
 
 ## The two concepts
 

@@ -1,6 +1,16 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P134](p134-subagents.md) — sub-agents: the fleet control plane is
+  replaced by a governed, profile-grantable delegation kernel. Two tools
+  shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
+  a start-on-call `SubagentExecutionWorkflow`, so the session workflow and
+  engine gain no delegation code; `features.subagents` with an allowlisted
+  agent menu (a refreshed catalog context entry) and root-scoped,
+  attenuating limits; typed `SessionOrigin` lineage on session views and
+  `session/list` (replacing `session_links`); one-shot children closed by
+  the execution; `inherit` profile environment intent. Removes fleet,
+  `PromiseSource::Run`, and (separably) the mailbox.
 - [ ] [P133](p133-retrievable-grant-leases.md) — retrievable grants: an
   immutable creation-time `exposure: brokered | retrievable` on auth grants,
   a broker-backed `auth/grants/lease` returning `{token, expiresAtMs}`
@@ -166,6 +176,8 @@
   explicit API/history reads
 
 ## Fleet (sub-agents)
+
+Superseded by [P134](p134-subagents.md); the entries below are history.
 - [x] [P82](p82-session-graph-fork-clone.md) — session graph foundation: clone, fork (by-reference), and links in the store
 - [x] [P83](p83-fleet-subagent-control-plane.md) — agent-facing Fleet control plane (spawn/task/read/list/cancel) on top of P82
 - [x] [P84](p84-fleet-wait-and-callbacks.md) — first cut complete: `agent_send`, generic deferred tool batches, `RunSubscription` workflow primitives, `agent_wait` DTO/preflight/parking/resume, and live Mode I/Mode W coverage
