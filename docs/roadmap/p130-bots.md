@@ -237,6 +237,15 @@
   doc, [P131](p131-bot-trigger-long-tail.md). Still open here: secret
   sealing (deferred by decision; now
   [P133](p133-retrievable-grant-leases.md)) and tier-2 per-trigger CEL projections.
+  Two defects from the 2026-08-25 external review, both open:
+  **admission is not durable** — `admitBotEvent` inserts the row and then
+  signals the controller; if the signal fails, the sender's retry hits the
+  duplicate path and returns without signalling, and no controller cursor
+  over `bot_events` recovers it (fix: on wake/boot, deliver everything
+  after the controller's per-bot `seq` cursor); and **`bot_trigger_put`
+  accepts a raw `secret` from the model**, which then transits
+  tool-argument CAS, Temporal history, and the activity feed (P133 removes
+  the field).
   Schedule-flood breaker coverage, CEL save-time validation, `bot:self`
   loop capping, and routed-session declaration rotation were closed by the
   2026-08-24 hardening round above.
@@ -616,7 +625,12 @@ hand-mirrored emission contract by [P132](p132-workflow-contract-export.md),
 service access to secrets by [P133](p133-retrievable-grant-leases.md).
 Revisit only if bots become the sole session nucleus (option D of the
 fleet-vs-bots review), the Rust SDK reaches 1.0, or API-shaped answers keep
-piling up.
+piling up. One further named trigger: once P131's trigger long tail has
+landed and the bot record shape has held still, bot records may become
+core-owned universe resources with the platform as membership proxy (the
+profile / MCP-server / environment pattern). Any Rust controller then
+arrives as a `BotControllerV2` with V1 controllers drained and migrated —
+Rust cannot replay TypeScript histories.
 
 **Frictions to plan around**, all flagged in the codebase survey:
 

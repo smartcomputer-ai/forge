@@ -211,18 +211,25 @@ from day one:
   child (digest-deterministic ids as before), start its run, return a
   promise; the generic `await` joins it. No clone/fork bases, no
   send/read/list graph surface, no link table — children are plain
-  sessions with `source_session_id` lineage.
-- **The grant**: `features.delegation { profiles: allowlist, maxChildren,
-  maxDepth, runBudget }`. Depth rides on the child session record so the
-  engine enforces `maxDepth`; budget and child-count are grant-local.
-  This is P93's safety layer folded into the capability instead of
-  deferred behind it.
+  sessions carrying a typed delegation origin (parent, root, depth,
+  invocation id, pinned profile revision). Not `source_session_id`: that
+  field means clone/fork content ancestry and is empty for profile spawns.
+- **The grant**: `features.delegation { profiles: allowlist,
+  maxDirectChildren, maxTotalDescendants, maxDepth, deadline }`. Limits
+  are scoped to the root tree and attenuate downward — a descendant's grant
+  can narrow its ancestors' limits, never reset them. Counts are atomic
+  reservations keyed by the deterministic invocation id, taken in the
+  spawn activity (cross-session state lives outside the engine); depth
+  rides on the child's origin. This is P93's safety layer folded into the
+  capability instead of deferred behind it.
 - **Observability is part of the kernel, not a follow-up**: lineage
-  (`sourceSessionId`, depth) exposed on session views and the sessions UI,
+  (delegation origin: parent, root, depth) exposed on session views and the sessions UI,
   closing the "model sees more of the graph than the human" gap.
 - **Nesting**: a child's profile may itself grant `delegation` — trees of
-  templated agents, bounded by depth, cancelled by the existing generic
-  cascade (run-scoped promises → child `CancelRun`).
+  templated agents, bounded by depth. Delegates are one-shot:
+  `close_on_terminal` is fixed on, so cancelling the promise closes the
+  child session (and any provisioned environment) instead of only
+  cancelling its run, which is all the cascade does today.
 - **Bots compose, not replace**: a bot's worker profiles may carry the
   grant, giving the bot fan-out with two budget layers (controller budget
   above, delegation budget below). `bot_delegate` as a separate workflow
@@ -252,11 +259,22 @@ Two adjustments to C′, both accepted:
    bot's worker session are ordinary sessions — outside the activity feed,
    budget, retention sweep, and breaker — and nothing closes them (the
    cancel cascade stops runs, not sessions). Reuse the P125 environment
-   pattern: the child records `sourceSessionId` as provenance plus a
-   default close trigger (close with parent), never ownership; the bot's
-   retention sweep, budget, and UI walk lineage to include descendants.
-   "Two budget layers" is only true once the upper layer can count the
-   lower.
+   pattern: the child's typed delegation origin is provenance, never
+   ownership, and delegates are one-shot (above); the bot's retention
+   sweep, budget, and UI walk lineage to include descendants. "Two budget
+   layers" is only true once the upper layer can count the lower — until
+   it can, call the bot budget an *activation budget*.
+3. **External review, 2026-08-25 — applied inline above.** Four
+   tightenings: delegation needs a typed origin, because
+   `source_session_id` is clone/fork content ancestry and profile spawns
+   record none (`fleet.rs`); quotas are root-scoped and attenuating, not
+   grant-local; delegates are one-shot, since promise cancellation today
+   only sends the child `CancelRun`; the spawn pins the resolved profile
+   revision, because an allowlisted profile is mutable. Framing to carry
+   into the rewrite of "Consequences": bots and delegation share sessions,
+   runs, promises, and cancellation but are different abstractions —
+   *durable orchestration* versus *attached delegation* — not one story at
+   two tiers.
 
 ## Bot federation (platform tier, roadmap)
 
@@ -274,6 +292,10 @@ needed fleet:
 Tracked as a P131 workstream.
 
 ## Consequences of C
+
+*Written for C. The review notes above amend this ledger: "one delegation
+story" and "risks: none" no longer hold as stated. Rewrite around durable
+orchestration versus attached delegation before slicing.*
 
 - **Wins**: one delegation story; ~5.4k lines and a whole contract feature
   gone; the README claim becomes honest ("bots run fleets of sessions" —

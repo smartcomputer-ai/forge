@@ -133,14 +133,22 @@ at use time.
   (default `authorization: Bearer <token>`) replaces credential-bearing
   `headers`; non-secret headers remain. The fire activity leases with a
   per-process cache. `bot_trigger_put` accepts `grantId` references only —
-  a session references, never creates or leases.
+  a session references, never creates or leases. The current raw `secret`
+  field is removed: today it transits tool-argument CAS, Temporal history,
+  and the activity feed.
 - **Bots webhook**: `verification: { scheme: "hmac-sha256", grantId,
   header, prefix? }` replaces the inline `secret`; the ingress route leases
-  as `service_account:lightspeed-platform`. The URL `token` stays as it is:
-  it is the endpoint's address (P130's assessment), not a credential.
+  as `service_account:lightspeed-platform`. The URL `token` stays an address,
+  not a credential (P130's assessment), but gains rotation; hashing it
+  (shown once, like an API key) is optional and cheap.
 - **Greenfield**: plaintext `secret` and credential `headers` fields are
   removed, not migrated; existing triggers are re-entered. Secret redaction
   for non-managers becomes moot — there is nothing left to redact.
+- **Per-bot credential bindings**: a bot's triggers may reference only
+  grants bound to that bot (a `bot_credentials` table — the
+  environment-credential pattern), so a worker's lease right is narrowed
+  to the bot's own bindings rather than every retrievable grant in the
+  universe.
 - **Channels**: `channel_accounts.credential_ref` becomes a grant id and
   connectors lease it (nothing in `platform/channels/src` reads that column
   today; confirm before wiring).

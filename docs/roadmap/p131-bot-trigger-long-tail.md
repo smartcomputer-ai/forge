@@ -170,9 +170,12 @@ Two small platform-tier items, independent of the rest of this doc (see
 
 - **Bot → bot events**: `bot_emit` grows a `targetBot`; the event keeps
   `source: bot:<sender>`, so provenance tagging, the self-emission cap,
-  and the receiver's filters and breaker apply unchanged.
+  and the receiver's filters and breaker apply unchanged. Add a causation
+  id and a hop bound to the event: provenance plus per-receiver breakers
+  rate-limit but do not stop A→B→A cycles.
 - **Bot → bot configuration**: target-bot forms of `bot_trigger_put` /
-  `bot_brief_put` behind a new `manageBots` operator grant (the
+  `bot_brief_put` behind a new `manageBots` operator grant, allowlisted per
+  target bot and operation (the
   `selfConfig` pattern pointed outward) — an ops-bot that tunes other
   bots.
 
