@@ -15,7 +15,7 @@ const tokenSpec: BotWebhookTriggerSpec = { token: "tok-1", verification: { schem
 function hmacSpec(secret: string): BotWebhookTriggerSpec {
   return {
     token: "tok-1",
-    verification: { scheme: "hmac-sha256", secret, header: "X-Hub-Signature-256", prefix: "sha256=" },
+    verification: { scheme: "hmac-sha256", grantId: `grant-${secret}`, header: "X-Hub-Signature-256", prefix: "sha256=" },
     preset: "github",
   };
 }
@@ -44,17 +44,17 @@ describe("webhook verification", () => {
     const body = Buffer.from(JSON.stringify({ action: "opened" }));
     const signature = `sha256=${createHmac("sha256", "s3cret-key").update(body).digest("hex")}`;
     expect(
-      verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, { "x-hub-signature-256": signature }).ok,
+      verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, { "x-hub-signature-256": signature }, "s3cret-key").ok,
     ).toBe(true);
     expect(
-      verifyWebhook(hmacSpec("wrong-secret"), "tok-1", body, { "x-hub-signature-256": signature }),
+      verifyWebhook(hmacSpec("wrong-secret"), "tok-1", body, { "x-hub-signature-256": signature }, "wrong-secret"),
     ).toEqual({ ok: false, reason: "signature mismatch" });
-    expect(verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, {})).toEqual({
+    expect(verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, {}, "s3cret-key")).toEqual({
       ok: false,
       reason: "missing X-Hub-Signature-256 header",
     });
     expect(
-      verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, { "x-hub-signature-256": "md5=nope" }),
+      verifyWebhook(hmacSpec("s3cret-key"), "tok-1", body, { "x-hub-signature-256": "md5=nope" }, "s3cret-key"),
     ).toEqual({ ok: false, reason: "signature prefix mismatch" });
   });
 });

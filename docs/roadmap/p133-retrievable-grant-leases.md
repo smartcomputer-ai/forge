@@ -2,20 +2,24 @@
 
 **Status**
 
-- In progress 2026-08-25. Slice 1 (core) is implemented: migration 010,
+- In progress 2026-08-25. Slices 1 and 2 are implemented: migration 010,
   immutable exposure on grants and OAuth flows, lease audit counters,
   `auth/grants/lease` through the existing refresh/mint broker, service method
   scope and HTTP-edge caller gating, generated Rust/TypeScript contracts,
-  Configurator exclusion, and principal-header documentation. Existing CLI
-  creation paths explicitly remain brokered. Platform consumers, UI, bot
-  credential bindings, and the later CLI commands remain open.
+  Configurator exclusion, and principal-header documentation. Bots now keep
+  only grant references for HTTP poll authentication and webhook HMAC,
+  validate references through core, lease at the execution boundary with a
+  process-local single-flight cache, and retry once after poll 401/403. The
+  Secrets UI creates retrievable grants explicitly and shows lease audit
+  metadata. Existing CLI creation paths explicitly remain brokered. Channels
+  and the later CLI commands remain open.
 - Proposed 2026-08-24 from the bots secret-sealing discussion. P130 deferred
   sealing webhook secrets; P131 ruled "broker-backed credentials … do not
   build a parallel secret store" for poll auth. Direction from Lukas: a
   grant may be tagged **at creation** as retrievable, trusted service
   workers read it through the API and cache it in memory, and the pattern
   is expected to recur (Channels credentials, the email trigger, pollers,
-  future integrations). Not started.
+  future integrations).
 - Builds on P69 (grants, encrypted secret store, token broker — whose own
   rule already permits "a short-lived lease to a trusted runtime boundary"),
   P90 (principals, `trusted-header` / `api-key` modes), P110
@@ -136,26 +140,26 @@ at use time.
 
 ### 6. Consumers
 
-- **Bots poll (`http`)**: `source.auth?: { grantId, header?, scheme? }`
+- **Bots poll (`http`)**: `source.auth?: { grantId, header?, scheme?, audience? }`
   (default `authorization: Bearer <token>`) replaces credential-bearing
   `headers`; non-secret headers remain. The fire activity leases with a
   per-process cache. `bot_trigger_put` accepts `grantId` references only —
-  a session references, never creates or leases. The current raw `secret`
-  field is removed: today it transits tool-argument CAS, Temporal history,
-  and the activity feed.
+  a session references, never creates or leases.
 - **Bots webhook**: `verification: { scheme: "hmac-sha256", grantId,
   header, prefix? }` replaces the inline `secret`; the ingress route leases
   as `service_account:lightspeed-platform`. The URL `token` stays an address,
   not a credential (P130's assessment), but gains rotation; hashing it
   (shown once, like an API key) is optional and cheap.
-- **Greenfield**: plaintext `secret` and credential `headers` fields are
-  removed, not migrated; existing triggers are re-entered. Secret redaction
-  for non-managers becomes moot — there is nothing left to redact.
-- **Per-bot credential bindings**: a bot's triggers may reference only
-  grants bound to that bot (a `bot_credentials` table — the
-  environment-credential pattern), so a worker's lease right is narrowed
-  to the bot's own bindings rather than every retrievable grant in the
-  universe.
+- **Greenfield**: plaintext `secret` and credential-bearing `headers` fields
+  are removed, not migrated; existing triggers are re-entered. Non-secret
+  poll headers remain, and legacy credential headers fail closed at runtime.
+- **No Platform credential shadow catalog**: triggers reference core grant ids
+  directly. Creating or editing a trigger performs a metadata-only core read
+  and requires an active `retrievable` grant in the same universe. The
+  creation-time exposure choice is the authorization boundary: the Bots
+  service principal may lease any retrievable grant in its universe. If
+  finer-grained policy is needed later, add it to core rather than duplicating
+  grant ownership in a `bot_credentials` table.
 - **Channels**: `channel_accounts.credential_ref` becomes a grant id and
   connectors lease it (nothing in `platform/channels/src` reads that column
   today; confirm before wiring).
@@ -182,9 +186,10 @@ would review a new `unsafe` block.
    through the broker; `Service` scope and edge gating; configurator
    assertion; contract regeneration and TypeScript client; document
    `x-lightspeed-principal` in `docs/variables.md` (undocumented today).
-2. **Platform** (1 day): service principals in workers and server; bots
-   poll `auth` and webhook `grantId`; UI and `bot_trigger_put`; plaintext
-   fields removed.
+2. **Platform** (complete 2026-08-25): service principals at the poll and
+   webhook lease boundaries; bots poll `auth` and webhook `grantId`; UI and
+   `bot_trigger_put`; plaintext fields removed. Legacy credential headers fail
+   closed at execution and existing plaintext triggers must be re-entered.
 3. **Later**: Channels credentials on leases; CLI subcommands.
 
 ## Tests

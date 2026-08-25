@@ -4,12 +4,14 @@ import { schema } from "@lightspeed/platform-db";
 import type { BotWebhookTriggerSpec } from "@lightspeed/platform-db/schema";
 import type { BotEventDocumentV1 } from "@lightspeed/bots/contracts";
 import {
+  constantTimeEquals,
   computeRouteSession,
   evaluateFilter,
   extractWebhookEvent,
   verifyWebhook,
   type FilterContext,
 } from "@lightspeed/bots/webhooks";
+import { GrantLeaseCache } from "@lightspeed/bots/credentials";
 import type { AppContext } from "../context.js";
 import {
   admitBotEvent,
@@ -17,8 +19,10 @@ import {
   errorMessage,
   recordActivity,
 } from "./bot-common.js";
+import { engineClientFor } from "./gateway.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
+const webhookLeaseCache = new GrantLeaseCache();
 
 /**
  * Public webhook ingress: authenticated by the per-trigger URL token plus the
@@ -43,6 +47,11 @@ export function botHookRoutes(ctx: AppContext) {
     if (!row || row.trigger.kind !== "webhook") return c.json({ error: "not found" }, 404);
     const spec = row.trigger.spec as BotWebhookTriggerSpec;
 
+    // Do not turn an untrusted path probe into a credential lease/audit event.
+    if (!constantTimeEquals(spec.token, c.req.param("token"))) {
+      return c.json({ error: "not found" }, 404);
+    }
+
     const rawBody = Buffer.from(await c.req.arrayBuffer());
     if (rawBody.byteLength > MAX_BODY_BYTES) {
       return c.json({ error: "payload too large" }, 413);
@@ -52,7 +61,33 @@ export function botHookRoutes(ctx: AppContext) {
       rawHeaders[name] = value;
     });
 
-    const verified = verifyWebhook(spec, c.req.param("token"), rawBody, rawHeaders);
+    let signingSecret: string | undefined;
+    if (spec.verification.scheme === "hmac-sha256") {
+      try {
+        signingSecret = await webhookLeaseCache.lease(
+          engineClientFor(ctx, row.universe, "service_account:lightspeed-platform"),
+          {
+            cacheScope: row.universe.lightspeedUniverseId,
+            grantId: spec.verification.grantId,
+            ...(spec.verification.audience === undefined
+              ? {}
+              : { audience: spec.verification.audience }),
+          },
+        );
+      } catch (error) {
+        return c.json(
+          { error: "webhook verification unavailable", failure: errorMessage(error) },
+          503,
+        );
+      }
+    }
+    const verified = verifyWebhook(
+      spec,
+      c.req.param("token"),
+      rawBody,
+      rawHeaders,
+      signingSecret,
+    );
     if (!verified.ok) {
       // Token mismatch is indistinguishable from an unknown endpoint;
       // signature failures on a known endpoint get an explicit 401.

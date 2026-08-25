@@ -64,23 +64,61 @@ export const webhookVerificationInput = z.discriminatedUnion("scheme", [
   z.object({ scheme: z.literal("token") }),
   z.object({
     scheme: z.literal("hmac-sha256"),
-    secret: z.string().min(8).max(200),
+    grantId: z.string().trim().min(1).max(300),
     header: z.string().trim().min(1).max(100),
     prefix: z.string().max(20).optional(),
+    audience: z.string().trim().min(1).max(2_000).optional(),
   }),
 ]);
 export const webhookSpecInput = z.object({
   verification: webhookVerificationInput.default({ scheme: "token" }),
   preset: z.enum(["github"]).nullish(),
 });
-export const pollSourceInput = z.discriminatedUnion("kind", [
-  z.object({
+const CREDENTIAL_HEADER_NAMES = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "api-key",
+]);
+const headerNameInput = z.string().trim().min(1).max(200).regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/);
+const pollHttpSourceInput = z
+  .object({
     kind: z.literal("http"),
     url: z.string().trim().url().max(2_000).refine((value) => /^https?:/.test(value), "http(s) only"),
     method: z.enum(["GET", "POST"]).optional(),
-    headers: z.record(z.string().max(200), z.string().max(2_000)).optional(),
+    headers: z.record(headerNameInput, z.string().max(2_000)).optional(),
+    auth: z
+      .object({
+        grantId: z.string().trim().min(1).max(300),
+        header: headerNameInput.optional(),
+        scheme: z.string().max(100).optional(),
+        audience: z.string().trim().min(1).max(2_000).optional(),
+      })
+      .optional(),
     body: z.string().max(100_000).optional(),
-  }),
+  })
+  .superRefine((source, ctx) => {
+    for (const name of Object.keys(source.headers ?? {})) {
+      if (CREDENTIAL_HEADER_NAMES.has(name.toLowerCase())) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["headers", name],
+          message: `credential header ${name} must use auth.grantId`,
+        });
+      }
+      if (source.auth && name.toLowerCase() === (source.auth.header ?? "authorization").toLowerCase()) {
+        ctx.addIssue({
+          code: "custom",
+          path: ["headers", name],
+          message: `${name} conflicts with the leased credential header`,
+        });
+      }
+    }
+  });
+export const pollSourceInput = z.discriminatedUnion("kind", [
+  pollHttpSourceInput,
   z.object({
     kind: z.literal("exec"),
     environmentId: z.string().trim().min(1).max(300),
@@ -157,13 +195,20 @@ type WebhookSpecRow = {
   token: string;
   verification:
     | { scheme: "token" }
-    | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+    | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
   preset: "github" | null;
 };
 type RouteRow = { policy: "bot" } | { policy: "perKey"; key: string | null } | { policy: "perEvent" };
 type PollSpecRow = {
   source:
-    | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+    | {
+        kind: "http";
+        url: string;
+        method?: "GET" | "POST";
+        headers?: Record<string, string>;
+        auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+        body?: string;
+      }
     | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
   intervalMs: number;
   items: string | null;
@@ -178,6 +223,16 @@ function normalizePollSpec(spec: z.infer<typeof pollSpecInput>): PollSpecRow {
           url: spec.source.url,
           ...(spec.source.method === undefined ? {} : { method: spec.source.method }),
           ...(spec.source.headers === undefined ? {} : { headers: spec.source.headers }),
+          ...(spec.source.auth === undefined
+            ? {}
+            : {
+                auth: {
+                  grantId: spec.source.auth.grantId,
+                  ...(spec.source.auth.header === undefined ? {} : { header: spec.source.auth.header }),
+                  ...(spec.source.auth.scheme === undefined ? {} : { scheme: spec.source.auth.scheme }),
+                  ...(spec.source.auth.audience === undefined ? {} : { audience: spec.source.auth.audience }),
+                },
+              }),
           ...(spec.source.body === undefined ? {} : { body: spec.source.body }),
         }
       : {
@@ -201,9 +256,10 @@ function normalizeWebhookSpec(spec: z.infer<typeof webhookSpecInput>, token: str
       ? ({ scheme: "token" } as const)
       : {
           scheme: "hmac-sha256" as const,
-          secret: spec.verification.secret,
+          grantId: spec.verification.grantId,
           header: spec.verification.header,
           ...(spec.verification.prefix === undefined ? {} : { prefix: spec.verification.prefix }),
+          ...(spec.verification.audience === undefined ? {} : { audience: spec.verification.audience }),
         };
   return { token, verification, preset: spec.preset ?? null };
 }
@@ -217,6 +273,8 @@ function normalizeRoute(route: z.infer<typeof routeInput> | null | undefined): R
 export interface BotConfigDeps {
   db: Db;
   temporal: Client;
+  /** Metadata-only validation; this callback must never lease a credential. */
+  validateGrant?: (grantId: string) => Promise<void>;
 }
 
 export class BotConfigError extends Error {
@@ -269,7 +327,7 @@ export function canManageRole(role: string): boolean {
 }
 
 /// Members who cannot manage the bot still see trigger shapes, but never the
-/// ingest token or signing secret.
+/// ingest token. Grant ids are non-secret stable references.
 export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
   if (trigger.kind === "poll") {
     const spec = trigger.spec as PollSpecRow;
@@ -286,22 +344,37 @@ export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
     };
   }
   if (trigger.kind !== "webhook") return trigger;
-  const spec = trigger.spec as {
-    token: string;
-    verification: { scheme: string; secret?: string };
-    preset?: string | null;
-  };
+  const spec = trigger.spec as WebhookSpecRow;
+  const verification = spec.verification as WebhookSpecRow["verification"] & { secret?: string };
   return {
     ...trigger,
     spec: {
       ...spec,
       token: "",
       verification:
-        spec.verification.secret === undefined
-          ? spec.verification
-          : { ...spec.verification, secret: "" },
+        verification.secret === undefined
+          ? verification
+          : { ...verification, secret: "" },
     } as BotTriggerRow["spec"],
   };
+}
+
+async function validateTriggerGrants(
+  deps: BotConfigDeps,
+  spec: WebhookSpecRow | PollSpecRow | ScheduleSpecRow,
+): Promise<void> {
+  const grantIds = new Set<string>();
+  if ("verification" in spec && spec.verification.scheme === "hmac-sha256") {
+    grantIds.add(spec.verification.grantId);
+  }
+  if ("source" in spec && spec.source.kind === "http" && spec.source.auth) {
+    grantIds.add(spec.source.auth.grantId);
+  }
+  if (grantIds.size === 0) return;
+  if (!deps.validateGrant) {
+    throw new BotConfigError("credential validation is unavailable", 502);
+  }
+  for (const grantId of grantIds) await deps.validateGrant(grantId);
 }
 
 /** Create a trigger; the single code path behind the API and the bot's own tools. */
@@ -346,6 +419,7 @@ export async function createTrigger(
           deliver: input.deliver ?? null,
           enabled: input.enabled,
         };
+  await validateTriggerGrants(deps, values.spec);
   const [trigger] = await deps.db
     .insert(schema.botTriggers)
     .values(values)
@@ -393,6 +467,7 @@ export async function updateTrigger(
       // A spec edit resets the cursor: the next fire re-baselines against
       // the (possibly different) source instead of misapplying old state.
       changes.spec = normalizePollSpec(parsed.data);
+      await validateTriggerGrants(deps, changes.spec as PollSpecRow);
       changes.cursor = null;
     } else if (existing.kind === "schedule") {
       const parsed = scheduleSpecInput.safeParse(input.spec);
@@ -404,6 +479,7 @@ export async function updateTrigger(
       // The URL token survives spec edits; rotation means a new trigger.
       const token = (existing.spec as { token: string }).token;
       changes.spec = normalizeWebhookSpec(parsed.data, token);
+      await validateTriggerGrants(deps, changes.spec as WebhookSpecRow);
     }
   }
   const [trigger] = await deps.db

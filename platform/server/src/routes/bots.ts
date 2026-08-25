@@ -17,6 +17,10 @@ import {
   updateTrigger,
 } from "@lightspeed/bots/config";
 import type { BotSnapshot } from "@lightspeed/bots/workflows";
+import {
+  GrantReferenceError,
+  validateRetrievableGrant,
+} from "@lightspeed/bots/credentials";
 import type { AppContext, ApiVariables } from "../context.js";
 import { parseBody } from "../http.js";
 import { engineClientFor } from "./gateway.js";
@@ -198,6 +202,23 @@ export function botRoutes(ctx: AppContext) {
     await reconcileBotSchedules({ db: ctx.db, temporal }, bot, universeId);
   }
 
+  function triggerConfigDeps(universe: Parameters<typeof engineClientFor>[1], temporal: Awaited<ReturnType<typeof getTemporal>>) {
+    return {
+      db: ctx.db,
+      temporal,
+      validateGrant: async (grantId: string) => {
+        try {
+          await validateRetrievableGrant(engineClientFor(ctx, universe), grantId);
+        } catch (error) {
+          if (error instanceof GrantReferenceError) {
+            throw new BotConfigError(error.message, 400);
+          }
+          throw new BotConfigError("could not validate the credential with Lightspeed", 502);
+        }
+      },
+    };
+  }
+
   byId.get("/:id/triggers", async (c) => {
     const found = await botForSession(c, c.req.param("id"), false);
     if (!found) return c.json({ error: "not found" }, 404);
@@ -218,7 +239,7 @@ export function botRoutes(ctx: AppContext) {
     try {
       const temporal = await getTemporal();
       const trigger = await createTrigger(
-        { db: ctx.db, temporal },
+        triggerConfigDeps(found.access.universe, temporal),
         { bot: found.bot, universeId: found.access.universe.lightspeedUniverseId, input: body.data },
       );
       return c.json({ trigger }, 201);
@@ -241,7 +262,7 @@ export function botRoutes(ctx: AppContext) {
     try {
       const temporal = await getTemporal();
       const trigger = await updateTrigger(
-        { db: ctx.db, temporal },
+        triggerConfigDeps(found.access.universe, temporal),
         {
           bot: found.bot,
           universeId: found.access.universe.lightspeedUniverseId,

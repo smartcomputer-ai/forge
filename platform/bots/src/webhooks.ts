@@ -38,17 +38,19 @@ export function verifyWebhook(
   urlToken: string,
   rawBody: Buffer,
   headers: Record<string, string>,
+  signingSecret?: string,
 ): { ok: true } | { ok: false; reason: string } {
   if (!constantTimeEquals(spec.token, urlToken)) return { ok: false, reason: "unknown endpoint" };
   const verification = spec.verification;
   if (verification.scheme === "token") return { ok: true };
+  if (signingSecret === undefined) return { ok: false, reason: "signing credential unavailable" };
   const provided = headers[verification.header.toLowerCase()];
   if (!provided) return { ok: false, reason: `missing ${verification.header} header` };
   const prefix = verification.prefix ?? "";
   if (prefix && !provided.startsWith(prefix)) {
     return { ok: false, reason: "signature prefix mismatch" };
   }
-  const expected = createHmac("sha256", verification.secret).update(rawBody).digest("hex");
+  const expected = createHmac("sha256", signingSecret).update(rawBody).digest("hex");
   if (!constantTimeEquals(provided.slice(prefix.length).toLowerCase(), expected)) {
     return { ok: false, reason: "signature mismatch" };
   }

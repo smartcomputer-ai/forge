@@ -11,7 +11,8 @@
     "./webhooks": "./src/webhooks.ts",
     "./config": "./src/config.ts",
     "./rendering": "./src/rendering.ts",
-    "./events": "./src/events.ts"
+    "./events": "./src/events.ts",
+    "./credentials": "./src/credentials.ts"
   },
   "scripts": {
     "dev": "tsx src/runtime/main.ts",

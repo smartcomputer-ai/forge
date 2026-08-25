@@ -44,6 +44,10 @@ import {
   resolvePath,
 } from "../rendering.js";
 import { evaluateFilter, type FilterContext } from "../webhooks.js";
+import {
+  GrantReferenceError,
+  validateRetrievableGrant,
+} from "../credentials.js";
 
 export interface BotToolActivitiesConfig {
   db: Db;
@@ -178,7 +182,20 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
 
   async function execute(input: ExecuteBotToolInput): Promise<unknown> {
     const { bot, lightspeedUniverseId } = await loadBot(input.botId);
-    const deps = { db: config.db, temporal: config.temporal };
+    const deps = {
+      db: config.db,
+      temporal: config.temporal,
+      validateGrant: async (grantId: string) => {
+        try {
+          await validateRetrievableGrant(clientFor(lightspeedUniverseId), grantId);
+        } catch (error) {
+          if (error instanceof GrantReferenceError) {
+            throw new BotConfigError(error.message, 400);
+          }
+          throw new BotConfigError("could not validate the credential with Lightspeed", 502);
+        }
+      },
+    };
     const args = (input.args ?? {}) as Record<string, unknown>;
 
     // Defense in depth: the gated tools are not declared to sessions of a
@@ -565,7 +582,24 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
       if (environmentId !== null || argv !== null) {
         throw new BotConfigError("set url (http) or environmentId+argv (exec), not both", 400);
       }
-      source = { kind: "http", url };
+      const grantId = nullableString(args.grantId);
+      const authHeader = nullableString(args.authHeader);
+      const authAudience = nullableString(args.authAudience);
+      const authScheme = typeof args.authScheme === "string" ? args.authScheme : null;
+      source = {
+        kind: "http",
+        url,
+        ...(grantId === null
+          ? {}
+          : {
+              auth: {
+                grantId,
+                ...(authHeader === null ? {} : { header: authHeader }),
+                ...(authScheme === null ? {} : { scheme: authScheme }),
+                ...(authAudience === null ? {} : { audience: authAudience }),
+              },
+            }),
+      };
     } else {
       if (environmentId === null || argv === null || argv.length === 0) {
         throw new BotConfigError(
@@ -606,21 +640,21 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
     };
   }
   const verification = nullableString(args.verification);
-  const secret = nullableString(args.secret);
+  const grantId = nullableString(args.grantId);
   let verificationInput: Record<string, unknown>;
   let preset: "github" | null = null;
   if (verification === "github") {
-    if (!secret) throw new BotConfigError("github verification needs a secret", 400);
+    if (!grantId) throw new BotConfigError("github verification needs a retrievable grantId", 400);
     preset = "github";
     verificationInput = {
       scheme: "hmac-sha256",
-      secret,
+      grantId,
       header: "x-hub-signature-256",
       prefix: "sha256=",
     };
   } else if (verification === "hmac-sha256") {
-    if (!secret) throw new BotConfigError("hmac-sha256 verification needs a secret", 400);
-    verificationInput = { scheme: "hmac-sha256", secret, header: "x-signature-256" };
+    if (!grantId) throw new BotConfigError("hmac-sha256 verification needs a retrievable grantId", 400);
+    verificationInput = { scheme: "hmac-sha256", grantId, header: "x-signature-256" };
   } else {
     verificationInput = { scheme: "token" };
   }

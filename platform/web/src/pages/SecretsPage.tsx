@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Collapsible,
   CollapsibleContent,
@@ -127,7 +128,7 @@ function SecretsList({ universeId, slug }: { universeId: string; slug: string })
     <>
       <PageHeader
         title="Secrets"
-        description="Encrypted secrets owned by this universe, never read back. Provider connections are managed under Integrations."
+        description="Encrypted secrets owned by this universe. Values are never read back to users; explicitly retrievable credentials may be leased by trusted services. Provider connections are managed under Integrations."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" />
@@ -266,6 +267,8 @@ function SecretsList({ universeId, slug }: { universeId: string; slug: string })
                       <TableHead>Credential</TableHead>
                       <TableHead>Provider</TableHead>
                       <TableHead>Type</TableHead>
+                      <TableHead>Exposure</TableHead>
+                      <TableHead>Last leased</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="w-0" />
                     </TableRow>
@@ -286,6 +289,17 @@ function SecretsList({ universeId, slug }: { universeId: string; slug: string })
                             <Badge variant="outline" className="ml-2 font-normal">
                               {managedByIntegration(grant)}
                             </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={grant.exposure === "retrievable" ? "secondary" : "outline"}>
+                            {grant.exposure}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {grant.lastLeasedAtMs ? formatTimestamp(grant.lastLeasedAtMs) : "Never"}
+                          {grant.leaseCount > 0 && (
+                            <span className="ml-1 text-xs">({grant.leaseCount})</span>
                           )}
                         </TableCell>
                         <TableCell>
@@ -374,6 +388,7 @@ function CreateSecretDialog({
   const [grantId, setGrantId] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [secret, setSecret] = useState("");
+  const [retrievable, setRetrievable] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
@@ -382,6 +397,7 @@ function CreateSecretDialog({
     setGrantId("");
     setAdvancedOpen(false);
     setSecret("");
+    setRetrievable(false);
     setError(null);
     create.reset();
   };
@@ -404,6 +420,7 @@ function CreateSecretDialog({
         `/api/v1/universes/${universeId}/secrets/grants`,
         {
           token: secret,
+          exposure: retrievable ? "retrievable" : "brokered",
           ...(grantId.trim() ? { grantId: grantId.trim() } : {}),
           ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
         },
@@ -422,6 +439,7 @@ function CreateSecretDialog({
     setGrantId("");
     setAdvancedOpen(false);
     setSecret("");
+    setRetrievable(false);
     setError(null);
   };
 
@@ -455,7 +473,7 @@ function CreateSecretDialog({
         <DialogHeader>
           <DialogTitle>Add secret</DialogTitle>
           <DialogDescription>
-            The value is sent once to Lightspeed, encrypted, and never returned by an API. Looking
+            The value is sent once to Lightspeed, encrypted, and never returned to this browser. Looking
             for OpenAI/Anthropic API keys, GitHub, or coding-agent subscriptions? Add those under{" "}
             <Link to={integrationsHref} className="underline">
               Integrations
@@ -481,6 +499,25 @@ function CreateSecretDialog({
                 : "Creates a revocable access credential that MCP servers or environments can reference."}
             </FieldDescription>
           </Field>
+          {kind === "bearer" && (
+            <Field className="rounded-lg border bg-muted/15 p-3">
+              <label className="flex items-start gap-3">
+                <Checkbox
+                  checked={retrievable}
+                  onCheckedChange={(checked) => setRetrievable(checked === true)}
+                  aria-label="Allow trusted services to retrieve this credential"
+                />
+                <span className="grid gap-1">
+                  <span className="text-sm font-medium">Retrievable by trusted services</span>
+                  <span className="text-xs text-muted-foreground">
+                    Required for Bot webhook signatures and authenticated HTTP polls. Trusted
+                    service workers can lease the plaintext into memory; every lease is audited.
+                    This choice cannot be changed later.
+                  </span>
+                </span>
+              </label>
+            </Field>
+          )}
           <Field>
             <FieldLabel htmlFor="secret-name">Display name</FieldLabel>
             <Input

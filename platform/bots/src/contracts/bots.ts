@@ -77,7 +77,7 @@ export interface ScheduleTriggerSpecV1 {
 
 export type WebhookVerificationV1 =
   | { scheme: "token" }
-  | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+  | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
 
 export interface WebhookTriggerSpecV1 {
   /** URL path secret; possession is the baseline authentication. */
@@ -88,7 +88,15 @@ export interface WebhookTriggerSpecV1 {
 
 /** How a poll trigger reaches its source. */
 export type BotPollSourceV1 =
-  | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+  | {
+      kind: "http";
+      url: string;
+      method?: "GET" | "POST";
+      /** Non-secret headers only; credentials are leased from the grant. */
+      headers?: Record<string, string>;
+      auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+      body?: string;
+    }
   | {
       kind: "exec";
       /** Universe environment the command runs in (woken on use). */
@@ -367,9 +375,9 @@ export const BOT_TOOL_SCHEMAS = {
         description: "Schedule kind: what the fired event asks the session to do",
       },
       verification: { type: ["string", "null"], enum: ["token", "hmac-sha256", "github", null] },
-      secret: {
+      grantId: {
         type: ["string", "null"],
-        description: "Required for hmac-sha256 and github verification",
+        description: "Retrievable core credential grant for webhook HMAC or HTTP poll authentication",
       },
       filter: {
         type: ["string", "null"],
@@ -396,6 +404,18 @@ export const BOT_TOOL_SCHEMAS = {
       url: {
         type: ["string", "null"],
         description: "Poll kind: HTTP(S) source fetched every intervalMs; exclusive with environmentId/argv",
+      },
+      authHeader: {
+        type: ["string", "null"],
+        description: "HTTP poll credential header (default authorization)",
+      },
+      authScheme: {
+        type: ["string", "null"],
+        description: "HTTP poll credential scheme (default Bearer; empty sends the token raw)",
+      },
+      authAudience: {
+        type: ["string", "null"],
+        description: "Optional audience passed to the core grant broker",
       },
       environmentId: {
         type: ["string", "null"],

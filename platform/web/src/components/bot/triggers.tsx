@@ -302,7 +302,7 @@ interface DeliveryFormState {
 
 interface WebhookFormState extends DeliveryFormState {
   scheme: "token" | "hmac-sha256";
-  secret: string;
+  grantId: string;
   header: string;
   prefix: string;
   preset: boolean;
@@ -311,6 +311,10 @@ interface WebhookFormState extends DeliveryFormState {
 interface PollFormState extends DeliveryFormState {
   sourceKind: "http" | "exec";
   url: string;
+  grantId: string;
+  authHeader: string;
+  authScheme: string;
+  authAudience: string;
   environmentId: string;
   /** One argv entry per line. */
   argvText: string;
@@ -335,6 +339,10 @@ const defaultPollForm: PollFormState = {
   ...defaultDeliveryForm,
   sourceKind: "http",
   url: "",
+  grantId: "",
+  authHeader: "authorization",
+  authScheme: "Bearer",
+  authAudience: "",
   environmentId: "",
   argvText: "",
   cwd: "",
@@ -349,6 +357,10 @@ function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
   return {
     sourceKind: spec.source.kind,
     url: spec.source.kind === "http" ? spec.source.url : "",
+    grantId: spec.source.kind === "http" ? (spec.source.auth?.grantId ?? "") : "",
+    authHeader: spec.source.kind === "http" ? (spec.source.auth?.header ?? "authorization") : "authorization",
+    authScheme: spec.source.kind === "http" ? (spec.source.auth?.scheme ?? "Bearer") : "Bearer",
+    authAudience: spec.source.kind === "http" ? (spec.source.auth?.audience ?? "") : "",
     environmentId: spec.source.kind === "exec" ? spec.source.environmentId : "",
     argvText: spec.source.kind === "exec" ? spec.source.argv.join("\n") : "",
     cwd: spec.source.kind === "exec" ? (spec.source.cwd ?? "") : "",
@@ -400,7 +412,22 @@ function pollPayload(form: PollFormState) {
     spec: {
       source:
         form.sourceKind === "http"
-          ? { kind: "http" as const, url: form.url.trim() }
+          ? {
+              kind: "http" as const,
+              url: form.url.trim(),
+              ...(form.grantId.trim()
+                ? {
+                    auth: {
+                      grantId: form.grantId.trim(),
+                      ...(form.authHeader.trim() && form.authHeader.trim() !== "authorization"
+                        ? { header: form.authHeader.trim() }
+                        : {}),
+                      ...(form.authScheme !== "Bearer" ? { scheme: form.authScheme } : {}),
+                      ...(form.authAudience.trim() ? { audience: form.authAudience.trim() } : {}),
+                    },
+                  }
+                : {}),
+            }
           : {
               kind: "exec" as const,
               environmentId: form.environmentId.trim(),
@@ -452,7 +479,7 @@ function deliveryFormProblem(form: DeliveryFormState): string | null {
 const defaultWebhookForm: WebhookFormState = {
   ...defaultDeliveryForm,
   scheme: "token",
-  secret: "",
+  grantId: "",
   header: "",
   prefix: "",
   preset: false,
@@ -462,7 +489,7 @@ function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
   const spec = trigger.spec as BotWebhookSpec;
   return {
     scheme: spec.verification.scheme,
-    secret: spec.verification.scheme === "hmac-sha256" ? spec.verification.secret : "",
+    grantId: spec.verification.scheme === "hmac-sha256" ? spec.verification.grantId : "",
     header: spec.verification.scheme === "hmac-sha256" ? spec.verification.header : "",
     prefix: spec.verification.scheme === "hmac-sha256" ? (spec.verification.prefix ?? "") : "",
     preset: spec.preset === "github",
@@ -484,7 +511,7 @@ function webhookPayload(form: WebhookFormState) {
           ? { scheme: "token" as const }
           : {
               scheme: "hmac-sha256" as const,
-              secret: form.secret,
+              grantId: form.grantId.trim(),
               header: form.header.trim() || "x-signature-256",
               ...(form.prefix ? { prefix: form.prefix } : {}),
             },
@@ -495,8 +522,8 @@ function webhookPayload(form: WebhookFormState) {
 }
 
 function webhookFormProblem(form: WebhookFormState): string | null {
-  if (form.scheme === "hmac-sha256" && form.secret.length < 8) {
-    return "The HMAC secret needs at least 8 characters.";
+  if (form.scheme === "hmac-sha256" && !form.grantId.trim()) {
+    return "Choose a retrievable credential grant for HMAC verification.";
   }
   return deliveryFormProblem(form);
 }
@@ -546,14 +573,18 @@ function WebhookFields({
       {form.scheme === "hmac-sha256" && (
         <div className="grid grid-cols-2 gap-3">
           <Field>
-            <FieldLabel htmlFor="webhook-secret">Secret</FieldLabel>
+            <FieldLabel htmlFor="webhook-grant">Credential grant ID</FieldLabel>
             <Input
-              id="webhook-secret"
-              value={form.secret}
-              onChange={(event) => setForm({ ...form, secret: event.target.value })}
-              type="password"
+              id="webhook-grant"
+              value={form.grantId}
+              onChange={(event) => setForm({ ...form, grantId: event.target.value })}
+              placeholder="grant_…"
+              className="font-mono"
               autoComplete="off"
             />
+            <FieldDescription>
+              Active retrievable credential from Secrets; the signing value is leased only during verification.
+            </FieldDescription>
           </Field>
           {!form.preset && (
             <Field>
@@ -698,20 +729,60 @@ function PollFields({
   return (
     <>
       {form.sourceKind === "http" ? (
-        <Field>
-          <FieldLabel htmlFor="poll-url">URL</FieldLabel>
-          <Input
-            id="poll-url"
-            value={form.url}
-            onChange={(event) => setForm({ ...form, url: event.target.value })}
-            placeholder="https://api.example.com/issues?state=open"
-            className="font-mono"
-          />
-          <FieldDescription>
-            Fetched on the interval; the JSON response is diffed and only new items wake the bot.
-            The first fire baselines without delivering.
-          </FieldDescription>
-        </Field>
+        <>
+          <Field>
+            <FieldLabel htmlFor="poll-url">URL</FieldLabel>
+            <Input
+              id="poll-url"
+              value={form.url}
+              onChange={(event) => setForm({ ...form, url: event.target.value })}
+              placeholder="https://api.example.com/issues?state=open"
+              className="font-mono"
+            />
+            <FieldDescription>
+              Fetched on the interval; the JSON response is diffed and only new items wake the bot.
+              The first fire baselines without delivering.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="poll-grant">Credential grant ID (optional)</FieldLabel>
+            <Input
+              id="poll-grant"
+              value={form.grantId}
+              onChange={(event) => setForm({ ...form, grantId: event.target.value })}
+              placeholder="grant_…"
+              className="font-mono"
+              autoComplete="off"
+            />
+            <FieldDescription>
+              Active retrievable credential from Secrets. It is leased into worker memory only when the poll fires.
+            </FieldDescription>
+          </Field>
+          {form.grantId.trim() && (
+            <div className="grid grid-cols-2 gap-3">
+              <Field>
+                <FieldLabel htmlFor="poll-auth-header">Credential header</FieldLabel>
+                <Input
+                  id="poll-auth-header"
+                  value={form.authHeader}
+                  onChange={(event) => setForm({ ...form, authHeader: event.target.value })}
+                  placeholder="authorization"
+                  className="font-mono"
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="poll-auth-scheme">Scheme</FieldLabel>
+                <Input
+                  id="poll-auth-scheme"
+                  value={form.authScheme}
+                  onChange={(event) => setForm({ ...form, authScheme: event.target.value })}
+                  placeholder="Bearer (blank sends raw token)"
+                  className="font-mono"
+                />
+              </Field>
+            </div>
+          )}
+        </>
       ) : (
         <>
           <Field>

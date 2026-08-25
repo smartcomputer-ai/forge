@@ -182,7 +182,7 @@ describe("bot_trigger_put argument mapping", () => {
       name: "prs",
       kind: "webhook",
       verification: "github",
-      secret: "s3cret-key-1",
+      grantId: "github-webhook-secret",
       routePolicy: "perKey",
       routeKey: null,
       filter: 'event.kind == "pull_request.opened"',
@@ -206,7 +206,7 @@ describe("bot_trigger_put argument mapping", () => {
     });
   });
 
-  it("maps schedules, requires secrets for signed schemes, and rejects bad kinds", () => {
+  it("maps schedules, requires grant references for signed schemes, and rejects bad kinds", () => {
     const schedule = parseTriggerPutArgs({
       name: "nightly",
       kind: "schedule",
@@ -220,7 +220,7 @@ describe("bot_trigger_put argument mapping", () => {
       spec: { cron: "0 3 * * *", timezone: "Europe/Zurich" },
     });
     expect(() =>
-      parseTriggerPutArgs({ name: "x", kind: "webhook", verification: "hmac-sha256", secret: null }),
+      parseTriggerPutArgs({ name: "x", kind: "webhook", verification: "hmac-sha256", grantId: null }),
     ).toThrow(BotConfigError);
     expect(() => parseTriggerPutArgs({ name: "x", kind: "poll" })).toThrow(BotConfigError);
   });
@@ -257,6 +257,9 @@ describe("poll trigger mapping and validation", () => {
       name: "issues",
       kind: "poll",
       url: "https://api.example.com/issues",
+      grantId: "issues-api-key",
+      authHeader: "x-api-key",
+      authScheme: "",
       intervalMs: 300_000,
       items: "data.issues",
       cursorId: "id",
@@ -268,7 +271,11 @@ describe("poll trigger mapping and validation", () => {
       name: "issues",
       kind: "poll",
       spec: {
-        source: { kind: "http", url: "https://api.example.com/issues" },
+        source: {
+          kind: "http",
+          url: "https://api.example.com/issues",
+          auth: { grantId: "issues-api-key", header: "x-api-key", scheme: "" },
+        },
         intervalMs: 300_000,
         items: "data.issues",
         cursor: { kind: "idSet", id: "id" },
@@ -350,6 +357,20 @@ describe("poll trigger mapping and validation", () => {
       pollSpecInput.safeParse({
         source: { kind: "http", url: "ftp://nope" },
         intervalMs: 120_000,
+        cursor: { kind: "idSet", id: "id" },
+      }).success,
+    ).toBe(false);
+  });
+
+  it("rejects credential material in ordinary HTTP headers", () => {
+    expect(
+      pollSpecInput.safeParse({
+        source: {
+          kind: "http",
+          url: "https://api.example.com/items",
+          headers: { Authorization: "Bearer plaintext" },
+        },
+        intervalMs: 60_000,
         cursor: { kind: "idSet", id: "id" },
       }).success,
     ).toBe(false);

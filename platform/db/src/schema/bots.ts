@@ -69,12 +69,20 @@ export type BotWebhookTriggerSpec = {
   token: string;
   verification:
     | { scheme: "token" }
-    | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+    | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
   preset?: "github" | null;
 };
 export type BotPollTriggerSpec = {
   source:
-    | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+    | {
+        kind: "http";
+        url: string;
+        method?: "GET" | "POST";
+        /** Non-secret headers only; credentials are resolved through `auth`. */
+        headers?: Record<string, string>;
+        auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+        body?: string;
+      }
     | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
   intervalMs: number;
   items?: string | null;

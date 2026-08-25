@@ -201,6 +201,7 @@ const bearerGrantCreateSchema = z.object({
   grantId: z.string().trim().min(1).optional(),
   displayName: z.string().trim().min(1).max(200).optional(),
   subjectHint: z.string().trim().min(1).max(200).optional(),
+  exposure: z.enum(["brokered", "retrievable"]).default("brokered"),
   token: z.string().min(1),
 });
 

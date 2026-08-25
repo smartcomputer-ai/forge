@@ -21,6 +21,7 @@ import {
   type PollCursorState,
 } from "../poll.js";
 import { computeRouteSession, evaluateFilter, type FilterContext } from "../webhooks.js";
+import { GrantLeaseCache, type GrantLeaseRequest } from "../credentials.js";
 
 const HTTP_TIMEOUT_MS = 30_000;
 const MAX_PAYLOAD_BYTES = 1024 * 1024;
@@ -59,19 +60,89 @@ export interface BotPollActivities {
 
 interface PollSpecRow {
   source:
-    | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+    | {
+        kind: "http";
+        url: string;
+        method?: "GET" | "POST";
+        headers?: Record<string, string>;
+        auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+        body?: string;
+      }
     | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
   intervalMs: number;
   items: string | null;
   cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
 }
 
+type PollHttpSource = Extract<PollSpecRow["source"], { kind: "http" }>;
+const FORBIDDEN_POLL_HEADERS = new Set([
+  "authorization",
+  "proxy-authorization",
+  "cookie",
+  "set-cookie",
+  "x-api-key",
+  "api-key",
+]);
+
+export async function fetchHttpPollPayload(input: {
+  universeId: string;
+  source: PollHttpSource;
+  client: Pick<LightspeedClient, "call">;
+  leaseCache: GrantLeaseCache;
+  fetch: typeof fetch;
+}): Promise<unknown> {
+  const { universeId, source, client, leaseCache, fetch: doFetch } = input;
+  for (const name of Object.keys(source.headers ?? {})) {
+    if (FORBIDDEN_POLL_HEADERS.has(name.toLowerCase())) {
+      throw new Error(`poll credential header ${name} must use auth.grantId`);
+    }
+  }
+  const leaseRequest: GrantLeaseRequest | null = source.auth
+    ? {
+        cacheScope: universeId,
+        grantId: source.auth.grantId,
+        ...(source.auth.audience === undefined ? {} : { audience: source.auth.audience }),
+      }
+    : null;
+  const request = async (): Promise<Response> => {
+    const headers = new Headers(source.headers);
+    if (source.auth && leaseRequest) {
+      const token = await leaseCache.lease(client, leaseRequest);
+      headers.set(
+        source.auth.header ?? "authorization",
+        credentialHeaderValue(token, source.auth.scheme),
+      );
+    }
+    return doFetch(source.url, {
+      method: source.method ?? "GET",
+      headers,
+      ...(source.body === undefined ? {} : { body: source.body }),
+      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+    });
+  };
+  let response = await request();
+  if (leaseRequest && (response.status === 401 || response.status === 403)) {
+    leaseCache.invalidate(leaseRequest);
+    response = await request();
+  }
+  if (!response.ok) throw new Error(`poll source responded ${response.status}`);
+  const text = await response.text();
+  if (text.length > MAX_PAYLOAD_BYTES) {
+    throw new Error(`poll payload exceeds ${MAX_PAYLOAD_BYTES} bytes`);
+  }
+  return parsePollPayload(text, "response body");
+}
+
 export function createBotPollActivities(config: BotPollActivitiesConfig): BotPollActivities {
+  const leaseCache = new GrantLeaseCache();
   const clientFor = (universeId: string) =>
     new LightspeedClient({
       endpoint: config.endpoint,
       ...(config.fetch === undefined ? {} : { fetch: config.fetch }),
-      headers: { "x-lightspeed-universe": universeId },
+      headers: {
+        "x-lightspeed-universe": universeId,
+        "x-lightspeed-principal": "service_account:lightspeed-bots",
+      },
     });
 
   async function recordActivity(
@@ -89,22 +160,17 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
   }
 
   /** Fetch the HTTP source with a wall-clock timeout and a size cap. */
-  async function fetchHttpPayload(source: Extract<PollSpecRow["source"], { kind: "http" }>): Promise<unknown> {
-    const doFetch = config.fetch ?? fetch;
-    const response = await doFetch(source.url, {
-      method: source.method ?? "GET",
-      ...(source.headers === undefined ? {} : { headers: source.headers }),
-      ...(source.body === undefined ? {} : { body: source.body }),
-      signal: AbortSignal.timeout(HTTP_TIMEOUT_MS),
+  async function fetchHttpPayload(
+    universeId: string,
+    source: Extract<PollSpecRow["source"], { kind: "http" }>,
+  ): Promise<unknown> {
+    return fetchHttpPollPayload({
+      universeId,
+      source,
+      client: clientFor(universeId),
+      leaseCache,
+      fetch: config.fetch ?? fetch,
     });
-    if (!response.ok) {
-      throw new Error(`poll source responded ${response.status}`);
-    }
-    const text = await response.text();
-    if (text.length > MAX_PAYLOAD_BYTES) {
-      throw new Error(`poll payload exceeds ${MAX_PAYLOAD_BYTES} bytes`);
-    }
-    return parsePollPayload(text, "response body");
   }
 
   /**
@@ -226,7 +292,7 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
       try {
         payload =
           spec.source.kind === "http"
-            ? await fetchHttpPayload(spec.source)
+            ? await fetchHttpPayload(row.lightspeedUniverseId, spec.source)
             : await fetchExecPayload(
                 row.lightspeedUniverseId,
                 row.trigger.id,
@@ -428,6 +494,11 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
     ).catch(() => undefined);
     await recordActivity(row.bot.id, kind, { detail });
   }
+}
+
+export function credentialHeaderValue(token: string, scheme: string | undefined): string {
+  const resolved = scheme === undefined ? "Bearer" : scheme.trim();
+  return resolved ? `${resolved} ${token}` : token;
 }
 
 function itemOccurredAt(

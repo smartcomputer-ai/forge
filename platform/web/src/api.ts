@@ -213,6 +213,7 @@ export interface AuthGrantOption {
   displayName?: string | null;
   subjectHint?: string | null;
   status: "active" | "needsReauth" | "revoked" | "failed";
+  exposure: "brokered" | "retrievable";
 }
 
 export interface SecretGrant extends AuthGrantOption {
@@ -225,6 +226,8 @@ export interface SecretGrant extends AuthGrantOption {
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
   expiresAtMs?: number | null;
+  lastLeasedAtMs?: number | null;
+  leaseCount: number;
   /// Non-secret provider metadata (GitHub App grants: installation id,
   /// account login, permissions, repository selection).
   metadata?: Record<string, unknown>;
@@ -574,7 +577,7 @@ export interface BotScheduleSpec {
 
 export type BotWebhookVerification =
   | { scheme: "token" }
-  | { scheme: "hmac-sha256"; secret: string; header: string; prefix?: string };
+  | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
 
 export interface BotWebhookSpec {
   token: string;
@@ -583,7 +586,14 @@ export interface BotWebhookSpec {
 }
 
 export type BotPollSource =
-  | { kind: "http"; url: string; method?: "GET" | "POST"; headers?: Record<string, string>; body?: string }
+  | {
+      kind: "http";
+      url: string;
+      method?: "GET" | "POST";
+      headers?: Record<string, string>;
+      auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+      body?: string;
+    }
   | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
 
 export interface BotPollSpec {
