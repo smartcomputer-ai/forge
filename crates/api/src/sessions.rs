@@ -1034,21 +1034,6 @@ pub enum SessionEventKindView {
     RunStarted {
         run_id: RunId,
     },
-    MessageBuffered {
-        message_id: String,
-        submission_id: Option<String>,
-    },
-    MessageConsumedByAwait {
-        message_id: String,
-        run_id: RunId,
-    },
-    MessagePromotedToRun {
-        message_id: String,
-        run_id: RunId,
-    },
-    MessageCancelled {
-        message_id: String,
-    },
     RunSteeringAccepted {
         run_id: RunId,
         steering_id: String,

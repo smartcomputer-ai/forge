@@ -92,10 +92,12 @@ through. It either rejects them, or maps them onto pre-registered universe
 records by name. Client-supplied stdio MCP servers cannot be reached from a
 hosted worker at all.
 
-### Permission and elicitation are mailbox awaits
+### Permission and elicitation need an opt-in await wake (mailbox removed)
 
 `session/request_permission` and `elicitation/create` are the same shape as
-a parked `await { mailbox: true }`: the run parks, the adapter projects the
+a parked `await` woken by an inbound reply. P134 slice 7 removed the fleet
+mailbox (`await { mailbox }`); this adapter would reintroduce that wake as an
+opt-in await field (P129's note). The run parks, the adapter projects the
 pending question to the editor, the user's answer enters as `SubmitMessage`,
 and the engine validates the wake. This dovetails with the pending
 [MCP approval flow](pNNN-mcp-approval-flow.md) and needs no new engine

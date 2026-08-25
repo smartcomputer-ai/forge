@@ -64,7 +64,6 @@ pub(super) async fn admit_and_append_command(
 pub(super) fn command_submission_id(command: &CoreAgentCommand) -> Option<SubmissionId> {
     match command {
         CoreAgentCommand::RequestRun(request) => request.submission_id.clone(),
-        CoreAgentCommand::SubmitMessage(message) => message.submission_id.clone(),
         _ => None,
     }
 }
@@ -302,11 +301,16 @@ async fn queue_detached_promise_followups(
             ));
         }
         let submission_id = detached_promise_submission_id(&followup.promise_id);
+        // A detached promise settling on an idle session wakes it with an
+        // ordinary run; the submission id is derived from the promise so a
+        // replayed follow-up is a no-op.
         ctx.state_mut(|state| {
             state.pending_admissions.push(AgentAdmission {
-                command: CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
+                command: CoreAgentCommand::RequestRun(engine::RunRequestCommand {
+                    notify_on_terminal: Vec::new(),
                     submission_id: Some(submission_id),
-                    input,
+                    source: engine::RunRequestSource::Input { input },
+                    run_config: engine::RunConfig::default(),
                 }),
                 correlation_token: None,
             });

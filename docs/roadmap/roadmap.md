@@ -1,7 +1,7 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P134](p134-subagents.md) — sub-agents (slices 1–5 done 2026-08-25; mailbox removal open): the fleet control plane is
+- [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
   a start-on-call `SubagentExecutionWorkflow`, so the session workflow and
@@ -10,7 +10,7 @@
   attenuating limits; typed `SessionOrigin` lineage on session views and
   `session/list` (replacing `session_links`); one-shot children closed by
   the execution; `inherit` profile environment intent. Removes fleet,
-  `PromiseSource::Run`, and (separably) the mailbox.
+  `PromiseSource::Run`, and the mailbox.
 - [ ] [P133](p133-retrievable-grant-leases.md) — retrievable grants: an
   immutable creation-time `exposure: brokered | retrievable` on auth grants,
   a broker-backed `auth/grants/lease` returning `{token, expiresAtMs}`

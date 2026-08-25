@@ -611,7 +611,7 @@ mod tests {
     use std::sync::Mutex;
 
     use engine::{
-        ActiveRun, ModelSelection, ProviderApiKind, RunId, RunOrigin, RunSource, RunStatus,
+        ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus,
     };
     use temporal_workflow::{DEFAULT_MODEL, default_run_config, default_session_config};
 
@@ -707,7 +707,6 @@ mod tests {
             run_id,
             status: RunStatus::Active,
             submission_id: None,
-            origin: RunOrigin::Requested,
             source: RunSource::Input { input: Vec::new() },
             input_entry_ids: Vec::new(),
             input_consumed_by_turn_id: None,

@@ -8,8 +8,8 @@ use engine::{
 #[test]
 fn pending_admissions_are_fifo() {
     let mut workflow = AgentSessionWorkflow::default();
-    workflow.queue_admission(admission(deliver_message("submit_1")));
-    workflow.queue_admission(admission(deliver_message("submit_2")));
+    workflow.queue_admission(admission(request_input_run("submit_1")));
+    workflow.queue_admission(admission(request_input_run("submit_2")));
 
     let pending = std::mem::take(&mut workflow.pending_admissions);
     assert_eq!(
@@ -33,7 +33,7 @@ fn admission_failure_status_does_not_poison_later_admission() {
         message: rejection.to_string(),
         rejection: Some(rejection.clone()),
     });
-    workflow.queue_admission(admission(deliver_message("submit_later")));
+    workflow.queue_admission(admission(request_input_run("submit_later")));
 
     let status = workflow.status_snapshot();
 
@@ -53,21 +53,6 @@ fn admission_failure_status_does_not_poison_later_admission() {
     );
     assert_eq!(status.admission_failures[0].rejection, Some(rejection));
     assert_eq!(status.last_error, None);
-}
-
-#[test]
-fn submit_message_submission_id_is_available_for_failure_correlation() {
-    let submission_id = SubmissionId::new("submit_test");
-    let command = CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-        submission_id: Some(submission_id.clone()),
-        input: user_input(engine::BlobRef::from_bytes(b"hello")),
-    });
-
-    assert_eq!(drive::command_submission_id(&command), Some(submission_id));
-    assert_eq!(
-        drive::command_submission_id(&CoreAgentCommand::CloseSession { force: false }),
-        None
-    );
 }
 
 #[test]
@@ -259,7 +244,6 @@ fn close_on_terminal_requires_idle_open_session_with_completed_run() {
         run_id: RunId::new(1),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: None,
         failure: None,
@@ -330,7 +314,6 @@ fn rehydrated_active_run_wakes_core_drive_without_a_new_signal() {
     let mut workflow = workflow_with_parked_tool_batch(AwaitSpec {
         promise_ids: vec![engine::PromiseId::new("p1")],
         mode: engine::AwaitMode::All,
-        mailbox: false,
         deadline_at_ms: Some(50_000),
     });
     assert!(!wait_loop::workflow_state_needs_core_drive_for_state(
@@ -385,19 +368,11 @@ fn continuation_state_round_trips_admission_failure_correlation() {
     assert_eq!(decoded, continuation);
 }
 
-fn deliver_message(submission_id: &str) -> CoreAgentCommand {
-    CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-        submission_id: Some(SubmissionId::new(submission_id)),
-        input: user_input(engine::BlobRef::from_bytes(submission_id.as_bytes())),
-    })
-}
-
-fn request_run_with_notify(submission_id: &str) -> CoreAgentCommand {
+/// An input-bearing run request with a submission id: the generic admission
+/// used where a test only needs "some command carrying input".
+fn request_input_run(submission_id: &str) -> CoreAgentCommand {
     CoreAgentCommand::RequestRun(engine::RunRequestCommand {
-        notify_on_terminal: vec![RunTerminalNotifyIntent {
-            holder_workflow_id: "universe/holder".to_owned(),
-            token: "promise_request".to_owned(),
-        }],
+        notify_on_terminal: Vec::new(),
         submission_id: Some(SubmissionId::new(submission_id)),
         source: engine::RunRequestSource::Input {
             input: user_input(engine::BlobRef::from_bytes(submission_id.as_bytes())),
@@ -405,6 +380,7 @@ fn request_run_with_notify(submission_id: &str) -> CoreAgentCommand {
         run_config: crate::default_run_config(),
     })
 }
+
 
 fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
     vec![ContextEntryInput {
@@ -547,15 +523,6 @@ fn pending_promise_cancellation(promise_id: &str) -> PendingPromiseCancellation 
     }
 }
 
-fn workflow_with_parked_mailbox_await() -> AgentSessionWorkflow {
-    workflow_with_parked_tool_batch(engine::AwaitSpec {
-        promise_ids: Vec::new(),
-        mode: engine::AwaitMode::All,
-        mailbox: true,
-        deadline_at_ms: None,
-    })
-}
-
 fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkflow {
     let mut workflow = AgentSessionWorkflow::default();
     let run_id = RunId::new(1);
@@ -587,7 +554,6 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
         run_id,
         status: RunStatus::Parked,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         source: engine::RunSource::Input {
             input: user_input(engine::BlobRef::from_bytes(b"start")),
         },
@@ -892,7 +858,6 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         run_id: RunId::new(1),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: None,
         failure: None,
@@ -1142,7 +1107,6 @@ fn terminal_run_with_notify_intent_queues_emission() {
         run_id: RunId::new(3),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: Some(output_ref.clone()),
         failure: None,
@@ -1259,7 +1223,6 @@ fn await_spec(
     engine::AwaitSpec {
         promise_ids: ids.iter().map(|id| engine::PromiseId::new(*id)).collect(),
         mode,
-        mailbox: false,
         deadline_at_ms,
     }
 }
@@ -1294,7 +1257,6 @@ fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
         promise_ids: vec![promise_id.clone()],
         mode: engine::AwaitMode::All,
         deadline_at_ms: None,
-        mailbox: false,
     });
     let invocation_id = engine::WorkflowToolInvocationId::for_call(
         test_universe(),
@@ -1324,8 +1286,7 @@ fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
             promise_ids: vec![promise_id.clone()],
             mode: engine::AwaitMode::All,
             deadline_at_ms: None,
-            mailbox: false,
-        },
+            },
     };
     workflow.core_state.promises.promises.insert(
         promise_id.clone(),
@@ -1386,38 +1347,6 @@ fn promise_snapshot_reports_pending_promise() {
 }
 
 #[test]
-fn mailbox_await_wakes_on_engine_buffered_message() {
-    let mut workflow = workflow_with_parked_mailbox_await();
-    assert!(!awaits::has_satisfied_await(&workflow));
-
-    workflow.queue_admission(admission(deliver_message("submit_regular")));
-    assert!(!awaits::has_satisfied_await(&workflow));
-    workflow.pending_admissions.clear();
-
-    workflow.queue_admission(admission(request_run_with_notify("fleet_request_1")));
-    assert!(!awaits::has_satisfied_await(&workflow));
-    workflow.pending_admissions.clear();
-
-    let input = user_input(engine::BlobRef::from_bytes(b"fleet_send_1"));
-    workflow
-        .core_state
-        .runs
-        .messages
-        .push(engine::BufferedMessage {
-            message_id: engine::MessageId::new(1),
-            submission_id: Some(SubmissionId::new("fleet_send_1")),
-            submission_digest: engine::message_submission_digest(&input),
-            input,
-            run_config: crate::default_run_config(),
-            config_revision: 0,
-            status: engine::MessageStatus::Buffered,
-            consumed_by_run_id: None,
-            promoted_to_run_id: None,
-        });
-    assert!(awaits::has_satisfied_await(&workflow));
-}
-
-#[test]
 fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
     let mut workflow = workflow_with_parked_tool_batch(engine::AwaitSpec {
         promise_ids: vec![
@@ -1427,7 +1356,6 @@ fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
             engine::PromiseId::new("p_detached"),
         ],
         mode: engine::AwaitMode::All,
-        mailbox: true,
         deadline_at_ms: Some(50_000),
     });
     let promises = [
@@ -1538,7 +1466,7 @@ fn continue_as_new_is_blocked_by_non_reconstructible_workflow_state() {
     let mut workflow = AgentSessionWorkflow::default();
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 
-    workflow.queue_admission(admission(deliver_message("submit_1")));
+    workflow.queue_admission(admission(request_input_run("submit_1")));
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
     workflow.pending_admissions.clear();
 

@@ -37,7 +37,8 @@ so these are correct and observable. Phase 2 makes the platform web UI (and
 the CLI) expose all three with proper feedback.
 
 Non-goals: delivering messages into a run parked on `await(mailbox=true)`
-(`SubmitMessage` → `MessageBuffered`, fleet-only today, stays fleet-only);
+(`SubmitMessage` → `MessageBuffered`, fleet-only; removed with fleet by P134
+slice 7 on 2026-08-25);
 `ForceCancelRun` as a client surface (remains a watchdog/reaper/force-close
 lever); streaming partial-output preservation on cancel; per-call tool
 cancellation UI.

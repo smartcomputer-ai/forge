@@ -69,7 +69,6 @@ pub(super) async fn process_satisfied_await(
         let claim = engine::await_wake(&state.core_state, now)?;
         let outcome = match claim {
             engine::WakeReason::Cancelled => AwaitOutcome::Cancelled,
-            engine::WakeReason::MailboxMessage => AwaitOutcome::MailboxMessage,
             engine::WakeReason::Timeout => AwaitOutcome::Timeout,
             engine::WakeReason::Terminal => AwaitOutcome::Terminal,
         };

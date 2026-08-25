@@ -18,8 +18,12 @@
   from the child's origin at apply time (rejected off a delegation origin or
   when the parent has no active environment), in the profile editor and CLI
   validation; live scenarios assert the catalog entry and that an inherited
-  provisioned environment stays open after the child closes. Open: slice 7
-  (mailbox removal).
+  provisioned environment stays open after the child closes.
+- Slice 7 implemented 2026-08-25: the mailbox is gone — `await { mailbox }`,
+  `SubmitMessage`, the `MessageBuffered`/`MessageConsumedByAwait`/
+  `MessagePromotedToRun`/`MessageCancelled` events, `WakeReason::MailboxMessage`,
+  `RunOrigin`, and the buffered-message state. The detached-promise follow-up
+  wakes an idle session with an ordinary `RequestRun`. Nothing open.
 - Proposed 2026-08-25, from the fleet-vs-bots review
   (`later/pNNN-fleet-vs-bots.md`, direction C′) and a design discussion with
   Lukas the same day. Decisions taken there and fixed here: the agent menu is

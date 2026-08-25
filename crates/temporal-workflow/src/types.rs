@@ -110,20 +110,12 @@ pub struct AgentSessionStatus {
     pub queued_runs: Vec<AgentQueuedRunSummary>,
     pub completed_runs: Vec<AgentCompletedRunSummary>,
     #[serde(default)]
-    pub consumed_message_submissions: Vec<AgentMessageSubmissionConsumptionSummary>,
-    #[serde(default)]
     pub admission_failures: Vec<AgentAdmissionFailure>,
     pub last_error: Option<String>,
     /// True when the session workflow failed during bootstrap/rehydration. The
     /// gateway surfaces this as a typed `session_bootstrap_failed` error.
     #[serde(default)]
     pub bootstrap_failed: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentMessageSubmissionConsumptionSummary {
-    pub submission_id: SubmissionId,
-    pub run_id: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -377,7 +369,6 @@ pub enum AwaitOutcome {
     Terminal,
     Timeout,
     Cancelled,
-    MailboxMessage,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

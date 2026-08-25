@@ -414,31 +414,6 @@ impl<'a> CoreAgentProjector<'a> {
                 RunEvent::Started { run_id } => Ok(SessionEventKindView::RunStarted {
                     run_id: api_run_id(*run_id),
                 }),
-                RunEvent::MessageBuffered {
-                    message_id,
-                    submission_id,
-                    ..
-                } => Ok(SessionEventKindView::MessageBuffered {
-                    message_id: message_id.as_u64().to_string(),
-                    submission_id: submission_id.as_ref().map(|id| id.as_str().to_owned()),
-                }),
-                RunEvent::MessageConsumedByAwait { message_id, run_id } => {
-                    Ok(SessionEventKindView::MessageConsumedByAwait {
-                        message_id: message_id.as_u64().to_string(),
-                        run_id: api_run_id(*run_id),
-                    })
-                }
-                RunEvent::MessagePromotedToRun { message_id, run_id } => {
-                    Ok(SessionEventKindView::MessagePromotedToRun {
-                        message_id: message_id.as_u64().to_string(),
-                        run_id: api_run_id(*run_id),
-                    })
-                }
-                RunEvent::MessageCancelled { message_id } => {
-                    Ok(SessionEventKindView::MessageCancelled {
-                        message_id: message_id.as_u64().to_string(),
-                    })
-                }
                 RunEvent::SteeringAccepted {
                     run_id,
                     steering_id,
@@ -2978,7 +2953,6 @@ mod tests {
                 notify_on_terminal: Vec::new(),
                 run_id,
                 submission_id: None,
-                origin: engine::RunOrigin::Requested,
                 source: engine::RunSource::Context {
                     triggers: vec![engine::RunSourceContextTrigger { key, entry_id }],
                 },

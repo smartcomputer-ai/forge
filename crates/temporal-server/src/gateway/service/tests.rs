@@ -1228,7 +1228,6 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
         run_id: RunId::new(7),
         status: RunStatus::Completed,
         submission_id: Some(submission_id.clone()),
-        origin: engine::RunOrigin::Requested,
         submission_digest: Some(engine::request_run_submission_digest(
             &original_source,
             &run_config,

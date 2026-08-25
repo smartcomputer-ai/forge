@@ -3,8 +3,8 @@
 use crate::{
     CommandError, CommandRejection, CommandRejectionKind, ContextEntrySource, ContextEvent,
     CoreAgentCommand, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError, MessageStatus,
-    PromiseEvent, PromiseResolution, RunConfig, RunEvent, RunRequestSource, RunSource, RunStatus,
+    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError,
+    PromiseEvent, PromiseResolution, RunEvent, RunRequestSource, RunSource, RunStatus,
     ToolConfigEvent, WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
@@ -242,111 +242,10 @@ pub fn admit_command(
                 CoreAgentEvent::Run(RunEvent::Accepted(crate::AcceptedRunEvent {
                     run_id: next_run_id,
                     submission_id: request.submission_id,
-                    origin: crate::RunOrigin::Requested,
                     source,
                     run_config: request.run_config,
                     config_revision: state.lifecycle.config_revision,
                     notify_on_terminal: request.notify_on_terminal,
-                })),
-            )])
-        }
-        CoreAgentCommand::SubmitMessage(message) => {
-            if let Some(submission_id) = message.submission_id.as_ref() {
-                use crate::core::components::run::{
-                    SubmissionMatch, match_existing_message_submission,
-                };
-                match match_existing_message_submission(state, submission_id, &message.input) {
-                    Some(SubmissionMatch::Identical) => return Ok(Vec::new()),
-                    Some(SubmissionMatch::Different) => {
-                        return reject(
-                            CommandRejectionKind::DuplicateSubmission,
-                            format!(
-                                "submission id {submission_id} was already used by a different \
-                                     command or message input"
-                            ),
-                        );
-                    }
-                    None => {}
-                }
-            }
-            require_open(state)?;
-            require_no_pending_compaction(
-                state,
-                "message cannot be delivered while context compaction is pending",
-            )?;
-            if message.input.is_empty() {
-                return reject(
-                    CommandRejectionKind::InvariantViolation,
-                    "message input must contain at least one entry",
-                );
-            }
-            crate::core::components::context::validate_run_input_entries(&message.input)
-                .map_err(command_rejection_from_domain)?;
-            // Message-origin runs carry no per-run overrides; session
-            // defaults (generation, limits) apply at planning time.
-            let run_config = RunConfig::default();
-            validate_run_config_for_state(state, &run_config)
-                .map_err(command_rejection_from_domain)?;
-            if state.runs.active.as_ref().is_some_and(|run| {
-                run.status == RunStatus::Parked
-                    && run.parked_tool_batch.as_ref().is_some_and(|parked| {
-                        matches!(
-                            &parked.suspension,
-                            crate::ToolBatchSuspension::AwaitTool { spec, .. }
-                                if spec.mailbox
-                        )
-                    })
-            }) {
-                let next_message_id =
-                    state
-                        .id_cursors
-                        .last_message_id
-                        .checked_add(1)
-                        .ok_or_else(|| {
-                            CommandError::Domain(DomainError::InvariantViolation(
-                                "message id cursor exhausted".to_owned(),
-                            ))
-                        })?;
-                let joins = CoreAgentJoins {
-                    submission_id: message.submission_id.clone(),
-                    ..CoreAgentJoins::default()
-                };
-                let input = message.input;
-                return Ok(vec![CoreAgentEventProposal::new(
-                    joins,
-                    CoreAgentEvent::Run(RunEvent::MessageBuffered {
-                        message_id: crate::MessageId::new(next_message_id),
-                        submission_id: message.submission_id,
-                        submission_digest: crate::message_submission_digest(&input),
-                        input,
-                        run_config,
-                        config_revision: state.lifecycle.config_revision,
-                    }),
-                )]);
-            }
-            let next_run_id = state.id_cursors.last_run_id.checked_add(1).ok_or_else(|| {
-                CommandError::Domain(DomainError::InvariantViolation(
-                    "run id cursor exhausted".to_owned(),
-                ))
-            })?;
-            let next_run_id = crate::RunId::new(next_run_id);
-            let joins = CoreAgentJoins {
-                submission_id: message.submission_id.clone(),
-                run_id: Some(next_run_id),
-                ..CoreAgentJoins::default()
-            };
-            Ok(vec![CoreAgentEventProposal::new(
-                joins,
-                CoreAgentEvent::Run(RunEvent::Accepted(crate::AcceptedRunEvent {
-                    run_id: next_run_id,
-                    submission_id: message.submission_id,
-                    origin: crate::RunOrigin::Message,
-                    source: RunSource::Input {
-                        input: message.input,
-                    },
-                    run_config,
-                    config_revision: state.lifecycle.config_revision,
-                    notify_on_terminal: Vec::new(),
                 })),
             )])
         }
@@ -457,11 +356,6 @@ pub fn admit_command(
             if !force
                 && (state.runs.active.is_some()
                     || !state.runs.queued.is_empty()
-                    || state
-                        .runs
-                        .messages
-                        .iter()
-                        .any(|message| message.status == MessageStatus::Buffered)
                     || state.context.pending_compaction
                     || state
                         .promises
@@ -494,22 +388,6 @@ pub fn admit_command(
                         },
                         CoreAgentEvent::Run(RunEvent::QueuedCancelled {
                             run_id: queued.run_id,
-                        }),
-                    ));
-                }
-                for message in state
-                    .runs
-                    .messages
-                    .iter()
-                    .filter(|message| message.status == MessageStatus::Buffered)
-                {
-                    proposals.push(CoreAgentEventProposal::new(
-                        CoreAgentJoins {
-                            submission_id: message.submission_id.clone(),
-                            ..CoreAgentJoins::default()
-                        },
-                        CoreAgentEvent::Run(RunEvent::MessageCancelled {
-                            message_id: message.message_id,
                         }),
                     ));
                 }

@@ -487,7 +487,6 @@ pub fn await_spec_from_args(
         deadline_at_ms: args
             .timeout_ms
             .map(|timeout| now_ms.saturating_add(timeout)),
-        mailbox: args.mailbox,
     })
 }
 

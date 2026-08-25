@@ -798,10 +798,6 @@ impl ChatSessionDriver {
                 )));
                 events.push(self.status_event("queued"));
             }
-            SessionEventKindView::MessageBuffered { .. }
-            | SessionEventKindView::MessageConsumedByAwait { .. }
-            | SessionEventKindView::MessagePromotedToRun { .. }
-            | SessionEventKindView::MessageCancelled { .. } => {}
             SessionEventKindView::RunStarted { run_id, .. } => {
                 events.push(ChatEvent::RunChanged(self.run_view_from_status(
                     run_id,

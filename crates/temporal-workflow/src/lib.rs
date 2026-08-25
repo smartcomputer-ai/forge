@@ -37,7 +37,7 @@ pub use rehydrate::{ReducedSession, RehydrateError, reduce_session_entries};
 pub use temporal_helpers::connect_temporal;
 pub use types::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,
-    AgentCompletedRunSummary, AgentMessageSubmissionConsumptionSummary, AgentQueuedRunSummary,
+    AgentCompletedRunSummary, AgentQueuedRunSummary,
     AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
     AwaitEnvironmentReadyActivityRequest, AwaitEnvironmentReadyActivityResult,
     AwaitMaterializationRequest, AwaitOutcome, AwaitPromiseResult, CancellingWatchdog,

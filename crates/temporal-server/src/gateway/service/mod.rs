@@ -231,10 +231,6 @@ fn status_has_submission(
             .completed_runs
             .iter()
             .any(|run| run.submission_id.as_ref() == Some(submission_id))
-        || status
-            .consumed_message_submissions
-            .iter()
-            .any(|consumed| &consumed.submission_id == submission_id)
 }
 
 enum ExistingRunSubmission {
@@ -261,8 +257,7 @@ fn existing_run_submission(
         .filter(|run| run.submission_id.as_ref() == Some(submission_id))
     {
         return Some(
-            if active.origin == engine::RunOrigin::Requested
-                && active.source.matches_request(source)
+            if active.source.matches_request(source)
                 && &active.run_config == run_config
                 && active.notify_on_terminal == notify_on_terminal
             {
@@ -281,8 +276,7 @@ fn existing_run_submission(
         .iter()
         .find(|run| run.submission_id.as_ref() == Some(submission_id))
     {
-        if queued.origin != engine::RunOrigin::Requested
-            || !queued.source.matches_request(source)
+        if !queued.source.matches_request(source)
             || &queued.run_config != run_config
             || queued.notify_on_terminal != notify_on_terminal
         {
@@ -303,18 +297,6 @@ fn existing_run_submission(
                 run_id: completed.run_id,
                 status: completed.status,
             },
-        });
-    }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
-        return Some(match message.submission_digest {
-            existing if existing != digest => ExistingRunSubmission::Reject,
-            _ => ExistingRunSubmission::Reject,
         });
     }
     None

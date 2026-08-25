@@ -249,21 +249,6 @@ impl AgentSessionWorkflow {
                         .and_then(|failure| failure.message_ref.clone()),
                 })
                 .collect(),
-            consumed_message_submissions: self
-                .core_state
-                .runs
-                .messages
-                .iter()
-                .filter_map(|message| {
-                    if message.status != engine::MessageStatus::ConsumedByAwait {
-                        return None;
-                    }
-                    Some(AgentMessageSubmissionConsumptionSummary {
-                        submission_id: message.submission_id.clone()?,
-                        run_id: message.consumed_by_run_id?.as_u64(),
-                    })
-                })
-                .collect(),
             admission_failures: self.admission_failures.clone(),
             last_error: self.last_error.clone(),
             bootstrap_failed: self.bootstrap_failed,

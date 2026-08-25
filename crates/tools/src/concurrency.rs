@@ -73,8 +73,6 @@ pub struct AwaitArgs {
     pub promises: Vec<String>,
     #[serde(default)]
     pub mode: AwaitModeArg,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub mailbox: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
@@ -83,9 +81,9 @@ impl AwaitArgs {
     /// Validate and dedupe the promise id list: 1..=32 non-empty ids,
     /// duplicates collapsed in first-occurrence order.
     pub fn validated_promise_ids(&self) -> ToolResult<Vec<String>> {
-        if self.promises.is_empty() && !self.mailbox {
+        if self.promises.is_empty() {
             return Err(ToolError::InvalidRequest {
-                message: "await requires at least one promise id or mailbox=true".to_owned(),
+                message: "await requires at least one promise id".to_owned(),
             });
         }
         if self.promises.len() > MAX_AWAIT_PROMISES {
@@ -376,7 +374,7 @@ pub fn concurrency_tool_bundles(
     let mut bundles = vec![
         function_bundle(
             AWAIT_TOOL_NAME,
-            "Park this run until the listed promises settle or, with mailbox=true, until the next inbound message. Timeout returns a partial snapshot; remaining promises stay pending and re-awaitable.",
+            "Park this run until the listed promises settle. Timeout returns a partial snapshot; remaining promises stay pending and re-awaitable.",
             await_input_schema(),
         )?,
         function_bundle(
@@ -498,7 +496,7 @@ fn await_input_schema() -> Value {
                     "type": "string",
                     "description": "Promise id returned by a promise-creating tool such as agent_spawn, job_submit, or sleep."
                 },
-                "description": "Promise ids to park on. May be empty when mailbox is true."
+                "description": "Promise ids to park on."
             },
             "mode": {
                 "type": "string",
@@ -510,11 +508,6 @@ fn await_input_schema() -> Value {
                 "type": ["integer", "null"],
                 "minimum": 0,
                 "description": "Optional timeout in milliseconds. On timeout the call returns a partial snapshot and the remaining promises stay pending and re-awaitable. Omit for an indefinite wait."
-            },
-            "mailbox": {
-                "type": "boolean",
-                "default": false,
-                "description": "When true, also wake on the next inbound message instead of queueing that message as a separate run."
             }
         },
         "required": ["promises"],
@@ -577,9 +570,6 @@ fn sleep_input_schema() -> Value {
     })
 }
 
-fn is_false(value: &bool) -> bool {
-    !*value
-}
 
 #[cfg(test)]
 mod tests {
@@ -790,21 +780,7 @@ mod tests {
 
         assert_eq!(args.promises, vec!["promise_a", "promise_b"]);
         assert_eq!(args.mode, AwaitModeArg::Any);
-        assert!(!args.mailbox);
         assert_eq!(args.timeout_ms, Some(1000));
-    }
-
-    #[test]
-    fn await_accepts_mailbox_only() {
-        let args: AwaitArgs = serde_json::from_value(json!({
-            "promises": [],
-            "mailbox": true
-        }))
-        .expect("decode await args");
-
-        assert!(args.promises.is_empty());
-        assert!(args.mailbox);
-        assert!(args.validated_promise_ids().expect("valid").is_empty());
     }
 
     #[test]

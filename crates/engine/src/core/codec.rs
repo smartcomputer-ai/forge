@@ -114,12 +114,6 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
         CoreAgentEvent::Run(event) => match event {
             RunEvent::Accepted(_) => "lightspeed.core.run.accepted",
             RunEvent::Started { .. } => "lightspeed.core.run.started",
-            RunEvent::MessageBuffered { .. } => "lightspeed.core.run.message_buffered",
-            RunEvent::MessageConsumedByAwait { .. } => {
-                "lightspeed.core.run.message_consumed_by_await"
-            }
-            RunEvent::MessagePromotedToRun { .. } => "lightspeed.core.run.message_promoted_to_run",
-            RunEvent::MessageCancelled { .. } => "lightspeed.core.run.message_cancelled",
             RunEvent::SteeringAccepted { .. } => "lightspeed.core.run.steering_accepted",
             RunEvent::CancellationRequested { .. } => "lightspeed.core.run.cancellation_requested",
             RunEvent::Completed { .. } => "lightspeed.core.run.completed",

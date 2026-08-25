@@ -512,25 +512,6 @@ export type SessionEventKindView =
       type: "runStarted";
     }
   | {
-      messageId: string;
-      submissionId?: string | null;
-      type: "messageBuffered";
-    }
-  | {
-      messageId: string;
-      runId: string;
-      type: "messageConsumedByAwait";
-    }
-  | {
-      messageId: string;
-      runId: string;
-      type: "messagePromotedToRun";
-    }
-  | {
-      messageId: string;
-      type: "messageCancelled";
-    }
-  | {
       input: ContextEntryInputView[];
       runId: string;
       steeringId: string;

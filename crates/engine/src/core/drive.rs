@@ -18,9 +18,9 @@ use crate::{
     ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
     ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
     CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, MessageStatus, PlanningError,
+    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError,
     PromiseEvent, PromiseId, PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent,
-    RunOrigin, RunSource, SessionId, SessionPosition, ToolBatchId, ToolBatchOutcome,
+    SessionId, SessionPosition, ToolBatchId, ToolBatchOutcome,
     ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult, ToolCallStatus,
     ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationRequest,
     ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
@@ -309,13 +309,6 @@ fn with_run_terminal_side_effects(
 ) -> Vec<CoreAgentEventProposal> {
     let mut output = Vec::with_capacity(proposals.len());
     let mut cancelled = BTreeSet::<PromiseId>::new();
-    let mut next_run_id = state.id_cursors.last_run_id;
-    let cancels_buffered_messages = proposals.iter().any(|proposal| {
-        matches!(
-            proposal.event,
-            CoreAgentEvent::Run(RunEvent::MessageCancelled { .. })
-        )
-    });
     for proposal in proposals {
         let terminal_run_id = terminal_run_id_for_proposal(&proposal);
         output.push(proposal.clone());
@@ -335,47 +328,6 @@ fn with_run_terminal_side_effects(
                 },
                 CoreAgentEvent::Promise(PromiseEvent::Cancelled {
                     promise_id: promise.promise_id.clone(),
-                }),
-            ));
-        }
-        if cancels_buffered_messages {
-            continue;
-        }
-        for message in state
-            .runs
-            .messages
-            .iter()
-            .filter(|message| message.status == MessageStatus::Buffered)
-        {
-            let Some(next) = next_run_id.checked_add(1) else {
-                continue;
-            };
-            let promoted_run_id = crate::RunId::new(next);
-            next_run_id = next;
-            let joins = CoreAgentJoins {
-                run_id: Some(promoted_run_id),
-                submission_id: message.submission_id.clone(),
-                ..CoreAgentJoins::default()
-            };
-            output.push(CoreAgentEventProposal::new(
-                joins.clone(),
-                CoreAgentEvent::Run(RunEvent::Accepted(crate::AcceptedRunEvent {
-                    run_id: promoted_run_id,
-                    submission_id: message.submission_id.clone(),
-                    origin: RunOrigin::Message,
-                    source: RunSource::Input {
-                        input: message.input.clone(),
-                    },
-                    run_config: message.run_config.clone(),
-                    config_revision: message.config_revision,
-                    notify_on_terminal: Vec::new(),
-                })),
-            ));
-            output.push(CoreAgentEventProposal::new(
-                joins,
-                CoreAgentEvent::Run(RunEvent::MessagePromotedToRun {
-                    message_id: message.message_id,
-                    run_id: promoted_run_id,
                 }),
             ));
         }
@@ -1103,11 +1055,7 @@ pub fn resume_tool_batch_proposals(
         (
             ToolBatchSuspension::AwaitTool { .. },
             ToolBatchResumeOutput::AwaitTool { result_ref },
-        ) => await_resume_result(
-            state,
-            result_ref,
-            command.claim == WakeReason::MailboxMessage,
-        )?,
+        ) => await_resume_result(state, result_ref)?,
         (
             ToolBatchSuspension::JoinedWorkflowCalls { .. },
             ToolBatchResumeOutput::JoinedWorkflowCalls,
@@ -1154,17 +1102,6 @@ pub fn resume_tool_batch_proposals(
             batch_id: result.batch_id,
         }),
     ));
-    if command.claim == WakeReason::MailboxMessage {
-        for message in buffered_mailbox_messages(state) {
-            proposals.push(CoreAgentEventProposal::new(
-                joins.clone(),
-                CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait {
-                    message_id: message.message_id,
-                    run_id: result.run_id,
-                }),
-            ));
-        }
-    }
     proposals.extend(tool_call_completed_proposals(state, None, result)?);
     Ok(proposals)
 }
@@ -1176,9 +1113,6 @@ pub fn await_wake(state: &CoreAgentState, now_ms: u64) -> Option<WakeReason> {
         return Some(WakeReason::Cancelled);
     }
     let spec = parked.suspension.spec();
-    if spec.mailbox && !buffered_mailbox_messages(state).is_empty() {
-        return Some(WakeReason::MailboxMessage);
-    }
     if spec
         .deadline_at_ms
         .is_some_and(|deadline| deadline <= now_ms)
@@ -1208,9 +1142,9 @@ fn validate_await_spec_for_active_run(
     run_id: crate::RunId,
     spec: &AwaitSpec,
 ) -> Result<(), DomainError> {
-    if spec.promise_ids.is_empty() && !spec.mailbox {
+    if spec.promise_ids.is_empty() {
         return Err(DomainError::InvariantViolation(
-            "await requires at least one promise id or mailbox=true".to_owned(),
+            "await requires at least one promise id".to_owned(),
         ));
     }
     for promise_id in &spec.promise_ids {
@@ -1244,7 +1178,6 @@ fn validate_await_spec_for_active_run(
 fn await_resume_result(
     state: &CoreAgentState,
     result_ref: BlobRef,
-    include_mailbox_messages: bool,
 ) -> Result<ToolInvocationBatchResult, DomainError> {
     let active_run = state
         .runs
@@ -1265,16 +1198,11 @@ fn await_resume_result(
         .ok_or_else(|| {
             DomainError::InvariantViolation(format!("tool batch {} is missing", parked.batch_id))
         })?;
-    let mut model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
+    let model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
         call_id,
         ToolCallStatus::Succeeded,
         result_ref.clone(),
     )];
-    if include_mailbox_messages {
-        for message in buffered_mailbox_messages(state) {
-            model_visible_context_entries.extend(message.input.iter().cloned());
-        }
-    }
     Ok(ToolInvocationBatchResult {
         run_id: active_run.run_id,
         turn_id: batch.turn_id,
@@ -1394,15 +1322,6 @@ fn joined_workflow_resume_result(
         batch_id: batch.batch_id,
         results,
     })
-}
-
-fn buffered_mailbox_messages(state: &CoreAgentState) -> Vec<&crate::BufferedMessage> {
-    state
-        .runs
-        .messages
-        .iter()
-        .filter(|message| message.status == MessageStatus::Buffered)
-        .collect()
 }
 
 fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvocationResult {
@@ -1737,7 +1656,6 @@ fn tool_call_completed_proposals(
                         promise_ids,
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 },
             }),
@@ -1874,7 +1792,7 @@ mod tests {
         ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, ObservedToolCall,
         ProviderApiKind, RunConfig, RunFailureKind, RunId, RunRequestCommand, RunRequestSource,
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
-        SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
+        SkillId, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
         ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
         ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
         WorkflowToolInvocation, skill_activation_context_key,
@@ -2272,13 +2190,44 @@ mod tests {
         }
     }
 
+    /// The promise the shared parked-await fixtures wait on; an await must
+    /// name at least one run-scoped, model-owned promise.
+    const WAIT_PROMISE_ID: &str = "promise_wait";
+
     fn wait_await_spec() -> AwaitSpec {
         AwaitSpec {
-            promise_ids: Vec::new(),
+            promise_ids: vec![crate::PromiseId::new(WAIT_PROMISE_ID)],
             mode: AwaitMode::All,
             deadline_at_ms: Some(90),
-            mailbox: true,
         }
+    }
+
+    fn insert_wait_promise(drive: &mut CoreAgentDrive, run_id: crate::RunId) {
+        let promise_id = crate::PromiseId::new(WAIT_PROMISE_ID);
+        drive.state.promises.promises.insert(
+            promise_id.clone(),
+            crate::Promise {
+                promise_id,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
+                },
+                scope: crate::PromiseScope::Run { run_id },
+                ownership: crate::PromiseOwnership::Model,
+                status: crate::PromiseStatus::Pending,
+                payload_ref: None,
+                error_ref: None,
+                deadline_ms: None,
+            },
+        );
+    }
+
+    /// Park the single tool invocation on the shared wait promise.
+    fn park_on_wait_promise(
+        drive: &mut CoreAgentDrive,
+        request: &ToolInvocationBatchRequest,
+    ) -> ToolBatchOutcome {
+        insert_wait_promise(drive, request.run_id);
+        deferred_await_outcome(request)
     }
 
     fn deferred_await_outcome(request: &ToolInvocationBatchRequest) -> ToolBatchOutcome {
@@ -3681,8 +3630,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
         assert_eq!(
@@ -4635,8 +4585,9 @@ mod tests {
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
 
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         let entries = commit_action(&mut drive, deferred);
         assert!(matches!(
@@ -4695,7 +4646,6 @@ mod tests {
                         promise_ids: vec![promise_id],
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4746,76 +4696,6 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_await_keeps_inbound_message_as_user_context() {
-        let session_id = SessionId::new("session-mailbox");
-        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
-        let request = drive_to_single_tool_invocation(&mut drive);
-        let deferred = drive
-            .resume_tool_batch_outcome(
-                deferred_await_outcome_with_spec(
-                    &request,
-                    AwaitSpec {
-                        promise_ids: Vec::new(),
-                        mode: AwaitMode::All,
-                        deadline_at_ms: None,
-                        mailbox: true,
-                    },
-                ),
-                90,
-            )
-            .expect("defer mailbox await");
-        commit_action(&mut drive, deferred);
-
-        let message_ref = BlobRef::from_bytes(b"inbound mailbox message");
-        let input = vec![message_input(ContextMessageRole::User, message_ref.clone())];
-        drive.state.runs.messages.push(crate::BufferedMessage {
-            message_id: crate::MessageId::new(1),
-            submission_id: Some(crate::SubmissionId::new("mailbox-1")),
-            submission_digest: crate::message_submission_digest(&input),
-            input,
-            run_config: run_config(),
-            config_revision: 0,
-            status: MessageStatus::Buffered,
-            consumed_by_run_id: None,
-            promoted_to_run_id: None,
-        });
-
-        let resumed = drive
-            .admit_command(
-                resume_tool_batch_command_with_claim(&request, WakeReason::MailboxMessage),
-                91,
-            )
-            .expect("resume mailbox await");
-        let entries = commit_action(&mut drive, resumed);
-        assert!(entries.iter().any(|entry| matches!(
-            entry.event,
-            CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait { .. })
-        )));
-        let result = entries
-            .iter()
-            .find_map(|entry| match &entry.event {
-                CoreAgentEvent::Tool(ToolEvent::CallCompleted { result, .. }) => Some(result),
-                _ => None,
-            })
-            .expect("await call completion");
-        assert_eq!(result.model_visible_context_entries.len(), 2);
-        assert!(matches!(
-            result.model_visible_context_entries[0].kind,
-            ContextEntryKind::ToolResult { .. }
-        ));
-        assert!(matches!(
-            result.model_visible_context_entries[1].kind,
-            ContextEntryKind::Message {
-                role: ContextMessageRole::User
-            }
-        ));
-        assert_eq!(
-            result.model_visible_context_entries[1].content_ref,
-            message_ref
-        );
-    }
-
-    #[test]
     fn zero_timeout_await_parks_then_wakes_timeout() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
@@ -4845,7 +4725,6 @@ mod tests {
                         promise_ids: vec![promise_id],
                         mode: AwaitMode::All,
                         deadline_at_ms: Some(90),
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4870,7 +4749,6 @@ mod tests {
                         promise_ids: vec![crate::PromiseId::new("missing")],
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4900,8 +4778,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5136,82 +5015,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_submission_after_mailbox_consumption_admits_as_no_op() {
-        let mut drive =
-            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
-        open_session(&mut drive);
-        request_run(&mut drive, BlobRef::from_bytes(b"parked"));
-        let _ = drive_until_generate(&mut drive);
-
-        let submission_id = crate::SubmissionId::new("retry_mailbox");
-        let source = RunRequestSource::Input {
-            input: user_input(BlobRef::from_bytes(b"x")),
-        };
-        let message_id = crate::MessageId::new(1);
-        let config_revision = drive.state().lifecycle.config_revision;
-        commit_core_event_result(
-            &mut drive,
-            CoreAgentEvent::Run(RunEvent::MessageBuffered {
-                message_id,
-                submission_id: Some(submission_id.clone()),
-                submission_digest: crate::message_submission_digest(source.input()),
-                input: source.input().to_vec(),
-                run_config: run_config(),
-                config_revision,
-            }),
-            30,
-        )
-        .expect("record buffered message submission");
-        commit_core_event_result(
-            &mut drive,
-            CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait {
-                message_id,
-                run_id: crate::RunId::new(1),
-            }),
-            30,
-        )
-        .expect("record consumed message submission");
-        assert_eq!(drive.state().runs.messages.len(), 1);
-        assert_eq!(
-            drive.state().runs.messages[0].status,
-            crate::MessageStatus::ConsumedByAwait
-        );
-
-        let mut replayed = CoreAgentDrive::from_replayed(
-            SessionId::new("session-a"),
-            drive.state().clone(),
-            drive.head().cloned(),
-        );
-        let duplicate = replayed
-            .admit_command(
-                CoreAgentCommand::SubmitMessage(SubmitMessageCommand {
-                    submission_id: Some(submission_id.clone()),
-                    input: source.input().to_vec(),
-                }),
-                31,
-            )
-            .expect("duplicate consumed mailbox request");
-        assert!(
-            !matches!(duplicate, CoreAgentAction::AppendEvents { .. }),
-            "duplicate consumed submission must not append events: {duplicate:?}"
-        );
-
-        let mismatch = replayed
-            .admit_command(
-                CoreAgentCommand::SubmitMessage(SubmitMessageCommand {
-                    submission_id: Some(submission_id),
-                    input: user_input(BlobRef::from_bytes(b"other")),
-                }),
-                32,
-            )
-            .expect_err("consumed duplicate with different input must fail");
-        let CoreAgentDriveError::Command(CommandError::Rejected(rejection)) = mismatch else {
-            panic!("expected command rejection, got: {mismatch:?}");
-        };
-        assert_eq!(rejection.kind, CommandRejectionKind::DuplicateSubmission);
-    }
-
-    #[test]
     fn duplicate_submission_after_run_completion_admits_as_no_op() {
         let mut drive =
             CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
@@ -5290,8 +5093,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5337,8 +5141,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
         let cancel = drive
@@ -5380,8 +5185,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5402,18 +5208,31 @@ mod tests {
             .admit_command(CoreAgentCommand::CloseSession { force: true }, 95)
             .expect("force close");
         let entries = commit_action(&mut drive, close);
-        assert!(matches!(
-            entries[0].event,
-            CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. })
-        ));
-        assert!(matches!(
-            entries[1].event,
-            CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. })
-        ));
-        assert!(matches!(
-            entries[2].event,
-            CoreAgentEvent::Lifecycle(crate::CoreAgentLifecycleEvent::Closed)
-        ));
+        // Force-cancelling the parked run cascades to its run-scoped wait
+        // promise; the order is force-cancel, queued-cancel, closed.
+        let position = |predicate: fn(&CoreAgentEvent) -> bool| {
+            entries
+                .iter()
+                .position(|entry| predicate(&entry.event))
+                .expect("event present")
+        };
+        let force_cancelled = position(|event| {
+            matches!(event, CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. }))
+        });
+        let queued_cancelled = position(|event| {
+            matches!(event, CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. }))
+        });
+        let closed = position(|event| {
+            matches!(
+                event,
+                CoreAgentEvent::Lifecycle(crate::CoreAgentLifecycleEvent::Closed)
+            )
+        });
+        assert!(force_cancelled < queued_cancelled && queued_cancelled < closed);
+        assert!(entries.iter().any(|entry| matches!(
+            entry.event,
+            CoreAgentEvent::Promise(crate::PromiseEvent::Cancelled { .. })
+        )));
         assert_eq!(drive.state().lifecycle.status, CoreAgentStatus::Closed);
         assert!(drive.state().runs.active.is_none());
         assert!(drive.state().runs.queued.is_empty());
@@ -5730,7 +5549,6 @@ mod tests {
                     promise_ids: vec![promise_id.clone()],
                     mode: AwaitMode::All,
                     deadline_at_ms: None,
-                    mailbox: false,
                 }
             )
             .is_err()
@@ -6224,7 +6042,6 @@ mod tests {
                     promise_ids: Vec::new(),
                     mode: AwaitMode::All,
                     deadline_at_ms: Some(1_000),
-                    mailbox: false,
                 },
                 90,
             )

@@ -1518,10 +1518,9 @@ fn defer_tool_batch(
             }
         }
         ToolBatchSuspension::JoinedWorkflowCalls { calls, spec } => {
-            if calls.is_empty() || spec.mode != crate::AwaitMode::All || spec.mailbox {
+            if calls.is_empty() || spec.mode != crate::AwaitMode::All {
                 return Err(DomainError::InvariantViolation(
-                    "joined workflow suspension requires non-empty all-of Promise wait without mailbox"
-                        .into(),
+                    "joined workflow suspension requires a non-empty all-of Promise wait".into(),
                 ));
             }
             let mut call_ids = BTreeSet::new();
