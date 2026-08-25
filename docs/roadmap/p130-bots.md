@@ -235,7 +235,8 @@
 - Next: the trigger long tail — poll primitive, agent-authored pollers,
   email, more presets, Channels bridge — extracted 2026-08-24 into its own
   doc, [P131](p131-bot-trigger-long-tail.md). Still open here: secret
-  sealing (deferred by decision) and tier-2 per-trigger CEL projections.
+  sealing (deferred by decision; now
+  [P133](p133-retrievable-grant-leases.md)) and tier-2 per-trigger CEL projections.
   Schedule-flood breaker coverage, CEL save-time validation, `bot:self`
   loop capping, and routed-session declaration rotation were closed by the
   2026-08-24 hardening round above.
@@ -603,6 +604,19 @@ existing 91 methods). The genuinely new engineering is a shared library —
 loop, batching, run lifecycle, continueAsNew quiescence) from
 Channels/Foundry into something like `platform/controller-kit`, so the third
 implementation of this shape is the last.
+
+**Tier decision, revisited 2026-08-24.** Moving bots into Rust — into the
+server or as a standalone crate — was weighed again, this time for secrets
+access, and rejected. Simply put: the leak was a contract, not a tier. The
+controller is ~1.2k lines of concurrent workflow code on a pre-1.0 Rust
+Temporal SDK; the bots cadence (eight tool revisions in four days) does not
+fit the core release train; and bots depend on platform-only RBAC, ingress,
+and UI. What the move would have bought is covered separately: the
+hand-mirrored emission contract by [P132](p132-workflow-contract-export.md),
+service access to secrets by [P133](p133-retrievable-grant-leases.md).
+Revisit only if bots become the sole session nucleus (option D of the
+fleet-vs-bots review), the Rust SDK reaches 1.0, or API-shaped answers keep
+piling up.
 
 **Frictions to plan around**, all flagged in the codebase survey:
 

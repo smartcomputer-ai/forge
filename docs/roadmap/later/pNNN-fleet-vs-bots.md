@@ -233,6 +233,31 @@ promise plumbing survive in miniature; everything else in the removal list
 still goes. The A2A adapter later targets the same `delegate` verb with a
 remote target instead of needing the old seven-tool vocabulary.
 
+## Review notes (2026-08-24, agreed)
+
+Two adjustments to C′, both accepted:
+
+1. **Shrink `fleet.rs` in place; do not delete and regrow.** Simply put:
+   the kernel keeps the hard half of fleet — deterministic child ids,
+   starting the child workflow, run-terminal → parent-promise resolution —
+   so removing it and rebuilding it later means rewriting tested code. What
+   actually goes is the `self`/`session` (clone/fork) bases,
+   `agent_send`/`agent_read`/`agent_list`, the link table, and the
+   fleet-only dispatch paths. Do it as one refactor: rename `agent_spawn` →
+   `delegate`, restrict bases to `profile`, delete the graph tools, add
+   `maxDepth`/`maxChildren` to the grant, expose lineage. "A quarter of the
+   size" holds for a subtraction, not a rewrite.
+2. **Delegated children of bot sessions need an owner.** Simply put: a bot
+   controller cannot see below its own sessions. Children delegated from a
+   bot's worker session are ordinary sessions — outside the activity feed,
+   budget, retention sweep, and breaker — and nothing closes them (the
+   cancel cascade stops runs, not sessions). Reuse the P125 environment
+   pattern: the child records `sourceSessionId` as provenance plus a
+   default close trigger (close with parent), never ownership; the bot's
+   retention sweep, budget, and UI walk lineage to include descendants.
+   "Two budget layers" is only true once the upper layer can count the
+   lower.
+
 ## Bot federation (platform tier, roadmap)
 
 Wanted, cheap, and independent of the core kernel — neither item ever

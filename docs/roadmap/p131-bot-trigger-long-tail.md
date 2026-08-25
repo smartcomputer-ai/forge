@@ -55,8 +55,8 @@ an interval and admit what changed.
   free).
 - Auth: static headers in the spec first (secret-sealing caveat applies as
   it does to webhook secrets); broker-backed credentials arrive with
-  workstream 3's approval flow or P110-style grants — do not build a
-  parallel secret store.
+  [P133](p133-retrievable-grant-leases.md) retrievable-grant leases — do not
+  build a parallel secret store.
 - Fits the existing surface: `bot_trigger_put` grows `kind: "poll"` fields;
   the flood breaker and CEL validation already generalize.
 - **Two sources, one primitive.** The spec carries a `source` discriminator
@@ -156,6 +156,12 @@ bursty rooms) so "watch this Slack channel and act" works. This is a
 Channels-side emitter into the existing bot ingest — no new bot-side
 machinery expected. (Distinct from operator chat, which P130 resolved via
 the sessions page's Direct-input override.)
+
+Shape, settled 2026-08-24: a session has one lifecycle controller but any
+number of tool receivers, so the bot stays the controller and Channels is
+both a *source* (inbound messages become bot events) and a *receiver*
+(outbound `channel_*` send tools bound to the channel workflow). No core
+change, and not co-management — two controllers is a P100 non-goal.
 
 ### 6. Bot federation (from the fleet-vs-bots review)
 

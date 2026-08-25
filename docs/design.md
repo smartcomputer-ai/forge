@@ -137,7 +137,11 @@ When a task genuinely needs a machine, the agent borrows one; dedicated VMs
 connect through a bridge daemon, and durable jobs run long tasks on that
 borrowed compute while the harness stays outside.
 
-Sub-agents are not a separate concept: a fleet is just more sessions. The fleet control plane clones or forks a session and starts an additional session workflow for it. Callbacks flow back as ordinary Temporal signals.
+Sub-agents are just more sessions: a child session starts from a profile and its run terminal resolves a promise the parent awaits. (The broader fleet control plane is being narrowed to that single `delegate` verb; see the fleet-vs-bots review under `docs/roadmap/later/`.)
+
+External controllers — Bots, Channels, workflow plugins — never run inside the session. A trusted creator starts a *managed session* whose lifecycle controller and workflow-backed tools are declared once, at creation, as opaque workflow endpoints. The model sees ordinary typed tools; calling one appends a fact to the session log and, for joined tools, parks the run on a promise. Delivery to the controller and its reply travel as one fixed Temporal signal (`deliver_emission`) carrying one envelope, and the session accepts a reply only from the endpoint admitted at creation.
+
+Those rules follow from three constraints. The log is the only truth: nothing blocks inside an activity waiting for another workflow, because that wait would not survive replay or a worker restart. The session worker stays still while products change: one envelope, one signal, no per-plugin code or endpoint registry in core. And the model never chooses a destination: endpoints come from the trusted creator, never from tool arguments or mutable config. One more rule keeps it safe: a receiver must answer from its own state and activities, never by requiring new work in the session that asked, or the parked run and the receiver wait on each other forever. A session has one lifecycle controller — the one told when runs end, whose ownership makes the session non-branchable — but any number of tool receivers.
 
 ## Crate Map
 Where the pieces above live:

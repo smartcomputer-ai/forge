@@ -206,6 +206,9 @@ Replace the duplicated Channels `contracts/emissions.ts` shapes with
 generated-client exports. Leave Foundry's internal shape untouched until the
 feature is retained or removed; P124 must not create new Foundry architecture.
 Do not introduce any new platform-local copy of Rust wire vocabulary.
+Bots added a second copy before anything generated existed;
+[P132](p132-workflow-contract-export.md) generates the workflow contract
+and removes both.
 
 The imported code remains outside the deterministic `engine` crate. Platform
 HTTP, authentication, database access, connectors, and Temporal workers are

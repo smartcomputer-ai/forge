@@ -1,6 +1,22 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P133](p133-retrievable-grant-leases.md) — retrievable grants: an
+  immutable creation-time `exposure: brokered | retrievable` on auth grants,
+  a broker-backed `auth/grants/lease` returning `{token, expiresAtMs}`
+  (never refresh tokens), a new `service` method scope admitted only for
+  service-account callers (structurally hidden from Configurator MCP and
+  browser sessions), lease audit counters, and an in-memory caching
+  contract; bots poll/webhook credentials and Channels move onto grant ids
+  and the platform's plaintext secret fields are removed.
+- [ ] [P132](p132-workflow-contract-export.md) — workflow contract export:
+  publish the `deliver_emission` protocol (envelope, producer types, id
+  derivations with known-answer vectors, workflow-id scheme, start-on-call
+  recipe/recovery types) from `temporal-workflow` as committed artifacts
+  with a staleness test, generate `@lightspeed/agent-client/workflow`, and
+  delete the hand-mirrored Bots/Channels `contracts/emissions.ts`. The
+  Temporal transport and producer authorization stay; an HTTP reply method
+  is deferred.
 - [ ] [P131](p131-bot-trigger-long-tail.md) — bot trigger long tail: `poll`
   primitive (interval + cursor over the schedule machinery), inbound email
   trigger, guardrailed agent-authored pollers as daemon jobs in the bot's
@@ -20,7 +36,7 @@
   run-scoped resolve, bot_event_read), `selfConfig`/`selfEmit` capability
   grants, schedule-flood breaker, CEL save-time validation, `bot:self` rate
   cap, routed-session declaration rotation. Open: webhook secret sealing
-  (deferred by decision), tier-2 per-trigger prompt projections; the
+  (deferred by decision; P133), tier-2 per-trigger prompt projections; the
   trigger long tail moved to P131.
 - [x] [P129](p129-active-run-control.md) — active-run control: make
   cancel, steer, and queue work end to end (both phases done and
