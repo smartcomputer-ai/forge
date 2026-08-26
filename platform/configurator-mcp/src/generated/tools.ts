@@ -854,7 +854,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "deadlineMs": {
               "default": 3600000,
-              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -1742,7 +1742,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "deadlineMs": {
               "default": 3600000,
-              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -3906,7 +3906,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "deadlineMs": {
               "default": 3600000,
-              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -5755,7 +5755,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "deadlineMs": {
               "default": 3600000,
-              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"
@@ -6931,7 +6931,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "deadlineMs": {
               "default": 3600000,
-              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of four hours.",
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
               "format": "uint64",
               "minimum": 0,
               "type": "integer"

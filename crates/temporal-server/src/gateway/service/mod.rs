@@ -1915,6 +1915,48 @@ fn has_all_core_subagent_bindings(state: &engine::CoreAgentState) -> bool {
     })
 }
 
+fn validate_subagent_deadline_for_existing_bindings(
+    state: &engine::CoreAgentState,
+    features: &engine::FeaturesConfig,
+) -> Result<(), AgentApiError> {
+    let Some(requested_deadline_ms) = features
+        .subagents
+        .as_ref()
+        .map(|subagents| subagents.limits.deadline_ms)
+    else {
+        return Ok(());
+    };
+    let existing_ceiling_ms = [
+        tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID,
+        tools::subagents::AGENT_SPAWN_WORKFLOW_TOOL_ID,
+    ]
+    .into_iter()
+    .filter_map(|tool_id| {
+        state
+            .workflow_tools
+            .bindings
+            .get(&WorkflowToolId::new(tool_id))
+    })
+    .filter_map(|binding| match binding.completion {
+        WorkflowToolCompletion::Joined {
+            deadline_after_ms, ..
+        } => Some(deadline_after_ms),
+        WorkflowToolCompletion::Promises {
+            deadline_after_ms, ..
+        } => deadline_after_ms,
+        WorkflowToolCompletion::Accepted => None,
+    })
+    .min();
+    if let Some(ceiling_ms) = existing_ceiling_ms
+        && requested_deadline_ms > ceiling_ms
+    {
+        return Err(AgentApiError::invalid_request(format!(
+            "subagents deadlineMs {requested_deadline_ms} exceeds this session's immutable binding ceiling of {ceiling_ms} ms; create a new session to use the 24-hour ceiling"
+        )));
+    }
+    Ok(())
+}
+
 fn has_all_core_environment_job_bindings(state: &engine::CoreAgentState) -> bool {
     [JOB_SUBMIT_WORKFLOW_TOOL_ID, JOB_RUN_WORKFLOW_TOOL_ID]
         .into_iter()
@@ -2089,6 +2131,7 @@ impl AgentApiService for GatewayAgentApi {
         self.validate_workspace_link_targets(&config.features)
             .await?;
         self.validate_subagent_agents(&config.features).await?;
+        validate_subagent_deadline_for_existing_bindings(&loaded.state, &config.features)?;
         if &config == current_config {
             // The config event is an idempotent no-op, but derived managed
             // context may still need repair after an interrupted refresh.

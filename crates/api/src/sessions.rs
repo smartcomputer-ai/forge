@@ -441,7 +441,7 @@ pub struct SubagentsFeature {
     #[serde(default = "default_subagent_max_concurrent")]
     pub max_concurrent: u32,
     /// Per-child run deadline in milliseconds; at most the execution
-    /// ceiling of four hours.
+    /// ceiling of 24 hours.
     #[serde(default = "default_subagent_deadline_ms")]
     pub deadline_ms: u64,
 }

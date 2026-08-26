@@ -1418,7 +1418,7 @@ export interface SubagentsFeature {
   agents: SubagentAgentRef[];
   /**
    * Per-child run deadline in milliseconds; at most the execution
-   * ceiling of four hours.
+   * ceiling of 24 hours.
    */
   deadlineMs?: number;
   /**

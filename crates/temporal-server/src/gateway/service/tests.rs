@@ -85,6 +85,63 @@ fn managed_session_retry_requires_the_durable_creation_fingerprint() {
 }
 
 #[test]
+fn legacy_subagent_bindings_retain_their_immutable_deadline_ceiling() {
+    const LEGACY_CEILING_MS: u64 = 4 * 60 * 60 * 1_000;
+    let bundle = tools::subagents::subagent_tool_bundle(tools::subagents::SubagentToolKind::Run)
+        .expect("subagent tool bundle");
+    let tool_id = WorkflowToolId::new(tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID);
+    let binding = engine::WorkflowToolBinding::admit(
+        uuid::Uuid::from_u128(1),
+        engine::WorkflowToolDefinition {
+            tool_id: tool_id.clone(),
+            revision: 1,
+            semantic_type: tools::subagents::AGENT_RUN_WORKFLOW_SEMANTIC_TYPE.to_owned(),
+            tool: bundle.spec,
+        },
+        WorkflowToolTarget::Bound {
+            receiver: WorkflowEndpointRef {
+                workflow_id: "legacy-subagent-execution".to_owned(),
+                workflow_kind: "subagent.execution".to_owned(),
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
+        },
+        WorkflowToolCompletion::Joined {
+            reply_schema_ref: None,
+            deadline_after_ms: LEGACY_CEILING_MS,
+        },
+    )
+    .expect("legacy subagent binding");
+    let mut state = engine::CoreAgentState::new();
+    state.workflow_tools.bindings.insert(tool_id, binding);
+    let mut features = engine::FeaturesConfig::default();
+    features.subagents = Some(engine::SubagentsFeature {
+        agents: vec![engine::SubagentAgentConfig {
+            profile_id: "reviewer".to_owned(),
+        }],
+        limits: engine::SubagentLimits {
+            deadline_ms: LEGACY_CEILING_MS,
+            ..engine::SubagentLimits::default()
+        },
+        ..engine::SubagentsFeature::default()
+    });
+
+    validate_subagent_deadline_for_existing_bindings(&state, &features)
+        .expect("legacy ceiling remains valid");
+    features
+        .subagents
+        .as_mut()
+        .expect("subagents")
+        .limits
+        .deadline_ms += 1;
+    assert_eq!(
+        validate_subagent_deadline_for_existing_bindings(&state, &features)
+            .expect_err("deadline above the durable binding must fail")
+            .kind,
+        AgentApiErrorKind::InvalidRequest
+    );
+}
+
+#[test]
 fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
     let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
     let reply_schema_ref = BlobRef::from_bytes(br#"{"type":"string"}"#);

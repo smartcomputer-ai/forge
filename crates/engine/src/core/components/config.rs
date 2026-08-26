@@ -337,7 +337,7 @@ pub const SUBAGENT_DEFAULT_MAX_CONCURRENT: u32 = 4;
 pub const SUBAGENT_DEFAULT_DEADLINE_MS: u64 = 60 * 60 * 1_000;
 /// Hard bound the execution binding enforces; a grant's `deadline_ms` may
 /// not exceed it.
-pub const SUBAGENT_DEADLINE_CEILING_MS: u64 = 4 * 60 * 60 * 1_000;
+pub const SUBAGENT_DEADLINE_CEILING_MS: u64 = 24 * 60 * 60 * 1_000;
 
 impl Default for SubagentLimits {
     fn default() -> Self {
@@ -1130,6 +1130,37 @@ mod tests {
             .expect_err("unknown feature version must fail validation");
 
         assert!(matches!(error, DomainError::InvariantViolation(_)));
+    }
+
+    #[test]
+    fn subagent_deadline_accepts_24_hours_and_rejects_larger_values() {
+        let mut config = config(ProviderApiKind::OpenAiResponses, None);
+        config.features.subagents = Some(SubagentsFeature {
+            agents: vec![SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            limits: SubagentLimits {
+                deadline_ms: SUBAGENT_DEADLINE_CEILING_MS,
+                ..SubagentLimits::default()
+            },
+            ..SubagentsFeature::default()
+        });
+
+        config
+            .validate()
+            .expect("24-hour deadline must be accepted");
+
+        config
+            .features
+            .subagents
+            .as_mut()
+            .expect("subagents feature")
+            .limits
+            .deadline_ms = SUBAGENT_DEADLINE_CEILING_MS + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(DomainError::InvariantViolation(_))
+        ));
     }
 
     #[test]

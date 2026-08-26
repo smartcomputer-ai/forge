@@ -42,7 +42,7 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
         // (required when this object is present)
         "profileId": "string",
       }],
-      // Per-child run deadline in milliseconds; at most the execution ceiling of four hours.
+      // Per-child run deadline in milliseconds; at most the execution ceiling of 24 hours.
       "deadlineMs": 0,
       // Open sessions under the root at any time, excluding the root.
       "maxConcurrent": 0,

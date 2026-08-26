@@ -230,9 +230,11 @@ pair — `agent_run` with `WorkflowToolCompletion::Joined { deadline_after_ms:
 SUBAGENT_DEADLINE_CEILING_MS }` and `agent_spawn` with
 `Completion::Promises { key_source: Reply, max_promises: 1, deadline_after_ms:
 ceiling }`, both `Target::Start { recipe: SubagentExecutionWorkflow on the
-core task queue }`. The ceiling (4 h) is the hard bound the engine enforces;
+core task queue }`. The ceiling (24 h) is the hard bound the engine enforces;
 the grant's `deadlineMs` is enforced inside the execution and pinned per call,
-so the binding never needs to change when the grant does.
+so the binding never needs to change when the grant does. Sessions that
+already admitted the former four-hour binding retain that immutable ceiling;
+they must be recreated to use a longer deadline.
 
 Admission (session worker, the `JobSubmitExecutionContextV1` pattern): when a
 batch carries an `agent_*` call, the worker validates `agent` against the
