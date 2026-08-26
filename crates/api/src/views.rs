@@ -62,6 +62,14 @@ pub enum SessionStatus {
 pub struct RunView {
     pub id: RunId,
     pub status: RunStatus,
+    /// When the run left the queue and began executing, derived from the
+    /// committed `runStarted` event. Absent while the run is queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// When the run reached a terminal state, derived from its committed
+    /// completed, failed, or cancelled event. Absent for non-terminal runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
     pub source: RunViewSource,
     #[serde(default)]
     pub entries: Vec<ContextEntryView>,

@@ -107,15 +107,17 @@ export interface TranscriptState {
   /// These indexes merge them into one stable group in the transcript.
   toolCallByCallId: Map<string, ToolCallLocation>;
   toolGroupByBatchId: Map<string, number>;
-  /// Prompt tokens per run, summed over its generations, with the share the
-  /// provider served from its prompt cache — surfaced as a marker when the
-  /// run finishes so a cold prefix is visible where it costs.
+  /// Provider-reported tokens per run, summed over its generations, with the
+  /// share served from prompt cache — surfaced when the run finishes.
   runUsage: Map<string, RunUsage>;
+  /// Committed wall-clock start times used to calculate terminal duration.
+  runStartedAtMs: Map<string, number>;
 }
 
 export interface RunUsage {
   inputTokens: number;
-  cachedInputTokens: number;
+  cachedInputTokens?: number;
+  outputTokens: number;
 }
 
 export function emptyTranscript(): TranscriptState {
@@ -131,17 +133,32 @@ export function emptyTranscript(): TranscriptState {
     toolCallByCallId: new Map(),
     toolGroupByBatchId: new Map(),
     runUsage: new Map(),
+    runStartedAtMs: new Map(),
   };
 }
 
-/// "12.3k tokens in · 94% cached" for a finished run; null when nothing was
-/// reported.
-export function describeRunUsage(usage: RunUsage | undefined): string | null {
-  if (!usage || usage.inputTokens <= 0) {
-    return null;
+/// "8.2s · 12.3k tokens in (94% cached) · 750 tokens out" for a finished
+/// run. Duration is still useful when the provider reports no usage.
+export function describeRunSummary(
+  usage: RunUsage | undefined,
+  durationMs: number | undefined,
+): string | null {
+  const parts: string[] = [];
+  if (durationMs !== undefined) {
+    parts.push(formatDuration(durationMs));
   }
-  const share = Math.round((usage.cachedInputTokens / usage.inputTokens) * 100);
-  return `${formatTokens(usage.inputTokens)} tokens in · ${share}% cached`;
+  if (usage && usage.inputTokens > 0) {
+    const cached = usage.cachedInputTokens;
+    const cacheLabel = cached !== undefined && cached > 0
+      ? ` (${Math.round((cached / usage.inputTokens) * 100)}% cached)`
+      : "";
+    parts.push(`${formatTokens(usage.inputTokens)} tokens in${cacheLabel}`);
+  }
+  if (usage && usage.outputTokens > 0) {
+    parts.push(`${formatTokens(usage.outputTokens)} tokens out`);
+  }
+  if (parts.length === 1 && durationMs !== undefined) return `run completed in ${parts[0]}`;
+  return parts.length ? parts.join(" · ") : null;
 }
 
 function formatTokens(count: number): string {
@@ -150,6 +167,21 @@ function formatTokens(count: number): string {
     : count >= 1000
       ? `${(count / 1000).toFixed(1)}k`
       : String(count);
+}
+
+function formatDuration(durationMs: number): string {
+  if (durationMs < 1_000) return `${durationMs}ms`;
+  if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(1)}s`;
+  const totalSeconds = Math.round(durationMs / 1_000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 3_600) {
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  }
+  const hours = Math.floor(totalSeconds / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  return minutes ? `${hours}h ${minutes}m` : `${hours}h`;
 }
 
 /// A run is live when the engine is executing or has queued it; clients use
@@ -176,6 +208,7 @@ export function applyEvents(
     toolCallByCallId: state.toolCallByCallId,
     toolGroupByBatchId: state.toolGroupByBatchId,
     runUsage: state.runUsage,
+    runStartedAtMs: state.runStartedAtMs,
   };
   for (const event of events) {
     const kind = event.kind;
@@ -192,7 +225,7 @@ export function applyEvents(
         enqueueRun(next, String(kind.runId));
         break;
       case "runStarted":
-        startRun(next, String(kind.runId));
+        startRun(next, String(kind.runId), event.observedAtMs);
         break;
       case "runCancellationRequested":
         if (next.activeRun?.runId === String(kind.runId)) {
@@ -213,13 +246,23 @@ export function applyEvents(
         setRunLabel(next, "thinking");
         break;
       case "turnGenerationCompleted":
-        if (kind.usage?.inputTokens) {
+        if (kind.usage && (kind.usage.inputTokens != null || kind.usage.outputTokens != null)) {
           const runId = String(kind.runId);
-          const current = next.runUsage.get(runId) ?? { inputTokens: 0, cachedInputTokens: 0 };
-          next.runUsage.set(runId, {
-            inputTokens: current.inputTokens + kind.usage.inputTokens,
-            cachedInputTokens: current.cachedInputTokens + (kind.usage.cachedInputTokens ?? 0),
-          });
+          const current = next.runUsage.get(runId) ?? {
+            inputTokens: 0,
+            outputTokens: 0,
+          };
+          const usage: RunUsage = {
+            inputTokens: current.inputTokens + (kind.usage.inputTokens ?? 0),
+            outputTokens: current.outputTokens + (kind.usage.outputTokens ?? 0),
+          };
+          if (kind.usage.cachedInputTokens != null) {
+            usage.cachedInputTokens = (current.cachedInputTokens ?? 0)
+              + kind.usage.cachedInputTokens;
+          } else if (current.cachedInputTokens !== undefined) {
+            usage.cachedInputTokens = current.cachedInputTokens;
+          }
+          next.runUsage.set(runId, usage);
         }
         break;
       case "toolBatchStarted":
@@ -258,33 +301,43 @@ export function applyEvents(
         const runId = String(kind.runId);
         const alreadyFinished = next.runPhases.get(runId) === "terminal";
         finishRun(next, runId);
-        const usage = describeRunUsage(next.runUsage.get(runId));
-        if (usage && !alreadyFinished) {
+        const summary = describeRunSummary(
+          next.runUsage.get(runId),
+          runDurationMs(next, runId, event.observedAtMs),
+        );
+        if (summary && !alreadyFinished) {
           next.entries.push({
             kind: "marker",
             key: `evt-${event.cursor.seq}`,
-            text: usage,
+            text: summary,
             tone: "muted",
           });
         }
         break;
       }
-      case "runFailed":
-        finishRun(next, String(kind.runId));
+      case "runFailed": {
+        const runId = String(kind.runId);
+        const durationMs = runDurationMs(next, runId, event.observedAtMs);
+        finishRun(next, runId);
         next.entries.push({
           kind: "marker",
           key: `evt-${event.cursor.seq}`,
-          text: `run failed: ${String(kind.message ?? "unknown error")}`,
+          text: `run failed${durationMs === undefined ? "" : ` after ${formatDuration(durationMs)}`}: ${String(kind.message ?? "unknown error")}`,
           tone: "error",
         });
         break;
+      }
       case "runCancelled": {
         const wasQueued = next.queuedRuns.some((run) => run.runId === String(kind.runId));
-        finishRun(next, String(kind.runId));
+        const runId = String(kind.runId);
+        const durationMs = runDurationMs(next, runId, event.observedAtMs);
+        finishRun(next, runId);
         next.entries.push({
           kind: "marker",
           key: `evt-${event.cursor.seq}`,
-          text: wasQueued ? "queued message cancelled" : "run cancelled",
+          text: wasQueued
+            ? "queued message cancelled"
+            : `run cancelled${durationMs === undefined ? "" : ` after ${formatDuration(durationMs)}`}`,
           tone: "muted",
         });
         break;
@@ -331,15 +384,27 @@ function enqueueRun(state: TranscriptState, runId: string) {
   state.runRevision += 1;
 }
 
-function startRun(state: TranscriptState, runId: string) {
+function startRun(state: TranscriptState, runId: string, observedAtMs?: number) {
   const phase = state.runPhases.get(runId);
   if (phase === "running" || phase === "terminal") {
     return;
   }
   state.runPhases.set(runId, "running");
+  if (observedAtMs !== undefined && !state.runStartedAtMs.has(runId)) {
+    state.runStartedAtMs.set(runId, observedAtMs);
+  }
   state.queuedRuns = state.queuedRuns.filter((run) => run.runId !== runId);
   state.activeRun = { runId, label: "running", cancelling: false };
   state.runRevision += 1;
+}
+
+function runDurationMs(
+  state: TranscriptState,
+  runId: string,
+  completedAtMs: number,
+): number | undefined {
+  const startedAtMs = state.runStartedAtMs.get(runId);
+  return startedAtMs === undefined ? undefined : Math.max(0, completedAtMs - startedAtMs);
 }
 
 function finishRun(state: TranscriptState, runId: string) {
@@ -367,6 +432,9 @@ export function reconcileRuns(
   let changed = false;
   for (const run of runs) {
     const runId = String(run.id);
+    if (run.startedAtMs != null && !next.runStartedAtMs.has(runId)) {
+      next.runStartedAtMs.set(runId, run.startedAtMs);
+    }
     const phase = next.runPhases.get(runId);
     switch (run.status) {
       case "completed":

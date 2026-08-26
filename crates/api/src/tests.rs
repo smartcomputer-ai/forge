@@ -10,6 +10,8 @@ fn notification_serializes_as_json_rpc_lite_shape() {
         run: RunView {
             id: "run_1".to_owned(),
             status: RunStatus::Completed,
+            started_at_ms: Some(10),
+            completed_at_ms: Some(20),
             source: RunViewSource::Input {
                 items: vec![InputItem::Text {
                     text: "hello".to_owned(),
@@ -32,6 +34,8 @@ fn notification_serializes_as_json_rpc_lite_shape() {
                 "run": {
                     "id": "run_1",
                     "status": "completed",
+                    "startedAtMs": 10,
+                    "completedAtMs": 20,
                     "source": {
                         "type": "input",
                         "items": [{ "type": "text", "text": "hello" }]
@@ -1520,6 +1524,8 @@ fn run_view_can_expose_tool_batches() {
     let run = RunView {
         id: "run_1".to_owned(),
         status: RunStatus::Running,
+        started_at_ms: Some(10),
+        completed_at_ms: None,
         source: RunViewSource::Input { items: Vec::new() },
         entries: Vec::new(),
         tool_batches: vec![ToolBatchView {
@@ -1548,6 +1554,8 @@ fn run_view_can_expose_tool_batches() {
 
     let value = serde_json::to_value(run).expect("serialize run");
 
+    assert_eq!(value["startedAtMs"], 10);
+    assert!(value.get("completedAtMs").is_none());
     assert_eq!(
         value["toolBatches"][0],
         json!({
@@ -2715,6 +2723,8 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
     RunView {
         id,
         status,
+        started_at_ms: None,
+        completed_at_ms: None,
         source: RunViewSource::Input { items: Vec::new() },
         entries: Vec::new(),
         tool_batches: Vec::new(),

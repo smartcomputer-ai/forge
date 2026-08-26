@@ -74,6 +74,8 @@ fn serialized_fixtures_validate_against_exported_schemas() {
     let run = RunView {
         id: "run_1".to_owned(),
         status: RunStatus::Completed,
+        started_at_ms: Some(10),
+        completed_at_ms: Some(20),
         source: RunViewSource::Input {
             items: vec![InputItem::Text {
                 text: "hello".to_owned(),

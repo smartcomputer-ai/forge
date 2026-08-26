@@ -7869,6 +7869,15 @@
       },
       "RunView": {
         "properties": {
+          "completedAtMs": {
+            "description": "When the run reached a terminal state, derived from its committed\ncompleted, failed, or cancelled event. Absent for non-terminal runs.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "entries": {
             "default": [],
             "items": {
@@ -7881,6 +7890,15 @@
           },
           "source": {
             "$ref": "#/components/schemas/RunViewSource"
+          },
+          "startedAtMs": {
+            "description": "When the run left the queue and began executing, derived from the\ncommitted `runStarted` event. Absent while the run is queued.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "status": {
             "$ref": "#/components/schemas/RunStatus"

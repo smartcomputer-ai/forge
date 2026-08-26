@@ -1878,6 +1878,8 @@ mod tests {
         let run = api::RunView {
             id: "run_7".into(),
             status: api::RunStatus::Running,
+            started_at_ms: None,
+            completed_at_ms: None,
             source: api::RunViewSource::Input { items: Vec::new() },
             entries: Vec::new(),
             tool_batches: vec![ToolBatchView {
@@ -1933,6 +1935,8 @@ mod tests {
         let run = api::RunView {
             id: "run_7".into(),
             status: api::RunStatus::Completed,
+            started_at_ms: None,
+            completed_at_ms: None,
             source: api::RunViewSource::Input { items: Vec::new() },
             entries: vec![ContextEntryView {
                 id: "item_43".into(),
@@ -2022,6 +2026,8 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Running,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: Vec::new(),
                 tool_batches: vec![
@@ -2130,6 +2136,8 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Completed,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: vec![
                     reasoning_state_entry("item_1", "I should inspect the crate layout first."),
@@ -2181,6 +2189,8 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Completed,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: vec![reasoning_state_entry("item_1", "reasoning state rs_abc123")],
                 tool_batches: Vec::new(),

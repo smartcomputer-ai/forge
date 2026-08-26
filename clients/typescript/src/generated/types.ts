@@ -1701,9 +1701,19 @@ export interface SubagentLimitsView {
  * via the `definition` "RunView".
  */
 export interface RunView {
+  /**
+   * When the run reached a terminal state, derived from its committed
+   * completed, failed, or cancelled event. Absent for non-terminal runs.
+   */
+  completedAtMs?: number | null;
   entries?: ContextEntryView[];
   id: string;
   source: RunViewSource;
+  /**
+   * When the run left the queue and began executing, derived from the
+   * committed `runStarted` event. Absent while the run is queued.
+   */
+  startedAtMs?: number | null;
   status: RunStatus;
   toolBatches?: ToolBatchView[];
   /**

@@ -148,10 +148,13 @@ impl<'a> CoreAgentProjector<'a> {
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
         let projected_entries = self.project_context_entries(&context_entries).await?;
         let usage = sum_llm_usage(projection.generation_usage_for_run(run_id).into_iter());
+        let (started_at_ms, completed_at_ms) = projection.lifecycle_timestamps_for_run(run_id);
 
         Ok(RunView {
             id: api_run_id(run_id),
             status,
+            started_at_ms,
+            completed_at_ms,
             source: match source {
                 Some(RunSource::Input { input }) => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
@@ -1080,6 +1083,46 @@ impl<'a> CoreAgentProjection<'a> {
                     .flatten()
             })
             .collect()
+    }
+
+    /// Wall-clock lifecycle boundaries carried by the committed run events.
+    /// A queued run has neither timestamp; an active run has only `started`.
+    pub fn lifecycle_timestamps_for_run(&self, run_id: RunId) -> (Option<u64>, Option<u64>) {
+        let mut started_at_ms = None;
+        let mut completed_at_ms = None;
+        for entry in self.entries {
+            let CoreAgentEvent::Run(event) = &entry.event else {
+                continue;
+            };
+            match event {
+                RunEvent::Started {
+                    run_id: event_run_id,
+                } if *event_run_id == run_id => {
+                    started_at_ms.get_or_insert(entry.observed_at_ms);
+                }
+                RunEvent::Completed {
+                    run_id: event_run_id,
+                    ..
+                }
+                | RunEvent::Failed {
+                    run_id: event_run_id,
+                    ..
+                }
+                | RunEvent::Cancelled {
+                    run_id: event_run_id,
+                }
+                | RunEvent::ForceCancelled {
+                    run_id: event_run_id,
+                }
+                | RunEvent::QueuedCancelled {
+                    run_id: event_run_id,
+                } if *event_run_id == run_id => {
+                    completed_at_ms = Some(entry.observed_at_ms);
+                }
+                _ => {}
+            }
+        }
+        (started_at_ms, completed_at_ms)
     }
 
     pub fn context_entries_for_run(&self, run_id: RunId) -> Vec<&'a ContextEntry> {
@@ -2371,6 +2414,30 @@ mod tests {
     }
 
     #[test]
+    fn run_lifecycle_timestamps_come_from_started_and_terminal_events() {
+        let run_id = RunId::new(7);
+        let entries = vec![
+            run_event_entry(10, RunEvent::Started { run_id }),
+            run_event_entry(
+                42,
+                RunEvent::Completed {
+                    run_id,
+                    output_ref: None,
+                },
+            ),
+        ];
+
+        assert_eq!(
+            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(run_id),
+            (Some(10), Some(42)),
+        );
+        assert_eq!(
+            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(RunId::new(8)),
+            (None, None),
+        );
+    }
+
+    #[test]
     fn context_entries_for_run_prefers_resolved_trigger_entry_ids_over_replaced_keys() {
         let key = engine::ContextEntryKey::new("message.1");
         let mut original = context_entry(1, ContextEntrySource::ContextEdit);
@@ -2996,6 +3063,17 @@ mod tests {
                 base_revision: seq - 1,
                 entries,
             }),
+        }
+    }
+
+    fn run_event_entry(observed_at_ms: u64, event: RunEvent) -> CoreAgentEntry {
+        CoreAgentEntry {
+            position: SessionPosition {
+                seq: EventSeq::new(observed_at_ms),
+            },
+            observed_at_ms,
+            joins: CoreAgentJoins::default(),
+            event: CoreAgentEvent::Run(event),
         }
     }
 
