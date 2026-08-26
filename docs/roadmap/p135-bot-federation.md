@@ -29,6 +29,10 @@
      automatic replies in v1**. Resolution receipts are slice 2 with a
      logical return route; publish/subscribe is deferred until a use case
      asks for fan-out.
+  4. Bot-side model-facing ids folded in from [P138](p138-model-facing-ids.md),
+     which stays core-only. Bots are already P138's good exemplar (`#N`,
+     names); what remains is subtractive — §8 — and ships as its own first
+     slice, independent of federation.
 - Absorbs P131 workstream 6 (bot → bot events) and the "Bot federation"
   note in `later/pNNN-fleet-vs-bots.md`. What else "make bots really good"
   means, unrelated to federation, is in
@@ -129,8 +133,9 @@ bot_emit { kind, summary, data?, to?: botName, sessionKey? }
   package so ingest, poll, self-emit, and addressed emit share one
   function; today the self-emit activity duplicates the insert without it.
 - **Joined.** The tool waits for validation and durable storage only —
-  never for B — and returns `{ eventId, seq, to }` or a typed refusal the
-  model reads: `unknown_bot`, `bot_disabled`, `no_inbox`, `not_accepted`
+  never for B — and returns `{ to, seq }` (B's `#N`, the handle bots
+  already use; never the digest id, per [P138](p138-model-facing-ids.md))
+  or a typed refusal the model reads: `unknown_bot`, `bot_disabled`, `no_inbox`, `not_accepted`
   (`from`), `filtered` (B's filter archived it), `breaker_tripped`,
   `rate_limited`, `loop_cut`. This changes the spec's completion from
   `accepted-push` to `joined` and makes the controller signal the result
@@ -207,8 +212,10 @@ depend on B's model remembering to emit one. The whole thing, in order:
 3. When the delivery finishes, B's controller calls one activity,
    `sendReceipts({ deliveryId, eventIds, status, summary })`. It reads the
    rows that carry `reply_to` and admits into A one event per asked event:
-   kind `bot.reply`, `source: "bot:b"`, `correlationId` = A's event id,
-   `summary` = B's summary or the status, `data: { status, outcome? }`,
+   kind `bot.reply`, `source: "bot:b"`, correlation `{ bot: "b", seq: 17 }`
+   — the `#N` the tool result gave A, rendered as "reply to your #17 at
+   `b`", never the digest event id (P138) — `summary` = B's summary or
+   the status, `data: { status, outcome? }`,
    id `reply:<bBotId>:<deliveryId>:<eventId>` (deterministic; retries
    converge). It is routed to `reply_to.session` — A's controller resolves
    the current generation on delivery as for any routed target — with
@@ -257,6 +264,44 @@ over its own configuration; the human over every bot's scope.
    id from (receiver, delivery, event).
 7. **A child is never a bot and a bot is never a child** (P134 §8).
 
+### 8. Model-facing ids: `#N` and names, never digests
+
+Everything a bot's model must *echo* is already a counter or a name:
+`seq` for `bot_event_read`, nothing for `bot_event_resolve` (the controller
+knows the delivery), trigger `name`, `sessionKey` (the label). The two long
+ids it can pass — `environmentId` and `grantId` on `bot_trigger_put` — are
+rare, belong to other registries, and come from a human's brief; they stay.
+
+What is wrong is what the model is *shown* and can never use, verified
+2026-08-26: `eventId` on every row of `bot_event_list`, `bot_filter_test`,
+and `bot_event_read` (`whk-<64 hex>` 68 chars, `poll:<uuid>:<32 hex>` 74,
+`schedule:<uuid>:<iso>` ~62, `self-<uuid>` 41 — a default 20-row list is
+~700 tokens of hex beside the `seq` that is accepted), `session.sessionId`
+per row, the uuid `id` beside `name` in `bot_trigger_list` / `put`, and in
+`bot_status` the `sessions[].sessionId`, `activeDeliveries[].id` (an event
+id, or `batch-<64 hex>` for a coalesced batch) and `profileId`. Digests
+invite copying, and a weak model that copies one burns a turn.
+
+The rule: **digest ids live in rows and on the API; the model sees `#N`
+and labels.** Concretely:
+
+- `bot_event_list`, `bot_filter_test`, `bot_event_read`: drop `eventId`;
+  `session` becomes its label (`"incident-42"`, or absent for main).
+- `bot_trigger_list`, `bot_trigger_put`: drop `id`.
+- `bot_status`: `sessions` → `{ label, kind }`; `activeDeliveries` →
+  `{ events: [12, 13], session }` with labels; drop `profileId`; buffers
+  keyed by label.
+- `bot_emit` returns `{ to, seq }` (§2); receipts correlate by
+  `{ bot, seq }` (§5); the federation event id
+  `bot:<senderBotId>:<digest>` (~105 chars) and the receipt id never
+  appear in a tool result or a rendering. Cross-bot references read
+  "#17 at `b`".
+- `renderEventPrompt`'s `correlation:` line stays — it is the sender's
+  value — but nothing Lightspeed writes there is a digest.
+- The web UI and the platform API keep every id; only the model-facing
+  payloads in `platform/bots/src/activities/tools.ts` and the controller
+  summary change.
+
 ## Worked example: an incident team
 
 - `triage` — Sentry/PagerDuty webhooks (`perKey` on incident id), `emit`.
@@ -295,23 +340,31 @@ through admission or a promise through P134.
 
 ## Slices
 
-1. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
+1. **Ids** (~0.25 d, independent — can ship before anything else): the §8
+   subtractions in the tool activity and `BotControllerSummary`, plus a
+   test that no model-facing bot tool result or event rendering contains
+   a uuid or a ≥32-hex digest.
+2. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
    form, create-dialog checkbox); `bot_emit { to }` joined with typed
    refusals; shared admission function in the bots package; `emit` grant
    rename; `sender_bot_id`, `hops`, `description` columns; deterministic
    ids; hop cut and rate cap; `bot:directory`; `emitted → b` / `loop_cut`
    activity; "from `a` #12" chip. Migration replaces `self_emit`; dev
    databases reset.
-2. **Receipts** (~0.5 d): `reply` flag, `reply_to` column, `sendReceipts`
+3. **Receipts** (~0.5 d): `reply` flag, `reply_to` column, `sendReceipts`
    on delivery finish, `bot.reply` rendering, `replied` activity, reply
    chip.
-3. On demand: publish/subscribe, wiring view, A2A target, deadlines.
+4. On demand: publish/subscribe, wiring view, A2A target, deadlines.
 
-1 → 2 in order; a two-bot exchange is visible after 1 and complete after 2.
+2 → 3 in order; a two-bot exchange is visible after 2 and complete after 3.
 
 ## Tests
 
-- **Unit** (`platform/bots/test`): inbox matching (`from` allowlist,
+- **Unit** (`platform/bots/test`): every `bot_*` result and every event
+  rendering, over a fixture with webhook, poll, schedule, self, and
+  federation events, matches no `/[0-9a-f]{32}/` and no uuid — the
+  §8 guarantee, so a new field cannot quietly reintroduce a digest;
+  inbox matching (`from` allowlist,
   disabled trigger, disabled bot, missing inbox, one-per-bot validation);
   deterministic ids across a retried invocation; `hops` propagation and the
   cut; sender rate cap across self and addressed emits; typed refusal for

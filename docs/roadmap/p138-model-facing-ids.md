@@ -11,7 +11,9 @@
   arguments), `temporal-server` (session tool runtime, job and sub-agent
   activities), `temporal-workflow` (reply tokens, the source-resolution
   emission id), `api` (promise views, key-source input), and both contract
-  exports. One platform touch (`bot_emit`).
+  exports. Core only: the bot-side ids (`bot_emit`'s return, the digest
+  ids shown by `bot_event_list` / `bot_status`) are
+  [P135 §8](p135-bot-federation.md), its first slice.
 - Builds on P100b (keyed promise sets), P134 (`agent_spawn`), P113 (job
   tools). Orthogonal to [P136](p136-context-catalogs.md) and
   [P137](p137-prompt-caching.md): ids live in tool results at the tail of
@@ -56,7 +58,7 @@ carries, and the reducer enforces only uniqueness.
 | VFS catalog routes | `snapshot_ref: sha256:<64 hex>`, `workspace_id: workspace_<32 hex>` | 71 / 42 | No — addressed by `path` |
 | skill catalog | `skill:<16 hex>:<16 hex>` | 39 | No — read by path |
 | bot events | `#<seq>` small integers (`bot_event_read #12`) | 1–3 | Yes — **the good exemplar** |
-| `bot_emit` return | `eventId: self-<uuid>` | 41 | No |
+| `bot_emit` return | `eventId: self-<uuid>` | 41 | No — P135 §8 returns `seq` |
 | tool call ids | provider-native `toolu_01…` / `call_…` | ~28 | No — the provider round-trips them |
 
 One `agent_spawn` acknowledgement is therefore three 64-hex digests, of
@@ -170,8 +172,6 @@ copies. Registry and API change, not core; not sliced here.
 
 ### 6. Small
 
-- `bot_emit` returns `{ seq }` — the handle bots already use — instead of
-  `eventId: self-<uuid>`.
 - Sub-agent `session_id: agent_<32 hex>` in the result envelope stays: the
   model never copies it and the sessions tree reads lineage from the API.
 - Process handles (`proc-<pid>-<nanos>-<n>-<n>`) are unique within a
@@ -205,7 +205,6 @@ copies. Registry and API change, not core; not sliced here.
    `ArrayItemField`, `job_id` shape aligned with completion keys, API
    input variant, contract export.
 3. **Job handles.** Optional `environment_id`, populated `handle`.
-4. **`bot_emit` seq.**
 
 ## Tests
 
@@ -226,7 +225,7 @@ copies. Registry and API change, not core; not sliced here.
   fails while the export is stale.
 - Live: `workflow_tool_plugins_live` parses `promise_<n>`; the sub-agent
   (spawn → await) and environment-job (submit → await keyed by job id)
-  suites stay green; a bots integration test covers `bot_emit` → `seq`.
+  suites stay green.
 
 ## Non-goals
 
