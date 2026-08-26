@@ -9,7 +9,6 @@ import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
 import { BotsPage } from "@/pages/BotsPage";
-import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
@@ -43,7 +42,7 @@ function SettingsIndexRedirect({ admin }: { admin: boolean }) {
       to={
         canManage(universe, admin)
           ? `/u/${slug}/settings/general`
-          : `/u/${slug}/settings/channels`
+          : `/u/${slug}/bots`
       }
       replace
     />
@@ -131,14 +130,6 @@ export function App() {
         <Route
           path="u/:slug/settings/secrets"
           element={<SecretsPage admin={admin} />}
-        />
-        <Route
-          path="u/:slug/settings/channels"
-          element={<ChannelsPage admin={admin} />}
-        />
-        <Route
-          path="u/:slug/settings/chat-bindings"
-          element={<Navigate to="../channels" replace relative="path" />}
         />
         <Route
           path="u/:slug/settings/api-keys"

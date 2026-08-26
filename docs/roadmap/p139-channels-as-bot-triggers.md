@@ -405,7 +405,9 @@ session's context unbounded today. Lands when someone wants silent rooms.
   Silent rooms are gone (ambient group traffic is dropped).
 - **Web**: chat trigger kind on the bot page (account, scope, activation,
   access, pairing with copy/rotate, retention, delivery fields); the
-  Channels settings page keeps accounts and points at bots.
+  universe "Channels" settings page and its menu item are removed —
+  provider accounts stay on the admin Channels page, connections live on
+  each bot, and members land on the bots list.
 - **Verified**: bots unit (89) and Temporal integration (15 scenarios,
   incl. carried tools + receipts + implicit handled + never-expiring chat
   session, with replay); channels unit (97) and Temporal integration (2
