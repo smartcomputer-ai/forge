@@ -61,6 +61,7 @@ export function CreateBotDialog({
   const [profileId, setProfileId] = useState("");
   const [brief, setBrief] = useState("");
   const [runsPerDay, setRunsPerDay] = useState("");
+  const [emit, setEmit] = useState(false);
   const [acceptsBotEvents, setAcceptsBotEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idInvalid = botId.trim().length > 0 && !ID_PATTERN.test(botId.trim());
@@ -71,6 +72,7 @@ export function CreateBotDialog({
     setDescription("");
     setBrief("");
     setRunsPerDay("");
+    setEmit(false);
     setAcceptsBotEvents(false);
     setError(null);
   };
@@ -83,6 +85,7 @@ export function CreateBotDialog({
         profileId,
         ...(brief.trim() ? { brief: brief.trim() } : {}),
         ...(runsPerDay.trim() ? { runsPerDay: Number(runsPerDay) } : {}),
+        ...(emit ? { emit: true } : {}),
         ...(acceptsBotEvents ? { acceptsBotEvents: true } : {}),
       }),
     onSuccess: async ({ bot }) => {
@@ -197,19 +200,31 @@ export function CreateBotDialog({
               />
               <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
             </Field>
-            <div className="flex items-center justify-between rounded-md border p-3">
-              <Label htmlFor="bot-accepts-bot-events" className="text-sm">
-                Accept events from other bots
-                <span className="block text-xs font-normal text-muted-foreground">
-                  Creates an inbox trigger so other bots in this universe can address this one.
-                  Narrow the senders on the trigger later.
-                </span>
-              </Label>
-              <Switch
-                id="bot-accepts-bot-events"
-                checked={acceptsBotEvents}
-                onCheckedChange={setAcceptsBotEvents}
-              />
+            <div className="grid gap-2">
+              <p className="text-sm font-medium">Bot communication</p>
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <Label htmlFor="bot-emit-events" className="text-sm">
+                  Send events to other bots
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Lets this bot discover eligible receivers and address them with bot_emit.
+                  </span>
+                </Label>
+                <Switch id="bot-emit-events" checked={emit} onCheckedChange={setEmit} />
+              </div>
+              <div className="flex items-center justify-between rounded-md border p-3">
+                <Label htmlFor="bot-accepts-bot-events" className="text-sm">
+                  Receive events from other bots
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Creates an inbox that initially accepts any bot in this universe. Narrow the
+                    allowed senders on the trigger later.
+                  </span>
+                </Label>
+                <Switch
+                  id="bot-accepts-bot-events"
+                  checked={acceptsBotEvents}
+                  onCheckedChange={setAcceptsBotEvents}
+                />
+              </div>
             </div>
           </div>
           <div className="grid gap-2 border-t p-4">

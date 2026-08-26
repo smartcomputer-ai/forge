@@ -217,10 +217,10 @@ export function BotSettingsDialog({
           </div>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-self-emit" className="text-sm">
-              Emit events
+              Send events to other bots
               <span className="block text-xs font-normal text-muted-foreground">
-                Lets the bot post events to itself and address other bots&apos; inboxes (bot_emit).
-                Rate-capped by the flood breaker (default 60/hour) to break feedback loops.
+                Lets this bot discover eligible receivers and address them with bot_emit. It may
+                also post events to itself. Rate-capped to break feedback loops.
               </span>
             </Label>
             <Switch id="bot-settings-self-emit" checked={emit} onCheckedChange={setEmit} />

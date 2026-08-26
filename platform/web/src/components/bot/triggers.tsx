@@ -3,6 +3,8 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, CalendarClock, Check, Copy, Inbox, Pause, Pencil, Play, Plus, RefreshCw, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
+  botLabel,
+  type BotListItem,
   type BotPollSpec,
   type BotRoute,
   type BotScheduleSpec,
@@ -12,6 +14,17 @@ import {
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Combobox,
+  ComboboxChip,
+  ComboboxChips,
+  ComboboxChipsInput,
+  ComboboxContent,
+  ComboboxEmpty,
+  ComboboxItem,
+  ComboboxList,
+  ComboboxValue,
+} from "@/components/ui/combobox";
 import {
   Dialog,
   DialogContent,
@@ -83,6 +96,11 @@ export function TriggersSection({
   const triggers = useQuery({
     queryKey: ["bot-triggers", universeId, botId],
     queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/universes/${universeId}/bots/${botId}/triggers`),
+  });
+  const bots = useQuery({
+    queryKey: ["bots", universeId],
+    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    enabled: manage,
   });
   const invalidate = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
@@ -185,11 +203,21 @@ export function TriggersSection({
           )}
         </div>
       ))}
-      {manage && <AddTriggerDialog universeId={universeId} botId={botId} env={env} open={addOpen} onOpenChange={setAddOpen} />}
+      {manage && (
+        <AddTriggerDialog
+          universeId={universeId}
+          botId={botId}
+          bots={bots.data?.bots ?? []}
+          env={env}
+          open={addOpen}
+          onOpenChange={setAddOpen}
+        />
+      )}
       {manage && editing && (
         <EditTriggerDialog
           universeId={universeId}
           botId={botId}
+          bots={bots.data?.bots ?? []}
           trigger={editing}
           open
           onOpenChange={(open) => {
@@ -229,14 +257,14 @@ function InboxRowDetail({ trigger }: { trigger: BotTrigger }) {
   );
 }
 
-interface InboxFormState extends DeliveryFormState {
-  /** One sender bot id per line; empty accepts any bot. */
-  fromText: string;
+export interface InboxFormState extends DeliveryFormState {
+  fromMode: "any" | "selected";
+  fromBotIds: string[];
 }
 
 /** Lazy: `defaultDeliveryForm` is declared further down the module. */
 function defaultInboxForm(): InboxFormState {
-  return { ...defaultDeliveryForm, fromText: "" };
+  return { ...defaultDeliveryForm, fromMode: "any", fromBotIds: [] };
 }
 
 function inboxFormFromTrigger(trigger: BotTrigger): InboxFormState {
@@ -249,52 +277,148 @@ function inboxFormFromTrigger(trigger: BotTrigger): InboxFormState {
     debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
     maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
     maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
-    fromText: (spec.from ?? []).join("\n"),
+    fromMode: spec.from === undefined ? "any" : "selected",
+    fromBotIds: spec.from ?? [],
   };
 }
 
-function inboxSenders(form: InboxFormState): string[] {
-  return form.fromText
-    .split(/[\n,]/)
-    .map((entry) => entry.trim())
-    .filter((entry) => entry.length > 0);
+export function inboxSelectionSpec(
+  mode: InboxFormState["fromMode"],
+  botIds: string[],
+): BotInboxSpec {
+  return mode === "any" ? {} : { from: botIds };
 }
 
 function inboxPayload(form: InboxFormState) {
-  const from = inboxSenders(form);
-  return { spec: from.length === 0 ? {} : { from }, ...deliveryPayload(form) };
+  return { spec: inboxSelectionSpec(form.fromMode, form.fromBotIds), ...deliveryPayload(form) };
 }
 
 function inboxFormProblem(form: InboxFormState): string | null {
-  const bad = inboxSenders(form).filter((entry) => !NAME_PATTERN.test(entry));
-  if (bad.length > 0) return `Not a bot id: ${bad.join(", ")}`;
+  if (form.fromMode === "selected" && form.fromBotIds.length === 0) {
+    return "Choose at least one bot, or allow any bot.";
+  }
   return deliveryFormProblem(form);
 }
 
+export function inboxBotOptionIds(
+  currentBotId: string,
+  bots: Pick<BotListItem, "botId">[],
+  selected: string[],
+): string[] {
+  return [...new Set([
+    ...bots.map((bot) => bot.botId).filter((id) => id !== currentBotId),
+    ...selected,
+  ])];
+}
+
+function BotMultiSelect({
+  currentBotId,
+  bots,
+  value,
+  onChange,
+}: {
+  currentBotId: string;
+  bots: BotListItem[];
+  value: string[];
+  onChange: (value: string[]) => void;
+}) {
+  const botMap = new Map(bots.map((bot) => [bot.botId, bot]));
+  const label = (botId: string) => botLabel(botMap.get(botId) ?? { botId, displayName: null });
+  const items = inboxBotOptionIds(currentBotId, bots, value).sort((left, right) =>
+    label(left).localeCompare(label(right)),
+  );
+
+  return (
+    <Combobox
+      items={items}
+      multiple
+      value={value}
+      onValueChange={onChange}
+      itemToStringLabel={label}
+      filter={(botId, query) => {
+        const bot = botMap.get(botId);
+        const search = `${label(botId)} ${botId} ${bot?.description ?? ""}`.toLocaleLowerCase();
+        return search.includes(query.toLocaleLowerCase());
+      }}
+    >
+      <ComboboxChips>
+        <ComboboxValue>
+          {value.map((botId) => (
+            <ComboboxChip key={botId}>{label(botId)}</ComboboxChip>
+          ))}
+        </ComboboxValue>
+        <ComboboxChipsInput id="inbox-from" placeholder={value.length ? "Add bot" : "Select bots"} />
+      </ComboboxChips>
+      <ComboboxContent>
+        <ComboboxEmpty>No matching bots.</ComboboxEmpty>
+        <ComboboxList>
+          {(botId: string) => {
+            const bot = botMap.get(botId);
+            return (
+              <ComboboxItem key={botId} value={botId}>
+                <span className="min-w-0">
+                  <span className="block truncate">{label(botId)}</span>
+                  {(bot?.displayName || bot === undefined) && (
+                    <span className="block truncate font-mono text-xs text-muted-foreground">
+                      {botId}
+                    </span>
+                  )}
+                </span>
+              </ComboboxItem>
+            );
+          }}
+        </ComboboxList>
+      </ComboboxContent>
+    </Combobox>
+  );
+}
+
 function InboxFields({
+  currentBotId,
+  bots,
   form,
   setForm,
 }: {
+  currentBotId: string;
+  bots: BotListItem[];
   form: InboxFormState;
   setForm: (next: InboxFormState) => void;
 }) {
   return (
     <>
       <Field>
-        <FieldLabel htmlFor="inbox-from">Accept events from</FieldLabel>
-        <Textarea
-          id="inbox-from"
-          value={form.fromText}
-          onChange={(event) => setForm({ ...form, fromText: event.target.value })}
-          rows={3}
-          placeholder="Any bot in this universe — or one bot id per line"
-          className="font-mono"
-        />
+        <FieldLabel>Allowed senders</FieldLabel>
+        <Select
+          value={form.fromMode}
+          onValueChange={(value) =>
+            value && setForm({ ...form, fromMode: value as InboxFormState["fromMode"] })
+          }
+        >
+          <SelectTrigger><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any bot in this universe</SelectItem>
+            <SelectItem value="selected">Selected bots</SelectItem>
+          </SelectContent>
+        </Select>
         <FieldDescription>
-          Bot ids allowed to address this bot with bot_emit. Empty means any bot. Narrow further with
-          the filter (CEL sees event.sender).
+          These bots can address this inbox with bot_emit. Narrow further with the filter (CEL sees
+          event.sender).
         </FieldDescription>
       </Field>
+      {form.fromMode === "selected" && (
+        <Field>
+          <FieldLabel htmlFor="inbox-from">Bots</FieldLabel>
+          <BotMultiSelect
+            currentBotId={currentBotId}
+            bots={bots}
+            value={form.fromBotIds}
+            onChange={(fromBotIds) => setForm({ ...form, fromBotIds })}
+          />
+          <FieldDescription>
+            Search by display name or immutable bot id. Only the selected ids are authorized.
+          </FieldDescription>
+        </Field>
+      )}
       <DeliveryFields form={form} setForm={setForm} />
     </>
   );
@@ -981,12 +1105,14 @@ function PollFields({
 function AddTriggerDialog({
   universeId,
   botId,
+  bots,
   env,
   open,
   onOpenChange,
 }: {
   universeId: string;
   botId: string;
+  bots: BotListItem[];
   env: BotEnvStatus;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1260,7 +1386,7 @@ function AddTriggerDialog({
               ) : kind === "poll" ? (
                 <PollFields form={poll} setForm={setPoll} />
               ) : kind === "bot" ? (
-                <InboxFields form={inbox} setForm={setInbox} />
+                <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
               ) : (
                 <WebhookFields form={webhook} setForm={setWebhook} />
               )}
@@ -1323,12 +1449,14 @@ function TriggerKindChoice({
 function EditTriggerDialog({
   universeId,
   botId,
+  bots,
   trigger,
   open,
   onOpenChange,
 }: {
   universeId: string;
   botId: string;
+  bots: BotListItem[];
   trigger: BotTrigger;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -1459,7 +1587,7 @@ function EditTriggerDialog({
             ) : trigger.kind === "poll" ? (
               <PollFields form={poll} setForm={setPoll} />
             ) : trigger.kind === "bot" ? (
-              <InboxFields form={inbox} setForm={setInbox} />
+              <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
             ) : (
               <WebhookFields form={webhook} setForm={setWebhook} />
             )}
