@@ -152,6 +152,13 @@ function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
+function subagentProfileIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item : string(record(item).profileId)).trim())
+    .filter(Boolean);
+}
+
 function commaList(value: unknown): string {
   return stringList(value).join(", ");
 }
@@ -295,10 +302,10 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
       if (!("fetch" in next) && !("search" in next)) continue;
     }
     if (name === "subagents") {
-      const agents = stringList(feature.agents).filter(Boolean);
+      const agents = subagentProfileIds(feature.agents);
       next.agents = agents.map((profileId) => ({ profileId }));
       for (const key of ["maxDepth", "maxDescendants", "maxConcurrent", "deadlineMs"] as const) {
-        const value = parseNumber(string(feature[key]));
+        const value = parseNumber(numberString(feature[key]));
         if (value !== undefined && value > 0) next[key] = value;
       }
     }
@@ -350,6 +357,10 @@ function configError(config: SessionConfig | undefined): string | null {
   const mcp = record(record(config.features).mcp);
   if ("mcp" in record(config.features) && (!Array.isArray(mcp.servers) || mcp.servers.some((server) => !string(record(server).serverId)))) {
     return "Each enabled MCP server needs a server id.";
+  }
+  const subagents = record(record(config.features).subagents);
+  if ("subagents" in record(config.features) && !subagentProfileIds(subagents.agents).length) {
+    return "Sub-agents require at least one agent profile.";
   }
   const linkError = workspaceLinksError(workspaceLinksFromConfig(config));
   if (linkError) return linkError;
@@ -1300,9 +1311,7 @@ function SubagentFields({
   profiles: ProfileOption[];
   patch: (fn: (feature: RecordValue) => void) => void;
 }) {
-  const agents = Array.isArray(feature.agents)
-    ? feature.agents.map((item) => (typeof item === "string" ? item : string(record(item).profileId))).filter(Boolean)
-    : [];
+  const agents = subagentProfileIds(feature.agents);
   const limits = [
     { key: "maxDepth", label: "Max depth", placeholder: "2", hint: "How deep sub-agents may nest below this session." },
     { key: "maxDescendants", label: "Max descendants", placeholder: "16", hint: "Lifetime total of sub-agent sessions under the root." },
