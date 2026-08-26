@@ -82,15 +82,11 @@ export function createBotBridgeActivities(config: BotBridgeConfig): BotBridgeAct
         universeId: input.universeId,
         eventId,
         document,
-        // The summary already is the message line; attachments are labelled
-        // below it and reach the model as run input items.
-        ...(input.media.length === 0
-          ? {}
-          : {
-              promptData: input.media.map((item) =>
-                mediaLabel({ kind: item.kind, ...(item.name == null ? {} : { name: item.name }) }),
-              ),
-            }),
+        // Keep the full document for filters and bot_event_read, but project
+        // the session prompt down to attachment labels. The summary already
+        // carries the human message line; an empty array deliberately
+        // suppresses the raw provider ids and routing metadata.
+        promptData: chatPromptData(input),
         ...(input.media.length === 0
           ? {}
           : {
@@ -157,6 +153,13 @@ export function createBotBridgeActivities(config: BotBridgeConfig): BotBridgeAct
       return { handle, maxSeq };
     },
   };
+}
+
+/** The small payload rendered below the message summary in the session prompt. */
+export function chatPromptData(input: Pick<EmitChatEventInput, "media">): string[] {
+  return input.media.map((item) =>
+    mediaLabel({ kind: item.kind, ...(item.name == null ? {} : { name: item.name }) }),
+  );
 }
 
 /** The stored envelope of one inbound message; `data` keeps the provider ids the model never sees. */

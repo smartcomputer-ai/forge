@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { renderAdmittedEvent } from "@lightspeed/bots/events";
 import {
   CHAT_MESSAGE_KIND,
   CHAT_SENT_KIND,
   chatMessageDocument,
+  chatPromptData,
   chatSentDocument,
   handleFromDocument,
 } from "../src/activities/bot-bridge.js";
@@ -46,6 +48,32 @@ describe("chat event documents", () => {
       media: [{ kind: "image", mime: "image/jpeg", name: "photo.jpg" }],
     });
     expect(JSON.stringify(document.data)).not.toContain("sha256:");
+  });
+
+  it("renders a terse session prompt while retaining the full filter document", () => {
+    const textOnly = { ...emit, media: [] };
+    const document = chatMessageDocument(textOnly);
+
+    expect(renderAdmittedEvent(17, document, chatPromptData(textOnly))).toBe(
+      "── event #17 · chat.message · whatsapp:41790000000@s.whatsapp.net · 2023-11-14 22:13Z\n" +
+        "Alice (2023-11-14 22:13Z): can you look at this?",
+    );
+    expect(document.data).toMatchObject({
+      conversation: { key: conversation.key, chatId: route.chatId },
+      sender: { id: emit.message.senderId },
+      messageId: emit.message.messageId,
+      text: emit.message.text,
+      mentionedBot: true,
+    });
+  });
+
+  it("adds only attachment labels below the message line", () => {
+    const document = chatMessageDocument(emit);
+    const prompt = renderAdmittedEvent(18, document, chatPromptData(emit));
+
+    expect(prompt).toContain("\nAlice (2023-11-14 22:13Z): can you look at this?\n- [image: photo.jpg]");
+    expect(prompt).not.toContain("messageId:");
+    expect(prompt).not.toContain("chatId:");
   });
 
   it("caps a very long message line and points at bot_event_read", () => {
