@@ -150,7 +150,10 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
                 ),
             });
         }
-        let provider_request = self.materialize_create_request(&request.request).await?;
+        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        // Route every turn of a session to the same prompt cache (P137).
+        provider_request.prompt_cache_key =
+            Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
         let provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
@@ -273,6 +276,7 @@ pub async fn materialize_create_request(
         metadata: non_empty_map(params.metadata),
         reasoning_effort,
         extra,
+        prompt_cache_key: None,
     })
 }
 

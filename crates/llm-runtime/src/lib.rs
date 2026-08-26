@@ -13,6 +13,7 @@ pub mod executor;
 pub mod openai_completions;
 pub mod openai_responses;
 pub mod params;
+mod prompt_cache;
 pub mod provider_keys;
 pub mod result;
 pub mod secrets;

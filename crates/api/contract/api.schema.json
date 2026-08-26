@@ -5501,6 +5501,62 @@
       },
       "type": "object"
     },
+    "LlmUsageView": {
+      "description": "Provider-reported token usage for one generation or a sum of them. Every\nfield is optional because providers report different subsets; counts\nthat a provider reports separately (Anthropic's cache read/write) are\nfolded into `input_tokens` so the field always means \"prompt tokens\nbilled on this request, cached or not\".",
+      "properties": {
+        "cacheWriteInputTokens": {
+          "description": "Prompt tokens written into the provider's prompt cache (Anthropic).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cachedInputTokens": {
+          "description": "Prompt tokens served from the provider's prompt cache.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoningTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "ManagedSessionStartParams": {
       "additionalProperties": false,
       "description": "Creation request for a session with immutable workflow ownership and\nworkflow-backed tools.",
@@ -7834,6 +7890,17 @@
             "$ref": "#/definitions/ToolBatchView"
           },
           "type": "array"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LlmUsageView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provider token usage summed over the run's completed generations;\nabsent until the first generation reports usage. The cached share\n(`cachedInputTokens / inputTokens`) is the prompt-cache hit rate."
         }
       },
       "required": [
@@ -8713,6 +8780,17 @@
             "type": {
               "const": "turnGenerationCompleted",
               "type": "string"
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LlmUsageView"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider token usage for this generation, including the\nprompt-cache read/write counts, when the provider reported it."
             }
           },
           "required": [

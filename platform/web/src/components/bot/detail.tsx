@@ -466,6 +466,12 @@ function StoredEventRow({
       {(decision?.summary ?? decision?.failure) && (
         <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{decision?.summary ?? decision?.failure}</p>
       )}
+      {decision?.usage && (
+        <p className="mt-1 text-muted-foreground">
+          {Math.round((decision.usage.cachedInputTokens / decision.usage.inputTokens) * 100)}% of{" "}
+          {decision.usage.inputTokens.toLocaleString()} prompt tokens cached
+        </p>
+      )}
       {event.session && <p className="mt-1 truncate text-muted-foreground">Session: {event.session.label}</p>}
     </div>
   );

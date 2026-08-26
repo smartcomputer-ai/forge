@@ -593,6 +593,11 @@ export type SessionEventKindView =
       status: string;
       turnId: string;
       type: "turnGenerationCompleted";
+      /**
+       * Provider token usage for this generation, including the
+       * prompt-cache read/write counts, when the provider reported it.
+       */
+      usage?: LlmUsageView | null;
     }
   | {
       turnId: string;
@@ -1696,6 +1701,12 @@ export interface RunView {
   source: RunViewSource;
   status: RunStatus;
   toolBatches?: ToolBatchView[];
+  /**
+   * Provider token usage summed over the run's completed generations;
+   * absent until the first generation reports usage. The cached share
+   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+   */
+  usage?: LlmUsageView | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1731,6 +1742,30 @@ export interface ToolEffectView {
     [k: string]: string;
   };
   kind: string;
+}
+/**
+ * Provider-reported token usage for one generation or a sum of them. Every
+ * field is optional because providers report different subsets; counts
+ * that a provider reports separately (Anthropic's cache read/write) are
+ * folded into `input_tokens` so the field always means "prompt tokens
+ * billed on this request, cached or not".
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "LlmUsageView".
+ */
+export interface LlmUsageView {
+  /**
+   * Prompt tokens written into the provider's prompt cache (Anthropic).
+   */
+  cacheWriteInputTokens?: number | null;
+  /**
+   * Prompt tokens served from the provider's prompt cache.
+   */
+  cachedInputTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  totalTokens?: number | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

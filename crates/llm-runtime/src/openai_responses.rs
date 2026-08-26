@@ -133,7 +133,10 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
             });
         }
 
-        let provider_request = self.materialize_create_request(&request.request).await?;
+        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        // Route every turn of a session to the same prompt cache (P137).
+        provider_request.prompt_cache_key =
+            Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let (send_request, redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
@@ -259,6 +262,7 @@ pub async fn materialize_create_request(
         service_tier,
         context_management: context_management_from_compaction(request.compaction.as_ref()),
         extra,
+        prompt_cache_key: None,
     })
 }
 

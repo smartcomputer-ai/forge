@@ -65,6 +65,8 @@ export interface BotRecentEventSnapshot {
   runId?: string;
   summary?: string;
   failure?: string;
+  /** Prompt tokens the run consumed and how many came from the provider's cache. */
+  usage?: { inputTokens: number; cachedInputTokens: number };
 }
 
 /** One unit of work for a session: a single event or a coalesced batch. */
@@ -1126,10 +1128,28 @@ export async function botControllerWorkflowV1(
           runId: active.runId ?? terminal.runId,
         };
       }
+      if (recent.runId !== undefined && recent.status !== "run_failed") {
+        // Best effort: the cached share is observability, never a reason to
+        // fail a delivery that already finished.
+        try {
+          const usage = await activities.readBotRunUsage({
+            universeId: config.universeId,
+            sessionId: target,
+            runId: recent.runId,
+          });
+          if (usage !== null) recent.usage = usage;
+        } catch {
+          // The read is retried by Temporal; a final failure leaves usage unset.
+        }
+      }
+      const cachedShare =
+        recent.usage === undefined
+          ? ""
+          : ` · ${Math.round((recent.usage.cachedInputTokens / recent.usage.inputTokens) * 100)}% of ${recent.usage.inputTokens} prompt tokens cached`;
       await record(recent.status === "run_failed" ? "run_failed" : "run_completed", {
         eventId: delivery.id,
         ...(recent.runId === undefined ? {} : { runId: recent.runId }),
-        detail: recent.failure ?? recent.summary ?? recent.status,
+        detail: `${recent.failure ?? recent.summary ?? recent.status}${cachedShare}`,
       });
       finishDelivery(active, recent);
     } catch (error) {

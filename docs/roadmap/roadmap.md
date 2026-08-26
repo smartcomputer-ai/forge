@@ -1,15 +1,14 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P137](p137-prompt-caching.md) — prompt caching (proposed 2026-08-26,
-  short by design): Anthropic gets no caching today (no `cache_control`
-  breakpoints anywhere in production), OpenAI caches automatically but
-  without `prompt_cache_key`, and usage facts are engine-only. Adapter-placed
-  Anthropic breakpoints (system / tools / moving last-message, `1h` TTL
-  knob), `prompt_cache_key` = session id, `LlmUsage` on the API, a
-  broken-prefix warning, and — the point — deterministic prefix-stability
-  tests plus per-provider live tests asserting hit rates across turns,
-  runs, tool calls, catalog changes, and compaction.
+- [x] [P137](p137-prompt-caching.md) — prompt caching (implemented 2026-08-26):
+  adapter-placed Anthropic breakpoints (system / last tool / moving
+  last-message, `prompt_cache_ttl` param for `1h`), `prompt_cache_key` =
+  session id on both OpenAI adapters, `LlmUsage` on `RunView` and
+  `turnGenerationCompleted` (web run marker, bot delivery detail), a
+  broken-prefix warning in the LLM activity, and per-provider caching live
+  suites proving ≥ 80 % cache reads across turns, a tool round trip, and a
+  superseded catalog.
 - [x] [P136](p136-context-catalogs.md) — context catalogs (implemented
   2026-08-26): the VFS, skill, and sub-agent catalogs are keyed entries at
   the front of the message list, and a keyed replace removes the old entry

@@ -296,6 +296,17 @@ Release construction, snapshots, and tagged publication are documented in
   their own catalogs (a bot directory, a roster) as `InputItem::Catalog` on
   `session/context/append`; run input rejects them. Do not reintroduce
   in-place catalog rewrites or catalogs in the system prompt.
+- Prompt caching is the adapters' job, and the rendered prefix must stay
+  stable to keep it. The Anthropic adapter places `cache_control`
+  breakpoints on every request (system prompt, last tool, last block of the
+  last message; TTL from `prompt_cache_ttl`); the OpenAI adapters send the
+  session id as `prompt_cache_key`. Markers are placement, not content —
+  tests about lowering strip them. Anything that rewrites context before
+  the tail (an instructions rewrite, compaction, an in-place catalog
+  replace) invalidates the cache from that point; append instead where you
+  can. Usage, including cache reads and writes, is on `RunView.usage` and
+  `turnGenerationCompleted`; the LLM activity warns when a large prompt
+  misses right after a hit.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry

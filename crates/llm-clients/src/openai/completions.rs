@@ -327,6 +327,10 @@ pub struct CreateCompletionRequest {
     pub metadata: Option<BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
+    /// Routes requests sharing a prefix to the same cache; OpenAI's prompt
+    /// cache is automatic but best-effort without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

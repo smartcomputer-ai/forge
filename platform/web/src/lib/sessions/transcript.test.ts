@@ -450,3 +450,41 @@ describe("session transcript run control", () => {
     expect(reconcileRuns(healed, [runView("run_3", "cancelled")])).toBe(healed);
   });
 });
+
+describe("run usage", () => {
+  it("summarizes prompt tokens and the cached share when the run finishes", () => {
+    let state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, {
+        type: "turnGenerationCompleted",
+        runId: "run_1",
+        turnId: "turn_1",
+        status: "succeeded",
+        usage: { inputTokens: 9000, cachedInputTokens: 8000 },
+      }),
+      event(4, {
+        type: "turnGenerationCompleted",
+        runId: "run_1",
+        turnId: "turn_2",
+        status: "succeeded",
+        usage: { inputTokens: 11000, cachedInputTokens: 10000 },
+      }),
+    ]);
+    expect(state.entries.some((entry) => entry.kind === "marker")).toBe(false);
+
+    state = applyEvents(state, [event(5, { type: "runCompleted", runId: "run_1" })]);
+    const marker = state.entries.find((entry) => entry.kind === "marker");
+    expect(marker?.kind === "marker" && marker.text).toBe("20k tokens in · 90% cached");
+    expect(marker?.kind === "marker" && marker.tone).toBe("muted");
+  });
+
+  it("adds no marker when the provider reported no usage", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, { type: "runCompleted", runId: "run_1" }),
+    ]);
+    expect(state.entries.some((entry) => entry.kind === "marker")).toBe(false);
+  });
+});

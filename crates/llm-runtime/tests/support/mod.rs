@@ -1,5 +1,8 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+#[allow(dead_code)]
+pub mod caching;
+
 use async_trait::async_trait;
 use engine::{ProviderApiKind, ProviderParams};
 use llm_clients::{

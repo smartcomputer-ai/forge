@@ -1901,6 +1901,7 @@ mod tests {
                     }),
                 }],
             }],
+            usage: None,
         };
 
         let chains = project_tool_chains(&run);
@@ -1963,6 +1964,7 @@ mod tests {
                 superseded_by: None,
             }],
             tool_batches: Vec::new(),
+            usage: None,
         };
 
         let chains = project_tool_chains(&run);
@@ -2036,6 +2038,7 @@ mod tests {
                         calls: vec![call("call_2", ToolItemStatus::Running)],
                     },
                 ],
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
@@ -2133,6 +2136,7 @@ mod tests {
                     reasoning_state_entry("item_2", "reasoning state rs_abc123"),
                 ],
                 tool_batches: Vec::new(),
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
@@ -2180,6 +2184,7 @@ mod tests {
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: vec![reasoning_state_entry("item_1", "reasoning state rs_abc123")],
                 tool_batches: Vec::new(),
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),

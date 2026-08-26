@@ -99,9 +99,23 @@ export interface CountBotDescendantSessionsInput {
   sinceMs: number;
 }
 
+export interface ReadRunUsageInput {
+  universeId: string;
+  sessionId: string;
+  runId: string;
+}
+
+/** Prompt tokens a run consumed and how many the provider served from its cache. */
+export interface BotRunUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
+}
+
 export interface BotLightspeedActivities {
   ensureBotSession(input: EnsureBotSessionInput): Promise<EnsureBotSessionResult>;
   readBotSessionStatus(input: ReadSessionInput): Promise<{ status: SessionStatus }>;
+  /** Usage of one finished run, or null when the provider reported none. */
+  readBotRunUsage(input: ReadRunUsageInput): Promise<BotRunUsage | null>;
   startBotRun(input: StartBotRunInput): Promise<{ runId: string }>;
   steerBotRun(input: SteerBotRunInput): Promise<{ steered: boolean; runId?: string }>;
   appendBotContext(input: AppendBotContextInput): Promise<void>;
@@ -187,6 +201,15 @@ export function createBotLightspeedActivities(
         sessionId: input.sessionId,
       });
       return { status: response.result.session.status };
+    },
+
+    async readBotRunUsage(input) {
+      const response = await clientForUniverse(config, input.universeId).call("session/read", {
+        sessionId: input.sessionId,
+      });
+      const usage = (response.result.session.runs ?? []).find((run) => run.id === input.runId)?.usage;
+      if (!usage?.inputTokens) return null;
+      return { inputTokens: usage.inputTokens, cachedInputTokens: usage.cachedInputTokens ?? 0 };
     },
 
     async startBotRun(input) {

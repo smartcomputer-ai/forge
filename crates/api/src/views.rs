@@ -67,6 +67,35 @@ pub struct RunView {
     pub entries: Vec<ContextEntryView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_batches: Vec<ToolBatchView>,
+    /// Provider token usage summed over the run's completed generations;
+    /// absent until the first generation reports usage. The cached share
+    /// (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsageView>,
+}
+
+/// Provider-reported token usage for one generation or a sum of them. Every
+/// field is optional because providers report different subsets; counts
+/// that a provider reports separately (Anthropic's cache read/write) are
+/// folded into `input_tokens` so the field always means "prompt tokens
+/// billed on this request, cached or not".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmUsageView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+    /// Prompt tokens served from the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u32>,
+    /// Prompt tokens written into the provider's prompt cache (Anthropic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

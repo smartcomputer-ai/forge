@@ -4,6 +4,36 @@
 
 - Proposed 2026-08-26, surfaced by the P135 review. Deliberately short
   until it is closer; the facts below were verified in code the same day.
+- **Implemented 2026-08-26**, one pass, live-proven the same day:
+  - Anthropic: `materialize_create_request` places the three-breakpoint
+    layout on every request — system prompt as one cached block, the last
+    custom tool definition, the last cacheable block of the last message
+    (thinking blocks are skipped; a marker a tool brought through provider
+    options is kept) — with `prompt_cache_ttl: "5m" | "1h"` on
+    `AnthropicMessagesParams` (validated; default 5m). Markers are
+    placement, not content: the P136 prefix test and the lowering tests
+    strip them before comparing.
+  - OpenAI: `prompt_cache_key` on `CreateResponseRequest` and
+    `CreateCompletionRequest`, set by both adapters from the session id
+    (ids over 64 bytes are hashed to a stable key).
+  - Usage: `LlmUsageView` on `RunView.usage` (summed over the run's
+    generations) and on `turnGenerationCompleted`; the web transcript ends
+    a run with "12.3k tokens in · 94% cached"; the bot controller reads the
+    finished run's usage and records the cached share in the delivery's
+    `run_completed` activity and `recentEvents`.
+  - Detector: the LLM activity logs every generation's cached share at
+    info and warns when a prompt of ≥ 2048 tokens reads nothing from the
+    cache right after a turn that did (process-local, per session).
+  - Proof: `crates/llm-runtime/tests/{anthropic_messages,openai_responses,
+    openai_completions}_caching_live.rs`, eight ignored tests asserting
+    ≥ 80 % of the previous prompt read from cache on the second turn, after
+    a tool round trip, and after a superseded catalog (plus the 1h TTL on
+    Anthropic). Observed on the first run: Anthropic 99–100 %, OpenAI
+    Responses 97 %, Completions 94–97 %.
+  - Not done, by choice: the run-boundary and compaction scenarios are the
+    session workflow's, not the adapters'; the deterministic prefix tests
+    (P136) and the adapter-level live tests cover the mechanism, and the
+    activity's warning is the guard for the rest.
 - Depends on [P136](p136-context-catalogs.md) for catalog refreshes to
   stop breaking the prefix; independent of it for everything else.
 - Core tier: `llm-runtime` adapters, `llm-clients` request types, `api`

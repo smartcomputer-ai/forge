@@ -81,6 +81,7 @@ fn serialized_fixtures_validate_against_exported_schemas() {
         },
         entries: Vec::new(),
         tool_batches: Vec::new(),
+        usage: None,
     };
     let outcome = AgentApiOutcome::with_notifications(
         RunStartResponse { run: run.clone() },

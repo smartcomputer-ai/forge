@@ -665,6 +665,8 @@ export interface BotRecentEvent {
   ref: string;
   /** Event sequence numbers (#N) in this delivery, when known. */
   seqs?: number[];
+  /** Prompt tokens the run consumed and how many the provider served from its cache. */
+  usage?: { inputTokens: number; cachedInputTokens: number };
   status:
     | "handled"
     | "deferred"

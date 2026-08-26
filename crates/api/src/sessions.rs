@@ -1087,6 +1087,10 @@ pub enum SessionEventKindView {
         run_id: RunId,
         turn_id: String,
         status: String,
+        /// Provider token usage for this generation, including the
+        /// prompt-cache read/write counts, when the provider reported it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<LlmUsageView>,
     },
     TurnCompleted {
         turn_id: String,

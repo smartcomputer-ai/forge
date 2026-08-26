@@ -9,16 +9,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use api::{
     ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
     ContextEntryKindView, ContextEntrySourceView, ContextEntryView, ContextMessageRoleView,
-    ContextView, EventCursor, EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput,
-    MediaKind, ModelConfig, ProviderContextDisplayView, ProviderNativeToolExecutionView,
-    RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
-    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
-    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
-    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
-    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
-    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
-    WorkflowToolSpecInput, WorkflowToolTargetInput,
+    ContextView, EventCursor, EventJoinsView, InputItem, LlmUsageView,
+    ManagedSessionWorkflowToolsInput, MediaKind, ModelConfig, ProviderContextDisplayView,
+    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView,
+    RunViewSource, SessionEventKindView, SessionEventView, SessionManagementView,
+    SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
+    ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
+    ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
+    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
+    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
+    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
+    WorkflowToolTargetInput,
 };
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
@@ -146,6 +147,7 @@ impl<'a> CoreAgentProjector<'a> {
         let source = projection.accepted_source_for_run(run_id);
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
         let projected_entries = self.project_context_entries(&context_entries).await?;
+        let usage = sum_llm_usage(projection.generation_usage_for_run(run_id).into_iter());
 
         Ok(RunView {
             id: api_run_id(run_id),
@@ -166,6 +168,7 @@ impl<'a> CoreAgentProjector<'a> {
             tool_batches: self
                 .project_tool_batches_for_run(&projection, &context_entries, run_id)
                 .await?,
+            usage,
         })
     }
 
@@ -515,11 +518,12 @@ impl<'a> CoreAgentProjector<'a> {
                     turn_id,
                     run_id,
                     status,
-                    ..
+                    facts,
                 } => Ok(SessionEventKindView::TurnGenerationCompleted {
                     run_id: api_run_id(*run_id),
                     turn_id: api_turn_id(*turn_id),
                     status: llm_generation_status_to_api(status).to_owned(),
+                    usage: facts.usage.as_ref().map(llm_usage_to_api),
                 }),
                 TurnEvent::Completed { turn_id, .. } => Ok(SessionEventKindView::TurnCompleted {
                     turn_id: api_turn_id(*turn_id),
@@ -1050,6 +1054,26 @@ impl<'a> CoreAgentProjection<'a> {
             };
             (accepted.run_id == run_id).then_some(&accepted.source)
         })
+    }
+
+    /// Usage reported by each completed generation of the run, in turn order.
+    pub fn generation_usage_for_run(&self, run_id: RunId) -> Vec<&'a engine::LlmUsage> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let CoreAgentEvent::Turn(TurnEvent::GenerationCompleted {
+                    run_id: event_run_id,
+                    facts,
+                    ..
+                }) = &entry.event
+                else {
+                    return None;
+                };
+                (*event_run_id == run_id)
+                    .then_some(facts.usage.as_ref())
+                    .flatten()
+            })
+            .collect()
     }
 
     pub fn context_entries_for_run(&self, run_id: RunId) -> Vec<&'a ContextEntry> {
@@ -3019,4 +3043,44 @@ fn superseded_by_map(entries: &[&ContextEntry]) -> BTreeMap<ContextEntryId, Cont
         .iter()
         .filter_map(|entry| entry.supersedes.map(|older| (older, entry.entry_id)))
         .collect()
+}
+
+/// Project provider usage. Every adapter already reports `input_tokens` as
+/// the whole prompt (the Anthropic adapter folds its separately reported
+/// cache read/write counts in and keeps the uncached count in
+/// `cache_miss_input_tokens`), so this is a field copy.
+fn llm_usage_to_api(usage: &engine::LlmUsage) -> LlmUsageView {
+    LlmUsageView {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        total_tokens: usage.total_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
+    }
+}
+
+/// Sum usage over a run's completed generations; `None` when no generation
+/// reported usage.
+fn sum_llm_usage<'a>(usages: impl Iterator<Item = &'a engine::LlmUsage>) -> Option<LlmUsageView> {
+    let mut total: Option<LlmUsageView> = None;
+    for usage in usages {
+        let view = llm_usage_to_api(usage);
+        let acc = total.get_or_insert_with(LlmUsageView::default);
+        fn add(acc: &mut Option<u32>, value: Option<u32>) {
+            if let Some(value) = value {
+                *acc = Some(acc.unwrap_or(0).saturating_add(value));
+            }
+        }
+        add(&mut acc.input_tokens, view.input_tokens);
+        add(&mut acc.output_tokens, view.output_tokens);
+        add(&mut acc.reasoning_tokens, view.reasoning_tokens);
+        add(&mut acc.total_tokens, view.total_tokens);
+        add(&mut acc.cached_input_tokens, view.cached_input_tokens);
+        add(
+            &mut acc.cache_write_input_tokens,
+            view.cache_write_input_tokens,
+        );
+    }
+    total
 }

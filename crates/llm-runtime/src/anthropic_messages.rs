@@ -255,7 +255,14 @@ pub async fn materialize_create_request(
         });
     }
 
-    let system = materialize_system(blobs, &request.context.entries).await?;
+    // Prompt-cache breakpoints (P137): Anthropic caches only at explicit
+    // `cache_control` markers, so the adapter places the standard layout on
+    // every request — end of the system prompt, last tool definition, last
+    // block of the last message (a moving marker that keeps the whole prefix
+    // warm turn after turn). Placement is a materialization detail; nothing
+    // in the planned request or the session log changes.
+    let cache_control = prompt_cache_control(params.prompt_cache_ttl.as_deref());
+    let system = materialize_system(blobs, &request.context.entries, &cache_control).await?;
     let message_entries = request
         .context
         .entries
@@ -263,8 +270,10 @@ pub async fn materialize_create_request(
         .filter(|entry| !matches!(entry.kind, ContextEntryKind::Instructions))
         .cloned()
         .collect::<Vec<_>>();
-    let messages = materialize_messages(blobs, &message_entries).await?;
-    let (tools, mcp_servers) = materialize_tools(blobs, &request.tools).await?;
+    let mut messages = materialize_messages(blobs, &message_entries).await?;
+    place_message_breakpoint(&mut messages, &cache_control);
+    let (mut tools, mcp_servers) = materialize_tools(blobs, &request.tools).await?;
+    place_tool_breakpoint(&mut tools, &cache_control);
 
     Ok(am::CreateMessageRequest {
         model: request.model.model.clone(),
@@ -335,9 +344,12 @@ fn compaction_instruction(target_tokens: Option<u32>) -> String {
     }
 }
 
+/// The system prompt as a single cached block; `None` when there are no
+/// instructions (an empty system block would be rejected).
 async fn materialize_system(
     blobs: &dyn BlobStore,
     entries: &[ContextEntry],
+    cache_control: &Value,
 ) -> LlmAdapterResult<Option<am::SystemContent>> {
     let mut parts = Vec::new();
     for entry in entries {
@@ -350,9 +362,84 @@ async fn materialize_system(
         }
     }
     if parts.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(am::SystemContent::Text(parts.join("\n\n"))))
+        return Ok(None);
+    }
+    Ok(Some(am::SystemContent::Blocks(vec![
+        am::ContentBlockParam::Text(am::TextBlockParam {
+            r#type: "text".to_owned(),
+            text: parts.join("\n\n"),
+            cache_control: Some(cache_control.clone()),
+            extra: Default::default(),
+        }),
+    ])))
+}
+
+/// The `cache_control` marker for this request: ephemeral, with the
+/// optional longer TTL from the params.
+fn prompt_cache_control(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) => json!({ "type": "ephemeral", "ttl": ttl }),
+        None => json!({ "type": "ephemeral" }),
+    }
+}
+
+/// Mark the last tool definition so the whole tool list is cached. Raw
+/// provider-native tools are left alone: their JSON is the operator's.
+fn place_tool_breakpoint(tools: &mut [am::Tool], cache_control: &Value) {
+    if let Some(am::Tool::Custom(definition)) = tools
+        .iter_mut()
+        .rev()
+        .find(|tool| matches!(tool, am::Tool::Custom(_)))
+        && definition.cache_control.is_none()
+    {
+        definition.cache_control = Some(cache_control.clone());
+    }
+}
+
+/// Mark the last block of the last message that can carry `cache_control`
+/// (thinking blocks cannot). Blocks that already carry a marker from
+/// provider options keep theirs.
+fn place_message_breakpoint(messages: &mut [am::MessageParam], cache_control: &Value) {
+    let Some(message) = messages.last_mut() else {
+        return;
+    };
+    let am::MessageParamContent::Blocks(blocks) = &mut message.content else {
+        return;
+    };
+    for block in blocks.iter_mut().rev() {
+        let slot = match block {
+            am::ContentBlockParam::Text(block) => &mut block.cache_control,
+            am::ContentBlockParam::Image(block) => &mut block.cache_control,
+            am::ContentBlockParam::Document(block) => &mut block.cache_control,
+            am::ContentBlockParam::ToolUse(block) => &mut block.cache_control,
+            am::ContentBlockParam::ToolResult(block) => &mut block.cache_control,
+            am::ContentBlockParam::Raw(value) => {
+                if let Some(object) = value.as_object_mut()
+                    && object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            matches!(
+                                kind,
+                                "text" | "image" | "document" | "tool_use" | "tool_result"
+                            )
+                        })
+                {
+                    object
+                        .entry("cache_control")
+                        .or_insert_with(|| cache_control.clone());
+                    return;
+                }
+                continue;
+            }
+            am::ContentBlockParam::Thinking(_) | am::ContentBlockParam::RedactedThinking(_) => {
+                continue;
+            }
+        };
+        if slot.is_none() {
+            *slot = Some(cache_control.clone());
+        }
+        return;
     }
 }
 
@@ -1117,6 +1204,23 @@ mod tests {
         blobs.insert_text(text).await
     }
 
+    /// Cache markers are placement, not content: tests about lowering compare
+    /// the content and assert the markers separately.
+    fn without_cache_control(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .filter(|(key, _)| key != "cache_control")
+                    .map(|(key, value)| (key, without_cache_control(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(without_cache_control).collect())
+            }
+            other => other,
+        }
+    }
+
     fn model() -> ModelSelection {
         ModelSelection {
             api_kind: ProviderApiKind::AnthropicMessages,
@@ -1393,6 +1497,7 @@ mod tests {
             service_tier: Some("auto".to_string()),
             container: None,
             extra: BTreeMap::from([("betas".to_string(), json!(["context-1m"]))]),
+            prompt_cache_ttl: None,
         }));
 
         let materialized = materialize_create_request(&blobs, &request)
@@ -1407,9 +1512,17 @@ mod tests {
                 "max_tokens": 2048,
                 "messages": [{
                     "role": "user",
-                    "content": [{ "type": "text", "text": "Read Cargo.toml" }]
+                    "content": [{
+                        "type": "text",
+                        "text": "Read Cargo.toml",
+                        "cache_control": { "type": "ephemeral" }
+                    }]
                 }],
-                "system": "Be precise.",
+                "system": [{
+                    "type": "text",
+                    "text": "Be precise.",
+                    "cache_control": { "type": "ephemeral" }
+                }],
                 "metadata": { "user_id": "user-1" },
                 "stop_sequences": ["<END>"],
                 "stream": false,
@@ -1549,7 +1662,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([
                 {
                     "role": "user",
@@ -1615,7 +1728,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([{
                 "role": "user",
                 "content": [
@@ -2054,7 +2167,7 @@ mod tests {
             .expect("followup request");
         let followup_json = serde_json::to_value(followup).expect("followup json");
         assert_eq!(
-            followup_json["messages"],
+            without_cache_control(followup_json["messages"].clone()),
             json!([{
                 "role": "assistant",
                 "content": [
@@ -2346,7 +2459,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([{
                 "role": "user",
                 "content": [{
@@ -2580,12 +2693,18 @@ mod tests {
         .await
         .expect("request after the update");
 
-        // Same-role blocks merge into one message, so compare block lists.
-        let before_blocks = serde_json::to_value(&before.messages).expect("json")[0]["content"]
+        // Same-role blocks merge into one message, so compare block lists. The
+        // moving cache marker is placement, not content: it sits on the last
+        // block of each request and is stripped before comparing.
+        let before_blocks = without_cache_control(
+            serde_json::to_value(&before.messages).expect("json"),
+        )[0]["content"]
             .as_array()
             .cloned()
             .expect("blocks");
-        let after_blocks = serde_json::to_value(&after.messages).expect("json")[0]["content"]
+        let after_blocks = without_cache_control(
+            serde_json::to_value(&after.messages).expect("json"),
+        )[0]["content"]
             .as_array()
             .cloned()
             .expect("blocks");
@@ -2604,5 +2723,108 @@ mod tests {
                 .expect("text")
                 .contains("Updated catalog")
         );
+    }
+
+    /// Prompt caching on Anthropic exists only at explicit markers, so every
+    /// request gets the three-breakpoint layout: end of the system prompt,
+    /// last tool definition, last block of the last message. The TTL param
+    /// rides on each marker; a marker a tool brought through provider
+    /// options is kept as is.
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_places_prompt_cache_breakpoints() {
+        let blobs = InMemoryBlobStore::new();
+        let instructions_ref = text_blob(&blobs, "Be precise.").await;
+        let input_ref = text_blob(&blobs, "Read Cargo.toml").await;
+        let schema_ref = crate::blob_io::put_json(
+            &blobs,
+            &json!({ "type": "object", "properties": {}, "required": [] }),
+        )
+        .await
+        .expect("schema");
+        let instructions_item = ContextEntry {
+            key: Some(engine::ContextEntryKey::new("instructions.000.test")),
+            entry_id: ContextEntryId::new(1),
+            kind: ContextEntryKind::Instructions,
+            source: ContextEntrySource::ContextEdit,
+            content_ref: instructions_ref,
+            media_type: Some("text/plain".to_owned()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+        let tool = |name: &str| ToolSpec {
+            name: ToolName::new(name),
+            execution: Default::default(),
+            kind: ToolKind::Function(FunctionToolSpec {
+                description_ref: None,
+                input_schema_ref: schema_ref.clone(),
+                output_schema_ref: None,
+                strict: None,
+                provider_options_ref: None,
+            }),
+            parallelism: ToolParallelism::ParallelSafe,
+        };
+        let mut request = intent_request(vec![instructions_item, user_entry(2, input_ref)]);
+        request.tools = vec![tool("first"), tool("last")];
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            prompt_cache_ttl: Some("1h".to_string()),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &request)
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+
+        let marker = json!({ "type": "ephemeral", "ttl": "1h" });
+        assert_eq!(value["system"][0]["cache_control"], marker, "system prompt");
+        assert_eq!(value["system"].as_array().map(Vec::len), Some(1));
+        assert!(
+            value["tools"][0].get("cache_control").is_none(),
+            "only the last tool"
+        );
+        assert_eq!(value["tools"][1]["cache_control"], marker, "last tool");
+        let blocks = value["messages"][0]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.last().expect("last block")["cache_control"], marker);
+        assert_eq!(
+            value["messages"].as_array().map(Vec::len),
+            Some(1),
+            "the marker moves with the last message; it never adds one"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_without_instructions_has_no_system_block() {
+        let blobs = InMemoryBlobStore::new();
+        let input_ref = text_blob(&blobs, "hi").await;
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &intent_request(vec![user_entry(1, input_ref)]))
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+        assert!(value.get("system").is_none());
+        assert_eq!(
+            value["messages"][0]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn anthropic_params_reject_unknown_prompt_cache_ttl() {
+        let params = anthropic_params(&AnthropicMessagesParams {
+            prompt_cache_ttl: Some("2h".to_string()),
+            ..AnthropicMessagesParams::default()
+        });
+        let error = crate::params::anthropic_messages_params(Some(&params))
+            .expect_err("2h is not a TTL Anthropic offers");
+        assert!(matches!(
+            error,
+            LlmAdapterError::InvalidProviderRequest { .. }
+        ));
     }
 }

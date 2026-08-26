@@ -178,9 +178,17 @@ pub struct AnthropicMessagesParams {
     pub service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// Lifetime of the prompt-cache breakpoints the adapter places on every
+    /// request: `"5m"` (default) or `"1h"`. The longer TTL costs more per
+    /// cache write and pays off for sessions that wake rarely (bots).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_ttl: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }
+
+/// Prompt-cache TTLs Anthropic accepts on a `cache_control` block.
+pub const ANTHROPIC_PROMPT_CACHE_TTLS: [&str; 2] = ["5m", "1h"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnthropicThinkingConfig {
@@ -295,7 +303,18 @@ pub fn anthropic_messages_params(
             ),
         });
     }
-    parse_params_body(&params.body)
+    let parsed: AnthropicMessagesParams = parse_params_body(&params.body)?;
+    if let Some(ttl) = parsed.prompt_cache_ttl.as_deref()
+        && !ANTHROPIC_PROMPT_CACHE_TTLS.contains(&ttl)
+    {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "unsupported Anthropic prompt_cache_ttl {ttl:?}; expected one of {}",
+                ANTHROPIC_PROMPT_CACHE_TTLS.join(", ")
+            ),
+        });
+    }
+    Ok(parsed)
 }
 
 /// Parse OpenAI Chat Completions params from optional opaque params.

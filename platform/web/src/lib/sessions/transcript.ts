@@ -107,6 +107,15 @@ export interface TranscriptState {
   /// These indexes merge them into one stable group in the transcript.
   toolCallByCallId: Map<string, ToolCallLocation>;
   toolGroupByBatchId: Map<string, number>;
+  /// Prompt tokens per run, summed over its generations, with the share the
+  /// provider served from its prompt cache — surfaced as a marker when the
+  /// run finishes so a cold prefix is visible where it costs.
+  runUsage: Map<string, RunUsage>;
+}
+
+export interface RunUsage {
+  inputTokens: number;
+  cachedInputTokens: number;
 }
 
 export function emptyTranscript(): TranscriptState {
@@ -121,7 +130,26 @@ export function emptyTranscript(): TranscriptState {
     runBySubmission: new Map(),
     toolCallByCallId: new Map(),
     toolGroupByBatchId: new Map(),
+    runUsage: new Map(),
   };
+}
+
+/// "12.3k tokens in · 94% cached" for a finished run; null when nothing was
+/// reported.
+export function describeRunUsage(usage: RunUsage | undefined): string | null {
+  if (!usage || usage.inputTokens <= 0) {
+    return null;
+  }
+  const share = Math.round((usage.cachedInputTokens / usage.inputTokens) * 100);
+  return `${formatTokens(usage.inputTokens)} tokens in · ${share}% cached`;
+}
+
+function formatTokens(count: number): string {
+  return count >= 10_000
+    ? `${Math.round(count / 1000)}k`
+    : count >= 1000
+      ? `${(count / 1000).toFixed(1)}k`
+      : String(count);
 }
 
 /// A run is live when the engine is executing or has queued it; clients use
@@ -147,6 +175,7 @@ export function applyEvents(
     runBySubmission: state.runBySubmission,
     toolCallByCallId: state.toolCallByCallId,
     toolGroupByBatchId: state.toolGroupByBatchId,
+    runUsage: state.runUsage,
   };
   for (const event of events) {
     const kind = event.kind;
@@ -183,6 +212,16 @@ export function applyEvents(
       case "turnGenerationRequested":
         setRunLabel(next, "thinking");
         break;
+      case "turnGenerationCompleted":
+        if (kind.usage?.inputTokens) {
+          const runId = String(kind.runId);
+          const current = next.runUsage.get(runId) ?? { inputTokens: 0, cachedInputTokens: 0 };
+          next.runUsage.set(runId, {
+            inputTokens: current.inputTokens + kind.usage.inputTokens,
+            cachedInputTokens: current.cachedInputTokens + (kind.usage.cachedInputTokens ?? 0),
+          });
+        }
+        break;
       case "toolBatchStarted":
         applyToolBatchStarted(next, kind);
         setRunLabel(next, "running tools");
@@ -215,9 +254,21 @@ export function applyEvents(
         completeToolGroup(next, String(kind.batchId));
         setRunLabel(next, "working");
         break;
-      case "runCompleted":
-        finishRun(next, String(kind.runId));
+      case "runCompleted": {
+        const runId = String(kind.runId);
+        const alreadyFinished = next.runPhases.get(runId) === "terminal";
+        finishRun(next, runId);
+        const usage = describeRunUsage(next.runUsage.get(runId));
+        if (usage && !alreadyFinished) {
+          next.entries.push({
+            kind: "marker",
+            key: `evt-${event.cursor.seq}`,
+            text: usage,
+            tone: "muted",
+          });
+        }
         break;
+      }
       case "runFailed":
         finishRun(next, String(kind.runId));
         next.entries.push({

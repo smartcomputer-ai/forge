@@ -17,6 +17,7 @@ fn notification_serializes_as_json_rpc_lite_shape() {
             },
             entries: Vec::new(),
             tool_batches: Vec::new(),
+            usage: None,
         },
     };
 
@@ -1542,6 +1543,7 @@ fn run_view_can_expose_tool_batches() {
                 }),
             }],
         }],
+        usage: None,
     };
 
     let value = serde_json::to_value(run).expect("serialize run");
@@ -2716,6 +2718,7 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
         source: RunViewSource::Input { items: Vec::new() },
         entries: Vec::new(),
         tool_batches: Vec::new(),
+        usage: None,
     }
 }
 
