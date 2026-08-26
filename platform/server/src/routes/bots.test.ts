@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
-import { decodeHistoryCursor, encodeHistoryCursor, historyLimit } from "./bots.js";
+import {
+  compareBotListItems,
+  decodeHistoryCursor,
+  encodeHistoryCursor,
+  historyLimit,
+} from "./bots.js";
+
+describe("bot list ordering", () => {
+  it("sorts by display name with the authored bot id as fallback and tie-breaker", () => {
+    const bots = [
+      { name: "zeta", displayName: "Alpha" },
+      { name: "beta", displayName: null },
+      { name: "bot-10", displayName: "Worker 10" },
+      { name: "bot-2", displayName: "Worker 2" },
+      { name: "alpha-2", displayName: "Same" },
+      { name: "alpha-1", displayName: "same" },
+    ];
+
+    expect(bots.sort(compareBotListItems).map((bot) => bot.name)).toEqual([
+      "zeta",
+      "beta",
+      "alpha-1",
+      "alpha-2",
+      "bot-2",
+      "bot-10",
+    ]);
+  });
+});
 
 describe("bot history pagination", () => {
   it("round-trips a stable timestamp and id cursor", () => {

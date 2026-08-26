@@ -94,6 +94,7 @@ const historyCursorSchema = z.object({
 });
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
+const BOT_LIST_COLLATOR = new Intl.Collator("en", { sensitivity: "base", numeric: true });
 
 type BotContext = Context<{ Variables: ApiVariables }>;
 
@@ -101,6 +102,18 @@ type BotContext = Context<{ Variables: ApiVariables }>;
 export function botView<T extends BotRow>(row: T) {
   const { id: _id, name, ...rest } = row;
   return { botId: name, ...rest };
+}
+
+/** Sort the navigation list by its visible label, never by the private row id. */
+export function compareBotListItems(
+  left: Pick<BotRow, "displayName" | "name">,
+  right: Pick<BotRow, "displayName" | "name">,
+): number {
+  const byLabel = BOT_LIST_COLLATOR.compare(
+    left.displayName ?? left.name,
+    right.displayName ?? right.name,
+  );
+  return byLabel !== 0 ? byLabel : BOT_LIST_COLLATOR.compare(left.name, right.name);
 }
 
 /**
@@ -136,8 +149,8 @@ export function botRoutes(ctx: AppContext) {
       .from(bots)
       .leftJoin(botTriggers, eq(botTriggers.botId, bots.id))
       .where(eq(bots.universeId, access.universe.id))
-      .groupBy(bots.id)
-      .orderBy(bots.name);
+      .groupBy(bots.id);
+    rows.sort(compareBotListItems);
     return c.json({ bots: rows.map(botView) });
   });
 
