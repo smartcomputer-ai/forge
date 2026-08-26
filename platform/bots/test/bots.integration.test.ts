@@ -676,6 +676,100 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     }
   }, 60_000);
 
+  it("wakes a parked controller to flush one event at its debounce deadline", async () => {
+    const deadlineBotName = "coalesce-deadline";
+    const runs: string[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async ({ deliveryId }: { deliveryId: string }) => {
+          runs.push(deliveryId);
+          return { runId: "run_1" };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations: [],
+        }),
+        readJsonBlob: async () => ({}),
+        readBotRunUsage: async () => null,
+        recordEventOutcomes: async () => ({ updated: 0 }),
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: deadlineBotName,
+        displayName: null,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const event: BotEvent = {
+        version: 1,
+        id: "deadline-1",
+        ref: eventRef,
+        coalesce: {
+          key: "trigger-x|main",
+          debounceMs: 25,
+          maxWaitMs: 1_000,
+          maxCount: 8,
+        },
+      };
+      const handle = await env.client.workflow.start(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, deadlineBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+      });
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.controllerStatus === "idle" && state.pendingEventCount === 0,
+      );
+
+      await handle.signal(BOT_EVENT_SIGNAL, event);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) =>
+          state.activeDeliveries.some(
+            (active) => active.id === event.id && active.runId === "run_1",
+          ),
+      );
+      expect(runs).toEqual([event.id]);
+
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(
+          botSessionId(deadlineBotName),
+          1,
+          botEventTerminalToken(event.id),
+        ),
+      );
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 1,
+      );
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
   it("applies steer and append delivery policies on busy sessions", async () => {
     const policyBotName = "policied";
     const calls: string[] = [];

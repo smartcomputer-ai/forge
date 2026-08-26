@@ -6,6 +6,7 @@ import {
   defineQuery,
   defineSignal,
   getExternalWorkflowHandle,
+  patched,
   proxyActivities,
   setHandler,
   sleep,
@@ -54,6 +55,7 @@ const SEEN_EMISSION_CAP = 2_000;
 const RECENT_EVENT_CAP = 50;
 const EXTRA_SESSION_CAP = 200;
 const HANDLED_INVOCATION_CAP = 2_000;
+const COALESCE_SIGNAL_WAKE_PATCH = "lightspeed_bot_coalesce_signal_wake_v1";
 
 export interface BotRecentEventSnapshot {
   id: string;
@@ -262,6 +264,11 @@ export async function botControllerWorkflowV1(
   // Bumped whenever a lane changes shared state outside the main loop, so a
   // parked loop re-evaluates deadlines (retention, budget) and dispatch.
   let laneTick = 0;
+  // A coalesced event may only create/update a buffer, which is not yet
+  // dispatchable. Wake the parked loop so it can schedule that buffer's
+  // debounce/max-wait timer. The patch keeps histories written before this
+  // wake-up behavior replayable; their next live event adopts the fix.
+  let eventTick = 0;
   let setupStatus: "initializing" | "degraded" | "ready" = "initializing";
   let configDirty = true;
   // A display-name change is label-only; it renames sessions, never rotates them.
@@ -444,6 +451,7 @@ export async function botControllerWorkflowV1(
 
   setHandler(botEventSignal, (event) => {
     validateBotEvent(event);
+    if (patched(COALESCE_SIGNAL_WAKE_PATCH)) eventTick += 1;
     if (seenEventIds.has(event.id)) {
       duplicateEventCount += 1;
       return;
@@ -1381,10 +1389,12 @@ export async function botControllerWorkflowV1(
       } satisfies BotCarryV1);
     }
     const tick = laneTick;
+    const observedEventTick = eventTick;
     const wake = () =>
       emissionInbox.length > 0 ||
       (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) ||
       laneTick !== tick ||
+      eventTick !== observedEventTick ||
       dispatchable();
     const deadlines = [nextBufferDeadline(), nextRetentionDeadline()];
     if (pendingDeliveries.length > 0 && config.runsPerDay !== null && budgetExhaustedView()) {
