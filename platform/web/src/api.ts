@@ -769,6 +769,8 @@ export interface BotState {
   runsToday: number;
   /** Sub-agent sessions delegated under the bot's sessions today; counted against `runsPerDay`. */
   descendantsToday: number;
+  /** Present while an operator-requested reset waits for an idle boundary. */
+  rotatingSessionIds?: string[];
   lastError: string | null;
 }
 

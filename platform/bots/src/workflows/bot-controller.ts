@@ -27,6 +27,7 @@ import {
   BOT_EVENT_SIGNAL,
   BOT_PUSHED_TOOL_IDS,
   BOT_SESSION_DECLARATION_MISMATCH,
+  BOT_SESSION_ROTATE_SIGNAL,
   BOT_STATE_QUERY,
   BOT_TOOLS_REVISION,
   BOTS_ACTIVITY_TASK_QUEUE,
@@ -41,6 +42,7 @@ import {
   type BotEventFinalOutcome,
   type BotEventOutcome,
   type BotEventSession,
+  type BotSessionRotateV1,
   type BotStartV1,
   type BotWhenBusyV1,
 } from "../contracts/bots.js";
@@ -139,6 +141,8 @@ export interface BotSnapshot {
   runsToday: number;
   /** Sub-agent sessions delegated under the bot's sessions today; they count against `runsPerDay`. */
   descendantsToday: number;
+  /** Sessions accepted for operator rotation and waiting for an idle boundary. */
+  rotatingSessionIds: string[];
   mainGeneration: number;
   toolsRevision: number | null;
   lastError: string | null;
@@ -174,6 +178,8 @@ export interface BotCarryV1 {
   mainGeneration?: number;
   /** Tool declaration revision the main session was created under. */
   toolsRevision?: number | null;
+  /** Operator-requested rotations that have not reached an idle boundary yet. */
+  rotationRequests?: string[];
   handledInvocationIds?: string[];
 }
 
@@ -193,6 +199,9 @@ const activities = proxyActivities<BotActivities>({
 
 export const botEventSignal = defineSignal<[BotEvent]>(BOT_EVENT_SIGNAL);
 export const botConfigSignal = defineSignal<[BotStartV1]>(BOT_CONFIG_SIGNAL);
+export const botSessionRotateSignal = defineSignal<[BotSessionRotateV1]>(
+  BOT_SESSION_ROTATE_SIGNAL,
+);
 export const deliverEmissionSignal = defineSignal<[unknown]>(DELIVER_EMISSION_SIGNAL);
 export const botStateQuery = defineQuery<BotSnapshot>(BOT_STATE_QUERY);
 
@@ -240,6 +249,7 @@ export async function botControllerWorkflowV1(
   const sessionGenerations = new Map<string, number>(
     Object.entries(carry?.sessionGenerations ?? {}),
   );
+  const rotationRequests = new Set(carry?.rotationRequests ?? []);
   const activeBySession = new Map<string, ActiveDelivery>();
   // A steer/append delivery may act on a session already occupied by the
   // terminal-tracked delivery. Keep one ordered sidecar per session without
@@ -269,6 +279,7 @@ export async function botControllerWorkflowV1(
   // debounce/max-wait timer. The patch keeps histories written before this
   // wake-up behavior replayable; their next live event adopts the fix.
   let eventTick = 0;
+  let rotationRetryAtMs: number | null = null;
   let setupStatus: "initializing" | "degraded" | "ready" = "initializing";
   let configDirty = true;
   // A display-name change is label-only; it renames sessions, never rotates them.
@@ -439,6 +450,7 @@ export async function botControllerWorkflowV1(
     }
     return pendingDeliveries.some((delivery) => {
       const target = targetOf(delivery);
+      if (rotationRequests.has(target)) return false;
       const active = activeBySession.get(target);
       if (active === undefined) return true;
       return (
@@ -499,6 +511,12 @@ export async function botControllerWorkflowV1(
     config = next;
     configDirty = true;
   });
+  setHandler(botSessionRotateSignal, (request) => {
+    if (request.version !== 1 || request.sessionId.length === 0) return;
+    rotationRequests.add(request.sessionId);
+    rotationRetryAtMs = null;
+    laneTick += 1;
+  });
   setHandler(deliverEmissionSignal, (emission) => {
     emissionInbox.push(emission);
   });
@@ -543,6 +561,7 @@ export async function botControllerWorkflowV1(
     runsPerDay: config.runsPerDay,
     runsToday,
     descendantsToday,
+    rotatingSessionIds: [...rotationRequests],
     mainGeneration,
     toolsRevision,
     lastError,
@@ -603,6 +622,71 @@ export async function botControllerWorkflowV1(
       }
     }
     return false;
+  }
+
+  /**
+   * Close operator-selected sessions only at an idle boundary, then advance
+   * their generation. Pending deliveries stay queued and resolve against the
+   * successor id, so a reset does not lose admitted work.
+   */
+  async function rotateRequestedSessions(): Promise<void> {
+    if (rotationRequests.size === 0) {
+      rotationRetryAtMs = null;
+      return;
+    }
+    if (rotationRetryAtMs !== null && Date.now() < rotationRetryAtMs) return;
+
+    let retry = false;
+    for (const target of [...rotationRequests]) {
+      const isMain = target === sessionId;
+      const routed = extraSessions.find((session) => session.sessionId === target);
+      // A duplicate or stale request is already satisfied.
+      if (!isMain && routed === undefined) {
+        rotationRequests.delete(target);
+        continue;
+      }
+      if (activeBySession.has(target) || sidecarBySession.has(target)) {
+        retry = true;
+        continue;
+      }
+
+      let closed = false;
+      try {
+        closed = (
+          await activities.closeBotSession({ universeId: config.universeId, sessionId: target })
+        ).closed;
+      } catch (error) {
+        lastError = errorMessage(error);
+      }
+      if (!closed) {
+        retry = true;
+        continue;
+      }
+
+      budgetRoots.add(target);
+      rotationRequests.delete(target);
+      lastError = null;
+      if (isMain) {
+        mainGeneration += 1;
+        sessionId = mainSessionIdFor(mainGeneration);
+        eventCursorSeq = 0;
+        appliedProfileId = null;
+        appliedProfileRevision = null;
+        toolsRevision = null;
+        sessionReady = false;
+        configDirty = true;
+        setupStatus = "initializing";
+        continue;
+      }
+
+      const index = extraSessions.findIndex((session) => session.sessionId === target);
+      if (index >= 0) extraSessions.splice(index, 1);
+      ensuredExtra.delete(target);
+      sessionCursors.delete(target);
+      const base = routedBase(target);
+      sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
+    }
+    rotationRetryAtMs = retry ? Date.now() + 5_000 : null;
   }
 
   function cursorFor(target: string): number {
@@ -1312,6 +1396,10 @@ export async function botControllerWorkflowV1(
       const delivery = pendingDeliveries[index];
       if (delivery === undefined) break;
       const target = targetOf(delivery);
+      if (rotationRequests.has(target)) {
+        index += 1;
+        continue;
+      }
       const occupied = activeBySession.get(target);
       if (occupied !== undefined) {
         if (
@@ -1344,12 +1432,15 @@ export async function botControllerWorkflowV1(
 
   for (;;) {
     await processEmissions();
+    await rotateRequestedSessions();
     flushRipeBuffers();
     await sweepRoutedSessions();
     await refreshDescendantsToday();
     if (renameDirty) await applyDisplayName();
     if (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) {
-      await waitUntilSessionIdle(sessionId).catch(() => undefined);
+      // A rotated generation does not exist until reconcileSession creates
+      // it; only an already-ready session needs the external idle check.
+      if (sessionReady) await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();
     }
     if (config.enabled && sessionReady && !configDirty) {
@@ -1383,6 +1474,7 @@ export async function botControllerWorkflowV1(
         extraSessions: [...extraSessions],
         sessionCursors: Object.fromEntries(sessionCursors),
         sessionGenerations: Object.fromEntries(sessionGenerations),
+        rotationRequests: [...rotationRequests],
         mainGeneration,
         toolsRevision,
         handledInvocationIds: [...handledInvocationIds].slice(-HANDLED_INVOCATION_CAP),
@@ -1396,7 +1488,7 @@ export async function botControllerWorkflowV1(
       laneTick !== tick ||
       eventTick !== observedEventTick ||
       dispatchable();
-    const deadlines = [nextBufferDeadline(), nextRetentionDeadline()];
+    const deadlines = [nextBufferDeadline(), nextRetentionDeadline(), rotationRetryAtMs];
     if (pendingDeliveries.length > 0 && config.runsPerDay !== null && budgetExhaustedView()) {
       deadlines.push(Date.now() + msUntilNextUtcDay());
     }

@@ -2,7 +2,13 @@ import { Hono, type Context } from "hono";
 import { and, count, desc, eq, getTableColumns, inArray, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@lightspeed/platform-db";
-import { BOT_STATE_QUERY, botWorkflowId, type BotEventDocumentV1 } from "@lightspeed/bots/contracts";
+import {
+  BOT_SESSION_ROTATE_SIGNAL,
+  BOT_STATE_QUERY,
+  botWorkflowId,
+  type BotEventDocumentV1,
+  type BotSessionRotateV1,
+} from "@lightspeed/bots/contracts";
 import {
   BotConfigError,
   botNameInput,
@@ -402,6 +408,32 @@ export function botRoutes(ctx: AppContext) {
     // a core outage must not hide the controller state.
     const lineage = await botSessionLineage(engineClientFor(ctx, found.access.universe), state);
     return c.json({ state, lineage });
+  });
+
+  byUniverse.post("/:id/bots/:botId/sessions/:sessionId/rotate", async (c) => {
+    const found = await botForUniverse(c, true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const sessionId = c.req.param("sessionId") ?? "";
+    const temporal = await getTemporal();
+    const handle = temporal.workflow.getHandle(
+      botWorkflowId(found.access.universe.lightspeedUniverseId, found.bot.name),
+    );
+    let state: BotSnapshot;
+    try {
+      state = await handle.query<BotSnapshot>(BOT_STATE_QUERY);
+    } catch (error) {
+      return c.json({ error: "bot controller unavailable", failure: errorMessage(error) }, 503);
+    }
+    if (!state.sessions.some((session) => session.sessionId === sessionId)) {
+      return c.json({ error: "session is not managed by this bot" }, 404);
+    }
+    const request: BotSessionRotateV1 = { version: 1, sessionId };
+    try {
+      await handle.signal(BOT_SESSION_ROTATE_SIGNAL, request);
+    } catch (error) {
+      return c.json({ error: "failed to request session rotation", failure: errorMessage(error) }, 502);
+    }
+    return c.json({ accepted: true, sessionId }, 202);
   });
 
   byUniverse.post("/:id/bots/:botId/events", async (c) => {

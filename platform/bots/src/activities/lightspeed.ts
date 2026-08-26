@@ -140,7 +140,7 @@ export interface BotLightspeedActivities {
   steerBotRun(input: SteerBotRunInput): Promise<{ steered: boolean; runId?: string }>;
   appendBotContext(input: AppendBotContextInput): Promise<void>;
   /**
-   * Close an idle routed session (non-force: a busy session is left alone)
+   * Close an idle managed session (non-force: a busy session is left alone)
    * together with its open sub-agent descendants (P134 lineage). A busy
    * descendant blocks the close; the sweep retries later.
    */

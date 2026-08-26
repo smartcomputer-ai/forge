@@ -13,6 +13,7 @@ export const BOTS_WORKFLOW_TASK_QUEUE = "lightspeed-bots-workflows-v1";
 export const BOTS_ACTIVITY_TASK_QUEUE = "lightspeed-bots-activities-v1";
 export const BOT_EVENT_SIGNAL = "bot_event_v1";
 export const BOT_CONFIG_SIGNAL = "bot_config_v1";
+export const BOT_SESSION_ROTATE_SIGNAL = "bot_session_rotate_v1";
 export const BOT_STATE_QUERY = "bot_state";
 /**
  * Delivery receipts to an admitting source's workflow (`BotEvent.notify`):
@@ -71,6 +72,12 @@ export interface BotStartV1 {
   /** Capability grant: declare `bot_emit` (events to itself or to another bot's inbox). */
   emit?: boolean;
   enabled: boolean;
+}
+
+/** Operator request to close one managed session and advance its generation. */
+export interface BotSessionRotateV1 {
+  version: 1;
+  sessionId: string;
 }
 
 export type BotTriggerKind = "schedule" | "webhook" | "poll" | "bot" | "chat";

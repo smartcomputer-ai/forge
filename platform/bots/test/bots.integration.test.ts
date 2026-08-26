@@ -13,6 +13,7 @@ import {
   BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_EVENT_SIGNAL,
   BOT_SESSION_DECLARATION_MISMATCH,
+  BOT_SESSION_ROTATE_SIGNAL,
   BOT_STATE_QUERY,
   BOT_STATUS_TOOL_ID,
   BOTS_ACTIVITY_TASK_QUEUE,
@@ -1365,6 +1366,82 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(ready.sessionId).toBe(`${base}-g2`);
       expect(ready.mainGeneration).toBe(2);
       expect(ready.sessions[0]?.sessionId).toBe(`${base}-g2`);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
+  it("rotates an operator-selected main session to a fresh generation", async () => {
+    const operatorBotName = "operator-rotated";
+    const ensured: string[] = [];
+    const closed: string[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          return { profileRevision: 1 };
+        },
+        closeBotSession: async ({ sessionId }: { sessionId: string }) => {
+          closed.push(sessionId);
+          return { closed: true };
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: operatorBotName,
+        displayName: null,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: true,
+      };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, operatorBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_CONFIG_SIGNAL,
+        signalArgs: [start],
+      });
+      const base = botSessionId(operatorBotName);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessionReady && state.sessionId === base,
+      );
+
+      await handle.signal(BOT_SESSION_ROTATE_SIGNAL, { version: 1, sessionId: base });
+      const rotated = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessionReady && state.sessionId === `${base}-g2`,
+      );
+      expect(closed).toEqual([base]);
+      expect(ensured).toEqual([base, `${base}-g2`]);
+      expect(rotated.sessions[0]?.sessionId).toBe(`${base}-g2`);
+      expect(rotated.rotatingSessionIds).toEqual([]);
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        botWorkflowId(universeId, operatorBotName),
+      );
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();

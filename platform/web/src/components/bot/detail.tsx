@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Inbox,
   LayoutDashboard,
+  LoaderCircle,
   RotateCcw,
   Settings2,
   Webhook,
@@ -21,6 +22,17 @@ import {
   type BotState,
   type ProfileDocument,
 } from "@/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -265,6 +277,7 @@ function BotOverview({
         {state ? state.sessions.map((session) => {
           const isMain = session.kind === "main";
           const ready = !isMain || state.sessionReady;
+          const rotating = state.rotatingSessionIds?.includes(session.sessionId) ?? false;
           const descendants = lineage?.[session.sessionId];
           return (
             <div
@@ -283,11 +296,22 @@ function BotOverview({
                     {descendants.open}/{descendants.total} sub-agents
                   </Badge>
                 )}
-                <Badge variant={ready ? "secondary" : "outline"}>{ready ? "ready" : "starting"}</Badge>
+                <Badge variant={ready && !rotating ? "secondary" : "outline"}>
+                  {rotating ? "resetting" : ready ? "ready" : "starting"}
+                </Badge>
                 {ready && (
                   <Button variant="outline" size="xs" render={<Link to={`/u/${slug}/sessions/${session.sessionId}`} />}>
                     Open <ArrowUpRight data-icon="inline-end" />
                   </Button>
+                )}
+                {manage && (
+                  <SessionResetButton
+                    universeId={bot.universeId}
+                    botId={bot.botId}
+                    sessionId={session.sessionId}
+                    label={isMain ? "main session" : session.label}
+                    rotating={rotating}
+                  />
                 )}
               </div>
               {descendants && descendants.children.length > 0 && (
@@ -315,6 +339,79 @@ function BotOverview({
         }) : <p className="text-xs text-muted-foreground">Waiting for the controller…</p>}
       </DetailSection>
       <TriggersSection universeId={bot.universeId} botId={bot.botId} manage={manage} env={env} />
+    </div>
+  );
+}
+
+function SessionResetButton({
+  universeId,
+  botId,
+  sessionId,
+  label,
+  rotating,
+}: {
+  universeId: string;
+  botId: string;
+  sessionId: string;
+  label: string;
+  rotating: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const reset = useMutation({
+    mutationFn: () =>
+      api(
+        "POST",
+        `/api/v1/universes/${universeId}/bots/${botId}/sessions/${encodeURIComponent(sessionId)}/rotate`,
+      ),
+    onSuccess: () => {
+      setOpen(false);
+      return queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, botId] });
+    },
+  });
+  const pending = rotating || reset.isPending;
+  return (
+    <div className="flex shrink-0 flex-col items-end gap-1">
+      <AlertDialog
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next);
+          if (next) reset.reset();
+        }}
+      >
+        <AlertDialogTrigger
+          render={
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              disabled={pending}
+              aria-label={`Reset ${label}`}
+              title="Close this session and continue with a fresh generation"
+            />
+          }
+        >
+          {pending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}
+        </AlertDialogTrigger>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset {label}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The current session and its open sub-agents will close, and the bot will continue
+              in a fresh session with no prior conversation history. Active work finishes first;
+              already admitted events remain queued.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep session</AlertDialogCancel>
+            <AlertDialogAction disabled={reset.isPending} onClick={() => reset.mutate()}>
+              {reset.isPending ? "Resetting…" : "Reset session"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      {reset.error && (
+        <span className="max-w-48 text-right text-xs text-destructive">{reset.error.message}</span>
+      )}
     </div>
   );
 }
