@@ -480,7 +480,10 @@ async fn materialize_block(
                 crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
-                am::ContentBlockParam::text(crate::environment_prompts::vfs_catalog_text(&catalog)),
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::environment_prompts::vfs_catalog_text(&catalog),
+                )),
             ))
         }
         ContextEntryKind::SkillCatalog => {
@@ -488,7 +491,10 @@ async fn materialize_block(
                 crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
-                am::ContentBlockParam::text(crate::skill_prompts::skill_catalog_text(&catalog)),
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::skill_prompts::skill_catalog_text(&catalog),
+                )),
             ))
         }
         ContextEntryKind::SubagentCatalog => {
@@ -496,11 +502,19 @@ async fn materialize_block(
                 crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
-                am::ContentBlockParam::text(crate::subagent_prompts::subagent_catalog_text(
-                    &catalog,
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::subagent_prompts::subagent_catalog_text(&catalog),
                 )),
             ))
         }
+        ContextEntryKind::Catalog { .. } => Ok((
+            am::MessageRole::User,
+            am::ContentBlockParam::text(
+                crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content_ref)
+                    .await?,
+            ),
+        )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &entry.content_ref).await?;
             Ok((
@@ -1282,6 +1296,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 
@@ -1306,6 +1321,7 @@ mod tests {
             provider_kind: item.provider_kind.clone(),
             provider_item_id: item.provider_item_id.clone(),
             token_estimate: item.token_estimate.clone(),
+            supersedes: None,
         }
     }
 
@@ -1340,6 +1356,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let mut request = intent_request(vec![instructions_item, user_entry(2, input_ref)]);
         request.tools = vec![ToolSpec {
@@ -1463,6 +1480,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1480,6 +1498,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_TEXT.to_owned()),
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1498,6 +1517,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
                 provider_item_id: Some("toolu_1".to_owned()),
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1517,6 +1537,7 @@ mod tests {
                 provider_kind: None,
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             user_entry(6, followup_ref),
         ];
@@ -1584,6 +1605,7 @@ mod tests {
             provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let request = intent_request(vec![raw_entry, user_entry(2, followup_ref)]);
 
@@ -2315,6 +2337,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let materialized = materialize_create_request(&blobs, &intent_request(vec![entry]))
@@ -2358,6 +2381,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2399,6 +2423,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2436,6 +2461,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2474,6 +2500,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (_, block) = materialize_block(&blobs, &entry)
@@ -2483,5 +2510,99 @@ mod tests {
         let value = serde_json::to_value(&block).expect("serialize block");
         assert_eq!(value["type"], json!("text"));
         assert_eq!(value["text"], json!("just a normal message"));
+    }
+
+    fn catalog_entry(id: u64, content_ref: BlobRef, supersedes: Option<u64>) -> ContextEntry {
+        ContextEntry {
+            key: Some(engine::ContextEntryKey::new("bot:directory")),
+            entry_id: ContextEntryId::new(id),
+            kind: ContextEntryKind::Catalog {
+                title: "Bot directory".to_string(),
+            },
+            source: ContextEntrySource::ContextEdit,
+            content_ref,
+            media_type: Some("text/markdown".to_string()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: supersedes.map(ContextEntryId::new),
+        }
+    }
+
+    /// A catalog update must append, never rewrite: everything rendered
+    /// before it is byte-identical, and only the successor carries the
+    /// update header. This is what keeps the provider prefix cache warm on
+    /// long-lived sessions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseding_catalog_appends_without_moving_the_rendered_prefix() {
+        let blobs = InMemoryBlobStore::new();
+        let v1_ref = text_blob(&blobs, "- infra: accepts events addressed by you").await;
+        let v2_ref = text_blob(
+            &blobs,
+            "- infra: accepts events addressed by you\n- comms: subscribes",
+        )
+        .await;
+        let input_ref = text_blob(&blobs, "Who can I reach?").await;
+        let user = ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(2),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            source: ContextEntrySource::RunInput {
+                run_id: RunId::new(1),
+                input_index: 0,
+            },
+            content_ref: input_ref,
+            media_type: None,
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+
+        let before = materialize_create_request(
+            &blobs,
+            &intent_request(vec![catalog_entry(1, v1_ref.clone(), None), user.clone()]),
+        )
+        .await
+        .expect("request before the update");
+        let after = materialize_create_request(
+            &blobs,
+            &intent_request(vec![
+                catalog_entry(1, v1_ref, None),
+                user,
+                catalog_entry(3, v2_ref, Some(1)),
+            ]),
+        )
+        .await
+        .expect("request after the update");
+
+        // Same-role blocks merge into one message, so compare block lists.
+        let before_blocks = serde_json::to_value(&before.messages).expect("json")[0]["content"]
+            .as_array()
+            .cloned()
+            .expect("blocks");
+        let after_blocks = serde_json::to_value(&after.messages).expect("json")[0]["content"]
+            .as_array()
+            .cloned()
+            .expect("blocks");
+        assert_eq!(after_blocks.len(), before_blocks.len() + 1);
+        assert_eq!(&after_blocks[..before_blocks.len()], &before_blocks[..]);
+        let successor = after_blocks.last().expect("successor")["text"]
+            .as_str()
+            .expect("text")
+            .to_string();
+        assert!(successor.starts_with(crate::catalog_prompts::CATALOG_UPDATE_HEADER));
+        assert!(successor.contains("Bot directory:"));
+        assert!(successor.ends_with("- comms: subscribes"));
+        assert!(
+            !before_blocks[0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("Updated catalog")
+        );
     }
 }

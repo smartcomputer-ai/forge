@@ -1154,6 +1154,13 @@ fn project_turns(session: &SessionView, settings: &ChatDraftSettings) -> Vec<Cha
                         content: text.clone(),
                         ref_: None,
                     },
+                    // Context-only; never valid run input, shown defensively.
+                    InputItem::Catalog { title, .. } => ChatMessageView {
+                        id: format!("{}:input:{index}", run.id),
+                        role: "user".into(),
+                        content: format!("catalog: {title}"),
+                        ref_: None,
+                    },
                     InputItem::TextRef { blob_ref } => ChatMessageView {
                         id: format!("{}:input:{index}", run.id),
                         role: "user".into(),
@@ -1851,6 +1858,8 @@ mod tests {
             text: None,
             display: None,
             source: None,
+            supersedes: None,
+            superseded_by: None,
         }
     }
 
@@ -1950,6 +1959,8 @@ mod tests {
                     error: None,
                 }),
                 source: None,
+                supersedes: None,
+                superseded_by: None,
             }],
             tool_batches: Vec::new(),
         };

@@ -145,11 +145,7 @@ impl<'a> CoreAgentProjector<'a> {
         let projection = CoreAgentProjection::new(entries);
         let source = projection.accepted_source_for_run(run_id);
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
-        let mut projected_entries = Vec::new();
-
-        for entry in &context_entries {
-            projected_entries.push(self.project_context_entry(entry).await?);
-        }
+        let projected_entries = self.project_context_entries(&context_entries).await?;
 
         Ok(RunView {
             id: api_run_id(run_id),
@@ -178,19 +174,21 @@ impl<'a> CoreAgentProjector<'a> {
         revision: u64,
         entries: &[ContextEntry],
     ) -> Result<ContextView, AgentApiError> {
-        let mut projected = Vec::with_capacity(entries.len());
-        for entry in entries {
-            projected.push(self.project_context_entry(entry).await?);
-        }
         Ok(ContextView {
             revision,
-            entries: projected,
+            entries: self
+                .project_context_entries(&entries.iter().collect::<Vec<_>>())
+                .await?,
         })
     }
 
+    /// Project one entry. `superseded_by` is the newer catalog version that
+    /// updated this one, known only when the caller holds the whole active
+    /// context (state views); event projections pass `None`.
     pub async fn project_context_entry(
         &self,
         entry: &ContextEntry,
+        superseded_by: Option<ContextEntryId>,
     ) -> Result<ContextEntryView, AgentApiError> {
         let text = match &entry.kind {
             // Binary media entries render from their preview; decoding
@@ -202,7 +200,9 @@ impl<'a> CoreAgentProjector<'a> {
                     None
                 }
             }
-            ContextEntryKind::ToolCall { .. } | ContextEntryKind::ToolResult { .. } => {
+            ContextEntryKind::ToolCall { .. }
+            | ContextEntryKind::ToolResult { .. }
+            | ContextEntryKind::Catalog { .. } => {
                 Some(self.read_blob_text(&entry.content_ref).await?)
             }
             _ => None,
@@ -224,7 +224,25 @@ impl<'a> CoreAgentProjector<'a> {
             text,
             display,
             source: Some(context_entry_source_to_api(&entry.source)),
+            supersedes: entry.supersedes.map(api_item_id),
+            superseded_by: superseded_by.map(api_item_id),
         })
+    }
+
+    /// Project active context entries, resolving `supersededBy` across them.
+    async fn project_context_entries(
+        &self,
+        entries: &[&ContextEntry],
+    ) -> Result<Vec<ContextEntryView>, AgentApiError> {
+        let superseded_by = superseded_by_map(entries);
+        let mut projected = Vec::with_capacity(entries.len());
+        for entry in entries {
+            projected.push(
+                self.project_context_entry(entry, superseded_by.get(&entry.entry_id).copied())
+                    .await?,
+            );
+        }
+        Ok(projected)
     }
 
     pub async fn project_input_entries(
@@ -520,7 +538,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextEntriesApplied {
                         base_revision: *base_revision,
@@ -556,7 +574,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextKeyPrefixReplaced {
                         base_revision: *base_revision,
@@ -572,7 +590,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextStateReplaced {
                         base_revision: *base_revision,
@@ -1147,6 +1165,11 @@ pub fn input_text(input: &[InputItem]) -> Result<String, AgentApiError> {
             InputItem::Media { .. } => {
                 return Err(AgentApiError::invalid_request(
                     "session/runs/start media input requires blob store resolution",
+                ));
+            }
+            InputItem::Catalog { .. } => {
+                return Err(AgentApiError::invalid_request(
+                    "catalog items are context, not conversation: publish them with session/context/append",
                 ));
             }
         }
@@ -1737,6 +1760,9 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
         ContextEntryKind::SubagentCatalog => ContextEntryKindView::SubagentCatalog,
+        ContextEntryKind::Catalog { title } => ContextEntryKindView::Catalog {
+            title: title.clone(),
+        },
         ContextEntryKind::SkillActivation {
             catalog_id,
             skill_id,
@@ -2583,10 +2609,11 @@ mod tests {
                 tokens: 123,
                 quality: TokenEstimateQuality::ProviderCounted,
             }),
+            supersedes: None,
         };
 
         let projected = projector
-            .project_context_entry(&item)
+            .project_context_entry(&item, None)
             .await
             .expect("project provider context entry");
 
@@ -2613,6 +2640,8 @@ mod tests {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
                 }),
+                supersedes: None,
+                superseded_by: None,
             }
         );
     }
@@ -2642,10 +2671,11 @@ mod tests {
             provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
             provider_item_id: Some("mcp_1".to_owned()),
             token_estimate: None,
+            supersedes: None,
         };
 
         let projected = projector
-            .project_context_entry(&item)
+            .project_context_entry(&item, None)
             .await
             .expect("project mcp provider context entry");
 
@@ -2680,6 +2710,8 @@ mod tests {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
                 }),
+                supersedes: None,
+                superseded_by: None,
             }
         );
     }
@@ -2976,6 +3008,15 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
+}
+
+/// Map each superseded catalog version to the newer entry that updated it.
+fn superseded_by_map(entries: &[&ContextEntry]) -> BTreeMap<ContextEntryId, ContextEntryId> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.supersedes.map(|older| (older, entry.entry_id)))
+        .collect()
 }

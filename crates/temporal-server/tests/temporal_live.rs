@@ -51,7 +51,6 @@ use tools::{
     subagents::{AGENT_RUN_TOOL_NAME, AGENT_SPAWN_TOOL_NAME},
 };
 
-
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_session_start_then_run_start_completes_fake_runs() -> anyhow::Result<()> {
@@ -380,7 +379,8 @@ async fn temporal_live_agent_run_inherits_parent_environment() -> anyhow::Result
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
-async fn temporal_live_agent_run_deadline_fails_the_reply_and_closes_the_child() -> anyhow::Result<()> {
+async fn temporal_live_agent_run_deadline_fails_the_reply_and_closes_the_child()
+-> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
@@ -504,10 +504,7 @@ impl SubagentScriptedLlm {
             failure_ref: None,
             context_entries,
             facts: LlmGenerationFacts {
-                provider_response_id: Some(format!(
-                    "subagent-tools-{}",
-                    request.turn_id.as_u64()
-                )),
+                provider_response_id: Some(format!("subagent-tools-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
                 tool_calls,
@@ -543,10 +540,7 @@ impl SubagentScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
-                provider_response_id: Some(format!(
-                    "subagent-final-{}",
-                    request.turn_id.as_u64()
-                )),
+                provider_response_id: Some(format!("subagent-final-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
@@ -562,7 +556,10 @@ fn parse_agent_run_script(text: &str) -> Option<(&str, usize)> {
         return None;
     }
     let profile = parts.next()?;
-    let count = parts.next().and_then(|count| count.parse().ok()).unwrap_or(1);
+    let count = parts
+        .next()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(1);
     Some((profile, count))
 }
 
@@ -725,8 +722,7 @@ where
     );
 
     let blobs_for_worker: Arc<dyn BlobStore> = store.clone();
-    let llm =
-        Arc::new(SubagentScriptedLlm::new(blobs_for_worker.clone())) as Arc<dyn CoreAgentLlm>;
+    let llm = Arc::new(SubagentScriptedLlm::new(blobs_for_worker.clone())) as Arc<dyn CoreAgentLlm>;
     let hosted = Arc::new(SessionTools::from_pg_store(store.clone()));
     let tools = hosted.clone() as Arc<dyn CoreAgentTools>;
     let activities = WorkerActivities::for_universe(
@@ -901,13 +897,17 @@ async fn wait_for_children_closed(
     expected: usize,
 ) -> anyhow::Result<Vec<engine::storage::SessionRecord>> {
     let mut children = Vec::new();
-    wait_until("sub-agent children to close", Duration::from_secs(60), async || {
-        children = list_children(sessions, parent).await?;
-        Ok(children.len() == expected
-            && children.iter().all(|child| {
-                child.lifecycle_status == engine::storage::SessionLifecycleStatus::Closed
-            }))
-    })
+    wait_until(
+        "sub-agent children to close",
+        Duration::from_secs(60),
+        async || {
+            children = list_children(sessions, parent).await?;
+            Ok(children.len() == expected
+                && children.iter().all(|child| {
+                    child.lifecycle_status == engine::storage::SessionLifecycleStatus::Closed
+                }))
+        },
+    )
     .await?;
     Ok(children)
 }
@@ -1019,7 +1019,10 @@ async fn run_agent_run_inline_live_client(
         "expected a sub-agent catalog context entry on the parent"
     );
 
-    let child_ids = children.iter().map(|child| child.session_id.clone()).collect::<Vec<_>>();
+    let child_ids = children
+        .iter()
+        .map(|child| child.session_id.clone())
+        .collect::<Vec<_>>();
     let mut all = vec![session_id];
     all.extend(child_ids);
     cleanup_subagent_test(&client, api.as_ref(), profile_id, &all).await;
@@ -1060,18 +1063,23 @@ async fn run_agent_run_fan_out_live_client(
         .flat_map(|batch| &batch.calls)
         .filter(|call| call.tool_name == AGENT_RUN_TOOL_NAME)
         .collect::<Vec<_>>();
-    assert_eq!(agent_calls.len(), 3, "expected three joined agent_run calls");
+    assert_eq!(
+        agent_calls.len(),
+        3,
+        "expected three joined agent_run calls"
+    );
     assert!(
         agent_calls
             .iter()
             .all(|call| call.status == api::ToolItemStatus::Succeeded)
     );
     let children = wait_for_children_closed(&sessions, &session_id, 3).await?;
-    assert!(
-        children
-            .iter()
-            .all(|child| child.origin.as_ref().is_some_and(|origin| origin.depth == 1))
-    );
+    assert!(children.iter().all(|child| {
+        child
+            .origin
+            .as_ref()
+            .is_some_and(|origin| origin.depth == 1)
+    }));
 
     let mut all = vec![session_id];
     all.extend(children.iter().map(|child| child.session_id.clone()));
@@ -1356,7 +1364,8 @@ async fn run_agent_run_inherit_environment_live_client(
     assert!(
         !matches!(
             environment.status,
-            api::EnvironmentLifecycleStatusView::Closing | api::EnvironmentLifecycleStatusView::Closed
+            api::EnvironmentLifecycleStatusView::Closing
+                | api::EnvironmentLifecycleStatusView::Closed
         ),
         "inherited environment must stay open after the child closes, got {:?}",
         environment.status
@@ -1388,17 +1397,21 @@ async fn run_agent_spawn_cancel_live_client(
     .await?;
 
     // The parent spawns, then parks on await; the slow child is running.
-    let parked = wait_until("the parent to park on await", Duration::from_secs(30), async || {
-        let handle = live_workflow_handle(&client, &session_id)?;
-        let status = handle
-            .query(
-                AgentSessionWorkflow::status,
-                (),
-                WorkflowQueryOptions::default(),
-            )
-            .await?;
-        Ok(status.active_waits == 1)
-    })
+    let parked = wait_until(
+        "the parent to park on await",
+        Duration::from_secs(30),
+        async || {
+            let handle = live_workflow_handle(&client, &session_id)?;
+            let status = handle
+                .query(
+                    AgentSessionWorkflow::status,
+                    (),
+                    WorkflowQueryOptions::default(),
+                )
+                .await?;
+            Ok(status.active_waits == 1)
+        },
+    )
     .await;
     if let Err(error) = parked {
         let view = api
@@ -1412,10 +1425,14 @@ async fn run_agent_spawn_cancel_live_client(
         anyhow::bail!("{error}; parent runs: {runs}");
     }
     let mut children = Vec::new();
-    wait_until("the slow child to exist", Duration::from_secs(30), async || {
-        children = list_children(&sessions, &session_id).await?;
-        Ok(children.len() == 1)
-    })
+    wait_until(
+        "the slow child to exist",
+        Duration::from_secs(30),
+        async || {
+            children = list_children(&sessions, &session_id).await?;
+            Ok(children.len() == 1)
+        },
+    )
     .await?;
     let child_id = children[0].session_id.clone();
 
@@ -2393,9 +2410,6 @@ async fn wait_for_terminal_run_with_timeout(
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
-
-
-
 
 async fn run_continue_as_new_live_client(
     client: Client,

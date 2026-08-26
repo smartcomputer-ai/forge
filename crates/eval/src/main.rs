@@ -1359,6 +1359,8 @@ mod tests {
             text: text.map(str::to_owned),
             display: None,
             source: None,
+            supersedes: None,
+            superseded_by: None,
         }
     }
 

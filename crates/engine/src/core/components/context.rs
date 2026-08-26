@@ -16,6 +16,12 @@ pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
 /// The sub-agent catalog (P134): the grant's agent menu with profile
 /// descriptions, refreshed like the skill catalog.
 pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
+/// Superseded catalog versions kept per key before the oldest is removed.
+/// A superseded catalog stays rendered so the provider prefix cache holds;
+/// the cap bounds how many stale versions a churning catalog can accumulate
+/// between prefix rewrites (one invalidation per `CAP` changes, not per
+/// change).
+pub const SUPERSEDED_CATALOG_CAP: usize = 5;
 pub const SKILL_ACTIVATION_CONTEXT_KEY_PREFIX: &str = "skills.activation.";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_RUN: &str = "lightspeed.skill.activation.run";
 pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activation.session";
@@ -41,7 +47,11 @@ pub type ContextEntryId = ContextItemId;
 #[serde(rename_all = "snake_case")]
 pub enum Event {
     /// Applies new immutable entries to active context. Unkeyed entries append;
-    /// keyed entries replace the previous active entry for that key.
+    /// keyed entries replace the previous active entry for that key — except
+    /// catalog kinds, which *supersede* it: the previous version stays active
+    /// (and rendered byte-for-byte, so the provider prefix cache holds), the
+    /// new entry records `supersedes`, and versions beyond
+    /// `SUPERSEDED_CATALOG_CAP` are dropped oldest-first.
     EntriesApplied {
         base_revision: u64,
         entries: Vec<ContextEntry>,
@@ -168,6 +178,12 @@ pub struct ContextEntry {
     pub provider_item_id: Option<String>,
     /// Optional accounting estimate used by context planning.
     pub token_estimate: Option<TokenEstimate>,
+    /// The earlier version of this keyed catalog that this entry replaces
+    /// as the current one. The earlier entry stays active until a prefix
+    /// rewrite or the per-key cap removes it; renderers mark this entry as
+    /// the update. Only catalog kinds supersede; other keyed entries replace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<ContextEntryId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -187,6 +203,7 @@ impl ContextEntryInput {
         entry_id: ContextEntryId,
         key: Option<ContextEntryKey>,
         source: ContextEntrySource,
+        supersedes: Option<ContextEntryId>,
     ) -> ContextEntry {
         ContextEntry {
             entry_id,
@@ -199,6 +216,7 @@ impl ContextEntryInput {
             provider_kind: self.provider_kind,
             provider_item_id: self.provider_item_id,
             token_estimate: self.token_estimate,
+            supersedes,
         }
     }
 }
@@ -213,6 +231,13 @@ pub enum ContextEntryKind {
     VfsCatalog,
     SkillCatalog,
     SubagentCatalog,
+    /// A client-owned catalog: an opaque text document under a client key
+    /// that tells the model what it may pick from (a directory, a roster, a
+    /// menu). Published through `session/context/append`; supersedes rather
+    /// than replaces on change, like the runtime catalogs.
+    Catalog {
+        title: String,
+    },
     SkillActivation {
         catalog_id: String,
         skill_id: SkillId,
@@ -227,6 +252,20 @@ pub enum ContextEntryKind {
     },
     ReasoningState,
     ProviderOpaque,
+}
+
+/// Catalog kinds supersede on keyed replacement instead of removing the
+/// previous version: menus change rarely relative to turns, and rewriting
+/// them mid-context would invalidate the provider prefix cache from that
+/// position for every session that outlives a catalog edit.
+pub fn is_supersedable_catalog_kind(kind: &ContextEntryKind) -> bool {
+    matches!(
+        kind,
+        ContextEntryKind::VfsCatalog
+            | ContextEntryKind::SkillCatalog
+            | ContextEntryKind::SubagentCatalog
+            | ContextEntryKind::Catalog { .. }
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -301,32 +340,14 @@ pub(crate) fn planned_context_entry_ids(state: &CoreAgentState) -> Vec<ContextEn
         seen.insert(entry.entry_id);
     }
 
-    if let Some(entry) = current_key_entry(state, &skill_catalog_key()) {
-        entry_ids.push(entry.entry_id);
-        seen.insert(entry.entry_id);
-    }
-    for key in [vfs_catalog_key()] {
-        if let Some(entry) = current_key_entry(state, &key)
-            && seen.insert(entry.entry_id)
-        {
-            entry_ids.push(entry.entry_id);
-        }
-    }
-
+    // Everything else, catalogs included, renders at its entry position.
+    // Catalogs are first published before the first run, so a fresh session
+    // still sees them right after the instructions; a refreshed catalog
+    // lands at the tail and supersedes the earlier version, which stays in
+    // place so the rendered prefix does not move.
     for entry in &state.context.entries {
-        if seen.contains(&entry.entry_id) {
-            continue;
-        }
-
-        match &entry.kind {
-            ContextEntryKind::Instructions
-            | ContextEntryKind::SkillCatalog
-            | ContextEntryKind::SubagentCatalog
-            | ContextEntryKind::VfsCatalog => {}
-            _ => {
-                entry_ids.push(entry.entry_id);
-                seen.insert(entry.entry_id);
-            }
+        if seen.insert(entry.entry_id) {
+            entry_ids.push(entry.entry_id);
         }
     }
 
@@ -369,18 +390,23 @@ pub(crate) fn compactable_context_entry_ids(state: &CoreAgentState) -> Vec<Conte
     planned_context_entry_ids(state)
         .into_iter()
         .filter(|entry_id| {
-            entry_by_id(state, *entry_id).is_some_and(|entry| {
-                !matches!(
-                    entry.kind,
-                    ContextEntryKind::Instructions
-                        | ContextEntryKind::SkillCatalog
-                        | ContextEntryKind::SubagentCatalog
-                        | ContextEntryKind::SkillActivation { .. }
-                        | ContextEntryKind::VfsCatalog
-                )
-            })
+            entry_by_id(state, *entry_id).is_some_and(|entry| is_compactable_entry(state, entry))
         })
         .collect()
+}
+
+/// Configuration entries (instructions, current catalogs, skill activations)
+/// survive compaction; conversation does not. A superseded catalog version
+/// is stale configuration kept only for prefix stability, so it is the
+/// first thing a prefix rewrite may drop.
+fn is_compactable_entry(state: &CoreAgentState, entry: &ContextEntry) -> bool {
+    match &entry.kind {
+        ContextEntryKind::Instructions | ContextEntryKind::SkillActivation { .. } => false,
+        kind if is_supersedable_catalog_kind(kind) => {
+            is_superseded_context_entry(state, entry.entry_id)
+        }
+        _ => true,
+    }
 }
 
 pub(crate) fn compactable_context_snapshot(
@@ -478,9 +504,28 @@ pub(crate) fn context_entries_from_inputs(
             next_entry_id = next_entry_id.checked_add(1).ok_or_else(|| {
                 DomainError::InvariantViolation("context entry id cursor exhausted".to_owned())
             })?;
-            Ok(entry.commit(ContextEntryId::new(next_entry_id), key, source))
+            let supersedes = key
+                .as_ref()
+                .and_then(|key| supersede_target(state, key, &entry.kind));
+            Ok(entry.commit(ContextEntryId::new(next_entry_id), key, source, supersedes))
         })
         .collect()
+}
+
+/// The active entry a keyed catalog write supersedes: the key's current
+/// entry, when both it and the new entry are catalog kinds. Any other keyed
+/// write replaces the current entry outright.
+fn supersede_target(
+    state: &CoreAgentState,
+    key: &ContextEntryKey,
+    kind: &ContextEntryKind,
+) -> Option<ContextEntryId> {
+    if !is_supersedable_catalog_kind(kind) {
+        return None;
+    }
+    current_key_entry(state, key)
+        .filter(|current| is_supersedable_catalog_kind(&current.kind))
+        .map(|current| current.entry_id)
 }
 
 pub(crate) fn validate_external_context_edit(
@@ -717,6 +762,10 @@ fn validate_external_context_edit_entry(
         ContextEntryKind::Message {
             role: ContextMessageRole::User,
         } => Ok(()),
+        ContextEntryKind::Catalog { title } if title.trim().is_empty() => Err(
+            DomainError::InvariantViolation(format!("catalog context entry {} needs a title", key)),
+        ),
+        ContextEntryKind::Catalog { .. } => Ok(()),
         ContextEntryKind::Instructions => Err(DomainError::InvariantViolation(format!(
             "instruction context entry requires an {}* key, got {}",
             INSTRUCTIONS_KEY_PREFIX, key
@@ -1009,18 +1058,7 @@ fn is_provider_compaction_prunable_entry(state: &CoreAgentState, entry: &Context
     if validate_entry_is_not_unconsumed_active_run_input(state, entry.entry_id).is_err() {
         return false;
     }
-    match entry.kind {
-        ContextEntryKind::Instructions
-        | ContextEntryKind::SkillCatalog
-        | ContextEntryKind::SubagentCatalog
-        | ContextEntryKind::SkillActivation { .. }
-        | ContextEntryKind::VfsCatalog => false,
-        ContextEntryKind::Message { .. }
-        | ContextEntryKind::ToolCall { .. }
-        | ContextEntryKind::ToolResult { .. }
-        | ContextEntryKind::ReasoningState
-        | ContextEntryKind::ProviderOpaque => true,
-    }
+    is_compactable_entry(state, entry)
 }
 
 fn has_active_nonterminal_tool_batch(state: &CoreAgentState) -> bool {
@@ -1040,6 +1078,8 @@ fn entry_by_id(state: &CoreAgentState, entry_id: ContextEntryId) -> Option<&Cont
         .find(|entry| entry.entry_id == entry_id)
 }
 
+/// The current entry for a key: the newest, since superseded catalog
+/// versions stay active under the same key.
 fn current_key_entry<'a>(
     state: &'a CoreAgentState,
     key: &ContextEntryKey,
@@ -1048,15 +1088,28 @@ fn current_key_entry<'a>(
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| entry.key.as_ref() == Some(key))
 }
 
-fn skill_catalog_key() -> ContextEntryKey {
-    ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)
+/// The current (newest) active entry under `key`, if any. Superseded catalog
+/// versions share the key and stay active; callers that compare a fresh
+/// snapshot against "what is published" must use this, never the first
+/// entry with the key.
+pub fn current_context_entry<'a>(
+    state: &'a CoreAgentState,
+    key: &ContextEntryKey,
+) -> Option<&'a ContextEntry> {
+    current_key_entry(state, key)
 }
 
-fn vfs_catalog_key() -> ContextEntryKey {
-    ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)
+/// True when a newer active entry records `supersedes == entry_id`.
+pub fn is_superseded_context_entry(state: &CoreAgentState, entry_id: ContextEntryId) -> bool {
+    state
+        .context
+        .entries
+        .iter()
+        .any(|entry| entry.supersedes == Some(entry_id))
 }
 
 pub fn skill_activation_context_key(catalog_id: &str, skill_id: &SkillId) -> ContextEntryKey {
@@ -1266,13 +1319,52 @@ fn apply_entries_applied(
         record_entry_materialization(state, entry)?;
 
         if let Some(key) = entry.key.as_ref() {
-            remove_context_entry_by_key(state, key);
+            let expected = supersede_target(state, key, &entry.kind);
+            if entry.supersedes != expected {
+                return Err(DomainError::InvariantViolation(format!(
+                    "context entry {} supersedes {:?} but key {} currently holds {:?}",
+                    entry.entry_id, entry.supersedes, key, expected
+                )));
+            }
+            if expected.is_none() {
+                remove_context_entry_by_key(state, key);
+            }
         }
 
         state.context.entries.push(entry.clone());
         state.id_cursors.last_context_item_id = entry.entry_id.as_u64();
+
+        if let Some(key) = entry.key.as_ref()
+            && entry.supersedes.is_some()
+        {
+            drop_superseded_beyond_cap(state, key);
+        }
     }
     Ok(())
+}
+
+/// Keep at most `SUPERSEDED_CATALOG_CAP` superseded versions under a key,
+/// dropping the oldest. Superseded catalogs are never run input, so no
+/// consumption check applies.
+fn drop_superseded_beyond_cap(state: &mut CoreAgentState, key: &ContextEntryKey) {
+    let mut versions = state
+        .context
+        .entries
+        .iter()
+        .filter(|entry| entry.key.as_ref() == Some(key))
+        .map(|entry| entry.entry_id)
+        .collect::<Vec<_>>();
+    // The newest is current; everything before it is superseded.
+    versions.pop();
+    if versions.len() <= SUPERSEDED_CATALOG_CAP {
+        return;
+    }
+    let excess = versions.len() - SUPERSEDED_CATALOG_CAP;
+    let dropped = versions.into_iter().take(excess).collect::<BTreeSet<_>>();
+    state
+        .context
+        .entries
+        .retain(|entry| !dropped.contains(&entry.entry_id));
 }
 
 fn validate_no_duplicate_entry_keys(entries: &[ContextEntry]) -> Result<(), DomainError> {
@@ -1674,7 +1766,9 @@ fn validate_replacement_entries(
         }
         previous_entry_id = Some(entry.entry_id);
 
+        // Superseded catalog versions legitimately share their key.
         if let Some(key) = entry.key.as_ref()
+            && !is_supersedable_catalog_kind(&entry.kind)
             && !seen_keys.insert(key.clone())
         {
             return Err(DomainError::InvariantViolation(format!(

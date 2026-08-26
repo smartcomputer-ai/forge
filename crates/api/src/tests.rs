@@ -1430,6 +1430,8 @@ fn provider_context_entry_serializes_debug_metadata() {
         text: None,
         display: None,
         source: None,
+        supersedes: None,
+        superseded_by: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize provider context entry");
@@ -1480,6 +1482,8 @@ fn provider_context_entry_serializes_mcp_display() {
             error: None,
         }),
         source: None,
+        supersedes: None,
+        superseded_by: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize mcp provider context entry");

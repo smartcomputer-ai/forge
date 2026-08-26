@@ -174,6 +174,7 @@ async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
                     provider_kind: None,
                     provider_item_id: None,
                     token_estimate: None,
+                    supersedes: None,
                 }],
                 token_estimate: None,
             },
@@ -251,6 +252,7 @@ async fn openai_responses_live_adapter_describes_image_input() {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         },
         ContextEntry {
             key: None,
@@ -268,6 +270,7 @@ async fn openai_responses_live_adapter_describes_image_input() {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         },
     ];
     let adapter = OpenAiResponsesLlmAdapter::new(
@@ -400,6 +403,7 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         },
         ContextEntry {
             key: None,
@@ -417,6 +421,7 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         },
     ];
     let adapter = OpenAiResponsesLlmAdapter::new(
@@ -509,6 +514,7 @@ async fn openai_responses_live_adapter_generates_result() {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     };
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
@@ -634,6 +640,7 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     };
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
@@ -734,6 +741,7 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     };
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),

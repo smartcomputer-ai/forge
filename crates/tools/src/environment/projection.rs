@@ -236,6 +236,7 @@ fn current_context_ref(
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key
@@ -251,6 +252,7 @@ fn current_key_ref(state: &CoreAgentState, key: &'static str) -> Option<BlobRef>
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key
@@ -310,6 +312,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let second = prepare_vfs_catalog_publication(&blobs, &state, catalog)

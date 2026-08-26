@@ -86,9 +86,6 @@ The point of the doc: caching must be tested, not assumed.
   - a tool-call round trip in between → the hit holds;
   - with P136: a catalog upsert between turns → the hit holds;
   - a compaction → the next turn re-warms (a write, then hits again).
-- **Temporal live** (bots integration, after usage is exposed): a bot
-  session across three deliveries shows the cached share rising, and a
-  trigger edit between deliveries does not reset it.
 
 ## Non-goals
 

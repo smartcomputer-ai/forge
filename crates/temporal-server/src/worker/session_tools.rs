@@ -602,8 +602,12 @@ impl SessionTools {
             let args: AgentCallArgs = match self.read_tool_args(call).await {
                 Ok(args) => args,
                 Err(error) => {
-                    return failed_result(self.blobs.as_ref(), call.call_id.clone(), error.to_string())
-                        .await;
+                    return failed_result(
+                        self.blobs.as_ref(),
+                        call.call_id.clone(),
+                        error.to_string(),
+                    )
+                    .await;
                 }
             };
             if let Err(error) = args.validate() {
@@ -2477,7 +2481,10 @@ mod tests {
         .expect("admit agent_run binding")
     }
 
-    fn subagents_policy(agents: &[&str], limits: engine::SubagentLimits) -> engine::SubagentsFeature {
+    fn subagents_policy(
+        agents: &[&str],
+        limits: engine::SubagentLimits,
+    ) -> engine::SubagentsFeature {
         engine::SubagentsFeature {
             agents: agents
                 .iter()
@@ -2646,7 +2653,12 @@ mod tests {
         .expect("decode execution context");
         assert_eq!(
             context,
-            SubagentExecutionContextV1::new("session-parent".to_owned(), 7, "reviewer".to_owned(), limits)
+            SubagentExecutionContextV1::new(
+                "session-parent".to_owned(),
+                7,
+                "reviewer".to_owned(),
+                limits
+            )
         );
         assert_eq!(context.version, SubagentExecutionContextV1::VERSION);
 

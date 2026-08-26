@@ -10,7 +10,7 @@
   broken-prefix warning, and — the point — deterministic prefix-stability
   tests plus per-provider live tests asserting hit rates across turns,
   runs, tool calls, catalog changes, and compaction.
-- [ ] [P136](p136-context-catalogs.md) — context catalogs (proposed
+- [x] [P136](p136-context-catalogs.md) — context catalogs (implemented
   2026-08-26): the VFS, skill, and sub-agent catalogs are keyed entries at
   the front of the message list, and a keyed replace removes the old entry
   mid-context and pushes the new one at the tail — every catalog change

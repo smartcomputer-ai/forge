@@ -6,12 +6,35 @@
   refreshed catalog land in the context, and does it invalidate the prompt
   cache?" — it does, from the front. Core tier (`engine`, `llm-runtime`,
   `temporal-server` projection, `api` views). Not yet sliced for a sprint;
-  the design is settled enough to build.
+  the design is settled enough to build. Implemented the same day; see
+  the entry below.
 - Extended the same day at Lukas's request: the supersede mechanism is
   exposed to clients as an external catalog (`InputItem::Catalog` on
   `session/context/append`), so bots and other platform controllers get
   cache-preserving menus through the API. P135's bot directory is its first
   consumer.
+- **Implemented 2026-08-26** (all four slices, one pass):
+  - Engine: `ContextEntry.supersedes`; `ContextEntryKind::Catalog { title }`;
+    catalog kinds supersede on keyed apply (`supersede_target` validated in
+    the reducer), `SUPERSEDED_CATALOG_CAP = 4` oldest-first;
+    `current_context_entry` / `is_superseded_context_entry` helpers, every
+    "current entry for key" lookup (workflow, gateway, tools) now takes the
+    newest entry; superseded versions are compactable and prunable, current
+    ones are not; `RemoveContext` clears every version; the planner renders
+    **all** entries in id order after the instructions — which also fixed a
+    P134 defect: the sub-agent catalog was excluded from the planned
+    snapshot and never reached the model.
+  - Runtime: `catalog_prompts` prefixes the successor with
+    `CATALOG_UPDATE_HEADER`; the earlier version renders unchanged (asserted
+    by byte-level prefix tests on the Anthropic and Responses adapters);
+    `Catalog` renders as `<title>:` plus the text.
+  - API: `InputItem::Catalog { title, text }` (context-only; run input and
+    the CLI reject it), `ContextEntryKindView::Catalog`, `supersedes` /
+    `supersededBy` on `ContextEntryView` (`supersededBy` on state views
+    only); contracts, TS client, Configurator tools regenerated; the web
+    transcript dims superseded catalog versions.
+  - Superseded versions are sent to the compactor like conversation and
+    then pruned; a small, deliberate simplification over "dropped for free".
 - Builds on P95 (sparse config, derived toolset), P107/P113 (VFS catalog,
   skills and prompts as VFS roots), P134 (the sub-agent catalog, whose
   "menu is a refreshed catalog context entry" rule this doc keeps).

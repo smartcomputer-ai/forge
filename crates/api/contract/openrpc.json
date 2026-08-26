@@ -3437,6 +3437,23 @@
             "type": "object"
           },
           {
+            "description": "A client-owned catalog published through `session/context/append`.",
+            "properties": {
+              "title": {
+                "type": "string"
+              },
+              "type": {
+                "const": "catalog",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "title"
+            ],
+            "type": "object"
+          },
+          {
             "properties": {
               "catalogId": {
                 "type": "string"
@@ -3730,6 +3747,20 @@
               }
             ],
             "description": "Where the entry came from: run input, a steering batch, model output,\na tool result, reasoning state, a context edit, or the runtime. Lets\ntranscripts render steering distinctly from the run's first input."
+          },
+          "supersededBy": {
+            "description": "For a catalog entry that a newer version has updated: that newer\nentry. Present only on state views (`session/read`), where the whole\nactive context is known.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supersedes": {
+            "description": "For a catalog entry: the earlier version of the same keyed catalog\nthat this entry updates. The earlier entry stays in context until a\nrewrite drops it.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "text": {
             "type": [
@@ -5393,6 +5424,29 @@
               "blobRef",
               "mime",
               "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+            "properties": {
+              "text": {
+                "description": "The catalog body, plain text or Markdown.",
+                "type": "string"
+              },
+              "title": {
+                "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                "type": "string"
+              },
+              "type": {
+                "const": "catalog",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "title",
+              "text"
             ],
             "type": "object"
           }

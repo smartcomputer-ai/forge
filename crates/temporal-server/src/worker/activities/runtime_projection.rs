@@ -2,14 +2,14 @@ use engine::{
     BlobRef, ContextEntry, ContextEntryId, ContextEntryKey, ContextEntryKind, ContextEntrySource,
     CoreAgentCommand, CoreAgentState, SKILL_CATALOG_CONTEXT_KEY, VFS_CATALOG_CONTEXT_KEY,
 };
-use tools::subagents::{
-    SubagentCatalogAgent, SubagentCatalogSnapshot, clear_subagent_catalog_command,
-    prepare_subagent_catalog_publication,
-};
 use temporal_workflow::{
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
 };
 use temporalio_sdk::activities::ActivityError;
+use tools::subagents::{
+    SubagentCatalogAgent, SubagentCatalogSnapshot, clear_subagent_catalog_command,
+    prepare_subagent_catalog_publication,
+};
 use tools::{
     environment::projection::{prepare_vfs_catalog_publication, vfs_catalog_from_workspace_links},
     prompts::{
@@ -75,11 +75,7 @@ pub(super) async fn refresh_runtime_projection(
     // skill catalog so profile description edits land at the next run.
     match request.subagents.as_ref() {
         Some(subagents) => {
-            let snapshot = subagent_catalog_snapshot(
-                deps.profiles.as_deref(),
-                subagents,
-            )
-            .await;
+            let snapshot = subagent_catalog_snapshot(deps.profiles.as_deref(), subagents).await;
             if let Some(command) = prepare_subagent_catalog_publication(
                 deps.blobs.as_ref(),
                 request.active_subagent_catalog_ref.as_ref(),
@@ -270,6 +266,7 @@ fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     }
 }
 
@@ -302,9 +299,9 @@ fn active_projection_entry(
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     }
 }
-
 
 /// Join the grant's allowlist with the current profile records. A missing
 /// profile keeps its id in the menu with no revision, so the model learns
@@ -321,8 +318,12 @@ pub async fn subagent_catalog_snapshot(
         };
         agents.push(SubagentCatalogAgent {
             profile_id: agent.profile_id.clone(),
-            display_name: record.as_ref().and_then(|profile| profile.display_name.clone()),
-            description: record.as_ref().and_then(|profile| profile.description.clone()),
+            display_name: record
+                .as_ref()
+                .and_then(|profile| profile.display_name.clone()),
+            description: record
+                .as_ref()
+                .and_then(|profile| profile.description.clone()),
             revision: record.as_ref().map(|profile| profile.revision),
         });
     }

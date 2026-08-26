@@ -18,11 +18,9 @@ impl GatewayAgentApi {
         let command = match subagents {
             Some(subagents) => {
                 let profiles: Arc<dyn ::profiles::ProfileStore> = self.store.clone();
-                let snapshot = crate::worker::subagent_catalog_snapshot(
-                    Some(profiles.as_ref()),
-                    subagents,
-                )
-                .await;
+                let snapshot =
+                    crate::worker::subagent_catalog_snapshot(Some(profiles.as_ref()), subagents)
+                        .await;
                 tools::subagents::prepare_subagent_catalog_publication(
                     self.store.as_ref(),
                     active_ref.as_ref(),
@@ -134,8 +132,10 @@ impl GatewayAgentApi {
                     "profile environment `inherit` requires the environments feature to be granted",
                 )
             })?;
-        let registry_id = ::environments::EnvironmentId::try_new(environment_id.as_str().to_owned())
-            .map_err(|error| AgentApiError::internal(format!("invalid environment id: {error}")))?;
+        let registry_id = ::environments::EnvironmentId::try_new(
+            environment_id.as_str().to_owned(),
+        )
+        .map_err(|error| AgentApiError::internal(format!("invalid environment id: {error}")))?;
         let environments: Arc<dyn ::environments::EnvironmentStore> = self.store.clone();
         let record = environments
             .read_environment(&registry_id)
@@ -167,8 +167,11 @@ impl GatewayAgentApi {
             .await?
             .map(|status| status.admission_failures.len())
             .unwrap_or(0);
-        self.submit_core_command(session_id, activate_environment_command(environment_id.clone()))
-            .await?;
+        self.submit_core_command(
+            session_id,
+            activate_environment_command(environment_id.clone()),
+        )
+        .await?;
         self.wait_for_active_environment(session_id, Some(&environment_id), baseline_failures)
             .await?;
         Ok(true)
@@ -180,6 +183,7 @@ pub(super) fn active_subagent_catalog_ref(state: &engine::CoreAgentState) -> Opt
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key

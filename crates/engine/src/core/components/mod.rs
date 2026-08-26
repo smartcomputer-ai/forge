@@ -34,9 +34,11 @@ pub use context::{
     OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     SKILL_ACTIVATION_CONTEXT_KEY_PREFIX, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, SUBAGENT_CATALOG_CONTEXT_KEY, TokenEstimate,
-    TokenEstimateQuality, VFS_CATALOG_CONTEXT_KEY, is_run_scoped_skill_activation_entry,
-    skill_activation_context_key, validate_external_context_key,
+    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY,
+    SUBAGENT_CATALOG_CONTEXT_KEY, SUPERSEDED_CATALOG_CAP, TokenEstimate, TokenEstimateQuality,
+    VFS_CATALOG_CONTEXT_KEY, current_context_entry, is_run_scoped_skill_activation_entry,
+    is_supersedable_catalog_kind, is_superseded_context_entry, skill_activation_context_key,
+    validate_external_context_key,
 };
 pub use environment::{
     ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND, EnvironmentEvent,
@@ -55,10 +57,10 @@ pub use promise::{
     promise_detach_effect,
 };
 pub use run::{
-    AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, JoinedWorkflowCall, ParkedToolBatch, ResumeToolBatchCommand, RunEvent,
-    RunFailure, RunFailureKind, RunQueueState, RunRecord, RunRequestCommand,
-    RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent,
-    SteeringBatch, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
+    AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, JoinedWorkflowCall,
+    ParkedToolBatch, ResumeToolBatchCommand, RunEvent, RunFailure, RunFailureKind, RunQueueState,
+    RunRecord, RunRequestCommand, RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus,
+    RunTerminalNotifyIntent, SteeringBatch, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
     request_run_submission_digest,
 };
 pub use state::*;

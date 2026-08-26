@@ -564,7 +564,10 @@ async fn materialize_message(
                 crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
             Ok(text_message(
                 dialect.instruction_role(),
-                crate::environment_prompts::vfs_catalog_text(&catalog),
+                crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::environment_prompts::vfs_catalog_text(&catalog),
+                ),
             ))
         }
         ContextEntryKind::SkillCatalog => {
@@ -572,7 +575,10 @@ async fn materialize_message(
                 crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
             Ok(text_message(
                 dialect.instruction_role(),
-                crate::skill_prompts::skill_catalog_text(&catalog),
+                crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::skill_prompts::skill_catalog_text(&catalog),
+                ),
             ))
         }
         ContextEntryKind::SubagentCatalog => {
@@ -580,9 +586,16 @@ async fn materialize_message(
                 crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
             Ok(text_message(
                 dialect.instruction_role(),
-                crate::subagent_prompts::subagent_catalog_text(&catalog),
+                crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::subagent_prompts::subagent_catalog_text(&catalog),
+                ),
             ))
         }
+        ContextEntryKind::Catalog { .. } => Ok(text_message(
+            dialect.instruction_role(),
+            crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content_ref).await?,
+        )),
         ContextEntryKind::SkillActivation { skill_id, .. } => Ok(text_message(
             dialect.instruction_role(),
             crate::skill_prompts::skill_activation_text(
@@ -1336,6 +1349,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 
@@ -1940,6 +1954,7 @@ mod tests {
                 provider_kind: input.provider_kind,
                 provider_item_id: input.provider_item_id,
                 token_estimate: input.token_estimate,
+                supersedes: None,
             })
             .collect();
         let replay = serde_json::to_value(

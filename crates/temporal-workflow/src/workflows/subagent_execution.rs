@@ -13,10 +13,10 @@ use temporalio_macros::{workflow, workflow_methods};
 use temporalio_sdk::{SyncWorkflowContext, WorkflowContext, WorkflowContextView, WorkflowResult};
 
 use crate::{
-    AgentSessionWorkflow, SubagentChildRef, SubagentCloseActivityRequest,
-    SubagentExecutionPhase, SubagentExecutionSnapshot, SubagentPrepareActivityRequest,
-    SubagentPrepareActivityResult, SubagentResolveActivityRequest, SubagentTerminal,
-    WorkflowActivities, WorkflowToolRecoveryResult, WorkflowToolStartArgs, activity_options,
+    AgentSessionWorkflow, SubagentChildRef, SubagentCloseActivityRequest, SubagentExecutionPhase,
+    SubagentExecutionSnapshot, SubagentPrepareActivityRequest, SubagentPrepareActivityResult,
+    SubagentResolveActivityRequest, SubagentTerminal, WorkflowActivities,
+    WorkflowToolRecoveryResult, WorkflowToolStartArgs, activity_options,
 };
 
 #[workflow(name = "SubagentExecutionWorkflow")]
@@ -44,10 +44,10 @@ impl SubagentExecutionWorkflow {
         if ctx.workflow_id() != start.execution_id
             || start.universe_id != start.invocation.session_universe_id
         {
-            return Err(
-                anyhow::anyhow!("subagent execution identity is invalid: workflow id or universe mismatch")
-                    .into(),
-            );
+            return Err(anyhow::anyhow!(
+                "subagent execution identity is invalid: workflow id or universe mismatch"
+            )
+            .into());
         }
         let Some(reply_promise_id) = start
             .invocation
@@ -391,7 +391,10 @@ mod tests {
         )
     }
 
-    fn classify(child: Option<&SubagentChildRef>, envelope: EmissionEnvelope) -> Option<SignalEffect> {
+    fn classify(
+        child: Option<&SubagentChildRef>,
+        envelope: EmissionEnvelope,
+    ) -> Option<SignalEffect> {
         let reply = reply_promise();
         let holder = holder_workflow_id();
         let invocation = invocation_id();
@@ -416,7 +419,10 @@ mod tests {
 
     #[test]
     fn run_terminal_is_accepted_on_the_reply_token_before_the_child_is_known() {
-        let effect = classify(None, run_terminal("agent_child", 1, reply_promise().as_str()));
+        let effect = classify(
+            None,
+            run_terminal("agent_child", 1, reply_promise().as_str()),
+        );
         assert_eq!(effect, Some(expected_terminal()));
     }
 
@@ -424,16 +430,25 @@ mod tests {
     fn run_terminal_requires_the_known_child_session_and_run() {
         let known = child();
         assert_eq!(
-            classify(Some(&known), run_terminal("agent_child", 1, reply_promise().as_str())),
+            classify(
+                Some(&known),
+                run_terminal("agent_child", 1, reply_promise().as_str())
+            ),
             Some(expected_terminal())
         );
         assert_eq!(
-            classify(Some(&known), run_terminal("agent_other", 1, reply_promise().as_str())),
+            classify(
+                Some(&known),
+                run_terminal("agent_other", 1, reply_promise().as_str())
+            ),
             None,
             "another session's terminal must be dropped"
         );
         assert_eq!(
-            classify(Some(&known), run_terminal("agent_child", 2, reply_promise().as_str())),
+            classify(
+                Some(&known),
+                run_terminal("agent_child", 2, reply_promise().as_str())
+            ),
             None,
             "another run of the child must be dropped"
         );
@@ -441,7 +456,10 @@ mod tests {
 
     #[test]
     fn run_terminal_with_a_foreign_token_or_workflow_producer_is_dropped() {
-        assert_eq!(classify(None, run_terminal("agent_child", 1, "some-other-token")), None);
+        assert_eq!(
+            classify(None, run_terminal("agent_child", 1, "some-other-token")),
+            None
+        );
         let mut from_workflow = run_terminal("agent_child", 1, reply_promise().as_str());
         from_workflow.producer = engine::EmissionProducer::Workflow {
             universe_id: UNIVERSE,
@@ -453,23 +471,35 @@ mod tests {
     #[test]
     fn holder_cancellation_of_the_reply_key_is_accepted_only_from_the_holder() {
         assert_eq!(
-            classify(None, cancellation("parent-session", invocation_id(), REPLY_COMPLETION_KEY)),
+            classify(
+                None,
+                cancellation("parent-session", invocation_id(), REPLY_COMPLETION_KEY)
+            ),
             Some(SignalEffect::HolderCancelled)
         );
         assert_eq!(
-            classify(None, cancellation("other-session", invocation_id(), REPLY_COMPLETION_KEY)),
+            classify(
+                None,
+                cancellation("other-session", invocation_id(), REPLY_COMPLETION_KEY)
+            ),
             None,
             "a cancellation from a session that is not the holder must be dropped"
         );
         assert_eq!(
-            classify(None, cancellation("parent-session", invocation_id(), "job-0")),
+            classify(
+                None,
+                cancellation("parent-session", invocation_id(), "job-0")
+            ),
             None,
             "only the reply key cancels this execution"
         );
         let other_invocation =
             WorkflowToolInvocationId::new(format!("wti:sha256:{}", "b".repeat(64)));
         assert_eq!(
-            classify(None, cancellation("parent-session", other_invocation, REPLY_COMPLETION_KEY)),
+            classify(
+                None,
+                cancellation("parent-session", other_invocation, REPLY_COMPLETION_KEY)
+            ),
             None,
             "another invocation's cancellation must be dropped"
         );
@@ -502,6 +532,9 @@ mod tests {
         snapshot.resolution = Some(resolution.clone());
         let recovery = recovery_result(&snapshot);
         assert_eq!(recovery.resolutions.len(), 1);
-        assert_eq!(recovery.resolutions.get(REPLY_COMPLETION_KEY), Some(&resolution));
+        assert_eq!(
+            recovery.resolutions.get(REPLY_COMPLETION_KEY),
+            Some(&resolution)
+        );
     }
 }

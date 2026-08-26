@@ -2321,6 +2321,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -2547,6 +2570,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "blobRef",
                 "mime",
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
               ],
               "type": "object"
             }
@@ -2876,6 +2922,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "blobRef",
                 "mime",
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
               ],
               "type": "object"
             }

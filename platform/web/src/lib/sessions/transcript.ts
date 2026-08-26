@@ -21,7 +21,14 @@ export type TranscriptEntry =
       /// the input that started it.
       steering?: boolean;
     }
-  | { kind: "system"; key: string; text: string }
+  | {
+      kind: "system";
+      key: string;
+      text: string;
+      /// A catalog version a newer version has updated; kept in context so
+      /// the rendered prefix stays cacheable, shown dimmed.
+      superseded?: boolean;
+    }
   | { kind: "reasoning"; key: string; text: string }
   | TranscriptToolGroup
   | { kind: "marker"; key: string; text: string; tone: "muted" | "error" };
@@ -422,9 +429,28 @@ function applyNonToolCallItem(
     case "subagentCatalog":
     case "skillActivation":
       if (displayableSystemText(item.preview ?? "")) {
-        state.entries.push({ kind: "system", key: item.id, text: item.preview ?? "" });
+        state.entries.push({
+          kind: "system",
+          key: item.id,
+          text: item.preview ?? "",
+          ...(item.supersededBy ? { superseded: true } : {}),
+        });
       }
       break;
+    case "catalog": {
+      // A client-owned catalog renders its title; a superseded version stays
+      // in context for prefix stability and is shown dimmed.
+      const text = kind.title || item.preview || "";
+      if (displayableSystemText(text)) {
+        state.entries.push({
+          kind: "system",
+          key: item.id,
+          text: item.supersedes ? `${text} (updated)` : text,
+          ...(item.supersededBy ? { superseded: true } : {}),
+        });
+      }
+      break;
+    }
     case "providerOpaque":
       if (item.display?.toolName) {
         const groupIndex = createToolGroup(

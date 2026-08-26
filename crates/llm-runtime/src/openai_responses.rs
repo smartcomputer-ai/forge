@@ -439,36 +439,30 @@ async fn materialize_input_item(
         ContextEntryKind::VfsCatalog => {
             let catalog =
                 crate::environment_prompts::read_vfs_catalog(blobs, &item.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::environment_prompts::vfs_catalog_text(&catalog),
-                ),
-                extra: Default::default(),
-            }))
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::environment_prompts::vfs_catalog_text(&catalog),
+            )))
         }
         ContextEntryKind::SkillCatalog => {
             let catalog =
                 crate::skill_prompts::read_skill_catalog(blobs, &item.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(crate::skill_prompts::skill_catalog_text(
-                    &catalog,
-                )),
-                extra: Default::default(),
-            }))
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::skill_prompts::skill_catalog_text(&catalog),
+            )))
         }
         ContextEntryKind::SubagentCatalog => {
             let catalog =
                 crate::subagent_prompts::read_subagent_catalog(blobs, &item.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::subagent_prompts::subagent_catalog_text(&catalog),
-                ),
-                extra: Default::default(),
-            }))
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::subagent_prompts::subagent_catalog_text(&catalog),
+            )))
         }
+        ContextEntryKind::Catalog { .. } => Ok(developer_message(
+            crate::catalog_prompts::external_catalog_text(blobs, item, &item.content_ref).await?,
+        )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &item.content_ref).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {
@@ -1162,6 +1156,15 @@ fn u64_to_u32(value: u64) -> u32 {
     value.min(u64::from(u32::MAX)) as u32
 }
 
+/// A developer-role text item; catalogs and instructions render this way.
+fn developer_message(text: String) -> oai::ResponseInputItem {
+    oai::ResponseInputItem::Message(oai::InputMessage {
+        role: oai::MessageRole::Developer,
+        content: oai::InputMessageContent::Text(text),
+        extra: Default::default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1260,6 +1263,7 @@ mod tests {
             provider_kind: item.provider_kind.clone(),
             provider_item_id: item.provider_item_id.clone(),
             token_estimate: item.token_estimate.clone(),
+            supersedes: None,
         }
     }
 
@@ -1406,6 +1410,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let item = ContextEntry {
             key: None,
@@ -1423,6 +1428,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let mut request = intent_request(vec![instructions_item, item]);
         request.tools = vec![ToolSpec {
@@ -1952,6 +1958,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let user_item = ContextEntry {
             key: None,
@@ -1969,6 +1976,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let activation_item = ContextEntry {
             key: None,
@@ -1986,6 +1994,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let request = intent_request(vec![catalog_item, user_item, activation_item]);
 
@@ -2030,6 +2039,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let raw_json = json!({
             "id": "resp_1",
@@ -2182,6 +2192,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let raw_json = json!({
             "id": "cmp_resp_1",
@@ -2561,6 +2572,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let entries = vec![
             entry(1, image_ref, Some("image/png")),
@@ -2606,6 +2618,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let input = materialize_input_items(&blobs, &entries)
@@ -2642,6 +2655,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let input = materialize_input_items(&blobs, &entries)
@@ -2765,6 +2779,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let entries = vec![entry(1, first_ref), entry(2, second_ref)];
 
@@ -2807,6 +2822,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let item = materialize_input_item(&blobs, &entry)
@@ -2826,5 +2842,96 @@ mod tests {
             .decode(encoded)
             .expect("valid base64");
         assert_eq!(decoded, image_bytes);
+    }
+
+    fn catalog_entry(id: u64, content_ref: BlobRef, supersedes: Option<u64>) -> ContextEntry {
+        ContextEntry {
+            key: Some(engine::ContextEntryKey::new("bot:directory")),
+            entry_id: ContextEntryId::new(id),
+            kind: ContextEntryKind::Catalog {
+                title: "Bot directory".to_string(),
+            },
+            source: ContextEntrySource::ContextEdit,
+            content_ref,
+            media_type: Some("text/markdown".to_string()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: supersedes.map(ContextEntryId::new),
+        }
+    }
+
+    /// A catalog update must append, never rewrite: every input item before
+    /// it is byte-identical, and only the successor carries the update
+    /// header. This is what keeps OpenAI's automatic prefix cache warm on
+    /// long-lived sessions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseding_catalog_appends_without_moving_the_rendered_prefix() {
+        let blobs = InMemoryBlobStore::new();
+        let v1_ref = text_blob(&blobs, "- infra: accepts events addressed by you").await;
+        let v2_ref = text_blob(
+            &blobs,
+            "- infra: accepts events addressed by you\n- comms: subscribes",
+        )
+        .await;
+        let input_ref = text_blob(&blobs, "Who can I reach?").await;
+        let user = ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(2),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            source: ContextEntrySource::RunInput {
+                run_id: RunId::new(1),
+                input_index: 0,
+            },
+            content_ref: input_ref,
+            media_type: None,
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+
+        let before = materialize_create_request(
+            &blobs,
+            &intent_request(vec![catalog_entry(1, v1_ref.clone(), None), user.clone()]),
+        )
+        .await
+        .expect("request before the update");
+        let after = materialize_create_request(
+            &blobs,
+            &intent_request(vec![
+                catalog_entry(1, v1_ref, None),
+                user,
+                catalog_entry(3, v2_ref, Some(1)),
+            ]),
+        )
+        .await
+        .expect("request after the update");
+
+        let before_items = serde_json::to_value(&before.input)
+            .expect("json")
+            .as_array()
+            .cloned()
+            .expect("items");
+        let after_items = serde_json::to_value(&after.input)
+            .expect("json")
+            .as_array()
+            .cloned()
+            .expect("items");
+        assert_eq!(after_items.len(), before_items.len() + 1);
+        assert_eq!(&after_items[..before_items.len()], &before_items[..]);
+        let successor =
+            serde_json::to_string(after_items.last().expect("successor")).expect("json");
+        assert!(successor.contains(crate::catalog_prompts::CATALOG_UPDATE_HEADER));
+        assert!(successor.contains("Bot directory:"));
+        assert!(
+            !serde_json::to_string(&before_items[0])
+                .expect("json")
+                .contains("Updated catalog")
+        );
     }
 }

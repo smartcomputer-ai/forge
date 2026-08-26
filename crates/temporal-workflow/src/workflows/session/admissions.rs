@@ -411,6 +411,7 @@ fn active_context_ref(
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key

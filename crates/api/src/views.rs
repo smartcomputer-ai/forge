@@ -184,6 +184,19 @@ pub enum InputItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// A client-owned catalog document: what the model may pick from (a
+    /// directory, a roster, a menu), rendered by the client as text. Accepted
+    /// only by `session/context/append` under a client key; run input rejects
+    /// it. A changed catalog supersedes the earlier version instead of
+    /// replacing it, so the earlier version stays rendered and the provider
+    /// prefix cache holds; superseded versions are dropped at the next
+    /// context rewrite or beyond a per-key cap.
+    Catalog {
+        /// Short name shown as the catalog's heading, e.g. "Bot directory".
+        title: String,
+        /// The catalog body, plain text or Markdown.
+        text: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -225,6 +238,10 @@ pub enum ContextEntryKindView {
     VfsCatalog,
     SkillCatalog,
     SubagentCatalog,
+    /// A client-owned catalog published through `session/context/append`.
+    Catalog {
+        title: String,
+    },
     SkillActivation {
         catalog_id: String,
         skill_id: SkillId,
@@ -296,6 +313,16 @@ pub struct ContextEntryView {
     /// transcripts render steering distinctly from the run's first input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ContextEntrySourceView>,
+    /// For a catalog entry: the earlier version of the same keyed catalog
+    /// that this entry updates. The earlier entry stays in context until a
+    /// rewrite drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<ItemId>,
+    /// For a catalog entry that a newer version has updated: that newer
+    /// entry. Present only on state views (`session/read`), where the whole
+    /// active context is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<ItemId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

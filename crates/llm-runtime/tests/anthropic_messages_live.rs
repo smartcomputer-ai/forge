@@ -113,6 +113,7 @@ fn user_entry(entry_id: u64, content_ref: BlobRef) -> ContextEntry {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     }
 }
 
@@ -168,6 +169,7 @@ fn retained_context_entry(index: usize, item: &ContextEntryInput) -> ContextEntr
         provider_kind: item.provider_kind.clone(),
         provider_item_id: item.provider_item_id.clone(),
         token_estimate: item.token_estimate.clone(),
+        supersedes: None,
     }
 }
 
@@ -513,6 +515,7 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     });
 
     let mut followup = intent_request("live-anthropic-messages-tool-followup", entries);

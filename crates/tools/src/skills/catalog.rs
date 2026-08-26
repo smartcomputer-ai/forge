@@ -164,6 +164,7 @@ fn current_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key
@@ -827,6 +828,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let second = prepare_skill_catalog_publication(

@@ -286,6 +286,16 @@ Release construction, snapshots, and tagged publication are documented in
   child. Do not add a parent-side delegation transport, child↔parent
   messaging, an agent graph surface, or an enum menu in the tool schema —
   the menu is a refreshed catalog context entry.
+- Catalogs (VFS, skill, sub-agent, and client `Catalog` entries) are
+  append-with-supersede: a keyed catalog write appends the new version with
+  `supersedes` set and leaves the earlier one active and rendered
+  byte-for-byte, so the provider prefix cache holds on long-lived sessions;
+  superseded versions are compactable, capped per key, and cleared by
+  `RemoveContext`. Look up "the current entry for a key" with
+  `current_context_entry` (newest), never the first match. Clients publish
+  their own catalogs (a bot directory, a roster) as `InputItem::Catalog` on
+  `session/context/append`; run input rejects them. Do not reintroduce
+  in-place catalog rewrites or catalogs in the system prompt.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry

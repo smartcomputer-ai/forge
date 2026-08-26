@@ -76,6 +76,11 @@ pub(super) async fn run_input_from_api(
                     media_message_input(store, blob_ref, mime, *kind, name.as_deref()).await?,
                 );
             }
+            InputItem::Catalog { .. } => {
+                return Err(AgentApiError::invalid_request(
+                    "catalog items are context, not conversation: publish them with session/context/append",
+                ));
+            }
         }
     }
 
@@ -209,11 +214,44 @@ pub(super) async fn context_entry_input_from_api(
             kind,
             name,
         } => media_message_input(store, blob_ref, mime, *kind, name.as_deref()).await,
+        InputItem::Catalog { title, text } => {
+            let title = title.trim();
+            if title.is_empty() {
+                return Err(AgentApiError::invalid_request(
+                    "session/context/append catalog items need a title",
+                ));
+            }
+            let text = text.trim();
+            if text.is_empty() {
+                return Err(empty_context_append_item_error());
+            }
+            let content_ref = store
+                .put_bytes(text.as_bytes().to_vec())
+                .await
+                .map_err(map_blob_store_error)?;
+            Ok(catalog_input(title.to_owned(), content_ref))
+        }
     }
 }
 
 fn empty_context_append_item_error() -> AgentApiError {
     AgentApiError::invalid_request("session/context/append items must contain non-empty text")
+}
+
+/// A client-owned catalog entry; the engine supersedes rather than replaces
+/// it on change, so the previous version keeps the rendered prefix stable.
+pub(super) fn catalog_input(title: String, content_ref: BlobRef) -> ContextEntryInput {
+    ContextEntryInput {
+        kind: ContextEntryKind::Catalog {
+            title: title.clone(),
+        },
+        content_ref,
+        media_type: Some("text/markdown".to_owned()),
+        preview: Some(title),
+        provider_kind: None,
+        provider_item_id: None,
+        token_estimate: None,
+    }
 }
 
 pub(super) fn user_message_input(content_ref: BlobRef) -> ContextEntryInput {

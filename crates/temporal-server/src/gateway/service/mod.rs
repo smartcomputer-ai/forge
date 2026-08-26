@@ -1883,7 +1883,6 @@ fn validate_managed_session_retry(
     }
 }
 
-
 fn is_core_environment_job_tool_id(tool_id: &str) -> bool {
     matches!(
         tool_id,
@@ -2440,12 +2439,7 @@ impl AgentApiService for GatewayAgentApi {
             match prepared {
                 PreparedAppend::Failed(result) => ordered.push(PreparedAppend::Failed(result)),
                 PreparedAppend::Ready { key, input, text } => {
-                    if let Some(active) = loaded
-                        .state
-                        .context
-                        .entries
-                        .iter()
-                        .find(|active| active.key.as_ref() == Some(&key))
+                    if let Some(active) = engine::current_context_entry(&loaded.state, &key)
                         .filter(|active| active_context_entry_matches_input(active, &input))
                     {
                         let effective = active_entry_input(active);

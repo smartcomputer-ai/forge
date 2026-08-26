@@ -887,6 +887,7 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     };
     let mut state = engine::CoreAgentState::new();
     state.context.entries = vec![entry];
@@ -1477,6 +1478,64 @@ async fn context_entry_input_from_api_rejects_empty_text() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn context_entry_input_from_api_stores_catalog_with_its_title() {
+    let store = engine::storage::InMemoryBlobStore::new();
+
+    let entry = context_entry_input_from_api(
+        &store,
+        &InputItem::Catalog {
+            title: " Bot directory ".to_owned(),
+            text: "- infra: accepts events addressed by you\n".to_owned(),
+        },
+    )
+    .await
+    .expect("entry");
+
+    assert_eq!(
+        entry.kind,
+        engine::ContextEntryKind::Catalog {
+            title: "Bot directory".to_owned(),
+        }
+    );
+    assert_eq!(entry.preview.as_deref(), Some("Bot directory"));
+    assert_eq!(
+        store
+            .read_text(&entry.content_ref)
+            .await
+            .expect("stored text"),
+        "- infra: accepts events addressed by you"
+    );
+
+    let error = context_entry_input_from_api(
+        &store,
+        &InputItem::Catalog {
+            title: "  ".to_owned(),
+            text: "x".to_owned(),
+        },
+    )
+    .await
+    .expect_err("a catalog needs a title");
+    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_input_from_api_rejects_catalog_items() {
+    let store = engine::storage::InMemoryBlobStore::new();
+
+    let error = run_input_from_api(
+        &store,
+        &[InputItem::Catalog {
+            title: "Bot directory".to_owned(),
+            text: "- infra".to_owned(),
+        }],
+    )
+    .await
+    .expect_err("catalogs are context, not run input");
+
+    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn context_entry_input_from_api_preserves_text_ref() {
     let store = engine::storage::InMemoryBlobStore::new();
     let blob_ref = store.insert_text("buffered room chatter").await;
@@ -2029,6 +2088,7 @@ fn direct_activation(
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     }
 }
 

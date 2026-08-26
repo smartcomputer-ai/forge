@@ -18,12 +18,12 @@ use crate::{
     ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
     ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
     CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError,
-    PromiseEvent, PromiseId, PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent,
-    SessionId, SessionPosition, ToolBatchId, ToolBatchOutcome,
-    ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult, ToolCallStatus,
-    ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationRequest,
-    ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
+    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId,
+    PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition,
+    ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId,
+    ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
+    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
+    TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -1792,10 +1792,10 @@ mod tests {
         ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, ObservedToolCall,
         ProviderApiKind, RunConfig, RunFailureKind, RunId, RunRequestCommand, RunRequestSource,
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
-        SkillId, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
-        ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
-        ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
-        WorkflowToolInvocation, skill_activation_context_key,
+        SkillId, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome, ToolChoice, ToolEffect,
+        ToolInvocationResult, ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef,
+        WorkflowToolDefinition, WorkflowToolId, WorkflowToolInvocation,
+        skill_activation_context_key,
     };
 
     fn config() -> SessionConfig {
@@ -1895,6 +1895,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 
@@ -2484,6 +2485,341 @@ mod tests {
         assert_eq!(entry.key.as_ref(), Some(&key));
         assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
         assert!(matches!(entry.source, ContextEntrySource::ContextEdit));
+    }
+
+    fn upsert(drive: &mut CoreAgentDrive, key: &str, entry: ContextEntryInput, at: u64) {
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(key),
+                    entry,
+                },
+                at,
+            )
+            .expect("context upsert");
+        commit_action(drive, action);
+    }
+
+    fn client_catalog_input(title: &str, content_ref: BlobRef) -> ContextEntryInput {
+        ContextEntryInput {
+            kind: ContextEntryKind::Catalog {
+                title: title.to_owned(),
+            },
+            content_ref,
+            media_type: Some("text/markdown".to_owned()),
+            preview: Some(title.to_owned()),
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+        }
+    }
+
+    fn entry_ids(drive: &CoreAgentDrive) -> Vec<u64> {
+        drive
+            .state()
+            .context
+            .entries
+            .iter()
+            .map(|entry| entry.entry_id.as_u64())
+            .collect()
+    }
+
+    #[test]
+    fn keyed_catalog_upsert_supersedes_and_keeps_the_previous_version() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"hello")),
+            21,
+        );
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            30,
+        );
+
+        // v1 (1), the client entry (2), v2 (3): nothing before v2 moved.
+        assert_eq!(entry_ids(&drive), vec![1, 2, 3]);
+        let state = drive.state();
+        let v1 = &state.context.entries[0];
+        let v2 = &state.context.entries[2];
+        assert_eq!(v1.supersedes, None);
+        assert_eq!(v2.supersedes, Some(v1.entry_id));
+        assert!(crate::is_superseded_context_entry(state, v1.entry_id));
+        assert!(!crate::is_superseded_context_entry(state, v2.entry_id));
+        assert_eq!(
+            crate::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
+                .map(|entry| entry.entry_id),
+            Some(v2.entry_id)
+        );
+
+        // Both versions render, in id order; only the stale one is compactable.
+        let planned = crate::core::components::context::planned_context_entry_ids(state);
+        assert_eq!(
+            planned.iter().map(|id| id.as_u64()).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let compactable = crate::core::components::context::compactable_context_entry_ids(state);
+        assert!(compactable.contains(&v1.entry_id));
+        assert!(!compactable.contains(&v2.entry_id));
+
+        // An identical put is a no-op.
+        let noop = drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
+                    entry: skill_catalog_input(BlobRef::from_bytes(b"v2")),
+                },
+                40,
+            )
+            .expect("no-op upsert");
+        assert!(matches!(noop, CoreAgentAction::Idle { .. }));
+    }
+
+    #[test]
+    fn superseded_catalog_versions_are_capped_oldest_first() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        for version in 0..(crate::SUPERSEDED_CATALOG_CAP as u64 + 3) {
+            upsert(
+                &mut drive,
+                "bot:directory",
+                client_catalog_input(
+                    "Bot directory",
+                    BlobRef::from_bytes(version.to_string().as_bytes()),
+                ),
+                20 + version,
+            );
+        }
+        let ids = entry_ids(&drive);
+        assert_eq!(ids.len(), crate::SUPERSEDED_CATALOG_CAP + 1);
+        assert_eq!(
+            ids.first(),
+            Some(&3),
+            "the two oldest versions were dropped"
+        );
+        assert_eq!(
+            ids.last(),
+            Some(&(crate::SUPERSEDED_CATALOG_CAP as u64 + 3))
+        );
+        let state = drive.state();
+        for pair in state.context.entries.windows(2) {
+            assert_eq!(pair[1].supersedes, Some(pair[0].entry_id));
+        }
+    }
+
+    #[test]
+    fn remove_context_clears_every_catalog_version_under_the_key() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            "bot:directory",
+            client_catalog_input("Bot directory", BlobRef::from_bytes(b"a")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "bot:directory",
+            client_catalog_input("Bot directory", BlobRef::from_bytes(b"b")),
+            21,
+        );
+        assert_eq!(drive.state().context.entries.len(), 2);
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::RemoveContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new("bot:directory"),
+                },
+                22,
+            )
+            .expect("remove");
+        commit_action(&mut drive, action);
+        assert!(drive.state().context.entries.is_empty());
+    }
+
+    #[test]
+    fn keyed_non_catalog_upsert_still_replaces_in_place() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"a")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"b")),
+            21,
+        );
+        let state = drive.state();
+        assert_eq!(state.context.entries.len(), 1);
+        assert_eq!(
+            state.context.entries[0].content_ref,
+            BlobRef::from_bytes(b"b")
+        );
+        assert_eq!(state.context.entries[0].supersedes, None);
+    }
+
+    #[test]
+    fn client_catalog_is_context_only_and_needs_a_client_key() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let input = client_catalog_input("Bot directory", BlobRef::from_bytes(b"a"));
+
+        drive
+            .admit_command(
+                request_run_command(None, vec![input.clone()], run_config()),
+                20,
+            )
+            .expect_err("a catalog is not run input");
+        drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
+                    entry: input.clone(),
+                },
+                21,
+            )
+            .expect_err("a runtime catalog key only carries its own kind");
+        drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new("bot:directory"),
+                    entry: client_catalog_input("   ", BlobRef::from_bytes(b"a")),
+                },
+                22,
+            )
+            .expect_err("a catalog needs a title");
+
+        upsert(&mut drive, "bot:directory", input, 23);
+        assert!(matches!(
+            drive.state().context.entries[0].kind,
+            ContextEntryKind::Catalog { ref title } if title == "Bot directory"
+        ));
+    }
+
+    #[test]
+    fn planned_context_includes_the_subagent_catalog_at_its_position() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let catalog = ContextEntryInput {
+            kind: ContextEntryKind::SubagentCatalog,
+            content_ref: BlobRef::from_bytes(b"agents"),
+            media_type: Some("application/json".to_owned()),
+            preview: Some("Sub-agent catalog".to_owned()),
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+        };
+        upsert(&mut drive, crate::SUBAGENT_CATALOG_CONTEXT_KEY, catalog, 20);
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"hello")),
+            21,
+        );
+        let planned = crate::core::components::context::planned_context_entry_ids(drive.state());
+        assert_eq!(
+            planned.iter().map(|id| id.as_u64()).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn standalone_compaction_prunes_superseded_catalogs_and_keeps_the_current_one() {
+        let session_id = SessionId::new("session-a");
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        open_session_with_config(&mut drive, standalone_compaction_config(None, Some(256)));
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"native")),
+            21,
+        );
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            22,
+        );
+        assert_eq!(entry_ids(&drive), vec![1, 2, 3]);
+
+        let request_compaction = drive
+            .admit_command(CoreAgentCommand::CompactContext, 30)
+            .expect("manual compaction");
+        commit_action(&mut drive, request_compaction);
+        let CoreAgentAction::CompactContext { request } =
+            drive.next_action(31, 64).expect("compact action")
+        else {
+            panic!("expected compact action");
+        };
+        // The stale catalog version and the conversation go to the compactor;
+        // the current catalog stays out of it.
+        assert_eq!(
+            request
+                .request
+                .context
+                .entry_ids()
+                .iter()
+                .map(|id| id.as_u64())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let completed = drive
+            .resume_context_compaction(
+                ContextCompactionResult {
+                    session_id: request.session_id,
+                    context_revision: request.request.context.context_revision,
+                    status: ContextCompactionStatus::Succeeded,
+                    failure_ref: None,
+                    context_entries: vec![openai_compaction_input(BlobRef::from_bytes(
+                        br#"{"type":"compaction","encrypted_content":"opaque"}"#,
+                    ))],
+                },
+                32,
+            )
+            .expect("resume compaction");
+        commit_action(&mut drive, completed);
+        let prune = drive.next_action(33, 64).expect("prune compacted entries");
+        commit_action(&mut drive, prune);
+
+        // v1 and the native entry are gone; v2 (id 3) and the compaction item remain.
+        let ids = entry_ids(&drive);
+        assert_eq!(ids, vec![3, 4]);
+        assert!(matches!(
+            drive.state().context.entries[0].kind,
+            ContextEntryKind::SkillCatalog
+        ));
     }
 
     #[test]
@@ -5217,10 +5553,16 @@ mod tests {
                 .expect("event present")
         };
         let force_cancelled = position(|event| {
-            matches!(event, CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. }))
+            matches!(
+                event,
+                CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. })
+            )
         });
         let queued_cancelled = position(|event| {
-            matches!(event, CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. }))
+            matches!(
+                event,
+                CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. })
+            )
         });
         let closed = position(|event| {
             matches!(

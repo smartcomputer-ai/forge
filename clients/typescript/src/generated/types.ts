@@ -146,6 +146,10 @@ export type ContextEntryKindView =
       type: "subagentCatalog";
     }
   | {
+      title: string;
+      type: "catalog";
+    }
+  | {
       catalogId: string;
       skillId: string;
       type: "skillActivation";
@@ -402,6 +406,17 @@ export type InputItem =
       mime: string;
       name?: string | null;
       type: "media";
+    }
+  | {
+      /**
+       * The catalog body, plain text or Markdown.
+       */
+      text: string;
+      /**
+       * Short name shown as the catalog's heading, e.g. "Bot directory".
+       */
+      title: string;
+      type: "catalog";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1232,6 +1247,18 @@ export interface ContextEntryView {
    * transcripts render steering distinctly from the run's first input.
    */
   source?: ContextEntrySourceView | null;
+  /**
+   * For a catalog entry that a newer version has updated: that newer
+   * entry. Present only on state views (`session/read`), where the whole
+   * active context is known.
+   */
+  supersededBy?: string | null;
+  /**
+   * For a catalog entry: the earlier version of the same keyed catalog
+   * that this entry updates. The earlier entry stays in context until a
+   * rewrite drops it.
+   */
+  supersedes?: string | null;
   text?: string | null;
   tokenEstimate?: TokenEstimateView | null;
 }

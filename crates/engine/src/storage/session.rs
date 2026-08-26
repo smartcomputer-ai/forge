@@ -418,7 +418,10 @@ impl SessionStore for InMemorySessionStore {
                     });
                 }
             }
-            check_origin_limits(origin, in_memory_origin_counts(&inner, &origin.root_session_id))?;
+            check_origin_limits(
+                origin,
+                in_memory_origin_counts(&inner, &origin.root_session_id),
+            )?;
         }
         let record = SessionRecord {
             session_id: request.session_id,
@@ -1195,7 +1198,12 @@ mod tests {
         ));
     }
 
-    fn subagent_origin(parent: &str, root: &str, depth: u32, limits: SubagentLimits) -> SessionOrigin {
+    fn subagent_origin(
+        parent: &str,
+        root: &str,
+        depth: u32,
+        limits: SubagentLimits,
+    ) -> SessionOrigin {
         SessionOrigin {
             kind: SessionOriginKind::Subagent,
             parent_session_id: SessionId::new(parent),
@@ -1254,17 +1262,29 @@ mod tests {
             deadline_ms: 1_000,
         };
 
-        create_delegated(&store, "child-a", subagent_origin("root", "root", 1, limits))
-            .await
-            .expect("first child");
-        create_delegated(&store, "child-b", subagent_origin("root", "root", 1, limits))
-            .await
-            .expect("second child");
+        create_delegated(
+            &store,
+            "child-a",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect("first child");
+        create_delegated(
+            &store,
+            "child-b",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect("second child");
         // Two open descendants: the concurrency limit refuses a third even
         // though the lifetime limit still has room.
-        let concurrent = create_delegated(&store, "child-c", subagent_origin("root", "root", 1, limits))
-            .await
-            .expect_err("third open child");
+        let concurrent = create_delegated(
+            &store,
+            "child-c",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect_err("third open child");
         assert_eq!(
             concurrent,
             SessionStoreError::OriginLimitExceeded {
@@ -1277,12 +1297,20 @@ mod tests {
 
         // Closing one frees its concurrency slot but not its lifetime slot.
         close_session(&store, "child-a").await;
-        create_delegated(&store, "child-c", subagent_origin("child-b", "root", 2, limits))
-            .await
-            .expect("grandchild after a close");
-        let descendants = create_delegated(&store, "child-d", subagent_origin("root", "root", 1, limits))
-            .await
-            .expect_err("fourth lifetime child");
+        create_delegated(
+            &store,
+            "child-c",
+            subagent_origin("child-b", "root", 2, limits),
+        )
+        .await
+        .expect("grandchild after a close");
+        let descendants = create_delegated(
+            &store,
+            "child-d",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect_err("fourth lifetime child");
         assert_eq!(
             descendants,
             SessionStoreError::OriginLimitExceeded {
@@ -1321,9 +1349,13 @@ mod tests {
         create_delegated(&store, "child", subagent_origin("root", "root", 1, limits))
             .await
             .expect("depth-1 child");
-        let too_deep = create_delegated(&store, "grandchild", subagent_origin("child", "root", 2, limits))
-            .await
-            .expect_err("depth-2 child");
+        let too_deep = create_delegated(
+            &store,
+            "grandchild",
+            subagent_origin("child", "root", 2, limits),
+        )
+        .await
+        .expect_err("depth-2 child");
         assert_eq!(
             too_deep,
             SessionStoreError::OriginLimitExceeded {
@@ -1390,15 +1422,27 @@ mod tests {
                 .expect("create root");
         }
         let limits = SubagentLimits::default();
-        create_delegated(&store, "a-child", subagent_origin("root-a", "root-a", 1, limits))
-            .await
-            .expect("a child");
-        create_delegated(&store, "a-grandchild", subagent_origin("a-child", "root-a", 2, limits))
-            .await
-            .expect("a grandchild");
-        create_delegated(&store, "b-child", subagent_origin("root-b", "root-b", 1, limits))
-            .await
-            .expect("b child");
+        create_delegated(
+            &store,
+            "a-child",
+            subagent_origin("root-a", "root-a", 1, limits),
+        )
+        .await
+        .expect("a child");
+        create_delegated(
+            &store,
+            "a-grandchild",
+            subagent_origin("a-child", "root-a", 2, limits),
+        )
+        .await
+        .expect("a grandchild");
+        create_delegated(
+            &store,
+            "b-child",
+            subagent_origin("root-b", "root-b", 1, limits),
+        )
+        .await
+        .expect("b child");
 
         let ids = |page: SessionListPage| {
             let mut ids = page
@@ -1438,7 +1482,11 @@ mod tests {
             })
             .await
             .expect("list all");
-        assert_eq!(everything.sessions.len(), 5, "roots have no origin and are listed only unfiltered");
+        assert_eq!(
+            everything.sessions.len(),
+            5,
+            "roots have no origin and are listed only unfiltered"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

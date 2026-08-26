@@ -15,8 +15,7 @@ use async_trait::async_trait;
 use engine::{
     BlobRef, PromiseResolution, RunStatus, RunTerminalNotifyIntent, SessionId, SubmissionId,
     storage::{
-        BlobStore, CreateSession, SessionOrigin, SessionOriginKind, SessionStore,
-        SessionStoreError,
+        BlobStore, CreateSession, SessionOrigin, SessionOriginKind, SessionStore, SessionStoreError,
     },
 };
 use temporal_workflow::{
@@ -220,7 +219,10 @@ impl SubagentService {
             Ok(profile_id) => profile_id,
             Err(error) => {
                 return self
-                    .rejected(format!("invalid agent profile id {:?}: {error}", args.agent))
+                    .rejected(format!(
+                        "invalid agent profile id {:?}: {error}",
+                        args.agent
+                    ))
                     .await;
             }
         };
@@ -315,8 +317,10 @@ impl SubagentService {
             }
             return Err(error);
         }
-        let submission_id =
-            SubmissionId::new(format!("subagent_run_{}", digest_suffix(&start.execution_id)));
+        let submission_id = SubmissionId::new(format!(
+            "subagent_run_{}",
+            digest_suffix(&start.execution_id)
+        ));
         let run_id = self
             .runtime
             .start_run(
@@ -582,7 +586,14 @@ mod tests {
         start_session_error: Mutex<Option<AgentApiError>>,
         close_error: Mutex<Option<AgentApiError>>,
         started_sessions: Mutex<Vec<(String, ProfileSource)>>,
-        started_runs: Mutex<Vec<(String, Vec<InputItem>, SubmissionId, Vec<RunTerminalNotifyIntent>)>>,
+        started_runs: Mutex<
+            Vec<(
+                String,
+                Vec<InputItem>,
+                SubmissionId,
+                Vec<RunTerminalNotifyIntent>,
+            )>,
+        >,
         closed: Mutex<Vec<(String, bool)>>,
     }
 
@@ -744,7 +755,12 @@ mod tests {
             invocation: WorkflowToolInvocation {
                 invocation_id: WorkflowToolInvocationId::new(format!(
                     "wti:sha256:{}",
-                    execution_id.chars().last().unwrap_or('a').to_string().repeat(64)
+                    execution_id
+                        .chars()
+                        .last()
+                        .unwrap_or('a')
+                        .to_string()
+                        .repeat(64)
                 )),
                 tool_id: WorkflowToolId::new(AGENT_RUN_WORKFLOW_TOOL_ID),
                 semantic_type: AGENT_RUN_WORKFLOW_SEMANTIC_TYPE.to_owned(),
@@ -773,7 +789,10 @@ mod tests {
         }
     }
 
-    async fn rejection_message(blobs: &InMemoryBlobStore, result: SubagentPrepareActivityResult) -> String {
+    async fn rejection_message(
+        blobs: &InMemoryBlobStore,
+        result: SubagentPrepareActivityResult,
+    ) -> String {
         match result {
             SubagentPrepareActivityResult::Rejected { error_ref } => {
                 let value: serde_json::Value =
@@ -795,7 +814,12 @@ mod tests {
         };
         let start = start_args(&h.blobs, "wte:a", "parent", "reviewer", "reviewer", limits).await;
 
-        let (child, deadline_ms) = prepared(h.service.prepare(start.clone(), 100).await.expect("prepare"));
+        let (child, deadline_ms) = prepared(
+            h.service
+                .prepare(start.clone(), 100)
+                .await
+                .expect("prepare"),
+        );
         assert_eq!(child.session_id, child_session_id("wte:a").as_str());
         assert_eq!(child.run_id, 1);
         assert_eq!(child.agent_profile_id, "reviewer");
@@ -817,7 +841,10 @@ mod tests {
         assert_eq!(origin.profile_id, "reviewer");
         assert_eq!(origin.profile_revision, 4);
         assert_eq!(origin.limits, limits);
-        assert_eq!(origin.invocation_id, start.invocation.invocation_id.as_str());
+        assert_eq!(
+            origin.invocation_id,
+            start.invocation.invocation_id.as_str()
+        );
 
         let started = h.runtime.started_sessions.lock().unwrap().clone();
         assert_eq!(started.len(), 1);
@@ -847,10 +874,26 @@ mod tests {
     async fn prepare_retry_reuses_the_reserved_child() {
         let runtime = FakeChildRuntime::with_profile("reviewer", 1);
         let h = harness(runtime).await;
-        let start = start_args(&h.blobs, "wte:a", "parent", "reviewer", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "parent",
+            "reviewer",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
-        let first = h.service.prepare(start.clone(), 100).await.expect("first prepare");
-        let second = h.service.prepare(start, 200).await.expect("retried prepare");
+        let first = h
+            .service
+            .prepare(start.clone(), 100)
+            .await
+            .expect("first prepare");
+        let second = h
+            .service
+            .prepare(start, 200)
+            .await
+            .expect("retried prepare");
         assert_eq!(first, second);
         let listed = h
             .sessions
@@ -864,7 +907,11 @@ mod tests {
             .expect("list")
             .sessions;
         assert_eq!(listed.len(), 1, "a retry must not reserve a second slot");
-        assert_eq!(h.runtime.started_runs.lock().unwrap().len(), 2, "the run start is re-issued with the same submission id");
+        assert_eq!(
+            h.runtime.started_runs.lock().unwrap().len(),
+            2,
+            "the run start is re-issued with the same submission id"
+        );
         let runs = h.runtime.started_runs.lock().unwrap().clone();
         assert_eq!(runs[0].2, runs[1].2);
     }
@@ -873,11 +920,22 @@ mod tests {
     async fn prepare_rejects_an_agent_other_than_the_admitted_one() {
         let runtime = FakeChildRuntime::with_profile("reviewer", 1);
         let h = harness(runtime).await;
-        let start = start_args(&h.blobs, "wte:a", "parent", "planner", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "parent",
+            "planner",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
         let result = h.service.prepare(start, 100).await.expect("prepare");
         let message = rejection_message(&h.blobs, result).await;
-        assert!(message.contains("does not match the admitted agent"), "{message}");
+        assert!(
+            message.contains("does not match the admitted agent"),
+            "{message}"
+        );
         assert!(h.runtime.started_sessions.lock().unwrap().is_empty());
     }
 
@@ -885,11 +943,22 @@ mod tests {
     async fn prepare_rejects_a_missing_profile_without_reserving() {
         let runtime = Arc::new(FakeChildRuntime::default());
         let h = harness(runtime).await;
-        let start = start_args(&h.blobs, "wte:a", "parent", "reviewer", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "parent",
+            "reviewer",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
         let result = h.service.prepare(start, 100).await.expect("prepare");
         let message = rejection_message(&h.blobs, result).await;
-        assert!(message.contains("agent profile does not exist"), "{message}");
+        assert!(
+            message.contains("agent profile does not exist"),
+            "{message}"
+        );
         assert!(
             h.sessions
                 .load_session(&child_session_id("wte:a"))
@@ -915,7 +984,11 @@ mod tests {
             h.service.prepare(first, 100).await.expect("first prepare"),
             SubagentPrepareActivityResult::Prepared { .. }
         ));
-        let result = h.service.prepare(second, 101).await.expect("second prepare");
+        let result = h
+            .service
+            .prepare(second, 101)
+            .await
+            .expect("second prepare");
         let message = rejection_message(&h.blobs, result).await;
         assert!(message.contains("maxDescendants"), "{message}");
         assert_eq!(h.runtime.started_sessions.lock().unwrap().len(), 1);
@@ -961,10 +1034,21 @@ mod tests {
             })
             .await
             .expect("create mid");
-        let start = start_args(&h.blobs, "wte:a", "mid", "reviewer", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "mid",
+            "reviewer",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
         let (child, deadline_ms) = prepared(h.service.prepare(start, 100).await.expect("prepare"));
-        assert_eq!(deadline_ms, 5_000, "deadline attenuated by the parent's origin");
+        assert_eq!(
+            deadline_ms, 5_000,
+            "deadline attenuated by the parent's origin"
+        );
         let origin = h
             .sessions
             .load_session(&SessionId::new(&child.session_id))
@@ -990,15 +1074,27 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn prepare_turns_a_caller_error_on_child_start_into_a_rejection_and_closes_the_child() {
         let runtime = FakeChildRuntime::with_profile("reviewer", 1);
-        *runtime.start_session_error.lock().unwrap() =
-            Some(AgentApiError::rejected("inherit requires a parent environment"));
+        *runtime.start_session_error.lock().unwrap() = Some(AgentApiError::rejected(
+            "inherit requires a parent environment",
+        ));
         let h = harness(runtime).await;
-        let start = start_args(&h.blobs, "wte:a", "parent", "reviewer", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "parent",
+            "reviewer",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
         let result = h.service.prepare(start, 100).await.expect("prepare");
         let message = rejection_message(&h.blobs, result).await;
         assert!(message.contains("could not be started"), "{message}");
-        assert!(message.contains("inherit requires a parent environment"), "{message}");
+        assert!(
+            message.contains("inherit requires a parent environment"),
+            "{message}"
+        );
         assert_eq!(
             h.runtime.closed.lock().unwrap().clone(),
             vec![(child_session_id("wte:a").as_str().to_owned(), true)],
@@ -1013,21 +1109,40 @@ mod tests {
         *runtime.start_session_error.lock().unwrap() =
             Some(AgentApiError::internal("temporal unavailable"));
         let h = harness(runtime).await;
-        let start = start_args(&h.blobs, "wte:a", "parent", "reviewer", "reviewer", SubagentLimits::default()).await;
+        let start = start_args(
+            &h.blobs,
+            "wte:a",
+            "parent",
+            "reviewer",
+            "reviewer",
+            SubagentLimits::default(),
+        )
+        .await;
 
-        let error = h.service.prepare(start, 100).await.expect_err("infrastructure error");
+        let error = h
+            .service
+            .prepare(start, 100)
+            .await
+            .expect_err("infrastructure error");
         assert_eq!(error.kind, AgentApiErrorKind::Internal);
-        assert!(h.runtime.closed.lock().unwrap().is_empty(), "a retryable error keeps the child for the retry");
+        assert!(
+            h.runtime.closed.lock().unwrap().is_empty(),
+            "a retryable error keeps the child for the retry"
+        );
     }
 
-    async fn envelope_of(blobs: &InMemoryBlobStore, resolution: &PromiseResolution) -> SubagentResultEnvelope {
+    async fn envelope_of(
+        blobs: &InMemoryBlobStore,
+        resolution: &PromiseResolution,
+    ) -> SubagentResultEnvelope {
         let payload_ref = match resolution {
             PromiseResolution::Resolved { payload_ref } => payload_ref.clone(),
             PromiseResolution::Failed { error_ref } => error_ref.clone(),
             other => panic!("unexpected resolution {other:?}"),
         }
         .expect("payload ref");
-        serde_json::from_slice(&blobs.read_bytes(&payload_ref).await.expect("read")).expect("decode envelope")
+        serde_json::from_slice(&blobs.read_bytes(&payload_ref).await.expect("read"))
+            .expect("decode envelope")
     }
 
     fn child_ref() -> SubagentChildRef {
@@ -1042,7 +1157,11 @@ mod tests {
     async fn resolve_maps_a_completed_run_to_a_resolved_envelope_and_closes_the_child() {
         let runtime = Arc::new(FakeChildRuntime::default());
         let h = harness(runtime).await;
-        let output_ref = h.blobs.put_bytes(b"\"looks good\"".to_vec()).await.expect("put output");
+        let output_ref = h
+            .blobs
+            .put_bytes(b"\"looks good\"".to_vec())
+            .await
+            .expect("put output");
 
         let resolution = h
             .service
@@ -1123,9 +1242,19 @@ mod tests {
         assert!(matches!(deadline, PromiseResolution::Failed { .. }));
         let envelope = envelope_of(&h.blobs, &deadline).await;
         assert_eq!(envelope.status, SubagentResultStatus::Deadline);
-        assert!(envelope.error.as_deref().unwrap_or_default().contains("deadline"));
+        assert!(
+            envelope
+                .error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("deadline")
+        );
         assert_eq!(envelope.output, None);
-        assert_eq!(h.runtime.closed.lock().unwrap().len(), 3, "every terminal closes the child");
+        assert_eq!(
+            h.runtime.closed.lock().unwrap().len(),
+            3,
+            "every terminal closes the child"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1134,12 +1263,22 @@ mod tests {
         let h = harness(runtime).await;
 
         *h.runtime.close_error.lock().unwrap() = Some(AgentApiError::not_found("session"));
-        h.service.close("agent_child").await.expect("missing child is fine");
+        h.service
+            .close("agent_child")
+            .await
+            .expect("missing child is fine");
         *h.runtime.close_error.lock().unwrap() =
             Some(AgentApiError::rejected("session is already closed"));
-        h.service.close("agent_child").await.expect("closed child is fine");
+        h.service
+            .close("agent_child")
+            .await
+            .expect("closed child is fine");
         *h.runtime.close_error.lock().unwrap() = Some(AgentApiError::internal("store down"));
-        let error = h.service.close("agent_child").await.expect_err("infrastructure error");
+        let error = h
+            .service
+            .close("agent_child")
+            .await
+            .expect_err("infrastructure error");
         assert_eq!(error.kind, AgentApiErrorKind::Internal);
     }
 
@@ -1148,7 +1287,10 @@ mod tests {
         assert_eq!(child_session_id("wte:a"), child_session_id("wte:a"));
         assert_ne!(child_session_id("wte:a"), child_session_id("wte:b"));
         assert!(child_session_id("wte:a").as_str().starts_with("agent_"));
-        assert_eq!(child_session_id("wte:a").as_str().len(), "agent_".len() + 32);
+        assert_eq!(
+            child_session_id("wte:a").as_str().len(),
+            "agent_".len() + 32
+        );
     }
 
     /// The in-memory store counts a closed child as no longer open; the
@@ -1166,7 +1308,10 @@ mod tests {
         let (child, _) = prepared(h.service.prepare(first, 100).await.expect("first prepare"));
         let message = rejection_message(
             &h.blobs,
-            h.service.prepare(second.clone(), 101).await.expect("second prepare"),
+            h.service
+                .prepare(second.clone(), 101)
+                .await
+                .expect("second prepare"),
         )
         .await;
         assert!(message.contains("maxConcurrent"), "{message}");
