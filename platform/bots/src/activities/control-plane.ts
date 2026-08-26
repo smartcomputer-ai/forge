@@ -1,34 +1,30 @@
-import { schema, type Db } from "@lightspeed/platform-db";
+import type { Db } from "@lightspeed/platform-db";
+import type { BotEventFinalOutcome } from "../contracts/bots.js";
+import { recordEventOutcomes } from "../admission.js";
 
-export interface BotActivityEntry {
-  kind: string;
-  eventId?: string;
-  runId?: string;
-  detail?: string;
-}
-
-export interface RecordBotActivityInput {
+export interface RecordEventOutcomesInput {
   botId: string;
-  entries: BotActivityEntry[];
+  eventIds: string[];
+  outcome: BotEventFinalOutcome;
+  detail: string | null;
+  deliveryId: string | null;
+  runId: string | null;
 }
 
 export interface BotControlPlaneActivities {
-  recordBotActivity(input: RecordBotActivityInput): Promise<void>;
+  /** Write-once outcome on every event row of a finished delivery. */
+  recordEventOutcomes(input: RecordEventOutcomesInput): Promise<{ updated: number }>;
 }
 
 export function createBotControlPlaneActivities(db: Db): BotControlPlaneActivities {
   return {
-    async recordBotActivity({ botId, entries }) {
-      if (entries.length === 0) return;
-      await db.insert(schema.botActivity).values(
-        entries.map((entry) => ({
-          botId,
-          kind: entry.kind,
-          eventId: entry.eventId ?? null,
-          runId: entry.runId ?? null,
-          detail: entry.detail ?? null,
-        })),
-      );
+    async recordEventOutcomes(input) {
+      return recordEventOutcomes(db, input.botId, input.eventIds, {
+        outcome: input.outcome,
+        detail: input.detail,
+        deliveryId: input.deliveryId,
+        runId: input.runId,
+      });
     },
   };
 }

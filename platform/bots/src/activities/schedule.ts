@@ -74,7 +74,7 @@ export function createBotScheduleActivities(
         if (Number(recent?.value ?? 0) >= breaker.fires) {
           await config.db
             .update(schema.botTriggers)
-            .set({ enabled: false })
+            .set({ enabled: false, disabledReason: "breaker", disabledAt: new Date() })
             .where(eq(schema.botTriggers.id, row.trigger.id));
           await deleteBotSchedule(
             config.temporal,
@@ -82,13 +82,6 @@ export function createBotScheduleActivities(
             row.bot.name,
             row.trigger.name,
           ).catch(() => undefined);
-          await config.db.insert(schema.botActivity).values({
-            botId: row.bot.id,
-            kind: "breaker_tripped",
-            eventId: null,
-            runId: null,
-            detail: `schedule trigger ${row.trigger.name} exceeded ${breaker.fires} fires in ${Math.round(breaker.windowMs / 1000)}s and was disabled`,
-          });
           return { admitted: false, reason: "breaker_tripped" };
         }
       }

@@ -42,7 +42,6 @@ import {
   checkSenderRate,
   checkTriggerBreaker,
   nextHops,
-  recordBotActivity,
   resolveInbox,
   storeBotEvent,
   type AdmissionDeps,
@@ -131,16 +130,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
   async function readJson(universeId: string, blobRef: string): Promise<unknown> {
     const response = await clientFor(universeId).call("blobs/read", { blobRef });
     return JSON.parse(Buffer.from(response.result.bytesBase64, "base64").toString("utf8")) as unknown;
-  }
-
-  async function recordSelfConfig(botId: string, detail: string, eventId?: string): Promise<void> {
-    await config.db.insert(schema.botActivity).values({
-      botId,
-      kind: "self_configured",
-      eventId: eventId ?? null,
-      runId: null,
-      detail,
-    });
   }
 
   function ingestUrl(trigger: BotTriggerRow): string {
@@ -315,7 +304,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             universeId: lightspeedUniverseId,
             input: parsed.data,
           });
-          await recordSelfConfig(bot.id, `created ${trigger.kind} trigger ${trigger.name}`);
         } else {
           if (existing.kind !== flat.create.kind) {
             throw new BotConfigError(
@@ -331,7 +319,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             existing,
             input: parsed.data,
           });
-          await recordSelfConfig(bot.id, `updated ${trigger.kind} trigger ${trigger.name}`);
         }
         return { trigger: await triggerView(trigger, bot.selfConfig), created: existing === undefined };
       }
@@ -340,11 +327,31 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         const existing = await findTriggerByName(config.db, bot.id, name);
         if (existing === undefined) throw new BotConfigError(`no trigger named ${name}`, 404);
         await deleteTrigger(deps, { bot, universeId: lightspeedUniverseId, existing });
-        await recordSelfConfig(bot.id, `deleted ${existing.kind} trigger ${existing.name}`);
         return { deleted: true, name };
       }
       case BOT_FILTER_TEST_TOOL_ID: {
         const filter = requireString(args.filter, "filter");
+        if (typeof args.payload === "object" && args.payload !== null && !Array.isArray(args.payload)) {
+          // One document, no traffic needed: the way to write a filter before
+          // any event exists, since refused events are never stored.
+          const payload = args.payload as Record<string, unknown>;
+          const headers =
+            typeof payload.headers === "object" && payload.headers !== null
+              ? (payload.headers as Record<string, string>)
+              : {};
+          const context: FilterContext = {
+            event: {
+              id: "payload",
+              kind: typeof payload.kind === "string" ? payload.kind : "payload",
+              source: typeof payload.source === "string" ? payload.source : "payload",
+              occurredAt: new Date().toISOString(),
+            },
+            data: payload.data === undefined ? payload : payload.data,
+            headers,
+          };
+          const outcome = evaluateFilter(filter, context);
+          return { filter, payload: true, matched: outcome.matched, ...(outcome.error === undefined ? {} : { error: outcome.error }) };
+        }
         const limit = typeof args.limit === "number" ? args.limit : 20;
         const samples = await recentEnvelopes(lightspeedUniverseId, bot.id, limit);
         const results = samples.map(({ row, document }) => {
@@ -463,7 +470,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           signal: BOT_CONFIG_SIGNAL,
           signalArgs: [start],
         });
-        await recordSelfConfig(bot.id, "rewrote its brief");
         return { brief, appliesAt: "next idle boundary" };
       }
       case BOT_EMIT_TOOL_ID: {
@@ -519,10 +525,6 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             senderBotId: bot.id,
             hops,
           });
-          await recordBotActivity(config.db, bot.id, "emitted", {
-            eventId,
-            detail: `emitted ${kind} → self${session === undefined ? "" : ` (${session.label})`}: ${summary.slice(0, 120)}`,
-          });
           return { seq: event.seq };
         }
         const target = await loadInboxTarget(bot.universeId, to);
@@ -554,16 +556,12 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
               }
             : {}),
         });
-        if (admitted.archived) {
+        if (admitted.filtered) {
           throw new BotAdmissionRefusal(
             "filtered",
-            `${to}'s inbox filter archived your event (#${admitted.event.seq ?? "?"} there); it will not be delivered`,
+            `${to}'s inbox filter refused your event; it was not stored or delivered`,
           );
         }
-        await recordBotActivity(config.db, bot.id, "emitted", {
-          eventId,
-          detail: `emitted ${kind} → ${to} #${admitted.event.seq ?? "?"}${reply ? " (receipt requested)" : ""}: ${summary.slice(0, 120)}`,
-        });
         return { to, seq: admitted.event.seq };
       }
       default:

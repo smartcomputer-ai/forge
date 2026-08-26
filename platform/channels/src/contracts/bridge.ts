@@ -87,7 +87,7 @@ export interface EmitChatEventInput {
 
 export type EmitChatEventResult =
   | {
-      status: "admitted" | "archived" | "duplicate";
+      status: "admitted" | "filtered" | "duplicate";
       eventId: string;
       seq: number | null;
       /** The routed session the event was admitted to (logical base id). */

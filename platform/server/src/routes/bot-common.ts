@@ -15,7 +15,6 @@ import {
 import {
   botStartFor,
   checkTriggerBreaker as checkTriggerBreakerWith,
-  recordBotActivity,
   storeBotEvent,
   type AdmissionDeps,
 } from "@lightspeed/bots/admission";
@@ -102,15 +101,6 @@ export async function checkTriggerBreaker(
   trigger: BotTriggerRow,
 ): Promise<{ tripped: boolean }> {
   return checkTriggerBreakerWith({ db: ctx.db }, bot, trigger);
-}
-
-export async function recordActivity(
-  ctx: AppContext,
-  botId: string,
-  kind: string,
-  fields?: { eventId?: string; detail?: string },
-): Promise<void> {
-  await recordBotActivity(ctx.db, botId, kind, fields);
 }
 
 export function errorMessage(error: unknown): string {

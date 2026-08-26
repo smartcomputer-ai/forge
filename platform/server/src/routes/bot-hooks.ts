@@ -109,8 +109,8 @@ export function botHookRoutes(ctx: AppContext) {
     };
 
     try {
-      // The shared trigger pipeline: filter (archive on miss), route,
-      // coalesce, delivery policy, store-then-wake.
+      // The shared trigger pipeline: filter (refuse on miss, nothing
+      // stored), route, coalesce, delivery policy, store-then-wake.
       const admitted = await admitTriggerEvent(await admissionDeps(ctx, row.universe), {
         bot: row.bot,
         trigger: row.trigger,
@@ -119,8 +119,11 @@ export function botHookRoutes(ctx: AppContext) {
         document,
         ...(extraction.promptData === undefined ? {} : { promptData: extraction.promptData }),
       });
-      if (admitted.archived) {
-        return c.json({ eventId: extraction.eventId, filtered: true, duplicate: admitted.duplicate }, 202);
+      if (admitted.filtered) {
+        return c.json(
+          { eventId: extraction.eventId, filtered: true, ...(admitted.error === undefined ? {} : { filterError: admitted.error }) },
+          202,
+        );
       }
       return c.json({ eventId: admitted.event.id, duplicate: admitted.duplicate }, 202);
     } catch (error) {

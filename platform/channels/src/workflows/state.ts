@@ -28,7 +28,7 @@ export type ApplyEmissionEffect =
 /** One inbound provider message on its way into the bot. */
 export interface ReceivedMessage {
   messageId: string;
-  status: "emitting" | "emitted" | "archived" | "duplicate" | "refused" | "failed";
+  status: "emitting" | "emitted" | "filtered" | "duplicate" | "refused" | "failed";
   /** The bot's event number, once admitted: the handle the model uses. */
   seq?: number;
   /** The routed session admission chose (logical base id). */

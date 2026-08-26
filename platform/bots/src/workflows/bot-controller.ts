@@ -37,6 +37,7 @@ import {
   validateBotEvent,
   type BotCoalesceParamsV1,
   type BotEvent,
+  type BotEventFinalOutcome,
   type BotEventOutcome,
   type BotEventSession,
   type BotStartV1,
@@ -59,7 +60,7 @@ export interface BotRecentEventSnapshot {
   ref: string;
   /** Event sequence numbers (#N) in this delivery, when known. */
   seqs?: number[];
-  status: BotEventOutcome | "unresolved" | "run_failed" | "appended" | "steered";
+  outcome: BotEventFinalOutcome;
   eventCount?: number;
   runId?: string;
   summary?: string;
@@ -258,7 +259,6 @@ export async function botControllerWorkflowV1(
   const budgetRoots = new Set<string>(carry?.budgetRoots ?? []);
   let descendantsRefreshedAtMs = 0;
   let descendantsRefreshedProcessed = -1;
-  let budgetNotified = false;
   // Bumped whenever a lane changes shared state outside the main loop, so a
   // parked loop re-evaluates deadlines (retention, budget) and dispatch.
   let laneTick = 0;
@@ -281,7 +281,6 @@ export async function botControllerWorkflowV1(
       budgetRoots.clear();
       descendantsRefreshedAtMs = 0;
       descendantsRefreshedProcessed = -1;
-      budgetNotified = false;
     }
   }
 
@@ -541,18 +540,6 @@ export async function botControllerWorkflowV1(
     lastError,
   }));
 
-  async function record(
-    kind: string,
-    fields?: { eventId?: string; runId?: string; detail?: string },
-  ): Promise<void> {
-    await activities
-      .recordBotActivity({
-        botId: config.botId,
-        entries: [{ kind, ...fields }],
-      })
-      .catch(() => undefined);
-  }
-
   function isDeclarationMismatch(error: unknown): boolean {
     return (
       error instanceof ActivityFailure &&
@@ -598,16 +585,12 @@ export async function botControllerWorkflowV1(
           eventCursorSeq = 0;
           appliedProfileId = null;
           appliedProfileRevision = null;
-          await record("session_rotated", {
-            detail: `main session ${previous} rotated to ${sessionId} for tool revision ${BOT_TOOLS_REVISION}`,
-          });
           continue;
         }
         lastError = errorMessage(error);
         setupStatus = "degraded";
         configDirty = false;
         sessionReady = false;
-        await record("degraded", { detail: lastError });
         return false;
       }
     }
@@ -775,9 +758,6 @@ export async function botControllerWorkflowV1(
         lastError = errorMessage(error);
       }
     }
-    await record("renamed", {
-      detail: `display name is now "${config.displayName ?? config.botName}"`,
-    });
   }
 
   /**
@@ -813,11 +793,9 @@ export async function botControllerWorkflowV1(
         resolution = { kind: "resolved", payload_ref: result.payloadRef };
       } else {
         resolution = { kind: "failed", error_ref: result.errorRef };
-        await record("tool_failed", { detail: `${invocation.tool_id}: ${result.message}` });
       }
     } catch (error) {
       lastError = errorMessage(error);
-      await record("tool_failed", { detail: `${invocation.tool_id}: ${lastError}` });
       resolution = { kind: "failed", error_ref: null };
     }
     try {
@@ -834,9 +812,6 @@ export async function botControllerWorkflowV1(
       );
     } catch (error) {
       lastError = errorMessage(error);
-      await record("tool_failed", {
-        detail: `${invocation.tool_id}: reply delivery failed: ${lastError}`,
-      });
     }
     laneTick += 1;
   }
@@ -900,9 +875,6 @@ export async function botControllerWorkflowV1(
           sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
           const previous = sessionIdToEnsure;
           sessionIdToEnsure = resolveRoutedSessionId(base);
-          await record("session_rotated", {
-            detail: `routed session ${previous} rotated to ${sessionIdToEnsure} after a declaration mismatch`,
-          });
           continue;
         }
         lastError = errorMessage(error);
@@ -962,11 +934,6 @@ export async function botControllerWorkflowV1(
       sessionCursors.delete(session.sessionId);
       const base = routedBase(session.sessionId);
       sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
-      await record("session_closed", {
-        detail:
-          `closed idle routed session ${session.sessionId} (${session.label})` +
-          (descendantsClosed > 0 ? ` and ${descendantsClosed} sub-agent session(s)` : ""),
-      });
     }
   }
 
@@ -980,14 +947,37 @@ export async function botControllerWorkflowV1(
       recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
     }
     eventsProcessed += 1;
+    void recordOutcomes(delivery, recent);
     void settleReceipts(delivery, recent);
     void notifyDelivery(delivery, {
       phase: "finished",
       sessionId: sessionIdOfDelivery,
       runId: recent.runId ?? null,
-      status: recent.status,
+      status: recent.outcome,
       summary: recent.summary ?? recent.failure ?? null,
     });
+  }
+
+  /**
+   * The write-once outcome on every event row of the delivery: the read
+   * model of this decision (the decision itself is in this workflow's
+   * history). Best effort — a failed write costs a pending badge, never a
+   * delivery.
+   */
+  async function recordOutcomes(delivery: BotDelivery, recent: BotRecentEventSnapshot): Promise<void> {
+    try {
+      await activities.recordEventOutcomes({
+        botId: config.botId,
+        eventIds: delivery.events.map((event) => event.id),
+        outcome: recent.outcome,
+        detail: recent.summary ?? recent.failure ?? null,
+        deliveryId: delivery.id,
+        runId: recent.runId ?? null,
+      });
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+    laneTick += 1;
   }
 
   /**
@@ -1041,13 +1031,12 @@ export async function botControllerWorkflowV1(
         botId: config.botId,
         deliveryId: delivery.id,
         eventIds: asked.map((event) => event.id),
-        status: recent.status,
+        status: recent.outcome,
         summary: recent.summary ?? null,
         hops: deliveryHops(delivery),
       });
     } catch (error) {
       lastError = errorMessage(error);
-      await record("reply_failed", { eventId: delivery.id, detail: lastError });
     }
     laneTick += 1;
   }
@@ -1075,14 +1064,10 @@ export async function botControllerWorkflowV1(
           deliveryId: delivery.id,
           events: delivery.events,
         });
-        await record("appended", {
-          eventId: delivery.id,
-          detail: `${eventCount} event(s) appended as context`,
-        });
         rememberDelivery(delivery, {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: "appended",
+          outcome: "appended",
           eventCount,
         }, target);
         return;
@@ -1100,15 +1085,10 @@ export async function botControllerWorkflowV1(
           events: delivery.events,
         });
         if (steered.steered) {
-          await record("steered", {
-            eventId: delivery.id,
-            ...(steered.runId === undefined ? {} : { runId: steered.runId }),
-            detail: `${eventCount} event(s) folded into the active run`,
-          });
           rememberDelivery(delivery, {
             id: delivery.id,
             ref: firstEvent.ref,
-            status: "steered",
+            outcome: "steered",
             eventCount,
             ...(steered.runId === undefined ? {} : { runId: steered.runId }),
           }, target);
@@ -1121,11 +1101,10 @@ export async function botControllerWorkflowV1(
       pendingDeliveries.unshift(delivery);
     } catch (error) {
       lastError = errorMessage(error);
-      await record("run_failed", { eventId: delivery.id, detail: lastError });
       rememberDelivery(delivery, {
         id: delivery.id,
         ref: firstEvent.ref,
-        status: "run_failed",
+        outcome: "run_failed",
         eventCount,
         failure: lastError,
       }, target);
@@ -1149,14 +1128,10 @@ export async function botControllerWorkflowV1(
       if (delivery.session !== undefined) {
         const ensured = await ensureRoutedSession(delivery.session, target, firstEvent.tools);
         if (ensured === null) {
-          await record("run_failed", {
-            eventId: delivery.id,
-            detail: `failed to create session ${target}`,
-          });
           finishDelivery(active, {
             id: delivery.id,
             ref: firstEvent.ref,
-            status: "run_failed",
+            outcome: "run_failed",
             eventCount,
             failure: `failed to create session ${target}: ${lastError ?? "unknown"}`,
           });
@@ -1193,14 +1168,10 @@ export async function botControllerWorkflowV1(
           deliveryId: delivery.id,
           events: delivery.events,
         });
-        await record("appended", {
-          eventId: delivery.id,
-          detail: `${eventCount} event(s) appended as context`,
-        });
         finishDelivery(active, {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: "appended",
+          outcome: "appended",
           eventCount,
         });
         return;
@@ -1219,15 +1190,10 @@ export async function botControllerWorkflowV1(
             events: delivery.events,
           });
           if (steered.steered) {
-            await record("steered", {
-              eventId: delivery.id,
-              ...(steered.runId === undefined ? {} : { runId: steered.runId }),
-              detail: `${eventCount} event(s) folded into the active run`,
-            });
             finishDelivery(active, {
               id: delivery.id,
               ref: firstEvent.ref,
-              status: "steered",
+              outcome: "steered",
               eventCount,
               ...(steered.runId === undefined ? {} : { runId: steered.runId }),
             });
@@ -1250,7 +1216,6 @@ export async function botControllerWorkflowV1(
         active.runId = run.runId;
         rollBudgetDay();
         runsToday += 1;
-        await record("run_started", { eventId: delivery.id, runId: run.runId });
         laneTick += 1;
         void notifyDelivery(delivery, { phase: "started", sessionId: target, runId: run.runId });
       } catch (error) {
@@ -1273,7 +1238,7 @@ export async function botControllerWorkflowV1(
         recent = {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: "run_failed",
+          outcome: "run_failed",
           eventCount,
           ...(active.runId === null ? {} : { runId: active.runId }),
           failure: "timed out waiting for the run terminal",
@@ -1282,7 +1247,7 @@ export async function botControllerWorkflowV1(
         recent = {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: "run_failed",
+          outcome: "run_failed",
           eventCount,
           runId: active.runId ?? terminal.runId,
           failure: `run ended ${terminal.status}`,
@@ -1291,7 +1256,7 @@ export async function botControllerWorkflowV1(
         recent = {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: resolution.outcome,
+          outcome: resolution.outcome,
           eventCount,
           runId: active.runId ?? terminal.runId,
           ...(resolution.summary === null ? {} : { summary: resolution.summary }),
@@ -1300,12 +1265,12 @@ export async function botControllerWorkflowV1(
         recent = {
           id: delivery.id,
           ref: firstEvent.ref,
-          status: "unresolved",
+          outcome: "unresolved",
           eventCount,
           runId: active.runId ?? terminal.runId,
         };
       }
-      if (recent.runId !== undefined && recent.status !== "run_failed") {
+      if (recent.runId !== undefined && recent.outcome !== "run_failed") {
         // Best effort: the cached share is observability, never a reason to
         // fail a delivery that already finished.
         try {
@@ -1319,23 +1284,13 @@ export async function botControllerWorkflowV1(
           // The read is retried by Temporal; a final failure leaves usage unset.
         }
       }
-      const cachedShare =
-        recent.usage === undefined
-          ? ""
-          : ` · ${Math.round((recent.usage.cachedInputTokens / recent.usage.inputTokens) * 100)}% of ${recent.usage.inputTokens} prompt tokens cached`;
-      await record(recent.status === "run_failed" ? "run_failed" : "run_completed", {
-        eventId: delivery.id,
-        ...(recent.runId === undefined ? {} : { runId: recent.runId }),
-        detail: `${recent.failure ?? recent.summary ?? recent.status}${cachedShare}`,
-      });
       finishDelivery(active, recent);
     } catch (error) {
       lastError = errorMessage(error);
-      await record("run_failed", { eventId: delivery.id, detail: lastError });
       finishDelivery(active, {
         id: delivery.id,
         ref: firstEvent.ref,
-        status: "run_failed",
+        outcome: "run_failed",
         eventCount,
         failure: lastError,
       });
@@ -1391,16 +1346,6 @@ export async function botControllerWorkflowV1(
     }
     if (config.enabled && sessionReady && !configDirty) {
       dispatch();
-      if (pendingDeliveries.length > 0 && budgetExhausted() && !budgetNotified) {
-        budgetNotified = true;
-        await record("budget_exhausted", {
-          detail:
-            `${runsToday + descendantsToday}/${config.runsPerDay} runs used for ${runDay}` +
-            (descendantsToday > 0
-              ? ` (${runsToday} bot runs, ${descendantsToday} sub-agent sessions)`
-              : ""),
-        });
-      }
     }
     if (
       emissionInbox.length === 0 &&

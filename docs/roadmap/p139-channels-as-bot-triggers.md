@@ -417,6 +417,32 @@ session's context unbounded today. Lands when someone wants silent rooms.
   `npm run check`. Not yet run: a live Telegram/WhatsApp chat on the dev
   stack.
 
+### Follow-up 2026-08-26: outcomes on the event row, no activity feed
+
+Lukas asked why bots keep a separate `bot_activity` table when the
+session log exists, and whether admitting filtered events is right for a
+firehose. Both were overdone; both simplified the same day (migration
+`0006_event_outcomes`, platform schema revision 7):
+
+- **`bot_activity` is gone.** The bot's decisions live in the controller's
+  Temporal history; Postgres is a read model. Every `bot_events` row now
+  carries a write-once `outcome` (the model's `handled` … `blocked`, or the
+  system's `unresolved | run_failed | steered | appended | archived`;
+  `NULL` = pending), `outcome_detail`, `delivery_id`, `run_id`,
+  `resolved_at`, written once per event when the delivery finishes — so a
+  coalesced batch marks all its rows. Trigger-level incidents became trigger
+  state: `bot_triggers.disabled_reason` (`breaker | poll_failed | operator`)
+  with `disabled_at`, and `last_filter_error` / `_at` for a CEL filter that
+  throws (fail-closed; cleared by the next match). Controller-level facts
+  (degraded, rotation, budget) stay in the live snapshot. The Activity tab
+  and `GET …/activity` are removed; the Events tab shows outcomes inline.
+- **Filter misses are never stored.** No seq, no CAS write, no row: a strict
+  filter on a firehose costs nothing, and `#N` never skips for junk. The
+  event log keeps only what the bot saw. `bot_filter_test` therefore takes
+  a `payload` (`{kind?, data?, headers?}`) to write a filter before any
+  traffic exists; without one it still samples the stored (delivered)
+  events, which is enough to tighten a filter that is too loose.
+
 ## Tests
 
 - **Unit** (`platform/bots/test`): chat event id determinism; the chat

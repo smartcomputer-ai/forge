@@ -106,6 +106,26 @@ export type BotEnvStatus =
   | { kind: "provision" }
   | { kind: "existing"; environmentId: string };
 
+/** A paused trigger says why: the breaker, a failed poll, a one-shot that fired, or an operator. */
+function pausedLabel(reason: BotTrigger["disabledReason"]): string {
+  switch (reason) {
+    case "breaker":
+      return "paused by breaker";
+    case "poll_failed":
+      return "paused: poll failed";
+    case "one_shot":
+      return "paused: one-shot fired";
+    case "operator":
+      return "paused by operator";
+    default:
+      return "paused";
+  }
+}
+
+function pausedVariant(reason: BotTrigger["disabledReason"]): "destructive" | "outline" {
+  return reason === "breaker" || reason === "poll_failed" ? "destructive" : "outline";
+}
+
 export function TriggersSection({
   universeId,
   botId,
@@ -180,7 +200,14 @@ export function TriggersSection({
               <Webhook className="size-3.5 shrink-0 text-muted-foreground" />
             )}
             <span className="min-w-0 flex-1 truncate font-medium">{trigger.name}</span>
-            {!trigger.enabled && <Badge variant="outline">paused</Badge>}
+            {!trigger.enabled && (
+              <Badge
+                variant={pausedVariant(trigger.disabledReason)}
+                title={trigger.disabledAt ? `since ${new Date(trigger.disabledAt).toLocaleString()}` : undefined}
+              >
+                {pausedLabel(trigger.disabledReason)}
+              </Badge>
+            )}
             {manage && (
               <span className="flex shrink-0 items-center">
                 <Button
@@ -222,6 +249,14 @@ export function TriggersSection({
               </span>
             )}
           </div>
+          {trigger.lastFilterError && (
+            <p
+              className="mt-1 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
+              title={trigger.lastFilterErrorAt ? `at ${new Date(trigger.lastFilterErrorAt).toLocaleString()}` : undefined}
+            >
+              filter error: {trigger.lastFilterError}
+            </p>
+          )}
           {trigger.kind === "schedule" ? (
             <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
           ) : trigger.kind === "poll" ? (

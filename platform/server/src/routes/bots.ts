@@ -31,13 +31,12 @@ import {
   botStart,
   errorMessage,
   getTemporal,
-  recordActivity,
   signalBotConfig,
   type BotRow,
   type BotTriggerRow,
 } from "./bot-common.js";
 
-const { bots, botTriggers, botEvents, botActivity, channelAccounts } = schema;
+const { bots, botTriggers, botEvents, channelAccounts } = schema;
 
 /// A bot's authored id (`botId` on the wire, `bots.name` in the row) is
 /// immutable and universe-unique, like a profile id; `displayName` is the
@@ -474,10 +473,6 @@ export function botRoutes(ctx: AppContext) {
       ...(stored.triggerId === null ? {} : { triggerId: stored.triggerId }),
       ...(stored.session === null ? {} : { session: stored.session }),
     });
-    await recordActivity(ctx, found.bot.id, "replayed", {
-      eventId: replayId,
-      detail: `replay of ${stored.eventId}`,
-    });
     return c.json({ event, original: stored.eventId }, 202);
   });
 
@@ -520,40 +515,6 @@ export function botRoutes(ctx: AppContext) {
         sender: senderBotId === null ? null : (senders.get(senderBotId) ?? null),
       })),
       nextCursor: rows.length > limit && last ? encodeHistoryCursor(last.receivedAt, last.id) : null,
-    });
-  });
-
-  byUniverse.get("/:id/bots/:botId/activity", async (c) => {
-    const found = await botForUniverse(c, false);
-    if (!found) return c.json({ error: "not found" }, 404);
-    const eventId = c.req.query("eventId");
-    const limit = historyLimit(c.req.query("limit"));
-    const cursor = decodeHistoryCursor(c.req.query("cursor"));
-    if (cursor === undefined) return c.json({ error: "invalid cursor" }, 400);
-    const baseFilter = eventId === undefined
-      ? eq(botActivity.botId, found.bot.id)
-      : and(eq(botActivity.botId, found.bot.id), eq(botActivity.eventId, eventId));
-    const rows = await ctx.db
-      .select()
-      .from(botActivity)
-      .where(
-        cursor === null
-          ? baseFilter
-          : and(
-              baseFilter,
-              or(
-                lt(botActivity.createdAt, cursor.at),
-                and(eq(botActivity.createdAt, cursor.at), lt(botActivity.id, cursor.id)),
-              ),
-            ),
-      )
-      .orderBy(desc(botActivity.createdAt), desc(botActivity.id))
-      .limit(limit + 1);
-    const activity = rows.slice(0, limit);
-    const last = activity.at(-1);
-    return c.json({
-      activity: activity.map(({ botId: _botId, ...entry }) => entry),
-      nextCursor: rows.length > limit && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
     });
   });
 

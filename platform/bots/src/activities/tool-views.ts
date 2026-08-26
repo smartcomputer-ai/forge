@@ -99,6 +99,14 @@ function sessionLabel(row: Pick<BotEventRow, "session">): { session?: string } {
   return row.session === null ? {} : { session: row.session.label };
 }
 
+/** What came of the event, or `pending` while the controller still holds it. */
+function outcomeFields(row: Pick<BotEventRow, "outcome" | "outcomeDetail">) {
+  return {
+    outcome: row.outcome ?? "pending",
+    ...(row.outcomeDetail === null ? {} : { outcomeDetail: row.outcomeDetail }),
+  };
+}
+
 export function eventListRowView(row: BotEventRow, document: BotEventDocumentV1 | null) {
   return {
     ...(row.seq === null ? {} : { seq: row.seq }),
@@ -108,6 +116,7 @@ export function eventListRowView(row: BotEventRow, document: BotEventDocumentV1 
     receivedAt: row.receivedAt.toISOString(),
     ...sessionLabel(row),
     summary: document?.summary ?? null,
+    ...outcomeFields(row),
   };
 }
 
@@ -138,6 +147,7 @@ export function eventEnvelopeView(
     occurredAt: row.occurredAt.toISOString(),
     receivedAt: row.receivedAt.toISOString(),
     ...sessionLabel(row),
+    ...outcomeFields(row),
     summary: document.summary,
     ...(document.correlationId == null ? {} : { correlationId: document.correlationId }),
     ...(document.links === undefined ? {} : { links: document.links }),

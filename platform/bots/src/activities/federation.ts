@@ -11,7 +11,6 @@ import {
   nextHops,
   receiptDocument,
   receiptEventId,
-  recordBotActivity,
   renderBotDirectory,
   storeBotEvent,
   type AdmissionDeps,
@@ -152,10 +151,7 @@ export function createBotFederationActivities(config: BotFederationConfig): BotF
         hops = nextHops(input.hops);
       } catch (error) {
         if (error instanceof BotAdmissionRefusal) {
-          await recordBotActivity(config.db, answering.id, "loop_cut", {
-            eventId: input.deliveryId,
-            detail: `receipts for delivery not sent: ${error.message}`,
-          });
+          // Hop bound reached: the exchange ends here, silently by design.
           return { sent: 0 };
         }
         throw error;
@@ -189,10 +185,6 @@ export function createBotFederationActivities(config: BotFederationConfig): BotF
           senderBotId: answering.id,
           hops,
           inReplyTo: { bot: answering.name, seq: row.seq },
-        });
-        await recordBotActivity(config.db, answering.id, "replied", {
-          eventId: row.eventId,
-          detail: `replied ${input.status} to ${asker.name} (#${event.seq ?? "?"} there)`,
         });
         sent += 1;
       }

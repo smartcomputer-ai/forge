@@ -43,6 +43,13 @@
       "when": 1787749619639,
       "tag": "0005_channels_as_bot_triggers",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1787755653564,
+      "tag": "0006_event_outcomes",
+      "breakpoints": true
     }
   ]
 }

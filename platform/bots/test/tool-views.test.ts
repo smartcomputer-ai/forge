@@ -63,6 +63,11 @@ function eventRow(overrides: Partial<BotEventRow>): BotEventRow {
     media: null,
     tools: null,
     notify: null,
+    outcome: null,
+    outcomeDetail: null,
+    deliveryId: null,
+    runId: null,
+    resolvedAt: null,
     receivedAt: new Date("2026-08-26T10:00:01Z"),
     ...overrides,
   };
@@ -177,6 +182,10 @@ describe("model-facing bot tool views", () => {
       cursor: null,
       sessionTtlMs: null,
       enabled: true,
+      disabledReason: null,
+      disabledAt: null,
+      lastFilterError: null,
+      lastFilterErrorAt: null,
       createdAt: new Date("2026-08-26T10:00:00Z"),
       updatedAt: new Date("2026-08-26T10:00:00Z"),
     };

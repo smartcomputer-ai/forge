@@ -145,19 +145,7 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
       },
     });
 
-  async function recordActivity(
-    botId: string,
-    kind: string,
-    fields?: { eventId?: string | null; detail?: string },
-  ): Promise<void> {
-    await config.db.insert(schema.botActivity).values({
-      botId,
-      kind,
-      eventId: fields?.eventId ?? null,
-      runId: null,
-      detail: fields?.detail ?? null,
-    });
-  }
+
 
   /** Fetch the HTTP source with a wall-clock timeout and a size cap. */
   async function fetchHttpPayload(
@@ -312,9 +300,6 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
             cursor: { ...(state ?? {}), consecutiveFailures: failures, lastPolledAt: nowIso },
           })
           .where(eq(schema.botTriggers.id, row.trigger.id));
-        await recordActivity(row.bot.id, "poll_failed", {
-          detail: `${row.trigger.name}: ${errorMessage(error).slice(0, 500)} (${failures} consecutive)`,
-        });
         if (failures >= MAX_POLL_CONSECUTIVE_FAILURES) {
           await disableTrigger(row, "poll_disabled",
             `poll trigger ${row.trigger.name} failed ${failures} times in a row and was disabled`);
@@ -329,17 +314,11 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
           .update(schema.botTriggers)
           .set({ cursor: diff.nextState })
           .where(eq(schema.botTriggers.id, row.trigger.id));
-        await recordActivity(row.bot.id, "poll_baselined", {
-          detail: `${row.trigger.name}: cursor initialized over ${items.length} existing item(s); nothing delivered`,
-        });
         return { polled: true, baselined: true, admitted: 0, filtered: 0 };
       }
 
       const fresh = diff.newItems.slice(0, MAX_POLL_ITEMS_PER_FIRE);
       if (diff.newItems.length > fresh.length) {
-        await recordActivity(row.bot.id, "poll_truncated", {
-          detail: `${row.trigger.name}: ${diff.newItems.length - fresh.length} new item(s) beyond the per-fire cap wait for the next fire`,
-        });
       }
 
       const client = clientFor(row.lightspeedUniverseId);
@@ -372,7 +351,6 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
           filterContext,
         );
         if (routed.error) {
-          await recordActivity(row.bot.id, "route_fallback", { eventId, detail: routed.error });
         }
         const document: BotEventDocumentV1 = {
           version: 1,
@@ -410,9 +388,6 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
         .set({ cursor: diff.nextState })
         .where(eq(schema.botTriggers.id, row.trigger.id));
       if (admitted > 0 || filtered > 0) {
-        await recordActivity(row.bot.id, "polled", {
-          detail: `${row.trigger.name}: ${admitted} admitted, ${filtered} filtered of ${diff.newItems.length} new item(s)`,
-        });
       }
       return { polled: true, baselined: false, admitted, filtered };
     },
@@ -421,11 +396,15 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
   async function disableTrigger(
     row: { trigger: { id: string; name: string }; bot: { id: string; name: string }; lightspeedUniverseId: string },
     kind: string,
-    detail: string,
+    _detail: string,
   ): Promise<void> {
     await config.db
       .update(schema.botTriggers)
-      .set({ enabled: false })
+      .set({
+        enabled: false,
+        disabledReason: kind === "breaker_tripped" ? "breaker" : "poll_failed",
+        disabledAt: new Date(),
+      })
       .where(eq(schema.botTriggers.id, row.trigger.id));
     await deleteBotSchedule(
       config.temporal,
@@ -433,7 +412,6 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
       row.bot.name,
       row.trigger.name,
     ).catch(() => undefined);
-    await recordActivity(row.bot.id, kind, { detail });
   }
 }
 

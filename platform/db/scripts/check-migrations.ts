@@ -79,6 +79,9 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await requireColumn(handle.pool, "bot_triggers", "session_ttl_ms");
     await requireColumn(handle.pool, "channel_pairings", "trigger_id");
     await requireNoTable(handle.pool, "channel_bindings");
+    await requireColumn(handle.pool, "bot_events", "outcome");
+    await requireColumn(handle.pool, "bot_triggers", "disabled_reason");
+    await requireNoTable(handle.pool, "bot_activity");
   } finally {
     await handle.pool.end();
   }
@@ -121,6 +124,9 @@ async function checkUpgrade(
     // 0005 drops channel bindings and re-keys pairings to chat triggers.
     await requireColumn(handle.pool, "channel_pairings", "trigger_id");
     await requireNoTable(handle.pool, "channel_bindings");
+    // 0006 folds the activity feed into event outcomes.
+    await requireColumn(handle.pool, "bot_events", "outcome");
+    await requireNoTable(handle.pool, "bot_activity");
     await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();

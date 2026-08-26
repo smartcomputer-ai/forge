@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, count, eq, gte } from "drizzle-orm";
+import { and, count, eq, gte, inArray, isNull } from "drizzle-orm";
 import type { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { BotRow, BotTriggerRow } from "./config.js";
@@ -8,6 +8,7 @@ import {
   type BotCoalesceParamsV1,
   type BotEvent,
   type BotEventDocumentV1,
+  type BotEventFinalOutcome,
   type BotEventMediaV1,
   type BotEventNotifyV1,
   type BotEventSession,
@@ -148,19 +149,43 @@ export function resolveInbox(
   return target.inbox;
 }
 
-export async function recordBotActivity(
+export interface EventOutcomeInput {
+  outcome: BotEventFinalOutcome;
+  detail?: string | null;
+  deliveryId?: string | null;
+  runId?: string | null;
+}
+
+/**
+ * Write-once outcome on event rows: the read model of what the controller
+ * decided (the decision itself is in its Temporal history). A row already
+ * resolved keeps its first outcome; a retried write is a no-op.
+ */
+export async function recordEventOutcomes(
   db: Db,
   botId: string,
-  kind: string,
-  fields?: { eventId?: string; runId?: string; detail?: string },
-): Promise<void> {
-  await db.insert(schema.botActivity).values({
-    botId,
-    kind,
-    eventId: fields?.eventId ?? null,
-    runId: fields?.runId ?? null,
-    detail: fields?.detail ?? null,
-  });
+  eventIds: string[],
+  input: EventOutcomeInput,
+): Promise<{ updated: number }> {
+  if (eventIds.length === 0) return { updated: 0 };
+  const rows = await db
+    .update(schema.botEvents)
+    .set({
+      outcome: input.outcome,
+      outcomeDetail: input.detail ?? null,
+      deliveryId: input.deliveryId ?? null,
+      runId: input.runId ?? null,
+      resolvedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(schema.botEvents.botId, botId),
+        inArray(schema.botEvents.eventId, eventIds),
+        isNull(schema.botEvents.outcome),
+      ),
+    )
+    .returning({ id: schema.botEvents.id });
+  return { updated: rows.length };
 }
 
 /**
@@ -182,11 +207,8 @@ export async function checkTriggerBreaker(
   if (Number(row?.value ?? 0) < breaker.fires) return { tripped: false };
   await deps.db
     .update(schema.botTriggers)
-    .set({ enabled: false })
+    .set({ enabled: false, disabledReason: "breaker", disabledAt: new Date() })
     .where(eq(schema.botTriggers.id, trigger.id));
-  await recordBotActivity(deps.db, bot.id, "breaker_tripped", {
-    detail: `trigger ${trigger.name} exceeded ${breaker.fires} events in ${Math.round(breaker.windowMs / 1000)}s and was disabled`,
-  });
   return { tripped: true };
 }
 
@@ -293,6 +315,10 @@ export async function storeBotEvent(
       media: input.media ?? null,
       tools: input.tools ?? null,
       notify: input.notify ?? null,
+      // Archived rows are for the record (a chat send, a replay's original):
+      // resolved at birth, never delivered.
+      outcome: input.deliver === false ? "archived" : null,
+      resolvedAt: input.deliver === false ? new Date() : null,
     })
     .onConflictDoNothing()
     .returning();
@@ -358,16 +384,15 @@ export interface AdmitTriggerEventInput {
   notify?: BotEventNotifyV1;
 }
 
-export interface AdmitTriggerEventResult {
-  event: BotEvent;
-  duplicate: boolean;
-  /** The trigger's filter did not match: stored for replay, never delivered. */
-  archived: boolean;
-}
+export type AdmitTriggerEventResult =
+  | { filtered: false; event: BotEvent; duplicate: boolean }
+  /** The filter did not match (or threw, fail-closed): nothing was stored. */
+  | { filtered: true; error?: string };
 
 /**
  * The trigger pipeline every receiver-side knob runs through, in order:
- * filter (archive on miss), route, coalesce, delivery policy, then
+ * filter (refuse on miss — a miss is never stored, so a strict filter on a
+ * firehose costs nothing), route, coalesce, delivery policy, then
  * store-then-wake. The caller has already checked the trigger is enabled
  * and the breaker has not tripped.
  */
@@ -405,16 +430,22 @@ export async function admitTriggerEvent(
   if (trigger.filter !== null) {
     const filtered = evaluateFilter(trigger.filter, context);
     if (!filtered.matched) {
-      // Archive without delivering so the envelope stays replayable and the
-      // activity feed can explain the skip.
-      const { event, duplicate } = await storeBotEvent(deps, { ...base, deliver: false });
-      if (!duplicate) {
-        await recordBotActivity(deps.db, bot.id, filtered.error ? "filter_error" : "filtered", {
-          eventId: input.eventId,
-          detail: filtered.error ?? `filter did not match: ${trigger.filter}`,
-        });
+      // A filter that throws is a configuration problem, not an event: it is
+      // surfaced on the trigger and cleared by the next match.
+      if (filtered.error !== undefined) {
+        await deps.db
+          .update(schema.botTriggers)
+          .set({ lastFilterError: filtered.error, lastFilterErrorAt: new Date() })
+          .where(eq(schema.botTriggers.id, trigger.id));
+        return { filtered: true, error: filtered.error };
       }
-      return { event, duplicate, archived: true };
+      return { filtered: true };
+    }
+    if (trigger.lastFilterError !== null) {
+      await deps.db
+        .update(schema.botTriggers)
+        .set({ lastFilterError: null, lastFilterErrorAt: null })
+        .where(eq(schema.botTriggers.id, trigger.id));
     }
   }
 
@@ -431,12 +462,6 @@ export async function admitTriggerEvent(
     { eventId: input.eventId, ...(document.data === undefined ? {} : { data: document.data }) },
     context,
   );
-  if (routed.error) {
-    await recordBotActivity(deps.db, bot.id, "route_fallback", {
-      eventId: input.eventId,
-      detail: routed.error,
-    });
-  }
   // Per-trigger retention rides on the routed target: null on the row
   // inherits the bot's setting, 0 keeps the session open indefinitely.
   const session =
@@ -456,7 +481,7 @@ export async function admitTriggerEvent(
         }),
     ...(trigger.deliver === null ? {} : { whenBusy: trigger.deliver.whenBusy }),
   });
-  return { event, duplicate, archived: false };
+  return { filtered: false, event, duplicate };
 }
 
 /** What the directory knows about one neighbour. */

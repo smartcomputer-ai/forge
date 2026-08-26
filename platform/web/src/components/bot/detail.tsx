@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Activity,
   ArrowUpRight,
   ChevronRight,
   Inbox,
@@ -15,8 +14,6 @@ import {
   api,
   botLabel,
   type Bot,
-  type BotActivityEntry,
-  type BotActivityPage,
   type BotEventEnvelope,
   type BotEventPage,
   type BotRecentEvent,
@@ -33,9 +30,9 @@ import { SendEventDialog } from "./send-event-dialog";
 import { BotStatusBadge, KeyValue } from "./status";
 import { TriggersSection, type BotEnvStatus } from "./triggers";
 
-type BotView = "overview" | "events" | "activity";
+type BotView = "overview" | "events";
 
-/** Bot workspace: live routing state plus paginated event and activity history. */
+/** Bot workspace: live routing state plus paginated event history with outcomes. */
 export function BotDetail({
   slug,
   bot,
@@ -55,19 +52,6 @@ export function BotDetail({
   const [eventOpen, setEventOpen] = useState(false);
   const [view, setView] = useState<BotView>("overview");
   const queryClient = useQueryClient();
-  const activityPages = useInfiniteQuery({
-    queryKey: ["bot-activity", bot.universeId, bot.botId],
-    queryFn: ({ pageParam }) =>
-      api<BotActivityPage>(
-        "GET",
-        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/activity?limit=50${
-          pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
-        }`,
-      ),
-    initialPageParam: "",
-    getNextPageParam: (last) => last.nextCursor ?? undefined,
-    enabled: view === "activity",
-  });
   const eventPages = useInfiniteQuery({
     queryKey: ["bot-events", bot.universeId, bot.botId],
     queryFn: ({ pageParam }) =>
@@ -81,7 +65,6 @@ export function BotDetail({
     getNextPageParam: (last) => last.nextCursor ?? undefined,
     enabled: view === "events",
   });
-  const activity = activityPages.data?.pages.flatMap((page) => page.activity) ?? [];
   const events = eventPages.data?.pages.flatMap((page) => page.events) ?? [];
   const replay = useMutation({
     mutationFn: (eventId: string) =>
@@ -89,7 +72,6 @@ export function BotDetail({
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-activity", bot.universeId, bot.botId] }),
         queryClient.invalidateQueries({ queryKey: ["bot-events", bot.universeId, bot.botId] }),
       ]);
     },
@@ -125,7 +107,6 @@ export function BotDetail({
               <Inbox /> Events
               {state && state.pendingEventCount > 0 && <Badge variant="outline">{state.pendingEventCount}</Badge>}
             </TabsTrigger>
-            <TabsTrigger value="activity"><Activity /> Activity</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>
@@ -140,7 +121,7 @@ export function BotDetail({
               stateError={stateError}
               manage={manage}
             />
-          ) : view === "events" ? (
+          ) : (
             <EventHistory
               events={events}
               state={state}
@@ -150,15 +131,6 @@ export function BotDetail({
               loadingMore={eventPages.isFetchingNextPage}
               onLoadMore={() => void eventPages.fetchNextPage()}
               onReplay={manage ? (eventId) => replay.mutate(eventId) : undefined}
-            />
-          ) : (
-            <ActivityHistory
-              activity={activity}
-              loading={activityPages.isLoading}
-              error={activityPages.error?.message}
-              hasMore={activityPages.hasNextPage}
-              loadingMore={activityPages.isFetchingNextPage}
-              onLoadMore={() => void activityPages.fetchNextPage()}
             />
           )}
         </div>
@@ -366,11 +338,17 @@ function EventHistory({
   onLoadMore: () => void;
   onReplay?: (eventId: string) => void;
 }) {
+  // Live controller state fills in rows whose stored outcome is still null
+  // (a delivery in flight); the stored outcome wins once written.
   const decisions = new Map(state?.recentEvents.map((event) => [event.id, event]) ?? []);
+  const batchSizes = new Map<string, number>();
+  for (const event of events) {
+    if (event.deliveryId) batchSizes.set(event.deliveryId, (batchSizes.get(event.deliveryId) ?? 0) + 1);
+  }
   return (
     <DetailSection
       title="Event history"
-      description="Every stored event envelope, newest first. Replay creates a new delivery from the same payload."
+      description="Every stored event envelope, newest first, with its outcome: what came of each event — the bot's decision, or the system's. Replay creates a new delivery from the same payload."
     >
       {loading && <p className="text-xs text-muted-foreground">Loading events…</p>}
       {error && <p className="text-xs text-destructive">{error}</p>}
@@ -379,36 +357,11 @@ function EventHistory({
           key={event.id}
           event={event}
           decision={decisions.get(event.eventId)}
+          batchSize={event.deliveryId ? batchSizes.get(event.deliveryId) ?? 1 : 1}
           onReplay={onReplay ? () => onReplay(event.eventId) : undefined}
         />
       ))}
       {!loading && !error && events.length === 0 && <p className="text-xs text-muted-foreground">No events received yet.</p>}
-      {hasMore && <LoadMoreButton loading={loadingMore} onClick={onLoadMore} />}
-    </DetailSection>
-  );
-}
-
-function ActivityHistory({
-  activity,
-  loading,
-  error,
-  hasMore,
-  loadingMore,
-  onLoadMore,
-}: {
-  activity: BotActivityEntry[];
-  loading: boolean;
-  error?: string;
-  hasMore: boolean;
-  loadingMore: boolean;
-  onLoadMore: () => void;
-}) {
-  return (
-    <DetailSection title="Activity history" description="The durable audit trail of routing decisions, runs, errors, and self-configuration.">
-      {loading && <p className="text-xs text-muted-foreground">Loading activity…</p>}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-      {activity.map((entry) => <ActivityRow key={entry.id} entry={entry} />)}
-      {!loading && !error && activity.length === 0 && <p className="text-xs text-muted-foreground">No activity recorded yet.</p>}
       {hasMore && <LoadMoreButton loading={loadingMore} onClick={onLoadMore} />}
     </DetailSection>
   );
@@ -447,19 +400,34 @@ function LoadMoreButton({ loading, onClick }: { loading: boolean; onClick: () =>
 function StoredEventRow({
   event,
   decision,
+  batchSize,
   onReplay,
 }: {
   event: BotEventEnvelope;
   decision?: BotRecentEvent;
+  /** Visible events sharing this event's delivery; > 1 marks a coalesced batch. */
+  batchSize: number;
   onReplay?: () => void;
 }) {
+  const outcome = event.outcome ?? decision?.outcome ?? null;
+  const detail = event.outcomeDetail ?? decision?.summary ?? decision?.failure;
+  const runId = event.runId ?? decision?.runId;
   return (
     <div className="rounded-md border p-3 text-xs">
       <div className="flex min-w-0 items-center gap-2">
         <code className="min-w-0 flex-1 truncate" title={event.eventId}>
           {event.seq != null ? `#${event.seq}` : event.eventId}
         </code>
-        <Badge variant={eventStatusVariant(decision?.status)}>{decision?.status ?? "received"}</Badge>
+        {batchSize > 1 && (
+          <Badge variant="outline" title={event.deliveryId ?? undefined}>batch of {batchSize}</Badge>
+        )}
+        {runId && <code className="shrink-0 text-muted-foreground">{runId}</code>}
+        <Badge
+          variant={eventStatusVariant(outcome ?? undefined)}
+          title={event.resolvedAt ? `resolved ${timeLabel(event.resolvedAt)}` : undefined}
+        >
+          {outcome ? outcome.replaceAll("_", " ") : "pending"}
+        </Badge>
         {onReplay && (
           <Button variant="ghost" size="icon-xs" onClick={onReplay} aria-label="Replay event"><RotateCcw /></Button>
         )}
@@ -478,9 +446,7 @@ function StoredEventRow({
           {event.hops > 0 && <Badge variant="outline">{event.hops} hop{event.hops === 1 ? "" : "s"}</Badge>}
         </p>
       )}
-      {(decision?.summary ?? decision?.failure) && (
-        <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{decision?.summary ?? decision?.failure}</p>
-      )}
+      {detail && <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{detail}</p>}
       {decision?.usage && (
         <p className="mt-1 text-muted-foreground">
           {Math.round((decision.usage.cachedInputTokens / decision.usage.inputTokens) * 100)}% of{" "}
@@ -518,24 +484,6 @@ function EventRow({
   );
 }
 
-function ActivityRow({ entry }: { entry: BotActivityEntry }) {
-  return (
-    <div className="rounded-md border p-3 text-xs">
-      <div className="flex items-center gap-2">
-        <Badge variant={activityVariant(entry.kind)}>{entry.kind.replaceAll("_", " ")}</Badge>
-        <span className="ml-auto shrink-0 text-muted-foreground">{timeLabel(entry.createdAt)}</span>
-      </div>
-      {entry.detail && <p className="mt-1 text-muted-foreground wrap-anywhere">{entry.detail}</p>}
-      {(entry.eventId || entry.runId) && (
-        <div className="mt-1 grid min-w-0 gap-1 text-muted-foreground">
-          {entry.eventId && <code className="block min-w-0 truncate">event: {entry.eventId}</code>}
-          {entry.runId && <code className="block min-w-0 truncate">run: {entry.runId}</code>}
-        </div>
-      )}
-    </div>
-  );
-}
-
 function flushLabel(flushAtMs: number): string {
   const deltaSeconds = Math.round((flushAtMs - Date.now()) / 1000);
   if (deltaSeconds <= 0) return "now";
@@ -546,12 +494,6 @@ function flushLabel(flushAtMs: number): string {
 function eventStatusVariant(status: string | undefined): "destructive" | "secondary" | "outline" {
   if (status === "run_failed" || status === "blocked") return "destructive";
   if (status === "handled") return "secondary";
-  return "outline";
-}
-
-function activityVariant(kind: string): "destructive" | "secondary" | "outline" {
-  if (kind === "run_failed" || kind === "degraded" || kind === "budget_exhausted") return "destructive";
-  if (kind === "run_completed") return "secondary";
   return "outline";
 }
 

@@ -672,6 +672,12 @@ export interface BotTrigger {
   /** Poll kind only: the advancing cursor; null until the baseline poll. */
   cursor?: BotPollCursorState | null;
   enabled: boolean;
+  /** Why the trigger is paused; null while enabled. */
+  disabledReason: "breaker" | "poll_failed" | "one_shot" | "operator" | null;
+  disabledAt: string | null;
+  /** The filter's last evaluation error; it refuses events until the filter is fixed. */
+  lastFilterError: string | null;
+  lastFilterErrorAt: string | null;
   createdAt: string;
   updatedAt: string;
   /** Webhook kind: the ingest path (capability URL) senders post to. */
@@ -686,6 +692,18 @@ export interface BotEventRef {
   ref: string;
 }
 
+/** What came of an event: the bot's decision, or the system's. */
+export type BotEventOutcome =
+  | "handled"
+  | "deferred"
+  | "ignored"
+  | "blocked"
+  | "unresolved"
+  | "run_failed"
+  | "steered"
+  | "appended"
+  | "archived";
+
 export interface BotRecentEvent {
   id: string;
   ref: string;
@@ -693,15 +711,7 @@ export interface BotRecentEvent {
   seqs?: number[];
   /** Prompt tokens the run consumed and how many the provider served from its cache. */
   usage?: { inputTokens: number; cachedInputTokens: number };
-  status:
-    | "handled"
-    | "deferred"
-    | "ignored"
-    | "blocked"
-    | "unresolved"
-    | "run_failed"
-    | "appended"
-    | "steered";
+  outcome: BotEventOutcome;
   eventCount?: number;
   runId?: string;
   summary?: string;
@@ -780,23 +790,18 @@ export interface BotEventEnvelope {
   /** Receipts: the asked event's #N at the answering bot. */
   inReplyTo: { bot: string; seq: number } | null;
   receivedAt: string;
+  /** Write-once; null while pending (queued, buffered, or a run in flight). */
+  outcome: BotEventOutcome | null;
+  /** One line: the model's summary, or the failure. */
+  outcomeDetail: string | null;
+  /** The delivery (single event or coalesced batch) it went out in; shared across a batch. */
+  deliveryId: string | null;
+  /** The session run that handled it; null for steered/appended/archived. */
+  runId: string | null;
+  resolvedAt: string | null;
 }
 
 export interface BotEventPage {
   events: BotEventEnvelope[];
-  nextCursor: string | null;
-}
-
-export interface BotActivityEntry {
-  id: string;
-  kind: string;
-  eventId: string | null;
-  runId: string | null;
-  detail: string | null;
-  createdAt: string;
-}
-
-export interface BotActivityPage {
-  activity: BotActivityEntry[];
   nextCursor: string | null;
 }

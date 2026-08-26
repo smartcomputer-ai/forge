@@ -36,7 +36,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 10;
+export const BOT_TOOLS_REVISION = 11;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -491,7 +491,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   triggerDelete: "Delete one of this bot's triggers by name.",
   triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
-    "Evaluate a candidate CEL filter against recent stored events and report which would match, so filters are written against real traffic.",
+    "Evaluate a candidate CEL filter. With payload ({kind?, data?, headers?}) it tests that one document; without it, recent stored events, so a filter that is too loose can be tightened against real traffic (events a filter refused are never stored).",
   eventList: "List recent events that arrived at this bot: #N, kind, source, and summary.",
   eventRead:
     "Read one stored event by its #N. Returns the full archived envelope (data, headers); narrow with path (e.g. data.pull_request.body) and cap size with maxBytes.",
@@ -646,7 +646,15 @@ export const BOT_TOOL_SCHEMAS = {
   },
   filterTestInput: {
     type: "object",
-    properties: { filter: { type: "string", minLength: 1 }, limit: NULLABLE_INTEGER },
+    properties: {
+      filter: { type: "string", minLength: 1 },
+      payload: {
+        type: ["object", "null"],
+        additionalProperties: true,
+        description: "A document to test instead of stored events: {kind?, data?, headers?}",
+      },
+      limit: NULLABLE_INTEGER,
+    },
     required: ["filter"],
     additionalProperties: false,
   },
@@ -844,6 +852,19 @@ export function botWorkflowTools(
 }
 
 export type BotEventOutcome = "handled" | "deferred" | "ignored" | "blocked";
+
+/**
+ * What came of an event, on its row and in the controller snapshot: the
+ * model's decision, or the system's when no decision was possible.
+ * `archived` rows were stored for the record and never delivered.
+ */
+export type BotEventFinalOutcome =
+  | BotEventOutcome
+  | "unresolved"
+  | "run_failed"
+  | "steered"
+  | "appended"
+  | "archived";
 
 export interface BotEventResolveArgs {
   outcome: BotEventOutcome;

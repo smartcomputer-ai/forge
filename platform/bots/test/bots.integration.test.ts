@@ -96,8 +96,9 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           }
           throw new Error(`unexpected blob ${blobRef}`);
         },
-        recordBotActivity: async (input: unknown) => {
+        recordEventOutcomes: async (input: unknown) => {
           activity.push(input);
+          return { updated: 1 };
         },
       },
     });
@@ -146,7 +147,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(completed.recentEvents[0]).toMatchObject({
         id: event.id,
         seqs: [17],
-        status: "handled",
+        outcome: "handled",
         runId: "run_1",
         summary: "queue drained",
       });
@@ -154,11 +155,16 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(completed.runsToday).toBe(1);
       expect(calls).toEqual(["ensureSession", "startRun"]);
 
-      const kinds = activity.flatMap((input) =>
-        (input as { entries: { kind: string }[] }).entries.map((entry) => entry.kind),
-      );
-      expect(kinds).toContain("run_started");
-      expect(kinds).toContain("run_completed");
+      // The decision lands once on the event row: the read model of this lane.
+      expect(activity).toEqual([
+        expect.objectContaining({
+          eventIds: [event.id],
+          outcome: "handled",
+          detail: "queue drained",
+          deliveryId: event.id,
+          runId: "run_1",
+        }),
+      ]);
 
       const history = await handle.fetchHistory();
       await Worker.runReplayHistory(
@@ -199,7 +205,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -283,7 +289,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -364,7 +370,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -450,7 +456,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -532,7 +538,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         kind: "keyed",
       });
       expect(done.activeDeliveries).toHaveLength(0);
-      expect(done.recentEvents.map((event) => event.status)).toEqual([
+      expect(done.recentEvents.map((event) => event.outcome)).toEqual([
         "unresolved",
         "unresolved",
         "unresolved",
@@ -593,7 +599,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
               : [],
         }),
         readJsonBlob: async () => ({ outcome: "handled", summary: "batch triaged" }),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -659,7 +665,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         id: expectedDeliveryId,
         eventCount: 3,
         seqs: [1, 2, 3],
-        status: "handled",
+        outcome: "handled",
         summary: "batch triaged",
       });
       expect(done.buffers).toHaveLength(0);
@@ -702,7 +708,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -748,7 +754,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       // The steer delivery folded into the busy run; the append delivery
       // became keyed context; neither started a run or consumed budget.
       expect(calls).toEqual(["steer:1", "append:1"]);
-      expect(done.recentEvents.map((event) => event.status)).toEqual(["steered", "appended"]);
+      expect(done.recentEvents.map((event) => event.outcome)).toEqual(["steered", "appended"]);
       expect(done.runsToday).toBe(0);
     } finally {
       workflowWorker.shutdown();
@@ -790,7 +796,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -841,7 +847,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       );
       expect(calls).toEqual(["steer", "append"]);
       expect(sidecarsDone.activeDeliveries[0]?.id).toBe(host.id);
-      expect(sidecarsDone.recentEvents.map((event) => event.status)).toEqual([
+      expect(sidecarsDone.recentEvents.map((event) => event.outcome)).toEqual([
         "steered",
         "appended",
       ]);
@@ -896,7 +902,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -969,7 +975,6 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     const rotatedRoutedBotName = "routed-rotated";
     const ensured: string[] = [];
     const runs: string[] = [];
-    const activity: string[] = [];
     const mainSession = botSessionId(rotatedRoutedBotName);
     const keyed = `${mainSession}:k-pr-9-cafecafe`;
     const workflowWorker = await Worker.create({
@@ -1004,9 +1009,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async (input: { entries: { kind: string }[] }) => {
-          activity.push(...input.entries.map((entry) => entry.kind));
-        },
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -1051,7 +1054,6 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(ensured).toContain(keyed);
       expect(ensured).toContain(`${keyed}-g2`);
       expect(runs).toEqual([`${keyed}-g2`]);
-      expect(activity).toContain("session_rotated");
       expect(
         inFlight.sessions.some((session) => session.sessionId === `${keyed}-g2`),
       ).toBe(true);
@@ -1104,7 +1106,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           executed.push(input);
           return { ok: true, payloadRef };
         },
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -1208,7 +1210,6 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
   it("rotates the main session when its tool declaration no longer matches", async () => {
     const rotateBotName = "rotated";
     const ensured: string[] = [];
-    const activity: string[] = [];
     const workflowWorker = await Worker.create({
       connection: env.nativeConnection,
       namespace: env.namespace ?? "default",
@@ -1236,9 +1237,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           invocations: [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async (input: { entries: { kind: string }[] }) => {
-          activity.push(...input.entries.map((entry) => entry.kind));
-        },
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -1272,7 +1271,6 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       expect(ready.sessionId).toBe(`${base}-g2`);
       expect(ready.mainGeneration).toBe(2);
       expect(ready.sessions[0]?.sessionId).toBe(`${base}-g2`);
-      expect(activity).toContain("session_rotated");
     } finally {
       workflowWorker.shutdown();
       activityWorker.shutdown();
@@ -1426,7 +1424,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
           receipts.push(input);
           return { sent: 1 };
         },
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
       },
     });
     const workflowRun = workflowWorker.run();
@@ -1559,7 +1557,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
               : [],
         }),
         readJsonBlob: async () => ({}),
-        recordBotActivity: async () => undefined,
+        recordEventOutcomes: async () => ({ updated: 0 }),
         sendDeliveryReceipts: async (input: { eventIds: string[]; receipt: Record<string, unknown> }) => {
           receipts.push(input);
           return { sent: 1, skipped: 0 };
@@ -1634,7 +1632,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         (state) => state.eventsProcessed === 1,
       );
       // A reply through the carried tool counts as handled without bot_event_resolve.
-      expect(done.recentEvents[0]).toMatchObject({ id: "chat-1", status: "handled", seqs: [17] });
+      expect(done.recentEvents[0]).toMatchObject({ id: "chat-1", outcome: "handled", seqs: [17] });
       const finishedReceipt = await eventually(
         async () => receipts,
         (list) => list.some((entry) => entry.receipt.phase === "finished"),

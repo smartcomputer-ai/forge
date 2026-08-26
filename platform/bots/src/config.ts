@@ -645,7 +645,13 @@ export async function updateTrigger(
     );
   }
   const changes: Partial<BotTriggerRow> = {};
-  if (input.enabled !== undefined) changes.enabled = input.enabled;
+  if (input.enabled !== undefined) {
+    changes.enabled = input.enabled;
+    // Re-enabling clears whatever switched the trigger off (breaker, poll
+    // failures, an operator); disabling by hand says so.
+    changes.disabledReason = input.enabled ? null : "operator";
+    changes.disabledAt = input.enabled ? null : new Date();
+  }
   if (input.filter !== undefined) changes.filter = input.filter;
   if (input.route !== undefined) {
     changes.route = existing.kind === "chat" ? chatRoute(input.route) : normalizeRoute(input.route);

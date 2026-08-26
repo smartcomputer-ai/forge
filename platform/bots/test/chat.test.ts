@@ -123,6 +123,10 @@ describe("chat triggers for the model", () => {
     cursor: null,
     sessionTtlMs: 0,
     enabled: true,
+    disabledReason: null,
+    disabledAt: null,
+    lastFilterError: null,
+    lastFilterErrorAt: null,
     createdAt: new Date("2026-08-26T10:00:00Z"),
     updatedAt: new Date("2026-08-26T10:00:00Z"),
   };

@@ -46,7 +46,7 @@ export function SendEventDialog({
       setError(null);
       onOpenChange(false);
       await queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, botId] });
-      await queryClient.invalidateQueries({ queryKey: ["bot-activity", universeId, botId] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-events", universeId, botId] });
     },
     onError: (err) => setError(err instanceof Error ? err.message : String(err)),
   });

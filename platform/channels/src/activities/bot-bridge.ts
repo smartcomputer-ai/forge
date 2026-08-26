@@ -108,8 +108,9 @@ export function createBotBridgeActivities(config: BotBridgeConfig): BotBridgeAct
           token: input.notify.token,
         },
       });
+      if (admitted.filtered) return { status: "filtered", eventId, seq: null, sessionId: null };
       return {
-        status: admitted.archived ? "archived" : admitted.duplicate ? "duplicate" : "admitted",
+        status: admitted.duplicate ? "duplicate" : "admitted",
         eventId,
         seq: admitted.event.seq ?? null,
         sessionId: admitted.event.session?.sessionId ?? null,

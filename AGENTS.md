@@ -323,6 +323,14 @@ Release construction, snapshots, and tagged publication are documented in
   `routedSessionTtlMs`. Do not reintroduce bindings, a channel-owned
   session, provider message ids in tool arguments, or a second lifecycle
   controller.
+- Bot decisions live in the controller's Temporal history; Postgres is the
+  read model. `bot_events` is the bot's numbered log of what arrived and
+  what it sent, each row with a write-once `outcome` (the model's
+  `handled`… or the system's `steered` / `run_failed` / `archived`; null =
+  pending) written when the delivery finishes; trigger incidents are
+  trigger state (`disabled_reason`, `last_filter_error`); controller state
+  is the live snapshot. A filter miss is never stored. Do not reintroduce
+  an activity/audit table or archived filter misses.
 - Catalogs (VFS, skill, sub-agent, and client `Catalog` entries) are
   append-with-supersede: a keyed catalog write appends the new version with
   `supersedes` set and leaves the earlier one active and rendered

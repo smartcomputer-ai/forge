@@ -9,7 +9,9 @@
   declarations carried on the event, and the controller sends
   `started`/`finished` receipts to the endpoint for typing and the
   no-tool-used reply fallback. Chat sessions never expire by default.
-  Replaces P131 §5.
+  Replaces P131 §5. Same-day follow-up: `bot_activity` removed in favour
+  of a write-once `outcome` on event rows, filter misses never stored,
+  `bot_filter_test` takes a payload.
 - [x] [P138](p138-model-facing-ids.md) — model-facing ids (implemented
   2026-08-26): `PromiseId` is a session counter (`promise_7`) numbered by
   executors from the tool batch's `promise_id_base` and checked by the

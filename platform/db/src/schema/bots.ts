@@ -193,6 +193,12 @@ export const botTriggers = pgTable(
      */
     sessionTtlMs: integer("session_ttl_ms"),
     enabled: boolean("enabled").default(true).notNull(),
+    /** Why the trigger is off: `breaker`, `poll_failed`, `one_shot`, or `operator`; null while enabled. */
+    disabledReason: text("disabled_reason"),
+    disabledAt: timestamp("disabled_at", { withTimezone: true }),
+    /** Last runtime failure of the CEL filter (fail-closed: the event was refused); cleared by the next match. */
+    lastFilterError: text("last_filter_error"),
+    lastFilterErrorAt: timestamp("last_filter_error_at", { withTimezone: true }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -250,6 +256,21 @@ export const botEvents = pgTable(
     tools: text("tools"),
     /** Private delivery-receipt route of the admitting source. */
     notify: jsonb("notify").$type<BotEventNotify>(),
+    /**
+     * What came of the event, written once when the controller finishes its
+     * delivery (or at admission for archived rows); null while pending. The
+     * model's decision (`handled` …) or the system's (`steered`, `run_failed`).
+     * Decisions themselves live in the controller's Temporal history; this is
+     * the read model.
+     */
+    outcome: text("outcome"),
+    /** One line: the model's summary, or the failure. */
+    outcomeDetail: text("outcome_detail"),
+    /** The delivery (single event or coalesced batch) this event went out in. */
+    deliveryId: text("delivery_id"),
+    /** The session run that handled it; null for steered / appended / archived. */
+    runId: text("run_id"),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     receivedAt: createdAt(),
   },
   (t) => [
@@ -259,23 +280,6 @@ export const botEvents = pgTable(
   ],
 );
 
-/** Event-to-decision-to-run trace written by the bot controller. */
-export const botActivity = pgTable(
-  "bot_activity",
-  {
-    id: uuid("id").primaryKey().defaultRandom(),
-    botId: uuid("bot_id")
-      .notNull()
-      .references(() => bots.id, { onDelete: "cascade" }),
-    kind: text("kind").notNull(),
-    eventId: text("event_id"),
-    runId: text("run_id"),
-    detail: text("detail"),
-    createdAt: createdAt(),
-  },
-  (t) => [index("bot_activity_bot_created_idx").on(t.botId, t.createdAt)],
-);
-
 export const botsRelations = relations(bots, ({ one, many }) => ({
   universe: one(universes, {
     fields: [bots.universeId],
@@ -283,7 +287,6 @@ export const botsRelations = relations(bots, ({ one, many }) => ({
   }),
   triggers: many(botTriggers),
   events: many(botEvents),
-  activity: many(botActivity),
 }));
 
 export const botTriggersRelations = relations(botTriggers, ({ one }) => ({
@@ -296,13 +299,6 @@ export const botTriggersRelations = relations(botTriggers, ({ one }) => ({
 export const botEventsRelations = relations(botEvents, ({ one }) => ({
   bot: one(bots, {
     fields: [botEvents.botId],
-    references: [bots.id],
-  }),
-}));
-
-export const botActivityRelations = relations(botActivity, ({ one }) => ({
-  bot: one(bots, {
-    fields: [botActivity.botId],
     references: [bots.id],
   }),
 }));
