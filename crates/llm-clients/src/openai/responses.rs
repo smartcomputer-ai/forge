@@ -1013,6 +1013,9 @@ pub struct ResponseContent {
     pub r#type: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// Model-authored refusal text (`{"type": "refusal"}` parts).
+    #[serde(default)]
+    pub refusal: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

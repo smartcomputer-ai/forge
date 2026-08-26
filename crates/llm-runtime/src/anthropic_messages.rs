@@ -30,9 +30,12 @@ use crate::{
     blob_io::{put_json, put_text, read_json, read_text},
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
-    params::{anthropic_messages_params, anthropic_thinking_from_effort},
+    params::{
+        anthropic_messages_params, anthropic_thinking_from_effort,
+        default_anthropic_thinking_display,
+    },
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::LlmGenerationExecution,
+    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
     },
@@ -49,12 +52,27 @@ pub const ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND: &str = "anthropic.mess
 const MEDIA_TYPE_JSON: &str = "application/json";
 const MEDIA_TYPE_TEXT: &str = "text/plain";
 
-/// Anthropic requires `max_tokens`; used when the session sets no
-/// `output_limit`.
-const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
-/// Output budget for summarization-based compaction when the task carries no
+/// Anthropic requires `max_tokens` on every request (OpenAI's equivalents
+/// are optional and omitted); used when the session sets no `output_limit`.
+/// Thinking counts toward this cap, so a cap sized for a bare answer
+/// truncates turns on models that reason before answering. 32K is within
+/// every current model's output ceiling; the session's `maxOutputTokens` is
+/// the knob for tighter bounds.
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_768;
+/// Summary budget for summarization-based compaction when the task carries no
 /// `target_tokens`.
 const DEFAULT_COMPACTION_MAX_TOKENS: u64 = 2048;
+/// Room above the summary budget for the thinking that precedes it. Models
+/// that think by default (Claude Opus 5) would otherwise spend a tight
+/// summary cap on reasoning and return a truncated or empty summary; the
+/// instruction still bounds the summary itself.
+const COMPACTION_THINKING_HEADROOM_TOKENS: u64 = 4096;
+/// Preview for a thinking block whose summary the provider withheld (an
+/// `omitted` display); clients hide this marker like other opaque state.
+const OMITTED_THINKING_PREVIEW: &str = "reasoning state";
+/// Preview for a `redacted_thinking` block: the provider flagged the
+/// reasoning and returns only encrypted data.
+const REDACTED_THINKING_PREVIEW: &str = "redacted thinking";
 
 const COMPACTION_INSTRUCTION: &str = "Summarize the conversation above for context compaction. \
 Capture the user's goals, decisions made, work completed, important tool results, and open \
@@ -214,13 +232,15 @@ pub async fn materialize_create_request(
     // params body already sets.
     if let Some(effort) = request.reasoning_effort.as_deref() {
         let derived = anthropic_thinking_from_effort(effort)?;
-        if params.thinking.is_none()
-            && params.output_config.is_none()
-            && let Some((thinking, output_config)) = derived
-        {
-            params.thinking = Some(thinking);
-            params.output_config = Some(output_config);
+        if params.thinking.is_none() && params.output_config.is_none() {
+            params.thinking = Some(derived.thinking);
+            params.output_config = derived.output_config;
         }
+    }
+    // Reasoning entries only carry text when the request asks for the
+    // summary; current models omit it unless told otherwise.
+    if let Some(thinking) = params.thinking.as_mut() {
+        default_anthropic_thinking_display(thinking);
     }
     if request.provider_response_id.is_some() {
         return Err(LlmAdapterError::InvalidProviderRequest {
@@ -310,12 +330,13 @@ pub async fn materialize_compact_request(
     messages.push(am::MessageParam::user(compaction_instruction(
         task.target_tokens,
     )));
+    let summary_tokens = task
+        .target_tokens
+        .map(u64::from)
+        .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS);
     Ok(am::CreateMessageRequest {
         model: task.model.model.clone(),
-        max_tokens: task
-            .target_tokens
-            .map(u64::from)
-            .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS),
+        max_tokens: summary_tokens + COMPACTION_THINKING_HEADROOM_TOKENS,
         messages,
         system: None,
         metadata: None,
@@ -858,6 +879,10 @@ pub async fn result_from_response(
     request: &LlmGenerationRequest,
     response: &ApiResponse<am::Message>,
 ) -> LlmAdapterResult<LlmGenerationResult> {
+    if response.parsed.stop_reason == Some(am::StopReason::Refusal) {
+        return refused_generation_result(blobs, request, response).await;
+    }
+
     let mut context_entries = Vec::new();
     let mut tool_calls = Vec::new();
 
@@ -894,18 +919,99 @@ pub async fn result_from_response(
                 tokens: u64_to_u32(tokens),
                 quality: TokenEstimateQuality::ProviderCounted,
             });
+    let finish = finish_reason(response.parsed.stop_reason, !tool_calls.is_empty());
+    // A turn cut off at `max_tokens` fails, keeping the partial text the
+    // user can see; tool calls from an unfinished turn have nothing to
+    // replay against and are dropped with the unfinished thinking.
+    let (status, failure_ref, context_entries, tool_calls) = if finish == LlmFinish::Length {
+        let failure_ref = put_text(
+            blobs,
+            truncation_failure_text(
+                request.run_id,
+                request.turn_id,
+                "Anthropic Messages",
+                &response.parsed.id,
+                Some(
+                    request
+                        .request
+                        .output_limit
+                        .map(u64::from)
+                        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
+                ),
+                usage.as_ref().and_then(|usage| usage.output_tokens),
+                usage.as_ref().and_then(|usage| usage.reasoning_tokens),
+            ),
+        )
+        .await?;
+        (
+            LlmGenerationStatus::Failed,
+            Some(failure_ref),
+            partial_output_entries(context_entries),
+            Vec::new(),
+        )
+    } else {
+        (
+            LlmGenerationStatus::Succeeded,
+            None,
+            context_entries,
+            tool_calls,
+        )
+    };
     Ok(LlmGenerationResult {
         run_id: request.run_id,
         turn_id: request.turn_id,
-        status: LlmGenerationStatus::Succeeded,
-        failure_ref: None,
+        status,
+        failure_ref,
         context_entries,
         facts: LlmGenerationFacts {
             provider_response_id: Some(response.parsed.id.clone()),
-            finish: finish_reason(response.parsed.stop_reason, !tool_calls.is_empty()),
+            finish,
             usage,
             tool_calls,
             context_token_estimate,
+        },
+    })
+}
+
+/// A `refusal` stop is terminal for the turn: the provider's safety
+/// classifier declined the request (HTTP 200 with no or partial content).
+/// The turn fails with the classifier's category and explanation instead of
+/// completing as an empty answer, any partial content is dropped, and nothing
+/// falls back to another model. The failure text follows the worker's
+/// provider-error blob layout so clients render it the same way.
+async fn refused_generation_result(
+    blobs: &dyn BlobStore,
+    request: &LlmGenerationRequest,
+    response: &ApiResponse<am::Message>,
+) -> LlmAdapterResult<LlmGenerationResult> {
+    let details = response.parsed.stop_details.as_ref();
+    let category = details
+        .and_then(|details| details.category.as_deref())
+        .unwrap_or("unspecified");
+    let explanation = details
+        .and_then(|details| details.explanation.as_deref())
+        .unwrap_or("no explanation provided");
+    let failure_ref = put_text(
+        blobs,
+        format!(
+            "core agent LLM generation failed\nrun_id={}\nturn_id={}\n\
+             error=Anthropic refused response {} (category: {category}): {explanation}\n",
+            request.run_id, request.turn_id, response.parsed.id
+        ),
+    )
+    .await?;
+    Ok(LlmGenerationResult {
+        run_id: request.run_id,
+        turn_id: request.turn_id,
+        status: LlmGenerationStatus::Failed,
+        failure_ref: Some(failure_ref),
+        context_entries: Vec::new(),
+        facts: LlmGenerationFacts {
+            provider_response_id: Some(response.parsed.id.clone()),
+            finish: LlmFinish::ContentFilter,
+            usage: response.parsed.usage.as_ref().map(llm_usage),
+            tool_calls: Vec::new(),
+            context_token_estimate: None,
         },
     })
 }
@@ -918,10 +1024,31 @@ pub async fn result_from_compact_response(
     let summary = response.parsed.output_text();
     let summary = summary.trim();
     if summary.is_empty() {
+        let block_types = response
+            .parsed
+            .content
+            .iter()
+            .map(|block| block.r#type.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(LlmAdapterError::InvalidProviderRequest {
             message: format!(
-                "Anthropic Messages compaction response {} did not include summary text",
-                response.parsed.id
+                "Anthropic Messages compaction response {} did not include summary text \
+                 (stop_reason: {:?}, stop_details: {:?}, blocks: [{block_types}], \
+                 output_tokens: {:?}, thinking_tokens: {:?})",
+                response.parsed.id,
+                response.parsed.stop_reason,
+                response.parsed.stop_details,
+                response
+                    .parsed
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.output_tokens),
+                response
+                    .parsed
+                    .usage
+                    .as_ref()
+                    .and_then(am::Usage::thinking_tokens),
             ),
         });
     }
@@ -1040,12 +1167,17 @@ async fn thinking_context_entry(
     raw_block: Value,
 ) -> LlmAdapterResult<ContextEntryInput> {
     let content_ref = put_json(blobs, &raw_block).await?;
-    let preview = block
-        .thinking
-        .as_deref()
-        .filter(|thinking| !thinking.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "redacted thinking".to_owned());
+    let preview = if block.r#type == "redacted_thinking" {
+        REDACTED_THINKING_PREVIEW.to_owned()
+    } else {
+        block
+            .thinking
+            .as_deref()
+            .map(str::trim)
+            .filter(|thinking| !thinking.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| OMITTED_THINKING_PREVIEW.to_owned())
+    };
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ReasoningState,
         content_ref,
@@ -1116,7 +1248,13 @@ fn llm_usage(usage: &am::Usage) -> LlmUsage {
     LlmUsage {
         input_tokens: input_tokens.map(u64_to_u32),
         output_tokens: output_tokens.map(u64_to_u32),
-        reasoning_tokens: None,
+        // Billed thinking tokens; a subset of `output_tokens`, reported
+        // regardless of whether the summary text was returned.
+        reasoning_tokens: usage
+            .output_tokens_details
+            .as_ref()
+            .and_then(|details| details.thinking_tokens)
+            .map(u64_to_u32),
         total_tokens: match (input_tokens, output_tokens) {
             (Some(input), Some(output)) => Some(u64_to_u32(input + output)),
             _ => None,
@@ -1269,12 +1407,15 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
-        assert_eq!(value["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(
+            value["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
         assert_eq!(value["output_config"], json!({ "effort": "max" }));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn materialize_create_request_none_reasoning_effort_omits_thinking() {
+    async fn materialize_create_request_none_reasoning_effort_disables_thinking() {
         let blobs = InMemoryBlobStore::new();
         let mut request = intent_request(Vec::new());
         request.reasoning_effort = Some("none".to_string());
@@ -1284,8 +1425,70 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
-        assert!(value.get("thinking").is_none());
+        // Explicit: models that think by default would otherwise reason.
+        assert_eq!(value["thinking"], json!({ "type": "disabled" }));
         assert!(value.get("output_config").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_without_effort_sends_no_thinking_config() {
+        let blobs = InMemoryBlobStore::new();
+        let request = intent_request(Vec::new());
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert!(value.get("thinking").is_none());
+        assert_eq!(value["max_tokens"], json!(DEFAULT_MAX_OUTPUT_TOKENS));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_keeps_explicit_thinking_display() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            thinking: Some(AnthropicThinkingConfig {
+                r#type: "adaptive".to_string(),
+                budget_tokens: None,
+                display: Some("omitted".to_string()),
+                extra: BTreeMap::new(),
+            }),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(
+            value["thinking"],
+            json!({ "type": "adaptive", "display": "omitted" })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_never_adds_display_to_disabled_thinking() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            thinking: Some(AnthropicThinkingConfig {
+                r#type: "disabled".to_string(),
+                budget_tokens: None,
+                display: None,
+                extra: BTreeMap::new(),
+            }),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(value["thinking"], json!({ "type": "disabled" }));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1309,9 +1512,11 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
+        // Explicit params keep their mode and budget; the display default
+        // still fills in so the reasoning entries carry text.
         assert_eq!(
             value["thinking"],
-            json!({ "type": "enabled", "budget_tokens": 512 })
+            json!({ "type": "enabled", "budget_tokens": 512, "display": "summarized" })
         );
         assert!(value.get("output_config").is_none());
     }
@@ -1320,7 +1525,7 @@ mod tests {
     async fn materialize_create_request_rejects_unknown_reasoning_effort() {
         let blobs = InMemoryBlobStore::new();
         let mut request = intent_request(Vec::new());
-        request.reasoning_effort = Some("xhigh".to_string());
+        request.reasoning_effort = Some("ultra".to_string());
 
         let error = materialize_create_request(&blobs, &request)
             .await
@@ -1527,7 +1732,7 @@ mod tests {
                 "stop_sequences": ["<END>"],
                 "stream": false,
                 "temperature": 0.2,
-                "thinking": { "type": "enabled", "budget_tokens": 1024 },
+                "thinking": { "type": "enabled", "budget_tokens": 1024, "display": "summarized" },
                 "output_config": { "effort": "high" },
                 "tool_choice": {
                     "type": "tool",
@@ -2098,7 +2303,11 @@ mod tests {
                     "input": { "path": "Cargo.toml" }
                 }
             ],
-            "usage": { "input_tokens": 10, "output_tokens": 5 }
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "output_tokens_details": { "thinking_tokens": 3 }
+            }
         });
         let api = fake_api(raw_json);
         let adapter = Arc::new(AnthropicMessagesLlmAdapter::new(api.clone(), blobs.clone()));
@@ -2130,6 +2339,15 @@ mod tests {
                 .as_ref()
                 .and_then(|usage| usage.total_tokens),
             Some(15)
+        );
+        assert_eq!(
+            result
+                .facts
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.reasoning_tokens),
+            Some(3),
+            "billed thinking tokens must surface as reasoning tokens"
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
         assert_eq!(
@@ -2259,6 +2477,52 @@ mod tests {
         );
     }
 
+    /// An `omitted` display returns thinking blocks with an empty summary;
+    /// they replay unchanged but preview as opaque state, never as text.
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_marks_omitted_thinking_as_opaque_reasoning_state() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "sig_1" },
+                { "type": "text", "text": "42" }
+            ]
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::ReasoningState
+        ));
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("reasoning state")
+        );
+        let replayed = read_json(&blobs, &result.context_entries[0].content_ref)
+            .await
+            .expect("raw block");
+        assert_eq!(replayed["signature"], "sig_1");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn result_captures_server_tool_blocks_as_provider_opaque_context() {
         let blobs = InMemoryBlobStore::new();
@@ -2317,12 +2581,148 @@ mod tests {
         assert_eq!(result.facts.finish, LlmFinish::Stop);
     }
 
+    /// A `max_tokens` cut-off fails the turn but keeps the partial text; the
+    /// unfinished thinking and the tool call (no result to replay against)
+    /// are dropped, and the failure names the cap and the spend.
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_fails_the_turn_on_truncation_but_keeps_partial_text() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_cut",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "max_tokens",
+            "content": [
+                { "type": "thinking", "thinking": "Half a thought", "signature": "sig" },
+                { "type": "text", "text": "The bicycle was" },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "read_file",
+                    "input": { "path": "Cargo.toml" }
+                }
+            ],
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 64,
+                "output_tokens_details": { "thinking_tokens": 40 }
+            }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(2),
+            turn_id: TurnId::new(5),
+            request: {
+                let mut request = intent_request(Vec::new());
+                request.output_limit = Some(64);
+                request
+            },
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::Length);
+        assert!(result.facts.tool_calls.is_empty(), "no tool call may run");
+        assert_eq!(
+            result.context_entries.len(),
+            1,
+            "{:?}",
+            result.context_entries
+        );
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("The bicycle was")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(failure.contains("run_id=2"), "{failure}");
+        assert!(failure.contains("turn_id=5"), "{failure}");
+        assert!(
+            failure
+                .contains("cut off at max output tokens 64 after 64 output tokens (40 thinking)"),
+            "{failure}"
+        );
+        assert!(failure.contains("partial output is kept"), "{failure}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_fails_the_turn_on_refusal() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_refused",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "refusal",
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "This request triggered restrictions on violative cyber content."
+            },
+            "content": [{ "type": "text", "text": "partial" }],
+            "usage": { "input_tokens": 20, "output_tokens": 0 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(3),
+            turn_id: TurnId::new(7),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::ContentFilter);
+        assert!(
+            result.context_entries.is_empty(),
+            "partial content must not land in the session log"
+        );
+        assert_eq!(
+            result.facts.provider_response_id.as_deref(),
+            Some("msg_refused")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(failure.contains("run_id=3"), "{failure}");
+        assert!(failure.contains("turn_id=7"), "{failure}");
+        assert!(failure.contains("(category: cyber)"), "{failure}");
+        assert!(
+            failure.contains("violative cyber content"),
+            "the classifier explanation must reach the failure: {failure}"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn result_maps_stop_reasons_to_finish() {
         for (stop_reason, expected) in [
             ("end_turn", LlmFinish::Stop),
             ("max_tokens", LlmFinish::Length),
-            ("refusal", LlmFinish::ContentFilter),
             ("model_context_window", LlmFinish::ContextLimit),
             ("pause_turn", LlmFinish::Unknown),
         ] {
@@ -2422,7 +2822,11 @@ mod tests {
         assert_eq!(seen.len(), 1);
         let request_json = serde_json::to_value(&seen[0]).expect("request json");
         assert_eq!(request_json["model"], "claude-opus-4-8");
-        assert_eq!(request_json["max_tokens"], 128);
+        // The cap leaves room for thinking above the summary budget.
+        assert_eq!(
+            request_json["max_tokens"],
+            128 + COMPACTION_THINKING_HEADROOM_TOKENS
+        );
         let messages = request_json["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 2);
         let instruction = messages[1]["content"].as_str().expect("instruction text");

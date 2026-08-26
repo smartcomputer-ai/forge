@@ -30,7 +30,7 @@ use support::{
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
         .or_else(|_| env_or_dotenv_var("ANTHROPIC_LIVE_MODEL"))
-        .unwrap_or_else(|_| "claude-opus-4-8".to_string())
+        .unwrap_or_else(|_| "claude-opus-5".to_string())
 }
 
 fn live_client() -> Client {
@@ -188,7 +188,7 @@ fn intent_request(
         },
         tools: Vec::new(),
         tool_choice: None,
-        output_limit: Some(256),
+        output_limit: Some(2048),
         reasoning_effort: None,
         parallel_tool_use: None,
         processing_tier: None,

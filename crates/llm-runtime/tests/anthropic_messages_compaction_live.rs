@@ -31,7 +31,7 @@ const LIVE_MARKER: &str = "LIGHTSPEED-ANTHROPIC-COMPACTION-LIVE-4217";
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
         .or_else(|_| env_or_dotenv_var("ANTHROPIC_LIVE_MODEL"))
-        .unwrap_or_else(|_| "claude-opus-4-8".to_string())
+        .unwrap_or_else(|_| "claude-opus-5".to_string())
 }
 
 fn live_client() -> Client {
@@ -110,12 +110,18 @@ async fn anthropic_messages_live_manual_standalone_compaction_preserves_marker()
         .await
         .expect("open session");
 
+    // Keep this note short and plain. Claude Opus 5's real-time cyber
+    // safeguard refused a three-sentence "Project kickoff notes: ..." version
+    // of it (stop_reason `refusal`, category `cyber`, zero output) whatever
+    // the subject — deployment pipeline or spring newsletter — while this
+    // shape passes consistently; that is a classifier decision, not the
+    // compaction behavior this test is about.
     let context_ref = store_anthropic_raw_message(
         blobs.as_ref(),
         &format!(
-            "Project kickoff notes: we are wiring the deployment pipeline this week. \
-             The release codename for this rollout is {LIVE_MARKER}; the ops team uses it \
-             to tag every artifact. We also decided to store session logs in Postgres."
+            "Remember this working title for the spring newsletter: {LIVE_MARKER}. \
+             We will need it later in the project. We also decided to keep the meeting \
+             notes in Postgres."
         ),
     )
     .await;
@@ -347,7 +353,7 @@ fn standalone_session_config(
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
-            max_output_tokens: Some(256),
+            max_output_tokens: Some(2048),
             reasoning_effort: None,
             tool_choice: None,
             parallel_tool_use: None,

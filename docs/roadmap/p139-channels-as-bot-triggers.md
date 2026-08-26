@@ -29,6 +29,12 @@
      `notify` field on the event, not a second variant of P135's `replyTo`
      (Lukas, same day): `replyTo` stays "a bot inbox through admission",
      `notify` is "a workflow endpoint through a signal".
+  8. Message handles reviewed against [P138](p138-model-facing-ids.md)
+     (same day, Lukas asked for a philosophical check): Channels hands
+     the model provider message ids — WhatsApp's are 16–32 hex — and
+     prints the chat JID in every envelope. Decided to simplify now
+     rather than later: handles are the bot's `#N` in both directions
+     (§4b), no provider id or JID in front of the model.
 - Builds on P100/P100b/P106 (workflow tools, emissions, receivers),
   P103 (managed sessions), P130 (admission pipeline, routed sessions,
   coalescing, delivery policies), P135 (receipts), P136 (catalogs),
@@ -157,10 +163,12 @@ coalesce → delivery policy → store-then-wake) with:
   `data: { conversation: { key, provider, chatId, threadId?, scope }, sender:
   { id, name, memberRole }, messageId, text, isDirect, mentionedBot,
   isReplyToBot, media: [{ kind, mime, name }] }`.
-- `promptData`: the chat preset projection — exactly today's envelope line,
-  `[telegram:dm #<messageId>] Alice (2026-08-26 14:02Z): text`, followed by
-  `[image: photo.jpg]` labels — so the provider message id the model needs
-  for `replyTo` survives the generic renderer.
+- `promptData`: the chat preset projection — `Alice (2026-08-26 14:02Z):
+  text`, followed by `[image: photo.jpg]` labels, under the renderer's own
+  `event #17 chat.message from telegram:acme-support` header. No provider
+  message id and no chat JID in front of the model: `#17` is the handle
+  (§4b); `chatId`, `messageId`, and `threadId` stay opaque provider data
+  in `data`, reachable by filters and `bot_event_read`.
 - `media`: the prepared `{ blobRef, kind, mime, name }` items (§7).
 - `tools`: the CAS ref of the receiver-bound declarations (§4).
 - `notify`: this workflow's endpoint and a token for delivery receipts (§5).
@@ -196,6 +204,38 @@ authors the declarations and bots pastes them in:
 `BotEvent` (the Temporal inbox value) gains `tools?: string` (blob ref) and
 `media?: […]` (≤ 8 small refs); `bot_events` stores both so replay
 re-creates the same session shape.
+
+### 4b. Message handles are `#N` in both directions
+
+Channels today hands the model *provider* message ids as the copy-back
+handle — `replyTo`, `message_edit.messageId`, `message_react.messageId`,
+and the send receipt's `messageIds`. Telegram's are small integers;
+WhatsApp's are 16–32 uppercase hex, exactly the digest shape
+[P138](p138-model-facing-ids.md) removes elsewhere, and the bots
+tool-views test would reject them in a rendering. Provider ids also carry
+no direction, which is why WhatsApp `message_react` hard-codes
+`fromMe: false` and cannot react to the bot's own message.
+
+The fix follows P138's rule — the model copies counters, the conversation
+workflow owns the mapping — and reuses the number the bot already has:
+
+- **Inbound**: one message is one event, so the bot's `#N` is the handle.
+  Admission returns `seq`; the conversation workflow records `#N →
+  { providerMessageId, fromMe: false }` in its bounded carry (today's
+  `replyTargets`, re-keyed).
+- **Outbound**: the bot's own send is stored as an archived `chat.sent`
+  event on the same bot — `deliver: false`, like a filtered event: in the
+  log with a `#N`, never delivered — carrying the text, the provider ids
+  (several for a chunked send), and `fromMe: true`. The send receipt is
+  `{ sent: 18 }`. The bot's event log thereby reads as the whole
+  conversation ledger, and `bot_event_read 18` works on sends too.
+- **Tools**: `message_send { text, replyTo?: integer }`, `message_edit
+  { message: integer, text }`, `message_react { message: integer, emoji }`.
+  The workflow resolves the handle to the provider id and direction; an
+  unknown handle is a typed, retryable tool error naming the valid range.
+
+One namespace per bot: `replyTo: 17`, `bot_event_read 17`, the event log,
+and the web UI all mean the same message.
 
 ### 5. Receipts and the reply fallback
 
@@ -270,9 +310,10 @@ does through the channel session now. Outbound stays text (`send`, `edit`,
 - `notify` receipts are signals with a token, never events; `replyTo`
   receipts are events through admission, never signals. They are
   sent by the controller when the lane changes state, never by the model.
-- Model-facing ids stay P138-clean: the model sees `#N`, provider message
-  ids inside the envelope line, and `message_send { text, replyTo }`; never
-  a session id, workflow id, or route hash.
+- Model-facing ids stay P138-clean: the model sees `#N` for every message,
+  inbound and sent, and `message_send { text, replyTo: 17 }`; never a
+  provider message id, chat JID, session id, workflow id, or route hash.
+  The conversation workflow owns the handle → provider id mapping.
 
 ### 9. What `silent` would take (not in v1)
 
@@ -299,8 +340,9 @@ session's context unbounded today. Lands when someone wants silent rooms.
    CRUD and `bot_trigger_put`, validation: `perKey`/`perEvent` only,
    pairing-code mint), `sessionTtlMs` on all kinds, `channel_pairings` →
    `triggerId`, delete `channel_bindings` and the bindings API. `BotEvent`
-   / `bot_events` gain `media`, `tools`, and `notify`. One migration;
-   platform schema revision bump.
+   / `bot_events` gain `media`, `tools`, and `notify`; `storeBotEvent`
+   accepts archived `chat.sent` rows from the conversation workflow
+   (§4b). One migration; platform schema revision bump.
 2. **Bots generic pieces.** `ensureRoutedSession` merges carried
    declarations; `deliveryInputItems`/`steerInputItems` append media;
    endpoint receipts `started`/`finished` from the lane; implicit
@@ -310,7 +352,10 @@ session's context unbounded today. Lands when someone wants silent rooms.
 3. **Conversation workflow.** Rename and cut `channelSessionWorkflowV1`;
    control plane over `chat` triggers; `emitChatEvent` activity into
    `@lightspeed/bots` admission; receipt signal handler with the existing
-   fallback; accepted-session set for invocations. Integration scenario
+   fallback; accepted-session set for invocations; `#N` handle map in the
+   carry, integer `replyTo`/`message` in the `message_*` schemas
+   (revision 2), `chat.sent` rows on every delivered send, and the
+   WhatsApp react/edit key taking `fromMe` from the handle. Integration scenario
    (fake delivery): pair, turn → event, `message_send` reply, fallback
    text on a tool-less run, media items on the run input.
 4. **UI and follow-ups.** Chat trigger form on the bot page (account,
@@ -322,8 +367,9 @@ session's context unbounded today. Lands when someone wants silent rooms.
 ## Tests
 
 - **Unit** (`platform/bots/test`): chat event id determinism; the chat
-  preset rendering keeps the provider message id and media labels and
-  passes the no-digest/no-uuid assertion; carried-declaration merge
+  preset rendering shows sender, time, text, and media labels, no provider
+  id or JID, and passes the no-digest/no-uuid assertion over Telegram and
+  WhatsApp fixtures (including a `chat.sent` row); carried-declaration merge
   (collision refused, identical ref accepted); receipt payloads per
   finish status; TTL override resolution.
 - **Unit** (`platform/channels/test`): control-plane selection over chat

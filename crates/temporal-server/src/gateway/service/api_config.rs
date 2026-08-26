@@ -305,16 +305,17 @@ pub(super) fn apply_run_limits_config(run_config: &mut RunConfig, limits: RunLim
 
 /// Known reasoning effort tiers per provider api kind. Enforced at the
 /// admission boundary so typos fail the put/run request, not the first
-/// generation; the runtime adapters validate again when materializing.
+/// generation; the vocabulary is the runtime adapters' own so admission
+/// never accepts a tier the adapter rejects (or the reverse).
 pub(super) fn validate_reasoning_effort(
     api_kind: &ProviderApiKind,
     effort: &str,
 ) -> Result<(), AgentApiError> {
     let supported: &[&str] = match api_kind {
-        ProviderApiKind::OpenAiResponses => &["none", "low", "medium", "high", "xhigh"],
-        ProviderApiKind::AnthropicMessages => &["none", "low", "medium", "high", "max"],
+        ProviderApiKind::OpenAiResponses => llm_runtime::params::OPENAI_REASONING_EFFORT_TIERS,
+        ProviderApiKind::AnthropicMessages => llm_runtime::params::ANTHROPIC_REASONING_EFFORT_TIERS,
         ProviderApiKind::OpenAiCompletions => {
-            &["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            llm_runtime::params::OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS
         }
     };
     if supported.contains(&effort) {
@@ -383,5 +384,38 @@ mod tests {
     #[test]
     fn completions_rejects_unknown_reasoning_effort() {
         assert!(validate_reasoning_effort(&ProviderApiKind::OpenAiCompletions, "ultra").is_err());
+    }
+
+    #[test]
+    fn anthropic_accepts_current_effort_vocabulary_including_xhigh() {
+        for effort in ["none", "low", "medium", "high", "xhigh", "max"] {
+            validate_reasoning_effort(&ProviderApiKind::AnthropicMessages, effort)
+                .unwrap_or_else(|error| panic!("{effort} should be supported: {error}"));
+        }
+        assert!(validate_reasoning_effort(&ProviderApiKind::AnthropicMessages, "minimal").is_err());
+    }
+
+    #[test]
+    fn admission_effort_vocabulary_matches_runtime_adapters() {
+        for (api_kind, tiers) in [
+            (
+                ProviderApiKind::OpenAiResponses,
+                llm_runtime::params::OPENAI_REASONING_EFFORT_TIERS,
+            ),
+            (
+                ProviderApiKind::AnthropicMessages,
+                llm_runtime::params::ANTHROPIC_REASONING_EFFORT_TIERS,
+            ),
+            (
+                ProviderApiKind::OpenAiCompletions,
+                llm_runtime::params::OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS,
+            ),
+        ] {
+            for effort in tiers {
+                validate_reasoning_effort(&api_kind, effort)
+                    .unwrap_or_else(|error| panic!("{api_kind:?} {effort}: {error}"));
+            }
+            assert!(validate_reasoning_effort(&api_kind, "ultra").is_err());
+        }
     }
 }

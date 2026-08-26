@@ -33,7 +33,7 @@ const LIVE_PROMPT_MARKER: &str = "LIVE-ANTHROPIC-PROMPT-AXIS-4217";
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
         .or_else(|_| env_or_dotenv_var("ANTHROPIC_LIVE_MODEL"))
-        .unwrap_or_else(|_| "claude-opus-4-8".to_string())
+        .unwrap_or_else(|_| "claude-opus-5".to_string())
 }
 
 fn live_client() -> Client {
@@ -342,7 +342,7 @@ fn session_config(model: ModelSelection, workspace_links: Vec<WorkspaceLink>) ->
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
-            max_output_tokens: Some(1024),
+            max_output_tokens: Some(4096),
             reasoning_effort: None,
             tool_choice: None,
             parallel_tool_use: None,

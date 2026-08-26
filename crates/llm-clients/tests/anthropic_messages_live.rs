@@ -1,7 +1,7 @@
 use llm_clients::ProviderFailureKind;
 use llm_clients::anthropic::messages::{
     API_KIND, Client, Config, CountTokensRequest, CreateMessageRequest, StopReason, Thinking, Tool,
-    ToolChoice, ToolDefinition,
+    ToolChoice, ToolDefinition, Usage,
 };
 use serde_json::json;
 
@@ -12,7 +12,7 @@ use support::{env_or_dotenv_var, required_env_or_dotenv_var};
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
         .or_else(|_| env_or_dotenv_var("ANTHROPIC_LIVE_MODEL"))
-        .unwrap_or_else(|_| "claude-sonnet-4-5".to_string())
+        .unwrap_or_else(|_| "claude-opus-5".to_string())
 }
 
 fn live_client() -> Client {
@@ -64,7 +64,7 @@ async fn anthropic_messages_live_create_text() {
     let request = CreateMessageRequest::user_text(
         live_model(),
         "Reply with exactly these two words: library messages",
-        64,
+        1024,
     );
 
     let response = client.create(request).await.expect("create message");
@@ -98,7 +98,7 @@ async fn anthropic_messages_live_create_text() {
 async fn anthropic_messages_live_stream_text() {
     let client = live_client();
     let request =
-        CreateMessageRequest::user_text(live_model(), "Reply with exactly: streaming ok", 64);
+        CreateMessageRequest::user_text(live_model(), "Reply with exactly: streaming ok", 1024);
     let mut stream = client.stream(request).await.expect("stream message");
 
     let mut saw_delta = false;
@@ -136,7 +136,7 @@ async fn anthropic_messages_live_forced_tool_use() {
     let mut request = CreateMessageRequest::user_text(
         live_model(),
         "Call get_weather for Zurich. Do not answer in natural language.",
-        256,
+        2048,
     );
     request.tools = Some(vec![Tool::Custom(tool)]);
     request.tool_choice = Some(ToolChoice::tool("get_weather"));
@@ -183,21 +183,53 @@ async fn anthropic_messages_live_thinking() {
     let client = live_client();
     let mut request = CreateMessageRequest::user_text(
         live_model(),
-        "What is 17 + 25? Answer with the final number.",
-        1200,
+        "Compute 13 * 17 and 29 * 31, then their sum. Think it through carefully, \
+         then answer with just the final number.",
+        4096,
     );
-    request.thinking = Some(Thinking::enabled(1024));
+    // Current models omit the summary text unless asked for it.
+    request.thinking = Some(Thinking::adaptive().with_display("summarized"));
+    request.output_config = Some(json!({ "effort": "high" }));
 
     let response = client.create(request).await.expect("thinking message");
 
+    let summaries = response
+        .parsed
+        .thinking_blocks()
+        .filter_map(|block| block.thinking.as_deref())
+        .map(str::trim)
+        .filter(|thinking| !thinking.is_empty())
+        .collect::<Vec<_>>();
     assert!(
-        response.parsed.thinking_blocks().next().is_some(),
-        "expected a thinking block, got {:?}",
+        !summaries.is_empty(),
+        "expected a thinking block with summarized text, got {:?}",
         response.parsed.content
     );
     assert!(
-        response.parsed.output_text().contains("42"),
-        "expected final answer text to contain 42, got {:?}",
+        response.parsed.thinking_blocks().all(|block| {
+            block.r#type == "redacted_thinking"
+                || block
+                    .signature
+                    .as_deref()
+                    .is_some_and(|signature| !signature.is_empty())
+        }),
+        "every thinking block must carry the signature replay needs, got {:?}",
+        response.parsed.content
+    );
+    assert!(
+        response
+            .parsed
+            .usage
+            .as_ref()
+            .and_then(Usage::thinking_tokens)
+            .unwrap_or_default()
+            > 0,
+        "expected billed thinking tokens in usage, got {:?}",
+        response.parsed.usage
+    );
+    assert!(
+        response.parsed.output_text().contains("1120"),
+        "expected final answer text to contain 1120, got {:?}",
         response.parsed.content
     );
 }

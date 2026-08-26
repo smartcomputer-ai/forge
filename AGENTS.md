@@ -88,7 +88,7 @@ cargo test -p temporal-server --test environment_provider_live temporal_live_env
 ```
 
 `temporal_live_slow` holds live tests that wait out production activity
-budgets (the LLM schedule-to-close test takes ~17 minutes); run it on its own,
+budgets (the LLM schedule-to-close test takes ~30 minutes); run it on its own,
 never as part of a routine live pass:
 
 ```bash
@@ -335,6 +335,25 @@ Release construction, snapshots, and tagged publication are documented in
   can. Usage, including cache reads and writes, is on `RunView.usage` and
   `turnGenerationCompleted`; the LLM activity warns when a large prompt
   misses right after a hit.
+- Anthropic thinking must stay visible: the adapter derives adaptive thinking
+  with `display: summarized` from `reasoningEffort` (current models omit the
+  summary by default, which leaves every reasoning entry blank), maps
+  `reasoningEffort: none` to `thinking: disabled` (Claude Opus 5 thinks when
+  a request carries no thinking config), accepts `xhigh`, and surfaces
+  `output_tokens_details.thinking_tokens` as `reasoning_tokens`. Thinking
+  counts toward `max_tokens`, so the adapter's default output cap and the
+  compaction cap leave room for it. A content-filter stop on any provider
+  (an Anthropic `refusal`, an OpenAI `content_filter`) fails the turn — the
+  engine maps `LlmFinish::ContentFilter` to a failed turn and the adapters
+  attach the provider's category/explanation — never an empty "successful"
+  answer, and never a server-side fallback to another model. A cut-off at
+  the output cap (`LlmFinish::Length`) fails the turn the same way but keeps
+  the assistant's partial text in the log; tool calls without results and
+  unfinished thinking are dropped because they are not replay-safe. Live
+  coverage lives in
+  `crates/llm-runtime/tests/anthropic_messages_live.rs` (thinking replay and
+  the thinking-through-tools round trip, default model `claude-opus-5`);
+  keep those asserting on summary text, not just block presence.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry

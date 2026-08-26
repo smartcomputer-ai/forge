@@ -34,7 +34,7 @@ use temporal_workflow::{LLM_SCHEDULE_TO_CLOSE, LLM_START_TO_CLOSE};
 use temporalio_client::{Client, WorkflowDescribeOptions, WorkflowTerminateOptions};
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires ./dev.sh infra; slow: waits out the full LLM schedule-to-close budget (~15 minutes)"]
+#[ignore = "requires ./dev.sh infra; slow: waits out the full LLM schedule-to-close budget (~21 minutes)"]
 async fn temporal_live_llm_activity_timeout_fails_the_run_not_the_session() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();

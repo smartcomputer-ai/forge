@@ -45,7 +45,7 @@ use tools::{
 
 const CASES_ROOT: &str = "crates/eval/cases";
 const DEFAULT_OPENAI_MODEL: &str = "gpt-5.5";
-const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-4-8";
+const DEFAULT_ANTHROPIC_MODEL: &str = "claude-opus-5";
 const DEFAULT_PROVIDER_ID: &str = "openai";
 const EVAL_INSTRUCTIONS: &str = "\
 You are running inside the Lightspeed agent eval harness.

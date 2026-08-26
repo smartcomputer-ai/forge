@@ -526,14 +526,20 @@ fn turn_outcome_for_generation_result(result: &LlmGenerationResult) -> TurnOutco
             LlmFinish::ToolCalls => TurnOutcome::ToolCallsQueued,
             LlmFinish::ContextLimit => TurnOutcome::ContextUpdateRequired,
             LlmFinish::Cancelled => TurnOutcome::Cancelled,
-            LlmFinish::Failed => TurnOutcome::Failed {
-                failure_ref: result.failure_ref.clone(),
-            },
-            LlmFinish::Stop | LlmFinish::Length | LlmFinish::ContentFilter | LlmFinish::Unknown => {
-                TurnOutcome::FinalOutput {
-                    output_ref: final_output_ref(&result.context_entries),
+            // A content filter (a provider refusal) and an output-cap cut-off
+            // are terminal for the turn: the provider did not finish serving
+            // the request, so the run fails with the adapter's reason instead
+            // of completing as an empty or partial answer. The result's
+            // context entries (a truncated turn's partial text) are still
+            // applied above, so the user sees what was produced.
+            LlmFinish::Failed | LlmFinish::ContentFilter | LlmFinish::Length => {
+                TurnOutcome::Failed {
+                    failure_ref: result.failure_ref.clone(),
                 }
             }
+            LlmFinish::Stop | LlmFinish::Unknown => TurnOutcome::FinalOutput {
+                output_ref: final_output_ref(&result.context_entries),
+            },
         },
     }
 }
@@ -4900,6 +4906,160 @@ mod tests {
             }
             commit_action(&mut drive, action);
         }
+    }
+
+    /// A provider content filter (an Anthropic `refusal`, an OpenAI
+    /// `content_filter` stop) fails the run like a model failure instead of
+    /// completing it with an empty answer; the adapter's failure text rides
+    /// along as the run failure message.
+    /// An output-cap cut-off fails the run like a model failure, but the
+    /// partial text the adapter kept is still applied to the context so the
+    /// user sees what was produced before the cut.
+    #[test]
+    fn length_finish_fails_run_but_keeps_partial_output() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let open = drive
+            .admit_command(CoreAgentCommand::OpenSession { config: config() }, 10)
+            .expect("open");
+        commit_action(&mut drive, open);
+        let request = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .expect("request run");
+        commit_action(&mut drive, request);
+
+        let llm_request = loop {
+            let action = drive.next_action(21, 8).expect("next");
+            if let CoreAgentAction::GenerateLlm { request } = action {
+                break request;
+            }
+            commit_action(&mut drive, action);
+        };
+        let partial_ref = BlobRef::from_bytes(b"The bicycle was");
+        let failure_ref = BlobRef::from_bytes(b"cut off at max output tokens 48");
+        let resumed = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: llm_request.run_id,
+                    turn_id: llm_request.turn_id,
+                    status: LlmGenerationStatus::Failed,
+                    failure_ref: Some(failure_ref.clone()),
+                    context_entries: vec![message_input(
+                        ContextMessageRole::Assistant,
+                        partial_ref.clone(),
+                    )],
+                    facts: LlmGenerationFacts {
+                        provider_response_id: Some("msg_cut".to_owned()),
+                        finish: LlmFinish::Length,
+                        usage: None,
+                        tool_calls: Vec::new(),
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .expect("resume truncated generation");
+        commit_action(&mut drive, resumed);
+
+        let fail_run = drive.next_action(31, 8).expect("fail run");
+        let entries = commit_action(&mut drive, fail_run);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::Run(crate::RunEvent::Failed { .. })
+        ));
+        let completed = drive.state().runs.completed.last().expect("completed run");
+        assert_eq!(completed.status, RunStatus::Failed);
+        let failure = completed.failure.as_ref().expect("run failure");
+        assert_eq!(failure.kind, RunFailureKind::ModelFailure);
+        assert_eq!(failure.message_ref.as_ref(), Some(&failure_ref));
+        assert!(
+            drive
+                .state()
+                .context
+                .entries
+                .iter()
+                .any(|entry| entry.content_ref == partial_ref),
+            "the partial text must stay in the active context: {:?}",
+            drive.state().context.entries
+        );
+        assert!(matches!(
+            drive.next_action(32, 8).expect("next"),
+            CoreAgentAction::Idle
+        ));
+    }
+
+    #[test]
+    fn content_filter_finish_fails_run_like_a_model_failure() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let open = drive
+            .admit_command(CoreAgentCommand::OpenSession { config: config() }, 10)
+            .expect("open");
+        commit_action(&mut drive, open);
+        let request = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .expect("request run");
+        commit_action(&mut drive, request);
+
+        let llm_request = loop {
+            let action = drive.next_action(21, 8).expect("next");
+            if let CoreAgentAction::GenerateLlm { request } = action {
+                break request;
+            }
+            commit_action(&mut drive, action);
+        };
+        let failure_ref = BlobRef::from_bytes(b"provider refused (category: cyber)");
+        let resumed = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: llm_request.run_id,
+                    turn_id: llm_request.turn_id,
+                    status: LlmGenerationStatus::Succeeded,
+                    failure_ref: Some(failure_ref.clone()),
+                    context_entries: Vec::new(),
+                    facts: LlmGenerationFacts {
+                        provider_response_id: Some("msg_refused".to_owned()),
+                        finish: LlmFinish::ContentFilter,
+                        usage: None,
+                        tool_calls: Vec::new(),
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .expect("resume content-filtered generation");
+        commit_action(&mut drive, resumed);
+
+        let fail_run = drive.next_action(31, 8).expect("fail run");
+        let entries = commit_action(&mut drive, fail_run);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::Run(crate::RunEvent::Failed { .. })
+        ));
+        assert!(drive.state().runs.active.is_none());
+        let completed = drive.state().runs.completed.last().expect("completed run");
+        assert_eq!(completed.status, RunStatus::Failed);
+        let failure = completed.failure.as_ref().expect("run failure");
+        assert_eq!(failure.kind, RunFailureKind::ModelFailure);
+        assert_eq!(failure.message_ref.as_ref(), Some(&failure_ref));
+        assert!(matches!(
+            drive.next_action(32, 8).expect("next"),
+            CoreAgentAction::Idle
+        ));
     }
 
     #[test]

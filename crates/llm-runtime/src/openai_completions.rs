@@ -24,7 +24,7 @@ use crate::{
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
     params::{openai_completions_params, validate_openai_reasoning_effort},
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::LlmGenerationExecution,
+    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
 };
 
 pub const OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND: &str = "openai.completions.message";
@@ -978,15 +978,70 @@ pub async fn result_from_response(
             tokens: u64_to_u32(tokens),
             quality: TokenEstimateQuality::ProviderCounted,
         });
+    let finish = finish_reason(choice.finish_reason.as_deref(), !tool_calls.is_empty());
+    let (status, failure_ref, context_entries, tool_calls) = if finish == LlmFinish::ContentFilter {
+        // Same treatment as a provider refusal: the turn fails with the
+        // reason (and the model's refusal text when it sent one), partial
+        // content is dropped, and nothing falls back to another model.
+        let detail = refusal
+            .as_deref()
+            .map(|refusal| format!(": {refusal}"))
+            .unwrap_or_default();
+        let failure_ref = put_text(
+            blobs,
+            format!(
+                "core agent LLM generation failed\nrun_id={}\nturn_id={}\n\
+                 error=Chat completion {} stopped for content_filter{detail}\n",
+                request.run_id, request.turn_id, response.parsed.id
+            ),
+        )
+        .await?;
+        (
+            LlmGenerationStatus::Failed,
+            Some(failure_ref),
+            Vec::new(),
+            Vec::new(),
+        )
+    } else if finish == LlmFinish::Length {
+        // Cut off at the output cap: fail the turn but keep the partial
+        // text; tool calls from an unfinished turn have no outputs to replay
+        // against and are dropped with the reasoning state.
+        let failure_ref = put_text(
+            blobs,
+            truncation_failure_text(
+                request.run_id,
+                request.turn_id,
+                "Chat completion",
+                &response.parsed.id,
+                request.request.output_limit.map(u64::from),
+                usage.as_ref().and_then(|usage| usage.output_tokens),
+                usage.as_ref().and_then(|usage| usage.reasoning_tokens),
+            ),
+        )
+        .await?;
+        (
+            LlmGenerationStatus::Failed,
+            Some(failure_ref),
+            partial_output_entries(context_entries),
+            Vec::new(),
+        )
+    } else {
+        (
+            LlmGenerationStatus::Succeeded,
+            None,
+            context_entries,
+            tool_calls,
+        )
+    };
     Ok(LlmGenerationResult {
         run_id: request.run_id,
         turn_id: request.turn_id,
-        status: LlmGenerationStatus::Succeeded,
-        failure_ref: None,
+        status,
+        failure_ref,
         context_entries,
         facts: LlmGenerationFacts {
             provider_response_id: Some(response.parsed.id.clone()),
-            finish: finish_reason(choice.finish_reason.as_deref(), !tool_calls.is_empty()),
+            finish,
             usage,
             tool_calls,
             context_token_estimate,
@@ -2026,6 +2081,114 @@ mod tests {
         assert_eq!(
             result.context_entries[1].provider_kind.as_deref(),
             Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND)
+        );
+    }
+
+    /// A `content_filter` finish fails the turn like a provider refusal; the
+    /// model's refusal text, when present, rides along in the failure.
+    /// A `length` finish fails the turn but keeps the partial text; the
+    /// dangling tool call is dropped and the failure names the cap.
+    #[tokio::test(flavor = "current_thread")]
+    async fn length_finish_fails_the_turn_but_keeps_partial_text() {
+        let blobs = InMemoryBlobStore::new();
+        let raw = json!({
+            "id": "chatcmpl_cut",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "length",
+                "message": {
+                    "role": "assistant",
+                    "content": "The bicycle was",
+                    "tool_calls": [{
+                        "id": "call_1",
+                        "type": "function",
+                        "function": { "name": "read_file", "arguments": "{\"path\":\"Cargo.toml\"}" }
+                    }]
+                }
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 16, "total_tokens": 26 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw.clone()).expect("response"),
+            raw_json: raw,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let mut request = request(Vec::new());
+        request.output_limit = Some(16);
+
+        let result = result_from_response(&blobs, &generation_request(request), &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::Length);
+        assert!(result.facts.tool_calls.is_empty(), "no tool call may run");
+        assert_eq!(
+            result.context_entries.len(),
+            1,
+            "{:?}",
+            result.context_entries
+        );
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("The bicycle was")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(
+            failure.contains("cut off at max output tokens 16 after 16 output tokens"),
+            "{failure}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn content_filter_finish_fails_the_turn_with_the_refusal_text() {
+        let blobs = InMemoryBlobStore::new();
+        let raw = json!({
+            "id": "chatcmpl_filtered",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "content_filter",
+                "message": {
+                    "role": "assistant",
+                    "content": "partial",
+                    "refusal": "I cannot do that."
+                }
+            }],
+            "usage": { "prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw.clone()).expect("response"),
+            raw_json: raw,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+
+        let result =
+            result_from_response(&blobs, &generation_request(request(Vec::new())), &response)
+                .await
+                .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::ContentFilter);
+        assert!(
+            result.context_entries.is_empty(),
+            "partial content must not land in the session log"
+        );
+        assert_eq!(
+            result.facts.provider_response_id.as_deref(),
+            Some("chatcmpl_filtered")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(
+            failure.contains("stopped for content_filter: I cannot do that."),
+            "{failure}"
         );
     }
 

@@ -366,8 +366,8 @@ fixtures. Ordinary unit tests do not require them.
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE` | Repository-relative local audio fixture; overrides the remote fixture URL. |
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE_URL` | Remote audio fixture URL. |
 | `OPENAI_AUDIO_TRANSCRIPTION_EXPECT` | Optional case-insensitive text expected in the transcription. |
-| `ANTHROPIC_LIVE_MODEL` | Shared fallback model for Anthropic live suites. |
-| `ANTHROPIC_MESSAGES_MODEL` | Anthropic Messages live-test model. |
+| `ANTHROPIC_LIVE_MODEL` | Shared fallback model for Anthropic live suites (default `claude-opus-5`). |
+| `ANTHROPIC_MESSAGES_MODEL` | Anthropic Messages live-test model (default `claude-opus-5`). |
 
 Provider live tests also use the production provider transport variables from
 the core-runtime section. Most Rust live suites read either the process

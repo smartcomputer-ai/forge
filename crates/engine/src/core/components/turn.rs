@@ -498,8 +498,10 @@ fn validate_outcome_for_generation(
             LlmFinish::ToolCalls => matches!(outcome, TurnOutcome::ToolCallsQueued),
             LlmFinish::ContextLimit => matches!(outcome, TurnOutcome::ContextUpdateRequired),
             LlmFinish::Cancelled => matches!(outcome, TurnOutcome::Cancelled),
-            LlmFinish::Failed => matches!(outcome, TurnOutcome::Failed { .. }),
-            LlmFinish::Stop | LlmFinish::Length | LlmFinish::ContentFilter | LlmFinish::Unknown => {
+            LlmFinish::Failed | LlmFinish::ContentFilter | LlmFinish::Length => {
+                matches!(outcome, TurnOutcome::Failed { .. })
+            }
+            LlmFinish::Stop | LlmFinish::Unknown => {
                 matches!(outcome, TurnOutcome::FinalOutput { .. })
             }
         },
