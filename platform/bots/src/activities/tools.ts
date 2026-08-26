@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { and, count, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
@@ -13,6 +12,7 @@ import {
   triggerUpdateInput,
   updateTrigger,
   webhookIngestPath,
+  type BotRow,
   type BotTriggerRow,
   type TriggerCreateInput,
   type TriggerUpdateInput,
@@ -32,11 +32,22 @@ import {
   BOTS_WORKFLOW_TASK_QUEUE,
   botKeyedSessionId,
   botWorkflowId,
-  type BotEvent,
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
-import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "../events.js";
+import {
+  BotAdmissionRefusal,
+  admitTriggerEvent,
+  botEventIdFor,
+  checkSenderRate,
+  checkTriggerBreaker,
+  nextHops,
+  recordBotActivity,
+  resolveInbox,
+  storeBotEvent,
+  type AdmissionDeps,
+  type InboxTarget,
+} from "../admission.js";
 import {
   DEFAULT_READ_BUDGET,
   largestBranches,
@@ -73,6 +84,8 @@ export interface ExecuteBotToolInput {
   botId: string;
   botName: string;
   sessionId: string;
+  /** Stable across activity retries; bot-originated event ids derive from it. */
+  invocationId: string;
   toolId: string;
   args: unknown;
   controller: BotControllerSummary;
@@ -152,6 +165,23 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
     return row;
   }
 
+  /** A bot in the same platform universe and its inbox (the `bot`-kind trigger), by authored id. */
+  async function loadInboxTarget(
+    universeId: string,
+    name: string,
+  ): Promise<(InboxTarget & { bot: BotRow }) | null> {
+    const [row] = await config.db
+      .select({ bot: schema.bots, inbox: schema.botTriggers })
+      .from(schema.bots)
+      .leftJoin(
+        schema.botTriggers,
+        and(eq(schema.botTriggers.botId, schema.bots.id), eq(schema.botTriggers.kind, "bot")),
+      )
+      .where(and(eq(schema.bots.universeId, universeId), eq(schema.bots.name, name)))
+      .limit(1);
+    return row === undefined ? null : { bot: row.bot, inbox: row.inbox };
+  }
+
   async function recentEnvelopes(universeId: string, botId: string, limit: number) {
     const rows = await config.db
       .select()
@@ -204,9 +234,9 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         403,
       );
     }
-    if (!bot.selfEmit && input.toolId === BOT_EMIT_TOOL_ID) {
+    if (!bot.emit && input.toolId === BOT_EMIT_TOOL_ID) {
       throw new BotConfigError(
-        "self-emitted events are disabled for this bot; an operator can enable them in the bot's settings",
+        "bot_emit is disabled for this bot (the emit grant); an operator can enable it in the bot's settings",
         403,
       );
     }
@@ -388,88 +418,102 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
       case BOT_EMIT_TOOL_ID: {
         const kind = requireString(args.kind, "kind");
         const summary = requireString(args.summary, "summary");
-        // Loop breaker: even a granted bot cannot feed itself unbounded
-        // events. The bot's breaker rate applies when set; otherwise a
-        // fixed ceiling. The refusal is a tool error the model reads.
-        const cap = bot.breaker ?? { fires: 60, windowMs: 60 * 60 * 1000 };
-        const since = new Date(Date.now() - cap.windowMs);
-        const [recentSelf] = await config.db
-          .select({ value: count() })
-          .from(schema.botEvents)
-          .where(
-            and(
-              eq(schema.botEvents.botId, bot.id),
-              eq(schema.botEvents.source, "bot:self"),
-              gte(schema.botEvents.receivedAt, since),
-            ),
-          );
-        if (Number(recentSelf?.value ?? 0) >= cap.fires) {
+        const to = nullableString(args.to);
+        const reply = args.reply === true;
+        const sessionKey = nullableString(args.sessionKey);
+        if (to !== null && sessionKey !== null) {
           throw new BotConfigError(
-            `self-emission rate exceeded (${cap.fires} events in ${Math.round(cap.windowMs / 1000)}s); wait before emitting again`,
-            429,
+            "sessionKey routes your own keyed sessions; it cannot be combined with to",
+            400,
           );
         }
-        const sessionKey = typeof args.sessionKey === "string" && args.sessionKey ? args.sessionKey : null;
+        if (reply && to === null) {
+          throw new BotConfigError("reply needs to: receipts come from the bot you address", 400);
+        }
+        const admission: AdmissionDeps = {
+          db: config.db,
+          temporal: config.temporal,
+          engine: clientFor(lightspeedUniverseId),
+        };
+        // Loop bound: an addressed emit is one hop further from the world
+        // than the delivery being handled; a self emit stays at the same
+        // distance (the rate cap bounds self loops).
+        const hops =
+          to === null ? input.controller.invocation.hops : nextHops(input.controller.invocation.hops);
+        await checkSenderRate(admission, bot);
+        // The invocation id is stable across retries, so a retried emit
+        // converges on one event per receiver.
+        const eventId = botEventIdFor(bot.id, input.invocationId);
         const document: BotEventDocumentV1 = {
           version: 1,
           kind,
-          source: "bot:self",
+          source: `bot:${bot.name}`,
           occurredAt: new Date().toISOString(),
           summary,
           ...(args.data === undefined || args.data === null ? {} : { data: args.data }),
+          sender: { bot: bot.name },
+          ...(hops === 0 ? {} : { hops }),
         };
-        const seq = await allocateBotEventSeq(config.db, bot.id);
-        const ref = await putJson(lightspeedUniverseId, document);
-        const promptRef = await putText(
-          lightspeedUniverseId,
-          renderAdmittedEvent(seq, document),
-        );
-        const eventId = `self-${randomUUID()}`;
-        const session =
-          sessionKey === null
-            ? undefined
-            : { sessionId: botKeyedSessionId(bot.name, sessionKey), label: sessionKey };
-        await config.db.insert(schema.botEvents).values({
-          botId: bot.id,
-          eventId,
-          seq,
-          triggerId: null,
-          kind,
-          source: "bot:self",
-          occurredAt: new Date(document.occurredAt),
-          ref,
-          promptRef,
-          session: session ?? null,
-        });
-        const start: BotStartV1 = {
-          version: 1,
+        if (to === null) {
+          const session =
+            sessionKey === null
+              ? undefined
+              : { sessionId: botKeyedSessionId(bot.name, sessionKey), label: sessionKey };
+          const { event } = await storeBotEvent(admission, {
+            bot,
+            universeId: lightspeedUniverseId,
+            eventId,
+            document,
+            ...(session === undefined ? {} : { session }),
+            senderBotId: bot.id,
+            hops,
+          });
+          await recordBotActivity(config.db, bot.id, "emitted", {
+            eventId,
+            detail: `emitted ${kind} → self${session === undefined ? "" : ` (${session.label})`}: ${summary.slice(0, 120)}`,
+          });
+          return { seq: event.seq };
+        }
+        const target = await loadInboxTarget(bot.universeId, to);
+        const inbox = resolveInbox(bot, to, target);
+        const targetBot = target?.bot;
+        if (targetBot === undefined) throw new BotAdmissionRefusal("unknown_bot", `no bot named ${to}`);
+        const breaker = await checkTriggerBreaker(admission, targetBot, inbox);
+        if (breaker.tripped) {
+          throw new BotAdmissionRefusal(
+            "breaker_tripped",
+            `${to}'s inbox exceeded its flood breaker and was disabled; a human re-enables it`,
+          );
+        }
+        const invocationSession = input.controller.invocation.session;
+        const admitted = await admitTriggerEvent(admission, {
+          bot: targetBot,
+          trigger: inbox,
           universeId: lightspeedUniverseId,
-          botId: bot.id,
-          botName: bot.name,
-          displayName: bot.displayName,
-          profileId: bot.profileId,
-          brief: bot.brief,
-          runsPerDay: bot.runsPerDay,
-          routedSessionTtlMs: bot.routedSessionTtlMs,
-          enabled: bot.enabled,
-        };
-        const event: BotEvent = {
-          version: 1,
-          id: eventId,
-          ref,
-          seq,
-          promptRef,
-          ...(session === undefined ? {} : { session }),
-        };
-        await wakeBotController({
-          db: config.db,
-          temporal: config.temporal,
-          start,
-          event,
-          stored: true,
+          eventId,
+          document,
+          senderBotId: bot.id,
+          hops,
+          ...(reply
+            ? {
+                replyTo: {
+                  botId: bot.id,
+                  ...(invocationSession === undefined ? {} : { session: invocationSession }),
+                },
+              }
+            : {}),
         });
-        await recordSelfConfig(bot.id, `emitted ${kind}: ${summary.slice(0, 120)}`, eventId);
-        return { seq };
+        if (admitted.archived) {
+          throw new BotAdmissionRefusal(
+            "filtered",
+            `${to}'s inbox filter archived your event (#${admitted.event.seq ?? "?"} there); it will not be delivered`,
+          );
+        }
+        await recordBotActivity(config.db, bot.id, "emitted", {
+          eventId,
+          detail: `emitted ${kind} → ${to} #${admitted.event.seq ?? "?"}${reply ? " (receipt requested)" : ""}: ${summary.slice(0, 120)}`,
+        });
+        return { to, seq: admitted.event.seq };
       }
       default:
         throw new BotConfigError(`unknown bot tool ${input.toolId}`, 400);
@@ -485,6 +529,14 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
       } catch (error) {
         // Validation and config failures are final answers for the model;
         // only unexpected infrastructure errors propagate for retry.
+        if (error instanceof BotAdmissionRefusal) {
+          const message = `${error.code}: ${error.message}`;
+          const errorRef = await putJson(input.universeId, {
+            error: error.message,
+            code: error.code,
+          }).catch(() => null);
+          return { ok: false, message, errorRef };
+        }
         if (error instanceof BotConfigError) {
           const message = error.issues
             ? `${error.message}: ${JSON.stringify(error.issues).slice(0, 800)}`
@@ -506,10 +558,22 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
 } {
   const name = requireString(args.name, "name");
   const kind = args.kind;
-  if (kind !== "schedule" && kind !== "webhook" && kind !== "poll") {
-    throw new BotConfigError("kind must be schedule, webhook, or poll", 400);
+  if (kind !== "schedule" && kind !== "webhook" && kind !== "poll" && kind !== "bot") {
+    throw new BotConfigError("kind must be schedule, webhook, poll, or bot", 400);
   }
   const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
+  if (kind === "bot") {
+    const from = Array.isArray(args.from)
+      ? args.from.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
+      : [];
+    const spec = from.length === 0 ? {} : { from };
+    const common = pollWebhookCommon(args, enabled);
+    return {
+      name,
+      create: { name, kind, spec, ...common },
+      update: { spec, ...common },
+    };
+  }
   if (kind === "poll") {
     const url = nullableString(args.url);
     const environmentId = nullableString(args.environmentId);

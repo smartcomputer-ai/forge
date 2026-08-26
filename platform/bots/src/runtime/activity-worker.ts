@@ -3,6 +3,7 @@ import { NativeConnection, Worker } from "@temporalio/worker";
 import { createDb } from "@lightspeed/platform-db";
 import {
   createBotControlPlaneActivities,
+  createBotFederationActivities,
   createBotLightspeedActivities,
   createBotPollActivities,
   createBotScheduleActivities,
@@ -44,6 +45,7 @@ const worker = await Worker.create({
       temporal,
       baseUrl: process.env.LIGHTSPEED_PLATFORM_BASE_URL ?? null,
     }),
+    ...createBotFederationActivities({ db: database.db, endpoint, temporal }),
   },
 });
 

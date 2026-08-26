@@ -563,7 +563,7 @@ export async function botControllerWorkflowV1(
           botName: config.botName,
           brief: config.brief,
           selfConfig: config.selfConfig === true,
-          selfEmit: config.selfEmit === true,
+          emit: config.emit === true,
           appliedProfileRevision:
             appliedProfileId === config.profileId ? appliedProfileRevision : null,
           controller: {
@@ -689,12 +689,28 @@ export async function botControllerWorkflowV1(
     }
   }
 
+  /** The highest hop count among a delivery's events (0 when none carry one). */
+  function deliveryHops(delivery: BotDelivery): number {
+    return delivery.events.reduce((max, event) => Math.max(max, event.hops ?? 0), 0);
+  }
+
   /**
    * What the tool activity may show the model: labels and `#N`s only.
-   * Session ids, delivery ids, and buffer keys stay here.
+   * Session ids, delivery ids, and buffer keys stay here. `invocation` is
+   * the federation context of the invoking session — private to `bot_emit`.
    */
-  function controllerSummary() {
+  function controllerSummary(invocationSessionId: string) {
+    const active = activeBySession.get(invocationSessionId);
+    const routed = extraSessions.find((session) => session.sessionId === invocationSessionId);
     return {
+      invocation: {
+        hops: active === undefined ? 0 : deliveryHops(active.delivery),
+        // A logical route: the base id, never a generation, so a receipt
+        // finds the session after a rotation.
+        ...(routed === undefined
+          ? {}
+          : { session: { sessionId: routedBase(routed.sessionId), label: routed.label } }),
+      },
       sessions: [{ label: "main", kind: "main" }, ...extraSessions].map((session) => ({
         label: session.label,
         kind: session.kind,
@@ -766,9 +782,10 @@ export async function botControllerWorkflowV1(
         botId: config.botId,
         botName: config.botName,
         sessionId: invocation.session_id,
+        invocationId: invocation.invocation_id,
         toolId: invocation.tool_id,
         args,
-        controller: controllerSummary(),
+        controller: controllerSummary(invocation.session_id),
       });
       if (result.ok) {
         resolution = { kind: "resolved", payload_ref: result.payloadRef };
@@ -838,7 +855,7 @@ export async function botControllerWorkflowV1(
           botName: config.botName,
           brief: config.brief,
           selfConfig: config.selfConfig === true,
-          selfEmit: config.selfEmit === true,
+          emit: config.emit === true,
           // Routed sessions take the profile at creation; only the main
           // session tracks profile revisions across its lifetime.
           appliedProfileRevision: null,
@@ -919,12 +936,38 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  function rememberDelivery(recent: BotRecentEventSnapshot): void {
+  function rememberDelivery(delivery: BotDelivery, recent: BotRecentEventSnapshot): void {
     recentEvents.push(recent);
     if (recentEvents.length > RECENT_EVENT_CAP) {
       recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
     }
     eventsProcessed += 1;
+    void settleReceipts(delivery, recent);
+  }
+
+  /**
+   * Receipts for events that asked for one ride on the delivery's finish:
+   * the receiver's outcome, deterministic, never a reply the model authors.
+   * Best effort — a failed receipt is an activity row, never a stuck lane.
+   */
+  async function settleReceipts(delivery: BotDelivery, recent: BotRecentEventSnapshot): Promise<void> {
+    const asked = delivery.events.filter((event) => event.reply === true);
+    if (asked.length === 0) return;
+    try {
+      await activities.sendBotReceipts({
+        universeId: config.universeId,
+        botId: config.botId,
+        deliveryId: delivery.id,
+        eventIds: asked.map((event) => event.id),
+        status: recent.status,
+        summary: recent.summary ?? null,
+        hops: deliveryHops(delivery),
+      });
+    } catch (error) {
+      lastError = errorMessage(error);
+      await record("reply_failed", { eventId: delivery.id, detail: lastError });
+    }
+    laneTick += 1;
   }
 
   function finishDelivery(active: ActiveDelivery, recent: BotRecentEventSnapshot): void {
@@ -932,7 +975,7 @@ export async function botControllerWorkflowV1(
       event.seq === undefined ? [] : [event.seq],
     );
     if (seqs.length > 0) recent.seqs = seqs;
-    rememberDelivery(recent);
+    rememberDelivery(active.delivery, recent);
     activeBySession.delete(active.sessionId);
     touchSession(active.sessionId);
     laneTick += 1;
@@ -954,7 +997,7 @@ export async function botControllerWorkflowV1(
           eventId: delivery.id,
           detail: `${eventCount} event(s) appended as context`,
         });
-        rememberDelivery({
+        rememberDelivery(delivery, {
           id: delivery.id,
           ref: firstEvent.ref,
           status: "appended",
@@ -980,7 +1023,7 @@ export async function botControllerWorkflowV1(
             ...(steered.runId === undefined ? {} : { runId: steered.runId }),
             detail: `${eventCount} event(s) folded into the active run`,
           });
-          rememberDelivery({
+          rememberDelivery(delivery, {
             id: delivery.id,
             ref: firstEvent.ref,
             status: "steered",
@@ -997,7 +1040,7 @@ export async function botControllerWorkflowV1(
     } catch (error) {
       lastError = errorMessage(error);
       await record("run_failed", { eventId: delivery.id, detail: lastError });
-      rememberDelivery({
+      rememberDelivery(delivery, {
         id: delivery.id,
         ref: firstEvent.ref,
         status: "run_failed",
@@ -1044,6 +1087,20 @@ export async function botControllerWorkflowV1(
           active.sessionId = ensured;
           activeBySession.set(ensured, active);
           target = ensured;
+        }
+      }
+
+      if (config.emit === true) {
+        // An emitting bot reads the directory before it decides. A failed
+        // put costs a stale directory, never the delivery.
+        try {
+          await activities.publishBotDirectory({
+            universeId: config.universeId,
+            botId: config.botId,
+            sessionId: target,
+          });
+        } catch (error) {
+          lastError = errorMessage(error);
         }
       }
 

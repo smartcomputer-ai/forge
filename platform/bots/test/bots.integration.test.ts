@@ -1378,6 +1378,140 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       await Promise.all([workflowRun, activityRun]);
     }
   }, 60_000);
+  it("publishes the directory before a delivery and sends receipts when it finishes", async () => {
+    const fedBotName = "federated";
+    const calls: string[] = [];
+    const directories: unknown[] = [];
+    const receipts: unknown[] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async () => ({ profileRevision: 1 }),
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        readBotRunUsage: async () => null,
+        publishBotDirectory: async (input: unknown) => {
+          calls.push("directory");
+          directories.push(input);
+          return { entries: 1 };
+        },
+        startBotRun: async () => {
+          calls.push("run");
+          return { runId: `run_${calls.filter((call) => call === "run").length}` };
+        },
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations:
+            afterSeq === 0
+              ? [
+                  {
+                    invocationId: `wti:sha256:${"d".repeat(64)}`,
+                    toolId: BOT_EVENT_RESOLVE_TOOL_ID,
+                    runId: "run_1",
+                    argumentsRef: resolveRef,
+                  },
+                ]
+              : [],
+        }),
+        readJsonBlob: async () => ({ outcome: "handled", summary: "root cause found" }),
+        sendBotReceipts: async (input: unknown) => {
+          calls.push("receipts");
+          receipts.push(input);
+          return { sent: 1 };
+        },
+        recordBotActivity: async () => undefined,
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: fedBotName,
+        displayName: null,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        emit: true,
+        enabled: true,
+      };
+      // An addressed event that asked for a receipt, two hops from the world.
+      const ask: BotEvent = { version: 1, id: "ask-1", ref: eventRef, seq: 5, hops: 2, reply: true };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, fedBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [ask],
+      });
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((active) => active.id === ask.id),
+      );
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(botSessionId(fedBotName), 1, botEventTerminalToken(ask.id)),
+      );
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 1,
+      );
+      await eventually(async () => calls, (seen) => seen.includes("receipts"));
+      // The directory lands before the run; the receipt carries the outcome
+      // and the delivery's hop count.
+      expect(calls).toEqual(["directory", "run", "receipts"]);
+      expect(directories[0]).toMatchObject({ universeId, botId, sessionId: botSessionId(fedBotName) });
+      expect(receipts[0]).toEqual({
+        universeId,
+        botId,
+        deliveryId: ask.id,
+        eventIds: [ask.id],
+        status: "handled",
+        summary: "root cause found",
+        hops: 2,
+      });
+
+      // An event that did not ask gets no receipt.
+      const plain: BotEvent = { version: 1, id: "plain-1", ref: eventRef, seq: 6 };
+      await handle.signal(BOT_EVENT_SIGNAL, plain);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((active) => active.id === plain.id),
+      );
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(botSessionId(fedBotName), 2, botEventTerminalToken(plain.id)),
+      );
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 2,
+      );
+      expect(receipts).toHaveLength(1);
+      expect(calls.filter((call) => call === "directory")).toHaveLength(2);
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        botWorkflowId(universeId, fedBotName),
+      );
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
 });
 
 function terminalEmission(runId: number, token: string): EmissionEnvelope {

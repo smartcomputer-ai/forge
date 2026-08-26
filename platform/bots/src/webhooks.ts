@@ -133,7 +133,8 @@ export function extractWebhookEvent(
 }
 
 export interface FilterContext {
-  event: { id: string; kind: string; source: string; occurredAt: string };
+  /** `sender` is the sending bot's id for bot-originated events. */
+  event: { id: string; kind: string; source: string; occurredAt: string; sender?: string };
   data: unknown;
   headers: Record<string, string>;
 }

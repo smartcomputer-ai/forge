@@ -72,7 +72,9 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await requireTable(handle.pool, "universes");
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
-    await requireColumn(handle.pool, "bots", "self_emit");
+    await requireColumn(handle.pool, "bots", "emit");
+    await requireColumn(handle.pool, "bots", "display_name");
+    await requireColumn(handle.pool, "bot_events", "sender_bot_id");
   } finally {
     await handle.pool.end();
   }
@@ -109,6 +111,9 @@ async function checkUpgrade(
     await migrateDb(handle);
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
+    // The rename in 0004 must land on an upgraded database too.
+    await requireColumn(handle.pool, "bots", "emit");
+    await requireColumn(handle.pool, "bot_events", "reply_to");
     await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();

@@ -286,6 +286,23 @@ Release construction, snapshots, and tagged publication are documented in
   child. Do not add a parent-side delegation transport, child↔parent
   messaging, an agent graph surface, or an enum menu in the tool schema —
   the menu is a refreshed catalog context entry.
+- Bot federation (P135) is events through admission, never authority: a
+  bot addresses another with `bot_emit { to }` through the receiver's
+  single `bot`-kind inbox trigger (at most one per bot), which owns
+  filter, route, coalesce, and delivery policy. `bot_emit` is joined and
+  returns `{ to, seq }` or a typed refusal; the sender rate cap and
+  `MAX_BOT_HOPS` bound every exchange. Every event path — webhook, poll,
+  schedule, self and addressed emits, receipts — goes through
+  `platform/bots/src/admission.ts` (`storeBotEvent` / `admitTriggerEvent`).
+  Replies are deterministic receipts (`bot.reply`) sent by the receiver's
+  controller when the delivery finishes, routed by a logical session
+  (base id, never a generation); no `bot_ask`, no joined cross-bot call,
+  no bot configures or creates another. Discovery is the `bot:directory`
+  catalog (only bots whose inbox accepts the reader). Bots are addressed
+  by an authored, immutable `botId` (`bots.name`) plus a mutable
+  `displayName`; the uuid row key never leaves the database, and
+  model-facing `bot_*` results carry `#N` and labels, never digests
+  (`activities/tool-views.ts`).
 - Catalogs (VFS, skill, sub-agent, and client `Catalog` entries) are
   append-with-supersede: a keyed catalog write appends the new version with
   `supersedes` set and leaves the earlier one active and rendered

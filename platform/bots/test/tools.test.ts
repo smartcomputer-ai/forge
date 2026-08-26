@@ -51,7 +51,7 @@ describe("bot tool declarations", () => {
     };
     const tools = botWorkflowTools(receiver, toolRefs.schemas, toolRefs.descriptions, {
       selfConfig: true,
-      selfEmit: true,
+      emit: true,
     });
     expect(tools).toHaveLength(10);
     for (const tool of tools) expect(tool.definition.revision).toBe(BOT_TOOLS_REVISION);
@@ -119,7 +119,7 @@ describe("bot tool declarations", () => {
     // self-emission are both opt-in.
     for (const tools of [
       botWorkflowTools(receiver, schemas, descriptions),
-      botWorkflowTools(receiver, schemas, descriptions, { selfConfig: false, selfEmit: false }),
+      botWorkflowTools(receiver, schemas, descriptions, { selfConfig: false, emit: false }),
     ]) {
       const ids = new Set(tools.map((tool) => tool.definition.toolId));
       expect(tools).toHaveLength(6);
@@ -133,7 +133,7 @@ describe("bot tool declarations", () => {
     }
     // The grants are independent.
     const emitOnly = new Set(
-      botWorkflowTools(receiver, schemas, descriptions, { selfEmit: true }).map(
+      botWorkflowTools(receiver, schemas, descriptions, { emit: true }).map(
         (tool) => tool.definition.toolId,
       ),
     );

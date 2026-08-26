@@ -22,6 +22,12 @@ export interface BotControllerSummary {
   buffers: { session: string; count: number; flushAtMs: number }[];
   runsToday: number;
   eventsProcessed: number;
+  /**
+   * Federation context of the invoking session — the hop count of the
+   * delivery it is handling and its logical route for receipts. Read by
+   * `bot_emit`; never shown to the model.
+   */
+  invocation: { hops: number; session?: { sessionId: string; label: string } };
 }
 
 export function botStatusView(bot: BotRow, controller: BotControllerSummary) {
@@ -37,7 +43,7 @@ export function botStatusView(bot: BotRow, controller: BotControllerSummary) {
       breaker: bot.breaker,
       routedSessionTtlMs: bot.routedSessionTtlMs,
       selfConfig: bot.selfConfig,
-      selfEmit: bot.selfEmit,
+      emit: bot.emit,
       eventsProcessed: controller.eventsProcessed,
     },
     sessions: controller.sessions,

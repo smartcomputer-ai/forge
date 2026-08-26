@@ -44,6 +44,8 @@ export interface EventPromptInput {
   data?: unknown;
   correlationId?: string | null;
   links?: string[];
+  /** Receipts: the asked event's #N at the answering bot. */
+  inReplyTo?: { bot: string; seq: number };
 }
 
 /**
@@ -64,6 +66,9 @@ export function renderEventPrompt(
     });
     if (rendered.text.length > 0) parts.push(rendered.text);
     elided = rendered.elided;
+  }
+  if (event.inReplyTo !== undefined) {
+    parts.push(`reply to your #${event.inReplyTo.seq} at ${event.inReplyTo.bot}`);
   }
   if (event.correlationId != null) parts.push(`correlation: ${event.correlationId}`);
   if (event.links !== undefined && event.links.length > 0) {

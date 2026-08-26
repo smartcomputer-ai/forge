@@ -37,7 +37,7 @@ const bot: BotRow = {
   routedSessionTtlMs: null,
   eventSeq: 17,
   selfConfig: true,
-  selfEmit: true,
+  emit: true,
   enabled: true,
   createdAt: new Date("2026-08-26T10:00:00Z"),
   updatedAt: new Date("2026-08-26T10:00:00Z"),
@@ -56,6 +56,10 @@ function eventRow(overrides: Partial<BotEventRow>): BotEventRow {
     ref: `sha256:${"b".repeat(64)}`,
     promptRef: `sha256:${"c".repeat(64)}`,
     session: { sessionId: "bot:v1:triage:k-pr-12-0123abcd", label: "pr-12" },
+    senderBotId: null,
+    hops: 0,
+    replyTo: null,
+    inReplyTo: null,
     receivedAt: new Date("2026-08-26T10:00:01Z"),
     ...overrides,
   };
@@ -66,7 +70,23 @@ const rows: BotEventRow[] = [
   eventRow({ eventId: `poll:${triggerUuid}:${"d".repeat(32)}`, source: "poll:issues", seq: 13 }),
   eventRow({ eventId: `schedule:${triggerUuid}:2026-08-26T08:00:00.000Z`, source: "schedule:nightly", seq: 14, session: null }),
   eventRow({ eventId: `self-${botUuid}`, source: "bot:triage", seq: 15, session: null }),
-  eventRow({ eventId: `bot:${botUuid}:${"e".repeat(64)}`, source: "bot:infra", seq: 16 }),
+  eventRow({
+    eventId: `bot:${botUuid}:${"e".repeat(64)}`,
+    source: "bot:infra",
+    seq: 16,
+    senderBotId: botUuid,
+    hops: 2,
+    replyTo: { botId: botUuid, session: { sessionId: "bot:v1:infra:k-inc-7-abcd1234", label: "inc-7" } },
+  }),
+  eventRow({
+    eventId: `reply:${botUuid}:${"f".repeat(64)}`,
+    kind: "bot.reply",
+    source: "bot:infra",
+    seq: 17,
+    senderBotId: botUuid,
+    hops: 3,
+    inReplyTo: { bot: "infra", seq: 9 },
+  }),
 ];
 
 const document: BotEventDocumentV1 = {
@@ -89,6 +109,7 @@ const controller: BotControllerSummary = {
   buffers: [{ session: "main", count: 3, flushAtMs: 1_800_000_000_000 }],
   runsToday: 4,
   eventsProcessed: 16,
+  invocation: { hops: 0 },
 };
 
 describe("model-facing bot tool views", () => {
@@ -98,6 +119,7 @@ describe("model-facing bot tool views", () => {
     expect(view.bot.botId).toBe("triage");
     expect(view.bot.displayName).toBe("Triage");
     expect(view.bot).not.toHaveProperty("profileId");
+    expect(view).not.toHaveProperty("invocation");
     expect(view.sessions).toEqual(controller.sessions);
     expect(view.activeDeliveries[0]).toEqual({ events: [12, 13], session: "pr-12" });
   });

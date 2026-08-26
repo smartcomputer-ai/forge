@@ -29,17 +29,18 @@
   The same mechanism is exposed to clients as `InputItem::Catalog` on
   `session/context/append` (external catalogs; P135's bot directory is
   the first consumer).
-- [ ] [P135](p135-bot-federation.md) — bot federation (proposed 2026-08-26,
-  revised three times the same day): bot ↔ bot as events through admission
-  only — one `bot` inbox trigger per bot (`from` allowlist; filter, route,
-  coalesce, deliver as for webhooks), `bot_emit { to }` joined for
-  admission with typed refusals, deterministic per-receiver ids, `hops`
-  bound, sender rate cap, a `bot:directory` catalog (only bots whose inbox
-  accepts the reader) through P136's external catalog. No automatic
-  replies in v1 (B answers by emitting back); slice 2 adds deterministic
-  resolution receipts with a logical return route. No cross-bot authority
-  (the `manage` grant is a later note), no `bot_ask`, no publish/subscribe
-  until a use case asks.
+- [x] [P135](p135-bot-federation.md) — bot federation (proposed and
+  implemented 2026-08-26): bot ↔ bot as events through admission only —
+  one `bot` inbox trigger per bot (`from` allowlist; filter, route,
+  coalesce, deliver as for webhooks), `bot_emit { to, reply }` joined
+  with typed refusals, deterministic per-receiver ids, `hops` bound,
+  sender rate cap, a `bot:directory` catalog through P136's external
+  catalog, deterministic resolution receipts (`bot.reply`) with a logical
+  return route, one shared admission pipeline for every event path;
+  bots addressed by an authored `botId` plus `displayName`, model-facing
+  tool results without digests. No cross-bot authority (the `manage`
+  grant is a later note), no `bot_ask`, no publish/subscribe until a use
+  case asks.
 - [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over

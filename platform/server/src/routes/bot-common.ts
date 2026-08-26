@@ -1,4 +1,3 @@
-import { and, count, eq, gte } from "drizzle-orm";
 import { Client, Connection } from "@temporalio/client";
 import { schema } from "@lightspeed/platform-db";
 import {
@@ -13,7 +12,13 @@ import {
   type BotStartV1,
   type BotWhenBusyV1,
 } from "@lightspeed/bots/contracts";
-import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "@lightspeed/bots/events";
+import {
+  botStartFor,
+  checkTriggerBreaker as checkTriggerBreakerWith,
+  recordBotActivity,
+  storeBotEvent,
+  type AdmissionDeps,
+} from "@lightspeed/bots/admission";
 import type { AppContext } from "../context.js";
 import { engineClientFor } from "./gateway.js";
 
@@ -36,20 +41,12 @@ export function getTemporal(): Promise<Client> {
 }
 
 export function botStart(bot: BotRow, universeId: string): BotStartV1 {
-  return {
-    version: 1,
-    universeId,
-    botId: bot.id,
-    botName: bot.name,
-    displayName: bot.displayName,
-    profileId: bot.profileId,
-    brief: bot.brief,
-    runsPerDay: bot.runsPerDay,
-    routedSessionTtlMs: bot.routedSessionTtlMs,
-    selfConfig: bot.selfConfig,
-    selfEmit: bot.selfEmit,
-    enabled: bot.enabled,
-  };
+  return botStartFor(bot, universeId);
+}
+
+/** Admission dependencies for a universe: the platform database, Temporal, and the core client. */
+export async function admissionDeps(ctx: AppContext, universe: UniverseRow): Promise<AdmissionDeps> {
+  return { db: ctx.db, temporal: await getTemporal(), engine: engineClientFor(ctx, universe) };
 }
 
 export async function signalBotConfig(config: BotStartV1): Promise<void> {
@@ -64,11 +61,10 @@ export async function signalBotConfig(config: BotStartV1): Promise<void> {
 }
 
 /**
- * Store, then wake: the document goes to CAS, the envelope row into the
- * authoritative store, and only then is the controller notified. A duplicate
- * admission wakes the controller again on purpose — the row may exist because
- * an earlier wake failed after the insert — and the controller dedupes by
- * event id.
+ * Store, then wake, through the shared admission pipeline in the bots
+ * package (`storeBotEvent`): CAS document, authoritative row, then the
+ * controller signal. Used by the manual event and replay routes; webhook
+ * ingest goes through `admitTriggerEvent` for the trigger pipeline.
  */
 export async function admitBotEvent(
   ctx: AppContext,
@@ -89,82 +85,11 @@ export async function admitBotEvent(
     ref?: string;
   },
 ): Promise<{ event: BotEvent; duplicate: boolean }> {
-  const engine = engineClientFor(ctx, input.universe);
-  const seq = await allocateBotEventSeq(ctx.db, input.bot.id);
-  const prompt = renderAdmittedEvent(seq, input.document, input.promptData);
-  const promptBlob = { bytesBase64: Buffer.from(prompt, "utf8").toString("base64") };
-  let ref = input.ref;
-  let promptRef: string | undefined;
-  if (ref === undefined) {
-    const stored = await engine.call("blobs/put", {
-      blobs: [
-        { bytesBase64: Buffer.from(JSON.stringify(input.document), "utf8").toString("base64") },
-        promptBlob,
-      ],
-    });
-    ref = stored.result.blobs?.[0]?.blobRef;
-    promptRef = stored.result.blobs?.[1]?.blobRef;
-  } else {
-    const stored = await engine.call("blobs/put", { blobs: [promptBlob] });
-    promptRef = stored.result.blobs?.[0]?.blobRef;
-  }
-  if (!ref || !promptRef) throw new Error("event document storage returned no ref");
-
-  const inserted = await ctx.db
-    .insert(schema.botEvents)
-    .values({
-      botId: input.bot.id,
-      eventId: input.eventId,
-      seq,
-      triggerId: input.triggerId ?? null,
-      kind: input.document.kind,
-      source: input.document.source,
-      occurredAt: new Date(input.document.occurredAt),
-      ref,
-      promptRef,
-      session: input.session ?? null,
-    })
-    .onConflictDoNothing()
-    .returning();
-  const duplicate = inserted.length === 0;
-  let eventSeq: number | null = seq;
-  if (duplicate) {
-    // Keep #N stable: a re-admitted event reuses the stored row's identity
-    // (the freshly allocated seq is wasted, which only leaves a gap).
-    const [stored] = await ctx.db
-      .select()
-      .from(schema.botEvents)
-      .where(
-        and(eq(schema.botEvents.botId, input.bot.id), eq(schema.botEvents.eventId, input.eventId)),
-      )
-      .limit(1);
-    if (stored) {
-      ref = stored.ref;
-      promptRef = stored.promptRef ?? undefined;
-      eventSeq = stored.seq;
-    }
-  }
-
-  const event: BotEvent = {
-    version: 1,
-    id: input.eventId,
-    ref,
-    ...(eventSeq === null ? {} : { seq: eventSeq }),
-    ...(promptRef === undefined ? {} : { promptRef }),
-    ...(input.session === undefined ? {} : { session: input.session }),
-    ...(input.coalesce === undefined ? {} : { coalesce: input.coalesce }),
-    ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),
-  };
-  if (input.deliver !== false) {
-    await wakeBotController({
-      db: ctx.db,
-      temporal: await getTemporal(),
-      start: botStart(input.bot, input.universe.lightspeedUniverseId),
-      event,
-      stored: !duplicate,
-    });
-  }
-  return { event, duplicate };
+  const { universe, ...rest } = input;
+  return storeBotEvent(await admissionDeps(ctx, universe), {
+    ...rest,
+    universeId: universe.lightspeedUniverseId,
+  });
 }
 
 /**
@@ -176,22 +101,7 @@ export async function checkTriggerBreaker(
   bot: BotRow,
   trigger: BotTriggerRow,
 ): Promise<{ tripped: boolean }> {
-  const breaker = bot.breaker;
-  if (!breaker) return { tripped: false };
-  const since = new Date(Date.now() - breaker.windowMs);
-  const [row] = await ctx.db
-    .select({ value: count() })
-    .from(schema.botEvents)
-    .where(and(eq(schema.botEvents.triggerId, trigger.id), gte(schema.botEvents.receivedAt, since)));
-  if (Number(row?.value ?? 0) < breaker.fires) return { tripped: false };
-  await ctx.db
-    .update(schema.botTriggers)
-    .set({ enabled: false })
-    .where(eq(schema.botTriggers.id, trigger.id));
-  await recordActivity(ctx, bot.id, "breaker_tripped", {
-    detail: `trigger ${trigger.name} exceeded ${breaker.fires} events in ${Math.round(breaker.windowMs / 1000)}s and was disabled`,
-  });
-  return { tripped: true };
+  return checkTriggerBreakerWith({ db: ctx.db }, bot, trigger);
 }
 
 export async function recordActivity(
@@ -200,13 +110,7 @@ export async function recordActivity(
   kind: string,
   fields?: { eventId?: string; detail?: string },
 ): Promise<void> {
-  await ctx.db.insert(schema.botActivity).values({
-    botId,
-    kind,
-    eventId: fields?.eventId ?? null,
-    runId: null,
-    detail: fields?.detail ?? null,
-  });
+  await recordBotActivity(ctx.db, botId, kind, fields);
 }
 
 export function errorMessage(error: unknown): string {

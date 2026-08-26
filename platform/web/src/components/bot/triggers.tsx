@@ -1,12 +1,13 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, Copy, Pause, Pencil, Play, Plus, RefreshCw, Terminal, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, Copy, Inbox, Pause, Pencil, Play, Plus, RefreshCw, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
   type BotPollSpec,
   type BotRoute,
   type BotScheduleSpec,
   type BotTrigger,
+  type BotInboxSpec,
   type BotWebhookSpec,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
@@ -125,6 +126,8 @@ export function TriggersSection({
           <div className="flex min-w-0 items-center gap-2">
             {trigger.kind === "schedule" ? (
               <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
+            ) : trigger.kind === "bot" ? (
+              <Inbox className="size-3.5 shrink-0 text-muted-foreground" />
             ) : (
               <Webhook className="size-3.5 shrink-0 text-muted-foreground" />
             )}
@@ -175,6 +178,8 @@ export function TriggersSection({
             <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
           ) : trigger.kind === "poll" ? (
             <PollRowDetail trigger={trigger} />
+          ) : trigger.kind === "bot" ? (
+            <InboxRowDetail trigger={trigger} />
           ) : (
             <WebhookRowDetail trigger={trigger} manage={manage} />
           )}
@@ -209,6 +214,88 @@ function ScheduleRowDetail({ spec }: { spec: BotScheduleSpec }) {
         )}
       </p>
       <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{spec.summary}</p>
+    </>
+  );
+}
+
+function InboxRowDetail({ trigger }: { trigger: BotTrigger }) {
+  const spec = trigger.spec as BotInboxSpec;
+  return (
+    <p className="mt-1 text-muted-foreground">
+      Inbox: {spec.from && spec.from.length > 0 ? `accepts events from ${spec.from.join(", ")}` : "accepts events from any bot"} ·{" "}
+      {routeLabel(trigger.route)}
+      {trigger.filter ? ` · filter: ${trigger.filter}` : ""}
+    </p>
+  );
+}
+
+interface InboxFormState extends DeliveryFormState {
+  /** One sender bot id per line; empty accepts any bot. */
+  fromText: string;
+}
+
+/** Lazy: `defaultDeliveryForm` is declared further down the module. */
+function defaultInboxForm(): InboxFormState {
+  return { ...defaultDeliveryForm, fromText: "" };
+}
+
+function inboxFormFromTrigger(trigger: BotTrigger): InboxFormState {
+  const spec = trigger.spec as BotInboxSpec;
+  return {
+    routePolicy: trigger.route?.policy ?? "bot",
+    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
+    filter: trigger.filter ?? "",
+    whenBusy: trigger.deliver?.whenBusy ?? "queue",
+    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
+    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
+    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+    fromText: (spec.from ?? []).join("\n"),
+  };
+}
+
+function inboxSenders(form: InboxFormState): string[] {
+  return form.fromText
+    .split(/[\n,]/)
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+function inboxPayload(form: InboxFormState) {
+  const from = inboxSenders(form);
+  return { spec: from.length === 0 ? {} : { from }, ...deliveryPayload(form) };
+}
+
+function inboxFormProblem(form: InboxFormState): string | null {
+  const bad = inboxSenders(form).filter((entry) => !NAME_PATTERN.test(entry));
+  if (bad.length > 0) return `Not a bot id: ${bad.join(", ")}`;
+  return deliveryFormProblem(form);
+}
+
+function InboxFields({
+  form,
+  setForm,
+}: {
+  form: InboxFormState;
+  setForm: (next: InboxFormState) => void;
+}) {
+  return (
+    <>
+      <Field>
+        <FieldLabel htmlFor="inbox-from">Accept events from</FieldLabel>
+        <Textarea
+          id="inbox-from"
+          value={form.fromText}
+          onChange={(event) => setForm({ ...form, fromText: event.target.value })}
+          rows={3}
+          placeholder="Any bot in this universe — or one bot id per line"
+          className="font-mono"
+        />
+        <FieldDescription>
+          Bot ids allowed to address this bot with bot_emit. Empty means any bot. Narrow further with
+          the filter (CEL sees event.sender).
+        </FieldDescription>
+      </Field>
+      <DeliveryFields form={form} setForm={setForm} />
     </>
   );
 }
@@ -905,7 +992,7 @@ function AddTriggerDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | null>(null);
+  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | "bot" | null>(null);
   const [name, setName] = useState("");
   const [once, setOnce] = useState(false);
   const [at, setAt] = useState("");
@@ -914,11 +1001,13 @@ function AddTriggerDialog({
   const [summary, setSummary] = useState("");
   const [webhook, setWebhook] = useState<WebhookFormState>(defaultWebhookForm);
   const [poll, setPoll] = useState<PollFormState>(defaultPollForm);
+  const [inbox, setInbox] = useState<InboxFormState>(defaultInboxForm);
   const [error, setError] = useState<string | null>(null);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
   const pollIssue = kind === "poll" ? pollFormProblem(poll) : null;
+  const inboxIssue = kind === "bot" ? inboxFormProblem(inbox) : null;
   const reset = () => {
     setKind(null);
     setName("");
@@ -929,6 +1018,7 @@ function AddTriggerDialog({
     setSummary("");
     setWebhook(defaultWebhookForm);
     setPoll(defaultPollForm);
+    setInbox(defaultInboxForm());
     setError(null);
   };
   const changeOpen = (next: boolean) => {
@@ -951,7 +1041,9 @@ function AddTriggerDialog({
             }
           : kind === "poll"
             ? { name: name.trim(), kind, ...pollPayload(poll) }
-            : { name: name.trim(), kind, ...webhookPayload(webhook) },
+            : kind === "bot"
+              ? { name: name.trim(), kind, ...inboxPayload(inbox) }
+              : { name: name.trim(), kind, ...webhookPayload(webhook) },
       );
     },
     onSuccess: async () => {
@@ -973,7 +1065,9 @@ function AddTriggerDialog({
         !summary.trim()
       : kind === "poll"
         ? pollIssue !== null
-        : webhookIssue !== null);
+        : kind === "bot"
+          ? inboxIssue !== null
+          : webhookIssue !== null);
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
@@ -988,9 +1082,11 @@ function AddTriggerDialog({
               ? poll.sourceKind === "exec"
                 ? "Add command poll"
                 : "Add HTTP/API poll"
-              : kind
-                ? `Add ${kind}`
-                : "Add trigger"}
+              : kind === "bot"
+                ? "Add inbox"
+                : kind
+                  ? `Add ${kind}`
+                  : "Add trigger"}
           </DialogTitle>
           <DialogDescription>
             {kind === "schedule"
@@ -999,7 +1095,9 @@ function AddTriggerDialog({
                 ? "Give the bot a protected ingest URL for external events."
                 : kind === "poll"
                   ? "Fetch a source on an interval and wake the bot with new items."
-                  : "Choose how this bot should receive events."}
+                  : kind === "bot"
+                    ? "Let other bots in this universe address this bot with bot_emit."
+                    : "Choose how this bot should receive events."}
           </DialogDescription>
         </DialogHeader>
         {!kind ? (
@@ -1016,6 +1114,12 @@ function AddTriggerDialog({
                 title="Webhook"
                 description="Receive token-protected or signed events from external systems."
                 onClick={() => setKind("webhook")}
+              />
+              <TriggerKindChoice
+                icon={<Inbox className="size-5" />}
+                title="Inbox"
+                description="Accept events other bots address to this bot (at most one inbox)."
+                onClick={() => setKind("bot")}
               />
               <TriggerKindChoice
                 icon={<RefreshCw className="size-5" />}
@@ -1155,13 +1259,15 @@ function AddTriggerDialog({
                 </>
               ) : kind === "poll" ? (
                 <PollFields form={poll} setForm={setPoll} />
+              ) : kind === "bot" ? (
+                <InboxFields form={inbox} setForm={setInbox} />
               ) : (
                 <WebhookFields form={webhook} setForm={setWebhook} />
               )}
             </div>
             <div className="grid gap-2 border-t p-4">
-              {(webhookIssue ?? pollIssue) && (
-                <p className="text-xs text-destructive">{webhookIssue ?? pollIssue}</p>
+              {(webhookIssue ?? pollIssue ?? inboxIssue) && (
+                <p className="text-xs text-destructive">{webhookIssue ?? pollIssue ?? inboxIssue}</p>
               )}
               {error && <p className="text-sm text-destructive">{error}</p>}
               <DialogFooter>
@@ -1169,7 +1275,7 @@ function AddTriggerDialog({
                   <ArrowLeft data-icon="inline-start" /> Back
                 </Button>
                 <Button type="submit" disabled={create.isPending || incomplete}>
-                  {create.isPending ? "Adding…" : `Add ${kind}`}
+                  {create.isPending ? "Adding…" : kind === "bot" ? "Add inbox" : `Add ${kind}`}
                 </Button>
               </DialogFooter>
             </div>
@@ -1239,10 +1345,14 @@ function EditTriggerDialog({
   const [poll, setPoll] = useState<PollFormState>(() =>
     trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
   );
+  const [inbox, setInbox] = useState<InboxFormState>(() =>
+    trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
+  );
   const [error, setError] = useState<string | null>(null);
   const cronIssue = trigger.kind === "schedule" && !oneShotAt ? cronProblem(cron) : null;
   const webhookIssue = trigger.kind === "webhook" ? webhookFormProblem(webhook) : null;
   const pollIssue = trigger.kind === "poll" ? pollFormProblem(poll) : null;
+  const inboxIssue = trigger.kind === "bot" ? inboxFormProblem(inbox) : null;
   const save = useMutation({
     mutationFn: () =>
       api(
@@ -1256,7 +1366,9 @@ function EditTriggerDialog({
             }
           : trigger.kind === "poll"
             ? pollPayload(poll)
-            : webhookPayload(webhook),
+            : trigger.kind === "bot"
+              ? inboxPayload(inbox)
+              : webhookPayload(webhook),
       ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
@@ -1270,19 +1382,23 @@ function EditTriggerDialog({
       ? (!oneShotAt && (!cron.trim() || cronIssue !== null)) || !summary.trim()
       : trigger.kind === "poll"
         ? pollIssue !== null
-        : webhookIssue !== null;
+        : trigger.kind === "bot"
+          ? inboxIssue !== null
+          : webhookIssue !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>Edit {trigger.kind}</DialogTitle>
+          <DialogTitle>Edit {trigger.kind === "bot" ? "inbox" : trigger.kind}</DialogTitle>
           <DialogDescription>
             {trigger.kind === "schedule"
               ? "Changes reconcile to the Temporal Schedule immediately; the next fire uses them."
               : trigger.kind === "poll"
                 ? "Spec changes reset the cursor: the next fire re-baselines against the source."
-                : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
+                : trigger.kind === "bot"
+                  ? "Sender and routing changes apply to the next event another bot addresses here."
+                  : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -1342,13 +1458,15 @@ function EditTriggerDialog({
               </>
             ) : trigger.kind === "poll" ? (
               <PollFields form={poll} setForm={setPoll} />
+            ) : trigger.kind === "bot" ? (
+              <InboxFields form={inbox} setForm={setInbox} />
             ) : (
               <WebhookFields form={webhook} setForm={setWebhook} />
             )}
           </div>
           <div className="grid gap-2 border-t p-4">
-            {(webhookIssue ?? pollIssue) && (
-              <p className="text-xs text-destructive">{webhookIssue ?? pollIssue}</p>
+            {(webhookIssue ?? pollIssue ?? inboxIssue) && (
+              <p className="text-xs text-destructive">{webhookIssue ?? pollIssue ?? inboxIssue}</p>
             )}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>

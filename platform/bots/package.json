@@ -12,6 +12,7 @@
     "./config": "./src/config.ts",
     "./rendering": "./src/rendering.ts",
     "./events": "./src/events.ts",
+    "./admission": "./src/admission.ts",
     "./credentials": "./src/credentials.ts"
   },
   "scripts": {

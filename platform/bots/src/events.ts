@@ -48,6 +48,7 @@ export function renderAdmittedEvent(
     data: promptData ?? document.data,
     ...(document.correlationId === undefined ? {} : { correlationId: document.correlationId }),
     ...(document.links === undefined ? {} : { links: document.links }),
+    ...(document.inReplyTo === undefined ? {} : { inReplyTo: document.inReplyTo }),
   });
 }
 

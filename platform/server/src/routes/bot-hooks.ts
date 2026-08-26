@@ -3,22 +3,11 @@ import { eq } from "drizzle-orm";
 import { schema } from "@lightspeed/platform-db";
 import type { BotWebhookTriggerSpec } from "@lightspeed/platform-db/schema";
 import type { BotEventDocumentV1 } from "@lightspeed/bots/contracts";
-import {
-  constantTimeEquals,
-  computeRouteSession,
-  evaluateFilter,
-  extractWebhookEvent,
-  verifyWebhook,
-  type FilterContext,
-} from "@lightspeed/bots/webhooks";
+import { constantTimeEquals, extractWebhookEvent, verifyWebhook } from "@lightspeed/bots/webhooks";
+import { admitTriggerEvent } from "@lightspeed/bots/admission";
 import { GrantLeaseCache } from "@lightspeed/bots/credentials";
 import type { AppContext } from "../context.js";
-import {
-  admitBotEvent,
-  checkTriggerBreaker,
-  errorMessage,
-  recordActivity,
-} from "./bot-common.js";
+import { admissionDeps, checkTriggerBreaker, errorMessage } from "./bot-common.js";
 import { engineClientFor } from "./gateway.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -109,12 +98,6 @@ export function botHookRoutes(ctx: AppContext) {
     );
     const occurredAt = new Date().toISOString();
     const source = `webhook:${row.trigger.name}`;
-    const filterContext: FilterContext = {
-      event: { id: extraction.eventId, kind: extraction.kind, source, occurredAt },
-      data: extraction.data,
-      headers: extraction.headers,
-    };
-
     const document: BotEventDocumentV1 = {
       version: 1,
       kind: extraction.kind,
@@ -126,63 +109,20 @@ export function botHookRoutes(ctx: AppContext) {
     };
 
     try {
-      if (row.trigger.filter !== null) {
-        const filtered = evaluateFilter(row.trigger.filter, filterContext);
-        if (!filtered.matched) {
-          // Archive without delivering so the envelope stays replayable and
-          // the activity feed can explain the skip.
-          const { duplicate } = await admitBotEvent(ctx, {
-            bot: row.bot,
-            universe: row.universe,
-            eventId: extraction.eventId,
-            document,
-            ...(extraction.promptData === undefined ? {} : { promptData: extraction.promptData }),
-            triggerId: row.trigger.id,
-            deliver: false,
-          });
-          if (!duplicate) {
-            await recordActivity(ctx, row.bot.id, filtered.error ? "filter_error" : "filtered", {
-              eventId: extraction.eventId,
-              detail: filtered.error ?? `filter did not match: ${row.trigger.filter}`,
-            });
-          }
-          return c.json({ eventId: extraction.eventId, filtered: true, duplicate }, 202);
-        }
-      }
-
-      const routed = computeRouteSession(
-        row.bot.name,
-        row.trigger.route,
-        spec.preset,
-        extraction,
-        filterContext,
-      );
-      if (routed.error) {
-        await recordActivity(ctx, row.bot.id, "route_fallback", {
-          eventId: extraction.eventId,
-          detail: routed.error,
-        });
-      }
-      const coalesce = row.trigger.coalesce;
-      const { event, duplicate } = await admitBotEvent(ctx, {
+      // The shared trigger pipeline: filter (archive on miss), route,
+      // coalesce, delivery policy, store-then-wake.
+      const admitted = await admitTriggerEvent(await admissionDeps(ctx, row.universe), {
         bot: row.bot,
-        universe: row.universe,
+        trigger: row.trigger,
+        universeId: row.universe.lightspeedUniverseId,
         eventId: extraction.eventId,
         document,
         ...(extraction.promptData === undefined ? {} : { promptData: extraction.promptData }),
-        triggerId: row.trigger.id,
-        ...(routed.session === undefined ? {} : { session: routed.session }),
-        ...(coalesce === null
-          ? {}
-          : {
-              coalesce: {
-                key: `${row.trigger.id}|${routed.session?.sessionId ?? "main"}`,
-                ...coalesce,
-              },
-            }),
-        ...(row.trigger.deliver === null ? {} : { whenBusy: row.trigger.deliver.whenBusy }),
       });
-      return c.json({ eventId: event.id, duplicate }, 202);
+      if (admitted.archived) {
+        return c.json({ eventId: extraction.eventId, filtered: true, duplicate: admitted.duplicate }, 202);
+      }
+      return c.json({ eventId: admitted.event.id, duplicate: admitted.duplicate }, 202);
     } catch (error) {
       return c.json({ error: "event admission failed", failure: errorMessage(error) }, 502);
     }

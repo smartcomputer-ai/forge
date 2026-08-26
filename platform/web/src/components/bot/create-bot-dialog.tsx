@@ -13,6 +13,8 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -59,6 +61,7 @@ export function CreateBotDialog({
   const [profileId, setProfileId] = useState("");
   const [brief, setBrief] = useState("");
   const [runsPerDay, setRunsPerDay] = useState("");
+  const [acceptsBotEvents, setAcceptsBotEvents] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const idInvalid = botId.trim().length > 0 && !ID_PATTERN.test(botId.trim());
   const reset = () => {
@@ -68,6 +71,7 @@ export function CreateBotDialog({
     setDescription("");
     setBrief("");
     setRunsPerDay("");
+    setAcceptsBotEvents(false);
     setError(null);
   };
   const create = useMutation({
@@ -79,6 +83,7 @@ export function CreateBotDialog({
         profileId,
         ...(brief.trim() ? { brief: brief.trim() } : {}),
         ...(runsPerDay.trim() ? { runsPerDay: Number(runsPerDay) } : {}),
+        ...(acceptsBotEvents ? { acceptsBotEvents: true } : {}),
       }),
     onSuccess: async ({ bot }) => {
       await queryClient.invalidateQueries({ queryKey: ["bots", universeId] });
@@ -192,6 +197,20 @@ export function CreateBotDialog({
               />
               <FieldDescription>Budget: events beyond the cap wait for the next UTC day.</FieldDescription>
             </Field>
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <Label htmlFor="bot-accepts-bot-events" className="text-sm">
+                Accept events from other bots
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Creates an inbox trigger so other bots in this universe can address this one.
+                  Narrow the senders on the trigger later.
+                </span>
+              </Label>
+              <Switch
+                id="bot-accepts-bot-events"
+                checked={acceptsBotEvents}
+                onCheckedChange={setAcceptsBotEvents}
+              />
+            </div>
           </div>
           <div className="grid gap-2 border-t p-4">
             {error && <p className="text-sm text-destructive">{error}</p>}

@@ -576,8 +576,8 @@ export interface Bot {
   routedSessionTtlMs: number | null;
   /** Whether this bot's sessions get the mutating self-configuration tools. */
   selfConfig: boolean;
-  /** Whether this bot's sessions get bot_emit (rate-capped self events). */
-  selfEmit: boolean;
+  /** Whether this bot's sessions get bot_emit: events to itself or to other bots' inboxes (rate-capped). */
+  emit: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
@@ -645,11 +645,17 @@ export interface BotCoalesce {
   maxCount: number;
 }
 
+/** Inbox: which bots may address this one; absent = any bot in the universe. */
+export interface BotInboxSpec {
+  from?: string[];
+}
+
 export interface BotTrigger {
   /** Authored id; the API addresses triggers by it. */
   name: string;
-  kind: "schedule" | "webhook" | "poll";
-  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec;
+  /** `bot` is the inbox for events other bots address here; at most one per bot. */
+  kind: "schedule" | "webhook" | "poll" | "bot";
+  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec | BotInboxSpec;
   filter: string | null;
   route: BotRoute | null;
   coalesce: BotCoalesce | null;
@@ -756,6 +762,12 @@ export interface BotEventEnvelope {
   occurredAt: string;
   ref: string;
   session: { sessionId: string; label: string } | null;
+  /** Sending bot id for bot-originated events; null for world events. */
+  sender: string | null;
+  /** Federation hop count; 0 for world events. */
+  hops: number;
+  /** Receipts: the asked event's #N at the answering bot. */
+  inReplyTo: { bot: string; seq: number } | null;
   receivedAt: string;
 }
 

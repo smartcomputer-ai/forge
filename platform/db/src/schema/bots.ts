@@ -52,11 +52,11 @@ export const bots = pgTable(
      */
     selfConfig: boolean("self_config").default(false).notNull(),
     /**
-     * Capability grant: whether the bot's sessions get `bot_emit`
-     * (self-originated events). Off by default; enabled bots are further
-     * rate-capped to break feedback loops.
+     * Capability grant: whether the bot's sessions get `bot_emit` — events to
+     * itself or addressed to another bot's inbox. Off by default; emitting
+     * bots are rate-capped to break feedback loops.
      */
-    selfEmit: boolean("self_emit").default(false).notNull(),
+    emit: boolean("emit").default(false).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -93,7 +93,15 @@ export type BotPollTriggerSpec = {
   items?: string | null;
   cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
 };
-export type BotTriggerSpec = BotScheduleTriggerSpec | BotWebhookTriggerSpec | BotPollTriggerSpec;
+/** Inbox: which bots may address this one; absent = any bot in the universe. */
+export type BotInboxTriggerSpec = {
+  from?: string[];
+};
+export type BotTriggerSpec =
+  | BotScheduleTriggerSpec
+  | BotWebhookTriggerSpec
+  | BotPollTriggerSpec
+  | BotInboxTriggerSpec;
 
 /** Poll cursor state: Lightspeed-owned, operator-visible, resettable. */
 export type BotPollCursorState = {
@@ -122,7 +130,8 @@ export const botTriggers = pgTable(
       .notNull()
       .references(() => bots.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
-    kind: text("kind", { enum: ["schedule", "webhook", "poll"] }).notNull(),
+    /** `bot` is the inbox for events other bots address here; at most one per bot. */
+    kind: text("kind", { enum: ["schedule", "webhook", "poll", "bot"] }).notNull(),
     /** Per-kind configuration document. */
     spec: jsonb("spec").$type<BotTriggerSpec>().notNull(),
     /** CEL over {event, data, headers}; non-matching events archive instead of delivering. */
@@ -175,6 +184,18 @@ export const botEvents = pgTable(
     promptRef: text("prompt_ref"),
     /** Routed session target recorded at admission; replay reuses it. */
     session: jsonb("session").$type<{ sessionId: string; label: string }>(),
+    /** Sending bot for bot-originated events (self or addressed); null for world events. */
+    senderBotId: uuid("sender_bot_id").references(() => bots.id, { onDelete: "set null" }),
+    /** Federation loop bound: 0 for world events, the causing delivery's highest + 1 for bot events. */
+    hops: integer("hops").default(0).notNull(),
+    /**
+     * Private return route of an addressed event that asked for a receipt:
+     * the asking bot and its logical session (base id, never a generation).
+     * Never on the wire.
+     */
+    replyTo: jsonb("reply_to").$type<{ botId: string; session?: { sessionId: string; label: string } }>(),
+    /** Public correlation of a receipt: the asked event's #N at the answering bot. */
+    inReplyTo: jsonb("in_reply_to").$type<{ bot: string; seq: number }>(),
     receivedAt: createdAt(),
   },
   (t) => [

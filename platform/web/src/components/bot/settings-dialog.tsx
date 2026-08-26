@@ -53,7 +53,7 @@ export function BotSettingsDialog({
     bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 3_600_000)) : "",
   );
   const [selfConfig, setSelfConfig] = useState(bot.selfConfig);
-  const [selfEmit, setSelfEmit] = useState(bot.selfEmit);
+  const [emit, setEmit] = useState(bot.emit);
   const [enabled, setEnabled] = useState(bot.enabled);
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
@@ -74,7 +74,7 @@ export function BotSettingsDialog({
           ? Math.round(Number(routedTtlHours) * 3_600_000)
           : null,
         selfConfig,
-        selfEmit,
+        emit,
         enabled,
       }),
     onSuccess: async ({ bot: updated }) => {
@@ -217,13 +217,13 @@ export function BotSettingsDialog({
           </div>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-self-emit" className="text-sm">
-              Self-emitted events
+              Emit events
               <span className="block text-xs font-normal text-muted-foreground">
-                Lets the bot post events to itself (bot_emit). Rate-capped by the flood breaker
-                (default 60/hour) to break feedback loops.
+                Lets the bot post events to itself and address other bots&apos; inboxes (bot_emit).
+                Rate-capped by the flood breaker (default 60/hour) to break feedback loops.
               </span>
             </Label>
-            <Switch id="bot-settings-self-emit" checked={selfEmit} onCheckedChange={setSelfEmit} />
+            <Switch id="bot-settings-self-emit" checked={emit} onCheckedChange={setEmit} />
           </div>
           <div className="flex items-center justify-between rounded-md border p-3">
             <Label htmlFor="bot-settings-enabled" className="text-sm">

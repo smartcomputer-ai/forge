@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { and, count, desc, eq, getTableColumns, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, inArray, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@lightspeed/platform-db";
 import { BOT_STATE_QUERY, botWorkflowId, type BotEventDocumentV1 } from "@lightspeed/bots/contracts";
@@ -55,7 +55,9 @@ const botCreateSchema = z.object({
   breaker: breakerInput.nullish(),
   routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullish(),
   selfConfig: z.boolean().optional(),
-  selfEmit: z.boolean().optional(),
+  emit: z.boolean().optional(),
+  /** Create the `inbox` trigger (kind bot) so other bots can address this one. */
+  acceptsBotEvents: z.boolean().optional(),
 });
 const botUpdateSchema = z
   .object({
@@ -67,7 +69,7 @@ const botUpdateSchema = z
     breaker: breakerInput.nullable().optional(),
     routedSessionTtlMs: z.number().int().min(60_000).max(8_640_000_000).nullable().optional(),
     selfConfig: z.boolean().optional(),
-    selfEmit: z.boolean().optional(),
+    emit: z.boolean().optional(),
     enabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "at least one field is required");
@@ -152,7 +154,7 @@ export function botRoutes(ctx: AppContext) {
         breaker: body.data.breaker ?? null,
         routedSessionTtlMs: body.data.routedSessionTtlMs ?? null,
         selfConfig: body.data.selfConfig ?? false,
-        selfEmit: body.data.selfEmit ?? false,
+        emit: body.data.emit ?? false,
       })
       .onConflictDoNothing()
       .returning();
@@ -160,6 +162,14 @@ export function botRoutes(ctx: AppContext) {
 
     try {
       await signalBotConfig(botStart(bot, access.universe.lightspeedUniverseId));
+      if (body.data.acceptsBotEvents === true) {
+        const temporal = await getTemporal();
+        await createTrigger(triggerConfigDeps(access.universe, temporal), {
+          bot,
+          universeId: access.universe.lightspeedUniverseId,
+          input: triggerCreateInput.parse({ name: "inbox", kind: "bot" }),
+        });
+      }
     } catch (error) {
       await ctx.db.delete(bots).where(eq(bots.id, bot.id));
       return c.json(
@@ -227,7 +237,7 @@ export function botRoutes(ctx: AppContext) {
           breaker: found.bot.breaker,
           routedSessionTtlMs: found.bot.routedSessionTtlMs,
           selfConfig: found.bot.selfConfig,
-          selfEmit: found.bot.selfEmit,
+          emit: found.bot.emit,
           enabled: found.bot.enabled,
         })
         .where(eq(bots.id, found.bot.id));
@@ -459,8 +469,20 @@ export function botRoutes(ctx: AppContext) {
       .limit(limit + 1);
     const events = rows.slice(0, limit);
     const last = events.at(-1);
+    // Senders by authored id; the row key and the private return route stay inside.
+    const senderIds = [...new Set(events.flatMap((event) => (event.senderBotId === null ? [] : [event.senderBotId])))];
+    const senders = new Map(
+      senderIds.length === 0
+        ? []
+        : (await ctx.db.select({ id: bots.id, name: bots.name }).from(bots).where(inArray(bots.id, senderIds))).map(
+            (row) => [row.id, row.name] as const,
+          ),
+    );
     return c.json({
-      events: events.map(({ botId: _botId, triggerId: _triggerId, ...event }) => event),
+      events: events.map(({ botId: _botId, triggerId: _triggerId, replyTo: _replyTo, senderBotId, ...event }) => ({
+        ...event,
+        sender: senderBotId === null ? null : (senders.get(senderBotId) ?? null),
+      })),
       nextCursor: rows.length > limit && last ? encodeHistoryCursor(last.receivedAt, last.id) : null,
     });
   });

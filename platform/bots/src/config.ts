@@ -149,7 +149,21 @@ export const breakerInput = z.object({
   fires: z.number().int().min(1).max(100_000),
   windowMs: z.number().int().min(1_000).max(86_400_000),
 });
+/** Inbox spec: which bots may address this one; absent = any bot in the universe. */
+export const inboxSpecInput = z.object({
+  from: z.array(botNameInput).max(100).optional(),
+});
 export const triggerCreateInput = z.discriminatedUnion("kind", [
+  z.object({
+    name: botNameInput,
+    kind: z.literal("bot"),
+    spec: inboxSpecInput.default({}),
+    filter: celInput.nullish(),
+    route: routeInput.nullish(),
+    coalesce: coalesceInput.nullish(),
+    deliver: deliverInput.nullish(),
+    enabled: z.boolean().default(true),
+  }),
   z.object({
     name: botNameInput,
     kind: z.literal("schedule"),
@@ -191,6 +205,7 @@ export const triggerUpdateInput = z
 export type TriggerUpdateInput = z.infer<typeof triggerUpdateInput>;
 
 type ScheduleSpecRow = { cron: string | null; at: string | null; timezone: string; summary: string };
+type InboxSpecRow = { from?: string[] };
 type WebhookSpecRow = {
   token: string;
   verification:
@@ -361,7 +376,7 @@ export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
 
 async function validateTriggerGrants(
   deps: BotConfigDeps,
-  spec: WebhookSpecRow | PollSpecRow | ScheduleSpecRow,
+  spec: WebhookSpecRow | PollSpecRow | ScheduleSpecRow | InboxSpecRow,
 ): Promise<void> {
   const grantIds = new Set<string>();
   if ("verification" in spec && spec.verification.scheme === "hmac-sha256") {
@@ -378,13 +393,45 @@ async function validateTriggerGrants(
 }
 
 /** Create a trigger; the single code path behind the API and the bot's own tools. */
+function normalizeInboxSpec(spec: z.infer<typeof inboxSpecInput>): InboxSpecRow {
+  const from = spec.from === undefined ? [] : [...new Set(spec.from)];
+  return from.length === 0 ? {} : { from };
+}
+
 export async function createTrigger(
   deps: BotConfigDeps,
   args: { bot: BotRow; universeId: string; input: TriggerCreateInput },
 ): Promise<BotTriggerRow> {
   const { bot, universeId, input } = args;
+  if (input.kind === "bot") {
+    // One inbox per bot: `to: "b"` must mean exactly one event in B, and
+    // the per-receiver event id is unique only because of this.
+    const [inbox] = await deps.db
+      .select()
+      .from(schema.botTriggers)
+      .where(and(eq(schema.botTriggers.botId, bot.id), eq(schema.botTriggers.kind, "bot")))
+      .limit(1);
+    if (inbox) {
+      throw new BotConfigError(
+        `this bot already has an inbox (trigger ${inbox.name}); a bot has at most one trigger of kind bot`,
+        409,
+      );
+    }
+  }
   const values =
-    input.kind === "poll"
+    input.kind === "bot"
+      ? {
+          botId: bot.id,
+          name: input.name,
+          kind: input.kind,
+          spec: normalizeInboxSpec(input.spec),
+          filter: input.filter ?? null,
+          route: normalizeRoute(input.route),
+          coalesce: input.coalesce ?? null,
+          deliver: input.deliver ?? null,
+          enabled: input.enabled,
+        }
+      : input.kind === "poll"
       ? {
           botId: bot.id,
           name: input.name,
@@ -450,7 +497,7 @@ export async function updateTrigger(
       input.deliver !== undefined)
   ) {
     throw new BotConfigError(
-      "filters, routes, coalescing, and delivery policy apply to webhook and poll triggers",
+      "filters, routes, coalescing, and delivery policy apply to webhook, poll, and bot triggers",
       400,
     );
   }
@@ -473,6 +520,10 @@ export async function updateTrigger(
       const parsed = scheduleSpecInput.safeParse(input.spec);
       if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
       changes.spec = normalizeScheduleSpec(parsed.data);
+    } else if (existing.kind === "bot") {
+      const parsed = inboxSpecInput.safeParse(input.spec);
+      if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
+      changes.spec = normalizeInboxSpec(parsed.data);
     } else {
       const parsed = webhookSpecInput.safeParse(input.spec);
       if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);

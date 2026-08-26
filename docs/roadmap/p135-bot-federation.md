@@ -2,8 +2,11 @@
 
 **Status**
 
-- Proposed 2026-08-26, recommendation-first design. **Slice 1 (identity
-  and ids) implemented 2026-08-26**; slices 2–3 not started.
+- Proposed 2026-08-26, recommendation-first design. **Implemented
+  2026-08-26**: slices 1–3 (identity and ids, bus, receipts) all landed the
+  same day; see the slice notes for what shipped and the two deliberate
+  deviations (poll filter misses stay unarchived; a `filtered` refusal
+  leaves the archived copy at the receiver for replay).
 - Three revisions the same day, each after review:
   1. The first draft allowed bot → bot *configuration* behind a `manage`
      grant while deferring *creation*. Lukas asked why one and not the
@@ -426,19 +429,53 @@ through admission or a promise through P134.
    event rendering. Pulled forward from §2: `bot_emit` is **joined**
    (`BOT_TOOLS_REVISION` 9), so the rate-cap refusal reaches the model.
    Temporal and session identities did not change; no stack reset.
-2. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
-   form, create-dialog checkbox); `bot_emit { to }` joined with typed
-   refusals; shared admission function in the bots package; `emit` grant
-   rename; `sender_bot_id`, `hops`, `description` columns; deterministic
-   ids; hop cut and rate cap; `bot:directory`; `emitted → b` / `loop_cut`
-   activity; "from `a` #12" chip. Migration replaces `self_emit`; dev
-   databases reset.
-3. **Receipts** (~0.5 d): `reply` flag, `reply_to` column, `sendReceipts`
-   on delivery finish, `bot.reply` rendering, `replied` activity, reply
-   chip.
+2. **Bus** — **done 2026-08-26.** Migration `0004_bot_federation`
+   (platform schema revision 5): `bots.self_emit` → `emit`;
+   `bot_events.sender_bot_id`, `hops`, `reply_to` (private route),
+   `in_reply_to` (public correlation). `bot` trigger kind with
+   `{ from? }`, at most one per bot (validated in `createTrigger`, so both
+   the API and `bot_trigger_put` refuse a second), full filter / route /
+   coalesce / deliver knobs, the CEL filter sees `event.sender`; the web
+   has an "Inbox" trigger kind and the create dialog's "accept events
+   from other bots" creates it (`acceptsBotEvents`). One admission
+   pipeline in `platform/bots/src/admission.ts` — `storeBotEvent`
+   (store-then-wake) and `admitTriggerEvent` (filter → route → coalesce →
+   delivery policy → store) — now used by webhook ingest, polls,
+   schedules, self and addressed emits, and receipts. `bot_emit { to,
+   reply }` is joined and returns `{ to, seq }` or a typed refusal
+   (`unknown_bot`, `bot_disabled`, `no_inbox`, `not_accepted`,
+   `filtered`, `breaker_tripped`, `rate_limited`, `loop_cut`; the code is
+   in the error payload). Ids are `bot:<senderRowKey>:<digest(invocation)>`;
+   `hops` rides on the inbox value and the controller hands the invoking
+   session's hop count and logical route to the tool activity
+   (`BotControllerSummary.invocation`, never shown to the model); the cut
+   is `MAX_BOT_HOPS = 8`; the sender rate cap counts every emit by
+   `sender_bot_id`. The controller puts the `bot:directory` catalog
+   (P136 external catalog) before every delivery of an emitting bot;
+   events carry `source: "bot:<id>"` and `sender`; event rows on the API
+   carry `sender` and `inReplyTo` and the UI shows "from `a`" / "reply to
+   #17 at `b`" / hop chips. Activity kinds: `emitted`, `loop_cut`,
+   `replied`, `reply_failed`. Deviation: poll items that miss the filter
+   still advance the cursor without an archived row (a busy feed would
+   bury the envelope store), so polls filter before the shared pipeline
+   and use only its store step.
+3. **Receipts** — **done 2026-08-26.** `reply: true` stores the asking
+   bot and its logical route on the receiver's row; the controller calls
+   `sendBotReceipts` when a delivery carrying an ask finishes (any finish
+   status, including `appended` / `steered` acknowledgements) and one
+   `bot.reply` per asked event is admitted into the asker's session
+   (`whenBusy: queue`, bypassing its inbox), rendered as "reply to your
+   #17 at `b`". Receipt ids are `reply:<answeringRowKey>:<digest(delivery,
+   event)>`; a receipt that would cross the hop bound is recorded as
+   `loop_cut` instead.
 4. On demand: publish/subscribe, wiring view, A2A target, deadlines.
 
-2 → 3 in order; a two-bot exchange is visible after 2 and complete after 3.
+Verification 2026-08-26: `npm run check` green; the bots Temporal
+integration suite (14 scenarios, including "publishes the directory
+before a delivery and sends receipts when it finishes" with history
+replay) green; `test:migrations` (empty install and upgrade from the
+baseline through 0004) green. A live two-bot exchange through the model
+was not run.
 
 ## Tests
 
@@ -454,13 +491,13 @@ through admission or a promise through P134.
   each admission failure; directory rendering (only accepting bots, the
   empty line) and the no-op put; receipt document and id per finish status;
   `reply_to` route for main and keyed senders.
-- **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`): `a` addresses `b` from a
-  keyed session with `reply: true` → `b` runs and resolves → the receipt
-  lands in `a`'s keyed session (after a generation rotation too); `b`'s
-  filter rejects → `a`'s tool result says `filtered` and `b` never runs;
-  `a`→`b`→`a` ping-pong stops at `MAX_BOT_HOPS` with `loop_cut`; change
-  `b`'s `displayName` while its controller runs → its sessions show the
-  new label, every id and `from` list untouched; controller history
-  replay.
+- **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`, fake activities): an
+  emitting bot publishes the directory before the run and sends receipts
+  with the delivery's status, summary, and hop count for asked events
+  only; controller history replay. Admission itself (inbox resolution,
+  refusals, hops, the directory, receipts) is unit-tested as pure
+  functions in `test/admission.test.ts`; the full `a`→`b`→`a` exchange
+  through real activities and a database has no harness yet and is the
+  first thing to dogfood on the dev stack.
 - **Platform**: `test:migrations` asserts the columns; `npm run check` and
   `check:identity` green; the bots integration suite keeps its scenarios.

@@ -467,6 +467,17 @@ function StoredEventRow({
       <p className="mt-1 text-muted-foreground wrap-anywhere">
         {event.kind} · {event.source} · received {timeLabel(event.receivedAt)}
       </p>
+      {(event.sender || event.inReplyTo) && (
+        <p className="mt-1 flex flex-wrap gap-1">
+          {event.sender && <Badge variant="outline">from {event.sender}</Badge>}
+          {event.inReplyTo && (
+            <Badge variant="outline">
+              reply to #{event.inReplyTo.seq} at {event.inReplyTo.bot}
+            </Badge>
+          )}
+          {event.hops > 0 && <Badge variant="outline">{event.hops} hop{event.hops === 1 ? "" : "s"}</Badge>}
+        </p>
+      )}
       {(decision?.summary ?? decision?.failure) && (
         <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{decision?.summary ?? decision?.failure}</p>
       )}

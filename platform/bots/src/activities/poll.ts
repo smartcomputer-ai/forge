@@ -10,7 +10,7 @@ import {
   type BotEventDocumentV1,
   type BotStartV1,
 } from "../contracts/bots.js";
-import { allocateBotEventSeq, renderAdmittedEvent, wakeBotController } from "../events.js";
+import { storeBotEvent } from "../admission.js";
 import {
   MAX_POLL_CONSECUTIVE_FAILURES,
   MAX_POLL_ITEMS_PER_FIRE,
@@ -344,20 +344,6 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
 
       const client = clientFor(row.lightspeedUniverseId);
       const source = `poll:${row.trigger.name}`;
-      const start: BotStartV1 = {
-        version: 1,
-        universeId: row.lightspeedUniverseId,
-        botId: row.bot.id,
-        botName: row.bot.name,
-        displayName: row.bot.displayName,
-        profileId: row.bot.profileId,
-        brief: row.bot.brief,
-        runsPerDay: row.bot.runsPerDay,
-        routedSessionTtlMs: row.bot.routedSessionTtlMs,
-        selfConfig: row.bot.selfConfig,
-        selfEmit: row.bot.selfEmit,
-        enabled: row.bot.enabled,
-      };
       let admitted = 0;
       let filtered = 0;
       for (const entry of fresh) {
@@ -396,72 +382,26 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
           summary: pollItemSummary(row.trigger.name, entry.item, entry.key),
           data: entry.item,
         };
-        const seq = await allocateBotEventSeq(config.db, row.bot.id);
-        const prompt = renderAdmittedEvent(seq, document);
-        const stored = await client.call("blobs/put", {
-          blobs: [
-            { bytesBase64: Buffer.from(JSON.stringify(document), "utf8").toString("base64") },
-            { bytesBase64: Buffer.from(prompt, "utf8").toString("base64") },
-          ],
-        });
-        let ref = stored.result.blobs?.[0]?.blobRef;
-        let promptRef = stored.result.blobs?.[1]?.blobRef;
-        if (!ref || !promptRef) throw new Error("event document storage returned no ref");
-        let eventSeq: number | null = seq;
-        const inserted = await config.db
-          .insert(schema.botEvents)
-          .values({
-            botId: row.bot.id,
+        await storeBotEvent(
+          { db: config.db, temporal: config.temporal, engine: client },
+          {
+            bot: row.bot,
+            universeId: row.lightspeedUniverseId,
             eventId,
-            seq,
+            document,
             triggerId: row.trigger.id,
-            kind: "poll",
-            source,
-            occurredAt: new Date(occurredAt),
-            ref,
-            promptRef,
-            session: routed.session ?? null,
-          })
-          .onConflictDoNothing()
-          .returning();
-        if (inserted.length === 0) {
-          const [existing] = await config.db
-            .select()
-            .from(schema.botEvents)
-            .where(
-              and(eq(schema.botEvents.botId, row.bot.id), eq(schema.botEvents.eventId, eventId)),
-            )
-            .limit(1);
-          if (existing) {
-            ref = existing.ref;
-            promptRef = existing.promptRef ?? undefined;
-            eventSeq = existing.seq;
-          }
-        }
-        const event: BotEvent = {
-          version: 1,
-          id: eventId,
-          ref,
-          ...(eventSeq === null ? {} : { seq: eventSeq }),
-          ...(promptRef === undefined ? {} : { promptRef }),
-          ...(routed.session === undefined ? {} : { session: routed.session }),
-          ...(row.trigger.coalesce === null
-            ? {}
-            : {
-                coalesce: {
-                  key: `${row.trigger.id}|${routed.session?.sessionId ?? "main"}`,
-                  ...row.trigger.coalesce,
-                },
-              }),
-          ...(row.trigger.deliver === null ? {} : { deliver: { whenBusy: row.trigger.deliver.whenBusy } }),
-        };
-        await wakeBotController({
-          db: config.db,
-          temporal: config.temporal,
-          start,
-          event,
-          stored: inserted.length > 0,
-        });
+            ...(routed.session === undefined ? {} : { session: routed.session }),
+            ...(row.trigger.coalesce === null
+              ? {}
+              : {
+                  coalesce: {
+                    key: `${row.trigger.id}|${routed.session?.sessionId ?? "main"}`,
+                    ...row.trigger.coalesce,
+                  },
+                }),
+            ...(row.trigger.deliver === null ? {} : { whenBusy: row.trigger.deliver.whenBusy }),
+          },
+        );
         admitted += 1;
       }
 
