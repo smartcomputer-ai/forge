@@ -26,8 +26,10 @@ for runtime in platform channels; do
   tar -tzf "dist/runtime/$runtime.tar.gz" ./package.json >/dev/null
 done
 tar -tzf dist/runtime/platform.tar.gz ./platform/server/src/main.ts >/dev/null
+tar -tzf dist/runtime/platform.tar.gz ./platform/bots/src/webhooks.ts >/dev/null
 tar -tzf dist/runtime/platform.tar.gz ./platform/web/dist/index.html >/dev/null
 tar -tzf dist/runtime/channels.tar.gz ./platform/channels/src/runtime/main.ts >/dev/null
+tar -tzf dist/runtime/channels.tar.gz ./platform/bots/src/runtime/main.ts >/dev/null
 channels_files="$(mktemp)"
 trap 'rm -f "$channels_files"' EXIT
 tar -tzf dist/runtime/channels.tar.gz > "$channels_files"

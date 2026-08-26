@@ -263,7 +263,8 @@ upstream Lightspeed gateway.
 
 The Bots workers (workflow and activity roles of `platform/bots`) share the
 Platform database and reach the core runtime through the public JSON-RPC
-endpoint.
+endpoint. Release deployments run them as a separate process from the same
+image payload as Channels.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |

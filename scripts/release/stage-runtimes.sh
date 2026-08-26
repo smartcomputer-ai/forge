@@ -19,6 +19,7 @@ copy_workspace_manifests() {
   cp package.json package-lock.json tsconfig.json "$root/"
   for workspace in \
     clients/typescript \
+    platform/bots \
     platform/channels \
     platform/cli \
     platform/configurator-mcp \
@@ -61,6 +62,7 @@ stage_runtime() {
 
 stage_runtime platform @lightspeed/platform-server \
   clients/typescript/dist \
+  platform/bots/src \
   platform/server/src \
   platform/db/src \
   platform/db/migrations \
@@ -68,6 +70,7 @@ stage_runtime platform @lightspeed/platform-server \
   platform/web/dist
 stage_runtime channels @lightspeed/channels \
   clients/typescript/dist \
+  platform/bots/src \
   platform/channels/src \
   platform/db/src \
   platform/db/migrations

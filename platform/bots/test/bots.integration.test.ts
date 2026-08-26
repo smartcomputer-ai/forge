@@ -39,6 +39,10 @@ const botId = "0b54d227-08a2-45a8-9b3f-6a4c21d1a222";
 const botName = "triage";
 const eventRef = `sha256:${"a".repeat(64)}`;
 const resolveRef = `sha256:${"b".repeat(64)}`;
+const defaultUsageActivities = {
+  readBotRunUsage: async () => null,
+  countBotDescendantSessions: async () => ({ count: 0 }),
+};
 
 describe.runIf(runIntegration)("bot controller workflow", () => {
   let env: TestWorkflowEnvironment;
@@ -66,6 +70,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => {
           calls.push("ensureSession");
           return { profileRevision: 4 };
@@ -194,6 +199,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         startBotRun: async () => {
@@ -273,6 +279,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         startBotRun: async () => {
@@ -360,6 +367,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => {
           ensured += 1;
           return { profileRevision: ensured };
@@ -443,6 +451,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
           ensured.push(sessionId);
           return { profileRevision: 1 };
@@ -573,6 +582,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         startBotRun: async ({
@@ -691,6 +701,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         startBotRun: async ({ deliveryId }: { deliveryId: string }) => {
@@ -785,6 +796,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "active" }),
         startBotRun: async () => {
@@ -873,6 +885,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: hostActive ? "running" : "idle" }),
         startBotRun: async () => {
@@ -979,6 +992,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
           ensured.push(sessionId);
           return { profileRevision: 1 };
@@ -1083,6 +1097,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
           ensured.push(sessionId);
           if (sessionId === keyed) {
@@ -1190,6 +1205,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
@@ -1316,6 +1332,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
           ensured.push(sessionId);
           if (sessionId === botSessionId(rotateBotName)) {
@@ -1388,6 +1405,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
           ensured.push(sessionId);
           return { profileRevision: 1 };
@@ -1463,6 +1481,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         admitScheduleEvent: async (input: unknown) => {
           admissions.push(input);
           return { admitted: true, eventId: "schedule:test", duplicate: false };
@@ -1563,6 +1582,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async () => ({ profileRevision: 1 }),
         readBotSessionStatus: async () => ({ status: "idle" }),
         readBotRunUsage: async () => null,
@@ -1699,6 +1719,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
       namespace: env.namespace ?? "default",
       taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
       activities: {
+        ...defaultUsageActivities,
         ensureBotSession: async (input: { sessionId: string; toolsRef?: string | null }) => {
           ensured.push({ sessionId: input.sessionId, toolsRef: input.toolsRef });
           return {
