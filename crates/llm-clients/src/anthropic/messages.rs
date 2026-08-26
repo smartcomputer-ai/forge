@@ -808,6 +808,13 @@ impl Thinking {
             extra: BTreeMap::new(),
         }
     }
+
+    /// Set the thinking display mode (`"summarized"` or `"omitted"`); current
+    /// models omit the summary text unless asked for it.
+    pub fn with_display(mut self, display: impl Into<String>) -> Self {
+        self.display = Some(display.into());
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -825,8 +832,25 @@ pub struct Message {
     pub stop_reason: Option<StopReason>,
     #[serde(default)]
     pub stop_sequence: Option<String>,
+    /// Populated only for `stop_reason: refusal`.
+    #[serde(default)]
+    pub stop_details: Option<StopDetails>,
     #[serde(default)]
     pub usage: Option<Usage>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
+}
+
+/// Structured detail for a `refusal` stop: the classifier category (an open
+/// set such as `cyber` or `reasoning_extraction`) and an explanation.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct StopDetails {
+    #[serde(rename = "type", default)]
+    pub r#type: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub explanation: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -928,6 +952,8 @@ pub struct Usage {
     pub server_tool_use: Option<Value>,
     #[serde(default)]
     pub service_tier: Option<String>,
+    #[serde(default)]
+    pub output_tokens_details: Option<OutputTokensDetails>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -936,6 +962,24 @@ impl Usage {
     pub fn total_tokens(&self) -> Option<u64> {
         Some(self.input_tokens? + self.output_tokens?)
     }
+
+    /// Billed thinking tokens from `output_tokens_details`; a subset of
+    /// `output_tokens` that is reported even when the summary text is
+    /// omitted from the response.
+    pub fn thinking_tokens(&self) -> Option<u64> {
+        self.output_tokens_details
+            .as_ref()
+            .and_then(|details| details.thinking_tokens)
+    }
+}
+
+/// Read-only breakdown of `output_tokens`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct OutputTokensDetails {
+    #[serde(default)]
+    pub thinking_tokens: Option<u64>,
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, Value>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -1169,6 +1213,7 @@ mod tests {
             "model": "claude-sonnet-4-5",
             "stop_reason": "tool_use",
             "content": [
+                { "type": "thinking", "thinking": "Zurich first.", "signature": "sig" },
                 { "type": "text", "text": "Checking" },
                 {
                     "type": "tool_use",
@@ -1180,7 +1225,8 @@ mod tests {
             "usage": {
                 "input_tokens": 3,
                 "output_tokens": 4,
-                "cache_read_input_tokens": 2
+                "cache_read_input_tokens": 2,
+                "output_tokens_details": { "thinking_tokens": 1 }
             }
         }))
         .expect("message");
@@ -1191,6 +1237,11 @@ mod tests {
             message.usage.as_ref().and_then(Usage::total_tokens),
             Some(7)
         );
+        assert_eq!(
+            message.usage.as_ref().and_then(Usage::thinking_tokens),
+            Some(1)
+        );
+        assert_eq!(message.thinking_blocks().count(), 1);
         let tools = message.tool_uses().collect::<Vec<_>>();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "get_weather");

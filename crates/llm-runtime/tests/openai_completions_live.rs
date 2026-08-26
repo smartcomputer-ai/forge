@@ -52,6 +52,7 @@ fn entry(
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     }
 }
 

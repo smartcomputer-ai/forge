@@ -169,7 +169,7 @@ function DangerZone({ universe }: { universe: Universe }) {
               <AlertDialogHeader>
                 <AlertDialogTitle>Archive {universe.name}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  All routing rules stop matching and paired chats go silent until the
+                  All bots stop firing and paired chats go silent until the
                   universe is restored.
                 </AlertDialogDescription>
               </AlertDialogHeader>

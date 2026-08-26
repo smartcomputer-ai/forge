@@ -22,7 +22,7 @@ export function resourceFeatureDisableReasons(
 /// or `provision`); absence leaves a session's selection unchanged.
 export function hasProfileEnvironment(document: Record<string, unknown>): boolean {
   const environment = record(document.environment);
-  return environment.type === "existing" || environment.type === "provision";
+  return environment.type === "existing" || environment.type === "provision" || environment.type === "inherit";
 }
 
 export function hasSessionFeature(config: unknown, name: ResourceFeature): boolean {

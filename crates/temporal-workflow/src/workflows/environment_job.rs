@@ -399,13 +399,17 @@ fn collect_terminal_emissions(
                 engine::PromiseResolution::Failed { error_ref }
             }
         };
+        let Ok(promise_id) = engine::PromiseId::try_new(subscription.promise_id.clone()) else {
+            continue;
+        };
         subscription.notified = true;
-        let promise_id = engine::PromiseId::new(subscription.promise_id.clone());
+        let holder_workflow_id = subscription.holder_workflow_id.clone();
         emissions.push((
-            subscription.holder_workflow_id.clone(),
+            holder_workflow_id.clone(),
             engine::EmissionEnvelope::source_resolution(
                 universe_id,
                 workflow_id.to_owned(),
+                &holder_workflow_id,
                 promise_id,
                 resolution,
             ),
@@ -449,7 +453,7 @@ mod tests {
         EnvironmentJobSubscription {
             holder_workflow_id: "universe/session_1".to_owned(),
             promise_id: "promise_1".to_owned(),
-            completion_key: "job-0".to_owned(),
+            completion_key: "job_1".to_owned(),
             job_id: JobId::new("job_1"),
             notified: false,
         }
@@ -467,7 +471,7 @@ mod tests {
             },
         );
         assert!(matches!(
-            workflow_tool_recovery(&workflow).resolutions.get("job-0"),
+            workflow_tool_recovery(&workflow).resolutions.get("job_1"),
             Some(engine::PromiseResolution::Resolved {
                 payload_ref: Some(actual),
             }) if actual == &payload_ref
@@ -523,7 +527,7 @@ mod tests {
                 session_id.clone(),
                 engine::EventSeq::new(7),
                 invocation_id.clone(),
-                "job-0".to_owned(),
+                "job_1".to_owned(),
                 engine::PromiseId::new("promise_1"),
             ),
         );
@@ -539,7 +543,7 @@ mod tests {
                 session_id,
                 engine::EventSeq::new(8),
                 invocation_id,
-                "job-0".to_owned(),
+                "job_1".to_owned(),
                 engine::PromiseId::new("promise_1"),
             ),
         );

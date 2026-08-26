@@ -1,9 +1,9 @@
 //! Generic promise/concurrency tool contracts.
 
 use engine::{
-    FunctionToolSpec, PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseOwnership,
-    PromiseScope, PromiseStatus, RunId, ToolEffect, ToolKind, ToolName, ToolParallelism, ToolSpec,
-    promise_cancel_effect, promise_detach_effect,
+    FunctionToolSpec, PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseId,
+    PromiseOwnership, PromiseScope, PromiseStatus, RunId, ToolEffect, ToolKind, ToolName,
+    ToolParallelism, ToolSpec, promise_cancel_effect, promise_detach_effect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -73,41 +73,20 @@ pub struct AwaitArgs {
     pub promises: Vec<String>,
     #[serde(default)]
     pub mode: AwaitModeArg,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub mailbox: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timeout_ms: Option<u64>,
 }
 
 impl AwaitArgs {
-    /// Validate and dedupe the promise id list: 1..=32 non-empty ids,
-    /// duplicates collapsed in first-occurrence order.
-    pub fn validated_promise_ids(&self) -> ToolResult<Vec<String>> {
-        if self.promises.is_empty() && !self.mailbox {
+    /// Validate and dedupe the promise id list: 1..=32 well-formed
+    /// `promise_<n>` ids, duplicates collapsed in first-occurrence order.
+    pub fn validated_promise_ids(&self) -> ToolResult<Vec<PromiseId>> {
+        if self.promises.is_empty() {
             return Err(ToolError::InvalidRequest {
-                message: "await requires at least one promise id or mailbox=true".to_owned(),
+                message: "await requires at least one promise id".to_owned(),
             });
         }
-        if self.promises.len() > MAX_AWAIT_PROMISES {
-            return Err(ToolError::InvalidRequest {
-                message: format!(
-                    "await promises must contain at most {MAX_AWAIT_PROMISES} promise ids"
-                ),
-            });
-        }
-        let mut seen = std::collections::BTreeSet::new();
-        let mut promise_ids = Vec::with_capacity(self.promises.len());
-        for promise_id in &self.promises {
-            if promise_id.trim().is_empty() {
-                return Err(ToolError::InvalidRequest {
-                    message: "await promise ids must be non-empty strings".to_owned(),
-                });
-            }
-            if seen.insert(promise_id.clone()) {
-                promise_ids.push(promise_id.clone());
-            }
-        }
-        Ok(promise_ids)
+        validated_promise_ids(&self.promises, MAX_AWAIT_PROMISES, "await")
     }
 }
 
@@ -126,7 +105,7 @@ pub struct CancelArgs {
 }
 
 impl CancelArgs {
-    pub fn validated_promise_ids(&self) -> ToolResult<Vec<String>> {
+    pub fn validated_promise_ids(&self) -> ToolResult<Vec<PromiseId>> {
         validated_non_empty_promise_ids(&self.promises, MAX_CANCEL_PROMISES, "cancel")
     }
 }
@@ -138,7 +117,7 @@ pub struct DetachArgs {
 }
 
 impl DetachArgs {
-    pub fn validated_promise_ids(&self) -> ToolResult<Vec<String>> {
+    pub fn validated_promise_ids(&self) -> ToolResult<Vec<PromiseId>> {
         validated_non_empty_promise_ids(&self.promises, MAX_DETACH_PROMISES, "detach")
     }
 }
@@ -192,7 +171,7 @@ impl PromiseControlError {
 }
 
 fn supplied_promise_controls<'a>(
-    requested_ids: &[String],
+    requested_ids: &[PromiseId],
     runtime: Option<&'a PromiseControlCallRuntime>,
 ) -> Result<&'a [engine::PromiseControlRuntime], PromiseControlError> {
     let runtime = runtime
@@ -208,7 +187,7 @@ fn supplied_promise_controls<'a>(
             .controls
             .iter()
             .zip(requested_ids)
-            .any(|(control, requested)| control.promise_id.as_str() != requested)
+            .any(|(control, requested)| control.promise_id != *requested)
     {
         return Err(PromiseControlError::new(
             "promise control runtime facts do not match the requested promise ids",
@@ -376,7 +355,7 @@ pub fn concurrency_tool_bundles(
     let mut bundles = vec![
         function_bundle(
             AWAIT_TOOL_NAME,
-            "Park this run until the listed promises settle or, with mailbox=true, until the next inbound message. Timeout returns a partial snapshot; remaining promises stay pending and re-awaitable.",
+            "Park this run until the listed promises settle. Timeout returns a partial snapshot; remaining promises stay pending and re-awaitable.",
             await_input_schema(),
         )?,
         function_bundle(
@@ -430,12 +409,24 @@ fn validated_non_empty_promise_ids(
     promises: &[String],
     max_promises: usize,
     tool_name: &str,
-) -> ToolResult<Vec<String>> {
+) -> ToolResult<Vec<PromiseId>> {
     if promises.is_empty() {
         return Err(ToolError::InvalidRequest {
             message: format!("{tool_name} promises must contain at least one promise id"),
         });
     }
+    validated_promise_ids(promises, max_promises, tool_name)
+}
+
+/// Parse the model's promise id list: every entry must be a `promise_<n>`
+/// handle as returned by a promise-creating tool. A malformed entry is an
+/// ordinary tool error, so a mistyped id costs the model one turn and
+/// never reaches the engine.
+fn validated_promise_ids(
+    promises: &[String],
+    max_promises: usize,
+    tool_name: &str,
+) -> ToolResult<Vec<PromiseId>> {
     if promises.len() > max_promises {
         return Err(ToolError::InvalidRequest {
             message: format!(
@@ -446,13 +437,14 @@ fn validated_non_empty_promise_ids(
     let mut seen = std::collections::BTreeSet::new();
     let mut promise_ids = Vec::with_capacity(promises.len());
     for promise_id in promises {
-        if promise_id.trim().is_empty() {
-            return Err(ToolError::InvalidRequest {
-                message: format!("{tool_name} promise ids must be non-empty strings"),
-            });
-        }
+        let promise_id =
+            PromiseId::try_new(promise_id.clone()).map_err(|error| ToolError::InvalidRequest {
+                message: format!(
+                    "{tool_name} promise ids must be the promise_<n> handles returned by promise-creating tools: {error}"
+                ),
+            })?;
         if seen.insert(promise_id.clone()) {
-            promise_ids.push(promise_id.clone());
+            promise_ids.push(promise_id);
         }
     }
     Ok(promise_ids)
@@ -496,9 +488,9 @@ fn await_input_schema() -> Value {
                 "maxItems": MAX_AWAIT_PROMISES,
                 "items": {
                     "type": "string",
-                    "description": "Promise id returned by a promise-creating tool such as agent_spawn, job_submit, or sleep."
+                    "description": "Promise handle (promise_<n>) returned by a promise-creating tool such as agent_spawn, job_submit, or sleep."
                 },
-                "description": "Promise ids to park on. May be empty when mailbox is true."
+                "description": "Promise ids to park on."
             },
             "mode": {
                 "type": "string",
@@ -510,11 +502,6 @@ fn await_input_schema() -> Value {
                 "type": ["integer", "null"],
                 "minimum": 0,
                 "description": "Optional timeout in milliseconds. On timeout the call returns a partial snapshot and the remaining promises stay pending and re-awaitable. Omit for an indefinite wait."
-            },
-            "mailbox": {
-                "type": "boolean",
-                "default": false,
-                "description": "When true, also wake on the next inbound message instead of queueing that message as a separate run."
             }
         },
         "required": ["promises"],
@@ -532,7 +519,7 @@ fn promise_cancel_input_schema() -> Value {
                 "maxItems": MAX_CANCEL_PROMISES,
                 "items": {
                     "type": "string",
-                    "description": "Promise id to revoke."
+                    "description": "Promise handle (promise_<n>) to revoke."
                 },
                 "description": "Promise ids to cancel."
             }
@@ -552,7 +539,7 @@ fn promise_detach_input_schema() -> Value {
                 "maxItems": MAX_DETACH_PROMISES,
                 "items": {
                     "type": "string",
-                    "description": "Promise id to detach."
+                    "description": "Promise handle (promise_<n>) to detach."
                 },
                 "description": "Promise ids to promote to session scope."
             }
@@ -575,10 +562,6 @@ fn sleep_input_schema() -> Value {
         "required": ["ms"],
         "additionalProperties": false
     })
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 #[cfg(test)]
@@ -609,11 +592,11 @@ mod tests {
     #[test]
     fn cancel_uses_supplied_status_and_ownership_facts() {
         let args = CancelArgs {
-            promises: vec!["pending".to_owned(), "resolved".to_owned()],
+            promises: vec!["promise_1".to_owned(), "promise_2".to_owned()],
         };
         let facts = runtime(vec![
             known_control(
-                "pending",
+                "promise_1",
                 PromiseOwnership::Model,
                 PromiseScope::Run {
                     run_id: RunId::new(1),
@@ -621,7 +604,7 @@ mod tests {
                 PromiseStatus::Pending,
             ),
             known_control(
-                "resolved",
+                "promise_2",
                 PromiseOwnership::Model,
                 PromiseScope::Session,
                 PromiseStatus::Resolved,
@@ -633,11 +616,11 @@ mod tests {
             output.promises,
             vec![
                 CancelPromiseOutput {
-                    promise_id: "pending".to_owned(),
+                    promise_id: "promise_1".to_owned(),
                     status: "cancelled".to_owned(),
                 },
                 CancelPromiseOutput {
-                    promise_id: "resolved".to_owned(),
+                    promise_id: "promise_2".to_owned(),
                     status: "resolved".to_owned(),
                 },
             ]
@@ -646,7 +629,7 @@ mod tests {
         assert_eq!(effects[0].kind, engine::PROMISE_CANCEL_EFFECT_KIND);
 
         let runtime_owned = runtime(vec![known_control(
-            "pending",
+            "promise_1",
             PromiseOwnership::Runtime,
             PromiseScope::Session,
             PromiseStatus::Pending,
@@ -654,30 +637,30 @@ mod tests {
         assert_eq!(
             cancel_promises_from_runtime(
                 &CancelArgs {
-                    promises: vec!["pending".to_owned()],
+                    promises: vec!["promise_1".to_owned()],
                 },
                 Some(&runtime_owned),
             )
             .expect_err("runtime-owned rejection")
             .to_string(),
-            "promise pending is runtime-owned and cannot be cancelled"
+            "promise promise_1 is runtime-owned and cannot be cancelled"
         );
     }
 
     #[test]
     fn promise_control_rejects_unknown_missing_and_mismatched_facts() {
         let args = CancelArgs {
-            promises: vec!["missing".to_owned()],
+            promises: vec!["promise_99".to_owned()],
         };
         let unknown = runtime(vec![engine::PromiseControlRuntime {
-            promise_id: engine::PromiseId::new("missing"),
+            promise_id: engine::PromiseId::new("promise_99"),
             state: PromiseControlStateRuntime::Unknown,
         }]);
         assert_eq!(
             cancel_promises_from_runtime(&args, Some(&unknown))
                 .expect_err("unknown rejection")
                 .to_string(),
-            "unknown promise missing"
+            "unknown promise promise_99"
         );
         assert_eq!(
             cancel_promises_from_runtime(&args, None)
@@ -686,7 +669,7 @@ mod tests {
             "promise control runtime facts are missing"
         );
         let mismatched = runtime(vec![engine::PromiseControlRuntime {
-            promise_id: engine::PromiseId::new("other"),
+            promise_id: engine::PromiseId::new("promise_98"),
             state: PromiseControlStateRuntime::Unknown,
         }]);
         assert_eq!(
@@ -700,17 +683,17 @@ mod tests {
     #[test]
     fn detach_uses_supplied_scope_status_and_ownership_facts() {
         let args = DetachArgs {
-            promises: vec!["session".to_owned(), "current".to_owned()],
+            promises: vec!["promise_1".to_owned(), "promise_2".to_owned()],
         };
         let facts = runtime(vec![
             known_control(
-                "session",
+                "promise_1",
                 PromiseOwnership::Model,
                 PromiseScope::Session,
                 PromiseStatus::Pending,
             ),
             known_control(
-                "current",
+                "promise_2",
                 PromiseOwnership::Model,
                 PromiseScope::Run {
                     run_id: RunId::new(7),
@@ -724,11 +707,11 @@ mod tests {
             output.promises,
             vec![
                 DetachPromiseOutput {
-                    promise_id: "session".to_owned(),
+                    promise_id: "promise_1".to_owned(),
                     status: "already_detached".to_owned(),
                 },
                 DetachPromiseOutput {
-                    promise_id: "current".to_owned(),
+                    promise_id: "promise_2".to_owned(),
                     status: "detached".to_owned(),
                 },
             ]
@@ -739,37 +722,37 @@ mod tests {
         for (facts, expected) in [
             (
                 known_control(
-                    "p",
+                    "promise_1",
                     PromiseOwnership::Runtime,
                     PromiseScope::Session,
                     PromiseStatus::Pending,
                 ),
-                "promise p is runtime-owned and cannot be detached".to_owned(),
+                "promise promise_1 is runtime-owned and cannot be detached".to_owned(),
             ),
             (
                 known_control(
-                    "p",
+                    "promise_1",
                     PromiseOwnership::Model,
                     PromiseScope::Session,
                     PromiseStatus::Failed,
                 ),
-                "promise p is already failed".to_owned(),
+                "promise promise_1 is already failed".to_owned(),
             ),
             (
                 known_control(
-                    "p",
+                    "promise_1",
                     PromiseOwnership::Model,
                     PromiseScope::Run {
                         run_id: RunId::new(8),
                     },
                     PromiseStatus::Pending,
                 ),
-                "promise p is scoped to run 8, not current run 7".to_owned(),
+                "promise promise_1 is scoped to run 8, not current run 7".to_owned(),
             ),
         ] {
             let error = detach_promises_from_runtime(
                 &DetachArgs {
-                    promises: vec!["p".to_owned()],
+                    promises: vec!["promise_1".to_owned()],
                 },
                 RunId::new(7),
                 Some(&runtime(vec![facts])),
@@ -782,35 +765,21 @@ mod tests {
     #[test]
     fn await_accepts_promises_mode_and_timeout() {
         let args: AwaitArgs = serde_json::from_value(json!({
-            "promises": ["promise_a", "promise_b"],
+            "promises": ["promise_1", "promise_2"],
             "mode": "any",
             "timeout_ms": 1000
         }))
         .expect("decode await args");
 
-        assert_eq!(args.promises, vec!["promise_a", "promise_b"]);
+        assert_eq!(args.promises, vec!["promise_1", "promise_2"]);
         assert_eq!(args.mode, AwaitModeArg::Any);
-        assert!(!args.mailbox);
         assert_eq!(args.timeout_ms, Some(1000));
-    }
-
-    #[test]
-    fn await_accepts_mailbox_only() {
-        let args: AwaitArgs = serde_json::from_value(json!({
-            "promises": [],
-            "mailbox": true
-        }))
-        .expect("decode await args");
-
-        assert!(args.promises.is_empty());
-        assert!(args.mailbox);
-        assert!(args.validated_promise_ids().expect("valid").is_empty());
     }
 
     #[test]
     fn await_defaults_to_all_mode_without_timeout() {
         let args: AwaitArgs = serde_json::from_value(json!({
-            "promises": ["promise_a"]
+            "promises": ["promise_1"]
         }))
         .expect("decode await args");
 
@@ -821,7 +790,7 @@ mod tests {
     #[test]
     fn await_rejects_unknown_fields() {
         serde_json::from_value::<AwaitArgs>(json!({
-            "promises": ["promise_a"],
+            "promises": ["promise_1"],
             "until": "activity"
         }))
         .expect_err("unknown fields are denied");
@@ -830,14 +799,32 @@ mod tests {
     #[test]
     fn await_validation_dedupes_and_preserves_order() {
         let args: AwaitArgs = serde_json::from_value(json!({
-            "promises": ["promise_b", "promise_a", "promise_b"]
+            "promises": ["promise_2", "promise_1", "promise_2"]
         }))
         .expect("decode await args");
 
         assert_eq!(
             args.validated_promise_ids().expect("validated ids"),
-            vec!["promise_b", "promise_a"]
+            vec![PromiseId::new("promise_2"), PromiseId::new("promise_1")]
         );
+    }
+
+    #[test]
+    fn await_validation_rejects_malformed_ids() {
+        let malformed: AwaitArgs = serde_json::from_value(json!({
+            "promises": ["wtp:sha256:0000", "promise_7"]
+        }))
+        .expect("decode await args");
+        assert!(matches!(
+            malformed.validated_promise_ids(),
+            Err(ToolError::InvalidRequest { .. })
+        ));
+        let leading_zero: CancelArgs =
+            serde_json::from_value(json!({ "promises": ["promise_07"] })).expect("decode");
+        assert!(matches!(
+            leading_zero.validated_promise_ids(),
+            Err(ToolError::InvalidRequest { .. })
+        ));
     }
 
     #[test]
@@ -873,13 +860,13 @@ mod tests {
     #[test]
     fn detach_validation_dedupes_and_preserves_order() {
         let args: DetachArgs = serde_json::from_value(json!({
-            "promises": ["promise_b", "promise_a", "promise_b"]
+            "promises": ["promise_2", "promise_1", "promise_2"]
         }))
         .expect("decode detach args");
 
         assert_eq!(
             args.validated_promise_ids().expect("validated ids"),
-            vec!["promise_b", "promise_a"]
+            vec![PromiseId::new("promise_2"), PromiseId::new("promise_1")]
         );
     }
 

@@ -967,6 +967,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "hex",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",
@@ -3501,6 +3502,7 @@ dependencies = [
  "schemars_derive",
  "serde",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -4228,6 +4230,8 @@ dependencies = [
  "futures",
  "futures-util",
  "hex",
+ "jsonschema",
+ "schemars",
  "serde",
  "serde_json",
  "sha2",

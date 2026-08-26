@@ -163,70 +163,6 @@ channelAccount
     printJson(await api("DELETE", `/api/v1/channel-accounts/${id}`)),
   );
 
-const binding = program.command("binding").description("manage channel bindings");
-
-binding
-  .command("list")
-  .requiredOption("--universe <id>")
-  .action(async (opts: { universe: string }) =>
-    printJson(await api("GET", `/api/v1/universes/${opts.universe}/bindings`)),
-  );
-
-binding
-  .command("add")
-  .requiredOption("--universe <id>")
-  .requiredOption("--name <name>", "stable rule name, e.g. lukas-chat")
-  .requiredOption("--session-key <key>")
-  .requiredOption("--channel-account <id>", "channel account UUID")
-  .option("--scope <scope>", "direct | group")
-  .option("--profile <id>", "Lightspeed profile id")
-  .option("--no-pairing", "open binding without a pairing code")
-  .option("--priority <n>", "lower wins", parseInt)
-  .action(
-    async (opts: {
-      universe: string;
-      name: string;
-      sessionKey: string;
-      channelAccount: string;
-      scope?: string;
-      profile?: string;
-      pairing: boolean;
-      priority?: number;
-    }) =>
-      printJson(
-        await api("POST", `/api/v1/universes/${opts.universe}/bindings`, {
-          name: opts.name,
-          sessionKey: opts.sessionKey,
-          channelAccountId: opts.channelAccount,
-          matchScope: opts.scope ?? null,
-          profileId: opts.profile ?? null,
-          ...(opts.pairing ? {} : { pairingCode: null }),
-          ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
-        }),
-      ),
-  );
-
-binding
-  .command("show <id>")
-  .action(async (id: string) => printJson(await api("GET", `/api/v1/bindings/${id}`)));
-
-binding
-  .command("rotate <id>")
-  .description("mint a fresh pairing code")
-  .action(async (id: string) =>
-    printJson(await api("POST", `/api/v1/bindings/${id}/rotate-pairing`)),
-  );
-
-binding
-  .command("disable <id>")
-  .action(async (id: string) =>
-    printJson(await api("PATCH", `/api/v1/bindings/${id}`, { enabled: false })),
-  );
-
-binding
-  .command("rm <id>")
-  .action(async (id: string) => printJson(await api("DELETE", `/api/v1/bindings/${id}`)));
-
 const userCmd = program.command("user").description("manage platform users (admin)");
 
 userCmd
@@ -257,60 +193,6 @@ userCmd
     printJson(
       await api("GET", "/api/auth/admin/list-users?limit=100"),
     ),
-  );
-
-const foundry = program.command("foundry").description("manage Foundry packs and events");
-
-foundry
-  .command("packs <universeId>")
-  .description("list a universe's foundry packs")
-  .action(async (universeId: string) =>
-    printJson(await api("GET", `/api/v1/universes/${universeId}/foundry-packs`)),
-  );
-
-foundry
-  .command("create-pack <universeId> <name> <repoUrl>")
-  .description("register a pack (kind: workflow)")
-  .option("--profile <id>", "manager profile", "foundry-manager")
-  .option("--environment-id <id>", "explicit environment override")
-  .action(async (universeId: string, name: string, repoUrl: string, opts: { profile: string; environmentId?: string }) =>
-    printJson(
-      await api("POST", `/api/v1/universes/${universeId}/foundry-packs`, {
-        name,
-        repoUrl,
-        managerProfileId: opts.profile,
-        ...(opts.environmentId === undefined ? {} : { environmentId: opts.environmentId }),
-      }),
-    ),
-  );
-
-foundry
-  .command("event <packId> <summary...>")
-  .description("send a durable event to a pack manager")
-  .option("--kind <kind>", "event kind", "operator.requested")
-  .option("--data <json>", "optional JSON event data")
-  .action(async (packId: string, summary: string[], opts: { kind: string; data?: string }) =>
-    printJson(
-      await api("POST", `/api/v1/foundry/packs/${packId}/events`, {
-        kind: opts.kind,
-        summary: summary.join(" "),
-        ...(opts.data === undefined ? {} : { data: JSON.parse(opts.data) as unknown }),
-      }),
-    ),
-  );
-
-foundry
-  .command("state <packId>")
-  .description("show the pack controller and event inbox state")
-  .action(async (packId: string) =>
-    printJson(await api("GET", `/api/v1/foundry/packs/${packId}/state`)),
-  );
-
-foundry
-  .command("releases <packId>")
-  .description("list recorded pack releases")
-  .action(async (packId: string) =>
-    printJson(await api("GET", `/api/v1/foundry/packs/${packId}/releases`)),
   );
 
 try {

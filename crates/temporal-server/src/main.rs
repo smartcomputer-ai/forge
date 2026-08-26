@@ -386,7 +386,7 @@ async fn run_both(args: BothArgs) -> anyhow::Result<()> {
         .public_base_url
         .clone()
         .unwrap_or_else(|| format!("http://{}", args.bind));
-    // Gateway and worker share one universe registry: fleet spawns and
+    // Gateway and worker share one universe registry: sub-agent spawns and
     // activity routing hit the same lazily-built per-universe state.
     let universes = Arc::new(UniverseRuntime::new(
         client.clone(),

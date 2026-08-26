@@ -79,7 +79,7 @@ describe("Telegram delivery activity", () => {
       activities.deliverChannelMessage(command({ type: "edit", messageId: "42", text: "new" })),
     ).resolves.toMatchObject({ messageIds: ["42"] });
     await expect(
-      activities.deliverChannelMessage(command({ type: "react", messageId: "42", emoji: "👍" })),
+      activities.deliverChannelMessage(command({ type: "react", messageId: "42", emoji: "👍", fromMe: false })),
     ).resolves.toMatchObject({ messageIds: ["42"] });
     expect(api.editMessageText).toHaveBeenCalledWith("-100123", 42, "new", {
       parse_mode: "HTML",

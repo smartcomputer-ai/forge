@@ -6,16 +6,19 @@
 
 pub mod anthropic_messages;
 pub mod blob_io;
+mod catalog_prompts;
 mod environment_prompts;
 pub mod error;
 pub mod executor;
 pub mod openai_completions;
 pub mod openai_responses;
 pub mod params;
+mod prompt_cache;
 pub mod provider_keys;
 pub mod result;
 pub mod secrets;
 mod skill_prompts;
+mod subagent_prompts;
 pub mod testing;
 
 pub use anthropic_messages::{

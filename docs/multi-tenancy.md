@@ -25,7 +25,7 @@ Isolation is enforced below the API boundary as well:
   public session IDs remain unchanged.
 - Per-universe runtime state is resolved lazily over deployment-shared pools
   and clients.
-- Registry reads, sessions, fleets, MCP servers, profiles, environments,
+- Registry reads, sessions, sub-agents, MCP servers, profiles, environments,
   credentials, and blobs cannot resolve across universes.
 
 All universes share the deployment task queue by default. Deployments sharing

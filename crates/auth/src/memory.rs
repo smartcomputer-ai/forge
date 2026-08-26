@@ -110,6 +110,41 @@ impl AuthGrantStore for InMemoryAuthGrantStore {
         Ok(record.clone())
     }
 
+    async fn record_grant_lease(
+        &self,
+        grant_id: &AuthGrantId,
+        leased_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError> {
+        let mut inner = self.inner.write().map_err(|_| lock_poisoned())?;
+        let record = inner
+            .get_mut(grant_id)
+            .ok_or_else(|| AuthRegistryError::GrantNotFound {
+                grant_id: grant_id.clone(),
+            })?;
+        record.last_leased_at_ms = Some(leased_at_ms);
+        record.lease_count = record.lease_count.saturating_add(1);
+        record.validate()?;
+        Ok(record.clone())
+    }
+
+    async fn record_grant_mint_expiry(
+        &self,
+        grant_id: &AuthGrantId,
+        expires_at_ms: i64,
+        updated_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError> {
+        let mut inner = self.inner.write().map_err(|_| lock_poisoned())?;
+        let record = inner
+            .get_mut(grant_id)
+            .ok_or_else(|| AuthRegistryError::GrantNotFound {
+                grant_id: grant_id.clone(),
+            })?;
+        record.expires_at_ms = Some(expires_at_ms);
+        record.updated_at_ms = updated_at_ms;
+        record.validate()?;
+        Ok(record.clone())
+    }
+
     async fn delete_grant(
         &self,
         grant_id: &AuthGrantId,
@@ -423,6 +458,7 @@ mod tests {
             grant_id: AuthGrantId::new(grant_id),
             provider_id: "static".to_owned(),
             provider_kind: AuthProviderKind::StaticBearer,
+            exposure: crate::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: None,
             subject_hint: None,
@@ -458,6 +494,19 @@ mod tests {
             .await
             .expect("list grants");
         assert_eq!(listed, vec![created.clone()]);
+
+        let first_lease = store
+            .record_grant_lease(&created.grant_id, 15)
+            .await
+            .expect("record first lease");
+        assert_eq!(first_lease.last_leased_at_ms, Some(15));
+        assert_eq!(first_lease.lease_count, 1);
+        let second_lease = store
+            .record_grant_lease(&created.grant_id, 16)
+            .await
+            .expect("record second lease");
+        assert_eq!(second_lease.last_leased_at_ms, Some(16));
+        assert_eq!(second_lease.lease_count, 2);
 
         let revoked = store
             .update_grant_status(&created.grant_id, AuthGrantStatus::Revoked, 20)

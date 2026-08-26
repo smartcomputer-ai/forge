@@ -6,18 +6,13 @@
 //! workflow can repair by itself: missed signals, terminated workflows, or
 //! promise/source state that is only visible by scanning session logs.
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core_agent_state};
 use async_trait::async_trait;
 use engine::{
     CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus, Promise,
-    PromiseId, PromiseResolution, PromiseScope, PromiseSource, RunId, RunRecord, RunStatus,
-    SessionId,
+    PromiseId, PromiseResolution, PromiseScope, PromiseSource, SessionId,
     storage::{
         AppendSessionEvents, ListSessions, SessionListCursor, SessionRecord, SessionStore,
         SessionStoreError,
@@ -50,8 +45,6 @@ pub struct ReaperStats {
     pub promises_examined: usize,
     pub holder_repairs_signalled: usize,
     pub holder_repairs_appended: usize,
-    pub child_cancels_signalled: usize,
-    pub child_cancels_appended: usize,
     pub stale_active_projections: usize,
     pub workflow_status_errors: usize,
     pub conflicts: usize,
@@ -65,8 +58,6 @@ impl ReaperStats {
         self.promises_examined += other.promises_examined;
         self.holder_repairs_signalled += other.holder_repairs_signalled;
         self.holder_repairs_appended += other.holder_repairs_appended;
-        self.child_cancels_signalled += other.child_cancels_signalled;
-        self.child_cancels_appended += other.child_cancels_appended;
         self.stale_active_projections += other.stale_active_projections;
         self.workflow_status_errors += other.workflow_status_errors;
         self.conflicts += other.conflicts;
@@ -74,10 +65,7 @@ impl ReaperStats {
     }
 
     fn repaired_anything(&self) -> bool {
-        self.holder_repairs_signalled > 0
-            || self.holder_repairs_appended > 0
-            || self.child_cancels_signalled > 0
-            || self.child_cancels_appended > 0
+        self.holder_repairs_signalled > 0 || self.holder_repairs_appended > 0
     }
 }
 
@@ -107,8 +95,6 @@ impl PromiseReaper {
                         promises_examined = stats.promises_examined,
                         holder_repairs_signalled = stats.holder_repairs_signalled,
                         holder_repairs_appended = stats.holder_repairs_appended,
-                        child_cancels_signalled = stats.child_cancels_signalled,
-                        child_cancels_appended = stats.child_cancels_appended,
                         stale_active_projections = stats.stale_active_projections,
                         workflow_status_errors = stats.workflow_status_errors,
                         conflicts = stats.conflicts,
@@ -162,7 +148,6 @@ struct LoadedSessionSnapshot {
 #[derive(Default)]
 struct ReaperPlan {
     holder_commands: BTreeMap<SessionId, Vec<CoreAgentCommand>>,
-    child_cancels: BTreeSet<(SessionId, RunId)>,
 }
 
 pub(super) async fn reap_universe_once(
@@ -187,15 +172,7 @@ pub(super) async fn reap_universe_once(
         &mut stats,
     )
     .await;
-    let plan = plan_repair(
-        universe_id,
-        &snapshots,
-        workflows.as_ref(),
-        &mut workflow_status_cache,
-        now_ms,
-        &mut stats,
-    )
-    .await;
+    let plan = plan_repair(&snapshots, now_ms, &mut stats);
 
     apply_holder_repairs(
         universe_id,
@@ -207,27 +184,11 @@ pub(super) async fn reap_universe_once(
         &mut stats,
     )
     .await;
-    apply_child_cancels(
-        ChildCancelContext {
-            universe_id,
-            store: append_store,
-            workflows: workflows.as_ref(),
-            snapshots: &snapshots,
-            workflow_status_cache: &mut workflow_status_cache,
-            now_ms,
-            stats: &mut stats,
-        },
-        plan.child_cancels,
-    )
-    .await;
     Ok(stats)
 }
 
-async fn plan_repair(
-    universe_id: Uuid,
+fn plan_repair(
     snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    workflows: &dyn WorkflowRepairClient,
-    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
     now_ms: u64,
     stats: &mut ReaperStats,
 ) -> ReaperPlan {
@@ -242,21 +203,10 @@ async fn plan_repair(
                     promise.promise_id.clone(),
                     PromiseResolution::Cancelled,
                 );
-                plan_source_cancel(&mut plan, &promise.source);
                 continue;
             }
 
-            if let Some(resolution) = promise_source_resolution(
-                universe_id,
-                snapshots,
-                workflows,
-                workflow_status_cache,
-                &mut plan,
-                &promise.source,
-                now_ms,
-            )
-            .await
-            {
+            if let Some(resolution) = promise_source_resolution(&promise.source, now_ms) {
                 plan_holder_resolution(
                     &mut plan,
                     holder_session_id,
@@ -284,60 +234,8 @@ fn plan_holder_resolution(
         });
 }
 
-fn plan_source_cancel(plan: &mut ReaperPlan, source: &PromiseSource) {
+fn promise_source_resolution(source: &PromiseSource, now_ms: u64) -> Option<PromiseResolution> {
     match source {
-        PromiseSource::Run {
-            target_session_id,
-            target_run_id,
-        } => {
-            if let Ok(session_id) = SessionId::try_new(target_session_id.clone()) {
-                plan.child_cancels
-                    .insert((session_id, RunId::new(*target_run_id)));
-            }
-        }
-        PromiseSource::Timer { .. } | PromiseSource::Workflow { .. } => {}
-    }
-}
-
-async fn promise_source_resolution(
-    universe_id: Uuid,
-    snapshots: &BTreeMap<SessionId, LoadedSessionSnapshot>,
-    workflows: &dyn WorkflowRepairClient,
-    workflow_status_cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
-    plan: &mut ReaperPlan,
-    source: &PromiseSource,
-    now_ms: u64,
-) -> Option<PromiseResolution> {
-    match source {
-        PromiseSource::Run {
-            target_session_id,
-            target_run_id,
-        } => {
-            let Ok(target_session_id) = SessionId::try_new(target_session_id.clone()) else {
-                return Some(PromiseResolution::Failed { error_ref: None });
-            };
-            let target_run_id = RunId::new(*target_run_id);
-            let Some(target) = snapshots.get(&target_session_id) else {
-                return Some(PromiseResolution::Failed { error_ref: None });
-            };
-            if let Some(record) = terminal_run_record(&target.state, target_run_id) {
-                return Some(run_record_resolution(record));
-            }
-            if target_run_is_nonterminal(&target.state, target_run_id)
-                && !workflow_is_running_cached(
-                    workflows,
-                    workflow_status_cache,
-                    universe_id,
-                    &target_session_id,
-                )
-                .await
-            {
-                plan.child_cancels
-                    .insert((target_session_id, target_run_id));
-                return Some(PromiseResolution::Failed { error_ref: None });
-            }
-            None
-        }
         PromiseSource::Timer { fire_at_ms } => {
             (*fire_at_ms <= now_ms).then_some(PromiseResolution::Resolved { payload_ref: None })
         }
@@ -358,40 +256,6 @@ fn promise_owner_live(state: &CoreAgentState, promise: &Promise) -> bool {
             .is_some_and(|run| run.run_id == run_id),
         PromiseScope::Session => state.lifecycle.status != CoreAgentStatus::Closed,
     }
-}
-
-fn terminal_run_record(state: &CoreAgentState, run_id: RunId) -> Option<&RunRecord> {
-    state
-        .runs
-        .completed
-        .iter()
-        .find(|record| record.run_id == run_id)
-}
-
-fn run_record_resolution(record: &RunRecord) -> PromiseResolution {
-    match record.status {
-        RunStatus::Completed => PromiseResolution::Resolved {
-            payload_ref: record.output_ref.clone(),
-        },
-        RunStatus::Failed | RunStatus::Cancelled => PromiseResolution::Failed {
-            error_ref: record
-                .failure
-                .as_ref()
-                .and_then(|failure| failure.message_ref.clone()),
-        },
-        RunStatus::Active | RunStatus::Parked | RunStatus::Cancelling => {
-            PromiseResolution::Failed { error_ref: None }
-        }
-    }
-}
-
-fn target_run_is_nonterminal(state: &CoreAgentState, run_id: RunId) -> bool {
-    state
-        .runs
-        .active
-        .as_ref()
-        .is_some_and(|run| run.run_id == run_id)
-        || state.runs.queued.iter().any(|run| run.run_id == run_id)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -490,18 +354,6 @@ async fn observe_active_projection_statuses(
     }
 }
 
-async fn workflow_is_running_cached(
-    workflows: &dyn WorkflowRepairClient,
-    cache: &mut BTreeMap<SessionId, SessionWorkflowStatus>,
-    universe_id: Uuid,
-    session_id: &SessionId,
-) -> bool {
-    matches!(
-        workflow_status_cached(workflows, cache, universe_id, session_id).await,
-        SessionWorkflowStatus::Running
-    )
-}
-
 async fn apply_holder_repairs(
     universe_id: Uuid,
     store: Arc<dyn SessionStore>,
@@ -551,94 +403,6 @@ async fn apply_holder_repairs(
                 );
             }
         }
-    }
-}
-
-struct ChildCancelContext<'a> {
-    universe_id: Uuid,
-    store: Arc<dyn SessionStore>,
-    workflows: &'a dyn WorkflowRepairClient,
-    snapshots: &'a BTreeMap<SessionId, LoadedSessionSnapshot>,
-    workflow_status_cache: &'a mut BTreeMap<SessionId, SessionWorkflowStatus>,
-    now_ms: u64,
-    stats: &'a mut ReaperStats,
-}
-
-async fn apply_child_cancels(
-    context: ChildCancelContext<'_>,
-    child_cancels: BTreeSet<(SessionId, RunId)>,
-) {
-    let ChildCancelContext {
-        universe_id,
-        store,
-        workflows,
-        snapshots,
-        workflow_status_cache,
-        now_ms,
-        stats,
-    } = context;
-    for (session_id, run_id) in child_cancels {
-        if workflow_is_running_cached(workflows, workflow_status_cache, universe_id, &session_id)
-            .await
-        {
-            let command = CoreAgentCommand::CancelRun { run_id };
-            match workflows
-                .signal_admissions(universe_id, &session_id, admissions(vec![command]))
-                .await
-            {
-                Ok(()) => {
-                    stats.child_cancels_signalled += 1;
-                    continue;
-                }
-                Err(WorkflowSignalFailure::NotFound) => {}
-                Err(WorkflowSignalFailure::Other(error)) => {
-                    stats.errors += 1;
-                    tracing::warn!(
-                        target: "temporal_server",
-                        %universe_id,
-                        %session_id,
-                        run_id = run_id.as_u64(),
-                        %error,
-                        "promise reaper failed to signal child cancellation"
-                    );
-                    continue;
-                }
-            }
-        }
-        let Some(snapshot) = snapshots.get(&session_id) else {
-            continue;
-        };
-        let command = direct_child_cancel_command(&snapshot.state, run_id);
-        match append_commands_direct(store.as_ref(), &session_id, snapshot, vec![command], now_ms)
-            .await
-        {
-            Ok(appended) => stats.child_cancels_appended += appended,
-            Err(DirectAppendError::Conflict) => stats.conflicts += 1,
-            Err(DirectAppendError::Other(error)) => {
-                stats.errors += 1;
-                tracing::warn!(
-                    target: "temporal_server",
-                    %universe_id,
-                    %session_id,
-                    run_id = run_id.as_u64(),
-                    %error,
-                    "promise reaper failed to append child cancellation"
-                );
-            }
-        }
-    }
-}
-
-fn direct_child_cancel_command(state: &CoreAgentState, run_id: RunId) -> CoreAgentCommand {
-    if state
-        .runs
-        .active
-        .as_ref()
-        .is_some_and(|active| active.run_id == run_id)
-    {
-        CoreAgentCommand::ForceCancelRun { run_id }
-    } else {
-        CoreAgentCommand::CancelRun { run_id }
     }
 }
 
@@ -723,6 +487,8 @@ async fn load_session_snapshots(
             .list_sessions(ListSessions {
                 cursor,
                 limit: SESSION_PAGE_LIMIT,
+                root_session_id: None,
+                parent_session_id: None,
             })
             .await?;
         for record in page.sessions {
@@ -831,13 +597,10 @@ fn now_ms() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
 
-    use engine::{
-        ActiveRun, BlobRef, CoreAgentCodec, CoreAgentEvent, ModelSelection, PromiseStatus,
-        ProviderApiKind, RunFailure, RunFailureKind, RunOrigin, RunSource,
-        storage::{CreateSession, InMemorySessionStore, ReadSessionEvents},
-    };
+    use engine::{ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus};
     use temporal_workflow::{DEFAULT_MODEL, default_run_config, default_session_config};
 
     use super::*;
@@ -912,175 +675,6 @@ mod tests {
         assert_eq!(stats.workflow_status_errors, 0);
     }
 
-    #[tokio::test]
-    async fn terminal_owner_cancels_pending_child_promise_and_child_run() {
-        let universe_id = Uuid::new_v4();
-        let holder_id = SessionId::new("holder");
-        let child_id = SessionId::new("child");
-        let promise_id = PromiseId::new("promise_child");
-        let holder_run_id = RunId::new(1);
-        let child_run_id = RunId::new(1);
-
-        let mut holder_state = open_state();
-        holder_state
-            .runs
-            .completed
-            .push(run_record(holder_run_id, RunStatus::Cancelled, None));
-        holder_state.promises.promises.insert(
-            promise_id.clone(),
-            Promise {
-                promise_id: promise_id.clone(),
-                source: PromiseSource::Run {
-                    target_session_id: child_id.as_str().to_owned(),
-                    target_run_id: child_run_id.as_u64(),
-                },
-                scope: PromiseScope::Run {
-                    run_id: holder_run_id,
-                },
-                ownership: engine::PromiseOwnership::Model,
-                status: PromiseStatus::Pending,
-                payload_ref: None,
-                error_ref: None,
-                deadline_ms: None,
-            },
-        );
-        let mut child_state = open_state();
-        child_state.runs.active = Some(active_run(child_run_id));
-
-        let snapshots = snapshots([
-            (holder_id.clone(), holder_state),
-            (child_id.clone(), child_state),
-        ]);
-        let workflows = FakeWorkflows::default();
-        let mut running_cache = BTreeMap::new();
-        let mut stats = ReaperStats::default();
-        let plan = plan_repair(
-            universe_id,
-            &snapshots,
-            &workflows,
-            &mut running_cache,
-            1_000,
-            &mut stats,
-        )
-        .await;
-
-        assert!(matches!(
-            &plan.holder_commands[&holder_id][0],
-            CoreAgentCommand::ResolvePromise {
-                promise_id: planned,
-                resolution: PromiseResolution::Cancelled
-            } if planned == &promise_id
-        ));
-        assert!(
-            plan.child_cancels
-                .contains(&(child_id.clone(), child_run_id))
-        );
-
-        let store = Arc::new(InMemorySessionStore::new());
-        create_store_session(store.as_ref(), &holder_id).await;
-        create_store_session(store.as_ref(), &child_id).await;
-        let append_store: Arc<dyn SessionStore> = store.clone();
-        let mut apply_stats = ReaperStats::default();
-        apply_holder_repairs(
-            universe_id,
-            append_store.clone(),
-            &workflows,
-            &snapshots,
-            plan.holder_commands,
-            2_000,
-            &mut apply_stats,
-        )
-        .await;
-        apply_child_cancels(
-            ChildCancelContext {
-                universe_id,
-                store: append_store,
-                workflows: &workflows,
-                snapshots: &snapshots,
-                workflow_status_cache: &mut running_cache,
-                now_ms: 2_000,
-                stats: &mut apply_stats,
-            },
-            plan.child_cancels,
-        )
-        .await;
-
-        assert_eq!(apply_stats.holder_repairs_appended, 1);
-        assert_eq!(apply_stats.child_cancels_appended, 1);
-        assert!(matches!(
-            first_event(store.as_ref(), &holder_id).await,
-            CoreAgentEvent::Promise(engine::PromiseEvent::Cancelled { promise_id: id })
-                if id == promise_id
-        ));
-        assert!(matches!(
-            first_event(store.as_ref(), &child_id).await,
-            CoreAgentEvent::Run(engine::RunEvent::ForceCancelled { run_id })
-                if run_id == child_run_id
-        ));
-    }
-
-    #[tokio::test]
-    async fn gone_child_workflow_fails_holder_promise_and_force_cancels_child() {
-        let universe_id = Uuid::new_v4();
-        let holder_id = SessionId::new("holder");
-        let child_id = SessionId::new("child");
-        let promise_id = PromiseId::new("promise_child");
-        let holder_run_id = RunId::new(1);
-        let child_run_id = RunId::new(1);
-
-        let mut holder_state = open_state();
-        holder_state.runs.active = Some(active_run(holder_run_id));
-        holder_state.promises.promises.insert(
-            promise_id.clone(),
-            Promise {
-                promise_id: promise_id.clone(),
-                source: PromiseSource::Run {
-                    target_session_id: child_id.as_str().to_owned(),
-                    target_run_id: child_run_id.as_u64(),
-                },
-                scope: PromiseScope::Run {
-                    run_id: holder_run_id,
-                },
-                ownership: engine::PromiseOwnership::Model,
-                status: PromiseStatus::Pending,
-                payload_ref: None,
-                error_ref: None,
-                deadline_ms: None,
-            },
-        );
-        let mut child_state = open_state();
-        child_state.runs.active = Some(active_run(child_run_id));
-
-        let snapshots = snapshots([
-            (holder_id.clone(), holder_state),
-            (child_id.clone(), child_state),
-        ]);
-        let workflows = FakeWorkflows::default();
-        let mut running_cache = BTreeMap::new();
-        let mut stats = ReaperStats::default();
-        let plan = plan_repair(
-            universe_id,
-            &snapshots,
-            &workflows,
-            &mut running_cache,
-            1_000,
-            &mut stats,
-        )
-        .await;
-
-        assert!(matches!(
-            &plan.holder_commands[&holder_id][0],
-            CoreAgentCommand::ResolvePromise {
-                promise_id: planned,
-                resolution: PromiseResolution::Failed { error_ref: None }
-            } if planned == &promise_id
-        ));
-        assert!(
-            plan.child_cancels
-                .contains(&(child_id.clone(), child_run_id))
-        );
-    }
-
     fn open_state() -> CoreAgentState {
         let mut state = CoreAgentState::new();
         state.lifecycle.status = CoreAgentStatus::Open;
@@ -1101,7 +695,6 @@ mod tests {
             run_id,
             status: RunStatus::Active,
             submission_id: None,
-            origin: RunOrigin::Requested,
             source: RunSource::Input { input: Vec::new() },
             input_entry_ids: Vec::new(),
             input_consumed_by_turn_id: None,
@@ -1116,22 +709,6 @@ mod tests {
             completed_tool_batches: BTreeMap::new(),
             output_ref: None,
             failure: None,
-            notify_on_terminal: Vec::new(),
-        }
-    }
-
-    fn run_record(run_id: RunId, status: RunStatus, output_ref: Option<BlobRef>) -> RunRecord {
-        RunRecord {
-            run_id,
-            status,
-            submission_id: None,
-            origin: RunOrigin::Requested,
-            submission_digest: None,
-            output_ref,
-            failure: (status == RunStatus::Failed).then_some(RunFailure {
-                kind: RunFailureKind::Internal,
-                message_ref: None,
-            }),
             notify_on_terminal: Vec::new(),
         }
     }
@@ -1154,6 +731,7 @@ mod tests {
                             head: None,
                             source_session_id: None,
                             source_seq: None,
+                            origin: None,
                             created_at_ms: 0,
                             updated_at_ms: 0,
                         },
@@ -1162,32 +740,5 @@ mod tests {
                 )
             })
             .collect()
-    }
-
-    async fn create_store_session(store: &InMemorySessionStore, session_id: &SessionId) {
-        store
-            .create_session(CreateSession {
-                session_id: session_id.clone(),
-                display_name: None,
-                created_at_ms: 0,
-            })
-            .await
-            .expect("create session");
-    }
-
-    async fn first_event(store: &InMemorySessionStore, session_id: &SessionId) -> CoreAgentEvent {
-        let page = store
-            .read_after(ReadSessionEvents {
-                session_id: session_id.clone(),
-                after: None,
-                limit: 10,
-            })
-            .await
-            .expect("read session events");
-        let entry = page.entries.into_iter().next().expect("event");
-        CoreAgentCodec
-            .decode_entry(&entry)
-            .expect("decode event")
-            .event
     }
 }

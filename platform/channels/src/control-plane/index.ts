@@ -1,1 +1,1 @@
-export * from "./bindings.js";
+export * from "./chat-triggers.js";

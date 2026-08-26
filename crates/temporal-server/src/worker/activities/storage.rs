@@ -29,6 +29,7 @@ pub(super) async fn create_or_load_session(
         .create_session(CreateSession {
             session_id: request.session_id.clone(),
             display_name: request.display_name.clone(),
+            origin: None,
             created_at_ms: request.observed_at_ms,
         })
         .await
@@ -433,6 +434,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -592,6 +594,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -703,6 +706,7 @@ mod tests {
                 head: None,
                 source_session_id: None,
                 source_seq: None,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 1,
             },

@@ -35,6 +35,7 @@ fn entry(id: u64, kind: ContextEntryKind, content_ref: engine::BlobRef) -> Conte
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     }
 }
 

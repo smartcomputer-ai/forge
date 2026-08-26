@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AuthFlowId, AuthGrantId, AuthProviderKind, AuthRegistryError, OAuthClientId, PrincipalRef,
-    SecretId, SecretValue, validate_audience_url, validate_nonempty_optional,
+    AuthFlowId, AuthGrantExposure, AuthGrantId, AuthProviderKind, AuthRegistryError, OAuthClientId,
+    PrincipalRef, SecretId, SecretValue, validate_audience_url, validate_nonempty_optional,
     validate_nonnegative_i64, validate_oauth_endpoint_url, validate_scopes,
     validate_token_component,
 };
@@ -191,6 +191,8 @@ pub struct AuthFlowRecord {
     pub client_id: OAuthClientId,
     pub provider_id: String,
     pub provider_kind: AuthProviderKind,
+    #[serde(default)]
+    pub grant_exposure: AuthGrantExposure,
     pub principal: PrincipalRef,
     /// Lowercase hex SHA-256 of the `state` query parameter.
     pub state_hash: String,
@@ -270,6 +272,7 @@ pub struct CreateAuthFlowRecord {
     pub client_id: OAuthClientId,
     pub provider_id: String,
     pub provider_kind: AuthProviderKind,
+    pub grant_exposure: AuthGrantExposure,
     pub principal: PrincipalRef,
     pub state_hash: String,
     pub pkce_verifier_secret: SecretId,
@@ -287,6 +290,7 @@ impl CreateAuthFlowRecord {
             client_id: self.client_id,
             provider_id: self.provider_id,
             provider_kind: self.provider_kind,
+            grant_exposure: self.grant_exposure,
             principal: self.principal,
             state_hash: self.state_hash,
             pkce_verifier_secret: self.pkce_verifier_secret,
@@ -869,6 +873,7 @@ mod tests {
             client_id: OAuthClientId::new("github"),
             provider_id: "github".to_owned(),
             provider_kind: AuthProviderKind::CustomOAuth,
+            grant_exposure: AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             state_hash: state_hash("state-123"),
             pkce_verifier_secret: SecretId::new("authsec_pkce"),

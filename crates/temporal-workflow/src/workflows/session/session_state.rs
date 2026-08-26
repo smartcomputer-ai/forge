@@ -36,7 +36,13 @@ impl AgentSessionWorkflow {
                         error_ref: failure_message_ref,
                     },
                 };
-                (engine::PromiseId::new(token), resolution)
+                let Ok(promise_id) = engine::PromiseId::try_new(token.clone()) else {
+                    self.last_error = Some(format!(
+                        "run-terminal emission carries a malformed promise token {token:?}"
+                    ));
+                    return;
+                };
+                (promise_id, resolution)
             }
             engine::EmissionBody::SourceResolution {
                 promise_id,
@@ -53,7 +59,7 @@ impl AgentSessionWorkflow {
                     });
                 return;
             }
-            engine::EmissionBody::ToolInvocation { invocation } => {
+            engine::EmissionBody::ToolInvocation { invocation, .. } => {
                 self.last_error = Some(format!(
                     "session workflow cannot receive workflow tool invocation {}",
                     invocation.invocation_id
@@ -122,6 +128,7 @@ impl AgentSessionWorkflow {
                                 session_id.clone(),
                                 entry.position.seq,
                                 invocation.clone(),
+                                crate::compose_workflow_id(universe_id, &session_id),
                             ),
                         ));
                         continue;
@@ -248,21 +255,6 @@ impl AgentSessionWorkflow {
                         .and_then(|failure| failure.message_ref.clone()),
                 })
                 .collect(),
-            consumed_message_submissions: self
-                .core_state
-                .runs
-                .messages
-                .iter()
-                .filter_map(|message| {
-                    if message.status != engine::MessageStatus::ConsumedByAwait {
-                        return None;
-                    }
-                    Some(AgentMessageSubmissionConsumptionSummary {
-                        submission_id: message.submission_id.clone()?,
-                        run_id: message.consumed_by_run_id?.as_u64(),
-                    })
-                })
-                .collect(),
             admission_failures: self.admission_failures.clone(),
             last_error: self.last_error.clone(),
             bootstrap_failed: self.bootstrap_failed,
@@ -347,7 +339,7 @@ async fn terminal_tool_invocation_delivery_failure(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
     pending: &PendingEmission,
 ) -> anyhow::Result<()> {
-    let engine::EmissionBody::ToolInvocation { invocation } = &pending.envelope.body else {
+    let engine::EmissionBody::ToolInvocation { invocation, .. } = &pending.envelope.body else {
         return Ok(());
     };
     let message = format!(

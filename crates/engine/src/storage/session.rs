@@ -2,7 +2,7 @@
 
 use crate::{
     CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND, CoreAgentCodec,
-    CoreAgentEvent, WorkflowToolConfigEvent,
+    CoreAgentEvent, SubagentLimits, WorkflowToolConfigEvent,
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
 };
 use async_trait::async_trait;
@@ -34,8 +34,102 @@ pub struct SessionRecord {
     pub head: Option<SessionPosition>,
     pub source_session_id: Option<SessionId>,
     pub source_seq: Option<EventSeq>,
+    /// Typed provenance of a delegated (sub-agent) session. Set at creation
+    /// and never changed; provenance, not ownership. `source_session_id`
+    /// is clone/fork content ancestry and stays empty for profile spawns.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOrigin>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionOrigin {
+    pub kind: SessionOriginKind,
+    pub parent_session_id: SessionId,
+    pub parent_run_id: u64,
+    /// The tree root: the nearest ancestor without an origin. Root-scoped
+    /// limits count every session whose origin names this root.
+    pub root_session_id: SessionId,
+    /// Absolute depth from the root (a root's direct child is depth 1).
+    pub depth: u32,
+    pub invocation_id: String,
+    pub profile_id: String,
+    pub profile_revision: u64,
+    /// Effective limits pinned at spawn: the parent's grant attenuated by
+    /// the parent's own origin limits.
+    pub limits: SubagentLimits,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOriginKind {
+    Subagent,
+}
+
+/// Which root-scoped limit a session creation exceeded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionOriginLimit {
+    MaxDepth,
+    MaxDescendants,
+    MaxConcurrent,
+}
+
+impl std::fmt::Display for SessionOriginLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MaxDepth => "maxDepth",
+            Self::MaxDescendants => "maxDescendants",
+            Self::MaxConcurrent => "maxConcurrent",
+        })
+    }
+}
+
+/// Root-scoped counts a store checks before reserving a delegated session.
+/// `descendants` is lifetime (closed sessions included); `open_descendants`
+/// excludes closed ones. Both exclude the root itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SessionOriginCounts {
+    pub descendants: u64,
+    pub open_descendants: u64,
+}
+
+/// Shared reservation rule for every session store: the child row is the
+/// reservation, so this runs inside the store's creation transaction with
+/// the root row locked.
+pub fn check_origin_limits(
+    origin: &SessionOrigin,
+    counts: SessionOriginCounts,
+) -> Result<(), SessionStoreError> {
+    let exceeded = |limit, max: u64, actual: u64| SessionStoreError::OriginLimitExceeded {
+        root_session_id: origin.root_session_id.clone(),
+        limit,
+        max,
+        actual,
+    };
+    if u64::from(origin.depth) > u64::from(origin.limits.max_depth) {
+        return Err(exceeded(
+            SessionOriginLimit::MaxDepth,
+            u64::from(origin.limits.max_depth),
+            u64::from(origin.depth),
+        ));
+    }
+    if counts.descendants >= u64::from(origin.limits.max_descendants) {
+        return Err(exceeded(
+            SessionOriginLimit::MaxDescendants,
+            u64::from(origin.limits.max_descendants),
+            counts.descendants,
+        ));
+    }
+    if counts.open_descendants >= u64::from(origin.limits.max_concurrent) {
+        return Err(exceeded(
+            SessionOriginLimit::MaxConcurrent,
+            u64::from(origin.limits.max_concurrent),
+            counts.open_descendants,
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,6 +146,11 @@ pub struct CreateSession {
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Delegation provenance. Stores treat the creation as the root-scoped
+    /// reservation: the parent and root must exist and the origin's limits
+    /// must hold, atomically with the insert.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOrigin>,
     pub created_at_ms: u64,
 }
 
@@ -94,42 +193,6 @@ pub struct ReadSessionEvents {
     pub limit: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct UpsertSessionLink {
-    pub from_session_id: SessionId,
-    pub to_session_id: SessionId,
-    pub relationship: String,
-    pub created_at_ms: u64,
-    pub metadata: serde_json::Value,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionLinkDirection {
-    #[default]
-    Outgoing,
-    Incoming,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ListSessionLinks {
-    pub session_id: SessionId,
-    #[serde(default)]
-    pub direction: SessionLinkDirection,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub relationship: Option<String>,
-    pub limit: usize,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SessionLinkRecord {
-    pub from_session_id: SessionId,
-    pub to_session_id: SessionId,
-    pub relationship: String,
-    pub created_at_ms: u64,
-    pub metadata: serde_json::Value,
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionPage {
     pub entries: Vec<StoredSessionEntry>,
@@ -150,6 +213,12 @@ pub struct ListSessions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<SessionListCursor>,
     pub limit: usize,
+    /// Only sessions whose origin names this root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<SessionId>,
+    /// Only sessions whose origin names this parent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,8 +254,13 @@ pub enum SessionStoreError {
         message: String,
     },
 
-    #[error("invalid session link relationship: {relationship:?}")]
-    InvalidRelationship { relationship: String },
+    #[error("session origin limit {limit} exceeded for root {root_session_id}: {actual} of {max}")]
+    OriginLimitExceeded {
+        root_session_id: SessionId,
+        limit: SessionOriginLimit,
+        max: u64,
+        actual: u64,
+    },
 
     #[error("session is not closed: {session_id} ({lifecycle_status:?})")]
     SessionNotClosed {
@@ -289,30 +363,6 @@ pub trait SessionStore: Send + Sync {
         })
     }
 
-    async fn upsert_link(
-        &self,
-        request: UpsertSessionLink,
-    ) -> Result<SessionLinkRecord, SessionStoreError> {
-        Err(SessionStoreError::Store {
-            message: format!(
-                "upsert_link is not supported by this session store for {} -> {}",
-                request.from_session_id, request.to_session_id
-            ),
-        })
-    }
-
-    async fn list_links(
-        &self,
-        request: ListSessionLinks,
-    ) -> Result<Vec<SessionLinkRecord>, SessionStoreError> {
-        Err(SessionStoreError::Store {
-            message: format!(
-                "list_links is not supported by this session store for {}",
-                request.session_id
-            ),
-        })
-    }
-
     async fn append(
         &self,
         request: AppendSessionEvents,
@@ -338,7 +388,6 @@ pub struct InMemorySessionStore {
 struct InMemorySessionStoreInner {
     records: BTreeMap<SessionId, SessionRecord>,
     entries: BTreeMap<SessionId, Vec<StoredSessionEntry>>,
-    links: BTreeMap<(SessionId, SessionId, String), SessionLinkRecord>,
 }
 
 impl InMemorySessionStore {
@@ -361,6 +410,19 @@ impl SessionStore for InMemorySessionStore {
                 session_id: request.session_id,
             });
         }
+        if let Some(origin) = &request.origin {
+            for session_id in [&origin.parent_session_id, &origin.root_session_id] {
+                if !inner.records.contains_key(session_id) {
+                    return Err(SessionStoreError::SessionNotFound {
+                        session_id: session_id.clone(),
+                    });
+                }
+            }
+            check_origin_limits(
+                origin,
+                in_memory_origin_counts(&inner, &origin.root_session_id),
+            )?;
+        }
         let record = SessionRecord {
             session_id: request.session_id,
             display_name: request.display_name,
@@ -370,6 +432,7 @@ impl SessionStore for InMemorySessionStore {
             head: None,
             source_session_id: None,
             source_seq: None,
+            origin: request.origin,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
         };
@@ -409,6 +472,22 @@ impl SessionStore for InMemorySessionStore {
         });
         let mut sessions: Vec<SessionRecord> = records
             .into_iter()
+            .filter(|record| {
+                request.root_session_id.as_ref().is_none_or(|root| {
+                    record
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| &origin.root_session_id == root)
+                })
+            })
+            .filter(|record| {
+                request.parent_session_id.as_ref().is_none_or(|parent| {
+                    record
+                        .origin
+                        .as_ref()
+                        .is_some_and(|origin| &origin.parent_session_id == parent)
+                })
+            })
             .filter(|record| {
                 request.cursor.as_ref().is_none_or(|cursor| {
                     (record.updated_at_ms, record.session_id.as_str())
@@ -478,9 +557,6 @@ impl SessionStore for InMemorySessionStore {
 
         inner.records.remove(session_id);
         inner.entries.remove(session_id);
-        inner
-            .links
-            .retain(|(from, to, _), _| from != session_id && to != session_id);
         for candidate in inner.records.values_mut() {
             if candidate.source_session_id.as_ref() == Some(session_id) {
                 candidate.source_session_id = None;
@@ -522,6 +598,7 @@ impl SessionStore for InMemorySessionStore {
             head: None,
             source_session_id: Some(request.source_session_id),
             source_seq: None,
+            origin: None,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
         };
@@ -572,6 +649,7 @@ impl SessionStore for InMemorySessionStore {
             head,
             source_session_id: Some(request.source_session_id),
             source_seq: Some(request.source_seq),
+            origin: None,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
         };
@@ -591,72 +669,6 @@ impl SessionStore for InMemorySessionStore {
             &entries,
             effective_head_u64(&inner, session_id)?,
         ))
-    }
-
-    async fn upsert_link(
-        &self,
-        request: UpsertSessionLink,
-    ) -> Result<SessionLinkRecord, SessionStoreError> {
-        validate_relationship(&request.relationship)?;
-        let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
-            message: "session store write lock poisoned".into(),
-        })?;
-        for session_id in [&request.from_session_id, &request.to_session_id] {
-            if !inner.records.contains_key(session_id) {
-                return Err(SessionStoreError::SessionNotFound {
-                    session_id: session_id.clone(),
-                });
-            }
-        }
-        let record = SessionLinkRecord {
-            from_session_id: request.from_session_id,
-            to_session_id: request.to_session_id,
-            relationship: request.relationship,
-            created_at_ms: request.created_at_ms,
-            metadata: request.metadata,
-        };
-        inner.links.insert(
-            (
-                record.from_session_id.clone(),
-                record.to_session_id.clone(),
-                record.relationship.clone(),
-            ),
-            record.clone(),
-        );
-        Ok(record)
-    }
-
-    async fn list_links(
-        &self,
-        request: ListSessionLinks,
-    ) -> Result<Vec<SessionLinkRecord>, SessionStoreError> {
-        if request.limit == 0 {
-            return Err(SessionStoreError::InvalidLimit { limit: 0 });
-        }
-        let inner = self.inner.read().map_err(|_| SessionStoreError::Store {
-            message: "session store read lock poisoned".into(),
-        })?;
-        if !inner.records.contains_key(&request.session_id) {
-            return Err(SessionStoreError::SessionNotFound {
-                session_id: request.session_id,
-            });
-        }
-        Ok(inner
-            .links
-            .values()
-            .filter(|record| match request.direction {
-                SessionLinkDirection::Outgoing => record.from_session_id == request.session_id,
-                SessionLinkDirection::Incoming => record.to_session_id == request.session_id,
-            })
-            .filter(|record| {
-                request
-                    .relationship
-                    .as_ref()
-                    .is_none_or(|relationship| &record.relationship == relationship)
-            })
-            .take(request.limit)
-            .cloned()
-            .collect())
     }
 
     async fn append(
@@ -744,13 +756,24 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
-pub fn validate_relationship(relationship: &str) -> Result<(), SessionStoreError> {
-    if relationship.is_empty() {
-        return Err(SessionStoreError::InvalidRelationship {
-            relationship: relationship.to_owned(),
-        });
+fn in_memory_origin_counts(
+    inner: &InMemorySessionStoreInner,
+    root_session_id: &SessionId,
+) -> SessionOriginCounts {
+    let mut counts = SessionOriginCounts::default();
+    for record in inner.records.values() {
+        if record
+            .origin
+            .as_ref()
+            .is_some_and(|origin| &origin.root_session_id == root_session_id)
+        {
+            counts.descendants += 1;
+            if record.lifecycle_status != SessionLifecycleStatus::Closed {
+                counts.open_descendants += 1;
+            }
+        }
     }
-    Ok(())
+    counts
 }
 
 pub fn largest_safe_fork_seq(entries: &[StoredSessionEntry], head: u64) -> EventSeq {
@@ -1082,6 +1105,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1112,6 +1136,7 @@ mod tests {
                 .create_session(CreateSession {
                     session_id: SessionId::new(name),
                     display_name: Some(format!("Session {name}")),
+                    origin: None,
                     created_at_ms,
                 })
                 .await
@@ -1122,6 +1147,8 @@ mod tests {
             .list_sessions(ListSessions {
                 cursor: None,
                 limit: 2,
+                root_session_id: None,
+                parent_session_id: None,
             })
             .await
             .expect("first page");
@@ -1139,6 +1166,8 @@ mod tests {
             .list_sessions(ListSessions {
                 cursor: Some(cursor),
                 limit: 2,
+                root_session_id: None,
+                parent_session_id: None,
             })
             .await
             .expect("second page");
@@ -1161,10 +1190,303 @@ mod tests {
                 .list_sessions(ListSessions {
                     cursor: None,
                     limit: 0,
+                    root_session_id: None,
+                    parent_session_id: None,
                 })
                 .await,
             Err(SessionStoreError::InvalidLimit { limit: 0 })
         ));
+    }
+
+    fn subagent_origin(
+        parent: &str,
+        root: &str,
+        depth: u32,
+        limits: SubagentLimits,
+    ) -> SessionOrigin {
+        SessionOrigin {
+            kind: SessionOriginKind::Subagent,
+            parent_session_id: SessionId::new(parent),
+            parent_run_id: 1,
+            root_session_id: SessionId::new(root),
+            depth,
+            invocation_id: format!("wti:sha256:{}", "a".repeat(64)),
+            profile_id: "reviewer".to_owned(),
+            profile_revision: 1,
+            limits,
+        }
+    }
+
+    async fn create_delegated(
+        store: &InMemorySessionStore,
+        session_id: &str,
+        origin: SessionOrigin,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new(session_id),
+                display_name: None,
+                origin: Some(origin),
+                created_at_ms: 1,
+            })
+            .await
+    }
+
+    async fn close_session(store: &InMemorySessionStore, session_id: &str) {
+        store
+            .append(AppendSessionEvents {
+                session_id: SessionId::new(session_id),
+                expected_head: None,
+                events: vec![lifecycle_opened_event(10), lifecycle_closed_event(11)],
+            })
+            .await
+            .expect("close session");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_reserves_delegated_sessions_against_root_limits() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let limits = SubagentLimits {
+            max_depth: 2,
+            max_descendants: 3,
+            max_concurrent: 2,
+            deadline_ms: 1_000,
+        };
+
+        create_delegated(
+            &store,
+            "child-a",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect("first child");
+        create_delegated(
+            &store,
+            "child-b",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect("second child");
+        // Two open descendants: the concurrency limit refuses a third even
+        // though the lifetime limit still has room.
+        let concurrent = create_delegated(
+            &store,
+            "child-c",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect_err("third open child");
+        assert_eq!(
+            concurrent,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxConcurrent,
+                max: 2,
+                actual: 2,
+            }
+        );
+
+        // Closing one frees its concurrency slot but not its lifetime slot.
+        close_session(&store, "child-a").await;
+        create_delegated(
+            &store,
+            "child-c",
+            subagent_origin("child-b", "root", 2, limits),
+        )
+        .await
+        .expect("grandchild after a close");
+        let descendants = create_delegated(
+            &store,
+            "child-d",
+            subagent_origin("root", "root", 1, limits),
+        )
+        .await
+        .expect_err("fourth lifetime child");
+        assert_eq!(
+            descendants,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxDescendants,
+                max: 3,
+                actual: 3,
+            }
+        );
+        assert!(
+            store
+                .load_session(&SessionId::new("child-d"))
+                .await
+                .expect("load")
+                .is_none(),
+            "a refused reservation leaves no row"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_refuses_delegation_past_max_depth() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let limits = SubagentLimits {
+            max_depth: 1,
+            ..SubagentLimits::default()
+        };
+        create_delegated(&store, "child", subagent_origin("root", "root", 1, limits))
+            .await
+            .expect("depth-1 child");
+        let too_deep = create_delegated(
+            &store,
+            "grandchild",
+            subagent_origin("child", "root", 2, limits),
+        )
+        .await
+        .expect_err("depth-2 child");
+        assert_eq!(
+            too_deep,
+            SessionStoreError::OriginLimitExceeded {
+                root_session_id: SessionId::new("root"),
+                limit: SessionOriginLimit::MaxDepth,
+                max: 1,
+                actual: 2,
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_requires_the_parent_and_root_of_a_delegated_session() {
+        let store = InMemorySessionStore::new();
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new("root"),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create root");
+        let missing_parent = create_delegated(
+            &store,
+            "child",
+            subagent_origin("ghost", "root", 1, SubagentLimits::default()),
+        )
+        .await
+        .expect_err("missing parent");
+        assert_eq!(
+            missing_parent,
+            SessionStoreError::SessionNotFound {
+                session_id: SessionId::new("ghost"),
+            }
+        );
+        let missing_root = create_delegated(
+            &store,
+            "child",
+            subagent_origin("root", "ghost-root", 1, SubagentLimits::default()),
+        )
+        .await
+        .expect_err("missing root");
+        assert_eq!(
+            missing_root,
+            SessionStoreError::SessionNotFound {
+                session_id: SessionId::new("ghost-root"),
+            }
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_lists_by_root_and_by_parent() {
+        let store = InMemorySessionStore::new();
+        for root in ["root-a", "root-b"] {
+            store
+                .create_session(CreateSession {
+                    session_id: SessionId::new(root),
+                    display_name: None,
+                    origin: None,
+                    created_at_ms: 1,
+                })
+                .await
+                .expect("create root");
+        }
+        let limits = SubagentLimits::default();
+        create_delegated(
+            &store,
+            "a-child",
+            subagent_origin("root-a", "root-a", 1, limits),
+        )
+        .await
+        .expect("a child");
+        create_delegated(
+            &store,
+            "a-grandchild",
+            subagent_origin("a-child", "root-a", 2, limits),
+        )
+        .await
+        .expect("a grandchild");
+        create_delegated(
+            &store,
+            "b-child",
+            subagent_origin("root-b", "root-b", 1, limits),
+        )
+        .await
+        .expect("b child");
+
+        let ids = |page: SessionListPage| {
+            let mut ids = page
+                .sessions
+                .iter()
+                .map(|record| record.session_id.as_str().to_owned())
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let under_a = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: Some(SessionId::new("root-a")),
+                parent_session_id: None,
+            })
+            .await
+            .expect("list by root");
+        assert_eq!(ids(under_a), vec!["a-child", "a-grandchild"]);
+        let children_of_a = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: None,
+                parent_session_id: Some(SessionId::new("root-a")),
+            })
+            .await
+            .expect("list by parent");
+        assert_eq!(ids(children_of_a), vec!["a-child"]);
+        let everything = store
+            .list_sessions(ListSessions {
+                cursor: None,
+                limit: 10,
+                root_session_id: None,
+                parent_session_id: None,
+            })
+            .await
+            .expect("list all");
+        assert_eq!(
+            everything.sessions.len(),
+            5,
+            "roots have no origin and are listed only unfiltered"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1175,6 +1497,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1209,6 +1532,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: parent.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1322,6 +1646,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: parent.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1384,6 +1709,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: tool_only.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 30,
             })
             .await
@@ -1423,6 +1749,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1463,6 +1790,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1472,6 +1800,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 2,
             })
             .await
@@ -1515,6 +1844,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: source_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1559,57 +1889,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn in_memory_session_links_preserve_direction_and_relationship() {
-        let store = InMemorySessionStore::new();
-        let left = SessionId::new("left");
-        let right = SessionId::new("right");
-        for session_id in [&left, &right] {
-            store
-                .create_session(CreateSession {
-                    session_id: session_id.clone(),
-                    display_name: None,
-                    created_at_ms: 1,
-                })
-                .await
-                .expect("create session");
-        }
-
-        let link = store
-            .upsert_link(UpsertSessionLink {
-                from_session_id: left.clone(),
-                to_session_id: right.clone(),
-                relationship: "can_see".to_owned(),
-                created_at_ms: 10,
-                metadata: serde_json::json!({"reason": "test"}),
-            })
-            .await
-            .expect("upsert link");
-
-        assert_eq!(link.from_session_id, left);
-        assert_eq!(link.to_session_id, right);
-        let outgoing = store
-            .list_links(ListSessionLinks {
-                session_id: left,
-                direction: SessionLinkDirection::Outgoing,
-                relationship: Some("can_see".to_owned()),
-                limit: 10,
-            })
-            .await
-            .expect("list outgoing");
-        assert_eq!(outgoing, vec![link.clone()]);
-        let incoming = store
-            .list_links(ListSessionLinks {
-                session_id: right,
-                direction: SessionLinkDirection::Incoming,
-                relationship: None,
-                limit: 10,
-            })
-            .await
-            .expect("list incoming");
-        assert_eq!(incoming, vec![link]);
-    }
-
-    #[tokio::test(flavor = "current_thread")]
     async fn in_memory_fork_reads_stitch_multiple_levels_and_clamp_parent_tail() {
         let store = InMemorySessionStore::new();
         let root = SessionId::new("root");
@@ -1617,6 +1896,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: root.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -1720,6 +2000,7 @@ mod tests {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await

@@ -15,7 +15,9 @@
   The two adapters are orthogonal (see "Relationship to the editor ACP
   adapter" below) and share only the adapter rules.
 - Builds on P92/P94 (unified suspension, engine-native awaits, log-backed
-  mailbox, validated wake) and P93 fleet tools.
+  validated wake) and the P134 sub-agent tools (`agent_run` / `agent_spawn`).
+  The mailbox (`await { mailbox }`) was removed by P134 slice 7; the
+  `input-required` mapping below needs an opt-in await field if built.
 - References:
   - A2A specification: <https://a2a-protocol.org/latest/specification/>
   - A2A Life of a Task: <https://a2a-protocol.org/latest/topics/life-of-a-task/>
@@ -45,7 +47,7 @@ It must not become an alternate engine semantics.
 
 Lightspeed is not primarily an interop protocol. It is a deterministic,
 event-sourced execution substrate with structured concurrency, promise
-resolution, cancellation, mailbox delivery, idempotent submissions, and
+resolution, cancellation, idempotent submissions, and
 Temporal-backed recovery.
 
 A2A is an agent/agent protocol surface: an agent publishes an Agent Card,
@@ -56,7 +58,7 @@ useful as an adapter layer for both directions:
 - **Inbound (Lightspeed as A2A server):** other agents delegate work to a
   Lightspeed session/profile.
 - **Outbound (Lightspeed as A2A client):** Lightspeed's fleet tools
-  (`agent_spawn`/`agent_request`/`agent_send`) target a remote A2A agent
+  (`agent_run`/`agent_spawn`) target a remote A2A agent
   instead of a local session.
 
 Both directions enter Lightspeed through the same admission boundaries as
@@ -68,9 +70,9 @@ native clients and fleet tools.
 |---|---|---|
 | Conversation scope | `Session` | `contextId` |
 | Unit of work | `Run` | `Task` |
-| New work | `RequestRun`, `agent_request`, `agent_spawn` | `message/send` returning a `Task` |
+| New work | `RequestRun`, `agent_run`, `agent_spawn` | `message/send` returning a `Task` |
 | Fire-and-forget input | `SubmitMessage` | `message/send` within an existing `contextId` |
-| Awaiting input | parked `await { mailbox: true }` | `input-required` task state |
+| Awaiting input | not modelled today (P134 removed the mailbox; would be an opt-in await field) | `input-required` task state |
 | Follow-up after completion | new run in same session | new task in same `contextId`, `referenceTaskIds` |
 | Terminal result | run terminal output resolves promise | completed task artifacts/status |
 | Progress | `session/events/read`, notifications | `message/stream` / `tasks/resubscribe` SSE, push notifications |
@@ -86,16 +88,14 @@ immutable tasks, and follow-ups as additional runs in the same session.
 The main difference is Lightspeed's receiver-side delivery rule:
 
 ```text
-agent_send / SubmitMessage
+session/runs/start
 
-if receiver is parked with mailbox:true:
-  message wakes the current run (validated by ResumeToolBatch)
-else:
-  message becomes a new message-origin run
+a submitted message is always a new run; a second start queues behind the
+active run (P129). There is no mailbox wake since P134 slice 7.
 ```
 
 P94 makes that rule engine law by logging the message buffer and validating
-mailbox wakes in the engine. A2A does not require this exact internal rule,
+the (since-removed) mailbox wake in the engine. A2A does not require this exact internal rule,
 but it projects cleanly onto A2A task states.
 
 ## Inbound adapter shape (Lightspeed as A2A server)
@@ -111,7 +111,7 @@ A2A tasks/cancel       -> CancelRun
 A2A tasks/resubscribe  -> replay/subscribe session/events/read from a cursor
 A2A Task state         -> projected run status (see state table)
 A2A referenceTaskIds   -> context metadata pointing at prior run/artifact refs
-A2A input-required     -> parked await with mailbox:true
+A2A input-required     -> (needs an opt-in await field; not modelled today)
 A2A artifact           -> run output refs / produced context artifacts (CAS)
 A2A Agent Card         -> generated from a published agent profile
 ```
@@ -121,7 +121,7 @@ Task-state projection (collapse conservatively):
 ```text
 run accepted, not started         -> submitted
 run executing                     -> working
-run parked, await mailbox:true    -> input-required
+run parked on await               -> working (no input-required mapping today)
 run parked, other await           -> working
 run completed                     -> completed
 run cancelled                     -> canceled
@@ -129,7 +129,7 @@ run failed                        -> failed
 ```
 
 Defaulting `message/send` to `SubmitMessage` preserves Lightspeed's receiver
-semantics: an interactive session consumes the message as mailbox input,
+semantics: an interactive session would consume the message through an opt-in await wake input,
 while an idle session turns it into a message-origin run. When an A2A client
 requires a stable task id at request acceptance time and the receiver would
 otherwise consume the message, the adapter must choose `RequestRun` and
@@ -167,15 +167,15 @@ Agent Card URL plus optional credentials, resolved immediately before I/O.
 ```text
 agent_spawn(target=a2a:<id>)   -> message/send creating a task; promise resolves
                                   on terminal task state (via stream or push)
-agent_request(target=a2a:<id>) -> same, awaited inline
-agent_send(target=a2a:<id>)    -> message/send into an existing contextId
+agent_run(target=a2a:<id>)     -> same, joined inline
+(follow-up sends are out of scope: P134 children are one-shot)
 agent_read                     -> tasks/get
 agent_cancel                   -> tasks/cancel
 ```
 
 Outbound task ids and context ids are recorded as promise/handle metadata so
 the promise can be resolved deterministically after worker restart. Remote
-`input-required` surfaces to the local agent as a mailbox message on the
+`input-required` surfaces to the local agent through an opt-in await wake (to be added) on the
 spawned handle, not as an automatic reply.
 
 ## Adapter rules
@@ -188,7 +188,7 @@ spawned handle, not as an automatic reply.
   terminal runs.
 - Preserve receiver-side delivery. The adapter may choose whether a call
   requires `RequestRun` or allows `SubmitMessage`, but the receiver engine
-  decides mailbox-consume vs message-origin-run for submitted messages.
+  decides how a submitted message is admitted (today: always a new run) for messages.
 - Preserve idempotency. A2A message ids and task ids map to Lightspeed
   submission ids so retries do not duplicate work.
 - Preserve structured cancellation. `tasks/cancel` maps to `CancelRun`;
@@ -236,7 +236,7 @@ into it over A2A) with no conflict, because both enter through
 
 - Do not make A2A the internal engine model.
 - Do not expose engine reducer internals to A2A clients.
-- Do not add a second public resume path that bypasses mailbox/promise wake
+- Do not add a second public resume path that bypasses the promise/awaise wake
   validation.
 - Do not let A2A task/message terminology reintroduce sender-side
   consume-vs-run decisions. Receiver-side delivery is a Lightspeed invariant.

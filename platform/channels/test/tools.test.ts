@@ -3,6 +3,7 @@ import {
   CHANNEL_TOOL_DEADLINE_MS,
   CHANNEL_TOOL_DESCRIPTIONS,
   CHANNEL_TOOL_SCHEMAS,
+  CHANNEL_TOOLS_REVISION,
   channelWorkflowTools,
   type ChannelToolSchemaRefs,
 } from "../src/contracts/tools.js";
@@ -12,7 +13,8 @@ const refs: ChannelToolSchemaRefs = {
   editInput: "blob:edit",
   reactInput: "blob:react",
   noopInput: "blob:noop",
-  deliveryReceipt: "blob:receipt",
+  sendReceipt: "blob:send-receipt",
+  messageReceipt: "blob:message-receipt",
 };
 const descriptions = Object.fromEntries(
   Object.keys(CHANNEL_TOOL_DESCRIPTIONS).map((name) => [name, `blob:description-${name}`]),
@@ -30,8 +32,18 @@ describe("channelWorkflowTools", () => {
     }
   });
 
-  it("declares Joined delivery tools and an Accepted no-op", () => {
-    const receiver = { workflowId: "channels/one", workflowKind: "channelSessionWorkflowV1" };
+  it("names messages by number in both directions, never by provider id", () => {
+    expect(CHANNEL_TOOL_SCHEMAS.sendInput.properties.replyTo.type).toEqual(["integer", "null"]);
+    expect(CHANNEL_TOOL_SCHEMAS.editInput.properties.message.type).toBe("integer");
+    expect(CHANNEL_TOOL_SCHEMAS.reactInput.properties.message.type).toBe("integer");
+    expect(CHANNEL_TOOL_SCHEMAS.sendReceipt.properties.sent.type).toBe("integer");
+    for (const schema of Object.values(CHANNEL_TOOL_SCHEMAS)) {
+      expect(JSON.stringify(schema)).not.toMatch(/messageId|provider message id/i);
+    }
+  });
+
+  it("declares Joined delivery tools bound to the conversation and an Accepted no-op", () => {
+    const receiver = { workflowId: "channels/one", workflowKind: "channelConversationWorkflowV1" };
     const tools = channelWorkflowTools(receiver, refs, descriptions);
 
     expect(tools.map((tool) => tool.definition.tool.name)).toEqual([
@@ -40,14 +52,16 @@ describe("channelWorkflowTools", () => {
       "message_react",
       "message_noop",
     ]);
+    for (const tool of tools) expect(tool.definition.revision).toBe(CHANNEL_TOOLS_REVISION);
     for (const tool of tools.slice(0, 3)) {
       expect(tool.target).toEqual({ type: "bound", receiver, dispatch: "push" });
-      expect(tool.completion).toEqual({
+      expect(tool.completion).toMatchObject({
         type: "joined",
         deadlineAfterMs: CHANNEL_TOOL_DEADLINE_MS,
-        replySchemaRef: refs.deliveryReceipt,
       });
     }
+    expect(tools[0]?.completion).toMatchObject({ replySchemaRef: refs.sendReceipt });
+    expect(tools[1]?.completion).toMatchObject({ replySchemaRef: refs.messageReceipt });
     expect(tools.map((tool) => tool.definition.tool.kind.descriptionRef)).toEqual([
       descriptions.send,
       descriptions.edit,

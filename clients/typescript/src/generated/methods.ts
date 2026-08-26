@@ -67,6 +67,7 @@ export const METHODS = [
   "mcp/servers/list",
   "mcp/servers/delete",
   "auth/grants/import",
+  "auth/grants/lease",
   "auth/grants/read",
   "auth/grants/list",
   "auth/grants/revoke",
@@ -292,7 +293,7 @@ export const METHOD_INFO = {
   "environments/jobs/create": {
     scope: "universe",
     summary: "Create environment jobs",
-    description: "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.",
+    description: "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.",
   },
   "environments/jobs/read": {
     scope: "universe",
@@ -407,7 +408,12 @@ export const METHOD_INFO = {
   "auth/grants/import": {
     scope: "universe",
     summary: "Import a static bearer grant",
-    description: "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.",
+    description: "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.",
+  },
+  "auth/grants/lease": {
+    scope: "service",
+    summary: "Lease a retrievable authentication grant",
+    description: "Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads.",
   },
   "auth/grants/read": {
     scope: "universe",
@@ -447,7 +453,7 @@ export const METHOD_INFO = {
   "auth/flows/start": {
     scope: "universe",
     summary: "Start an OAuth authorization flow",
-    description: "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
+    description: "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
   },
   "auth/flows/read": {
     scope: "universe",
@@ -914,7 +920,7 @@ export interface MethodMap {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.
    */
   "environments/jobs/create": {
     params: Api.EnvironmentJobCreateParams;
@@ -1121,11 +1127,20 @@ export interface MethodMap {
   /**
    * Import a static bearer grant
    *
-   * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.
+   * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.
    */
   "auth/grants/import": {
     params: Api.AuthGrantImportParams;
     result: Api.AgentApiOutcomeOfAuthGrantImportResponse;
+  };
+  /**
+   * Lease a retrievable authentication grant
+   *
+   * Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads.
+   */
+  "auth/grants/lease": {
+    params: Api.AuthGrantLeaseParams;
+    result: Api.AgentApiOutcomeOfAuthGrantLeaseResponse;
   };
   /**
    * Read authentication grant metadata
@@ -1193,7 +1208,7 @@ export interface MethodMap {
   /**
    * Start an OAuth authorization flow
    *
-   * Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
+   * Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
    */
   "auth/flows/start": {
     params: Api.AuthFlowStartParams;
@@ -1705,7 +1720,7 @@ export const rpc = {
   /**
    * Create environment jobs
    *
-   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session.
+   * Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff.
    */
   environmentsJobsCreate(client: RpcCaller, params: Api.EnvironmentJobCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobCreateResponse> {
     return client.call("environments/jobs/create", params);
@@ -1889,10 +1904,18 @@ export const rpc = {
   /**
    * Import a static bearer grant
    *
-   * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.
+   * Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.
    */
   authGrantsImport(client: RpcCaller, params: Api.AuthGrantImportParams): Promise<Api.AgentApiOutcomeOfAuthGrantImportResponse> {
     return client.call("auth/grants/import", params);
+  },
+  /**
+   * Lease a retrievable authentication grant
+   *
+   * Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads.
+   */
+  authGrantsLease(client: RpcCaller, params: Api.AuthGrantLeaseParams): Promise<Api.AgentApiOutcomeOfAuthGrantLeaseResponse> {
+    return client.call("auth/grants/lease", params);
   },
   /**
    * Read authentication grant metadata
@@ -1953,7 +1976,7 @@ export const rpc = {
   /**
    * Start an OAuth authorization flow
    *
-   * Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
+   * Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.
    */
   authFlowsStart(client: RpcCaller, params: Api.AuthFlowStartParams): Promise<Api.AgentApiOutcomeOfAuthFlowStartResponse> {
     return client.call("auth/flows/start", params);

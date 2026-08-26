@@ -178,9 +178,17 @@ pub struct AnthropicMessagesParams {
     pub service_tier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<String>,
+    /// Lifetime of the prompt-cache breakpoints the adapter places on every
+    /// request: `"5m"` (default) or `"1h"`. The longer TTL costs more per
+    /// cache write and pays off for sessions that wake rarely (bots).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_ttl: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, Value>,
 }
+
+/// Prompt-cache TTLs Anthropic accepts on a `cache_control` block.
+pub const ANTHROPIC_PROMPT_CACHE_TTLS: [&str; 2] = ["5m", "1h"];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnthropicThinkingConfig {
@@ -295,7 +303,18 @@ pub fn anthropic_messages_params(
             ),
         });
     }
-    parse_params_body(&params.body)
+    let parsed: AnthropicMessagesParams = parse_params_body(&params.body)?;
+    if let Some(ttl) = parsed.prompt_cache_ttl.as_deref()
+        && !ANTHROPIC_PROMPT_CACHE_TTLS.contains(&ttl)
+    {
+        return Err(LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "unsupported Anthropic prompt_cache_ttl {ttl:?}; expected one of {}",
+                ANTHROPIC_PROMPT_CACHE_TTLS.join(", ")
+            ),
+        });
+    }
+    Ok(parsed)
 }
 
 /// Parse OpenAI Chat Completions params from optional opaque params.
@@ -333,7 +352,25 @@ pub const OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS: &[&str] =
     &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 /// Reasoning effort tiers accepted by the Anthropic Messages adapter.
-pub const ANTHROPIC_REASONING_EFFORT_TIERS: &[&str] = &["none", "low", "medium", "high", "max"];
+pub const ANTHROPIC_REASONING_EFFORT_TIERS: &[&str] =
+    &["none", "low", "medium", "high", "xhigh", "max"];
+
+/// Thinking display mode the adapter requests unless params set one: the
+/// summarized reasoning text lands in the session log's reasoning entries.
+/// Current models default to `"omitted"`, which returns thinking blocks with
+/// an empty `thinking` field and would leave every reasoning entry blank.
+pub const ANTHROPIC_THINKING_DISPLAY_SUMMARIZED: &str = "summarized";
+/// `thinking.type` that turns thinking off; the API rejects `display` next
+/// to it because there is nothing to display.
+pub const ANTHROPIC_THINKING_TYPE_DISABLED: &str = "disabled";
+
+/// Anthropic thinking settings derived from an intent reasoning effort.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnthropicThinkingSettings {
+    pub thinking: AnthropicThinkingConfig,
+    /// `output_config` carrying the effort level; absent for `"none"`.
+    pub output_config: Option<Value>,
+}
 
 fn validate_reasoning_effort(
     effort: &str,
@@ -386,26 +423,48 @@ pub fn validate_openai_reasoning_effort(effort: &str) -> LlmAdapterResult<String
 
 /// Materialize Anthropic Messages thinking settings from an intent effort
 /// tier. Current Anthropic models steer thinking through adaptive thinking
-/// plus an `output_config.effort` level, not token budgets. `"none"` means no
-/// thinking config; unknown tiers are rejected.
-pub fn anthropic_thinking_from_effort(
-    effort: &str,
-) -> LlmAdapterResult<Option<(AnthropicThinkingConfig, Value)>> {
+/// plus an `output_config.effort` level, not token budgets, and the summary
+/// text is requested explicitly because those models omit it by default.
+/// `"none"` disables thinking explicitly: models such as Claude Opus 5 think
+/// whenever a request carries no thinking config, so omitting it would not
+/// mean "no reasoning" (models that cannot turn thinking off reject the
+/// request, which is the honest outcome for that tier). Unknown tiers are
+/// rejected.
+pub fn anthropic_thinking_from_effort(effort: &str) -> LlmAdapterResult<AnthropicThinkingSettings> {
     validate_reasoning_effort(
         effort,
         ANTHROPIC_REASONING_EFFORT_TIERS,
         ProviderApiKind::AnthropicMessages,
     )?;
     if effort == "none" {
-        return Ok(None);
+        return Ok(AnthropicThinkingSettings {
+            thinking: AnthropicThinkingConfig {
+                r#type: ANTHROPIC_THINKING_TYPE_DISABLED.to_owned(),
+                budget_tokens: None,
+                display: None,
+                extra: BTreeMap::new(),
+            },
+            output_config: None,
+        });
     }
-    let thinking = AnthropicThinkingConfig {
-        r#type: "adaptive".to_owned(),
-        budget_tokens: None,
-        display: None,
-        extra: BTreeMap::new(),
-    };
-    Ok(Some((thinking, serde_json::json!({ "effort": effort }))))
+    Ok(AnthropicThinkingSettings {
+        thinking: AnthropicThinkingConfig {
+            r#type: "adaptive".to_owned(),
+            budget_tokens: None,
+            display: Some(ANTHROPIC_THINKING_DISPLAY_SUMMARIZED.to_owned()),
+            extra: BTreeMap::new(),
+        },
+        output_config: Some(serde_json::json!({ "effort": effort })),
+    })
+}
+
+/// Fill in the thinking display mode when params leave it unset so reasoning
+/// entries carry summary text. Explicit params keep their value; disabled
+/// thinking never gets one.
+pub fn default_anthropic_thinking_display(thinking: &mut AnthropicThinkingConfig) {
+    if thinking.display.is_none() && thinking.r#type != ANTHROPIC_THINKING_TYPE_DISABLED {
+        thinking.display = Some(ANTHROPIC_THINKING_DISPLAY_SUMMARIZED.to_owned());
+    }
 }
 
 fn parse_params_body<T: serde::de::DeserializeOwned>(body: &Value) -> LlmAdapterResult<T> {
@@ -561,27 +620,56 @@ mod tests {
 
     #[test]
     fn anthropic_thinking_from_effort_maps_tiers() {
-        assert_eq!(
-            anthropic_thinking_from_effort("none").expect("none tier"),
-            None
-        );
-        for tier in ["low", "medium", "high", "max"] {
-            let (thinking, output_config) = anthropic_thinking_from_effort(tier)
-                .expect("known tier")
-                .expect("non-none tier derives thinking");
-            assert_eq!(thinking.r#type, "adaptive");
-            assert_eq!(thinking.budget_tokens, None);
-            assert_eq!(output_config, json!({ "effort": tier }));
+        let none = anthropic_thinking_from_effort("none").expect("none tier");
+        assert_eq!(none.thinking.r#type, "disabled");
+        assert_eq!(none.thinking.display, None);
+        assert_eq!(none.output_config, None);
+        for tier in ["low", "medium", "high", "xhigh", "max"] {
+            let settings = anthropic_thinking_from_effort(tier).expect("known tier");
+            assert_eq!(settings.thinking.r#type, "adaptive");
+            assert_eq!(settings.thinking.budget_tokens, None);
+            assert_eq!(settings.thinking.display.as_deref(), Some("summarized"));
+            assert_eq!(settings.output_config, Some(json!({ "effort": tier })));
         }
     }
 
     #[test]
     fn anthropic_thinking_from_effort_rejects_unknown_tier() {
-        let error = anthropic_thinking_from_effort("xhigh").expect_err("unknown tier must fail");
+        let error = anthropic_thinking_from_effort("ultra").expect_err("unknown tier must fail");
         assert!(matches!(
             error,
             LlmAdapterError::InvalidProviderRequest { .. }
         ));
+    }
+
+    #[test]
+    fn default_anthropic_thinking_display_fills_only_unset_enabled_modes() {
+        let mut adaptive = AnthropicThinkingConfig {
+            r#type: "adaptive".to_owned(),
+            budget_tokens: None,
+            display: None,
+            extra: BTreeMap::new(),
+        };
+        default_anthropic_thinking_display(&mut adaptive);
+        assert_eq!(adaptive.display.as_deref(), Some("summarized"));
+
+        let mut explicit = AnthropicThinkingConfig {
+            r#type: "enabled".to_owned(),
+            budget_tokens: Some(1024),
+            display: Some("omitted".to_owned()),
+            extra: BTreeMap::new(),
+        };
+        default_anthropic_thinking_display(&mut explicit);
+        assert_eq!(explicit.display.as_deref(), Some("omitted"));
+
+        let mut disabled = AnthropicThinkingConfig {
+            r#type: "disabled".to_owned(),
+            budget_tokens: None,
+            display: None,
+            extra: BTreeMap::new(),
+        };
+        default_anthropic_thinking_display(&mut disabled);
+        assert_eq!(disabled.display, None);
     }
 
     #[test]

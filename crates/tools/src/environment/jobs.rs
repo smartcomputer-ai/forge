@@ -56,9 +56,13 @@ pub enum JobError {
     Failed { message: String },
 }
 
+/// A job as the model names it. `environment_id` defaults to the session's
+/// active environment — the one `job_submit` targets — and is only needed
+/// to read a job in another environment.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobHandleArg {
-    pub environment_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_id: Option<String>,
     pub job_id: JobId,
 }
 
@@ -198,6 +202,14 @@ impl JobSubmitSpecArgs {
                 message: "job argv must not be empty".to_owned(),
             });
         }
+        // The model's job id keys the job's promise, so it must fit the
+        // completion-key shape; checking here keeps key derivation from
+        // ever failing on an accepted job.
+        engine::validate_completion_key(job_id.as_str()).map_err(|error| {
+            JobError::InvalidRequest {
+                message: format!("job_id {:?} is invalid: {error}", job_id.as_str()),
+            }
+        })?;
         let depends_on = self
             .depends_on
             .into_iter()
@@ -581,6 +593,41 @@ mod tests {
             .into_protocol_spec(JobId::new("job-derived"))
             .expect_err("timeout above maximum must fail");
         assert!(matches!(error, JobError::InvalidRequest { .. }));
+    }
+
+    #[test]
+    fn job_ids_must_fit_the_completion_key_shape() {
+        for job_id in ["build:1", "", "-lead", &"x".repeat(65)] {
+            let error = JobSubmitSpecArgs {
+                name: None,
+                job_id: JobId::new(if job_id.is_empty() {
+                    "placeholder"
+                } else {
+                    job_id
+                }),
+                argv: vec!["true".to_owned()],
+                cwd: None,
+                env: BTreeMap::new(),
+                stdin: None,
+                timeout_ms: None,
+                depends_on: Vec::new(),
+                dependency_policy: JobDependencyPolicy::AllSucceeded,
+                queue_key: None,
+            }
+            .into_protocol_spec(JobId::new(if job_id.is_empty() {
+                "placeholder"
+            } else {
+                job_id
+            }));
+            if job_id.is_empty() {
+                error.expect("placeholder id is valid");
+            } else {
+                assert!(
+                    matches!(error, Err(JobError::InvalidRequest { .. })),
+                    "{job_id:?} must be rejected"
+                );
+            }
+        }
     }
 
     #[test]

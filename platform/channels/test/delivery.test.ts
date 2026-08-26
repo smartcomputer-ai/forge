@@ -3,16 +3,25 @@ import { createFakeDeliveryActivities } from "../src/activities/fake-delivery.js
 import { parseToolOperation, validateDeliveryResult } from "../src/contracts/delivery.js";
 
 describe("channel delivery contracts", () => {
-  it("decodes canonical tool arguments", () => {
+  it("decodes tool arguments as message numbers", () => {
     expect(
+      parseToolOperation("channels.message_send.v1", { text: "hello", replyTo: 41 }),
+    ).toEqual({ type: "send", text: "hello", replyTo: 41 });
+    expect(
+      parseToolOperation("channels.message_send.v1", { text: "hello", replyTo: null }),
+    ).toEqual({ type: "send", text: "hello", replyTo: null });
+    expect(
+      parseToolOperation("channels.message_edit.v1", { message: 42, text: "fixed" }),
+    ).toEqual({ type: "edit", message: 42, text: "fixed" });
+    expect(
+      parseToolOperation("channels.message_react.v1", { message: 42, emoji: "👍" }),
+    ).toEqual({ type: "react", message: 42, emoji: "👍" });
+    expect(() =>
       parseToolOperation("channels.message_send.v1", { text: "hello", replyTo: "41" }),
-    ).toEqual({ type: "send", text: "hello", replyTo: "41" });
-    expect(
-      parseToolOperation("channels.message_edit.v1", { messageId: "42", text: "fixed" }),
-    ).toEqual({ type: "edit", messageId: "42", text: "fixed" });
-    expect(
-      parseToolOperation("channels.message_react.v1", { messageId: "42", emoji: "👍" }),
-    ).toEqual({ type: "react", messageId: "42", emoji: "👍" });
+    ).toThrow("message number");
+    expect(() => parseToolOperation("channels.message_react.v1", { message: 0, emoji: "x" })).toThrow(
+      "message number",
+    );
     expect(() => parseToolOperation("unknown", {})).toThrow("unsupported pushed channel tool");
   });
 

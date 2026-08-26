@@ -1,6 +1,6 @@
 use engine::{
     PromiseControlArgumentCallFacts, PromiseControlArgumentFacts, PromiseControlArgumentRequest,
-    PromiseControlKind, PromiseId, ToolBatchOutcome, storage::BlobStore,
+    PromiseControlKind, ToolBatchOutcome, storage::BlobStore,
 };
 use temporalio_sdk::activities::ActivityError;
 use tools::concurrency::{CancelArgs, DetachArgs};
@@ -41,7 +41,7 @@ pub(super) async fn prepare_promise_controls(
         calls.push(match parsed {
             Some(promise_ids) => PromiseControlArgumentCallFacts::Parsed {
                 call_id: call.call_id,
-                promise_ids: promise_ids.into_iter().map(PromiseId::new).collect(),
+                promise_ids,
             },
             None => PromiseControlArgumentCallFacts::Invalid {
                 call_id: call.call_id,
@@ -146,7 +146,7 @@ mod tests {
     async fn preparation_reads_only_cas_and_returns_bounded_validated_ids() {
         let blobs = InMemoryBlobStore::new();
         let valid_ref = blobs
-            .put_bytes(br#"{"promises":["p1","p1","p2"]}"#.to_vec())
+            .put_bytes(br#"{"promises":["promise_1","promise_1","promise_2"]}"#.to_vec())
             .await
             .expect("valid args");
         let invalid_ref = blobs
@@ -184,7 +184,10 @@ mod tests {
             vec![
                 PromiseControlArgumentCallFacts::Parsed {
                     call_id: ToolCallId::new("cancel"),
-                    promise_ids: vec![PromiseId::new("p1"), PromiseId::new("p2")],
+                    promise_ids: vec![
+                        engine::PromiseId::new("promise_1"),
+                        engine::PromiseId::new("promise_2")
+                    ],
                 },
                 PromiseControlArgumentCallFacts::Invalid {
                     call_id: ToolCallId::new("detach-invalid"),

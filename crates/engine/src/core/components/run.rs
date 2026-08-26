@@ -5,35 +5,18 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActiveToolBatch, BlobRef, CompletedToolBatch, ContextEntryId, ContextEntryInput,
     ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, MessageId, PlanningError, PromiseId, RunConfig, RunId,
-    SteeringId, SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
+    CoreAgentStatus, DomainError, PlanningError, PromiseId, RunConfig, RunId, SteeringId,
+    SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+// Accepted run payloads intentionally keep their durable event shape inline.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Accepted(AcceptedRunEvent),
     Started {
         run_id: RunId,
-    },
-    MessageBuffered {
-        message_id: MessageId,
-        submission_id: Option<SubmissionId>,
-        submission_digest: u64,
-        input: Vec<ContextEntryInput>,
-        run_config: RunConfig,
-        config_revision: u64,
-    },
-    MessageConsumedByAwait {
-        message_id: MessageId,
-        run_id: RunId,
-    },
-    MessagePromotedToRun {
-        message_id: MessageId,
-        run_id: RunId,
-    },
-    MessageCancelled {
-        message_id: MessageId,
     },
     SteeringAccepted {
         run_id: RunId,
@@ -72,8 +55,6 @@ pub enum Event {
 pub struct AcceptedRun {
     pub run_id: RunId,
     pub submission_id: Option<SubmissionId>,
-    #[serde(default)]
-    pub origin: RunOrigin,
     pub source: RunSource,
     pub run_config: RunConfig,
     pub config_revision: u64,
@@ -94,8 +75,6 @@ pub struct ActiveRun {
     pub run_id: RunId,
     pub status: RunStatus,
     pub submission_id: Option<SubmissionId>,
-    #[serde(default)]
-    pub origin: RunOrigin,
     pub source: RunSource,
     pub input_entry_ids: Vec<ContextEntryId>,
     pub input_consumed_by_turn_id: Option<TurnId>,
@@ -117,6 +96,7 @@ pub struct ActiveRun {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum RunStatus {
     Active,
     Parked,
@@ -131,8 +111,6 @@ pub struct RunRecord {
     pub run_id: RunId,
     pub status: RunStatus,
     pub submission_id: Option<SubmissionId>,
-    #[serde(default)]
-    pub origin: RunOrigin,
     /// Digest of the accepted submission payload, kept after the full input is
     /// dropped so duplicate submissions can still be checked for equality
     /// against completed runs.
@@ -145,38 +123,12 @@ pub struct RunRecord {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BufferedMessage {
-    pub message_id: MessageId,
-    pub submission_id: Option<SubmissionId>,
-    pub submission_digest: u64,
-    pub input: Vec<ContextEntryInput>,
-    pub run_config: RunConfig,
-    pub config_revision: u64,
-    pub status: MessageStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consumed_by_run_id: Option<RunId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub promoted_to_run_id: Option<RunId>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageStatus {
-    Buffered,
-    ConsumedByAwait,
-    PromotedToRun,
-    Cancelled,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AwaitSpec {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub promise_ids: Vec<PromiseId>,
     pub mode: AwaitMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_at_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub mailbox: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -225,7 +177,6 @@ pub struct JoinedWorkflowCall {
 #[serde(rename_all = "snake_case")]
 pub enum WakeReason {
     Cancelled,
-    MailboxMessage,
     Timeout,
     Terminal,
 }
@@ -256,8 +207,6 @@ pub struct RunFailure {
 pub struct AcceptedRunEvent {
     pub run_id: RunId,
     pub submission_id: Option<SubmissionId>,
-    #[serde(default)]
-    pub origin: RunOrigin,
     pub source: RunSource,
     pub run_config: RunConfig,
     pub config_revision: u64,
@@ -275,20 +224,6 @@ pub struct RunRequestCommand {
     /// holder-side promise id). The edge event is the subscription (P92 §1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunOrigin {
-    #[default]
-    Requested,
-    Message,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SubmitMessageCommand {
-    pub submission_id: Option<SubmissionId>,
-    pub input: Vec<ContextEntryInput>,
 }
 
 /// One log-backed notify-intent attached to a run. Replaces the P84
@@ -407,12 +342,6 @@ pub struct RunQueueState {
     pub active: Option<ActiveRun>,
     pub queued: Vec<AcceptedRun>,
     pub completed: Vec<RunRecord>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub messages: Vec<BufferedMessage>,
-}
-
-fn is_false(value: &bool) -> bool {
-    !*value
 }
 
 pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, PlanningError> {
@@ -596,7 +525,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             let AcceptedRunEvent {
                 run_id,
                 submission_id,
-                origin,
                 source,
                 run_config,
                 config_revision,
@@ -627,7 +555,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             state.runs.queued.push(AcceptedRun {
                 run_id: *run_id,
                 submission_id: submission_id.clone(),
-                origin: *origin,
                 source: source.clone(),
                 run_config: run_config.clone(),
                 config_revision: *config_revision,
@@ -664,7 +591,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 run_id: *run_id,
                 status: RunStatus::Active,
                 submission_id: queued.submission_id,
-                origin: queued.origin,
                 source: queued.source,
                 notify_on_terminal: queued.notify_on_terminal,
                 input_entry_ids: Vec::new(),
@@ -681,103 +607,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 output_ref: None,
                 failure: None,
             });
-            Ok(())
-        }
-        Event::MessageBuffered {
-            message_id,
-            submission_id,
-            submission_digest,
-            input,
-            run_config,
-            config_revision,
-        } => {
-            if state.lifecycle.status != CoreAgentStatus::Open {
-                return Err(DomainError::InvariantViolation(
-                    "messages can only be buffered while session is open".into(),
-                ));
-            }
-            let expected_message_id =
-                state
-                    .id_cursors
-                    .last_message_id
-                    .checked_add(1)
-                    .ok_or_else(|| {
-                        DomainError::InvariantViolation("message id cursor exhausted".into())
-                    })?;
-            if message_id.as_u64() != expected_message_id {
-                return Err(DomainError::InvariantViolation(format!(
-                    "expected message id {}, got {}",
-                    expected_message_id, message_id
-                )));
-            }
-            if *config_revision != state.lifecycle.config_revision {
-                return Err(DomainError::InvariantViolation(format!(
-                    "buffered message config revision {} does not match session revision {}",
-                    config_revision, state.lifecycle.config_revision
-                )));
-            }
-            crate::core::components::config::validate_run_config_for_state(state, run_config)?;
-            state.runs.messages.push(BufferedMessage {
-                message_id: *message_id,
-                submission_id: submission_id.clone(),
-                submission_digest: *submission_digest,
-                input: input.clone(),
-                run_config: run_config.clone(),
-                config_revision: *config_revision,
-                status: MessageStatus::Buffered,
-                consumed_by_run_id: None,
-                promoted_to_run_id: None,
-            });
-            state.id_cursors.last_message_id = message_id.as_u64();
-            Ok(())
-        }
-        Event::MessageConsumedByAwait { message_id, run_id } => {
-            active_run_ref(state, *run_id)?;
-            let message = message_mut(state, *message_id)?;
-            if message.status != MessageStatus::Buffered {
-                return Err(DomainError::InvariantViolation(format!(
-                    "message {} is not buffered",
-                    message_id
-                )));
-            }
-            message.status = MessageStatus::ConsumedByAwait;
-            message.consumed_by_run_id = Some(*run_id);
-            Ok(())
-        }
-        Event::MessagePromotedToRun { message_id, run_id } => {
-            if !state.runs.queued.iter().any(|run| run.run_id == *run_id)
-                && state
-                    .runs
-                    .active
-                    .as_ref()
-                    .is_none_or(|run| run.run_id != *run_id)
-                && !state.runs.completed.iter().any(|run| run.run_id == *run_id)
-            {
-                return Err(DomainError::InvariantViolation(format!(
-                    "promoted message {} references missing run {}",
-                    message_id, run_id
-                )));
-            }
-            let message = message_mut(state, *message_id)?;
-            if message.status != MessageStatus::Buffered {
-                return Err(DomainError::InvariantViolation(format!(
-                    "message {} is not buffered",
-                    message_id
-                )));
-            }
-            message.status = MessageStatus::PromotedToRun;
-            message.promoted_to_run_id = Some(*run_id);
-            Ok(())
-        }
-        Event::MessageCancelled { message_id } => {
-            let message = message_mut(state, *message_id)?;
-            if message.status != MessageStatus::Buffered {
-                return Err(DomainError::InvariantViolation(format!(
-                    "message {} is not buffered",
-                    message_id
-                )));
-            }
-            message.status = MessageStatus::Cancelled;
             Ok(())
         }
         Event::SteeringAccepted {
@@ -888,7 +717,6 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 run_id: queued.run_id,
                 status: RunStatus::Cancelled,
                 submission_id: queued.submission_id,
-                origin: queued.origin,
                 submission_digest,
                 output_ref: None,
                 failure: None,
@@ -925,8 +753,7 @@ pub(crate) fn match_existing_run_submission(
         .filter(|run| run.submission_id.as_ref() == Some(submission_id))
     {
         return Some(
-            if active.origin == RunOrigin::Requested
-                && active.source.matches_request(source)
+            if active.source.matches_request(source)
                 && &active.run_config == run_config
                 && active.notify_on_terminal == notify_on_terminal
             {
@@ -943,8 +770,7 @@ pub(crate) fn match_existing_run_submission(
         .find(|run| run.submission_id.as_ref() == Some(submission_id))
     {
         return Some(
-            if queued.origin == RunOrigin::Requested
-                && queued.source.matches_request(source)
+            if queued.source.matches_request(source)
                 && &queued.run_config == run_config
                 && queued.notify_on_terminal == notify_on_terminal
             {
@@ -973,82 +799,6 @@ pub(crate) fn match_existing_run_submission(
             _ => SubmissionMatch::Identical,
         });
     }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(match message.submission_digest {
-            digest
-                if digest
-                    != request_run_submission_digest(source, run_config, notify_on_terminal) =>
-            {
-                SubmissionMatch::Different
-            }
-            _ => SubmissionMatch::Identical,
-        });
-    }
-    None
-}
-
-pub(crate) fn match_existing_message_submission(
-    state: &CoreAgentState,
-    submission_id: &SubmissionId,
-    input: &[ContextEntryInput],
-) -> Option<SubmissionMatch> {
-    if let Some(active) = state
-        .runs
-        .active
-        .as_ref()
-        .filter(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if active.origin == RunOrigin::Message && active.source.matches_message_input(input) {
-                SubmissionMatch::Identical
-            } else {
-                SubmissionMatch::Different
-            },
-        );
-    }
-    if let Some(queued) = state
-        .runs
-        .queued
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(
-            if queued.origin == RunOrigin::Message && queued.source.matches_message_input(input) {
-                SubmissionMatch::Identical
-            } else {
-                SubmissionMatch::Different
-            },
-        );
-    }
-    if let Some(completed) = state
-        .runs
-        .completed
-        .iter()
-        .find(|run| run.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(match completed.submission_digest {
-            Some(digest) if digest != message_submission_digest(input) => {
-                SubmissionMatch::Different
-            }
-            _ => SubmissionMatch::Identical,
-        });
-    }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        return Some(match message.submission_digest {
-            digest if digest != message_submission_digest(input) => SubmissionMatch::Different,
-            _ => SubmissionMatch::Identical,
-        });
-    }
     None
 }
 
@@ -1061,12 +811,6 @@ pub fn request_run_submission_digest(
     notify_on_terminal: &[RunTerminalNotifyIntent],
 ) -> u64 {
     submission_digest_json(&("request_run", source, run_config, notify_on_terminal))
-}
-
-/// Deterministic digest of a message submission's payload. The command kind is
-/// part of the digest so submission ids share one namespace across commands.
-pub fn message_submission_digest(input: &[ContextEntryInput]) -> u64 {
-    submission_digest_json(&("submit_message", input))
 }
 
 fn submission_digest_json<T: Serialize>(payload: &T) -> u64 {
@@ -1082,14 +826,11 @@ fn submission_digest_json<T: Serialize>(payload: &T) -> u64 {
 }
 
 fn submission_digest_for_accepted_run(run: &AcceptedRun) -> u64 {
-    match run.origin {
-        RunOrigin::Requested => request_run_submission_digest(
-            &source_request_equivalent(&run.source),
-            &run.run_config,
-            &run.notify_on_terminal,
-        ),
-        RunOrigin::Message => message_submission_digest(run.source.input()),
-    }
+    request_run_submission_digest(
+        &source_request_equivalent(&run.source),
+        &run.run_config,
+        &run.notify_on_terminal,
+    )
 }
 
 pub(crate) fn source_request_equivalent(source: &RunSource) -> RunRequestSource {
@@ -1117,18 +858,6 @@ pub(crate) fn active_run_mut(
         )));
     }
     Ok(active_run)
-}
-
-pub(crate) fn message_mut(
-    state: &mut CoreAgentState,
-    message_id: MessageId,
-) -> Result<&mut BufferedMessage, DomainError> {
-    state
-        .runs
-        .messages
-        .iter_mut()
-        .find(|message| message.message_id == message_id)
-        .ok_or_else(|| DomainError::InvariantViolation(format!("message {} not found", message_id)))
 }
 
 pub(crate) fn active_run_ref(
@@ -1172,7 +901,6 @@ fn finish_active_run(
         let accepted = AcceptedRun {
             run_id: active_run.run_id,
             submission_id: active_run.submission_id.clone(),
-            origin: active_run.origin,
             source: active_run.source.clone(),
             run_config: active_run.run_config.clone(),
             config_revision: active_run.config_revision,
@@ -1184,7 +912,6 @@ fn finish_active_run(
         run_id: active_run.run_id,
         status,
         submission_id: active_run.submission_id,
-        origin: active_run.origin,
         submission_digest,
         output_ref,
         failure,

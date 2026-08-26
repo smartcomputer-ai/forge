@@ -118,7 +118,6 @@ fn admissible_during_turn(command: &CoreAgentCommand) -> bool {
             | CoreAgentCommand::ForceCancelRun { .. }
             | CoreAgentCommand::RequestRunSteering { .. }
             | CoreAgentCommand::RequestRun(_)
-            | CoreAgentCommand::SubmitMessage(_)
             | CoreAgentCommand::ResolvePromise { .. }
             | CoreAgentCommand::FailWorkflowToolDelivery { .. }
             | CoreAgentCommand::FailWorkflowToolStart { .. }
@@ -170,13 +169,6 @@ async fn preprocess_input_entries(
                 });
             }
         },
-        CoreAgentCommand::SubmitMessage(message) => (
-            message.submission_id.clone(),
-            message.input,
-            InputPreprocessRebuild::SubmitMessage {
-                submission_id: message.submission_id,
-            },
-        ),
         CoreAgentCommand::UpsertContext {
             expected_revision,
             key,
@@ -221,9 +213,6 @@ enum InputPreprocessRebuild {
         run_config: RunConfig,
         notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
     },
-    SubmitMessage {
-        submission_id: Option<SubmissionId>,
-    },
     UpsertContext {
         expected_revision: Option<u64>,
         key: ContextEntryKey,
@@ -243,12 +232,6 @@ impl InputPreprocessRebuild {
                 source: engine::RunRequestSource::Input { input },
                 run_config,
             })),
-            Self::SubmitMessage { submission_id } => Ok(CoreAgentCommand::SubmitMessage(
-                engine::SubmitMessageCommand {
-                    submission_id,
-                    input,
-                },
-            )),
             Self::UpsertContext {
                 expected_revision,
                 key,
@@ -353,6 +336,17 @@ async fn refresh_runtime_projection_before_run(
                     VFS_CATALOG_CONTEXT_KEY,
                     ContextEntryKind::VfsCatalog,
                 ),
+                subagents: drive
+                    .state()
+                    .lifecycle
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.features.subagents.clone()),
+                active_subagent_catalog_ref: active_context_ref(
+                    drive.state(),
+                    engine::SUBAGENT_CATALOG_CONTEXT_KEY,
+                    ContextEntryKind::SubagentCatalog,
+                ),
             },
             activity_options(),
         )
@@ -417,6 +411,7 @@ fn active_context_ref(
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key

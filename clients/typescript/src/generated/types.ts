@@ -66,7 +66,8 @@ export type AgentApiErrorKind =
       | "transcription_failure"
       | "internal"
     )
-  | "session_bootstrap_failed";
+  | "session_bootstrap_failed"
+  | "environment_not_ready";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentNotification".
@@ -140,6 +141,13 @@ export type ContextEntryKindView =
     }
   | {
       type: "skillCatalog";
+    }
+  | {
+      type: "subagentCatalog";
+    }
+  | {
+      title: string;
+      type: "catalog";
     }
   | {
       catalogId: string;
@@ -235,11 +243,6 @@ export type CompactionPolicy =
 export type ProfileId = string;
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetSpawnBase".
- */
-export type FleetSpawnBase = "self" | "session" | "profile";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "VfsToolSurface".
  */
 export type VfsToolSurface = "readOnly" | "edit";
@@ -325,6 +328,11 @@ export type WorkflowToolCompletionKeySourceInput =
       type: "stringArray";
     }
   | {
+      field: string;
+      pointer: string;
+      type: "arrayItemField";
+    }
+  | {
       pointer: string;
       prefix: string;
       type: "arrayIndices";
@@ -368,6 +376,11 @@ export type WorkflowToolTargetInput =
 export type BoundWorkflowToolDispatchInput = "pull" | "push";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionOriginKind".
+ */
+export type SessionOriginKind = "subagent";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
  */
 export type RunViewSource =
@@ -398,6 +411,17 @@ export type InputItem =
       mime: string;
       name?: string | null;
       type: "media";
+    }
+  | {
+      /**
+       * The catalog body, plain text or Markdown.
+       */
+      text: string;
+      /**
+       * Short name shown as the catalog's heading, e.g. "Bot directory".
+       */
+      title: string;
+      type: "catalog";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -508,25 +532,6 @@ export type SessionEventKindView =
       type: "runStarted";
     }
   | {
-      messageId: string;
-      submissionId?: string | null;
-      type: "messageBuffered";
-    }
-  | {
-      messageId: string;
-      runId: string;
-      type: "messageConsumedByAwait";
-    }
-  | {
-      messageId: string;
-      runId: string;
-      type: "messagePromotedToRun";
-    }
-  | {
-      messageId: string;
-      type: "messageCancelled";
-    }
-  | {
       input: ContextEntryInputView[];
       runId: string;
       steeringId: string;
@@ -593,6 +598,11 @@ export type SessionEventKindView =
       status: string;
       turnId: string;
       type: "turnGenerationCompleted";
+      /**
+       * Provider token usage for this generation, including the
+       * prompt-cache read/write counts, when the provider reported it.
+       */
+      usage?: LlmUsageView | null;
     }
   | {
       turnId: string;
@@ -749,6 +759,11 @@ export type TokenEndpointAuthMethod = "clientSecretBasic" | "clientSecretPost" |
  * via the `definition` "AuthFlowStatus".
  */
 export type AuthFlowStatus = "pending" | "completed" | "failed" | "expired";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantExposure".
+ */
+export type AuthGrantExposure = "brokered" | "retrievable";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "PrincipalKind".
@@ -996,6 +1011,9 @@ export type ProfileEnvironment =
       type: "existing";
     }
   | {
+      type: "inherit";
+    }
+  | {
       /**
        * Credentials bound to the environment right after it is
        * provisioned, before activation (P127 D5): references to universe
@@ -1196,6 +1214,10 @@ export interface SessionView {
    * indicates external session ownership; tool-only declarations do not.
    */
   management?: ManagedSessionWorkflowToolsInput | null;
+  /**
+   * Sub-agent lineage; absent for root sessions.
+   */
+  origin?: SessionOriginView | null;
   runs?: RunView[];
   status: SessionStatus;
   updatedAtMs: number;
@@ -1235,6 +1257,18 @@ export interface ContextEntryView {
    * transcripts render steering distinctly from the run's first input.
    */
   source?: ContextEntrySourceView | null;
+  /**
+   * For a catalog entry that a newer version has updated: that newer
+   * entry. Present only on state views (`session/read`), where the whole
+   * active context is known.
+   */
+  supersededBy?: string | null;
+  /**
+   * For a catalog entry: the earlier version of the same keyed catalog
+   * that this entry updates. The earlier entry stays in context until a
+   * rewrite drops it.
+   */
+  supersedes?: string | null;
   text?: string | null;
   tokenEstimate?: TokenEstimateView | null;
 }
@@ -1308,8 +1342,8 @@ export interface ContextConfig {
  */
 export interface FeaturesConfig {
   environments?: EnvironmentsFeature | null;
-  fleet?: FleetFeature | null;
   mcp?: McpFeature | null;
+  subagents?: SubagentsFeature | null;
   timers?: TimersFeature | null;
   vfs?: VfsFeature | null;
   web?: WebFeature | null;
@@ -1343,43 +1377,6 @@ export interface EnvironmentsFeature {
   version?: number;
 }
 /**
- * Grants the Fleet subagent control plane
- * (agent_spawn/send/read/list/cancel and profile_list/read).
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetFeature".
- */
-export interface FleetFeature {
-  profiles?: FleetProfilesConfig | null;
-  spawn?: FleetSpawnConfig | null;
-  version?: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetProfilesConfig".
- */
-export interface FleetProfilesConfig {
-  /**
-   * Absent means all named profiles are visible/readable/spawnable.
-   */
-  allow?: ProfileId[] | null;
-  deny?: ProfileId[];
-  /**
-   * Defaults to true when omitted.
-   */
-  inline?: boolean | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "FleetSpawnConfig".
- */
-export interface FleetSpawnConfig {
-  /**
-   * Absent means all bases are allowed.
-   */
-  bases?: FleetSpawnBase[] | null;
-}
-/**
  * Grants remote MCP tools by declaring linked servers from the universe MCP
  * catalog; must link at least one server, with unique server ids.
  *
@@ -1402,6 +1399,48 @@ export interface McpServerLink {
   approval?: RemoteMcpApprovalPolicy | null;
   deferLoading?: boolean | null;
   serverId: string;
+}
+/**
+ * Grants sub-agent delegation: `agent_run` (joined, result inline) and
+ * `agent_spawn` (promise, joined with `await`) over the listed agent
+ * profiles. Limits are root-scoped and attenuating: every descendant of a
+ * root session counts against the root, and a nested grant can narrow but
+ * never widen the limits pinned on its origin.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentsFeature".
+ */
+export interface SubagentsFeature {
+  /**
+   * The agent menu. Every id must name an existing profile; the model
+   * picks by id and reads descriptions from the sub-agent catalog.
+   */
+  agents: SubagentAgentRef[];
+  /**
+   * Per-child run deadline in milliseconds; at most the execution
+   * ceiling of 24 hours.
+   */
+  deadlineMs?: number;
+  /**
+   * Open sessions under the root at any time, excluding the root.
+   */
+  maxConcurrent?: number;
+  /**
+   * A child at depth `d` may spawn only while `d + 1 <= maxDepth`.
+   */
+  maxDepth?: number;
+  /**
+   * Lifetime total of sessions ever created under the root.
+   */
+  maxDescendants?: number;
+  version?: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentAgentRef".
+ */
+export interface SubagentAgentRef {
+  profileId: ProfileId;
 }
 /**
  * Grants timer promises through the sleep tool plus the base concurrency
@@ -1610,15 +1649,79 @@ export interface WorkflowStartRefInput {
   revision: number;
 }
 /**
+ * Typed provenance of a delegated (sub-agent) session: who created it,
+ * under which root, at what depth, and the effective limits it was spawned
+ * with. Provenance, never ownership — the child is an ordinary session.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionOriginView".
+ */
+export interface SessionOriginView {
+  agent: SubagentAgentPin;
+  /**
+   * Absolute depth from the root; a root's direct child is 1.
+   */
+  depth: number;
+  /**
+   * The workflow-tool invocation that created the child.
+   */
+  invocationId: string;
+  kind: SessionOriginKind;
+  limits: SubagentLimitsView;
+  parentRunId: string;
+  parentSessionId: string;
+  /**
+   * Nearest ancestor without an origin; root-scoped limits count every
+   * session naming this root.
+   */
+  rootSessionId: string;
+}
+/**
+ * The profile a sub-agent was spawned from, pinned at its revision.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentAgentPin".
+ */
+export interface SubagentAgentPin {
+  profileId: ProfileId;
+  revision: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SubagentLimitsView".
+ */
+export interface SubagentLimitsView {
+  deadlineMs: number;
+  maxConcurrent: number;
+  maxDepth: number;
+  maxDescendants: number;
+}
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunView".
  */
 export interface RunView {
+  /**
+   * When the run reached a terminal state, derived from its committed
+   * completed, failed, or cancelled event. Absent for non-terminal runs.
+   */
+  completedAtMs?: number | null;
   entries?: ContextEntryView[];
   id: string;
   source: RunViewSource;
+  /**
+   * When the run left the queue and began executing, derived from the
+   * committed `runStarted` event. Absent while the run is queued.
+   */
+  startedAtMs?: number | null;
   status: RunStatus;
   toolBatches?: ToolBatchView[];
+  /**
+   * Provider token usage summed over the run's completed generations;
+   * absent until the first generation reports usage. The cached share
+   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+   */
+  usage?: LlmUsageView | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1654,6 +1757,30 @@ export interface ToolEffectView {
     [k: string]: string;
   };
   kind: string;
+}
+/**
+ * Provider-reported token usage for one generation or a sum of them. Every
+ * field is optional because providers report different subsets; counts
+ * that a provider reports separately (Anthropic's cache read/write) are
+ * folded into `input_tokens` so the field always means "prompt tokens
+ * billed on this request, cached or not".
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "LlmUsageView".
+ */
+export interface LlmUsageView {
+  /**
+   * Prompt tokens written into the provider's prompt cache (Anthropic).
+   */
+  cacheWriteInputTokens?: number | null;
+  /**
+   * Prompt tokens served from the provider's prompt cache.
+   */
+  cachedInputTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  totalTokens?: number | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1855,9 +1982,12 @@ export interface AuthGrantView {
   createdAtMs: number;
   displayName?: string | null;
   expiresAtMs?: number | null;
+  exposure: AuthGrantExposure;
   grantId: string;
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
+  lastLeasedAtMs?: number | null;
+  leaseCount: number;
   /**
    * Non-secret provider-specific metadata (for GitHub App installation
    * grants: installation id, account, permissions, repository selection).
@@ -1925,6 +2055,24 @@ export interface AgentApiOutcomeOfAuthGrantImportResponse {
  */
 export interface AuthGrantImportResponse {
   grant: AuthGrantView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfAuthGrantLeaseResponse".
+ */
+export interface AgentApiOutcomeOfAuthGrantLeaseResponse {
+  notifications?: AgentNotification[];
+  result: AuthGrantLeaseResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantLeaseResponse".
+ */
+export interface AuthGrantLeaseResponse {
+  expiresAtMs?: number | null;
+  grantId: string;
+  providerKind: AuthProviderKind;
+  token: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3430,6 +3578,10 @@ export interface SessionSummaryView {
    * lifecycle controller at managed-session creation.
    */
   managed: boolean;
+  /**
+   * Sub-agent lineage; absent for root sessions.
+   */
+  origin?: SessionOriginView | null;
   updatedAtMs: number;
 }
 /**
@@ -3842,6 +3994,7 @@ export interface AuthClientReadParams {
 export interface AuthFlowStartParams {
   audience?: string | null;
   clientId: string;
+  exposure?: AuthGrantExposure & string;
   scopes?: string[] | null;
 }
 /**
@@ -3857,6 +4010,7 @@ export interface AuthFlowStatusParams {
  */
 export interface AuthGitHubInstallationGrantParams {
   displayName?: string | null;
+  exposure?: AuthGrantExposure & string;
   grantId?: string | null;
   installationId: number;
   providerId: string;
@@ -3881,6 +4035,7 @@ export interface AuthGrantImportParams {
   audience?: string | null;
   displayName?: string | null;
   expiresAtMs?: number | null;
+  exposure?: AuthGrantExposure & string;
   grantId?: string | null;
   /**
    * Non-secret, caller-defined metadata stored on the grant and returned
@@ -3894,6 +4049,19 @@ export interface AuthGrantImportParams {
   scopes?: string[];
   subjectHint?: string | null;
   token: string;
+}
+/**
+ * Request a current access-token lease for a retrievable grant. Callers must
+ * cache only in memory until shortly before `expiresAtMs` (or for at most
+ * five minutes when it is absent), re-lease after target 401/403 responses,
+ * and never persist the token or place it in a workflow payload.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AuthGrantLeaseParams".
+ */
+export interface AuthGrantLeaseParams {
+  audience?: string | null;
+  grantId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4704,6 +4872,14 @@ export interface SessionListParams {
    */
   cursor?: string | null;
   limit?: number | null;
+  /**
+   * Only sub-agent sessions delegated directly by this session.
+   */
+  parentSessionId?: string | null;
+  /**
+   * Only sub-agent sessions whose lineage root is this session.
+   */
+  rootSessionId?: string | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

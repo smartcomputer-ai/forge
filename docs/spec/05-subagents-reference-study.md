@@ -767,6 +767,8 @@ Cleanup should be explicit:
 
 ## Lightspeed Design Position
 
+Superseded by `docs/roadmap/p134-subagents.md`, which turned this position into the shipped `agent_run` / `agent_spawn` kernel; the notes below are the study's original conclusions.
+
 For the first Lightspeed subagent implementation, prefer:
 
 - child subagents as ordinary Lightspeed sessions/runs,

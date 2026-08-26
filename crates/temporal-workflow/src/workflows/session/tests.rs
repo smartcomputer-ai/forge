@@ -8,8 +8,8 @@ use engine::{
 #[test]
 fn pending_admissions_are_fifo() {
     let mut workflow = AgentSessionWorkflow::default();
-    workflow.queue_admission(admission(deliver_message("submit_1")));
-    workflow.queue_admission(admission(deliver_message("submit_2")));
+    workflow.queue_admission(admission(request_input_run("submit_1")));
+    workflow.queue_admission(admission(request_input_run("submit_2")));
 
     let pending = std::mem::take(&mut workflow.pending_admissions);
     assert_eq!(
@@ -33,7 +33,7 @@ fn admission_failure_status_does_not_poison_later_admission() {
         message: rejection.to_string(),
         rejection: Some(rejection.clone()),
     });
-    workflow.queue_admission(admission(deliver_message("submit_later")));
+    workflow.queue_admission(admission(request_input_run("submit_later")));
 
     let status = workflow.status_snapshot();
 
@@ -53,21 +53,6 @@ fn admission_failure_status_does_not_poison_later_admission() {
     );
     assert_eq!(status.admission_failures[0].rejection, Some(rejection));
     assert_eq!(status.last_error, None);
-}
-
-#[test]
-fn submit_message_submission_id_is_available_for_failure_correlation() {
-    let submission_id = SubmissionId::new("submit_test");
-    let command = CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-        submission_id: Some(submission_id.clone()),
-        input: user_input(engine::BlobRef::from_bytes(b"hello")),
-    });
-
-    assert_eq!(drive::command_submission_id(&command), Some(submission_id));
-    assert_eq!(
-        drive::command_submission_id(&CoreAgentCommand::CloseSession { force: false }),
-        None
-    );
 }
 
 #[test]
@@ -123,7 +108,8 @@ fn source_resolution_emission_queues_pending_resolution_with_producer() {
         engine::EmissionEnvelope::source_resolution(
             test_universe(),
             "universe/envjob-job_1".to_owned(),
-            engine::PromiseId::new("p1"),
+            "universe/session_1",
+            engine::PromiseId::new("promise_1"),
             engine::PromiseResolution::Resolved {
                 payload_ref: Some(payload_ref.clone()),
             },
@@ -134,7 +120,7 @@ fn source_resolution_emission_queues_pending_resolution_with_producer() {
     // and optional reply-schema validation before ResolvePromise admission.
     assert!(workflow.pending_admissions.is_empty());
     let pending = &workflow.pending_source_resolutions[0];
-    assert_eq!(pending.promise_id.as_str(), "p1");
+    assert_eq!(pending.promise_id.as_str(), "promise_1");
     assert!(matches!(
         &pending.resolution,
         engine::PromiseResolution::Resolved {
@@ -153,14 +139,15 @@ fn duplicate_source_resolution_delivery_is_an_end_to_end_noop() {
     let mut workflow = AgentSessionWorkflow::default();
     workflow.core_state.lifecycle.status = CoreAgentStatus::Open;
     workflow.core_state.promises.promises.insert(
-        engine::PromiseId::new("p1"),
-        promise("p1", PromiseStatus::Pending),
+        engine::PromiseId::new("promise_1"),
+        promise("promise_1", PromiseStatus::Pending),
     );
     let payload_ref = engine::BlobRef::from_bytes(b"job output");
     let envelope = engine::EmissionEnvelope::source_resolution(
         test_universe(),
         "universe/envjob-job_1".to_owned(),
-        engine::PromiseId::new("p1"),
+        "universe/session_1",
+        engine::PromiseId::new("promise_1"),
         engine::PromiseResolution::Resolved {
             payload_ref: Some(payload_ref.clone()),
         },
@@ -216,7 +203,7 @@ fn duplicate_source_resolution_delivery_is_an_end_to_end_noop() {
         .core_state
         .promises
         .promises
-        .get(&engine::PromiseId::new("p1"))
+        .get(&engine::PromiseId::new("promise_1"))
         .expect("resolved promise");
     assert_eq!(promise.status, PromiseStatus::Resolved);
     assert_eq!(promise.payload_ref.as_ref(), Some(&payload_ref));
@@ -231,7 +218,8 @@ fn cross_universe_emission_is_rejected_before_admission() {
         engine::EmissionEnvelope::source_resolution(
             producer_universe,
             "other-universe/envjob-job_1".to_owned(),
-            engine::PromiseId::new("p1"),
+            "universe/session_1",
+            engine::PromiseId::new("promise_1"),
             engine::PromiseResolution::Resolved { payload_ref: None },
         ),
     );
@@ -259,7 +247,6 @@ fn close_on_terminal_requires_idle_open_session_with_completed_run() {
         run_id: RunId::new(1),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: None,
         failure: None,
@@ -271,14 +258,14 @@ fn close_on_terminal_requires_idle_open_session_with_completed_run() {
     ));
 
     state.promises.promises.insert(
-        engine::PromiseId::new("p_detached"),
-        promise("p_detached", PromiseStatus::Pending),
+        engine::PromiseId::new("promise_14"),
+        promise("promise_14", PromiseStatus::Pending),
     );
     assert!(!drive::should_close_on_terminal(&args, &state));
     state
         .promises
         .promises
-        .get_mut(&engine::PromiseId::new("p_detached"))
+        .get_mut(&engine::PromiseId::new("promise_14"))
         .expect("promise")
         .status = PromiseStatus::Resolved;
     assert!(drive::should_close_on_terminal(&args, &state));
@@ -328,9 +315,8 @@ fn active_drive_rollover_outcome_is_typed_and_waits_for_transport_drain() {
 #[test]
 fn rehydrated_active_run_wakes_core_drive_without_a_new_signal() {
     let mut workflow = workflow_with_parked_tool_batch(AwaitSpec {
-        promise_ids: vec![engine::PromiseId::new("p1")],
+        promise_ids: vec![engine::PromiseId::new("promise_1")],
         mode: engine::AwaitMode::All,
-        mailbox: false,
         deadline_at_ms: Some(50_000),
     });
     assert!(!wait_loop::workflow_state_needs_core_drive_for_state(
@@ -385,19 +371,11 @@ fn continuation_state_round_trips_admission_failure_correlation() {
     assert_eq!(decoded, continuation);
 }
 
-fn deliver_message(submission_id: &str) -> CoreAgentCommand {
-    CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-        submission_id: Some(SubmissionId::new(submission_id)),
-        input: user_input(engine::BlobRef::from_bytes(submission_id.as_bytes())),
-    })
-}
-
-fn request_run_with_notify(submission_id: &str) -> CoreAgentCommand {
+/// An input-bearing run request with a submission id: the generic admission
+/// used where a test only needs "some command carrying input".
+fn request_input_run(submission_id: &str) -> CoreAgentCommand {
     CoreAgentCommand::RequestRun(engine::RunRequestCommand {
-        notify_on_terminal: vec![RunTerminalNotifyIntent {
-            holder_workflow_id: "universe/holder".to_owned(),
-            token: "promise_request".to_owned(),
-        }],
+        notify_on_terminal: Vec::new(),
         submission_id: Some(SubmissionId::new(submission_id)),
         source: engine::RunRequestSource::Input {
             input: user_input(engine::BlobRef::from_bytes(submission_id.as_bytes())),
@@ -547,15 +525,6 @@ fn pending_promise_cancellation(promise_id: &str) -> PendingPromiseCancellation 
     }
 }
 
-fn workflow_with_parked_mailbox_await() -> AgentSessionWorkflow {
-    workflow_with_parked_tool_batch(engine::AwaitSpec {
-        promise_ids: Vec::new(),
-        mode: engine::AwaitMode::All,
-        mailbox: true,
-        deadline_at_ms: None,
-    })
-}
-
 fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkflow {
     let mut workflow = AgentSessionWorkflow::default();
     let run_id = RunId::new(1);
@@ -569,6 +538,7 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
             batch_id,
             run_id,
             turn_id,
+            promise_id_base: 1,
             calls: vec![engine::ToolCallState {
                 call: engine::ObservedToolCall {
                     call_id: call_id.clone(),
@@ -587,7 +557,6 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
         run_id,
         status: RunStatus::Parked,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         source: engine::RunSource::Input {
             input: user_input(engine::BlobRef::from_bytes(b"start")),
         },
@@ -675,7 +644,7 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
             test_universe(),
             SessionId::new("child_a"),
             EventSeq::new(8),
-            "promise_a".to_owned(),
+            "promise_1".to_owned(),
             RunId::new(1),
             RunStatus::Completed,
             Some(engine::BlobRef::from_bytes(b"result")),
@@ -688,7 +657,7 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
             test_universe(),
             SessionId::new("child_b"),
             EventSeq::new(9),
-            "promise_b".to_owned(),
+            "promise_2".to_owned(),
             RunId::new(2),
             RunStatus::Cancelled,
             None,
@@ -702,7 +671,7 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
             promise_id,
             resolution: engine::PromiseResolution::Resolved { payload_ref },
         } => {
-            assert_eq!(promise_id.as_str(), "promise_a");
+            assert_eq!(promise_id.as_str(), "promise_1");
             assert!(payload_ref.is_some());
         }
         other => panic!("expected resolved promise admission, got {other:?}"),
@@ -711,7 +680,7 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
         CoreAgentCommand::ResolvePromise {
             promise_id,
             resolution: engine::PromiseResolution::Failed { .. },
-        } => assert_eq!(promise_id.as_str(), "promise_b"),
+        } => assert_eq!(promise_id.as_str(), "promise_2"),
         other => panic!("expected failed promise admission, got {other:?}"),
     }
 }
@@ -783,7 +752,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         execution_context_ref: None,
         completion_promises: Some(std::collections::BTreeMap::from([(
             engine::REPLY_COMPLETION_KEY.to_owned(),
-            engine::workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY),
+            engine::PromiseId::from_number(1),
         )])),
     };
     workflow
@@ -817,7 +786,10 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
     );
     assert!(matches!(
         &pending.envelope.body,
-        engine::EmissionBody::ToolInvocation { invocation: delivered }
+        engine::EmissionBody::ToolInvocation {
+            invocation: delivered,
+            ..
+        }
             if delivered == &invocation
     ));
 
@@ -889,7 +861,6 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         run_id: RunId::new(1),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: None,
         failure: None,
@@ -1025,7 +996,7 @@ fn start_intents_recompute_pending_start_work_from_durable_state() {
         &engine::ToolCallId::new("call-1"),
         &binding.binding_fingerprint,
     );
-    let promise_id = engine::workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY);
+    let promise_id = engine::PromiseId::from_number(1);
     let execution_id =
         engine::workflow_tool_execution_id(&invocation_id, &start.recipe_fingerprint);
     let invocation = engine::WorkflowToolInvocation {
@@ -1139,7 +1110,6 @@ fn terminal_run_with_notify_intent_queues_emission() {
         run_id: RunId::new(3),
         status: RunStatus::Completed,
         submission_id: None,
-        origin: engine::RunOrigin::Requested,
         submission_digest: None,
         output_ref: Some(output_ref.clone()),
         failure: None,
@@ -1204,12 +1174,20 @@ fn promise(id: &str, status: PromiseStatus) -> engine::Promise {
     promise_with_source(
         id,
         status,
-        PromiseSource::Run {
-            target_session_id: "child".to_owned(),
-            target_run_id: 1,
-        },
+        bound_workflow_source("child"),
         PromiseScope::Session,
     )
+}
+
+/// A bound-receiver workflow promise: resolved only by pushed emission, so
+/// it never enters the recovery poll set.
+fn bound_workflow_source(peer: &str) -> PromiseSource {
+    PromiseSource::Workflow {
+        producer_workflow_id: format!("universe/{peer}"),
+        producer_workflow_kind: "bound_receiver".to_owned(),
+        invocation_id: format!("wti_{peer}"),
+        completion_key: engine::REPLY_COMPLETION_KEY.to_owned(),
+    }
 }
 
 fn promise_with_source(
@@ -1248,20 +1226,22 @@ fn await_spec(
     engine::AwaitSpec {
         promise_ids: ids.iter().map(|id| engine::PromiseId::new(*id)).collect(),
         mode,
-        mailbox: false,
         deadline_at_ms,
     }
 }
 
 #[test]
 fn workflow_await_waits_for_every_promise_in_all_mode() {
-    let mut workflow =
-        workflow_with_parked_tool_batch(await_spec(&["p1", "p2"], engine::AwaitMode::All, None));
+    let mut workflow = workflow_with_parked_tool_batch(await_spec(
+        &["promise_1", "promise_2"],
+        engine::AwaitMode::All,
+        None,
+    ));
     add_promises(
         &mut workflow,
         vec![
-            promise("p1", PromiseStatus::Resolved),
-            promise("p2", PromiseStatus::Pending),
+            promise("promise_1", PromiseStatus::Resolved),
+            promise("promise_2", PromiseStatus::Pending),
         ],
     );
     assert!(!awaits::has_satisfied_await(&workflow));
@@ -1269,8 +1249,8 @@ fn workflow_await_waits_for_every_promise_in_all_mode() {
     add_promises(
         &mut workflow,
         vec![
-            promise("p1", PromiseStatus::Resolved),
-            promise("p2", PromiseStatus::Failed),
+            promise("promise_1", PromiseStatus::Resolved),
+            promise("promise_2", PromiseStatus::Failed),
         ],
     );
     assert!(awaits::has_satisfied_await(&workflow));
@@ -1278,12 +1258,11 @@ fn workflow_await_waits_for_every_promise_in_all_mode() {
 
 #[test]
 fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
-    let promise_id = engine::PromiseId::new("joined_reply");
+    let promise_id = engine::PromiseId::new("promise_15");
     let mut workflow = workflow_with_parked_tool_batch(engine::AwaitSpec {
         promise_ids: vec![promise_id.clone()],
         mode: engine::AwaitMode::All,
         deadline_at_ms: None,
-        mailbox: false,
     });
     let invocation_id = engine::WorkflowToolInvocationId::for_call(
         test_universe(),
@@ -1313,7 +1292,6 @@ fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
             promise_ids: vec![promise_id.clone()],
             mode: engine::AwaitMode::All,
             deadline_at_ms: None,
-            mailbox: false,
         },
     };
     workflow.core_state.promises.promises.insert(
@@ -1344,13 +1322,16 @@ fn parked_join_reconstructs_wake_from_runtime_owned_terminal_promises() {
 
 #[test]
 fn workflow_await_resolves_any_mode_on_first_terminal_promise() {
-    let mut workflow =
-        workflow_with_parked_tool_batch(await_spec(&["p1", "p2"], engine::AwaitMode::Any, None));
+    let mut workflow = workflow_with_parked_tool_batch(await_spec(
+        &["promise_1", "promise_2"],
+        engine::AwaitMode::Any,
+        None,
+    ));
     add_promises(
         &mut workflow,
         vec![
-            promise("p1", PromiseStatus::Cancelled),
-            promise("p2", PromiseStatus::Pending),
+            promise("promise_1", PromiseStatus::Cancelled),
+            promise("promise_2", PromiseStatus::Pending),
         ],
     );
     assert!(awaits::has_satisfied_await(&workflow));
@@ -1358,92 +1339,62 @@ fn workflow_await_resolves_any_mode_on_first_terminal_promise() {
 
 #[test]
 fn workflow_await_deadline_uses_timer_not_state_condition() {
-    let mut workflow =
-        workflow_with_parked_tool_batch(await_spec(&["p1"], engine::AwaitMode::All, Some(1_000)));
-    add_promises(&mut workflow, vec![promise("p1", PromiseStatus::Pending)]);
+    let mut workflow = workflow_with_parked_tool_batch(await_spec(
+        &["promise_1"],
+        engine::AwaitMode::All,
+        Some(1_000),
+    ));
+    add_promises(
+        &mut workflow,
+        vec![promise("promise_1", PromiseStatus::Pending)],
+    );
     assert!(!awaits::has_satisfied_await(&workflow));
     assert_eq!(awaits::nearest_await_wake_ms(&workflow), Some(1_000));
 }
 
 #[test]
 fn promise_snapshot_reports_pending_promise() {
-    let spec = await_spec(&["p1"], engine::AwaitMode::All, Some(1_000));
+    let spec = await_spec(&["promise_1"], engine::AwaitMode::All, Some(1_000));
     let mut workflow = workflow_with_parked_tool_batch(spec.clone());
-    add_promises(&mut workflow, vec![promise("p1", PromiseStatus::Pending)]);
+    add_promises(
+        &mut workflow,
+        vec![promise("promise_1", PromiseStatus::Pending)],
+    );
     let snapshot = awaits::promise_snapshot(&spec, &workflow.core_state);
     assert_eq!(snapshot[0].status, "pending");
-}
-
-#[test]
-fn mailbox_await_wakes_on_engine_buffered_message() {
-    let mut workflow = workflow_with_parked_mailbox_await();
-    assert!(!awaits::has_satisfied_await(&workflow));
-
-    workflow.queue_admission(admission(deliver_message("submit_regular")));
-    assert!(!awaits::has_satisfied_await(&workflow));
-    workflow.pending_admissions.clear();
-
-    workflow.queue_admission(admission(request_run_with_notify("fleet_request_1")));
-    assert!(!awaits::has_satisfied_await(&workflow));
-    workflow.pending_admissions.clear();
-
-    let input = user_input(engine::BlobRef::from_bytes(b"fleet_send_1"));
-    workflow
-        .core_state
-        .runs
-        .messages
-        .push(engine::BufferedMessage {
-            message_id: engine::MessageId::new(1),
-            submission_id: Some(SubmissionId::new("fleet_send_1")),
-            submission_digest: engine::message_submission_digest(&input),
-            input,
-            run_config: crate::default_run_config(),
-            config_revision: 0,
-            status: engine::MessageStatus::Buffered,
-            consumed_by_run_id: None,
-            promoted_to_run_id: None,
-        });
-    assert!(awaits::has_satisfied_await(&workflow));
 }
 
 #[test]
 fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
     let mut workflow = workflow_with_parked_tool_batch(engine::AwaitSpec {
         promise_ids: vec![
-            engine::PromiseId::new("p_child"),
-            engine::PromiseId::new("p_request"),
-            engine::PromiseId::new("p_timer"),
-            engine::PromiseId::new("p_detached"),
+            engine::PromiseId::new("promise_11"),
+            engine::PromiseId::new("promise_12"),
+            engine::PromiseId::new("promise_13"),
+            engine::PromiseId::new("promise_14"),
         ],
         mode: engine::AwaitMode::All,
-        mailbox: true,
         deadline_at_ms: Some(50_000),
     });
     let promises = [
         promise_with_source(
-            "p_child",
+            "promise_11",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "child".to_owned(),
-                target_run_id: 10,
-            },
+            bound_workflow_source("child"),
             PromiseScope::Run {
                 run_id: RunId::new(1),
             },
         ),
         promise_with_source(
-            "p_request",
+            "promise_12",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "peer".to_owned(),
-                target_run_id: 11,
-            },
+            bound_workflow_source("peer"),
             PromiseScope::Run {
                 run_id: RunId::new(1),
             },
         ),
         promise_with_source(
-            "p_timer",
+            "promise_13",
             PromiseStatus::Pending,
             PromiseSource::Timer { fire_at_ms: 60_000 },
             PromiseScope::Run {
@@ -1451,12 +1402,9 @@ fn continue_as_new_allows_pending_sources_and_parked_tool_batches() {
             },
         ),
         promise_with_source(
-            "p_detached",
+            "promise_14",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "detached_child".to_owned(),
-                target_run_id: 12,
-            },
+            bound_workflow_source("detached_child"),
             PromiseScope::Session,
         ),
     ];
@@ -1489,27 +1437,21 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
     let timer_source = PromiseSource::Timer { fire_at_ms: 60_000 };
     let promises = [
         promise_with_source(
-            "p_timer",
+            "promise_13",
             PromiseStatus::Pending,
             timer_source.clone(),
             PromiseScope::Session,
         ),
         promise_with_source(
-            "p_child",
+            "promise_11",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "child".to_owned(),
-                target_run_id: 10,
-            },
+            bound_workflow_source("child"),
             PromiseScope::Session,
         ),
         promise_with_source(
-            "p_request",
+            "promise_12",
             PromiseStatus::Pending,
-            PromiseSource::Run {
-                target_session_id: "peer".to_owned(),
-                target_run_id: 11,
-            },
+            bound_workflow_source("peer"),
             PromiseScope::Session,
         ),
     ];
@@ -1525,11 +1467,11 @@ fn promise_source_polls_rehydrate_from_pending_poll_sources() {
 
     assert_eq!(workflow.promise_source_polls.len(), 1);
     assert!(!workflow.promise_source_polls.contains_key("stale"));
-    assert!(!workflow.promise_source_polls.contains_key("p_child"));
-    assert!(!workflow.promise_source_polls.contains_key("p_request"));
+    assert!(!workflow.promise_source_polls.contains_key("promise_11"));
+    assert!(!workflow.promise_source_polls.contains_key("promise_12"));
     let timer_poll = workflow
         .promise_source_polls
-        .get("p_timer")
+        .get("promise_13")
         .expect("timer poll");
     assert_eq!(timer_poll.source, timer_source);
     assert_eq!(timer_poll.next_check_at_ms, 60_000);
@@ -1542,7 +1484,7 @@ fn continue_as_new_is_blocked_by_non_reconstructible_workflow_state() {
     let mut workflow = AgentSessionWorkflow::default();
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 
-    workflow.queue_admission(admission(deliver_message("submit_1")));
+    workflow.queue_admission(admission(request_input_run("submit_1")));
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
     workflow.pending_admissions.clear();
 
@@ -1556,7 +1498,7 @@ fn continue_as_new_is_blocked_by_non_reconstructible_workflow_state() {
 
     workflow
         .pending_promise_cancellations
-        .push(pending_promise_cancellation("p1"));
+        .push(pending_promise_cancellation("promise_1"));
     assert!(!wait_loop::workflow_state_allows_continue_as_new(&workflow));
     workflow.pending_promise_cancellations.clear();
 
@@ -1575,8 +1517,8 @@ fn continue_as_new_is_blocked_by_non_reconstructible_workflow_state() {
 
     // Log-derived state (pending promises) never blocks continue-as-new.
     workflow.core_state.promises.promises.insert(
-        engine::PromiseId::new("p1"),
-        promise("p1", PromiseStatus::Pending),
+        engine::PromiseId::new("promise_1"),
+        promise("promise_1", PromiseStatus::Pending),
     );
     assert!(wait_loop::workflow_state_allows_continue_as_new(&workflow));
 }
@@ -1606,7 +1548,7 @@ fn closed_quiescent_workflow_can_complete() {
 
     workflow
         .pending_promise_cancellations
-        .push(pending_promise_cancellation("p1"));
+        .push(pending_promise_cancellation("promise_1"));
     assert!(!wait_loop::workflow_state_is_closed_and_quiescent(
         &workflow
     ));

@@ -17,9 +17,10 @@ type EventInput<T extends EventKind["type"]> =
 const event = <T extends EventKind["type"]>(
   seq: number,
   kind: EventInput<T>,
+  observedAtMs = seq,
 ): SessionEvent => ({
   cursor: { seq },
-  observedAtMs: seq,
+  observedAtMs,
   joins: {},
   sessionId: "session-test",
   kind: {
@@ -38,6 +39,17 @@ const item = (
   kind: SessionItem["kind"],
   extra: Omit<Partial<SessionItem>, "id" | "kind" | "contentRef"> = {},
 ): SessionItem => ({ id, kind, ...extra, contentRef: `sha256:${id}` });
+
+const runView = (
+  id: string,
+  status: SessionRunView["status"],
+  text = "",
+): SessionRunView => ({
+  id,
+  status,
+  source: { type: "input", items: text ? [{ type: "text", text }] : [] },
+  entries: [],
+});
 
 describe("session transcript traces", () => {
   it("keeps readable reasoning summaries and hides opaque continuation state", () => {
@@ -330,13 +342,6 @@ describe("session transcript traces", () => {
 });
 
 describe("session transcript run control", () => {
-  const runView = (id: string, status: SessionRunView["status"], text = ""): SessionRunView => ({
-    id,
-    status,
-    source: { type: "input", items: text ? [{ type: "text", text }] : [] },
-    entries: [],
-  });
-
   it("queues runs accepted behind the active one and starts them in order", () => {
     let state = applyEvents(emptyTranscript(), [
       event(1, { type: "runAccepted", runId: "run_1" }),
@@ -357,6 +362,7 @@ describe("session transcript run control", () => {
     expect(state.queuedRuns).toEqual([]);
     expect(state.entries).toEqual([
       { kind: "marker", key: "evt-5", text: "queued message cancelled", tone: "muted" },
+      { kind: "marker", key: "evt-6", text: "run completed in 4ms", tone: "muted" },
     ]);
 
     state = applyEvents(state, [event(8, { type: "runCompleted", runId: "run_3" })]);
@@ -391,7 +397,7 @@ describe("session transcript run control", () => {
     expect(state.entries.at(-1)).toEqual({
       kind: "marker",
       key: "evt-6",
-      text: "run cancelled",
+      text: "run cancelled after 4ms",
       tone: "muted",
     });
   });
@@ -448,5 +454,80 @@ describe("session transcript run control", () => {
 
     // Identity is preserved when nothing changes.
     expect(reconcileRuns(healed, [runView("run_3", "cancelled")])).toBe(healed);
+  });
+});
+
+describe("run usage", () => {
+  it("summarizes prompt tokens and the cached share when the run finishes", () => {
+    let state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
+      event(3, {
+        type: "turnGenerationCompleted",
+        runId: "run_1",
+        turnId: "turn_1",
+        status: "succeeded",
+        usage: { inputTokens: 9000, cachedInputTokens: 8000, outputTokens: 1000 },
+      }),
+      event(4, {
+        type: "turnGenerationCompleted",
+        runId: "run_1",
+        turnId: "turn_2",
+        status: "succeeded",
+        usage: { inputTokens: 11000, cachedInputTokens: 10000, outputTokens: 2000 },
+      }),
+    ]);
+    expect(state.entries.some((entry) => entry.kind === "marker")).toBe(false);
+
+    state = applyEvents(state, [event(5, { type: "runCompleted", runId: "run_1" }, 9_200)]);
+    const marker = state.entries.find((entry) => entry.kind === "marker");
+    expect(marker?.kind === "marker" && marker.text).toBe(
+      "8.2s · 20k tokens in (90% cached) · 3.0k tokens out",
+    );
+    expect(marker?.kind === "marker" && marker.tone).toBe("muted");
+  });
+
+  it("shows duration when the provider reported no usage", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
+      event(3, { type: "runCompleted", runId: "run_1" }, 2_500),
+    ]);
+    const marker = state.entries.find((entry) => entry.kind === "marker");
+    expect(marker?.kind === "marker" && marker.text).toBe("run completed in 1.5s");
+  });
+
+  it("omits the cache percentage when the run had no cache hits", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
+      event(3, {
+        type: "turnGenerationCompleted",
+        runId: "run_1",
+        turnId: "turn_1",
+        status: "succeeded",
+        usage: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 200 },
+      }),
+      event(4, { type: "runCompleted", runId: "run_1" }, 2_000),
+    ]);
+
+    const marker = state.entries.find((entry) => entry.kind === "marker");
+    expect(marker?.kind === "marker" && marker.text).toBe(
+      "1.0s · 5.0k tokens in · 200 tokens out",
+    );
+  });
+
+  it("uses the authoritative run start time when event catch-up missed it", () => {
+    let state = reconcileRuns(emptyTranscript(), [{
+      ...runView("run_1", "running"),
+      startedAtMs: 1_000,
+    }]);
+
+    state = applyEvents(state, [
+      event(3, { type: "runCompleted", runId: "run_1" }, 3_500),
+    ]);
+
+    const marker = state.entries.find((entry) => entry.kind === "marker");
+    expect(marker?.kind === "marker" && marker.text).toBe("run completed in 2.5s");
   });
 });

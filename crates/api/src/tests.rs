@@ -10,6 +10,8 @@ fn notification_serializes_as_json_rpc_lite_shape() {
         run: RunView {
             id: "run_1".to_owned(),
             status: RunStatus::Completed,
+            started_at_ms: Some(10),
+            completed_at_ms: Some(20),
             source: RunViewSource::Input {
                 items: vec![InputItem::Text {
                     text: "hello".to_owned(),
@@ -17,6 +19,7 @@ fn notification_serializes_as_json_rpc_lite_shape() {
             },
             entries: Vec::new(),
             tool_batches: Vec::new(),
+            usage: None,
         },
     };
 
@@ -31,6 +34,8 @@ fn notification_serializes_as_json_rpc_lite_shape() {
                 "run": {
                     "id": "run_1",
                     "status": "completed",
+                    "startedAtMs": 10,
+                    "completedAtMs": 20,
                     "source": {
                         "type": "input",
                         "items": [{ "type": "text", "text": "hello" }]
@@ -56,6 +61,23 @@ fn auth_grant_import_params_redact_token_in_debug_output() {
     assert!(!debug.contains("super-secret-token"), "{debug}");
     assert!(debug.contains("<redacted>"));
     assert_eq!(params.token, "super-secret-token");
+    assert_eq!(params.exposure, AuthGrantExposure::Brokered);
+}
+
+#[test]
+fn auth_grant_lease_response_redacts_token_in_debug_output() {
+    let response = AuthGrantLeaseResponse {
+        token: "super-secret-leased-token".to_owned(),
+        expires_at_ms: Some(1234),
+        grant_id: "authgrant_1".to_owned(),
+        provider_kind: AuthProviderKind::StaticBearer,
+    };
+
+    let debug = format!("{response:?}");
+
+    assert!(!debug.contains("super-secret-leased-token"), "{debug}");
+    assert!(debug.contains("<redacted>"));
+    assert!(debug.contains("authgrant_1"));
 }
 
 #[test]
@@ -1040,6 +1062,27 @@ async fn dispatch_json_rpc_routes_mcp_server_put() {
     );
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_auth_grant_lease() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_AUTH_GRANTS_LEASE.to_owned(),
+            params: Some(json!({
+                "grantId": "authgrant_1",
+                "audience": "https://api.example.com"
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["grantId"], json!("authgrant_1"));
+    assert_eq!(result["result"]["token"], json!("leased-token"));
+}
+
 #[test]
 fn mcp_server_put_params_default_approval_is_never_and_revision_optional() {
     let params: McpServerPutParams = serde_json::from_value(json!({
@@ -1392,6 +1435,8 @@ fn provider_context_entry_serializes_debug_metadata() {
         text: None,
         display: None,
         source: None,
+        supersedes: None,
+        superseded_by: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize provider context entry");
@@ -1442,6 +1487,8 @@ fn provider_context_entry_serializes_mcp_display() {
             error: None,
         }),
         source: None,
+        supersedes: None,
+        superseded_by: None,
     };
 
     let value = serde_json::to_value(entry).expect("serialize mcp provider context entry");
@@ -1477,6 +1524,8 @@ fn run_view_can_expose_tool_batches() {
     let run = RunView {
         id: "run_1".to_owned(),
         status: RunStatus::Running,
+        started_at_ms: Some(10),
+        completed_at_ms: None,
         source: RunViewSource::Input { items: Vec::new() },
         entries: Vec::new(),
         tool_batches: vec![ToolBatchView {
@@ -1500,10 +1549,13 @@ fn run_view_can_expose_tool_batches() {
                 }),
             }],
         }],
+        usage: None,
     };
 
     let value = serde_json::to_value(run).expect("serialize run");
 
+    assert_eq!(value["startedAtMs"], 10);
+    assert!(value.get("completedAtMs").is_none());
     assert_eq!(
         value["toolBatches"][0],
         json!({
@@ -1743,6 +1795,7 @@ impl AgentApiService for TestService {
                 display_name: Some("Test session".to_owned()),
                 lifecycle_status: SessionLifecycleStatus::Open,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             }],
@@ -1760,6 +1813,7 @@ impl AgentApiService for TestService {
                 display_name: params.display_name,
                 lifecycle_status: SessionLifecycleStatus::Open,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -1792,6 +1846,7 @@ impl AgentApiService for TestService {
                 display_name: None,
                 lifecycle_status: SessionLifecycleStatus::Closed,
                 managed: false,
+                origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
@@ -2289,6 +2344,18 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn lease_auth_grant(
+        &self,
+        params: AuthGrantLeaseParams,
+    ) -> Result<AgentApiOutcome<AuthGrantLeaseResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(AuthGrantLeaseResponse {
+            token: "leased-token".to_owned(),
+            expires_at_ms: None,
+            grant_id: params.grant_id,
+            provider_kind: AuthProviderKind::StaticBearer,
+        }))
+    }
+
     async fn list_auth_grants(
         &self,
         _params: AuthGrantListParams,
@@ -2489,6 +2556,7 @@ fn test_auth_grant(grant_id: String, status: AuthGrantStatus) -> AuthGrantView {
         grant_id,
         provider_id: "static".to_owned(),
         provider_kind: AuthProviderKind::StaticBearer,
+        exposure: AuthGrantExposure::Brokered,
         principal: PrincipalRefView::default(),
         display_name: None,
         subject_hint: None,
@@ -2499,6 +2567,8 @@ fn test_auth_grant(grant_id: String, status: AuthGrantStatus) -> AuthGrantView {
         expires_at_ms: None,
         status,
         metadata: serde_json::Value::Object(Default::default()),
+        last_leased_at_ms: None,
+        lease_count: 0,
         created_at_ms: 1,
         updated_at_ms: 2,
     }
@@ -2513,10 +2583,15 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
         document: ProfileDocument {
             config: Some(SessionConfig {
                 features: Some(FeaturesConfig {
-                    fleet: Some(FleetFeature {
+                    subagents: Some(SubagentsFeature {
                         version: CURRENT_FEATURE_VERSION,
-                        profiles: None,
-                        spawn: None,
+                        agents: vec![SubagentAgentRef {
+                            profile_id: ProfileId::new("reviewer"),
+                        }],
+                        max_depth: 2,
+                        max_descendants: 16,
+                        max_concurrent: 4,
+                        deadline_ms: 3_600_000,
                     }),
                     ..FeaturesConfig::default()
                 }),
@@ -2561,6 +2636,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_context: ContextView::default(),
         active_tools: ActiveToolsView::default(),
         management: None,
+        origin: None,
     }
 }
 
@@ -2647,9 +2723,12 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
     RunView {
         id,
         status,
+        started_at_ms: None,
+        completed_at_ms: None,
         source: RunViewSource::Input { items: Vec::new() },
         entries: Vec::new(),
         tool_batches: Vec::new(),
+        usage: None,
     }
 }
 

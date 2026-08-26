@@ -2,7 +2,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use api::{
     AgentApiError, JsonRpcRequest, JsonRpcResponse, dispatch_json_rpc, dispatch_operator_json_rpc,
-    is_operator_method,
+    is_operator_method, is_service_method,
 };
 use auth::{ApiKeyStore, PrincipalKind, PrincipalRef, api_key_hash};
 use axum::{
@@ -45,7 +45,8 @@ pub const UNIVERSE_HEADER: &str = "x-lightspeed-universe";
 /// Optional trusted-header caller identity, injected by the upstream gateway
 /// alongside [`UNIVERSE_HEADER`]. Value is `<kind>:<id>` with kind `user` or
 /// `service_account`, or a bare id (treated as a user id). Recorded on grants
-/// and flows for audit; never an authorization mechanism.
+/// and flows for audit. Service-scoped methods additionally require the
+/// `service_account` kind.
 pub const PRINCIPAL_HEADER: &str = "x-lightspeed-principal";
 
 #[derive(Clone, Debug)]
@@ -170,6 +171,13 @@ impl GatewayState {
         }
     }
 
+    fn authorize_service_call(&self, caller: &PrincipalRef) -> Result<(), AgentApiError> {
+        match &self.resolution {
+            UniverseResolution::FixedApi { .. } => Ok(()),
+            UniverseResolution::Multi { mode, .. } => authorize_service_principal(mode, caller),
+        }
+    }
+
     async fn api_for_daemon(
         &self,
         universe_id: Uuid,
@@ -209,6 +217,21 @@ impl GatewayState {
         environments::EnvironmentProviderStore::read_provider(store.as_ref(), provider_id)
             .await
             .map_err(|error| AgentApiError::rejected(error.to_string()))
+    }
+}
+
+fn authorize_service_principal(
+    mode: &GatewayAuthMode,
+    caller: &PrincipalRef,
+) -> Result<(), AgentApiError> {
+    if matches!(mode, GatewayAuthMode::Single { .. })
+        || caller.kind == PrincipalKind::ServiceAccount
+    {
+        Ok(())
+    } else {
+        Err(AgentApiError::rejected(
+            "service methods require a service_account principal",
+        ))
     }
 }
 
@@ -849,6 +872,11 @@ async fn rpc(
             return no_store_json_rpc(JsonRpcResponse::failure(request.id, error.into()));
         }
     };
+    if is_service_method(&request.method)
+        && let Err(error) = state.authorize_service_call(&caller)
+    {
+        return no_store_json_rpc(JsonRpcResponse::failure(request.id, error.into()));
+    }
     no_store_json_rpc(
         principal::with_request_principal(caller, dispatch_json_rpc(api.as_ref(), request)).await,
     )
@@ -1037,6 +1065,31 @@ mod tests {
             universe_from_header(&headers).expect("resolve"),
             universe_id
         );
+    }
+
+    #[test]
+    fn service_scope_gating_matrix_fails_closed() {
+        let single = GatewayAuthMode::Single {
+            universe_id: Uuid::nil(),
+        };
+        let trusted = GatewayAuthMode::TrustedHeader;
+        let api_key = GatewayAuthMode::ApiKey;
+        let service = PrincipalRef {
+            kind: PrincipalKind::ServiceAccount,
+            id: Some("lightspeed-bots".to_owned()),
+        };
+        let user = PrincipalRef {
+            kind: PrincipalKind::User,
+            id: Some("user-1".to_owned()),
+        };
+        let default = PrincipalRef::universe_default();
+
+        assert!(authorize_service_principal(&single, &default).is_ok());
+        for mode in [&trusted, &api_key] {
+            assert!(authorize_service_principal(mode, &service).is_ok());
+            assert!(authorize_service_principal(mode, &user).is_err());
+            assert!(authorize_service_principal(mode, &default).is_err());
+        }
     }
 
     #[test]

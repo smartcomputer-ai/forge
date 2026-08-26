@@ -9,16 +9,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use api::{
     ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
     ContextEntryKindView, ContextEntrySourceView, ContextEntryView, ContextMessageRoleView,
-    ContextView, EventCursor, EventJoinsView, InputItem, ManagedSessionWorkflowToolsInput,
-    MediaKind, ModelConfig, ProfileId, ProviderContextDisplayView, ProviderNativeToolExecutionView,
-    RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
-    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
-    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
-    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
-    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
-    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
-    WorkflowToolSpecInput, WorkflowToolTargetInput,
+    ContextView, EventCursor, EventJoinsView, InputItem, LlmUsageView,
+    ManagedSessionWorkflowToolsInput, MediaKind, ModelConfig, ProviderContextDisplayView,
+    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView,
+    RunViewSource, SessionEventKindView, SessionEventView, SessionManagementView,
+    SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
+    ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
+    ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
+    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
+    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
+    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
+    WorkflowToolTargetInput,
 };
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
@@ -115,6 +116,12 @@ impl<'a> CoreAgentProjector<'a> {
                 .as_ref()
                 .map(|id| id.as_str().to_owned()),
             management: session_management_to_api(params.state),
+            origin: params
+                .record
+                .origin
+                .as_ref()
+                .map(session_origin_to_api)
+                .transpose()?,
         })
     }
 
@@ -139,15 +146,15 @@ impl<'a> CoreAgentProjector<'a> {
         let projection = CoreAgentProjection::new(entries);
         let source = projection.accepted_source_for_run(run_id);
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
-        let mut projected_entries = Vec::new();
-
-        for entry in &context_entries {
-            projected_entries.push(self.project_context_entry(entry).await?);
-        }
+        let projected_entries = self.project_context_entries(&context_entries).await?;
+        let usage = sum_llm_usage(projection.generation_usage_for_run(run_id).into_iter());
+        let (started_at_ms, completed_at_ms) = projection.lifecycle_timestamps_for_run(run_id);
 
         Ok(RunView {
             id: api_run_id(run_id),
             status,
+            started_at_ms,
+            completed_at_ms,
             source: match source {
                 Some(RunSource::Input { input }) => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
@@ -164,6 +171,7 @@ impl<'a> CoreAgentProjector<'a> {
             tool_batches: self
                 .project_tool_batches_for_run(&projection, &context_entries, run_id)
                 .await?,
+            usage,
         })
     }
 
@@ -172,19 +180,21 @@ impl<'a> CoreAgentProjector<'a> {
         revision: u64,
         entries: &[ContextEntry],
     ) -> Result<ContextView, AgentApiError> {
-        let mut projected = Vec::with_capacity(entries.len());
-        for entry in entries {
-            projected.push(self.project_context_entry(entry).await?);
-        }
         Ok(ContextView {
             revision,
-            entries: projected,
+            entries: self
+                .project_context_entries(&entries.iter().collect::<Vec<_>>())
+                .await?,
         })
     }
 
+    /// Project one entry. `superseded_by` is the newer catalog version that
+    /// updated this one, known only when the caller holds the whole active
+    /// context (state views); event projections pass `None`.
     pub async fn project_context_entry(
         &self,
         entry: &ContextEntry,
+        superseded_by: Option<ContextEntryId>,
     ) -> Result<ContextEntryView, AgentApiError> {
         let text = match &entry.kind {
             // Binary media entries render from their preview; decoding
@@ -196,7 +206,9 @@ impl<'a> CoreAgentProjector<'a> {
                     None
                 }
             }
-            ContextEntryKind::ToolCall { .. } | ContextEntryKind::ToolResult { .. } => {
+            ContextEntryKind::ToolCall { .. }
+            | ContextEntryKind::ToolResult { .. }
+            | ContextEntryKind::Catalog { .. } => {
                 Some(self.read_blob_text(&entry.content_ref).await?)
             }
             _ => None,
@@ -218,7 +230,25 @@ impl<'a> CoreAgentProjector<'a> {
             text,
             display,
             source: Some(context_entry_source_to_api(&entry.source)),
+            supersedes: entry.supersedes.map(api_item_id),
+            superseded_by: superseded_by.map(api_item_id),
         })
+    }
+
+    /// Project active context entries, resolving `supersededBy` across them.
+    async fn project_context_entries(
+        &self,
+        entries: &[&ContextEntry],
+    ) -> Result<Vec<ContextEntryView>, AgentApiError> {
+        let superseded_by = superseded_by_map(entries);
+        let mut projected = Vec::with_capacity(entries.len());
+        for entry in entries {
+            projected.push(
+                self.project_context_entry(entry, superseded_by.get(&entry.entry_id).copied())
+                    .await?,
+            );
+        }
+        Ok(projected)
     }
 
     pub async fn project_input_entries(
@@ -408,31 +438,6 @@ impl<'a> CoreAgentProjector<'a> {
                 RunEvent::Started { run_id } => Ok(SessionEventKindView::RunStarted {
                     run_id: api_run_id(*run_id),
                 }),
-                RunEvent::MessageBuffered {
-                    message_id,
-                    submission_id,
-                    ..
-                } => Ok(SessionEventKindView::MessageBuffered {
-                    message_id: message_id.as_u64().to_string(),
-                    submission_id: submission_id.as_ref().map(|id| id.as_str().to_owned()),
-                }),
-                RunEvent::MessageConsumedByAwait { message_id, run_id } => {
-                    Ok(SessionEventKindView::MessageConsumedByAwait {
-                        message_id: message_id.as_u64().to_string(),
-                        run_id: api_run_id(*run_id),
-                    })
-                }
-                RunEvent::MessagePromotedToRun { message_id, run_id } => {
-                    Ok(SessionEventKindView::MessagePromotedToRun {
-                        message_id: message_id.as_u64().to_string(),
-                        run_id: api_run_id(*run_id),
-                    })
-                }
-                RunEvent::MessageCancelled { message_id } => {
-                    Ok(SessionEventKindView::MessageCancelled {
-                        message_id: message_id.as_u64().to_string(),
-                    })
-                }
                 RunEvent::SteeringAccepted {
                     run_id,
                     steering_id,
@@ -516,11 +521,12 @@ impl<'a> CoreAgentProjector<'a> {
                     turn_id,
                     run_id,
                     status,
-                    ..
+                    facts,
                 } => Ok(SessionEventKindView::TurnGenerationCompleted {
                     run_id: api_run_id(*run_id),
                     turn_id: api_turn_id(*turn_id),
                     status: llm_generation_status_to_api(status).to_owned(),
+                    usage: facts.usage.as_ref().map(llm_usage_to_api),
                 }),
                 TurnEvent::Completed { turn_id, .. } => Ok(SessionEventKindView::TurnCompleted {
                     turn_id: api_turn_id(*turn_id),
@@ -539,7 +545,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextEntriesApplied {
                         base_revision: *base_revision,
@@ -575,7 +581,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextKeyPrefixReplaced {
                         base_revision: *base_revision,
@@ -591,7 +597,7 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     let mut projected = Vec::with_capacity(entries.len());
                     for entry in entries {
-                        projected.push(self.project_context_entry(entry).await?);
+                        projected.push(self.project_context_entry(entry, None).await?);
                     }
                     Ok(SessionEventKindView::ContextStateReplaced {
                         base_revision: *base_revision,
@@ -1012,6 +1018,12 @@ fn workflow_tool_declaration_to_api(
                             pointer: pointer.clone(),
                         }
                     }
+                    engine::WorkflowToolCompletionKeySource::ArrayItemField { pointer, field } => {
+                        WorkflowToolCompletionKeySourceInput::ArrayItemField {
+                            pointer: pointer.clone(),
+                            field: field.clone(),
+                        }
+                    }
                     engine::WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix } => {
                         WorkflowToolCompletionKeySourceInput::ArrayIndices {
                             pointer: pointer.clone(),
@@ -1051,6 +1063,66 @@ impl<'a> CoreAgentProjection<'a> {
             };
             (accepted.run_id == run_id).then_some(&accepted.source)
         })
+    }
+
+    /// Usage reported by each completed generation of the run, in turn order.
+    pub fn generation_usage_for_run(&self, run_id: RunId) -> Vec<&'a engine::LlmUsage> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let CoreAgentEvent::Turn(TurnEvent::GenerationCompleted {
+                    run_id: event_run_id,
+                    facts,
+                    ..
+                }) = &entry.event
+                else {
+                    return None;
+                };
+                (*event_run_id == run_id)
+                    .then_some(facts.usage.as_ref())
+                    .flatten()
+            })
+            .collect()
+    }
+
+    /// Wall-clock lifecycle boundaries carried by the committed run events.
+    /// A queued run has neither timestamp; an active run has only `started`.
+    pub fn lifecycle_timestamps_for_run(&self, run_id: RunId) -> (Option<u64>, Option<u64>) {
+        let mut started_at_ms = None;
+        let mut completed_at_ms = None;
+        for entry in self.entries {
+            let CoreAgentEvent::Run(event) = &entry.event else {
+                continue;
+            };
+            match event {
+                RunEvent::Started {
+                    run_id: event_run_id,
+                } if *event_run_id == run_id => {
+                    started_at_ms.get_or_insert(entry.observed_at_ms);
+                }
+                RunEvent::Completed {
+                    run_id: event_run_id,
+                    ..
+                }
+                | RunEvent::Failed {
+                    run_id: event_run_id,
+                    ..
+                }
+                | RunEvent::Cancelled {
+                    run_id: event_run_id,
+                }
+                | RunEvent::ForceCancelled {
+                    run_id: event_run_id,
+                }
+                | RunEvent::QueuedCancelled {
+                    run_id: event_run_id,
+                } if *event_run_id == run_id => {
+                    completed_at_ms = Some(entry.observed_at_ms);
+                }
+                _ => {}
+            }
+        }
+        (started_at_ms, completed_at_ms)
     }
 
     pub fn context_entries_for_run(&self, run_id: RunId) -> Vec<&'a ContextEntry> {
@@ -1168,6 +1240,11 @@ pub fn input_text(input: &[InputItem]) -> Result<String, AgentApiError> {
                     "session/runs/start media input requires blob store resolution",
                 ));
             }
+            InputItem::Catalog { .. } => {
+                return Err(AgentApiError::invalid_request(
+                    "catalog items are context, not conversation: publish them with session/context/append",
+                ));
+            }
         }
     }
     if parts.is_empty() {
@@ -1250,7 +1327,6 @@ pub fn api_run_id(run_id: RunId) -> String {
 
 fn promise_source_name(source: &engine::PromiseSource) -> &'static str {
     match source {
-        engine::PromiseSource::Run { .. } => "run",
         engine::PromiseSource::Timer { .. } => "timer",
         engine::PromiseSource::Workflow { .. } => "workflow",
     }
@@ -1456,10 +1532,10 @@ fn features_config_to_api(
     Ok(api::FeaturesConfig {
         vfs: features.vfs.as_ref().map(vfs_feature_to_api),
         web: features.web.as_ref().map(web_feature_to_api),
-        fleet: features
-            .fleet
+        subagents: features
+            .subagents
             .as_ref()
-            .map(fleet_feature_to_api)
+            .map(subagents_feature_to_api)
             .transpose()?,
         timers: features.timers.as_ref().map(|timers| api::TimersFeature {
             version: timers.version,
@@ -1527,38 +1603,67 @@ fn web_feature_to_api(web: &engine::WebFeature) -> api::WebFeature {
     }
 }
 
-fn fleet_feature_to_api(fleet: &engine::FleetFeature) -> Result<api::FleetFeature, AgentApiError> {
-    let profiles = if fleet.profiles.is_default() {
-        None
-    } else {
-        Some(api::FleetProfilesConfig {
-            allow: fleet
-                .profiles
-                .allow
-                .as_ref()
-                .map(|allow| profile_ids_to_api(allow))
-                .transpose()?,
-            deny: profile_ids_to_api(&fleet.profiles.deny)?,
-            inline: (!fleet.profiles.inline).then_some(false),
-        })
-    };
-    let spawn = (!fleet.spawn.is_default()).then(|| api::FleetSpawnConfig {
-        bases: fleet.spawn.bases.as_ref().map(|bases| {
-            bases
-                .iter()
-                .map(|base| match base {
-                    engine::FleetSpawnBase::Self_ => api::FleetSpawnBase::Self_,
-                    engine::FleetSpawnBase::Session => api::FleetSpawnBase::Session,
-                    engine::FleetSpawnBase::Profile => api::FleetSpawnBase::Profile,
+fn subagents_feature_to_api(
+    subagents: &engine::SubagentsFeature,
+) -> Result<api::SubagentsFeature, AgentApiError> {
+    Ok(api::SubagentsFeature {
+        version: subagents.version,
+        agents: subagents
+            .agents
+            .iter()
+            .map(|agent| {
+                Ok(api::SubagentAgentRef {
+                    profile_id: api::ProfileId::try_new(agent.profile_id.clone()).map_err(
+                        |error| {
+                            AgentApiError::internal(format!(
+                                "invalid subagent profile id {}: {error}",
+                                agent.profile_id
+                            ))
+                        },
+                    )?,
                 })
-                .collect()
-        }),
-    });
-    Ok(api::FleetFeature {
-        version: fleet.version,
-        profiles,
-        spawn,
+            })
+            .collect::<Result<Vec<_>, AgentApiError>>()?,
+        max_depth: subagents.limits.max_depth,
+        max_descendants: subagents.limits.max_descendants,
+        max_concurrent: subagents.limits.max_concurrent,
+        deadline_ms: subagents.limits.deadline_ms,
     })
+}
+
+/// Project a session record's delegation provenance for API views.
+pub fn session_origin_to_api(
+    origin: &engine::storage::SessionOrigin,
+) -> Result<api::SessionOriginView, AgentApiError> {
+    Ok(api::SessionOriginView {
+        kind: match origin.kind {
+            engine::storage::SessionOriginKind::Subagent => api::SessionOriginKind::Subagent,
+        },
+        parent_session_id: origin.parent_session_id.as_str().to_owned(),
+        parent_run_id: format!("run_{}", origin.parent_run_id),
+        root_session_id: origin.root_session_id.as_str().to_owned(),
+        depth: origin.depth,
+        invocation_id: origin.invocation_id.clone(),
+        agent: api::SubagentAgentPin {
+            profile_id: api::ProfileId::try_new(origin.profile_id.clone()).map_err(|error| {
+                AgentApiError::internal(format!(
+                    "invalid subagent origin profile id {}: {error}",
+                    origin.profile_id
+                ))
+            })?,
+            revision: origin.profile_revision,
+        },
+        limits: subagent_limits_to_api(origin.limits),
+    })
+}
+
+pub fn subagent_limits_to_api(limits: engine::SubagentLimits) -> api::SubagentLimitsView {
+    api::SubagentLimitsView {
+        max_depth: limits.max_depth,
+        max_descendants: limits.max_descendants,
+        max_concurrent: limits.max_concurrent,
+        deadline_ms: limits.deadline_ms,
+    }
 }
 
 fn mcp_feature_to_api(mcp: &engine::McpFeature) -> api::McpFeature {
@@ -1587,19 +1692,6 @@ fn remote_mcp_approval_to_api(
         engine::RemoteMcpApprovalPolicy::Always => api::RemoteMcpApprovalPolicy::Always,
         engine::RemoteMcpApprovalPolicy::Never => api::RemoteMcpApprovalPolicy::Never,
     }
-}
-
-fn profile_ids_to_api(profile_ids: &[String]) -> Result<Vec<ProfileId>, AgentApiError> {
-    profile_ids
-        .iter()
-        .map(|profile_id| {
-            ProfileId::try_new(profile_id.clone()).map_err(|error| {
-                AgentApiError::internal(format!(
-                    "stored fleet profile policy contains invalid profile id {profile_id:?}: {error}"
-                ))
-            })
-        })
-        .collect()
 }
 
 fn active_tools_to_api(
@@ -1740,6 +1832,10 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
         ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
         ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
+        ContextEntryKind::SubagentCatalog => ContextEntryKindView::SubagentCatalog,
+        ContextEntryKind::Catalog { title } => ContextEntryKindView::Catalog {
+            title: title.clone(),
+        },
         ContextEntryKind::SkillActivation {
             catalog_id,
             skill_id,
@@ -1795,10 +1891,10 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::InvalidLimit { limit } => {
             AgentApiError::invalid_request(format!("invalid page limit: {limit}"))
         }
-        SessionStoreError::InvalidForkPoint { .. }
-        | SessionStoreError::InvalidRelationship { .. } => {
+        SessionStoreError::InvalidForkPoint { .. } => {
             AgentApiError::invalid_request(error.to_string())
         }
+        SessionStoreError::OriginLimitExceeded { .. } => AgentApiError::rejected(error.to_string()),
         SessionStoreError::SessionNotClosed { .. } => AgentApiError::rejected(error.to_string()),
         SessionStoreError::ManagedSessionCannotBranch { .. } => {
             AgentApiError::rejected(error.to_string())
@@ -2117,6 +2213,54 @@ fn patch_target(patch: &str) -> Option<String> {
     })
 }
 
+/// Map each superseded catalog version to the newer entry that updated it.
+fn superseded_by_map(entries: &[&ContextEntry]) -> BTreeMap<ContextEntryId, ContextEntryId> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.supersedes.map(|older| (older, entry.entry_id)))
+        .collect()
+}
+
+/// Project provider usage. Every adapter already reports `input_tokens` as
+/// the whole prompt (the Anthropic adapter folds its separately reported
+/// cache read/write counts in and keeps the uncached count in
+/// `cache_miss_input_tokens`), so this is a field copy.
+fn llm_usage_to_api(usage: &engine::LlmUsage) -> LlmUsageView {
+    LlmUsageView {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        total_tokens: usage.total_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
+    }
+}
+
+/// Sum usage over a run's completed generations; `None` when no generation
+/// reported usage.
+fn sum_llm_usage<'a>(usages: impl Iterator<Item = &'a engine::LlmUsage>) -> Option<LlmUsageView> {
+    let mut total: Option<LlmUsageView> = None;
+    for usage in usages {
+        let view = llm_usage_to_api(usage);
+        let acc = total.get_or_insert_with(LlmUsageView::default);
+        fn add(acc: &mut Option<u32>, value: Option<u32>) {
+            if let Some(value) = value {
+                *acc = Some(acc.unwrap_or(0).saturating_add(value));
+            }
+        }
+        add(&mut acc.input_tokens, view.input_tokens);
+        add(&mut acc.output_tokens, view.output_tokens);
+        add(&mut acc.reasoning_tokens, view.reasoning_tokens);
+        add(&mut acc.total_tokens, view.total_tokens);
+        add(&mut acc.cached_input_tokens, view.cached_input_tokens);
+        add(
+            &mut acc.cache_write_input_tokens,
+            view.cache_write_input_tokens,
+        );
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use engine::{
@@ -2275,6 +2419,7 @@ mod tests {
             head: None,
             source_session_id: None,
             source_seq: None,
+            origin: None,
             created_at_ms: 1,
             updated_at_ms: 2,
         };
@@ -2314,6 +2459,30 @@ mod tests {
 
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].entry_id, ContextEntryId::new(1));
+    }
+
+    #[test]
+    fn run_lifecycle_timestamps_come_from_started_and_terminal_events() {
+        let run_id = RunId::new(7);
+        let entries = vec![
+            run_event_entry(10, RunEvent::Started { run_id }),
+            run_event_entry(
+                42,
+                RunEvent::Completed {
+                    run_id,
+                    output_ref: None,
+                },
+            ),
+        ];
+
+        assert_eq!(
+            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(run_id),
+            (Some(10), Some(42)),
+        );
+        assert_eq!(
+            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(RunId::new(8)),
+            (None, None),
+        );
     }
 
     #[test]
@@ -2585,10 +2754,11 @@ mod tests {
                 tokens: 123,
                 quality: TokenEstimateQuality::ProviderCounted,
             }),
+            supersedes: None,
         };
 
         let projected = projector
-            .project_context_entry(&item)
+            .project_context_entry(&item, None)
             .await
             .expect("project provider context entry");
 
@@ -2615,6 +2785,8 @@ mod tests {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
                 }),
+                supersedes: None,
+                superseded_by: None,
             }
         );
     }
@@ -2644,10 +2816,11 @@ mod tests {
             provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
             provider_item_id: Some("mcp_1".to_owned()),
             token_estimate: None,
+            supersedes: None,
         };
 
         let projected = projector
-            .project_context_entry(&item)
+            .project_context_entry(&item, None)
             .await
             .expect("project mcp provider context entry");
 
@@ -2682,6 +2855,8 @@ mod tests {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
                 }),
+                supersedes: None,
+                superseded_by: None,
             }
         );
     }
@@ -2763,18 +2938,16 @@ mod tests {
                         blocked_domains: vec!["blocked.example".to_owned()],
                     }),
                 }),
-                fleet: Some(engine::FleetFeature {
+                subagents: Some(engine::SubagentsFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
-                    profiles: engine::FleetProfilesConfig {
-                        allow: Some(vec!["researcher".to_owned()]),
-                        deny: vec!["admin".to_owned()],
-                        inline: false,
-                    },
-                    spawn: engine::FleetSpawnConfig {
-                        bases: Some(vec![
-                            engine::FleetSpawnBase::Self_,
-                            engine::FleetSpawnBase::Profile,
-                        ]),
+                    agents: vec![engine::SubagentAgentConfig {
+                        profile_id: "researcher".to_owned(),
+                    }],
+                    limits: engine::SubagentLimits {
+                        max_depth: 3,
+                        max_descendants: 10,
+                        max_concurrent: 2,
+                        deadline_ms: 120_000,
                     },
                 }),
                 timers: Some(engine::TimersFeature::default()),
@@ -2838,24 +3011,16 @@ mod tests {
                             blocked_domains: vec!["blocked.example".to_owned()],
                         }),
                     }),
-                    fleet: Some(api::FleetFeature {
+                    subagents: Some(api::SubagentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
-                        profiles: Some(api::FleetProfilesConfig {
-                            allow: Some(vec![
-                                ProfileId::try_new("researcher".to_owned())
-                                    .expect("valid profile id")
-                            ]),
-                            deny: vec![
-                                ProfileId::try_new("admin".to_owned()).expect("valid profile id")
-                            ],
-                            inline: Some(false),
-                        }),
-                        spawn: Some(api::FleetSpawnConfig {
-                            bases: Some(vec![
-                                api::FleetSpawnBase::Self_,
-                                api::FleetSpawnBase::Profile,
-                            ]),
-                        }),
+                        agents: vec![api::SubagentAgentRef {
+                            profile_id: api::ProfileId::try_new("researcher".to_owned())
+                                .expect("valid profile id"),
+                        }],
+                        max_depth: 3,
+                        max_descendants: 10,
+                        max_concurrent: 2,
+                        deadline_ms: 120_000,
                     }),
                     timers: Some(api::TimersFeature {
                         version: api::CURRENT_FEATURE_VERSION,
@@ -2881,17 +3046,29 @@ mod tests {
     }
 
     #[test]
-    fn fleet_feature_with_default_sub_sections_projects_sparse() {
-        let projected =
-            fleet_feature_to_api(&engine::FleetFeature::default()).expect("project fleet feature");
-
+    fn session_origin_projects_lineage_and_pinned_limits() {
+        let origin = engine::storage::SessionOrigin {
+            kind: engine::storage::SessionOriginKind::Subagent,
+            parent_session_id: engine::SessionId::new("parent"),
+            parent_run_id: 7,
+            root_session_id: engine::SessionId::new("root"),
+            depth: 2,
+            invocation_id: "wti_1".to_owned(),
+            profile_id: "reviewer".to_owned(),
+            profile_revision: 4,
+            limits: engine::SubagentLimits::default(),
+        };
+        let projected = session_origin_to_api(&origin).expect("project origin");
+        assert_eq!(projected.kind, api::SessionOriginKind::Subagent);
+        assert_eq!(projected.parent_session_id, "parent");
+        assert_eq!(projected.parent_run_id, "run_7");
+        assert_eq!(projected.root_session_id, "root");
+        assert_eq!(projected.depth, 2);
+        assert_eq!(projected.agent.profile_id.as_str(), "reviewer");
+        assert_eq!(projected.agent.revision, 4);
         assert_eq!(
-            projected,
-            api::FleetFeature {
-                version: api::CURRENT_FEATURE_VERSION,
-                profiles: None,
-                spawn: None,
-            }
+            projected.limits,
+            subagent_limits_to_api(engine::SubagentLimits::default())
         );
     }
 
@@ -2937,6 +3114,17 @@ mod tests {
         }
     }
 
+    fn run_event_entry(observed_at_ms: u64, event: RunEvent) -> CoreAgentEntry {
+        CoreAgentEntry {
+            position: SessionPosition {
+                seq: EventSeq::new(observed_at_ms),
+            },
+            observed_at_ms,
+            joins: CoreAgentJoins::default(),
+            event: CoreAgentEvent::Run(event),
+        }
+    }
+
     fn accepted_context_run_entry(
         seq: u64,
         run_id: RunId,
@@ -2953,7 +3141,6 @@ mod tests {
                 notify_on_terminal: Vec::new(),
                 run_id,
                 submission_id: None,
-                origin: engine::RunOrigin::Requested,
                 source: engine::RunSource::Context {
                     triggers: vec![engine::RunSourceContextTrigger { key, entry_id }],
                 },
@@ -2977,6 +3164,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 }

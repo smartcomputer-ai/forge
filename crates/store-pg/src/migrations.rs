@@ -34,7 +34,6 @@ const LIGHTSPEED_TABLES: &[&str] = &[
     "environments",
     "mcp_servers",
     "session_events",
-    "session_links",
     "sessions",
     "universes",
     "vfs_snapshots",
@@ -84,19 +83,9 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "api_keys",
         sql: include_str!("../migrations/007_api_keys.sql"),
     },
-    EmbeddedMigration {
-        version: 8,
-        name: "environment_origin_session",
-        sql: include_str!("../migrations/008_environment_origin_session.sql"),
-    },
-    EmbeddedMigration {
-        version: 9,
-        name: "auth_kind_cleanup_and_model_endpoints",
-        sql: include_str!("../migrations/009_collapse_github_oauth_kinds.sql"),
-    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {
@@ -365,11 +354,20 @@ mod tests {
                 .all(|migration| checksum(migration.sql).len() == 64)
         );
         assert!(LIGHTSPEED_TABLES.windows(2).all(|pair| pair[0] < pair[1]));
+        // Relations the ledger owns: created by some migration and not
+        // dropped by a later one.
+        let dropped_tables: BTreeSet<_> = MIGRATIONS
+            .iter()
+            .flat_map(|migration| migration.sql.lines())
+            .filter_map(|line| line.trim().strip_prefix("DROP TABLE IF EXISTS "))
+            .map(|remainder| remainder.trim_end_matches(';').to_owned())
+            .collect();
         let migrated_tables: BTreeSet<_> = MIGRATIONS
             .iter()
             .flat_map(|migration| migration.sql.lines())
             .filter_map(|line| line.trim().strip_prefix("CREATE TABLE IF NOT EXISTS "))
             .map(|remainder| remainder.trim_end_matches(" (").to_owned())
+            .filter(|table| !dropped_tables.contains(table))
             .collect();
         assert_eq!(
             migrated_tables,

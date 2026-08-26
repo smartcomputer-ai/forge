@@ -4,8 +4,8 @@ Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
 image, one Channels image startable in each supported role, the generated
 TypeScript client, API contracts, checksums, an SPDX SBOM, and a release
-manifest. Foundry is deliberately not a release artifact. A consumer should
-pin one manifest rather than selecting components separately.
+manifest. A consumer should pin one manifest rather than selecting components
+separately.
 
 ## Database migrations
 
@@ -59,6 +59,20 @@ gate with a non-production database whose user may create temporary databases:
 ```bash
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
+
+The platform ledger was rebased on 2026-08-26 to one entry per product
+area: `0000_platform_baseline` (auth, universes, setup installations),
+`0001_channels` (`channel_accounts`, `channel_identities`), and
+`0002_bots` (bots, triggers, events, and chat-trigger pairings). A chat
+connection is a `chat` trigger; the retired `channel_bindings` and
+`bot_activity` tables are not part of the baseline. Keep that shape: a new
+area gets its own migration, and its tables live in their own
+`platform/db/src/schema/<area>.ts`. A rebase invalidates the Drizzle ledger of
+every existing database: either reset the database (`./dev.sh reset` for development) or
+replace the rows in `drizzle.__drizzle_migrations` with one row per journal
+entry (any hash, `created_at` = the entry's `when`) so only later migrations
+apply. A journal with a single entry passes the gate on the empty-install
+check alone; the upgrade check resumes with the next migration.
 
 ## Local release build
 

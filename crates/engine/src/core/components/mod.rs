@@ -34,9 +34,11 @@ pub use context::{
     OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     SKILL_ACTIVATION_CONTEXT_KEY_PREFIX, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, TokenEstimate,
-    TokenEstimateQuality, VFS_CATALOG_CONTEXT_KEY, is_run_scoped_skill_activation_entry,
-    skill_activation_context_key, validate_external_context_key,
+    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY,
+    SUBAGENT_CATALOG_CONTEXT_KEY, SUPERSEDED_CATALOG_CAP, TokenEstimate, TokenEstimateQuality,
+    VFS_CATALOG_CONTEXT_KEY, current_context_entry, is_run_scoped_skill_activation_entry,
+    is_supersedable_catalog_kind, is_superseded_context_entry, skill_activation_context_key,
+    validate_external_context_key,
 };
 pub use environment::{
     ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND, EnvironmentEvent,
@@ -49,18 +51,17 @@ pub use lifecycle::{CoreAgentLifecycleEvent, CoreAgentStatus, LifecycleState};
 pub use llm::*;
 pub use log::*;
 pub use promise::{
-    PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND, Promise,
-    PromiseComponentState, PromiseEvent, PromiseId, PromiseOwnership, PromiseResolution,
-    PromiseScope, PromiseSource, PromiseStatus, promise_cancel_effect, promise_create_effect,
-    promise_detach_effect,
+    PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND,
+    PROMISE_ID_PREFIX, Promise, PromiseComponentState, PromiseEvent, PromiseId, PromiseIdAllocator,
+    PromiseIdError, PromiseOwnership, PromiseResolution, PromiseScope, PromiseSource,
+    PromiseStatus, promise_cancel_effect, promise_create_effect, promise_detach_effect,
 };
 pub use run::{
-    AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, BufferedMessage,
-    JoinedWorkflowCall, MessageStatus, ParkedToolBatch, ResumeToolBatchCommand, RunEvent,
-    RunFailure, RunFailureKind, RunOrigin, RunQueueState, RunRecord, RunRequestCommand,
-    RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus, RunTerminalNotifyIntent,
-    SteeringBatch, SubmitMessageCommand, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
-    message_submission_digest, request_run_submission_digest,
+    AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, JoinedWorkflowCall,
+    ParkedToolBatch, ResumeToolBatchCommand, RunEvent, RunFailure, RunFailureKind, RunQueueState,
+    RunRecord, RunRequestCommand, RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus,
+    RunTerminalNotifyIntent, SteeringBatch, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
+    request_run_submission_digest,
 };
 pub use state::*;
 pub use tooling::{
@@ -85,5 +86,5 @@ pub use workflow_tool::{
     WorkflowToolConfigEvent, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent,
     WorkflowToolInvocation, WorkflowToolState, WorkflowToolTarget, completion_promise_source,
     read_tool_emissions, validate_completion_key, with_completion_deadline,
-    workflow_tool_emit_effect, workflow_tool_execution_id, workflow_tool_promise_id,
+    workflow_tool_emit_effect, workflow_tool_execution_id,
 };

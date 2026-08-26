@@ -55,6 +55,8 @@ if ! nc -z localhost "${TEMPORAL_PORT}" >/dev/null 2>&1; then
   exit 1
 fi
 
+"${SCRIPT_DIR}/temporal-ensure.sh"
+
 cat <<EOF
 
 Lightspeed local infra is up.

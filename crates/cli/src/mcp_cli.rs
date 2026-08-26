@@ -531,6 +531,7 @@ async fn server_login(args: McpServerLoginArgs) -> Result<()> {
     }
     let started = api
         .start_auth_flow(api::AuthFlowStartParams {
+            exposure: api::AuthGrantExposure::Brokered,
             client_id: format!("mcp:{}", args.server_id),
             scopes: (!args.scopes.is_empty()).then_some(args.scopes),
             audience: args.audience,

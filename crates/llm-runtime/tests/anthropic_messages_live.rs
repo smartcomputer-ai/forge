@@ -5,25 +5,22 @@ use engine::{
     ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND, BlobRef, ContextCompactionRequest,
     ContextCompactionStatus, ContextCompactionTask, ContextEntry, ContextEntryId,
     ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextMessageRole, ContextSnapshot,
-    LlmFinish, LlmGenerationRequest, LlmGenerationStatus, LlmRequest, ModelSelection,
-    ProviderApiKind, RunId, SessionId, ToolChoice, ToolName, TurnId,
+    LlmFinish, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest,
+    ModelSelection, ProviderApiKind, RunId, SessionId, ToolChoice, ToolName, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
 use llm_clients::anthropic::messages::{Client, Config};
-use llm_runtime::{
-    AnthropicMessagesLlmAdapter, LlmCompactionAdapter, LlmGenerationAdapter,
-    params::{AnthropicMessagesParams, AnthropicThinkingConfig},
-};
-use serde_json::json;
+use llm_runtime::{AnthropicMessagesLlmAdapter, LlmCompactionAdapter, LlmGenerationAdapter};
+use serde_json::{Value, json};
 
 mod support;
 
-use support::{anthropic_params, retrying_anthropic_messages_client};
+use support::retrying_anthropic_messages_client;
 
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
         .or_else(|_| env_or_dotenv_var("ANTHROPIC_LIVE_MODEL"))
-        .unwrap_or_else(|_| "claude-opus-4-8".to_string())
+        .unwrap_or_else(|_| "claude-opus-5".to_string())
 }
 
 fn live_client() -> Client {
@@ -113,6 +110,7 @@ fn user_entry(entry_id: u64, content_ref: BlobRef) -> ContextEntry {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     }
 }
 
@@ -128,7 +126,8 @@ fn intent_request(fingerprint: &str, entries: Vec<ContextEntry>) -> LlmRequest {
         },
         tools: Vec::new(),
         tool_choice: None,
-        output_limit: Some(1024),
+        // Thinking counts toward the cap on models that reason by default.
+        output_limit: Some(4096),
         reasoning_effort: None,
         parallel_tool_use: None,
         processing_tier: None,
@@ -136,6 +135,49 @@ fn intent_request(fingerprint: &str, entries: Vec<ContextEntry>) -> LlmRequest {
         compaction: None,
         params: None,
     }
+}
+
+/// The reasoning entries must carry the provider's summary text (not the
+/// opaque marker an omitted display leaves behind), and usage must report the
+/// billed thinking tokens.
+fn assert_visible_thinking(result: &LlmGenerationResult, label: &str) {
+    let previews = result
+        .context_entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, ContextEntryKind::ReasoningState))
+        .map(|entry| entry.preview.clone().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(
+        !previews.is_empty(),
+        "{label}: expected a reasoning state entry from thinking blocks, got {:?}",
+        result.context_entries
+    );
+    assert!(
+        previews.iter().any(|preview| {
+            let lower = preview.trim().to_lowercase();
+            !lower.is_empty() && lower != "reasoning state" && lower != "redacted thinking"
+        }),
+        "{label}: expected summarized thinking text in the reasoning entries, got {previews:?}"
+    );
+    let reasoning_tokens = result
+        .facts
+        .usage
+        .as_ref()
+        .and_then(|usage| usage.reasoning_tokens)
+        .unwrap_or_default();
+    assert!(
+        reasoning_tokens > 0,
+        "{label}: expected billed thinking tokens in usage, got {:?}",
+        result.facts.usage
+    );
+}
+
+async fn provider_request_json(blobs: &InMemoryBlobStore, execution_ref: &BlobRef) -> Value {
+    let raw = blobs
+        .read_text(execution_ref)
+        .await
+        .expect("provider request blob");
+    serde_json::from_str(&raw).expect("provider request json")
 }
 
 fn generation_request(turn_id: u64, request: LlmRequest) -> LlmGenerationRequest {
@@ -168,6 +210,7 @@ fn retained_context_entry(index: usize, item: &ContextEntryInput) -> ContextEntr
         provider_kind: item.provider_kind.clone(),
         provider_item_id: item.provider_item_id.clone(),
         token_estimate: item.token_estimate.clone(),
+        supersedes: None,
     }
 }
 
@@ -513,6 +556,7 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
         provider_kind: None,
         provider_item_id: None,
         token_estimate: None,
+        supersedes: None,
     });
 
     let mut followup = intent_request("live-anthropic-messages-tool-followup", entries);
@@ -545,13 +589,17 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
     );
 }
 
+/// The product path: the session's `reasoningEffort` alone must yield
+/// visible (summarized) thinking, billed thinking tokens in usage, and
+/// signed blocks that replay on the next turn.
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
 async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
     let blobs = Arc::new(InMemoryBlobStore::new());
     let input_ref = text_blob(
         &blobs,
-        "Compute 13 * 17 and 29 * 31, then their sum. Reply with just the final number.",
+        "Compute 13 * 17 and 29 * 31, then their sum. Think it through carefully, \
+         then reply with just the final number.",
     )
     .await;
     let adapter = AnthropicMessagesLlmAdapter::new(
@@ -563,17 +611,8 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
         "live-anthropic-messages-thinking",
         vec![user_entry(1, input_ref.clone())],
     );
-    request.output_limit = Some(4096);
-    request.params = Some(anthropic_params(&AnthropicMessagesParams {
-        thinking: Some(AnthropicThinkingConfig {
-            r#type: "adaptive".to_string(),
-            budget_tokens: None,
-            display: None,
-            extra: Default::default(),
-        }),
-        output_config: Some(json!({ "effort": "high" })),
-        ..AnthropicMessagesParams::default()
-    }));
+    request.output_limit = Some(8192);
+    request.reasoning_effort = Some("high".to_string());
 
     let execution = adapter
         .generate(generation_request(1, request.clone()))
@@ -581,14 +620,17 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
         .expect("generate with thinking");
 
     assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
-    assert!(
-        execution
-            .result
-            .context_entries
-            .iter()
-            .any(|entry| matches!(entry.kind, ContextEntryKind::ReasoningState)),
-        "expected a reasoning state context entry from thinking blocks"
+    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    assert_eq!(
+        provider_request["thinking"],
+        json!({ "type": "adaptive", "display": "summarized" }),
+        "the effort tier must derive adaptive thinking with a visible summary"
     );
+    assert_eq!(
+        provider_request["output_config"],
+        json!({ "effort": "high" })
+    );
+    assert_visible_thinking(&execution.result, "first turn");
     let answer_ref = execution
         .result
         .context_entries
@@ -619,7 +661,7 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
     entries.push(user_entry(entries.len() as u64 + 1, followup_ref));
     let mut followup = intent_request("live-anthropic-messages-thinking-followup", entries);
     followup.output_limit = request.output_limit;
-    followup.params = request.params;
+    followup.reasoning_effort = request.reasoning_effort;
 
     let followup_execution = adapter
         .generate(generation_request(2, followup))
@@ -648,6 +690,359 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
     assert!(
         followup_answer.contains("1124"),
         "expected 1124, got {followup_answer:?}"
+    );
+}
+
+/// Interleaved thinking through a tool loop on the product path. Both turns
+/// need reasoning (which city; Kelvin to Celsius) — adaptive thinking skips
+/// trivial dispatch even at `xhigh`, the tier admission used to reject — so
+/// the model thinks before the call and again after the result; every
+/// summarized, signed block must replay unchanged next to its `tool_use`,
+/// and the tool call follows the thinking that explains it.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
+async fn anthropic_messages_live_adapter_thinks_across_tool_round_trip() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let input_ref = text_blob(
+        &blobs,
+        "I am in the capital of Switzerland. Work out which city that is, look up its current \
+         temperature with the get_weather tool, and finally answer with the temperature in \
+         degrees Celsius. Think carefully before each step.",
+    )
+    .await;
+    let schema_ref = blobs
+        .put_bytes(
+            serde_json::to_vec(&json!({
+                "type": "object",
+                "properties": { "city": { "type": "string" } },
+                "required": ["city"]
+            }))
+            .expect("schema bytes"),
+        )
+        .await
+        .expect("schema blob");
+    let description_ref = text_blob(&blobs, "Get current weather for a city").await;
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    );
+
+    let mut request = intent_request(
+        "live-anthropic-messages-thinking-tool",
+        vec![user_entry(1, input_ref.clone())],
+    );
+    request.output_limit = Some(8192);
+    request.reasoning_effort = Some("xhigh".to_string());
+    request.tools = vec![weather_tool_spec(
+        schema_ref.clone(),
+        description_ref.clone(),
+    )];
+    request.parallel_tool_use = Some(false);
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("generate tool call with thinking");
+
+    assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
+    assert_eq!(execution.result.facts.finish, LlmFinish::ToolCalls);
+    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    assert_eq!(
+        provider_request["output_config"],
+        json!({ "effort": "xhigh" })
+    );
+    assert_eq!(
+        provider_request["thinking"],
+        json!({ "type": "adaptive", "display": "summarized" })
+    );
+    assert_visible_thinking(&execution.result, "tool call turn");
+    let kinds = execution
+        .result
+        .context_entries
+        .iter()
+        .map(|entry| entry.kind.clone())
+        .collect::<Vec<_>>();
+    let first_thinking = kinds
+        .iter()
+        .position(|kind| matches!(kind, ContextEntryKind::ReasoningState))
+        .expect("reasoning entry");
+    let first_tool_call = kinds
+        .iter()
+        .position(|kind| matches!(kind, ContextEntryKind::ToolCall { .. }))
+        .expect("tool call entry");
+    assert!(
+        first_thinking < first_tool_call,
+        "thinking must precede the tool call it explains, got {kinds:?}"
+    );
+    let tool_call = execution
+        .result
+        .facts
+        .tool_calls
+        .first()
+        .expect("observed tool call");
+    assert_eq!(tool_call.tool_name, ToolName::new("get_weather"));
+    let arguments = blobs
+        .read_text(&tool_call.arguments_ref)
+        .await
+        .expect("tool arguments");
+    assert!(
+        arguments.to_lowercase().contains("bern"),
+        "expected the model to reason its way to Bern, got {arguments:?}"
+    );
+
+    // Replay thinking + tool_use exactly as retained, then a tool result the
+    // model has to convert before answering.
+    let mut entries = vec![user_entry(1, input_ref)];
+    let offset = entries.len();
+    entries.extend(
+        execution
+            .result
+            .context_entries
+            .iter()
+            .enumerate()
+            .map(|(index, item)| retained_context_entry(offset + index, item)),
+    );
+    let tool_output_ref = text_blob(&blobs, "284.15 K and sunny").await;
+    entries.push(ContextEntry {
+        key: None,
+        entry_id: ContextEntryId::new(entries.len() as u64 + 1),
+        kind: ContextEntryKind::ToolResult {
+            call_id: tool_call.call_id.clone(),
+            is_error: false,
+        },
+        source: ContextEntrySource::Tool {
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: None,
+        },
+        content_ref: tool_output_ref,
+        media_type: Some("text/plain".to_owned()),
+        preview: None,
+        provider_kind: None,
+        provider_item_id: None,
+        token_estimate: None,
+        supersedes: None,
+    });
+
+    let mut followup = intent_request("live-anthropic-messages-thinking-tool-followup", entries);
+    followup.output_limit = Some(8192);
+    followup.reasoning_effort = Some("xhigh".to_string());
+    followup.tools = vec![weather_tool_spec(schema_ref, description_ref)];
+
+    let followup_execution = adapter
+        .generate(generation_request(2, followup))
+        .await
+        .expect("generate final answer after replaying thinking + tool_use");
+
+    assert_eq!(
+        followup_execution.result.status,
+        LlmGenerationStatus::Succeeded
+    );
+    // Interleaved thinking: the model reasons about the tool result too.
+    assert_visible_thinking(&followup_execution.result, "follow-up turn");
+    let final_ref = followup_execution
+        .result
+        .context_entries
+        .iter()
+        .find_map(|item| match item.kind {
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant,
+            } => Some(item.content_ref.clone()),
+            _ => None,
+        })
+        .expect("final assistant context item");
+    let final_text = blobs.read_text(&final_ref).await.expect("final text");
+    assert!(
+        final_text.contains("11"),
+        "expected final answer to use the tool result, got {final_text:?}"
+    );
+}
+
+/// With no `maxOutputTokens` on the session the adapter sends its 32K default
+/// (Anthropic requires the field; the OpenAI adapters send none) and the
+/// provider accepts it on a plain non-streaming request.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
+async fn anthropic_messages_live_adapter_default_output_cap_is_accepted() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let input_ref = text_blob(&blobs, "Reply with exactly: ok").await;
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    );
+    let mut request = intent_request(
+        "live-anthropic-messages-default-cap",
+        vec![user_entry(1, input_ref)],
+    );
+    request.output_limit = None;
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("generate with the default cap");
+
+    assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
+    assert_eq!(execution.result.facts.finish, LlmFinish::Stop);
+    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    assert_eq!(
+        provider_request["max_tokens"],
+        json!(32_768),
+        "the adapter default must be sent when the session sets no cap"
+    );
+    let answer_ref = execution
+        .result
+        .context_entries
+        .iter()
+        .find_map(|item| match item.kind {
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant,
+            } => Some(item.content_ref.clone()),
+            _ => None,
+        })
+        .expect("assistant answer");
+    let answer = blobs.read_text(&answer_ref).await.expect("answer text");
+    assert!(answer.to_lowercase().contains("ok"), "got {answer:?}");
+}
+
+/// A turn cut off at `max_tokens` fails the run but keeps the partial text.
+/// Thinking is off (`reasoningEffort: none` → `thinking: disabled`, proved on
+/// the wire here) so the tiny cap lands on visible output rather than on
+/// reasoning.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
+async fn anthropic_messages_live_adapter_fails_the_turn_on_truncation_but_keeps_partial_text() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let input_ref = text_blob(
+        &blobs,
+        "Write a 400-word essay about the history of the bicycle. Begin immediately with the \
+         essay text.",
+    )
+    .await;
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    );
+    let mut request = intent_request(
+        "live-anthropic-messages-truncation",
+        vec![user_entry(1, input_ref)],
+    );
+    request.output_limit = Some(48);
+    request.reasoning_effort = Some("none".to_string());
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("a truncated response is a response, not a transport error");
+
+    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    assert_eq!(provider_request["max_tokens"], json!(48));
+    assert_eq!(provider_request["thinking"], json!({ "type": "disabled" }));
+    assert_eq!(
+        execution.result.status,
+        LlmGenerationStatus::Failed,
+        "expected the cut-off to fail the turn, got {:?}",
+        execution.result
+    );
+    assert_eq!(execution.result.facts.finish, LlmFinish::Length);
+    assert!(execution.result.facts.tool_calls.is_empty());
+    let partial = execution
+        .result
+        .context_entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind,
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        partial.len(),
+        execution.result.context_entries.len(),
+        "only the partial text may be kept, got {:?}",
+        execution.result.context_entries
+    );
+    assert_eq!(partial.len(), 1, "expected the partial essay text");
+    let text = blobs
+        .read_text(&partial[0].content_ref)
+        .await
+        .expect("partial text");
+    assert!(!text.trim().is_empty(), "partial text must be visible");
+    let failure_ref = execution
+        .result
+        .failure_ref
+        .clone()
+        .expect("truncation failure ref");
+    let failure = blobs.read_text(&failure_ref).await.expect("failure text");
+    assert!(
+        failure.contains("cut off at max output tokens 48")
+            && failure.contains("partial output is kept"),
+        "expected the cap in the failure text, got {failure:?}"
+    );
+}
+
+/// A safety-classifier refusal must fail the turn with its category, never
+/// complete it as an empty answer, and nothing may fall back to another
+/// model. Claude Opus 5's real-time cyber safeguard has refused exactly this
+/// note plus summary request every time it was sent (`stop_reason: refusal`,
+/// category `cyber`, zero output); if the classifier ever stops refusing it,
+/// this test fails on the status assertion and the fixture needs a new
+/// trigger — the adapter path it proves is unchanged.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
+async fn anthropic_messages_live_adapter_fails_the_turn_on_refusal() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let notes_ref = text_blob(
+        &blobs,
+        "Project kickoff notes: we are wiring the deployment pipeline this week. The release \
+         codename for this rollout is LIGHTSPEED-ANTHROPIC-COMPACTION-LIVE-4217; the ops team \
+         uses it to tag every artifact. We also decided to store session logs in Postgres.",
+    )
+    .await;
+    let ask_ref = text_blob(
+        &blobs,
+        "Summarize the conversation above for context compaction. Capture the user's goals, \
+         decisions made, work completed, important tool results, and open questions. The \
+         summary will replace the prior conversation history, so include everything needed to \
+         continue seamlessly. Reply with the summary only. Keep the summary under 256 tokens.",
+    )
+    .await;
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    );
+    let request = intent_request(
+        "live-anthropic-messages-refusal",
+        vec![user_entry(1, notes_ref), user_entry(2, ask_ref)],
+    );
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("a refusal is a response, not a transport error");
+
+    assert_eq!(
+        execution.result.status,
+        LlmGenerationStatus::Failed,
+        "expected the classifier refusal to fail the turn, got {:?}",
+        execution.result
+    );
+    assert_eq!(execution.result.facts.finish, LlmFinish::ContentFilter);
+    assert!(
+        execution.result.context_entries.is_empty(),
+        "a refused turn must not land content in the session log"
+    );
+    let failure_ref = execution
+        .result
+        .failure_ref
+        .clone()
+        .expect("refusal failure ref");
+    let failure = blobs.read_text(&failure_ref).await.expect("failure text");
+    assert!(
+        failure.contains("Anthropic refused response") && failure.contains("(category: "),
+        "expected the refusal category in the failure text, got {failure:?}"
     );
 }
 

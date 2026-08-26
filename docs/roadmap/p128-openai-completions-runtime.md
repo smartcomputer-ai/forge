@@ -324,9 +324,8 @@ Phase 2:
   `{openai:responses, openai:completions}` (Anthropic-compatible endpoints
   are a follow-up: allow `anthropic:messages` only once the Anthropic
   client gets the same override).
-- `store-pg`: the endpoint fields remain additive JSON; the still-unreleased
-  migration 009 also expands the provider-kind constraint for the new
-  `model_endpoint` row, avoiding a redundant migration revision.
+- `store-pg`: the endpoint fields remain additive JSON; the pre-release
+  `004_auth` baseline also admits the `model_endpoint` provider kind.
 - `models/list`: `ModelProviderDiscoveryView.providerId` may now be any
   universe provider id; `source` says `universe`.
 

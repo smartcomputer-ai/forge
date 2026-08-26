@@ -126,6 +126,11 @@ impl std::fmt::Debug for EndpointOverride {
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HttpClientConfig {
     pub connect_timeout: Duration,
+    /// Whole-request ceiling for one provider call. Non-streaming generations
+    /// with thinking run for minutes on frontier models, so this matches the
+    /// official SDKs' ten-minute default; the LLM activity's start-to-close
+    /// stays above it so Temporal never times out a request that is still
+    /// being served.
     pub request_timeout: Duration,
 }
 
@@ -133,7 +138,7 @@ impl Default for HttpClientConfig {
     fn default() -> Self {
         Self {
             connect_timeout: Duration::from_secs(10),
-            request_timeout: Duration::from_secs(120),
+            request_timeout: Duration::from_secs(600),
         }
     }
 }

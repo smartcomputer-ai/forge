@@ -18,12 +18,12 @@ use crate::{
     ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
     ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
     CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, MessageStatus, PlanningError,
-    PromiseEvent, PromiseId, PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent,
-    RunOrigin, RunSource, SessionId, SessionPosition, ToolBatchId, ToolBatchOutcome,
-    ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult, ToolCallStatus,
-    ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationRequest,
-    ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
+    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId,
+    PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition,
+    ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId,
+    ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
+    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
+    TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -309,13 +309,6 @@ fn with_run_terminal_side_effects(
 ) -> Vec<CoreAgentEventProposal> {
     let mut output = Vec::with_capacity(proposals.len());
     let mut cancelled = BTreeSet::<PromiseId>::new();
-    let mut next_run_id = state.id_cursors.last_run_id;
-    let cancels_buffered_messages = proposals.iter().any(|proposal| {
-        matches!(
-            proposal.event,
-            CoreAgentEvent::Run(RunEvent::MessageCancelled { .. })
-        )
-    });
     for proposal in proposals {
         let terminal_run_id = terminal_run_id_for_proposal(&proposal);
         output.push(proposal.clone());
@@ -335,47 +328,6 @@ fn with_run_terminal_side_effects(
                 },
                 CoreAgentEvent::Promise(PromiseEvent::Cancelled {
                     promise_id: promise.promise_id.clone(),
-                }),
-            ));
-        }
-        if cancels_buffered_messages {
-            continue;
-        }
-        for message in state
-            .runs
-            .messages
-            .iter()
-            .filter(|message| message.status == MessageStatus::Buffered)
-        {
-            let Some(next) = next_run_id.checked_add(1) else {
-                continue;
-            };
-            let promoted_run_id = crate::RunId::new(next);
-            next_run_id = next;
-            let joins = CoreAgentJoins {
-                run_id: Some(promoted_run_id),
-                submission_id: message.submission_id.clone(),
-                ..CoreAgentJoins::default()
-            };
-            output.push(CoreAgentEventProposal::new(
-                joins.clone(),
-                CoreAgentEvent::Run(RunEvent::Accepted(crate::AcceptedRunEvent {
-                    run_id: promoted_run_id,
-                    submission_id: message.submission_id.clone(),
-                    origin: RunOrigin::Message,
-                    source: RunSource::Input {
-                        input: message.input.clone(),
-                    },
-                    run_config: message.run_config.clone(),
-                    config_revision: message.config_revision,
-                    notify_on_terminal: Vec::new(),
-                })),
-            ));
-            output.push(CoreAgentEventProposal::new(
-                joins,
-                CoreAgentEvent::Run(RunEvent::MessagePromotedToRun {
-                    message_id: message.message_id,
-                    run_id: promoted_run_id,
                 }),
             ));
         }
@@ -574,14 +526,20 @@ fn turn_outcome_for_generation_result(result: &LlmGenerationResult) -> TurnOutco
             LlmFinish::ToolCalls => TurnOutcome::ToolCallsQueued,
             LlmFinish::ContextLimit => TurnOutcome::ContextUpdateRequired,
             LlmFinish::Cancelled => TurnOutcome::Cancelled,
-            LlmFinish::Failed => TurnOutcome::Failed {
-                failure_ref: result.failure_ref.clone(),
-            },
-            LlmFinish::Stop | LlmFinish::Length | LlmFinish::ContentFilter | LlmFinish::Unknown => {
-                TurnOutcome::FinalOutput {
-                    output_ref: final_output_ref(&result.context_entries),
+            // A content filter (a provider refusal) and an output-cap cut-off
+            // are terminal for the turn: the provider did not finish serving
+            // the request, so the run fails with the adapter's reason instead
+            // of completing as an empty or partial answer. The result's
+            // context entries (a truncated turn's partial text) are still
+            // applied above, so the user sees what was produced.
+            LlmFinish::Failed | LlmFinish::ContentFilter | LlmFinish::Length => {
+                TurnOutcome::Failed {
+                    failure_ref: result.failure_ref.clone(),
                 }
             }
+            LlmFinish::Stop | LlmFinish::Unknown => TurnOutcome::FinalOutput {
+                output_ref: final_output_ref(&result.context_entries),
+            },
         },
     }
 }
@@ -750,6 +708,7 @@ pub fn next_tool_batch_request(
         run_id: batch.run_id,
         turn_id: batch.turn_id,
         batch_id: batch.batch_id,
+        promise_id_base: batch.promise_id_base,
         workspace_links: state
             .lifecycle
             .config
@@ -764,11 +723,11 @@ pub fn next_tool_batch_request(
             .as_ref()
             .and_then(|config| config.features.environments.as_ref())
             .map(|feature| crate::EnvironmentPolicyRuntime::v1(feature.providers.clone())),
-        fleet_policy: state
+        subagents_policy: state
             .lifecycle
             .config
             .as_ref()
-            .and_then(|config| config.features.fleet.clone()),
+            .and_then(|config| config.features.subagents.clone()),
         calls,
     }))
 }
@@ -1103,11 +1062,7 @@ pub fn resume_tool_batch_proposals(
         (
             ToolBatchSuspension::AwaitTool { .. },
             ToolBatchResumeOutput::AwaitTool { result_ref },
-        ) => await_resume_result(
-            state,
-            result_ref,
-            command.claim == WakeReason::MailboxMessage,
-        )?,
+        ) => await_resume_result(state, result_ref)?,
         (
             ToolBatchSuspension::JoinedWorkflowCalls { .. },
             ToolBatchResumeOutput::JoinedWorkflowCalls,
@@ -1154,17 +1109,6 @@ pub fn resume_tool_batch_proposals(
             batch_id: result.batch_id,
         }),
     ));
-    if command.claim == WakeReason::MailboxMessage {
-        for message in buffered_mailbox_messages(state) {
-            proposals.push(CoreAgentEventProposal::new(
-                joins.clone(),
-                CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait {
-                    message_id: message.message_id,
-                    run_id: result.run_id,
-                }),
-            ));
-        }
-    }
     proposals.extend(tool_call_completed_proposals(state, None, result)?);
     Ok(proposals)
 }
@@ -1176,9 +1120,6 @@ pub fn await_wake(state: &CoreAgentState, now_ms: u64) -> Option<WakeReason> {
         return Some(WakeReason::Cancelled);
     }
     let spec = parked.suspension.spec();
-    if spec.mailbox && !buffered_mailbox_messages(state).is_empty() {
-        return Some(WakeReason::MailboxMessage);
-    }
     if spec
         .deadline_at_ms
         .is_some_and(|deadline| deadline <= now_ms)
@@ -1208,9 +1149,9 @@ fn validate_await_spec_for_active_run(
     run_id: crate::RunId,
     spec: &AwaitSpec,
 ) -> Result<(), DomainError> {
-    if spec.promise_ids.is_empty() && !spec.mailbox {
+    if spec.promise_ids.is_empty() {
         return Err(DomainError::InvariantViolation(
-            "await requires at least one promise id or mailbox=true".to_owned(),
+            "await requires at least one promise id".to_owned(),
         ));
     }
     for promise_id in &spec.promise_ids {
@@ -1244,7 +1185,6 @@ fn validate_await_spec_for_active_run(
 fn await_resume_result(
     state: &CoreAgentState,
     result_ref: BlobRef,
-    include_mailbox_messages: bool,
 ) -> Result<ToolInvocationBatchResult, DomainError> {
     let active_run = state
         .runs
@@ -1265,16 +1205,11 @@ fn await_resume_result(
         .ok_or_else(|| {
             DomainError::InvariantViolation(format!("tool batch {} is missing", parked.batch_id))
         })?;
-    let mut model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
+    let model_visible_context_entries = vec![ToolInvocationResult::tool_result_context_entry(
         call_id,
         ToolCallStatus::Succeeded,
         result_ref.clone(),
     )];
-    if include_mailbox_messages {
-        for message in buffered_mailbox_messages(state) {
-            model_visible_context_entries.extend(message.input.iter().cloned());
-        }
-    }
     Ok(ToolInvocationBatchResult {
         run_id: active_run.run_id,
         turn_id: batch.turn_id,
@@ -1396,13 +1331,43 @@ fn joined_workflow_resume_result(
     })
 }
 
-fn buffered_mailbox_messages(state: &CoreAgentState) -> Vec<&crate::BufferedMessage> {
-    state
+/// A tool result may only mint promise ids from its batch's slot: at or
+/// above the base recorded when the batch was created, and never one the
+/// session already holds. Executors number from
+/// `ToolInvocationBatchRequest::promise_id_base`; this is the reducer-side
+/// half of that contract.
+fn validate_minted_promise_id(
+    state: &CoreAgentState,
+    run_id: crate::RunId,
+    batch_id: crate::ToolBatchId,
+    promise_id: &crate::PromiseId,
+    minted_in_result: &mut BTreeSet<crate::PromiseId>,
+) -> Result<(), DomainError> {
+    let base = state
         .runs
-        .messages
-        .iter()
-        .filter(|message| message.status == MessageStatus::Buffered)
-        .collect()
+        .active
+        .as_ref()
+        .filter(|active| active.run_id == run_id)
+        .and_then(|active| active.tool_batches.get(&batch_id))
+        .map(|batch| batch.promise_id_base)
+        .ok_or_else(|| {
+            DomainError::InvariantViolation(format!(
+                "tool batch {batch_id} of run {run_id} is not active"
+            ))
+        })?;
+    if promise_id.number() < base {
+        return Err(DomainError::InvariantViolation(format!(
+            "promise {promise_id} was minted below tool batch {batch_id}'s promise base {base}"
+        )));
+    }
+    if state.promises.promises.contains_key(promise_id)
+        || !minted_in_result.insert(promise_id.clone())
+    {
+        return Err(DomainError::InvariantViolation(format!(
+            "promise {promise_id} already exists"
+        )));
+    }
+    Ok(())
 }
 
 fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvocationResult {
@@ -1428,6 +1393,7 @@ fn tool_call_completed_proposals(
 ) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
     let mut proposals = Vec::new();
     let mut resolved_promises = BTreeSet::new();
+    let mut minted_promises = BTreeSet::new();
     let mut pending_port_emissions = BTreeMap::<crate::WorkflowToolId, u32>::new();
     let mut joined_calls = Vec::new();
     let mut joined_promise_proposals = Vec::new();
@@ -1489,6 +1455,13 @@ fn tool_call_completed_proposals(
             if let Some(promise) =
                 crate::core::components::promise::promise_from_create_effect(effect, result.run_id)?
             {
+                validate_minted_promise_id(
+                    state,
+                    result.run_id,
+                    result.batch_id,
+                    &promise.promise_id,
+                    &mut minted_promises,
+                )?;
                 promise_proposals.push(CoreAgentEventProposal::new(
                     joins.clone(),
                     CoreAgentEvent::Promise(PromiseEvent::Created { promise }),
@@ -1619,6 +1592,13 @@ fn tool_call_completed_proposals(
                         ));
                     }
                     for (key, promise_id) in promises {
+                        validate_minted_promise_id(
+                            state,
+                            result.run_id,
+                            result.batch_id,
+                            promise_id,
+                            &mut minted_promises,
+                        )?;
                         let source =
                             crate::core::components::workflow_tool::completion_promise_source(
                                 binding,
@@ -1737,7 +1717,6 @@ fn tool_call_completed_proposals(
                         promise_ids,
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 },
             }),
@@ -1874,10 +1853,10 @@ mod tests {
         ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, ObservedToolCall,
         ProviderApiKind, RunConfig, RunFailureKind, RunId, RunRequestCommand, RunRequestSource,
         RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
-        SkillId, SubmitMessageCommand, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
-        ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
-        ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
-        WorkflowToolInvocation, skill_activation_context_key,
+        SkillId, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome, ToolChoice, ToolEffect,
+        ToolInvocationResult, ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef,
+        WorkflowToolDefinition, WorkflowToolId, WorkflowToolInvocation,
+        skill_activation_context_key,
     };
 
     fn config() -> SessionConfig {
@@ -1977,6 +1956,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 
@@ -2208,7 +2188,7 @@ mod tests {
             selection_tools: true,
             ..crate::EnvironmentsFeature::default()
         });
-        session_config.features.fleet = Some(crate::FleetFeature::default());
+        session_config.features.subagents = Some(test_subagents_feature());
         open_session_with_config(&mut drive, session_config);
         let set_active = drive
             .admit_command(
@@ -2235,7 +2215,16 @@ mod tests {
                 "provider-b".to_owned(),
             ])))
         );
-        assert_eq!(request.fleet_policy, Some(crate::FleetFeature::default()));
+        assert_eq!(request.subagents_policy, Some(test_subagents_feature()));
+    }
+
+    fn test_subagents_feature() -> crate::SubagentsFeature {
+        crate::SubagentsFeature {
+            agents: vec![crate::SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            ..crate::SubagentsFeature::default()
+        }
     }
 
     fn completed_tool_result(request: &ToolInvocationBatchRequest) -> ToolInvocationBatchResult {
@@ -2263,13 +2252,44 @@ mod tests {
         }
     }
 
+    /// The promise the shared parked-await fixtures wait on; an await must
+    /// name at least one run-scoped, model-owned promise.
+    const WAIT_PROMISE_ID: &str = "promise_1";
+
     fn wait_await_spec() -> AwaitSpec {
         AwaitSpec {
-            promise_ids: Vec::new(),
+            promise_ids: vec![crate::PromiseId::new(WAIT_PROMISE_ID)],
             mode: AwaitMode::All,
             deadline_at_ms: Some(90),
-            mailbox: true,
         }
+    }
+
+    fn insert_wait_promise(drive: &mut CoreAgentDrive, run_id: crate::RunId) {
+        let promise_id = crate::PromiseId::new(WAIT_PROMISE_ID);
+        drive.state.promises.promises.insert(
+            promise_id.clone(),
+            crate::Promise {
+                promise_id,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
+                },
+                scope: crate::PromiseScope::Run { run_id },
+                ownership: crate::PromiseOwnership::Model,
+                status: crate::PromiseStatus::Pending,
+                payload_ref: None,
+                error_ref: None,
+                deadline_ms: None,
+            },
+        );
+    }
+
+    /// Park the single tool invocation on the shared wait promise.
+    fn park_on_wait_promise(
+        drive: &mut CoreAgentDrive,
+        request: &ToolInvocationBatchRequest,
+    ) -> ToolBatchOutcome {
+        insert_wait_promise(drive, request.run_id);
+        deferred_await_outcome(request)
     }
 
     fn deferred_await_outcome(request: &ToolInvocationBatchRequest) -> ToolBatchOutcome {
@@ -2526,6 +2546,341 @@ mod tests {
         assert_eq!(entry.key.as_ref(), Some(&key));
         assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
         assert!(matches!(entry.source, ContextEntrySource::ContextEdit));
+    }
+
+    fn upsert(drive: &mut CoreAgentDrive, key: &str, entry: ContextEntryInput, at: u64) {
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(key),
+                    entry,
+                },
+                at,
+            )
+            .expect("context upsert");
+        commit_action(drive, action);
+    }
+
+    fn client_catalog_input(title: &str, content_ref: BlobRef) -> ContextEntryInput {
+        ContextEntryInput {
+            kind: ContextEntryKind::Catalog {
+                title: title.to_owned(),
+            },
+            content_ref,
+            media_type: Some("text/markdown".to_owned()),
+            preview: Some(title.to_owned()),
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+        }
+    }
+
+    fn entry_ids(drive: &CoreAgentDrive) -> Vec<u64> {
+        drive
+            .state()
+            .context
+            .entries
+            .iter()
+            .map(|entry| entry.entry_id.as_u64())
+            .collect()
+    }
+
+    #[test]
+    fn keyed_catalog_upsert_supersedes_and_keeps_the_previous_version() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"hello")),
+            21,
+        );
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            30,
+        );
+
+        // v1 (1), the client entry (2), v2 (3): nothing before v2 moved.
+        assert_eq!(entry_ids(&drive), vec![1, 2, 3]);
+        let state = drive.state();
+        let v1 = &state.context.entries[0];
+        let v2 = &state.context.entries[2];
+        assert_eq!(v1.supersedes, None);
+        assert_eq!(v2.supersedes, Some(v1.entry_id));
+        assert!(crate::is_superseded_context_entry(state, v1.entry_id));
+        assert!(!crate::is_superseded_context_entry(state, v2.entry_id));
+        assert_eq!(
+            crate::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
+                .map(|entry| entry.entry_id),
+            Some(v2.entry_id)
+        );
+
+        // Both versions render, in id order; only the stale one is compactable.
+        let planned = crate::core::components::context::planned_context_entry_ids(state);
+        assert_eq!(
+            planned.iter().map(|id| id.as_u64()).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let compactable = crate::core::components::context::compactable_context_entry_ids(state);
+        assert!(compactable.contains(&v1.entry_id));
+        assert!(!compactable.contains(&v2.entry_id));
+
+        // An identical put is a no-op.
+        let noop = drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
+                    entry: skill_catalog_input(BlobRef::from_bytes(b"v2")),
+                },
+                40,
+            )
+            .expect("no-op upsert");
+        assert!(matches!(noop, CoreAgentAction::Idle));
+    }
+
+    #[test]
+    fn superseded_catalog_versions_are_capped_oldest_first() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        for version in 0..(crate::SUPERSEDED_CATALOG_CAP as u64 + 3) {
+            upsert(
+                &mut drive,
+                "bot:directory",
+                client_catalog_input(
+                    "Bot directory",
+                    BlobRef::from_bytes(version.to_string().as_bytes()),
+                ),
+                20 + version,
+            );
+        }
+        let ids = entry_ids(&drive);
+        assert_eq!(ids.len(), crate::SUPERSEDED_CATALOG_CAP + 1);
+        assert_eq!(
+            ids.first(),
+            Some(&3),
+            "the two oldest versions were dropped"
+        );
+        assert_eq!(
+            ids.last(),
+            Some(&(crate::SUPERSEDED_CATALOG_CAP as u64 + 3))
+        );
+        let state = drive.state();
+        for pair in state.context.entries.windows(2) {
+            assert_eq!(pair[1].supersedes, Some(pair[0].entry_id));
+        }
+    }
+
+    #[test]
+    fn remove_context_clears_every_catalog_version_under_the_key() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            "bot:directory",
+            client_catalog_input("Bot directory", BlobRef::from_bytes(b"a")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "bot:directory",
+            client_catalog_input("Bot directory", BlobRef::from_bytes(b"b")),
+            21,
+        );
+        assert_eq!(drive.state().context.entries.len(), 2);
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::RemoveContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new("bot:directory"),
+                },
+                22,
+            )
+            .expect("remove");
+        commit_action(&mut drive, action);
+        assert!(drive.state().context.entries.is_empty());
+    }
+
+    #[test]
+    fn keyed_non_catalog_upsert_still_replaces_in_place() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"a")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"b")),
+            21,
+        );
+        let state = drive.state();
+        assert_eq!(state.context.entries.len(), 1);
+        assert_eq!(
+            state.context.entries[0].content_ref,
+            BlobRef::from_bytes(b"b")
+        );
+        assert_eq!(state.context.entries[0].supersedes, None);
+    }
+
+    #[test]
+    fn client_catalog_is_context_only_and_needs_a_client_key() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let input = client_catalog_input("Bot directory", BlobRef::from_bytes(b"a"));
+
+        drive
+            .admit_command(
+                request_run_command(None, vec![input.clone()], run_config()),
+                20,
+            )
+            .expect_err("a catalog is not run input");
+        drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
+                    entry: input.clone(),
+                },
+                21,
+            )
+            .expect_err("a runtime catalog key only carries its own kind");
+        drive
+            .admit_command(
+                CoreAgentCommand::UpsertContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new("bot:directory"),
+                    entry: client_catalog_input("   ", BlobRef::from_bytes(b"a")),
+                },
+                22,
+            )
+            .expect_err("a catalog needs a title");
+
+        upsert(&mut drive, "bot:directory", input, 23);
+        assert!(matches!(
+            drive.state().context.entries[0].kind,
+            ContextEntryKind::Catalog { ref title } if title == "Bot directory"
+        ));
+    }
+
+    #[test]
+    fn planned_context_includes_the_subagent_catalog_at_its_position() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let catalog = ContextEntryInput {
+            kind: ContextEntryKind::SubagentCatalog,
+            content_ref: BlobRef::from_bytes(b"agents"),
+            media_type: Some("application/json".to_owned()),
+            preview: Some("Sub-agent catalog".to_owned()),
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+        };
+        upsert(&mut drive, crate::SUBAGENT_CATALOG_CONTEXT_KEY, catalog, 20);
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"hello")),
+            21,
+        );
+        let planned = crate::core::components::context::planned_context_entry_ids(drive.state());
+        assert_eq!(
+            planned.iter().map(|id| id.as_u64()).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn standalone_compaction_prunes_superseded_catalogs_and_keeps_the_current_one() {
+        let session_id = SessionId::new("session-a");
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        open_session_with_config(&mut drive, standalone_compaction_config(None, Some(256)));
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            20,
+        );
+        upsert(
+            &mut drive,
+            "client.native",
+            provider_opaque_input(BlobRef::from_bytes(b"native")),
+            21,
+        );
+        upsert(
+            &mut drive,
+            SKILL_CATALOG_CONTEXT_KEY,
+            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            22,
+        );
+        assert_eq!(entry_ids(&drive), vec![1, 2, 3]);
+
+        let request_compaction = drive
+            .admit_command(CoreAgentCommand::CompactContext, 30)
+            .expect("manual compaction");
+        commit_action(&mut drive, request_compaction);
+        let CoreAgentAction::CompactContext { request } =
+            drive.next_action(31, 64).expect("compact action")
+        else {
+            panic!("expected compact action");
+        };
+        // The stale catalog version and the conversation go to the compactor;
+        // the current catalog stays out of it.
+        assert_eq!(
+            request
+                .request
+                .context
+                .entry_ids()
+                .iter()
+                .map(|id| id.as_u64())
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let completed = drive
+            .resume_context_compaction(
+                ContextCompactionResult {
+                    session_id: request.session_id,
+                    context_revision: request.request.context.context_revision,
+                    status: ContextCompactionStatus::Succeeded,
+                    failure_ref: None,
+                    context_entries: vec![openai_compaction_input(BlobRef::from_bytes(
+                        br#"{"type":"compaction","encrypted_content":"opaque"}"#,
+                    ))],
+                },
+                32,
+            )
+            .expect("resume compaction");
+        commit_action(&mut drive, completed);
+        let prune = drive.next_action(33, 64).expect("prune compacted entries");
+        commit_action(&mut drive, prune);
+
+        // v1 and the native entry are gone; v2 (id 3) and the compaction item remain.
+        let ids = entry_ids(&drive);
+        assert_eq!(ids, vec![3, 4]);
+        assert!(matches!(
+            drive.state().context.entries[0].kind,
+            ContextEntryKind::SkillCatalog
+        ));
     }
 
     #[test]
@@ -3672,8 +4027,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
         assert_eq!(
@@ -4552,6 +4908,160 @@ mod tests {
         }
     }
 
+    /// A provider content filter (an Anthropic `refusal`, an OpenAI
+    /// `content_filter` stop) fails the run like a model failure instead of
+    /// completing it with an empty answer; the adapter's failure text rides
+    /// along as the run failure message.
+    /// An output-cap cut-off fails the run like a model failure, but the
+    /// partial text the adapter kept is still applied to the context so the
+    /// user sees what was produced before the cut.
+    #[test]
+    fn length_finish_fails_run_but_keeps_partial_output() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let open = drive
+            .admit_command(CoreAgentCommand::OpenSession { config: config() }, 10)
+            .expect("open");
+        commit_action(&mut drive, open);
+        let request = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .expect("request run");
+        commit_action(&mut drive, request);
+
+        let llm_request = loop {
+            let action = drive.next_action(21, 8).expect("next");
+            if let CoreAgentAction::GenerateLlm { request } = action {
+                break request;
+            }
+            commit_action(&mut drive, action);
+        };
+        let partial_ref = BlobRef::from_bytes(b"The bicycle was");
+        let failure_ref = BlobRef::from_bytes(b"cut off at max output tokens 48");
+        let resumed = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: llm_request.run_id,
+                    turn_id: llm_request.turn_id,
+                    status: LlmGenerationStatus::Failed,
+                    failure_ref: Some(failure_ref.clone()),
+                    context_entries: vec![message_input(
+                        ContextMessageRole::Assistant,
+                        partial_ref.clone(),
+                    )],
+                    facts: LlmGenerationFacts {
+                        provider_response_id: Some("msg_cut".to_owned()),
+                        finish: LlmFinish::Length,
+                        usage: None,
+                        tool_calls: Vec::new(),
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .expect("resume truncated generation");
+        commit_action(&mut drive, resumed);
+
+        let fail_run = drive.next_action(31, 8).expect("fail run");
+        let entries = commit_action(&mut drive, fail_run);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::Run(crate::RunEvent::Failed { .. })
+        ));
+        let completed = drive.state().runs.completed.last().expect("completed run");
+        assert_eq!(completed.status, RunStatus::Failed);
+        let failure = completed.failure.as_ref().expect("run failure");
+        assert_eq!(failure.kind, RunFailureKind::ModelFailure);
+        assert_eq!(failure.message_ref.as_ref(), Some(&failure_ref));
+        assert!(
+            drive
+                .state()
+                .context
+                .entries
+                .iter()
+                .any(|entry| entry.content_ref == partial_ref),
+            "the partial text must stay in the active context: {:?}",
+            drive.state().context.entries
+        );
+        assert!(matches!(
+            drive.next_action(32, 8).expect("next"),
+            CoreAgentAction::Idle
+        ));
+    }
+
+    #[test]
+    fn content_filter_finish_fails_run_like_a_model_failure() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let open = drive
+            .admit_command(CoreAgentCommand::OpenSession { config: config() }, 10)
+            .expect("open");
+        commit_action(&mut drive, open);
+        let request = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .expect("request run");
+        commit_action(&mut drive, request);
+
+        let llm_request = loop {
+            let action = drive.next_action(21, 8).expect("next");
+            if let CoreAgentAction::GenerateLlm { request } = action {
+                break request;
+            }
+            commit_action(&mut drive, action);
+        };
+        let failure_ref = BlobRef::from_bytes(b"provider refused (category: cyber)");
+        let resumed = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: llm_request.run_id,
+                    turn_id: llm_request.turn_id,
+                    status: LlmGenerationStatus::Succeeded,
+                    failure_ref: Some(failure_ref.clone()),
+                    context_entries: Vec::new(),
+                    facts: LlmGenerationFacts {
+                        provider_response_id: Some("msg_refused".to_owned()),
+                        finish: LlmFinish::ContentFilter,
+                        usage: None,
+                        tool_calls: Vec::new(),
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .expect("resume content-filtered generation");
+        commit_action(&mut drive, resumed);
+
+        let fail_run = drive.next_action(31, 8).expect("fail run");
+        let entries = commit_action(&mut drive, fail_run);
+        assert!(matches!(
+            entries[0].event,
+            CoreAgentEvent::Run(crate::RunEvent::Failed { .. })
+        ));
+        assert!(drive.state().runs.active.is_none());
+        let completed = drive.state().runs.completed.last().expect("completed run");
+        assert_eq!(completed.status, RunStatus::Failed);
+        let failure = completed.failure.as_ref().expect("run failure");
+        assert_eq!(failure.kind, RunFailureKind::ModelFailure);
+        assert_eq!(failure.message_ref.as_ref(), Some(&failure_ref));
+        assert!(matches!(
+            drive.next_action(32, 8).expect("next"),
+            CoreAgentAction::Idle
+        ));
+    }
+
     #[test]
     fn failed_generation_fails_run_without_starting_another_turn() {
         let session_id = SessionId::new("session-a");
@@ -4626,8 +5136,9 @@ mod tests {
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
 
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         let entries = commit_action(&mut drive, deferred);
         assert!(matches!(
@@ -4661,7 +5172,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
-        let promise_id = crate::PromiseId::new("promise_done");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -4686,7 +5197,6 @@ mod tests {
                         promise_ids: vec![promise_id],
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4737,81 +5247,11 @@ mod tests {
     }
 
     #[test]
-    fn mailbox_await_keeps_inbound_message_as_user_context() {
-        let session_id = SessionId::new("session-mailbox");
-        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
-        let request = drive_to_single_tool_invocation(&mut drive);
-        let deferred = drive
-            .resume_tool_batch_outcome(
-                deferred_await_outcome_with_spec(
-                    &request,
-                    AwaitSpec {
-                        promise_ids: Vec::new(),
-                        mode: AwaitMode::All,
-                        deadline_at_ms: None,
-                        mailbox: true,
-                    },
-                ),
-                90,
-            )
-            .expect("defer mailbox await");
-        commit_action(&mut drive, deferred);
-
-        let message_ref = BlobRef::from_bytes(b"inbound mailbox message");
-        let input = vec![message_input(ContextMessageRole::User, message_ref.clone())];
-        drive.state.runs.messages.push(crate::BufferedMessage {
-            message_id: crate::MessageId::new(1),
-            submission_id: Some(crate::SubmissionId::new("mailbox-1")),
-            submission_digest: crate::message_submission_digest(&input),
-            input,
-            run_config: run_config(),
-            config_revision: 0,
-            status: MessageStatus::Buffered,
-            consumed_by_run_id: None,
-            promoted_to_run_id: None,
-        });
-
-        let resumed = drive
-            .admit_command(
-                resume_tool_batch_command_with_claim(&request, WakeReason::MailboxMessage),
-                91,
-            )
-            .expect("resume mailbox await");
-        let entries = commit_action(&mut drive, resumed);
-        assert!(entries.iter().any(|entry| matches!(
-            entry.event,
-            CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait { .. })
-        )));
-        let result = entries
-            .iter()
-            .find_map(|entry| match &entry.event {
-                CoreAgentEvent::Tool(ToolEvent::CallCompleted { result, .. }) => Some(result),
-                _ => None,
-            })
-            .expect("await call completion");
-        assert_eq!(result.model_visible_context_entries.len(), 2);
-        assert!(matches!(
-            result.model_visible_context_entries[0].kind,
-            ContextEntryKind::ToolResult { .. }
-        ));
-        assert!(matches!(
-            result.model_visible_context_entries[1].kind,
-            ContextEntryKind::Message {
-                role: ContextMessageRole::User
-            }
-        ));
-        assert_eq!(
-            result.model_visible_context_entries[1].content_ref,
-            message_ref
-        );
-    }
-
-    #[test]
     fn zero_timeout_await_parks_then_wakes_timeout() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
-        let promise_id = crate::PromiseId::new("promise_pending");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -4836,7 +5276,6 @@ mod tests {
                         promise_ids: vec![promise_id],
                         mode: AwaitMode::All,
                         deadline_at_ms: Some(90),
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4858,10 +5297,9 @@ mod tests {
                 deferred_await_outcome_with_spec(
                     &request,
                     AwaitSpec {
-                        promise_ids: vec![crate::PromiseId::new("missing")],
+                        promise_ids: vec![crate::PromiseId::new("promise_99")],
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
-                        mailbox: false,
                     },
                 ),
                 90,
@@ -4891,8 +5329,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5127,82 +5566,6 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_submission_after_mailbox_consumption_admits_as_no_op() {
-        let mut drive =
-            CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
-        open_session(&mut drive);
-        request_run(&mut drive, BlobRef::from_bytes(b"parked"));
-        let _ = drive_until_generate(&mut drive);
-
-        let submission_id = crate::SubmissionId::new("retry_mailbox");
-        let source = RunRequestSource::Input {
-            input: user_input(BlobRef::from_bytes(b"x")),
-        };
-        let message_id = crate::MessageId::new(1);
-        let config_revision = drive.state().lifecycle.config_revision;
-        commit_core_event_result(
-            &mut drive,
-            CoreAgentEvent::Run(RunEvent::MessageBuffered {
-                message_id,
-                submission_id: Some(submission_id.clone()),
-                submission_digest: crate::message_submission_digest(source.input()),
-                input: source.input().to_vec(),
-                run_config: run_config(),
-                config_revision,
-            }),
-            30,
-        )
-        .expect("record buffered message submission");
-        commit_core_event_result(
-            &mut drive,
-            CoreAgentEvent::Run(RunEvent::MessageConsumedByAwait {
-                message_id,
-                run_id: crate::RunId::new(1),
-            }),
-            30,
-        )
-        .expect("record consumed message submission");
-        assert_eq!(drive.state().runs.messages.len(), 1);
-        assert_eq!(
-            drive.state().runs.messages[0].status,
-            crate::MessageStatus::ConsumedByAwait
-        );
-
-        let mut replayed = CoreAgentDrive::from_replayed(
-            SessionId::new("session-a"),
-            drive.state().clone(),
-            drive.head().cloned(),
-        );
-        let duplicate = replayed
-            .admit_command(
-                CoreAgentCommand::SubmitMessage(SubmitMessageCommand {
-                    submission_id: Some(submission_id.clone()),
-                    input: source.input().to_vec(),
-                }),
-                31,
-            )
-            .expect("duplicate consumed mailbox request");
-        assert!(
-            !matches!(duplicate, CoreAgentAction::AppendEvents { .. }),
-            "duplicate consumed submission must not append events: {duplicate:?}"
-        );
-
-        let mismatch = replayed
-            .admit_command(
-                CoreAgentCommand::SubmitMessage(SubmitMessageCommand {
-                    submission_id: Some(submission_id),
-                    input: user_input(BlobRef::from_bytes(b"other")),
-                }),
-                32,
-            )
-            .expect_err("consumed duplicate with different input must fail");
-        let CoreAgentDriveError::Command(CommandError::Rejected(rejection)) = mismatch else {
-            panic!("expected command rejection, got: {mismatch:?}");
-        };
-        assert_eq!(rejection.kind, CommandRejectionKind::DuplicateSubmission);
-    }
-
-    #[test]
     fn duplicate_submission_after_run_completion_admits_as_no_op() {
         let mut drive =
             CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
@@ -5281,8 +5644,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5328,8 +5692,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
         let cancel = drive
@@ -5371,8 +5736,9 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
+        let parked = park_on_wait_promise(&mut drive, &request);
         let deferred = drive
-            .resume_tool_batch_outcome(deferred_await_outcome(&request), 90)
+            .resume_tool_batch_outcome(parked, 90)
             .expect("defer tool batch");
         commit_action(&mut drive, deferred);
 
@@ -5393,18 +5759,37 @@ mod tests {
             .admit_command(CoreAgentCommand::CloseSession { force: true }, 95)
             .expect("force close");
         let entries = commit_action(&mut drive, close);
-        assert!(matches!(
-            entries[0].event,
-            CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. })
-        ));
-        assert!(matches!(
-            entries[1].event,
-            CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. })
-        ));
-        assert!(matches!(
-            entries[2].event,
-            CoreAgentEvent::Lifecycle(crate::CoreAgentLifecycleEvent::Closed)
-        ));
+        // Force-cancelling the parked run cascades to its run-scoped wait
+        // promise; the order is force-cancel, queued-cancel, closed.
+        let position = |predicate: fn(&CoreAgentEvent) -> bool| {
+            entries
+                .iter()
+                .position(|entry| predicate(&entry.event))
+                .expect("event present")
+        };
+        let force_cancelled = position(|event| {
+            matches!(
+                event,
+                CoreAgentEvent::Run(crate::RunEvent::ForceCancelled { .. })
+            )
+        });
+        let queued_cancelled = position(|event| {
+            matches!(
+                event,
+                CoreAgentEvent::Run(crate::RunEvent::QueuedCancelled { .. })
+            )
+        });
+        let closed = position(|event| {
+            matches!(
+                event,
+                CoreAgentEvent::Lifecycle(crate::CoreAgentLifecycleEvent::Closed)
+            )
+        });
+        assert!(force_cancelled < queued_cancelled && queued_cancelled < closed);
+        assert!(entries.iter().any(|entry| matches!(
+            entry.event,
+            CoreAgentEvent::Promise(crate::PromiseEvent::Cancelled { .. })
+        )));
         assert_eq!(drive.state().lifecycle.status, CoreAgentStatus::Closed);
         assert!(drive.state().runs.active.is_none());
         assert!(drive.state().runs.queued.is_empty());
@@ -5448,9 +5833,8 @@ mod tests {
         let mut result = completed_tool_result(request);
         result.results[0].effects = vec![crate::promise_create_effect(
             &crate::PromiseId::new(promise_id),
-            &crate::PromiseSource::Run {
-                target_session_id: "child_session".to_owned(),
-                target_run_id: 1,
+            &crate::PromiseSource::Timer {
+                fire_at_ms: u64::MAX,
             },
             None,
         )];
@@ -5647,8 +6031,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id: invocation_id.clone(),
             tool_id: definition.tool_id,
@@ -5722,7 +6105,6 @@ mod tests {
                     promise_ids: vec![promise_id.clone()],
                     mode: AwaitMode::All,
                     deadline_at_ms: None,
-                    mailbox: false,
                 }
             )
             .is_err()
@@ -5934,6 +6316,7 @@ mod tests {
             .get(&definition.tool_id)
             .cloned()
             .expect("binding");
+        let promise_ids = crate::PromiseIdAllocator::new(request.promise_id_base);
         let mut joined_ids = Vec::new();
         let mut results = Vec::new();
         for call in &request.calls {
@@ -5964,8 +6347,7 @@ mod tests {
                 &call.call_id,
                 &binding.binding_fingerprint,
             );
-            let promise_id =
-                crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+            let promise_id = promise_ids.allocate();
             let invocation = WorkflowToolInvocation {
                 invocation_id: invocation_id.clone(),
                 tool_id: definition.tool_id.clone(),
@@ -6175,8 +6557,7 @@ mod tests {
             &workflow_call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id,
             tool_id: definition.tool_id,
@@ -6216,7 +6597,6 @@ mod tests {
                     promise_ids: Vec::new(),
                     mode: AwaitMode::All,
                     deadline_at_ms: Some(1_000),
-                    mailbox: false,
                 },
                 90,
             )
@@ -6308,8 +6688,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id: invocation_id.clone(),
             tool_id: definition.tool_id,
@@ -6488,8 +6867,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let execution_id =
             crate::workflow_tool_execution_id(&invocation_id, &start.recipe_fingerprint);
         let invocation = WorkflowToolInvocation {
@@ -6608,7 +6986,7 @@ mod tests {
         let run_id = request.run_id;
         let resumed = drive
             .resume_tool_batch_outcome(
-                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_a")),
+                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_1")),
                 90,
             )
             .expect("resume tool batch");
@@ -6622,10 +7000,96 @@ mod tests {
             .state()
             .promises
             .promises
-            .get(&crate::PromiseId::new("promise_a"))
+            .get(&crate::PromiseId::new("promise_1"))
             .expect("promise in state");
         assert_eq!(promise.status, crate::PromiseStatus::Pending);
         assert_eq!(promise.scope, crate::PromiseScope::Run { run_id });
+    }
+
+    fn promise_tool_result_with_ids(
+        request: &ToolInvocationBatchRequest,
+        numbers: &[u64],
+    ) -> ToolInvocationBatchResult {
+        let mut result = completed_tool_result(request);
+        result.results[0].effects = numbers
+            .iter()
+            .map(|number| {
+                crate::promise_create_effect(
+                    &crate::PromiseId::from_number(*number),
+                    &crate::PromiseSource::Timer {
+                        fire_at_ms: u64::MAX,
+                    },
+                    None,
+                )
+            })
+            .collect();
+        result
+    }
+
+    #[test]
+    fn tool_batch_promise_base_sits_above_the_cursor_and_the_cursor_follows_the_max() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert_eq!(request.promise_id_base, 1);
+
+        // Executors of parallel calls draw from the allocator in any order;
+        // every id at or above the base is accepted and the cursor follows
+        // the highest one.
+        let resumed = drive
+            .resume_tool_batch_outcome(
+                ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[3, 2])),
+                90,
+            )
+            .expect("resume tool batch");
+        commit_action(&mut drive, resumed);
+        let promises = &drive.state().promises.promises;
+        assert!(promises.contains_key(&crate::PromiseId::from_number(2)));
+        assert!(promises.contains_key(&crate::PromiseId::from_number(3)));
+        assert_eq!(drive.state().id_cursors.last_promise_id, 3);
+    }
+
+    #[test]
+    fn tool_result_promise_below_the_batch_base_is_an_invariant_violation() {
+        let session_id = SessionId::new("session-a");
+        let mut state = CoreAgentState::new();
+        state.id_cursors.last_promise_id = 5;
+        let mut drive = CoreAgentDrive::from_replayed(session_id, state, None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert_eq!(request.promise_id_base, 6);
+
+        assert!(
+            drive
+                .resume_tool_batch_outcome(
+                    ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[2])),
+                    90,
+                )
+                .is_err(),
+            "an id below the batch base could collide with an earlier promise"
+        );
+        let resumed = drive
+            .resume_tool_batch_outcome(
+                ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[6])),
+                90,
+            )
+            .expect("resume tool batch");
+        commit_action(&mut drive, resumed);
+        assert_eq!(drive.state().id_cursors.last_promise_id, 6);
+    }
+
+    #[test]
+    fn tool_result_reusing_a_promise_id_is_an_invariant_violation() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert!(
+            drive
+                .resume_tool_batch_outcome(
+                    ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[1, 1])),
+                    90,
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -6634,14 +7098,13 @@ mod tests {
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
         let run_id = request.run_id;
-        let promise_id = crate::PromiseId::new("promise_a");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
                 promise_id: promise_id.clone(),
-                source: crate::PromiseSource::Run {
-                    target_session_id: "child_session".to_owned(),
-                    target_run_id: 1,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
                 },
                 scope: crate::PromiseScope::Run { run_id },
                 ownership: crate::PromiseOwnership::Model,
@@ -6677,14 +7140,13 @@ mod tests {
     fn run_terminal_cascade_skips_session_scoped_promises() {
         let mut state = CoreAgentState::new();
         let run_id = crate::RunId::new(1);
-        let promise_id = crate::PromiseId::new("promise_a");
+        let promise_id = crate::PromiseId::new("promise_1");
         state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
                 promise_id: promise_id.clone(),
-                source: crate::PromiseSource::Run {
-                    target_session_id: "child_session".to_owned(),
-                    target_run_id: 1,
+                source: crate::PromiseSource::Timer {
+                    fire_at_ms: u64::MAX,
                 },
                 scope: crate::PromiseScope::Session,
                 ownership: crate::PromiseOwnership::Model,
@@ -6715,9 +7177,9 @@ mod tests {
     fn promise_control_argument_facts_join_only_requested_state() {
         let mut state = CoreAgentState::new();
         state.promises.promises.insert(
-            crate::PromiseId::new("known"),
+            crate::PromiseId::new("promise_1"),
             crate::Promise {
-                promise_id: crate::PromiseId::new("known"),
+                promise_id: crate::PromiseId::new("promise_1"),
                 source: crate::PromiseSource::Timer { fire_at_ms: 10 },
                 scope: crate::PromiseScope::Run {
                     run_id: RunId::new(4),
@@ -6734,10 +7196,11 @@ mod tests {
             run_id: RunId::new(4),
             turn_id: TurnId::new(1),
             batch_id: ToolBatchId::new(1),
+            promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
-            fleet_policy: None,
+            subagents_policy: None,
             calls: vec![
                 ToolInvocationRequest {
                     call_id: crate::ToolCallId::new("cancel"),
@@ -6764,8 +7227,8 @@ mod tests {
                     crate::PromiseControlArgumentCallFacts::Parsed {
                         call_id: crate::ToolCallId::new("cancel"),
                         promise_ids: vec![
-                            crate::PromiseId::new("known"),
-                            crate::PromiseId::new("unknown"),
+                            crate::PromiseId::new("promise_1"),
+                            crate::PromiseId::new("promise_99"),
                         ],
                     },
                     crate::PromiseControlArgumentCallFacts::Invalid {
@@ -6804,7 +7267,7 @@ mod tests {
         let request = drive_to_single_tool_invocation(&mut drive);
         let resumed = drive
             .resume_tool_batch_outcome(
-                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_a")),
+                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_1")),
                 90,
             )
             .expect("resume tool batch");
@@ -6814,7 +7277,7 @@ mod tests {
         let resolve = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_a"),
+                    promise_id: crate::PromiseId::new("promise_1"),
                     resolution: crate::PromiseResolution::Resolved {
                         payload_ref: Some(payload_ref.clone()),
                     },
@@ -6827,7 +7290,7 @@ mod tests {
             .state()
             .promises
             .promises
-            .get(&crate::PromiseId::new("promise_a"))
+            .get(&crate::PromiseId::new("promise_1"))
             .expect("promise in state");
         assert_eq!(promise.status, crate::PromiseStatus::Resolved);
         assert_eq!(promise.payload_ref.as_ref(), Some(&payload_ref));
@@ -6836,7 +7299,7 @@ mod tests {
         let late = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_a"),
+                    promise_id: crate::PromiseId::new("promise_1"),
                     resolution: crate::PromiseResolution::Failed { error_ref: None },
                 },
                 92,
@@ -6851,7 +7314,7 @@ mod tests {
                 .state()
                 .promises
                 .promises
-                .get(&crate::PromiseId::new("promise_a"))
+                .get(&crate::PromiseId::new("promise_1"))
                 .expect("promise")
                 .status,
             crate::PromiseStatus::Resolved
@@ -6860,7 +7323,7 @@ mod tests {
         let unknown = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_missing"),
+                    promise_id: crate::PromiseId::new("promise_99"),
                     resolution: crate::PromiseResolution::Cancelled,
                 },
                 93,

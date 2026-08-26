@@ -30,9 +30,12 @@ use crate::{
     blob_io::{put_json, put_text, read_json, read_text},
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
-    params::{anthropic_messages_params, anthropic_thinking_from_effort},
+    params::{
+        anthropic_messages_params, anthropic_thinking_from_effort,
+        default_anthropic_thinking_display,
+    },
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::LlmGenerationExecution,
+    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
     },
@@ -49,12 +52,27 @@ pub const ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND: &str = "anthropic.mess
 const MEDIA_TYPE_JSON: &str = "application/json";
 const MEDIA_TYPE_TEXT: &str = "text/plain";
 
-/// Anthropic requires `max_tokens`; used when the session sets no
-/// `output_limit`.
-const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 4096;
-/// Output budget for summarization-based compaction when the task carries no
+/// Anthropic requires `max_tokens` on every request (OpenAI's equivalents
+/// are optional and omitted); used when the session sets no `output_limit`.
+/// Thinking counts toward this cap, so a cap sized for a bare answer
+/// truncates turns on models that reason before answering. 32K is within
+/// every current model's output ceiling; the session's `maxOutputTokens` is
+/// the knob for tighter bounds.
+const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_768;
+/// Summary budget for summarization-based compaction when the task carries no
 /// `target_tokens`.
 const DEFAULT_COMPACTION_MAX_TOKENS: u64 = 2048;
+/// Room above the summary budget for the thinking that precedes it. Models
+/// that think by default (Claude Opus 5) would otherwise spend a tight
+/// summary cap on reasoning and return a truncated or empty summary; the
+/// instruction still bounds the summary itself.
+const COMPACTION_THINKING_HEADROOM_TOKENS: u64 = 4096;
+/// Preview for a thinking block whose summary the provider withheld (an
+/// `omitted` display); clients hide this marker like other opaque state.
+const OMITTED_THINKING_PREVIEW: &str = "reasoning state";
+/// Preview for a `redacted_thinking` block: the provider flagged the
+/// reasoning and returns only encrypted data.
+const REDACTED_THINKING_PREVIEW: &str = "redacted thinking";
 
 const COMPACTION_INSTRUCTION: &str = "Summarize the conversation above for context compaction. \
 Capture the user's goals, decisions made, work completed, important tool results, and open \
@@ -214,13 +232,15 @@ pub async fn materialize_create_request(
     // params body already sets.
     if let Some(effort) = request.reasoning_effort.as_deref() {
         let derived = anthropic_thinking_from_effort(effort)?;
-        if params.thinking.is_none()
-            && params.output_config.is_none()
-            && let Some((thinking, output_config)) = derived
-        {
-            params.thinking = Some(thinking);
-            params.output_config = Some(output_config);
+        if params.thinking.is_none() && params.output_config.is_none() {
+            params.thinking = Some(derived.thinking);
+            params.output_config = derived.output_config;
         }
+    }
+    // Reasoning entries only carry text when the request asks for the
+    // summary; current models omit it unless told otherwise.
+    if let Some(thinking) = params.thinking.as_mut() {
+        default_anthropic_thinking_display(thinking);
     }
     if request.provider_response_id.is_some() {
         return Err(LlmAdapterError::InvalidProviderRequest {
@@ -255,7 +275,14 @@ pub async fn materialize_create_request(
         });
     }
 
-    let system = materialize_system(blobs, &request.context.entries).await?;
+    // Prompt-cache breakpoints (P137): Anthropic caches only at explicit
+    // `cache_control` markers, so the adapter places the standard layout on
+    // every request — end of the system prompt, last tool definition, last
+    // block of the last message (a moving marker that keeps the whole prefix
+    // warm turn after turn). Placement is a materialization detail; nothing
+    // in the planned request or the session log changes.
+    let cache_control = prompt_cache_control(params.prompt_cache_ttl.as_deref());
+    let system = materialize_system(blobs, &request.context.entries, &cache_control).await?;
     let message_entries = request
         .context
         .entries
@@ -263,8 +290,10 @@ pub async fn materialize_create_request(
         .filter(|entry| !matches!(entry.kind, ContextEntryKind::Instructions))
         .cloned()
         .collect::<Vec<_>>();
-    let messages = materialize_messages(blobs, &message_entries).await?;
-    let (tools, mcp_servers) = materialize_tools(blobs, &request.tools).await?;
+    let mut messages = materialize_messages(blobs, &message_entries).await?;
+    place_message_breakpoint(&mut messages, &cache_control);
+    let (mut tools, mcp_servers) = materialize_tools(blobs, &request.tools).await?;
+    place_tool_breakpoint(&mut tools, &cache_control);
 
     Ok(am::CreateMessageRequest {
         model: request.model.model.clone(),
@@ -301,12 +330,13 @@ pub async fn materialize_compact_request(
     messages.push(am::MessageParam::user(compaction_instruction(
         task.target_tokens,
     )));
+    let summary_tokens = task
+        .target_tokens
+        .map(u64::from)
+        .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS);
     Ok(am::CreateMessageRequest {
         model: task.model.model.clone(),
-        max_tokens: task
-            .target_tokens
-            .map(u64::from)
-            .unwrap_or(DEFAULT_COMPACTION_MAX_TOKENS),
+        max_tokens: summary_tokens + COMPACTION_THINKING_HEADROOM_TOKENS,
         messages,
         system: None,
         metadata: None,
@@ -335,9 +365,12 @@ fn compaction_instruction(target_tokens: Option<u32>) -> String {
     }
 }
 
+/// The system prompt as a single cached block; `None` when there are no
+/// instructions (an empty system block would be rejected).
 async fn materialize_system(
     blobs: &dyn BlobStore,
     entries: &[ContextEntry],
+    cache_control: &Value,
 ) -> LlmAdapterResult<Option<am::SystemContent>> {
     let mut parts = Vec::new();
     for entry in entries {
@@ -350,9 +383,84 @@ async fn materialize_system(
         }
     }
     if parts.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(am::SystemContent::Text(parts.join("\n\n"))))
+        return Ok(None);
+    }
+    Ok(Some(am::SystemContent::Blocks(vec![
+        am::ContentBlockParam::Text(am::TextBlockParam {
+            r#type: "text".to_owned(),
+            text: parts.join("\n\n"),
+            cache_control: Some(cache_control.clone()),
+            extra: Default::default(),
+        }),
+    ])))
+}
+
+/// The `cache_control` marker for this request: ephemeral, with the
+/// optional longer TTL from the params.
+fn prompt_cache_control(ttl: Option<&str>) -> Value {
+    match ttl {
+        Some(ttl) => json!({ "type": "ephemeral", "ttl": ttl }),
+        None => json!({ "type": "ephemeral" }),
+    }
+}
+
+/// Mark the last tool definition so the whole tool list is cached. Raw
+/// provider-native tools are left alone: their JSON is the operator's.
+fn place_tool_breakpoint(tools: &mut [am::Tool], cache_control: &Value) {
+    if let Some(am::Tool::Custom(definition)) = tools
+        .iter_mut()
+        .rev()
+        .find(|tool| matches!(tool, am::Tool::Custom(_)))
+        && definition.cache_control.is_none()
+    {
+        definition.cache_control = Some(cache_control.clone());
+    }
+}
+
+/// Mark the last block of the last message that can carry `cache_control`
+/// (thinking blocks cannot). Blocks that already carry a marker from
+/// provider options keep theirs.
+fn place_message_breakpoint(messages: &mut [am::MessageParam], cache_control: &Value) {
+    let Some(message) = messages.last_mut() else {
+        return;
+    };
+    let am::MessageParamContent::Blocks(blocks) = &mut message.content else {
+        return;
+    };
+    for block in blocks.iter_mut().rev() {
+        let slot = match block {
+            am::ContentBlockParam::Text(block) => &mut block.cache_control,
+            am::ContentBlockParam::Image(block) => &mut block.cache_control,
+            am::ContentBlockParam::Document(block) => &mut block.cache_control,
+            am::ContentBlockParam::ToolUse(block) => &mut block.cache_control,
+            am::ContentBlockParam::ToolResult(block) => &mut block.cache_control,
+            am::ContentBlockParam::Raw(value) => {
+                if let Some(object) = value.as_object_mut()
+                    && object
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_some_and(|kind| {
+                            matches!(
+                                kind,
+                                "text" | "image" | "document" | "tool_use" | "tool_result"
+                            )
+                        })
+                {
+                    object
+                        .entry("cache_control")
+                        .or_insert_with(|| cache_control.clone());
+                    return;
+                }
+                continue;
+            }
+            am::ContentBlockParam::Thinking(_) | am::ContentBlockParam::RedactedThinking(_) => {
+                continue;
+            }
+        };
+        if slot.is_none() {
+            *slot = Some(cache_control.clone());
+        }
+        return;
     }
 }
 
@@ -480,7 +588,10 @@ async fn materialize_block(
                 crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
-                am::ContentBlockParam::text(crate::environment_prompts::vfs_catalog_text(&catalog)),
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::environment_prompts::vfs_catalog_text(&catalog),
+                )),
             ))
         }
         ContextEntryKind::SkillCatalog => {
@@ -488,9 +599,30 @@ async fn materialize_block(
                 crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
             Ok((
                 am::MessageRole::User,
-                am::ContentBlockParam::text(crate::skill_prompts::skill_catalog_text(&catalog)),
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::skill_prompts::skill_catalog_text(&catalog),
+                )),
             ))
         }
+        ContextEntryKind::SubagentCatalog => {
+            let catalog =
+                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
+            Ok((
+                am::MessageRole::User,
+                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
+                    entry,
+                    crate::subagent_prompts::subagent_catalog_text(&catalog),
+                )),
+            ))
+        }
+        ContextEntryKind::Catalog { .. } => Ok((
+            am::MessageRole::User,
+            am::ContentBlockParam::text(
+                crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content_ref)
+                    .await?,
+            ),
+        )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &entry.content_ref).await?;
             Ok((
@@ -747,6 +879,10 @@ pub async fn result_from_response(
     request: &LlmGenerationRequest,
     response: &ApiResponse<am::Message>,
 ) -> LlmAdapterResult<LlmGenerationResult> {
+    if response.parsed.stop_reason == Some(am::StopReason::Refusal) {
+        return refused_generation_result(blobs, request, response).await;
+    }
+
     let mut context_entries = Vec::new();
     let mut tool_calls = Vec::new();
 
@@ -783,18 +919,99 @@ pub async fn result_from_response(
                 tokens: u64_to_u32(tokens),
                 quality: TokenEstimateQuality::ProviderCounted,
             });
+    let finish = finish_reason(response.parsed.stop_reason, !tool_calls.is_empty());
+    // A turn cut off at `max_tokens` fails, keeping the partial text the
+    // user can see; tool calls from an unfinished turn have nothing to
+    // replay against and are dropped with the unfinished thinking.
+    let (status, failure_ref, context_entries, tool_calls) = if finish == LlmFinish::Length {
+        let failure_ref = put_text(
+            blobs,
+            truncation_failure_text(
+                request.run_id,
+                request.turn_id,
+                "Anthropic Messages",
+                &response.parsed.id,
+                Some(
+                    request
+                        .request
+                        .output_limit
+                        .map(u64::from)
+                        .unwrap_or(DEFAULT_MAX_OUTPUT_TOKENS),
+                ),
+                usage.as_ref().and_then(|usage| usage.output_tokens),
+                usage.as_ref().and_then(|usage| usage.reasoning_tokens),
+            ),
+        )
+        .await?;
+        (
+            LlmGenerationStatus::Failed,
+            Some(failure_ref),
+            partial_output_entries(context_entries),
+            Vec::new(),
+        )
+    } else {
+        (
+            LlmGenerationStatus::Succeeded,
+            None,
+            context_entries,
+            tool_calls,
+        )
+    };
     Ok(LlmGenerationResult {
         run_id: request.run_id,
         turn_id: request.turn_id,
-        status: LlmGenerationStatus::Succeeded,
-        failure_ref: None,
+        status,
+        failure_ref,
         context_entries,
         facts: LlmGenerationFacts {
             provider_response_id: Some(response.parsed.id.clone()),
-            finish: finish_reason(response.parsed.stop_reason, !tool_calls.is_empty()),
+            finish,
             usage,
             tool_calls,
             context_token_estimate,
+        },
+    })
+}
+
+/// A `refusal` stop is terminal for the turn: the provider's safety
+/// classifier declined the request (HTTP 200 with no or partial content).
+/// The turn fails with the classifier's category and explanation instead of
+/// completing as an empty answer, any partial content is dropped, and nothing
+/// falls back to another model. The failure text follows the worker's
+/// provider-error blob layout so clients render it the same way.
+async fn refused_generation_result(
+    blobs: &dyn BlobStore,
+    request: &LlmGenerationRequest,
+    response: &ApiResponse<am::Message>,
+) -> LlmAdapterResult<LlmGenerationResult> {
+    let details = response.parsed.stop_details.as_ref();
+    let category = details
+        .and_then(|details| details.category.as_deref())
+        .unwrap_or("unspecified");
+    let explanation = details
+        .and_then(|details| details.explanation.as_deref())
+        .unwrap_or("no explanation provided");
+    let failure_ref = put_text(
+        blobs,
+        format!(
+            "core agent LLM generation failed\nrun_id={}\nturn_id={}\n\
+             error=Anthropic refused response {} (category: {category}): {explanation}\n",
+            request.run_id, request.turn_id, response.parsed.id
+        ),
+    )
+    .await?;
+    Ok(LlmGenerationResult {
+        run_id: request.run_id,
+        turn_id: request.turn_id,
+        status: LlmGenerationStatus::Failed,
+        failure_ref: Some(failure_ref),
+        context_entries: Vec::new(),
+        facts: LlmGenerationFacts {
+            provider_response_id: Some(response.parsed.id.clone()),
+            finish: LlmFinish::ContentFilter,
+            usage: response.parsed.usage.as_ref().map(llm_usage),
+            tool_calls: Vec::new(),
+            context_token_estimate: None,
         },
     })
 }
@@ -807,10 +1024,31 @@ pub async fn result_from_compact_response(
     let summary = response.parsed.output_text();
     let summary = summary.trim();
     if summary.is_empty() {
+        let block_types = response
+            .parsed
+            .content
+            .iter()
+            .map(|block| block.r#type.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
         return Err(LlmAdapterError::InvalidProviderRequest {
             message: format!(
-                "Anthropic Messages compaction response {} did not include summary text",
-                response.parsed.id
+                "Anthropic Messages compaction response {} did not include summary text \
+                 (stop_reason: {:?}, stop_details: {:?}, blocks: [{block_types}], \
+                 output_tokens: {:?}, thinking_tokens: {:?})",
+                response.parsed.id,
+                response.parsed.stop_reason,
+                response.parsed.stop_details,
+                response
+                    .parsed
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.output_tokens),
+                response
+                    .parsed
+                    .usage
+                    .as_ref()
+                    .and_then(am::Usage::thinking_tokens),
             ),
         });
     }
@@ -929,12 +1167,17 @@ async fn thinking_context_entry(
     raw_block: Value,
 ) -> LlmAdapterResult<ContextEntryInput> {
     let content_ref = put_json(blobs, &raw_block).await?;
-    let preview = block
-        .thinking
-        .as_deref()
-        .filter(|thinking| !thinking.is_empty())
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| "redacted thinking".to_owned());
+    let preview = if block.r#type == "redacted_thinking" {
+        REDACTED_THINKING_PREVIEW.to_owned()
+    } else {
+        block
+            .thinking
+            .as_deref()
+            .map(str::trim)
+            .filter(|thinking| !thinking.is_empty())
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| OMITTED_THINKING_PREVIEW.to_owned())
+    };
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ReasoningState,
         content_ref,
@@ -1005,7 +1248,13 @@ fn llm_usage(usage: &am::Usage) -> LlmUsage {
     LlmUsage {
         input_tokens: input_tokens.map(u64_to_u32),
         output_tokens: output_tokens.map(u64_to_u32),
-        reasoning_tokens: None,
+        // Billed thinking tokens; a subset of `output_tokens`, reported
+        // regardless of whether the summary text was returned.
+        reasoning_tokens: usage
+            .output_tokens_details
+            .as_ref()
+            .and_then(|details| details.thinking_tokens)
+            .map(u64_to_u32),
         total_tokens: match (input_tokens, output_tokens) {
             (Some(input), Some(output)) => Some(u64_to_u32(input + output)),
             _ => None,
@@ -1093,6 +1342,23 @@ mod tests {
         blobs.insert_text(text).await
     }
 
+    /// Cache markers are placement, not content: tests about lowering compare
+    /// the content and assert the markers separately.
+    fn without_cache_control(value: serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.into_iter()
+                    .filter(|(key, _)| key != "cache_control")
+                    .map(|(key, value)| (key, without_cache_control(value)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.into_iter().map(without_cache_control).collect())
+            }
+            other => other,
+        }
+    }
+
     fn model() -> ModelSelection {
         ModelSelection {
             api_kind: ProviderApiKind::AnthropicMessages,
@@ -1141,12 +1407,15 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
-        assert_eq!(value["thinking"], json!({ "type": "adaptive" }));
+        assert_eq!(
+            value["thinking"],
+            json!({ "type": "adaptive", "display": "summarized" })
+        );
         assert_eq!(value["output_config"], json!({ "effort": "max" }));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn materialize_create_request_none_reasoning_effort_omits_thinking() {
+    async fn materialize_create_request_none_reasoning_effort_disables_thinking() {
         let blobs = InMemoryBlobStore::new();
         let mut request = intent_request(Vec::new());
         request.reasoning_effort = Some("none".to_string());
@@ -1156,8 +1425,70 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
-        assert!(value.get("thinking").is_none());
+        // Explicit: models that think by default would otherwise reason.
+        assert_eq!(value["thinking"], json!({ "type": "disabled" }));
         assert!(value.get("output_config").is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_without_effort_sends_no_thinking_config() {
+        let blobs = InMemoryBlobStore::new();
+        let request = intent_request(Vec::new());
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert!(value.get("thinking").is_none());
+        assert_eq!(value["max_tokens"], json!(DEFAULT_MAX_OUTPUT_TOKENS));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_keeps_explicit_thinking_display() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            thinking: Some(AnthropicThinkingConfig {
+                r#type: "adaptive".to_string(),
+                budget_tokens: None,
+                display: Some("omitted".to_string()),
+                extra: BTreeMap::new(),
+            }),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(
+            value["thinking"],
+            json!({ "type": "adaptive", "display": "omitted" })
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_never_adds_display_to_disabled_thinking() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            thinking: Some(AnthropicThinkingConfig {
+                r#type: "disabled".to_string(),
+                budget_tokens: None,
+                display: None,
+                extra: BTreeMap::new(),
+            }),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(value["thinking"], json!({ "type": "disabled" }));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1181,9 +1512,11 @@ mod tests {
             .expect("materialize");
         let value = serde_json::to_value(materialized).expect("json");
 
+        // Explicit params keep their mode and budget; the display default
+        // still fills in so the reasoning entries carry text.
         assert_eq!(
             value["thinking"],
-            json!({ "type": "enabled", "budget_tokens": 512 })
+            json!({ "type": "enabled", "budget_tokens": 512, "display": "summarized" })
         );
         assert!(value.get("output_config").is_none());
     }
@@ -1192,7 +1525,7 @@ mod tests {
     async fn materialize_create_request_rejects_unknown_reasoning_effort() {
         let blobs = InMemoryBlobStore::new();
         let mut request = intent_request(Vec::new());
-        request.reasoning_effort = Some("xhigh".to_string());
+        request.reasoning_effort = Some("ultra".to_string());
 
         let error = materialize_create_request(&blobs, &request)
             .await
@@ -1272,6 +1605,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }
     }
 
@@ -1296,6 +1630,7 @@ mod tests {
             provider_kind: item.provider_kind.clone(),
             provider_item_id: item.provider_item_id.clone(),
             token_estimate: item.token_estimate.clone(),
+            supersedes: None,
         }
     }
 
@@ -1330,6 +1665,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let mut request = intent_request(vec![instructions_item, user_entry(2, input_ref)]);
         request.tools = vec![ToolSpec {
@@ -1366,6 +1702,7 @@ mod tests {
             service_tier: Some("auto".to_string()),
             container: None,
             extra: BTreeMap::from([("betas".to_string(), json!(["context-1m"]))]),
+            prompt_cache_ttl: None,
         }));
 
         let materialized = materialize_create_request(&blobs, &request)
@@ -1380,14 +1717,22 @@ mod tests {
                 "max_tokens": 2048,
                 "messages": [{
                     "role": "user",
-                    "content": [{ "type": "text", "text": "Read Cargo.toml" }]
+                    "content": [{
+                        "type": "text",
+                        "text": "Read Cargo.toml",
+                        "cache_control": { "type": "ephemeral" }
+                    }]
                 }],
-                "system": "Be precise.",
+                "system": [{
+                    "type": "text",
+                    "text": "Be precise.",
+                    "cache_control": { "type": "ephemeral" }
+                }],
                 "metadata": { "user_id": "user-1" },
                 "stop_sequences": ["<END>"],
                 "stream": false,
                 "temperature": 0.2,
-                "thinking": { "type": "enabled", "budget_tokens": 1024 },
+                "thinking": { "type": "enabled", "budget_tokens": 1024, "display": "summarized" },
                 "output_config": { "effort": "high" },
                 "tool_choice": {
                     "type": "tool",
@@ -1453,6 +1798,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1470,6 +1816,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_TEXT.to_owned()),
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1488,6 +1835,7 @@ mod tests {
                 provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
                 provider_item_id: Some("toolu_1".to_owned()),
                 token_estimate: None,
+                supersedes: None,
             },
             ContextEntry {
                 key: None,
@@ -1507,6 +1855,7 @@ mod tests {
                 provider_kind: None,
                 provider_item_id: None,
                 token_estimate: None,
+                supersedes: None,
             },
             user_entry(6, followup_ref),
         ];
@@ -1518,7 +1867,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([
                 {
                     "role": "user",
@@ -1574,6 +1923,7 @@ mod tests {
             provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let request = intent_request(vec![raw_entry, user_entry(2, followup_ref)]);
 
@@ -1583,7 +1933,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([{
                 "role": "user",
                 "content": [
@@ -1953,7 +2303,11 @@ mod tests {
                     "input": { "path": "Cargo.toml" }
                 }
             ],
-            "usage": { "input_tokens": 10, "output_tokens": 5 }
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "output_tokens_details": { "thinking_tokens": 3 }
+            }
         });
         let api = fake_api(raw_json);
         let adapter = Arc::new(AnthropicMessagesLlmAdapter::new(api.clone(), blobs.clone()));
@@ -1985,6 +2339,15 @@ mod tests {
                 .as_ref()
                 .and_then(|usage| usage.total_tokens),
             Some(15)
+        );
+        assert_eq!(
+            result
+                .facts
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.reasoning_tokens),
+            Some(3),
+            "billed thinking tokens must surface as reasoning tokens"
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
         assert_eq!(
@@ -2022,7 +2385,7 @@ mod tests {
             .expect("followup request");
         let followup_json = serde_json::to_value(followup).expect("followup json");
         assert_eq!(
-            followup_json["messages"],
+            without_cache_control(followup_json["messages"].clone()),
             json!([{
                 "role": "assistant",
                 "content": [
@@ -2114,6 +2477,52 @@ mod tests {
         );
     }
 
+    /// An `omitted` display returns thinking blocks with an empty summary;
+    /// they replay unchanged but preview as opaque state, never as text.
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_marks_omitted_thinking_as_opaque_reasoning_state() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "end_turn",
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "sig_1" },
+                { "type": "text", "text": "42" }
+            ]
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::ReasoningState
+        ));
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("reasoning state")
+        );
+        let replayed = read_json(&blobs, &result.context_entries[0].content_ref)
+            .await
+            .expect("raw block");
+        assert_eq!(replayed["signature"], "sig_1");
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn result_captures_server_tool_blocks_as_provider_opaque_context() {
         let blobs = InMemoryBlobStore::new();
@@ -2172,12 +2581,148 @@ mod tests {
         assert_eq!(result.facts.finish, LlmFinish::Stop);
     }
 
+    /// A `max_tokens` cut-off fails the turn but keeps the partial text; the
+    /// unfinished thinking and the tool call (no result to replay against)
+    /// are dropped, and the failure names the cap and the spend.
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_fails_the_turn_on_truncation_but_keeps_partial_text() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_cut",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "max_tokens",
+            "content": [
+                { "type": "thinking", "thinking": "Half a thought", "signature": "sig" },
+                { "type": "text", "text": "The bicycle was" },
+                {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "read_file",
+                    "input": { "path": "Cargo.toml" }
+                }
+            ],
+            "usage": {
+                "input_tokens": 20,
+                "output_tokens": 64,
+                "output_tokens_details": { "thinking_tokens": 40 }
+            }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(2),
+            turn_id: TurnId::new(5),
+            request: {
+                let mut request = intent_request(Vec::new());
+                request.output_limit = Some(64);
+                request
+            },
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::Length);
+        assert!(result.facts.tool_calls.is_empty(), "no tool call may run");
+        assert_eq!(
+            result.context_entries.len(),
+            1,
+            "{:?}",
+            result.context_entries
+        );
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("The bicycle was")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(failure.contains("run_id=2"), "{failure}");
+        assert!(failure.contains("turn_id=5"), "{failure}");
+        assert!(
+            failure
+                .contains("cut off at max output tokens 64 after 64 output tokens (40 thinking)"),
+            "{failure}"
+        );
+        assert!(failure.contains("partial output is kept"), "{failure}");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn result_fails_the_turn_on_refusal() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "msg_refused",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": "refusal",
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "This request triggered restrictions on violative cyber content."
+            },
+            "content": [{ "type": "text", "text": "partial" }],
+            "usage": { "input_tokens": 20, "output_tokens": 0 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(3),
+            turn_id: TurnId::new(7),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::ContentFilter);
+        assert!(
+            result.context_entries.is_empty(),
+            "partial content must not land in the session log"
+        );
+        assert_eq!(
+            result.facts.provider_response_id.as_deref(),
+            Some("msg_refused")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(failure.contains("run_id=3"), "{failure}");
+        assert!(failure.contains("turn_id=7"), "{failure}");
+        assert!(failure.contains("(category: cyber)"), "{failure}");
+        assert!(
+            failure.contains("violative cyber content"),
+            "the classifier explanation must reach the failure: {failure}"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn result_maps_stop_reasons_to_finish() {
         for (stop_reason, expected) in [
             ("end_turn", LlmFinish::Stop),
             ("max_tokens", LlmFinish::Length),
-            ("refusal", LlmFinish::ContentFilter),
             ("model_context_window", LlmFinish::ContextLimit),
             ("pause_turn", LlmFinish::Unknown),
         ] {
@@ -2277,7 +2822,11 @@ mod tests {
         assert_eq!(seen.len(), 1);
         let request_json = serde_json::to_value(&seen[0]).expect("request json");
         assert_eq!(request_json["model"], "claude-opus-4-8");
-        assert_eq!(request_json["max_tokens"], 128);
+        // The cap leaves room for thinking above the summary budget.
+        assert_eq!(
+            request_json["max_tokens"],
+            128 + COMPACTION_THINKING_HEADROOM_TOKENS
+        );
         let messages = request_json["messages"].as_array().expect("messages");
         assert_eq!(messages.len(), 2);
         let instruction = messages[1]["content"].as_str().expect("instruction text");
@@ -2305,6 +2854,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let materialized = materialize_create_request(&blobs, &intent_request(vec![entry]))
@@ -2313,7 +2863,7 @@ mod tests {
         let value = serde_json::to_value(materialized).expect("json");
 
         assert_eq!(
-            value["messages"],
+            without_cache_control(value["messages"].clone()),
             json!([{
                 "role": "user",
                 "content": [{
@@ -2348,6 +2898,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2389,6 +2940,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2426,6 +2978,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (role, block) = materialize_block(&blobs, &entry)
@@ -2464,6 +3017,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let (_, block) = materialize_block(&blobs, &entry)
@@ -2473,5 +3027,208 @@ mod tests {
         let value = serde_json::to_value(&block).expect("serialize block");
         assert_eq!(value["type"], json!("text"));
         assert_eq!(value["text"], json!("just a normal message"));
+    }
+
+    fn catalog_entry(id: u64, content_ref: BlobRef, supersedes: Option<u64>) -> ContextEntry {
+        ContextEntry {
+            key: Some(engine::ContextEntryKey::new("bot:directory")),
+            entry_id: ContextEntryId::new(id),
+            kind: ContextEntryKind::Catalog {
+                title: "Bot directory".to_string(),
+            },
+            source: ContextEntrySource::ContextEdit,
+            content_ref,
+            media_type: Some("text/markdown".to_string()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: supersedes.map(ContextEntryId::new),
+        }
+    }
+
+    /// A catalog update must append, never rewrite: everything rendered
+    /// before it is byte-identical, and only the successor carries the
+    /// update header. This is what keeps the provider prefix cache warm on
+    /// long-lived sessions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseding_catalog_appends_without_moving_the_rendered_prefix() {
+        let blobs = InMemoryBlobStore::new();
+        let v1_ref = text_blob(&blobs, "- infra: accepts events addressed by you").await;
+        let v2_ref = text_blob(
+            &blobs,
+            "- infra: accepts events addressed by you\n- comms: subscribes",
+        )
+        .await;
+        let input_ref = text_blob(&blobs, "Who can I reach?").await;
+        let user = ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(2),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            source: ContextEntrySource::RunInput {
+                run_id: RunId::new(1),
+                input_index: 0,
+            },
+            content_ref: input_ref,
+            media_type: None,
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+
+        let before = materialize_create_request(
+            &blobs,
+            &intent_request(vec![catalog_entry(1, v1_ref.clone(), None), user.clone()]),
+        )
+        .await
+        .expect("request before the update");
+        let after = materialize_create_request(
+            &blobs,
+            &intent_request(vec![
+                catalog_entry(1, v1_ref, None),
+                user,
+                catalog_entry(3, v2_ref, Some(1)),
+            ]),
+        )
+        .await
+        .expect("request after the update");
+
+        // Same-role blocks merge into one message, so compare block lists. The
+        // moving cache marker is placement, not content: it sits on the last
+        // block of each request and is stripped before comparing.
+        let before_blocks = without_cache_control(
+            serde_json::to_value(&before.messages).expect("json"),
+        )[0]["content"]
+            .as_array()
+            .cloned()
+            .expect("blocks");
+        let after_blocks = without_cache_control(
+            serde_json::to_value(&after.messages).expect("json"),
+        )[0]["content"]
+            .as_array()
+            .cloned()
+            .expect("blocks");
+        assert_eq!(after_blocks.len(), before_blocks.len() + 1);
+        assert_eq!(&after_blocks[..before_blocks.len()], &before_blocks[..]);
+        let successor = after_blocks.last().expect("successor")["text"]
+            .as_str()
+            .expect("text")
+            .to_string();
+        assert!(successor.starts_with(crate::catalog_prompts::CATALOG_UPDATE_HEADER));
+        assert!(successor.contains("Bot directory:"));
+        assert!(successor.ends_with("- comms: subscribes"));
+        assert!(
+            !before_blocks[0]["text"]
+                .as_str()
+                .expect("text")
+                .contains("Updated catalog")
+        );
+    }
+
+    /// Prompt caching on Anthropic exists only at explicit markers, so every
+    /// request gets the three-breakpoint layout: end of the system prompt,
+    /// last tool definition, last block of the last message. The TTL param
+    /// rides on each marker; a marker a tool brought through provider
+    /// options is kept as is.
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_places_prompt_cache_breakpoints() {
+        let blobs = InMemoryBlobStore::new();
+        let instructions_ref = text_blob(&blobs, "Be precise.").await;
+        let input_ref = text_blob(&blobs, "Read Cargo.toml").await;
+        let schema_ref = crate::blob_io::put_json(
+            &blobs,
+            &json!({ "type": "object", "properties": {}, "required": [] }),
+        )
+        .await
+        .expect("schema");
+        let instructions_item = ContextEntry {
+            key: Some(engine::ContextEntryKey::new("instructions.000.test")),
+            entry_id: ContextEntryId::new(1),
+            kind: ContextEntryKind::Instructions,
+            source: ContextEntrySource::ContextEdit,
+            content_ref: instructions_ref,
+            media_type: Some("text/plain".to_owned()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+        let tool = |name: &str| ToolSpec {
+            name: ToolName::new(name),
+            execution: Default::default(),
+            kind: ToolKind::Function(FunctionToolSpec {
+                description_ref: None,
+                input_schema_ref: schema_ref.clone(),
+                output_schema_ref: None,
+                strict: None,
+                provider_options_ref: None,
+            }),
+            parallelism: ToolParallelism::ParallelSafe,
+        };
+        let mut request = intent_request(vec![instructions_item, user_entry(2, input_ref)]);
+        request.tools = vec![tool("first"), tool("last")];
+        request.params = Some(anthropic_params(&AnthropicMessagesParams {
+            prompt_cache_ttl: Some("1h".to_string()),
+            ..AnthropicMessagesParams::default()
+        }));
+
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &request)
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+
+        let marker = json!({ "type": "ephemeral", "ttl": "1h" });
+        assert_eq!(value["system"][0]["cache_control"], marker, "system prompt");
+        assert_eq!(value["system"].as_array().map(Vec::len), Some(1));
+        assert!(
+            value["tools"][0].get("cache_control").is_none(),
+            "only the last tool"
+        );
+        assert_eq!(value["tools"][1]["cache_control"], marker, "last tool");
+        let blocks = value["messages"][0]["content"].as_array().expect("blocks");
+        assert_eq!(blocks.last().expect("last block")["cache_control"], marker);
+        assert_eq!(
+            value["messages"].as_array().map(Vec::len),
+            Some(1),
+            "the marker moves with the last message; it never adds one"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_without_instructions_has_no_system_block() {
+        let blobs = InMemoryBlobStore::new();
+        let input_ref = text_blob(&blobs, "hi").await;
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &intent_request(vec![user_entry(1, input_ref)]))
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+        assert!(value.get("system").is_none());
+        assert_eq!(
+            value["messages"][0]["content"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    #[test]
+    fn anthropic_params_reject_unknown_prompt_cache_ttl() {
+        let params = anthropic_params(&AnthropicMessagesParams {
+            prompt_cache_ttl: Some("2h".to_string()),
+            ..AnthropicMessagesParams::default()
+        });
+        let error = crate::params::anthropic_messages_params(Some(&params))
+            .expect_err("2h is not a TTL Anthropic offers");
+        assert!(matches!(
+            error,
+            LlmAdapterError::InvalidProviderRequest { .. }
+        ));
     }
 }

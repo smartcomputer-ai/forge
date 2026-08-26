@@ -54,6 +54,16 @@ They do not configure the TypeScript Platform server.
 universes explicitly through the operator API or `lightspeed-server universe
 create`.
 
+In `trusted-header` mode, the upstream gateway must send
+`x-lightspeed-universe: <uuid>` on universe-scoped calls. It may also send
+`x-lightspeed-principal: user:<id>` or
+`x-lightspeed-principal: service_account:<id>`; a bare value is treated as a
+user id and an absent value as `universe_default`. The principal is recorded
+for audit, and the `service_account` kind is additionally required for
+service-scoped methods such as `auth/grants/lease`. These headers are rejected
+in `single` and `api-key` modes; API-key mode derives both universe and
+principal from the key record.
+
 ### Default model and provider transport
 
 Provider keys in the environment are deployment-wide fallback credentials.
@@ -249,19 +259,21 @@ upstream Lightspeed gateway.
 | `LIGHTSPEED_CONFIGURATOR_MCP_UPSTREAM_TIMEOUT_MS` | `60000` | Per-probe and per-tool upstream timeout. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_SHUTDOWN_TIMEOUT_MS` | `10000` | Grace period before open HTTP connections are closed. |
 
-## Foundry candidate
+## Bots
 
-Foundry is mechanically preserved but is not a supported release component.
-These variables exist only for its current development workers.
+The Bots workers (workflow and activity roles of `platform/bots`) share the
+Platform database and reach the core runtime through the public JSON-RPC
+endpoint.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
 | `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
 | `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
-| `FOUNDRY_WORKFLOW_TASK_QUEUE` | `lightspeed-foundry-workflows-v1` | Foundry workflow queue override. |
-| `FOUNDRY_ACTIVITY_TASK_QUEUE` | `lightspeed-foundry-activities-v1` | Foundry activity queue override. |
+| `LIGHTSPEED_BOTS_WORKFLOW_TASK_QUEUE` | `lightspeed-bots-workflows-v1` | Bots workflow queue override. |
+| `LIGHTSPEED_BOTS_ACTIVITY_TASK_QUEUE` | `lightspeed-bots-activities-v1` | Bots activity queue override. |
 | `LIGHTSPEED_ENDPOINT` | **Required by the activity worker** | Lightspeed JSON-RPC endpoint. |
 | `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
+| `LIGHTSPEED_PLATFORM_BASE_URL` | Optional | Public platform origin; when set, bot tools return absolute webhook ingest URLs instead of paths. |
 
 ## Local development
 
@@ -337,7 +349,7 @@ fixtures. Ordinary unit tests do not require them.
 | `LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL` | Scratch PostgreSQL URL used by the Platform empty-install and upgrade migration test. |
 | `LIGHTSPEED_CHANNELS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Channels Temporal integration suite. |
 | `LIGHTSPEED_CHANNELS_DELIVERY_TASK_QUEUE` | Required only by the Channels fake delivery worker used in integration tests. |
-| `FOUNDRY_TEMPORAL_INTEGRATION` | Set to `1` to enable the unsupported Foundry Temporal integration test. |
+| `BOTS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Bots Temporal integration suite. |
 | `LIGHTSPEED_OPENAI_MODEL` | First-choice model override in hosted runtime live tests. |
 | `OPENAI_LIVE_MODEL` | Shared fallback model for OpenAI live suites. |
 | `OPENAI_RESPONSES_MODEL` | OpenAI Responses live-test model. |
@@ -354,8 +366,8 @@ fixtures. Ordinary unit tests do not require them.
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE` | Repository-relative local audio fixture; overrides the remote fixture URL. |
 | `OPENAI_AUDIO_TRANSCRIPTION_FIXTURE_URL` | Remote audio fixture URL. |
 | `OPENAI_AUDIO_TRANSCRIPTION_EXPECT` | Optional case-insensitive text expected in the transcription. |
-| `ANTHROPIC_LIVE_MODEL` | Shared fallback model for Anthropic live suites. |
-| `ANTHROPIC_MESSAGES_MODEL` | Anthropic Messages live-test model. |
+| `ANTHROPIC_LIVE_MODEL` | Shared fallback model for Anthropic live suites (default `claude-opus-5`). |
+| `ANTHROPIC_MESSAGES_MODEL` | Anthropic Messages live-test model (default `claude-opus-5`). |
 
 Provider live tests also use the production provider transport variables from
 the core-runtime section. Most Rust live suites read either the process

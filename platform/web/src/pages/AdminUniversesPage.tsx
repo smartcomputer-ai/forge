@@ -214,7 +214,7 @@ export function AdminUniversesPage() {
                               <AlertDialogDescription>
                                 Purges everything engine-side (sessions, profiles,
                                 workspaces, blobs) and removes the universe, its
-                                members, and routing rules from the platform. This
+                                members, and bots from the platform. This
                                 cannot be undone.
                               </AlertDialogDescription>
                             </AlertDialogHeader>

@@ -1,9 +1,9 @@
 import { Hono } from "hono";
 import { schema } from "@lightspeed/platform-db";
 import type { AppContext, ApiVariables } from "./context.js";
-import { bindingRoutes } from "./routes/bindings.js";
+import { botHookRoutes } from "./routes/bot-hooks.js";
+import { botRoutes } from "./routes/bots.js";
 import { channelAccountRoutes } from "./routes/channel-accounts.js";
-import { foundryRoutes } from "./routes/foundry.js";
 import { environmentOperatorRoutes } from "./routes/environment-operators.js";
 import { gatewayRoutes } from "./routes/gateway.js";
 import { setupRoutes } from "./routes/setups.js";
@@ -20,6 +20,10 @@ export function buildApp(ctx: AppContext) {
   // better-auth owns everything under /api/auth (sign-in, admin user
   // management, organization endpoints, bearer tokens).
   app.on(["GET", "POST"], "/api/auth/*", (c) => ctx.auth.handler(c.req.raw));
+
+  // Webhook ingress authenticates by per-trigger URL token + signature, not
+  // by platform session; it must mount before the session-authed API router.
+  app.route("/api/v1/hooks", botHookRoutes(ctx));
 
   const api = new Hono<{ Variables: ApiVariables }>();
   api.use("*", async (c, next) => {
@@ -60,15 +64,11 @@ export function buildApp(ctx: AppContext) {
     return c.json({ connectors: await readChannelsStatus(ctx.env.channelsHealthUrls) });
   });
 
-  const bindings = bindingRoutes(ctx);
-  const foundry = foundryRoutes(ctx);
+  const botsApi = botRoutes(ctx);
   api.route("/universes", universeRoutes(ctx));
   api.route("/universes", setupRoutes(ctx));
-  api.route("/universes", bindings.byUniverse);
   api.route("/universes", gatewayRoutes(ctx));
-  api.route("/universes", foundry.byUniverse);
-  api.route("/bindings", bindings.byId);
-  api.route("/foundry/packs", foundry.packs);
+  api.route("/universes", botsApi.byUniverse);
   api.route("/admin", environmentOperatorRoutes(ctx));
   api.route("/channel-accounts", channelAccountRoutes(ctx));
 

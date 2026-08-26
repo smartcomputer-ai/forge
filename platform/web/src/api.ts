@@ -26,11 +26,28 @@ export class ApiError extends Error {
 }
 
 function extractMessage(body: unknown): string | null {
-  if (body && typeof body === "object" && "error" in body) {
-    const error = (body as { error: unknown }).error;
-    return typeof error === "string" ? error : null;
+  if (!body || typeof body !== "object" || !("error" in body)) return null;
+  const { error, issues, failure } = body as {
+    error: unknown;
+    issues?: unknown;
+    failure?: unknown;
+  };
+  if (typeof error !== "string") return null;
+  if (typeof failure === "string" && failure) return `${error}: ${failure}`;
+  if (Array.isArray(issues)) {
+    const details = issues
+      .slice(0, 3)
+      .map((issue) => {
+        if (!issue || typeof issue !== "object") return null;
+        const { path, message } = issue as { path?: unknown; message?: unknown };
+        if (typeof message !== "string") return null;
+        const at = Array.isArray(path) && path.length > 0 ? `${path.join(".")}: ` : "";
+        return `${at}${message}`;
+      })
+      .filter((detail): detail is string => detail !== null);
+    if (details.length > 0) return `${error} — ${details.join("; ")}`;
   }
-  return null;
+  return error;
 }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -196,6 +213,7 @@ export interface AuthGrantOption {
   displayName?: string | null;
   subjectHint?: string | null;
   status: "active" | "needsReauth" | "revoked" | "failed";
+  exposure: "brokered" | "retrievable";
 }
 
 export interface SecretGrant extends AuthGrantOption {
@@ -208,6 +226,8 @@ export interface SecretGrant extends AuthGrantOption {
   hasAccessToken: boolean;
   hasRefreshToken: boolean;
   expiresAtMs?: number | null;
+  lastLeasedAtMs?: number | null;
+  leaseCount: number;
   /// Non-secret provider metadata (GitHub App grants: installation id,
   /// account login, permissions, repository selection).
   metadata?: Record<string, unknown>;
@@ -319,6 +339,19 @@ export type EnvironmentTemplate = EnvironmentTemplateView;
 export type EnvironmentCredentialSource = EnvironmentCredentialSourceView;
 export type EnvironmentCredential = EnvironmentCredentialView;
 
+/// Sub-agent lineage (P134): who delegated the session, under which root,
+/// at what depth, from which pinned profile revision. Provenance only.
+export interface SessionOrigin {
+  kind: "subagent";
+  parentSessionId: string;
+  parentRunId: string;
+  rootSessionId: string;
+  depth: number;
+  invocationId: string;
+  agent: { profileId: string; revision: number };
+  limits: { maxDepth: number; maxDescendants: number; maxConcurrent: number; deadlineMs: number };
+}
+
 export interface SessionSummary {
   id: string;
   displayName?: string | null;
@@ -326,6 +359,7 @@ export interface SessionSummary {
   updatedAtMs: number;
   lifecycleStatus: "new" | "open" | "closed";
   managed: boolean;
+  origin?: SessionOrigin | null;
 }
 
 export interface SessionManagement {
@@ -358,6 +392,7 @@ export interface SessionView {
   config?: Record<string, unknown> | null;
   configRevision: number;
   management?: SessionManagement | null;
+  origin?: SessionOrigin | null;
   /// Every run of the session — completed, the active one, and runs queued
   /// behind it — straight from the engine. Authoritative for run state; the
   /// event tail is the live, incremental view.
@@ -470,24 +505,6 @@ export interface BlobContent {
   bytesBase64: string;
 }
 
-export interface Binding {
-  id: string;
-  universeId: string;
-  channelAccountId: string;
-  name: string;
-  matchScope: "direct" | "group" | null;
-  profileId: string | null;
-  sessionKey: string;
-  pairingCode: string | null;
-  priority: number;
-  enabled: boolean;
-  createdAt: string;
-  channelAccount: Pick<
-    ChannelAccount,
-    "id" | "provider" | "accountId" | "displayName" | "enabled"
-  >;
-}
-
 export interface ChannelAccount {
   id: string;
   provider: "telegram" | "whatsapp";
@@ -525,70 +542,268 @@ export interface ChannelsStatus {
   connectors: ChannelConnectorStatus[];
 }
 
-/// Foundry: persistent software-system managers, event state, and releases.
-export interface FoundryPack {
-  id: string;
+/// Bots: durable event routers that own managed sessions.
+export interface Bot {
+  /** Authored, immutable, universe-unique id: what models say and URLs use. */
+  botId: string;
   universeId: string;
-  name: string;
-  kind: "workflow";
-  repoUrl: string;
-  managerProfileId: string;
-  environmentId: string | null;
-  runtimeTarget: FoundryRuntimeTarget | null;
+  /** Mutable label; falls back to the id. */
+  displayName: string | null;
+  /** One line other bots read about this bot. */
+  description: string | null;
+  profileId: string;
+  brief: string | null;
+  runsPerDay: number | null;
+  breaker: { fires: number; windowMs: number } | null;
+  routedSessionTtlMs: number | null;
+  /** Whether this bot's sessions get the mutating self-configuration tools. */
+  selfConfig: boolean;
+  /** Whether this bot's sessions get bot_emit: events to itself or to other bots' inboxes (rate-capped). */
+  emit: boolean;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface FoundryRuntimeTarget {
-  kind: "docker" | "kubernetes" | "ssh" | "external";
-  name: string;
-  metadata?: Record<string, string>;
+export interface BotListItem extends Bot {
+  triggerCount: number;
 }
 
-export interface FoundryEvent {
+export function botLabel(bot: Pick<Bot, "botId" | "displayName">): string {
+  return bot.displayName ?? bot.botId;
+}
+
+export interface BotScheduleSpec {
+  cron?: string | null;
+  at?: string | null;
+  timezone: string;
+  summary: string;
+}
+
+export type BotWebhookVerification =
+  | { scheme: "token" }
+  | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
+
+export interface BotWebhookSpec {
+  token: string;
+  verification: BotWebhookVerification;
+  preset?: "github" | null;
+}
+
+export type BotPollSource =
+  | {
+      kind: "http";
+      url: string;
+      method?: "GET" | "POST";
+      headers?: Record<string, string>;
+      auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
+      body?: string;
+    }
+  | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+
+export interface BotPollSpec {
+  source: BotPollSource;
+  intervalMs: number;
+  items: string | null;
+  cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
+}
+
+export interface BotPollCursorState {
+  ids?: string[];
+  watermark?: string | number;
+  consecutiveFailures: number;
+  baselinedAt?: string;
+  lastPolledAt?: string;
+}
+
+export type BotRoute =
+  | { policy: "bot" }
+  | { policy: "perKey"; key?: string | null }
+  | { policy: "perEvent" };
+
+export interface BotCoalesce {
+  debounceMs: number;
+  maxWaitMs: number;
+  maxCount: number;
+}
+
+/** Inbox: which bots may address this one; absent = any bot in the universe. */
+export interface BotInboxSpec {
+  from?: string[];
+}
+
+/**
+ * Chat: a messaging account whose conversations wake this bot, one session
+ * per conversation. `pairingCode` is `""` for members who cannot manage the
+ * bot (blanked by the server) and `null` for an open connection.
+ */
+export interface BotChatSpec {
+  channelAccountId: string;
+  matchScope: "direct" | "group" | null;
+  activation: {
+    group?: "mention" | "always";
+    triggerPrefixes?: string[];
+    mentionNames?: string[];
+  } | null;
+  access: {
+    turn?: "conversation" | "members";
+    control?: "none" | "members" | "admins" | "owners";
+  } | null;
+  pairingCode: string | null;
+  /** Lower wins among matching chat triggers on one account. */
+  priority: number;
+}
+
+export interface BotTrigger {
+  /** Authored id; the API addresses triggers by it. */
+  name: string;
+  /** `bot` is the inbox for events other bots address here; at most one per bot. */
+  kind: "schedule" | "webhook" | "poll" | "bot" | "chat";
+  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec | BotInboxSpec | BotChatSpec;
+  filter: string | null;
+  route: BotRoute | null;
+  coalesce: BotCoalesce | null;
+  deliver: { whenBusy: "queue" | "steer" | "append" } | null;
+  /**
+   * Retention of the sessions this trigger routes to: null inherits the bot's
+   * `routedSessionTtlMs`, 0 keeps them open forever (the chat default).
+   */
+  sessionTtlMs: number | null;
+  /** Poll kind only: the advancing cursor; null until the baseline poll. */
+  cursor?: BotPollCursorState | null;
+  enabled: boolean;
+  /** Why the trigger is paused; null while enabled. */
+  disabledReason: "breaker" | "poll_failed" | "one_shot" | "operator" | null;
+  disabledAt: string | null;
+  /** The filter's last evaluation error; it refuses events until the filter is fixed. */
+  lastFilterError: string | null;
+  lastFilterErrorAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** Webhook kind: the ingest path (capability URL) senders post to. */
+  ingestPath?: string;
+  /** Chat kind: the account the spec names, or null when it no longer exists. */
+  channelAccount?: Pick<ChannelAccount, "id" | "provider" | "accountId" | "displayName"> | null;
+}
+
+export interface BotEventRef {
   version: 1;
   id: string;
   ref: string;
 }
 
-export interface FoundryRecentEvent {
+/** What came of an event: the bot's decision, or the system's. */
+export type BotEventOutcome =
+  | "handled"
+  | "deferred"
+  | "ignored"
+  | "blocked"
+  | "unresolved"
+  | "run_failed"
+  | "steered"
+  | "appended"
+  | "archived";
+
+export interface BotRecentEvent {
   id: string;
   ref: string;
-  status: "handled" | "deferred" | "ignored" | "blocked" | "unresolved" | "run_failed";
+  /** Event sequence numbers (#N) in this delivery, when known. */
+  seqs?: number[];
+  /** Prompt tokens the run consumed and how many the provider served from its cache. */
+  usage?: { inputTokens: number; cachedInputTokens: number };
+  outcome: BotEventOutcome;
+  eventCount?: number;
   runId?: string;
   summary?: string;
   failure?: string;
 }
 
-export interface FoundryPackState {
+export interface BotManagedSession {
   sessionId: string;
-  controllerStatus: "initializing" | "idle" | "manager_busy" | "delivering_event" | "degraded";
-  activeEvent: FoundryEvent | null;
-  activeRunId: string | null;
+  label: string;
+  kind: "main" | "keyed" | "event";
+  lastActiveAtMs?: number;
+}
+
+/// Sub-agent descendants of one bot session (P134 lineage), read from core by
+/// the platform server beside the controller state.
+export interface BotSessionLineage {
+  open: number;
+  total: number;
+  children: Array<{
+    id: string;
+    displayName: string | null;
+    lifecycleStatus: "new" | "open" | "closed";
+    profileId: string | null;
+    depth: number;
+    updatedAtMs: number;
+  }>;
+}
+
+export type BotLineage = Record<string, BotSessionLineage>;
+
+export interface BotState {
+  botName: string;
+  displayName: string | null;
+  profileId: string;
+  sessionId: string;
+  sessions: BotManagedSession[];
+  controllerStatus:
+    | "initializing"
+    | "idle"
+    | "session_busy"
+    | "delivering_event"
+    | "budget_exhausted"
+    | "degraded";
+  activeDeliveries: { id: string; eventCount: number; sessionId: string; runId: string | null }[];
   sessionReady: boolean;
-  pendingEvents: FoundryEvent[];
   pendingEventCount: number;
-  recentEvents: FoundryRecentEvent[];
+  pendingDeliveryCount: number;
+  buffers: { key: string; count: number; flushAtMs: number }[];
+  recentEvents: BotRecentEvent[];
   eventsProcessed: number;
   duplicateEventCount: number;
   duplicateEmissionCount: number;
-  managerProfileId: string;
   appliedProfileRevision: number | null;
-  environmentId: string | null;
+  runsPerDay: number | null;
+  runsToday: number;
+  /** Sub-agent sessions delegated under the bot's sessions today; counted against `runsPerDay`. */
+  descendantsToday: number;
+  /** Present while an operator-requested reset waits for an idle boundary. */
+  rotatingSessionIds?: string[];
   lastError: string | null;
 }
 
-export interface FoundryRelease {
+export interface BotEventEnvelope {
   id: string;
-  packId: string;
-  invocationId: string;
-  sourceCommit: string;
-  artifactDigest: string;
-  target: string;
-  outcome: "succeeded" | "failed" | "rolled_back";
-  initiatedBy: string | null;
-  smokePassed: boolean | null;
-  detailsRef: string | null;
-  createdAt: string;
+  eventId: string;
+  /** Per-bot sequence number (#N); null only for pre-numbering rows. */
+  seq: number | null;
+  promptRef: string | null;
+  kind: string;
+  source: string;
+  occurredAt: string;
+  ref: string;
+  session: { sessionId: string; label: string } | null;
+  /** Sending bot id for bot-originated events; null for world events. */
+  sender: string | null;
+  /** Federation hop count; 0 for world events. */
+  hops: number;
+  /** Receipts: the asked event's #N at the answering bot. */
+  inReplyTo: { bot: string; seq: number } | null;
+  receivedAt: string;
+  /** Write-once; null while pending (queued, buffered, or a run in flight). */
+  outcome: BotEventOutcome | null;
+  /** One line: the model's summary, or the failure. */
+  outcomeDetail: string | null;
+  /** The delivery (single event or coalesced batch) it went out in; shared across a batch. */
+  deliveryId: string | null;
+  /** The session run that handled it; null for steered/appended/archived. */
+  runId: string | null;
+  resolvedAt: string | null;
+}
+
+export interface BotEventPage {
+  events: BotEventEnvelope[];
+  nextCursor: string | null;
 }

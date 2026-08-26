@@ -27,7 +27,7 @@ One caveat we take seriously: frontier models are optimized to the hilt (via RL)
 **What you can build with Lightspeed**:
 
 - An insanely **scalable OpenClaw-style personal assistant**: thousands of users, very low cost (besides tokens)
-- A fully **autonomous software factory**: a fleet of agents that build, test, and critique your next feature — and keep running for weeks
+- A fully **autonomous software factory**: a coordinator that runs sub-agents to build, test, and critique your next feature — and keeps running for weeks
 - **Research agents** that spin up compute for long-running experiments, stay live for days, and supervise progress
 - ...and much more!
 
@@ -79,8 +79,8 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
   shared by every session selecting that MCP server id
 - [x] **Flexible prompt & instruction configuration**
-- [x] **Sub-agents (aka "fleets")**: agents that start and manage other agents
-- [x] **Agent profiles**: reusable session setups, shared across clients and fleets;
+- [x] **Sub-agents**: `agent_run` / `agent_spawn` over allowlisted profiles, supervised by an execution workflow, with root-scoped limits and typed lineage
+- [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;
   a profile can activate an existing environment or provision a fresh one per session
 
 **Durability & scale**
@@ -88,36 +88,21 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Long-running agents**: sessions that last weeks to months and survive restarts
 - [x] **Active-run control**: cancel a run (in-flight model and tool calls are
   aborted, no farewell turn), steer it with a message the model sees at its
-  next turn, or queue the next message behind it — all admitted live, not
-  after the run
+  next turn, or queue the next message behind it
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
 - [x] **Managed sessions and workflow-backed tools**: trusted workflow
   controllers can create sessions with immutable tool bindings, durable
-  emissions, keyed completions, deadlines, and cancellation
+  emissions, keyed completions, deadlines, and cancellation; receiver
+  implementers use the generated
+  [workflow contract](crates/temporal-workflow/contract/workflow-contract.md)
 - [x] **Eval harness** for regression-testing agent and tool workflows
 - [ ] **Timers, schedules, wake-ups**
 
 **Borrowed compute**
 
-- [x] **Dedicated VMs**, connected as universe environment instances that
-  sessions use through event-sourced active environment state; model discovery
-  and selection is a separate, default-off `selectionTools` grant. Ordinary
-  file and process tools always operate on the selected environment and never
-  on linked VFS content. The in-repo stateless Incus provider supplies
-  durable full-VM provisioning, explicit takeover of existing VMs,
-  on-demand envd routes, and pause/stop power control; real
-  Incus deployment still requires node certificates, an immutable image, and
-  provider policy configuration
-- [x] **Environment power states and idle policy**: environments can be
-  paused, suspended, or stopped by intent, staged idle policies power them
-  down from the daemon's own idle clock, and any powered-down environment
-  wakes transparently on its next use
-- [x] **Provider-owned jobs** for long-running work: downloads, experiments,
-  and delegated coding-agent runs with optional session/run supervision. Jobs
-  are an advanced, default-off environment grant and appear as model tools
-  when the environment feature grants them; live availability is checked when
-  invoked
-- [ ] **Ad-hoc sandboxes**
+- [x] **Dedicated VMs**: sessions run their file and process tools on a selected environment, provisioned by the in-repo Incus provider or attached as an existing machine
+- [x] **Power states and idle policy**: environments pause, suspend, or stop on intent or after staged idle timeouts, and wake transparently on next use
+- [x] **Environment jobs**: long-running work (downloads, experiments, delegated coding agents) runs as provider-owned jobs, exposed to the model as a default-off grant
 
 **Security & auth**
 

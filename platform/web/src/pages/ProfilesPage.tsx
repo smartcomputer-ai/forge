@@ -132,8 +132,8 @@ function ProfilePane({
         )}
         {profiles.data && profiles.data.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">
-            No profiles yet. Routing rules reference profiles by label — create one to
-            give bound chats their configuration.
+            No profiles yet. Bots reference profiles by id — create one to give a
+            bot its configuration.
           </p>
         )}
         <ul>
@@ -348,7 +348,7 @@ function ProfileEditor({
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete profile {profileId}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  Routing rules referencing this profile id fall back to the default
+                  Bots referencing this profile id fall back to the default
                   configuration.
                 </AlertDialogDescription>
               </AlertDialogHeader>
@@ -643,7 +643,7 @@ function NewProfileDialog({
         <DialogHeader>
           <DialogTitle>New profile</DialogTitle>
           <DialogDescription>
-            Routing rules apply it to sessions via the profile id.
+            Bots apply it to their sessions via the profile id.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">
@@ -675,7 +675,7 @@ function NewProfileDialog({
               className="font-mono"
             />
             <FieldDescription>
-              What routing rules and tooling reference — cannot be changed later.
+              What bots and tooling reference — cannot be changed later.
             </FieldDescription>
           </Field>
           {error && <p className="text-sm text-destructive">{error}</p>}

@@ -25,7 +25,7 @@ use crate::{
     config::pg_store_from_env,
     credential_injection::EnvironmentCredentialResolver,
     environment_gateway::EnvironmentGatewayClientConfig,
-    fleet::FleetChildRuntime,
+    subagents::{SubagentChildRuntime, SubagentService},
     worker::{BrokerSecretResolver, SessionTools, StoredProviderKeyResolver},
 };
 
@@ -63,6 +63,9 @@ pub struct ToolActivityDeps {
 pub struct RuntimeProjectionActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     pub(super) workspace_store: Arc<dyn VfsWorkspaceStore>,
+    /// Profile registry for the sub-agent catalog; absent in minimal test
+    /// states, where the catalog lists ids without descriptions.
+    pub(super) profiles: Option<Arc<dyn ::profiles::ProfileStore>>,
 }
 
 #[derive(Clone)]
@@ -94,6 +97,12 @@ pub struct WorkflowToolExecutionDeps {
     pub(super) client: temporalio_client::Client,
 }
 
+/// Deps for the sub-agent execution activities (P134).
+#[derive(Clone)]
+pub struct SubagentActivityDeps {
+    pub(super) service: SubagentService,
+}
+
 #[derive(Clone)]
 pub struct ActivityState {
     storage: StorageActivityDeps,
@@ -103,6 +112,7 @@ pub struct ActivityState {
     preprocess: PreprocessActivityDeps,
     environment_jobs: Option<EnvironmentJobActivityDeps>,
     workflow_tool_executions: Option<WorkflowToolExecutionDeps>,
+    subagents: Option<SubagentActivityDeps>,
 }
 
 impl ActivityState {
@@ -135,6 +145,7 @@ impl ActivityState {
             },
             environment_jobs: None,
             workflow_tool_executions: None,
+            subagents: None,
         }
     }
 
@@ -145,7 +156,15 @@ impl ActivityState {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
             blobs: self.storage.blobs.clone(),
             workspace_store,
+            profiles: None,
         });
+        self
+    }
+
+    pub fn with_profile_store(mut self, profiles: Arc<dyn ::profiles::ProfileStore>) -> Self {
+        if let Some(projection) = self.runtime_projection.as_mut() {
+            projection.profiles = Some(profiles);
+        }
         self
     }
 
@@ -156,6 +175,17 @@ impl ActivityState {
 
     pub fn with_workflow_tool_executions(mut self, client: temporalio_client::Client) -> Self {
         self.workflow_tool_executions = Some(WorkflowToolExecutionDeps { client });
+        self
+    }
+
+    pub fn with_subagent_runtime(mut self, runtime: Arc<dyn SubagentChildRuntime>) -> Self {
+        self.subagents = Some(SubagentActivityDeps {
+            service: SubagentService::new(
+                self.storage.sessions.clone(),
+                self.storage.blobs.clone(),
+                runtime,
+            ),
+        });
         self
     }
 
@@ -178,8 +208,10 @@ impl ActivityState {
         let environment_job_credentials =
             EnvironmentCredentialResolver::from_pg_store(store.clone());
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
-        let mut state =
-            Self::new(sessions, blobs, llm, tools).with_runtime_projection_deps(workspace_store);
+        let profile_store: Arc<dyn ::profiles::ProfileStore> = store.clone();
+        let mut state = Self::new(sessions, blobs, llm, tools)
+            .with_runtime_projection_deps(workspace_store)
+            .with_profile_store(profile_store);
         state.storage.blob_graph = Some(blob_graph.clone());
         state.environment_jobs = Some(EnvironmentJobActivityDeps {
             blobs: environment_job_blobs,
@@ -220,39 +252,12 @@ impl ActivityState {
         Ok(state)
     }
 
-    pub fn from_pg_store_with_default_runtime_and_fleet(
-        store: Arc<PgStore>,
-        fleet_runtime: Arc<dyn FleetChildRuntime>,
-    ) -> anyhow::Result<Self> {
-        let blobs: Arc<dyn BlobStore> = store.clone();
-        let broker = registry_token_broker(store.clone())?;
-        let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
-        let secrets: Arc<dyn SecretResolver> =
-            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
-        let provider_keys = stored_provider_key_resolver(store.clone(), broker);
-        let transcriber = default_audio_transcriber(provider_keys.clone())?;
-        let transcoder = default_audio_transcoder_from_env()?;
-        let llm = default_llm_runtime(blobs, Some(secrets), Some(provider_keys))?;
-        let hosted = Arc::new(SessionTools::from_pg_store_with_fleet_runtime(
-            store.clone(),
-            fleet_runtime,
-        ));
-        let tools: Arc<dyn CoreAgentTools> = hosted.clone();
-        let mut state = Self::from_pg_store(store, llm, tools)
-            .with_hosted_tools(hosted)
-            .with_audio_transcriber(transcriber);
-        if let Some(transcoder) = transcoder {
-            state = state.with_audio_transcoder(transcoder);
-        }
-        Ok(state)
-    }
-
     /// Build a universe's activity state over the deployment's shared HTTP
     /// clients. Marginal per-universe cost is the resolver layers and tool
     /// registry only; every HTTP client is shared (P90 follow-up).
     pub fn from_pg_store_with_shared_clients(
         store: Arc<PgStore>,
-        fleet_runtime: Option<Arc<dyn FleetChildRuntime>>,
+        subagent_runtime: Option<Arc<dyn SubagentChildRuntime>>,
         clients: &DeploymentClients,
         temporal_client: temporalio_client::Client,
         gateway: EnvironmentGatewayClientConfig,
@@ -280,20 +285,17 @@ impl ActivityState {
             clients.anthropic.clone(),
         );
         let temporal_client_for_workflow_tools = temporal_client.clone();
-        let hosted = Arc::new(match fleet_runtime {
-            Some(fleet_runtime) => {
-                SessionTools::from_pg_store_with_fleet_runtime(store.clone(), fleet_runtime)
-                    .with_environment_gateway(gateway.clone())
-            }
-            None => {
-                SessionTools::from_pg_store(store.clone()).with_environment_gateway(gateway.clone())
-            }
-        });
+        let hosted = Arc::new(
+            SessionTools::from_pg_store(store.clone()).with_environment_gateway(gateway.clone()),
+        );
         let tools: Arc<dyn CoreAgentTools> = hosted.clone();
         let mut state = Self::from_pg_store(store, llm, tools)
             .with_hosted_tools(hosted)
             .with_audio_transcriber(transcriber)
             .with_workflow_tool_executions(temporal_client_for_workflow_tools);
+        if let Some(subagent_runtime) = subagent_runtime {
+            state = state.with_subagent_runtime(subagent_runtime);
+        }
         if let Some(environment_jobs) = state.environment_jobs.as_mut() {
             environment_jobs.gateway = Some(gateway);
         }
@@ -334,6 +336,10 @@ impl ActivityState {
 
     pub(super) fn workflow_tool_executions(&self) -> Option<&WorkflowToolExecutionDeps> {
         self.workflow_tool_executions.as_ref()
+    }
+
+    pub(super) fn subagents(&self) -> Option<&SubagentActivityDeps> {
+        self.subagents.as_ref()
     }
 }
 

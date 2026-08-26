@@ -1,23 +1,81 @@
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+use thiserror::Error;
 
 use crate::{BlobRef, CoreAgentState, DomainError, RunId};
 
-/// Stable identifier for a promise. Minted by the tool executor that creates
-/// the promise (a deterministic digest of the creating call context) and
-/// carried in the creation event, so replay re-derives identical ids.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
+/// Stable identifier for a promise: a session-scoped counter rendered as
+/// `promise_<n>`, the same convention as `run_<n>`, so the model copies a
+/// short handle rather than a digest. The engine hands every tool batch a
+/// base one past the session cursor (`ToolInvocationBatchRequest::
+/// promise_id_base`); the executor numbers the promises it creates from
+/// that base, and the reducer accepts a creation only at or above the
+/// batch's base and never twice. Producer correlation lives on
+/// `PromiseSource`, not in the id.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct PromiseId(String);
 
+pub const PROMISE_ID_PREFIX: &str = "promise_";
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("promise id must use promise_<number> form: {value:?}")]
+pub struct PromiseIdError {
+    pub value: String,
+}
+
 impl PromiseId {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
+    pub fn from_number(number: u64) -> Self {
+        Self(format!("{PROMISE_ID_PREFIX}{number}"))
+    }
+
+    pub fn try_new(value: impl Into<String>) -> Result<Self, PromiseIdError> {
+        let value = value.into();
+        match parse_promise_number(&value) {
+            Some(_) => Ok(Self(value)),
+            None => Err(PromiseIdError { value }),
+        }
+    }
+
+    /// Trusted constructor for ids the engine minted itself; panics on a
+    /// malformed value. Untrusted input (model arguments, emissions) goes
+    /// through `try_new`.
+    pub fn new(value: impl Into<String>) -> Self {
+        Self::try_new(value).unwrap_or_else(|error| panic!("{error}"))
+    }
+
+    pub fn number(&self) -> u64 {
+        parse_promise_number(&self.0).expect("promise id was validated at construction")
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+fn parse_promise_number(value: &str) -> Option<u64> {
+    let digits = value.strip_prefix(PROMISE_ID_PREFIX)?;
+    if digits.is_empty()
+        || digits.len() > 20
+        || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        || (digits.len() > 1 && digits.starts_with('0'))
+    {
+        return None;
+    }
+    digits.parse::<u64>().ok()
+}
+
+impl PartialOrd for PromiseId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for PromiseId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.number().cmp(&other.number())
     }
 }
 
@@ -27,19 +85,52 @@ impl std::fmt::Display for PromiseId {
     }
 }
 
+impl Serialize for PromiseId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for PromiseId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_new(value).map_err(serde::de::Error::custom)
+    }
+}
+
+/// Hands out promise ids to the executors of one tool batch dispatch,
+/// counting up from the batch's base. Executors of parallel calls share
+/// one allocator; the order they draw in is not replayed, only the
+/// recorded result is.
+#[derive(Debug)]
+pub struct PromiseIdAllocator {
+    next: AtomicU64,
+}
+
+impl PromiseIdAllocator {
+    pub fn new(base: u64) -> Self {
+        Self {
+            next: AtomicU64::new(base),
+        }
+    }
+
+    pub fn allocate(&self) -> PromiseId {
+        PromiseId::from_number(self.next.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// What produces the resolution of a promise. Provider-native detail stays
 /// opaque; the engine keeps only the facts needed for deterministic
 /// branching and outward cancellation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum PromiseSource {
-    /// A run in another session; resolved by that run's terminal
-    /// notification (push transport). The creating tool decides whether that
-    /// run came from spawn or request.
-    Run {
-        target_session_id: String,
-        target_run_id: u64,
-    },
     /// A durable timer owned by the session workflow.
     Timer { fire_at_ms: u64 },
     /// One keyed completion promise of a workflow-tool invocation (P100b).
@@ -129,6 +220,7 @@ impl PromiseComponentState {
 /// cancellation) converge on this one funnel.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum PromiseResolution {
     Resolved { payload_ref: Option<BlobRef> },
     Failed { error_ref: Option<BlobRef> },
@@ -195,6 +287,10 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     )));
                 }
             }
+            state.id_cursors.last_promise_id = state
+                .id_cursors
+                .last_promise_id
+                .max(promise.promise_id.number());
             state
                 .promises
                 .promises
@@ -265,11 +361,8 @@ pub const PROMISE_DETACH_EFFECT_KIND: &str = "lightspeed.core.promise.detach";
 
 pub const PROMISE_EFFECT_ID: &str = "promise_id";
 pub const PROMISE_EFFECT_SOURCE: &str = "source";
-pub const PROMISE_EFFECT_TARGET_SESSION_ID: &str = "target_session_id";
-pub const PROMISE_EFFECT_TARGET_RUN_ID: &str = "target_run_id";
 pub const PROMISE_EFFECT_FIRE_AT_MS: &str = "fire_at_ms";
 pub const PROMISE_EFFECT_DEADLINE_MS: &str = "deadline_ms";
-pub const PROMISE_EFFECT_SOURCE_RUN: &str = "run";
 pub const PROMISE_EFFECT_SOURCE_TIMER: &str = "timer";
 pub const PROMISE_EFFECT_SOURCE_WORKFLOW: &str = "workflow";
 pub const PROMISE_EFFECT_PRODUCER_WORKFLOW_ID: &str = "producer_workflow_id";
@@ -286,23 +379,6 @@ pub fn promise_create_effect(
     let mut data = BTreeMap::new();
     data.insert(PROMISE_EFFECT_ID.to_owned(), promise_id.as_str().to_owned());
     match source {
-        PromiseSource::Run {
-            target_session_id,
-            target_run_id,
-        } => {
-            data.insert(
-                PROMISE_EFFECT_SOURCE.to_owned(),
-                PROMISE_EFFECT_SOURCE_RUN.to_owned(),
-            );
-            data.insert(
-                PROMISE_EFFECT_TARGET_SESSION_ID.to_owned(),
-                target_session_id.clone(),
-            );
-            data.insert(
-                PROMISE_EFFECT_TARGET_RUN_ID.to_owned(),
-                target_run_id.to_string(),
-            );
-        }
         PromiseSource::Timer { fire_at_ms } => {
             data.insert(
                 PROMISE_EFFECT_SOURCE.to_owned(),
@@ -389,7 +465,9 @@ pub(crate) fn promise_from_create_effect(
             DomainError::InvariantViolation(format!("promise create effect is missing `{key}`"))
         })
     };
-    let promise_id = PromiseId::new(field(PROMISE_EFFECT_ID)?);
+    let promise_id = PromiseId::try_new(field(PROMISE_EFFECT_ID)?).map_err(|error| {
+        DomainError::InvariantViolation(format!("promise create effect has an invalid id: {error}"))
+    })?;
     let source_kind = field(PROMISE_EFFECT_SOURCE)?;
     let parse_u64 = |key: &str, value: String| {
         value.parse::<u64>().map_err(|_| {
@@ -397,13 +475,6 @@ pub(crate) fn promise_from_create_effect(
         })
     };
     let source = match source_kind.as_str() {
-        PROMISE_EFFECT_SOURCE_RUN => PromiseSource::Run {
-            target_session_id: field(PROMISE_EFFECT_TARGET_SESSION_ID)?,
-            target_run_id: parse_u64(
-                PROMISE_EFFECT_TARGET_RUN_ID,
-                field(PROMISE_EFFECT_TARGET_RUN_ID)?,
-            )?,
-        },
         PROMISE_EFFECT_SOURCE_TIMER => PromiseSource::Timer {
             fire_at_ms: parse_u64(PROMISE_EFFECT_FIRE_AT_MS, field(PROMISE_EFFECT_FIRE_AT_MS)?)?,
         },
@@ -451,7 +522,13 @@ pub(crate) fn promise_id_from_cancel_effect(
             "promise cancel effect is missing `promise_id`".into(),
         ));
     };
-    Ok(Some(PromiseId::new(promise_id.clone())))
+    PromiseId::try_new(promise_id.clone())
+        .map(Some)
+        .map_err(|error| {
+            DomainError::InvariantViolation(format!(
+                "promise cancel effect has an invalid id: {error}"
+            ))
+        })
 }
 
 pub(crate) fn promise_id_from_detach_effect(
@@ -465,5 +542,58 @@ pub(crate) fn promise_id_from_detach_effect(
             "promise detach effect is missing `promise_id`".into(),
         ));
     };
-    Ok(Some(PromiseId::new(promise_id.clone())))
+    PromiseId::try_new(promise_id.clone())
+        .map(Some)
+        .map_err(|error| {
+            DomainError::InvariantViolation(format!(
+                "promise detach effect has an invalid id: {error}"
+            ))
+        })
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn promise_ids_are_canonical_counters() {
+        assert_eq!(PromiseId::from_number(7).as_str(), "promise_7");
+        assert_eq!(PromiseId::from_number(0).number(), 0);
+        assert_eq!(
+            PromiseId::try_new("promise_12")
+                .expect("canonical")
+                .number(),
+            12
+        );
+        for malformed in [
+            "",
+            "promise_",
+            "promise_07",
+            "promise_a",
+            "promise-7",
+            "7",
+            "wtp:sha256:abc",
+            "promise_7 ",
+            "promise_123456789012345678901",
+        ] {
+            assert!(PromiseId::try_new(malformed).is_err(), "{malformed:?}");
+        }
+    }
+
+    #[test]
+    fn promise_ids_order_numerically_and_round_trip_as_strings() {
+        assert!(PromiseId::from_number(9) < PromiseId::from_number(10));
+        let encoded = serde_json::to_string(&PromiseId::from_number(10)).expect("encode");
+        assert_eq!(encoded, "\"promise_10\"");
+        let decoded: PromiseId = serde_json::from_str(&encoded).expect("decode");
+        assert_eq!(decoded, PromiseId::from_number(10));
+        assert!(serde_json::from_str::<PromiseId>("\"promise_x\"").is_err());
+    }
+
+    #[test]
+    fn allocator_counts_up_from_the_base() {
+        let allocator = PromiseIdAllocator::new(4);
+        assert_eq!(allocator.allocate(), PromiseId::from_number(4));
+        assert_eq!(allocator.allocate(), PromiseId::from_number(5));
+    }
 }

@@ -118,11 +118,12 @@ pub fn boundary_error_blob_activity_options() -> ActivityOptions {
 // retryable — terminal provider errors complete the activity with a failed
 // generation result and never retry.
 
-/// Start-to-close covers one provider attempt: the configured transport
-/// request ceiling (120s) plus completion grace.
-pub const LLM_START_TO_CLOSE: Duration = Duration::from_secs(150);
-/// The authoritative total retry budget across all attempts and backoff.
-pub const LLM_SCHEDULE_TO_CLOSE: Duration = Duration::from_secs(15 * 60);
+/// Start-to-close covers one provider attempt: the transport request
+/// ceiling (600s, `HttpClientConfig::default`) plus completion grace.
+pub const LLM_START_TO_CLOSE: Duration = Duration::from_secs(630);
+/// The authoritative total retry budget across all attempts and backoff:
+/// room for two full-length attempts.
+pub const LLM_SCHEDULE_TO_CLOSE: Duration = Duration::from_secs(21 * 60);
 pub const LLM_RETRY_INITIAL_INTERVAL: Duration = Duration::from_secs(2);
 pub const LLM_RETRY_MAX_INTERVAL: Duration = Duration::from_secs(60);
 pub const LLM_RETRY_BACKOFF_COEFFICIENT: f64 = 2.0;

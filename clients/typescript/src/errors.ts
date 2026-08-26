@@ -8,6 +8,7 @@ export type LightspeedRpcErrorKind =
   | "not_found"
   | "conflict"
   | "rejected"
+  | "environment_not_ready"
   | "internal"
   | "unknown";
 
@@ -23,6 +24,8 @@ export function lightspeedRpcErrorKind(code: number): LightspeedRpcErrorKind {
       return "conflict";
     case -32010:
       return "rejected";
+    case -32012:
+      return "environment_not_ready";
     case -32603:
       return "internal";
     default:

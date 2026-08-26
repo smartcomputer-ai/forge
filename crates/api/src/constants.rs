@@ -106,6 +106,7 @@ pub const METHOD_ENVIRONMENTS_JOBS_CANCEL: &str = "environments/jobs/cancel";
 // ── Universe: auth ──────────────────────────────────────────────────────────
 
 pub const METHOD_AUTH_GRANTS_IMPORT: &str = "auth/grants/import";
+pub const METHOD_AUTH_GRANTS_LEASE: &str = "auth/grants/lease";
 pub const METHOD_AUTH_GRANTS_READ: &str = "auth/grants/read";
 pub const METHOD_AUTH_GRANTS_LIST: &str = "auth/grants/list";
 pub const METHOD_AUTH_GRANTS_REVOKE: &str = "auth/grants/revoke";

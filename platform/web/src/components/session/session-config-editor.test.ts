@@ -200,6 +200,40 @@ describe("environment feature config", () => {
   });
 });
 
+describe("sub-agent feature config", () => {
+  it("preserves API-shaped profile selections across editor normalization", () => {
+    const config = {
+      features: {
+        subagents: {
+          agents: [{ profileId: "primary" }],
+          maxDepth: 3,
+          maxDescendants: 24,
+          maxConcurrent: 6,
+          deadlineMs: 7_200_000,
+        },
+      },
+    };
+
+    expect(normalizeSessionConfig(normalizeSessionConfig(config))).toEqual(config);
+  });
+
+  it("converts profile ids selected by the editor to the API shape", () => {
+    expect(normalizeSessionConfig({
+      features: {
+        subagents: {
+          agents: ["primary"],
+        },
+      },
+    })).toEqual({
+      features: {
+        subagents: {
+          agents: [{ profileId: "primary" }],
+        },
+      },
+    });
+  });
+});
+
 describe("MCP feature config", () => {
   it("keeps only server selection and behavioral overrides", () => {
     expect(normalizeSessionConfig({

@@ -5,7 +5,6 @@ import {
   Boxes,
   FolderGit2,
   Globe,
-  Hammer,
   KeyRound,
   LockKeyhole,
   MessagesSquare,
@@ -36,11 +35,11 @@ import {
   SidebarProvider,
   SidebarTrigger,
 } from "@/components/ui/sidebar";
+import { BotFaceIcon } from "@/components/icons/bot";
 import { UniverseSwitcher } from "@/components/universe-switcher";
 import { UserMenu } from "@/components/user-menu";
 import type { SessionUser } from "@/auth";
 import { canManage, rememberUniverse, useUniverses } from "@/lib/universes";
-import { FOUNDRY_ENABLED } from "@/lib/features";
 
 /// The sidebar has three modes. Universe mode is the app's top level:
 /// switcher + universe nav. Admin and account are modes *above* the
@@ -146,15 +145,15 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                   <SidebarGroupContent>
                     <SidebarMenu>
                       <NavItem
-                        to={`/u/${active.slug}/sessions`}
-                        icon={MessagesSquare}
-                        label="Sessions"
+                        to={`/u/${active.slug}/bots`}
+                        icon={BotFaceIcon}
+                        label="Bots"
                         prefix
                       />
                       <NavItem
-                        to={`/u/${active.slug}/workspaces`}
-                        icon={FolderGit2}
-                        label="Workspaces"
+                        to={`/u/${active.slug}/sessions`}
+                        icon={MessagesSquare}
+                        label="Sessions"
                         prefix
                       />
                       <NavItem
@@ -163,14 +162,12 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         label="Profiles"
                         prefix
                       />
-                      {FOUNDRY_ENABLED && (
-                        <NavItem
-                          to={`/u/${active.slug}/foundry`}
-                          icon={Hammer}
-                          label="Foundry"
-                          prefix
-                        />
-                      )}
+                      <NavItem
+                        to={`/u/${active.slug}/workspaces`}
+                        icon={FolderGit2}
+                        label="Workspaces"
+                        prefix
+                      />
                     </SidebarMenu>
                   </SidebarGroupContent>
                 </SidebarGroup>
@@ -210,11 +207,6 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         />
                       </>
                     )}
-                    <NavItem
-                      to={`/u/${active.slug}/settings/channels`}
-                      icon={RadioTower}
-                      label="Channels"
-                    />
                     {canManage(active, admin) && (
                       <>
                         <NavItem
@@ -293,10 +285,10 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
           <SidebarTrigger />
           <span className="text-sm font-medium">{mobileTitle}</span>
         </header>
-        {/* Master-detail surfaces (sessions, workspaces, profiles, Foundry) manage
-            their own panes and scrolling — full-bleed. Everything else
+        {/* Master-detail surfaces (sessions, workspaces, profiles, bots)
+            manage their own panes and scrolling — full-bleed. Everything else
             gets the centered scrolling column. */}
-        {/\/u\/[^/]+\/(sessions|workspaces|profiles|foundry)/.test(location.pathname) ? (
+        {/\/u\/[^/]+\/(sessions|workspaces|profiles|bots)/.test(location.pathname) ? (
           <main className="flex min-h-0 min-w-0 flex-1 flex-col">
             <Outlet />
           </main>

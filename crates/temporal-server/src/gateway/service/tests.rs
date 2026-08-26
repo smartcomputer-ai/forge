@@ -85,6 +85,65 @@ fn managed_session_retry_requires_the_durable_creation_fingerprint() {
 }
 
 #[test]
+fn legacy_subagent_bindings_retain_their_immutable_deadline_ceiling() {
+    const LEGACY_CEILING_MS: u64 = 4 * 60 * 60 * 1_000;
+    let bundle = tools::subagents::subagent_tool_bundle(tools::subagents::SubagentToolKind::Run)
+        .expect("subagent tool bundle");
+    let tool_id = WorkflowToolId::new(tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID);
+    let binding = engine::WorkflowToolBinding::admit(
+        uuid::Uuid::from_u128(1),
+        engine::WorkflowToolDefinition {
+            tool_id: tool_id.clone(),
+            revision: 1,
+            semantic_type: tools::subagents::AGENT_RUN_WORKFLOW_SEMANTIC_TYPE.to_owned(),
+            tool: bundle.spec,
+        },
+        WorkflowToolTarget::Bound {
+            receiver: WorkflowEndpointRef {
+                workflow_id: "legacy-subagent-execution".to_owned(),
+                workflow_kind: "subagent.execution".to_owned(),
+            },
+            dispatch: BoundWorkflowToolDispatch::Push,
+        },
+        WorkflowToolCompletion::Joined {
+            reply_schema_ref: None,
+            deadline_after_ms: LEGACY_CEILING_MS,
+        },
+    )
+    .expect("legacy subagent binding");
+    let mut state = engine::CoreAgentState::new();
+    state.workflow_tools.bindings.insert(tool_id, binding);
+    let mut features = engine::FeaturesConfig {
+        subagents: Some(engine::SubagentsFeature {
+            agents: vec![engine::SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            limits: engine::SubagentLimits {
+                deadline_ms: LEGACY_CEILING_MS,
+                ..engine::SubagentLimits::default()
+            },
+            ..engine::SubagentsFeature::default()
+        }),
+        ..engine::FeaturesConfig::default()
+    };
+
+    validate_subagent_deadline_for_existing_bindings(&state, &features)
+        .expect("legacy ceiling remains valid");
+    features
+        .subagents
+        .as_mut()
+        .expect("subagents")
+        .limits
+        .deadline_ms += 1;
+    assert_eq!(
+        validate_subagent_deadline_for_existing_bindings(&state, &features)
+            .expect_err("deadline above the durable binding must fail")
+            .kind,
+        AgentApiErrorKind::InvalidRequest
+    );
+}
+
+#[test]
 fn managed_workflow_tools_api_maps_bound_promise_function_tools() {
     let input_schema_ref = BlobRef::from_bytes(br#"{"type":"object"}"#);
     let reply_schema_ref = BlobRef::from_bytes(br#"{"type":"string"}"#);
@@ -565,6 +624,7 @@ fn test_auth_grant_record(
         grant_id: auth::AuthGrantId::new(grant_id),
         provider_id: "static".to_owned(),
         provider_kind,
+        exposure: auth::AuthGrantExposure::Brokered,
         principal: auth::PrincipalRef::universe_default(),
         display_name: None,
         subject_hint: None,
@@ -579,6 +639,22 @@ fn test_auth_grant_record(
         created_at_ms: 1,
     }
     .into_record()
+}
+
+#[test]
+fn grant_leases_require_creation_time_retrievable_exposure() {
+    let brokered = test_auth_grant_record(
+        "authgrant_brokered",
+        auth::AuthProviderKind::StaticBearer,
+        auth::AuthGrantStatus::Active,
+        None,
+    );
+    let mut retrievable = brokered.clone();
+    retrievable.exposure = auth::AuthGrantExposure::Retrievable;
+
+    let error = require_retrievable_grant(&brokered).expect_err("brokered grant must reject");
+    assert_eq!(error.kind, AgentApiErrorKind::Rejected);
+    require_retrievable_grant(&retrievable).expect("retrievable grant accepted");
 }
 
 fn mcp_config_link() -> engine::McpServerLink {
@@ -870,6 +946,7 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     };
     let mut state = engine::CoreAgentState::new();
     state.context.entries = vec![entry];
@@ -1211,7 +1288,6 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
         run_id: RunId::new(7),
         status: RunStatus::Completed,
         submission_id: Some(submission_id.clone()),
-        origin: engine::RunOrigin::Requested,
         submission_digest: Some(engine::request_run_submission_digest(
             &original_source,
             &run_config,
@@ -1456,6 +1532,64 @@ async fn context_entry_input_from_api_rejects_empty_text() {
     )
     .await
     .expect_err("empty text must be rejected");
+
+    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn context_entry_input_from_api_stores_catalog_with_its_title() {
+    let store = engine::storage::InMemoryBlobStore::new();
+
+    let entry = context_entry_input_from_api(
+        &store,
+        &InputItem::Catalog {
+            title: " Bot directory ".to_owned(),
+            text: "- infra: accepts events addressed by you\n".to_owned(),
+        },
+    )
+    .await
+    .expect("entry");
+
+    assert_eq!(
+        entry.kind,
+        engine::ContextEntryKind::Catalog {
+            title: "Bot directory".to_owned(),
+        }
+    );
+    assert_eq!(entry.preview.as_deref(), Some("Bot directory"));
+    assert_eq!(
+        store
+            .read_text(&entry.content_ref)
+            .await
+            .expect("stored text"),
+        "- infra: accepts events addressed by you"
+    );
+
+    let error = context_entry_input_from_api(
+        &store,
+        &InputItem::Catalog {
+            title: "  ".to_owned(),
+            text: "x".to_owned(),
+        },
+    )
+    .await
+    .expect_err("a catalog needs a title");
+    assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_input_from_api_rejects_catalog_items() {
+    let store = engine::storage::InMemoryBlobStore::new();
+
+    let error = run_input_from_api(
+        &store,
+        &[InputItem::Catalog {
+            title: "Bot directory".to_owned(),
+            text: "- infra".to_owned(),
+        }],
+    )
+    .await
+    .expect_err("catalogs are context, not run input");
 
     assert_eq!(error.kind, AgentApiErrorKind::InvalidRequest);
 }
@@ -2013,6 +2147,7 @@ fn direct_activation(
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     }
 }
 
@@ -2222,6 +2357,7 @@ fn auth_flow_views_carry_derived_status() {
         client_id: auth::OAuthClientId::new("crm"),
         provider_id: "crm".to_owned(),
         provider_kind: auth::AuthProviderKind::McpOAuth,
+        grant_exposure: auth::AuthGrantExposure::Brokered,
         principal: auth::PrincipalRef::universe_default(),
         state_hash: auth::state_hash("state-1"),
         pkce_verifier_secret: auth::SecretId::new("authsec_pkce"),

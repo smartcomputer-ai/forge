@@ -14,8 +14,8 @@ use engine::{
     },
     storage::{
         AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore, CreateClonedSession,
-        CreateForkedSession, CreateSession, ListSessionLinks, ReadSessionEvents, SessionBlobRoot,
-        SessionLinkDirection, SessionStore, UpsertSessionLink,
+        CreateForkedSession, CreateSession, ListSessions, ReadSessionEvents, SessionBlobRoot,
+        SessionOrigin, SessionOriginKind, SessionStore, SessionStoreError,
     },
 };
 use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
@@ -54,6 +54,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
     left.create_session(CreateSession {
         session_id: session_id.clone(),
         display_name: None,
+        origin: None,
         created_at_ms: 1,
     })
     .await
@@ -84,6 +85,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 20,
         })
         .await
@@ -110,6 +112,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
         .create_session(CreateSession {
             session_id: SessionId::new("other-universe"),
             display_name: None,
+            origin: None,
             created_at_ms: 999,
         })
         .await
@@ -120,6 +123,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
             .create_session(CreateSession {
                 session_id: SessionId::new(name),
                 display_name: Some(format!("Session {name}")),
+                origin: None,
                 created_at_ms,
             })
             .await
@@ -139,6 +143,8 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
         .list_sessions(ListSessions {
             cursor: None,
             limit: 2,
+            root_session_id: None,
+            parent_session_id: None,
         })
         .await
         .expect("first page");
@@ -160,6 +166,8 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
         .list_sessions(ListSessions {
             cursor: Some(cursor),
             limit: 2,
+            root_session_id: None,
+            parent_session_id: None,
         })
         .await
         .expect("second page");
@@ -208,6 +216,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             .create_session(CreateSession {
                 session_id: session_id.clone(),
                 display_name: None,
+                origin: None,
                 created_at_ms: 1,
             })
             .await
@@ -270,42 +279,93 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             .await
             .expect("count workspaces");
     assert_eq!(workspace_count, 1);
-    let link = store
-        .upsert_link(UpsertSessionLink {
-            from_session_id: clone_id.clone(),
-            to_session_id: peer_id.clone(),
-            relationship: "can_see".to_owned(),
-            created_at_ms: 30,
-            metadata: serde_json::json!({"via": "test"}),
+    // Sub-agent lineage: the child row is the root-scoped reservation.
+    let limits = engine::SubagentLimits {
+        max_depth: 1,
+        max_descendants: 2,
+        max_concurrent: 1,
+        deadline_ms: 1_000,
+    };
+    let origin = |invocation: &str, depth: u32| SessionOrigin {
+        kind: SessionOriginKind::Subagent,
+        parent_session_id: peer_id.clone(),
+        parent_run_id: 1,
+        root_session_id: peer_id.clone(),
+        depth,
+        invocation_id: invocation.to_owned(),
+        profile_id: "reviewer".to_owned(),
+        profile_revision: 3,
+        limits,
+    };
+    let child = store
+        .create_session(CreateSession {
+            session_id: SessionId::new("child-1"),
+            display_name: Some("reviewer: first".to_owned()),
+            origin: Some(origin("inv-1", 1)),
+            created_at_ms: 40,
         })
         .await
-        .expect("upsert link");
-    assert_eq!(link.from_session_id, clone_id.clone());
-    assert_eq!(link.to_session_id, peer_id.clone());
+        .expect("create child with origin");
+    assert_eq!(child.origin, Some(origin("inv-1", 1)));
     assert_eq!(
         store
-            .list_links(ListSessionLinks {
-                session_id: clone_id,
-                direction: SessionLinkDirection::Outgoing,
-                relationship: Some("can_see".to_owned()),
-                limit: 10,
-            })
+            .load_session(&SessionId::new("child-1"))
             .await
-            .expect("list outgoing links"),
-        vec![link.clone()]
+            .expect("load child")
+            .and_then(|record| record.origin),
+        Some(origin("inv-1", 1))
     );
+    let listed = store
+        .list_sessions(ListSessions {
+            cursor: None,
+            limit: 10,
+            root_session_id: Some(peer_id.clone()),
+            parent_session_id: None,
+        })
+        .await
+        .expect("list by root");
     assert_eq!(
-        store
-            .list_links(ListSessionLinks {
-                session_id: peer_id,
-                direction: SessionLinkDirection::Incoming,
-                relationship: None,
-                limit: 10,
-            })
-            .await
-            .expect("list incoming links"),
-        vec![link]
+        listed
+            .sessions
+            .iter()
+            .map(|record| record.session_id.clone())
+            .collect::<Vec<_>>(),
+        vec![SessionId::new("child-1")]
     );
+    // max_concurrent = 1: a second open child is refused.
+    let refused = store
+        .create_session(CreateSession {
+            session_id: SessionId::new("child-2"),
+            display_name: None,
+            origin: Some(origin("inv-2", 1)),
+            created_at_ms: 41,
+        })
+        .await
+        .expect_err("second concurrent child is refused");
+    assert!(matches!(
+        refused,
+        SessionStoreError::OriginLimitExceeded {
+            limit: engine::storage::SessionOriginLimit::MaxConcurrent,
+            ..
+        }
+    ));
+    // max_depth = 1: depth 2 is refused before any counting.
+    let too_deep = store
+        .create_session(CreateSession {
+            session_id: SessionId::new("child-3"),
+            display_name: None,
+            origin: Some(origin("inv-3", 2)),
+            created_at_ms: 42,
+        })
+        .await
+        .expect_err("depth beyond the limit is refused");
+    assert!(matches!(
+        too_deep,
+        SessionStoreError::OriginLimitExceeded {
+            limit: engine::storage::SessionOriginLimit::MaxDepth,
+            ..
+        }
+    ));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -317,6 +377,7 @@ async fn pg_live_fork_stitches_reads_and_clamps_parent_tail() {
         .create_session(CreateSession {
             session_id: root.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await
@@ -460,6 +521,7 @@ async fn pg_live_operator_universe_lifecycle_stats_and_purge() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 5,
         })
         .await
@@ -608,6 +670,7 @@ async fn pg_live_records_session_roots_and_blob_edges() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 1,
         })
         .await
@@ -940,6 +1003,7 @@ async fn pg_live_mcp_crud_and_universe_isolation() {
         grant_id: AuthGrantId::new("authgrant_mcp_crm"),
         provider_id: "static".to_owned(),
         provider_kind: AuthProviderKind::StaticBearer,
+        exposure: auth::AuthGrantExposure::Brokered,
         principal: PrincipalRef::universe_default(),
         display_name: Some("CRM MCP".to_owned()),
         subject_hint: None,
@@ -1059,12 +1123,15 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         })
         .await
         .expect("register provider");
-    assert_eq!(
+    // Providers are global rows shared by every test universe on this
+    // database, so assert membership rather than equality.
+    assert!(
         store
             .list_providers(ListEnvironmentProviders::default())
             .await
-            .expect("list providers"),
-        vec![provider.clone()]
+            .expect("list providers")
+            .contains(&provider),
+        "registered provider must be listed"
     );
 
     store
@@ -1229,6 +1296,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         .create_session(CreateSession {
             session_id: session_id.clone(),
             display_name: None,
+            origin: None,
             created_at_ms: 35,
         })
         .await
@@ -1398,6 +1466,7 @@ async fn pg_live_auth_grants_crud_and_status_updates() {
             grant_id: grant_id.clone(),
             provider_id: "static".to_owned(),
             provider_kind: AuthProviderKind::StaticBearer,
+            exposure: auth::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: Some("CRM token".to_owned()),
             subject_hint: None,
@@ -1423,6 +1492,7 @@ async fn pg_live_auth_grants_crud_and_status_updates() {
                     grant_id: grant_id.clone(),
                     provider_id: "static".to_owned(),
                     provider_kind: AuthProviderKind::StaticBearer,
+                    exposure: auth::AuthGrantExposure::Brokered,
                     principal: PrincipalRef::universe_default(),
                     display_name: None,
                     subject_hint: None,
@@ -1541,6 +1611,7 @@ async fn pg_live_auth_flows_are_one_time_use() {
             client_id: OAuthClientId::new("crm"),
             provider_id: "crm".to_owned(),
             provider_kind: AuthProviderKind::McpOAuth,
+            grant_exposure: auth::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             state_hash: state_hash(state),
             pkce_verifier_secret: SecretId::new("authsec_pkce_live"),
@@ -1612,6 +1683,7 @@ async fn pg_live_auth_flows_are_one_time_use() {
             client_id: OAuthClientId::new("crm"),
             provider_id: "crm".to_owned(),
             provider_kind: AuthProviderKind::McpOAuth,
+            grant_exposure: auth::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             state_hash: state_hash("state-live-2"),
             pkce_verifier_secret: SecretId::new("authsec_pkce_live2"),
@@ -1639,6 +1711,7 @@ async fn pg_live_grant_refresh_updates_token_refs_and_lock_serializes() {
             grant_id: grant_id.clone(),
             provider_id: "crm".to_owned(),
             provider_kind: AuthProviderKind::McpOAuth,
+            exposure: auth::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: None,
             subject_hint: None,
@@ -1816,6 +1889,7 @@ async fn pg_live_grant_metadata_round_trips() {
             grant_id: grant_id.clone(),
             provider_id: "lightspeed-github".to_owned(),
             provider_kind: AuthProviderKind::GitHubApp,
+            exposure: auth::AuthGrantExposure::Brokered,
             principal: PrincipalRef::universe_default(),
             display_name: None,
             subject_hint: Some("acme".to_owned()),
@@ -1925,6 +1999,7 @@ async fn pg_live_environment_credentials_round_trip() {
                 grant_id: AuthGrantId::new(grant_id),
                 provider_id: provider.to_owned(),
                 provider_kind: kind,
+                exposure: auth::AuthGrantExposure::Brokered,
                 principal: PrincipalRef::universe_default(),
                 display_name: None,
                 subject_hint: None,

@@ -65,6 +65,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     source_session_id text,
     source_seq bigint,
 
+    -- Typed provenance for delegated sub-agent children. The complete
+    -- SessionOrigin document is retained while the two queried ids are
+    -- denormalized for root- and parent-scoped listing/limits. These are
+    -- historical facts, not ownership, so they intentionally have no foreign
+    -- keys to sessions.
+    origin_json jsonb,
+    origin_root_session_id text,
+    origin_parent_session_id text,
+
     PRIMARY KEY (universe_id, session_id),
 
     FOREIGN KEY (universe_id, source_session_id)
@@ -91,6 +100,21 @@ CREATE TABLE IF NOT EXISTS sessions (
         CHECK (source_seq IS NULL OR source_session_id IS NOT NULL),
     CONSTRAINT sessions_source_not_self
         CHECK (source_session_id IS NULL OR source_session_id <> session_id),
+    CONSTRAINT sessions_origin_shape
+        CHECK (
+            (
+                origin_json IS NULL
+                AND origin_root_session_id IS NULL
+                AND origin_parent_session_id IS NULL
+            )
+            OR (
+                jsonb_typeof(origin_json) = 'object'
+                AND origin_root_session_id IS NOT NULL
+                AND origin_root_session_id <> ''
+                AND origin_parent_session_id IS NOT NULL
+                AND origin_parent_session_id <> ''
+            )
+        ),
     CONSTRAINT sessions_created_at_ms_nonnegative
         CHECK (created_at_ms >= 0),
     CONSTRAINT sessions_updated_at_ms_nonnegative
@@ -167,6 +191,14 @@ CREATE INDEX IF NOT EXISTS sessions_source_session_id_idx
     ON sessions (universe_id, source_session_id)
     WHERE source_session_id IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS sessions_origin_root_idx
+    ON sessions (universe_id, origin_root_session_id)
+    WHERE origin_root_session_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS sessions_origin_parent_idx
+    ON sessions (universe_id, origin_parent_session_id)
+    WHERE origin_parent_session_id IS NOT NULL;
+
 -- Keyset paging for session listings: newest activity first.
 CREATE INDEX IF NOT EXISTS sessions_updated_at_idx
     ON sessions (universe_id, updated_at_ms DESC, session_id DESC);
@@ -183,38 +215,6 @@ ALTER TABLE sessions
 ALTER TABLE sessions
     ADD CONSTRAINT sessions_source_seq_nonnegative
         CHECK (source_seq IS NULL OR source_seq >= 0);
-
--- Directed, typed relationships between sessions. A link means
--- "from_session_id can <relationship> to_session_id" — for example which
--- sessions an agent may see, access, or configure. Links are plain data in
--- v1: nothing enforces them yet; Fleet tooling reads them later. They are set
--- independently of clone/fork lineage and can be created manually between any
--- two existing sessions, including sessions that never spawned each other.
--- relationship is an open string so the vocabulary can grow without migration.
-CREATE TABLE IF NOT EXISTS session_links (
-    universe_id uuid NOT NULL,
-    from_session_id text NOT NULL,
-    to_session_id text NOT NULL,
-    relationship text NOT NULL,
-    created_at_ms bigint NOT NULL,
-    metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
-
-    PRIMARY KEY (universe_id, from_session_id, to_session_id, relationship),
-    FOREIGN KEY (universe_id, from_session_id)
-        REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
-    FOREIGN KEY (universe_id, to_session_id)
-        REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
-
-    CONSTRAINT session_links_relationship_present
-        CHECK (relationship <> ''),
-    CONSTRAINT session_links_created_at_ms_nonnegative
-        CHECK (created_at_ms >= 0),
-    CONSTRAINT session_links_metadata_is_object
-        CHECK (jsonb_typeof(metadata) = 'object')
-);
-
-CREATE INDEX IF NOT EXISTS session_links_to_session_id_idx
-    ON session_links (universe_id, to_session_id);
 
 CREATE TABLE IF NOT EXISTS session_events (
     universe_id uuid NOT NULL,
@@ -355,9 +355,13 @@ CREATE INDEX IF NOT EXISTS cas_blob_edges_child_digest_idx
 COMMENT ON TABLE universes IS
     'Tenant/project/workspace boundary; sessions and CAS are shared within one universe.';
 COMMENT ON TABLE sessions IS
-    'One row per Lightspeed session; head_seq is updated transactionally with event appends. source_session_id/source_seq record clone (config-only) or fork (history-branch) lineage.';
-COMMENT ON TABLE session_links IS
-    'Directed, typed relationships between sessions (e.g. visibility/access/configure). Plain data in v1, not enforced; set independently of clone/fork lineage.';
+    'One row per Lightspeed session; head_seq is updated transactionally with event appends. source_session_id/source_seq record clone/fork content lineage; origin_json records delegated-child provenance.';
+COMMENT ON COLUMN sessions.origin_json IS
+    'Serialized SessionOrigin of a sub-agent child (kind, parent, parent run, root, depth, invocation, pinned profile revision, effective limits); null for roots.';
+COMMENT ON COLUMN sessions.origin_root_session_id IS
+    'Denormalized from origin_json: the lineage root; root-scoped limits count every session naming this root.';
+COMMENT ON COLUMN sessions.origin_parent_session_id IS
+    'Denormalized from origin_json: the delegating parent session.';
 COMMENT ON TABLE session_events IS
     'Append-only stored session entries as canonical JSONB with generated query columns.';
 COMMENT ON TABLE cas_blobs IS

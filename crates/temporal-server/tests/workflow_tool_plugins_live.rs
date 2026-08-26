@@ -41,7 +41,7 @@ use temporal_server::{
 use temporal_workflow::{
     AgentSessionWorkflow, DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET,
     WORKFLOW_TOOL_RECOVERY_QUERY, WorkflowToolRecipeV1, WorkflowToolRecoveryResult,
-    WorkflowToolStartArgs, connect_temporal, workflow_tool_recipe_fingerprint,
+    WorkflowToolStartArgs, compose_workflow_id, connect_temporal, workflow_tool_recipe_fingerprint,
 };
 use temporalio_client::{Client, WorkflowStartOptions, WorkflowTerminateOptions};
 use temporalio_common::worker::WorkerTaskTypes;
@@ -98,7 +98,7 @@ impl TestBoundPluginWorkflow {
             let envelopes = ctx.state_mut(|state| std::mem::take(&mut state.inbox));
             for envelope in envelopes {
                 match envelope.body {
-                    EmissionBody::ToolInvocation { invocation } => {
+                    EmissionBody::ToolInvocation { invocation, .. } => {
                         // Receiver dedup is invocation-id keying of the
                         // plugin's own state: a duplicate push is a no-op.
                         let fresh = ctx.state_mut(|state| {
@@ -125,6 +125,7 @@ impl TestBoundPluginWorkflow {
                             let reply = EmissionEnvelope::source_resolution(
                                 args.universe_id,
                                 ctx.workflow_id().to_owned(),
+                                &holder,
                                 promise_id.clone(),
                                 PromiseResolution::Resolved { payload_ref: None },
                             );
@@ -216,7 +217,7 @@ impl TestSelfReceiverControllerWorkflow {
             let envelopes = ctx.state_mut(|state| std::mem::take(&mut state.inbox));
             for envelope in envelopes {
                 match envelope.body {
-                    EmissionBody::ToolInvocation { invocation } => {
+                    EmissionBody::ToolInvocation { invocation, .. } => {
                         let invocation_id = invocation.invocation_id.as_str().to_owned();
                         let fresh = ctx.state_mut(|state| {
                             if let std::collections::btree_map::Entry::Vacant(e) =
@@ -242,6 +243,7 @@ impl TestSelfReceiverControllerWorkflow {
                             let reply = EmissionEnvelope::source_resolution(
                                 args.universe_id,
                                 ctx.workflow_id().to_owned(),
+                                &holder,
                                 promise_id.clone(),
                                 PromiseResolution::Resolved {
                                     payload_ref: args.reply_payload_ref.clone(),
@@ -333,6 +335,7 @@ impl TestStartPluginWorkflow {
             let envelope = EmissionEnvelope::source_resolution(
                 args.universe_id,
                 args.execution_id.clone(),
+                &args.holder_workflow_id,
                 promise_id.clone(),
                 resolution,
             );
@@ -445,6 +448,7 @@ impl TestSlowStartPluginWorkflow {
             let envelope = EmissionEnvelope::source_resolution(
                 args.universe_id,
                 args.execution_id.clone(),
+                &args.holder_workflow_id,
                 promise_id.clone(),
                 resolution,
             );
@@ -605,13 +609,15 @@ impl WorkflowToolScriptedLlm {
     }
 }
 
-/// Extract the first keyed completion promise id from a workflow-tool
+/// Extract the first promise handle (`promise_<n>`) from a workflow-tool
 /// acknowledgement.
 fn parse_completion_promise(text: &str) -> Option<String> {
-    let start = text.find("wtp:sha256:")?;
-    let hex = &text[start + "wtp:sha256:".len()..];
-    let hex: String = hex.chars().take_while(char::is_ascii_hexdigit).collect();
-    (hex.len() == 64).then(|| format!("wtp:sha256:{hex}"))
+    let start = text.find("promise_")?;
+    let digits: String = text[start + "promise_".len()..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    (!digits.is_empty()).then(|| format!("promise_{digits}"))
 }
 
 #[async_trait]
@@ -1142,7 +1148,7 @@ async fn workflow_tool_controller_self_receiver_resolves_before_run_terminal() -
                 .output
                 .as_deref()
                 .unwrap_or_default()
-                .contains("wtp:sha256:"),
+                .contains("promise_"),
             "Joined result must not expose the runtime Promise acknowledgement"
         );
 
@@ -1199,6 +1205,7 @@ async fn workflow_tool_controller_self_receiver_resolves_before_run_terminal() -
                     session_id.clone(),
                     engine::EventSeq::new(999),
                     invocation,
+                    compose_workflow_id(universe_id, &session_id),
                 ),
                 temporalio_client::WorkflowSignalOptions::default(),
             )
@@ -1572,6 +1579,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
         let forged = EmissionEnvelope::source_resolution(
             universe_id,
             "plugin/imposter".to_owned(),
+            &temporal_workflow::compose_workflow_id(universe_id, &session_id),
             engine::PromiseId::new(promise_id.clone()),
             PromiseResolution::Resolved { payload_ref: None },
         );
@@ -1610,6 +1618,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
         let authorized = EmissionEnvelope::source_resolution(
             universe_id,
             receiver_id.clone(),
+            &temporal_workflow::compose_workflow_id(universe_id, &session_id),
             engine::PromiseId::new(promise_id),
             PromiseResolution::Resolved { payload_ref: None },
         );
@@ -1673,6 +1682,7 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
             session_id.clone(),
             engine::EventSeq::new(999),
             synthetic_invocation,
+            compose_workflow_id(universe_id, &session_id),
         );
         for _ in 0..2 {
             plugin_handle
@@ -1947,11 +1957,32 @@ async fn workflow_tool_dead_receiver_fails_promise_terminally() -> anyhow::Resul
     .await
 }
 
-fn parse_execution_id(text: &str) -> Option<String> {
-    let start = text.find("wtx:sha256:")?;
-    let hex = &text[start + "wtx:sha256:".len()..];
-    let hex: String = hex.chars().take_while(char::is_ascii_hexdigit).collect();
-    (hex.len() == 64).then(|| format!("wtx:sha256:{hex}"))
+/// Execution ids of every start-on-call invocation so far, in session-log
+/// order.
+async fn started_execution_ids(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+) -> anyhow::Result<Vec<String>> {
+    let events = api
+        .read_session_events(api::SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: None,
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("read events: {error:?}"))?;
+    Ok(events
+        .result
+        .events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            api::SessionEventKindView::WorkflowToolStartRequested { execution_id, .. } => {
+                Some(execution_id.clone())
+            }
+            _ => None,
+        })
+        .collect())
 }
 
 /// All keyed completion promises emitted so far, in session-log order.
@@ -2087,6 +2118,7 @@ async fn workflow_tool_reply_schema_gates_resolutions() -> anyhow::Result<()> {
                 let reply = EmissionEnvelope::source_resolution(
                     live_universe_id()?,
                     receiver_id,
+                    &temporal_workflow::compose_workflow_id(live_universe_id()?, &session_id),
                     engine::PromiseId::new(promise_id),
                     PromiseResolution::Resolved {
                         payload_ref: Some(payload_ref),
@@ -2486,12 +2518,13 @@ async fn workflow_tool_auto_cancel_cancels_started_execution() -> anyhow::Result
             .map_err(|error| anyhow::anyhow!("start run: {error:?}"))?;
         let run = wait_for_terminal_run_slow(&api, &session_id, &run.result.run.id).await?;
         assert_eq!(run.status, api::RunStatus::Completed);
-        let execution_id = run
-            .entries
-            .iter()
-            .filter_map(|entry| entry.text.as_deref().and_then(parse_execution_id))
+        // The execution id is a client fact on the start-requested event,
+        // not part of the model-visible acknowledgement.
+        let execution_id = started_execution_ids(&api, &session_id)
+            .await?
+            .into_iter()
             .next()
-            .ok_or_else(|| anyhow::anyhow!("no execution id in run entries"))?;
+            .ok_or_else(|| anyhow::anyhow!("no start-requested event in session events"))?;
 
         // The run terminal auto-cancels the run-scoped keyed promise; with
         // its last key terminal, the owned execution must be cancelled.

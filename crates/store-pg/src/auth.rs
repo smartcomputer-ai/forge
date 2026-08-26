@@ -6,10 +6,10 @@
 //! inside [`auth::SecretValue`] wrappers in adapter memory.
 
 use ::auth::{
-    AuthGrantId, AuthGrantRecord, AuthGrantStatus, AuthGrantStore, AuthGrantTokenRefresh,
-    AuthProviderKind, AuthRegistryError, CreateAuthGrantRecord, ListAuthGrants, OAuthClientId,
-    PrincipalKind, PrincipalRef, PutSecretRecord, SecretId, SecretRecordMeta, SecretStore,
-    SecretValue,
+    AuthGrantExposure, AuthGrantId, AuthGrantRecord, AuthGrantStatus, AuthGrantStore,
+    AuthGrantTokenRefresh, AuthProviderKind, AuthRegistryError, CreateAuthGrantRecord,
+    ListAuthGrants, OAuthClientId, PrincipalKind, PrincipalRef, PutSecretRecord, SecretId,
+    SecretRecordMeta, SecretStore, SecretValue,
 };
 use aes_gcm::aead::{Aead, Payload};
 use aes_gcm::{Aes256Gcm, Key, KeyInit, Nonce};
@@ -214,6 +214,7 @@ const GRANT_COLUMNS: &str = r#"
     grant_id,
     provider_id,
     provider_kind,
+    exposure,
     principal_kind,
     principal_id,
     display_name,
@@ -226,6 +227,8 @@ const GRANT_COLUMNS: &str = r#"
     expires_at_ms,
     status,
     metadata_json,
+    last_leased_at_ms,
+    lease_count,
     created_at_ms,
     updated_at_ms
 "#;
@@ -248,6 +251,7 @@ impl AuthGrantStore for PgStore {
                 grant_id,
                 provider_id,
                 provider_kind,
+                exposure,
                 principal_kind,
                 principal_id,
                 display_name,
@@ -260,10 +264,12 @@ impl AuthGrantStore for PgStore {
                 expires_at_ms,
                 status,
                 metadata_json,
+                last_leased_at_ms,
+                lease_count,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $20)
             ON CONFLICT (universe_id, grant_id) DO NOTHING
             RETURNING {GRANT_COLUMNS}
             "#
@@ -273,6 +279,7 @@ impl AuthGrantStore for PgStore {
             .bind(record.grant_id.as_str())
             .bind(&record.provider_id)
             .bind(provider_kind_to_str(record.provider_kind))
+            .bind(grant_exposure_to_str(record.exposure))
             .bind(principal_kind_to_str(record.principal.kind))
             .bind(record.principal.id.as_deref())
             .bind(record.display_name.as_deref())
@@ -285,6 +292,12 @@ impl AuthGrantStore for PgStore {
             .bind(record.expires_at_ms)
             .bind(grant_status_to_str(record.status))
             .bind(&record.metadata)
+            .bind(record.last_leased_at_ms)
+            .bind(
+                i64::try_from(record.lease_count).map_err(|_| AuthRegistryError::Store {
+                    message: "auth grant lease count exceeds PostgreSQL bigint".to_owned(),
+                })?,
+            )
             .bind(record.created_at_ms)
             .fetch_optional(&self.pool)
             .await
@@ -430,6 +443,68 @@ impl AuthGrantStore for PgStore {
         grant_record_from_row(&row)
     }
 
+    async fn record_grant_lease(
+        &self,
+        grant_id: &AuthGrantId,
+        leased_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError> {
+        let query = format!(
+            r#"
+            UPDATE auth_grants
+            SET last_leased_at_ms = $3,
+                lease_count = lease_count + 1
+            WHERE universe_id = $1 AND grant_id = $2
+            RETURNING {GRANT_COLUMNS}
+            "#
+        );
+        let row = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .bind(grant_id.as_str())
+            .bind(leased_at_ms)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| auth_sql_error("record auth grant lease", error))?;
+
+        let Some(row) = row else {
+            return Err(AuthRegistryError::GrantNotFound {
+                grant_id: grant_id.clone(),
+            });
+        };
+        grant_record_from_row(&row)
+    }
+
+    async fn record_grant_mint_expiry(
+        &self,
+        grant_id: &AuthGrantId,
+        expires_at_ms: i64,
+        updated_at_ms: i64,
+    ) -> Result<AuthGrantRecord, AuthRegistryError> {
+        let query = format!(
+            r#"
+            UPDATE auth_grants
+            SET expires_at_ms = $3,
+                updated_at_ms = $4
+            WHERE universe_id = $1 AND grant_id = $2
+            RETURNING {GRANT_COLUMNS}
+            "#
+        );
+        let row = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .bind(grant_id.as_str())
+            .bind(expires_at_ms)
+            .bind(updated_at_ms)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| auth_sql_error("record auth grant mint expiry", error))?;
+
+        let Some(row) = row else {
+            return Err(AuthRegistryError::GrantNotFound {
+                grant_id: grant_id.clone(),
+            });
+        };
+        grant_record_from_row(&row)
+    }
+
     async fn delete_grant(
         &self,
         grant_id: &AuthGrantId,
@@ -488,6 +563,9 @@ fn grant_record_from_row(
     let provider_kind: String = row
         .try_get("provider_kind")
         .map_err(|error| auth_sql_error("decode grant provider kind", error))?;
+    let exposure: String = row
+        .try_get("exposure")
+        .map_err(|error| auth_sql_error("decode grant exposure", error))?;
     let principal_kind: String = row
         .try_get("principal_kind")
         .map_err(|error| auth_sql_error("decode grant principal kind", error))?;
@@ -512,6 +590,7 @@ fn grant_record_from_row(
             .try_get("provider_id")
             .map_err(|error| auth_sql_error("decode grant provider id", error))?,
         provider_kind: provider_kind_from_str(&provider_kind)?,
+        exposure: grant_exposure_from_str(&exposure)?,
         principal: PrincipalRef {
             kind: principal_kind_from_str(&principal_kind)?,
             id: row
@@ -555,6 +634,16 @@ fn grant_record_from_row(
         metadata: row
             .try_get("metadata_json")
             .map_err(|error| auth_sql_error("decode grant metadata", error))?,
+        last_leased_at_ms: row
+            .try_get("last_leased_at_ms")
+            .map_err(|error| auth_sql_error("decode grant last_leased_at_ms", error))?,
+        lease_count: u64::try_from(
+            row.try_get::<i64, _>("lease_count")
+                .map_err(|error| auth_sql_error("decode grant lease_count", error))?,
+        )
+        .map_err(|_| AuthRegistryError::Store {
+            message: "stored auth grant lease_count is negative".to_owned(),
+        })?,
         created_at_ms: row
             .try_get("created_at_ms")
             .map_err(|error| auth_sql_error("decode grant created_at_ms", error))?,
@@ -575,6 +664,23 @@ pub(crate) fn provider_kind_to_str(value: AuthProviderKind) -> &'static str {
         AuthProviderKind::ModelApiKey => "model_api_key",
         AuthProviderKind::ModelOAuth => "model_oauth",
         AuthProviderKind::ModelEndpoint => "model_endpoint",
+    }
+}
+
+pub(crate) fn grant_exposure_to_str(value: AuthGrantExposure) -> &'static str {
+    match value {
+        AuthGrantExposure::Brokered => "brokered",
+        AuthGrantExposure::Retrievable => "retrievable",
+    }
+}
+
+pub(crate) fn grant_exposure_from_str(value: &str) -> Result<AuthGrantExposure, AuthRegistryError> {
+    match value {
+        "brokered" => Ok(AuthGrantExposure::Brokered),
+        "retrievable" => Ok(AuthGrantExposure::Retrievable),
+        other => Err(AuthRegistryError::Store {
+            message: format!("unsupported auth grant exposure '{other}'"),
+        }),
     }
 }
 

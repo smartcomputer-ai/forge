@@ -8,10 +8,8 @@ import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
-import { ChannelsPage } from "@/pages/ChannelsPage";
+import { BotsPage } from "@/pages/BotsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
-import { FoundryPage } from "@/pages/FoundryPage";
-import { FOUNDRY_ENABLED } from "@/lib/features";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
 import { LoginPage } from "@/pages/LoginPage";
@@ -44,7 +42,7 @@ function SettingsIndexRedirect({ admin }: { admin: boolean }) {
       to={
         canManage(universe, admin)
           ? `/u/${slug}/settings/general`
-          : `/u/${slug}/settings/channels`
+          : `/u/${slug}/bots`
       }
       replace
     />
@@ -97,12 +95,8 @@ export function App() {
           path="u/:slug/workspaces/:workspaceId/files/*"
           element={<WorkspacesPage admin={admin} />}
         />
-        {FOUNDRY_ENABLED && (
-          <>
-            <Route path="u/:slug/foundry" element={<FoundryPage admin={admin} />} />
-            <Route path="u/:slug/foundry/:packId" element={<FoundryPage admin={admin} />} />
-          </>
-        )}
+        <Route path="u/:slug/bots" element={<BotsPage admin={admin} />} />
+        <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} />} />
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"
@@ -136,14 +130,6 @@ export function App() {
         <Route
           path="u/:slug/settings/secrets"
           element={<SecretsPage admin={admin} />}
-        />
-        <Route
-          path="u/:slug/settings/channels"
-          element={<ChannelsPage admin={admin} />}
-        />
-        <Route
-          path="u/:slug/settings/chat-bindings"
-          element={<Navigate to="../channels" replace relative="path" />}
         />
         <Route
           path="u/:slug/settings/api-keys"

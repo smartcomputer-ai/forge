@@ -201,6 +201,11 @@ pub enum ProfileEnvironment {
     /// Activate an existing universe environment. The profile never closes
     /// it.
     Existing { environment_id: EnvironmentId },
+    /// Activate the delegating parent's active environment (sub-agents,
+    /// P134). Resolved at spawn, shared not copied, never closed by the
+    /// child; rejected on a session without a delegation origin or whose
+    /// parent has no active environment.
+    Inherit {},
     /// Provision one environment for the session from the universe's enabled
     /// binding for `providerId`, then activate it. The provision request id
     /// is derived from the session id, so retries and repeated applies

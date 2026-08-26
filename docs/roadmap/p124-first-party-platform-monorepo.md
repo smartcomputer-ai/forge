@@ -202,10 +202,12 @@ workspace root and application-only packages marked `"private": true` unless a
 package is intentionally supported as a public npm artifact. Open source does
 not imply npm publication.
 
-Replace the duplicated Channels `contracts/emissions.ts` shapes with
-generated-client exports. Leave Foundry's internal shape untouched until the
-feature is retained or removed; P124 must not create new Foundry architecture.
-Do not introduce any new platform-local copy of Rust wire vocabulary.
+Completed by [P132](p132-workflow-contract-export.md): the generated client now
+exports the workflow emission contract, constants, derivations, and pure
+helpers; the duplicated Bots and Channels `contracts/emissions.ts` modules
+were removed. Leave Foundry's internal shape untouched until the feature is
+retained or removed; do not introduce another platform-local copy of Rust wire
+vocabulary.
 
 The imported code remains outside the deterministic `engine` crate. Platform
 HTTP, authentication, database access, connectors, and Temporal workers are

@@ -33,6 +33,7 @@ pub(super) fn auth_grant_import_draft(
         grant_id,
         provider_id: params.provider_id.unwrap_or_else(|| "static".to_owned()),
         provider_kind: auth::AuthProviderKind::StaticBearer,
+        exposure: registry_auth_grant_exposure(params.exposure),
         principal: crate::gateway::principal::request_principal(),
         display_name: params.display_name,
         subject_hint: params.subject_hint,
@@ -62,6 +63,7 @@ pub(super) fn auth_grant_view(record: auth::AuthGrantRecord) -> api::AuthGrantVi
         grant_id: record.grant_id.as_str().to_owned(),
         provider_id: record.provider_id,
         provider_kind: api_auth_provider_kind(record.provider_kind),
+        exposure: api_auth_grant_exposure(record.exposure),
         principal: api::PrincipalRefView {
             kind: api_principal_kind(record.principal.kind),
             id: record.principal.id,
@@ -75,8 +77,41 @@ pub(super) fn auth_grant_view(record: auth::AuthGrantRecord) -> api::AuthGrantVi
         expires_at_ms: record.expires_at_ms,
         status: api_auth_grant_status(record.status),
         metadata: record.metadata,
+        last_leased_at_ms: record.last_leased_at_ms,
+        lease_count: record.lease_count,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+pub(super) fn require_retrievable_grant(
+    grant: &auth::AuthGrantRecord,
+) -> Result<(), AgentApiError> {
+    if grant.exposure == auth::AuthGrantExposure::Retrievable {
+        Ok(())
+    } else {
+        Err(AgentApiError::rejected(format!(
+            "auth grant {} is brokered and cannot be leased",
+            grant.grant_id
+        )))
+    }
+}
+
+pub(super) fn map_auth_broker_error(error: auth::AuthBrokerError) -> AgentApiError {
+    match error {
+        auth::AuthBrokerError::GrantNotFound { grant_id } => {
+            AgentApiError::not_found(format!("auth grant not found: {grant_id}"))
+        }
+        auth::AuthBrokerError::GrantNotActive { .. }
+        | auth::AuthBrokerError::GrantExpired { .. }
+        | auth::AuthBrokerError::AudienceMismatch { .. }
+        | auth::AuthBrokerError::SecretMissing { .. }
+        | auth::AuthBrokerError::RefreshFailed { .. }
+        | auth::AuthBrokerError::MintFailed { .. }
+        | auth::AuthBrokerError::SourceNotConfigured { .. } => {
+            AgentApiError::rejected(error.to_string())
+        }
+        auth::AuthBrokerError::Store { message } => AgentApiError::internal(message),
     }
 }
 
@@ -197,6 +232,22 @@ pub(super) fn api_auth_provider_kind(value: auth::AuthProviderKind) -> api::Auth
         auth::AuthProviderKind::ModelApiKey => api::AuthProviderKind::ModelApiKey,
         auth::AuthProviderKind::ModelOAuth => api::AuthProviderKind::ModelOAuth,
         auth::AuthProviderKind::ModelEndpoint => api::AuthProviderKind::ModelEndpoint,
+    }
+}
+
+fn api_auth_grant_exposure(value: auth::AuthGrantExposure) -> api::AuthGrantExposure {
+    match value {
+        auth::AuthGrantExposure::Brokered => api::AuthGrantExposure::Brokered,
+        auth::AuthGrantExposure::Retrievable => api::AuthGrantExposure::Retrievable,
+    }
+}
+
+pub(super) fn registry_auth_grant_exposure(
+    value: api::AuthGrantExposure,
+) -> auth::AuthGrantExposure {
+    match value {
+        api::AuthGrantExposure::Brokered => auth::AuthGrantExposure::Brokered,
+        api::AuthGrantExposure::Retrievable => auth::AuthGrantExposure::Retrievable,
     }
 }
 

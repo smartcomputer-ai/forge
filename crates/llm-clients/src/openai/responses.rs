@@ -565,6 +565,10 @@ pub struct CreateResponseRequest {
     pub service_tier: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_management: Option<Value>,
+    /// Routes requests sharing a prefix to the same cache; OpenAI's prompt
+    /// cache is automatic but best-effort without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_cache_key: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -1009,6 +1013,9 @@ pub struct ResponseContent {
     pub r#type: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// Model-authored refusal text (`{"type": "refusal"}` parts).
+    #[serde(default)]
+    pub refusal: Option<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

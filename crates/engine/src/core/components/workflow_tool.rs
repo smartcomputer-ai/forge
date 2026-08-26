@@ -32,7 +32,6 @@ const CREATION_FINGERPRINT_DOMAIN: &str = "lightspeed.managed-session.creation.v
 /// Greenfield identity change.
 const FINGERPRINT_ENCODING_VERSION: u32 = 4;
 const INVOCATION_ID_DOMAIN: &str = "lightspeed.workflow-tool.invocation.v1";
-const COMPLETION_PROMISE_ID_DOMAIN: &str = "lightspeed.workflow-tool.promise.v1";
 const EXECUTION_ID_DOMAIN: &str = "lightspeed.workflow-tool.execution.v1";
 /// Diagnostic endpoint kind carried by promise sources whose producer is a
 /// system-derived started execution rather than an admitted bound receiver.
@@ -203,6 +202,10 @@ pub enum WorkflowToolCompletionKeySource {
     Reply,
     /// A JSON Pointer naming an array of unique completion-key strings.
     StringArray { pointer: String },
+    /// A JSON Pointer naming an array of objects; the named string field
+    /// of every item is its completion key, so the model's own name for a
+    /// work item (a job id) keys the item's promise.
+    ArrayItemField { pointer: String, field: String },
     ArrayIndices {
         /// JSON Pointer to a schema-validated array. Every array item creates
         /// one completion key.
@@ -226,6 +229,16 @@ impl WorkflowToolCompletionKeySource {
                 Ok(())
             }
             Self::StringArray { pointer } => validate_completion_pointer(pointer, max_promises),
+            Self::ArrayItemField { pointer, field } => {
+                validate_completion_pointer(pointer, max_promises)?;
+                if field.is_empty() || field.contains('/') {
+                    return Err(DomainError::InvariantViolation(
+                        "workflow tool array-item completion key field must be a non-empty object key"
+                            .to_owned(),
+                    ));
+                }
+                Ok(())
+            }
             Self::ArrayIndices { pointer, prefix } => {
                 validate_completion_pointer(pointer, max_promises)?;
                 let largest_key = format!("{prefix}{}", max_promises.saturating_sub(1));
@@ -304,16 +317,6 @@ pub fn validate_completion_key(key: &str) -> Result<(), DomainError> {
     )
 }
 
-/// Deterministic per-key promise id: the same invocation and key always
-/// derive the same promise, across activity retry, restart, and replay.
-pub fn workflow_tool_promise_id(invocation_id: &WorkflowToolInvocationId, key: &str) -> PromiseId {
-    let digest = digest_fields(
-        COMPLETION_PROMISE_ID_DOMAIN,
-        &[invocation_id.as_str().as_bytes(), key.as_bytes()],
-    );
-    PromiseId::new(format!("wtp:sha256:{}", hex::encode(digest)))
-}
-
 /// Deterministic execution id for one start-on-call invocation. The
 /// invocation id already covers universe, session, run, turn, batch, call,
 /// and binding fingerprint; adding the recipe fingerprint makes the started
@@ -380,6 +383,7 @@ pub struct WorkflowToolBinding {
 /// The model arguments remain in CAS and are referenced by `arguments_ref`.
 /// Receiver-specific interpretation belongs to the receiving workflow.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct WorkflowToolInvocation {
     pub invocation_id: WorkflowToolInvocationId,
     pub tool_id: WorkflowToolId,
@@ -1528,9 +1532,18 @@ pub(crate) fn invocation_from_emit_effect(
         .map(|decoded| {
             decoded
                 .into_iter()
-                .map(|(key, promise_id)| (key, PromiseId::new(promise_id)))
-                .collect::<BTreeMap<_, _>>()
-        });
+                .map(|(key, promise_id)| {
+                    PromiseId::try_new(promise_id)
+                        .map(|promise_id| (key, promise_id))
+                        .map_err(|error| {
+                            DomainError::InvariantViolation(format!(
+                                "workflow tool emit effect has an invalid completion promise id: {error}"
+                            ))
+                        })
+                })
+                .collect::<Result<BTreeMap<_, _>, _>>()
+        })
+        .transpose()?;
 
     Ok(Some(WorkflowToolInvocation {
         invocation_id,
@@ -1701,9 +1714,11 @@ fn require_start_target(binding: &WorkflowToolBinding) -> Result<(), DomainError
 }
 
 /// The completion promise map must exactly match the binding's declared
-/// completion mode: absent for `Accepted`, and for `Promises` a non-empty
-/// keyed set within the cap whose every promise id is the canonical
-/// derivation of (invocation id, key).
+/// completion mode: absent for `Accepted`, the single reserved key for
+/// `Joined`, and for `Promises` a non-empty keyed set within the cap with
+/// a distinct promise id per key. Promise ids are session counters minted
+/// by the executor from the batch's base; the drive checks them against
+/// the batch when it turns the effect into events.
 fn validate_completion_promises(
     binding: &WorkflowToolBinding,
     invocation: &WorkflowToolInvocation,
@@ -1723,17 +1738,6 @@ fn validate_completion_promises(
             if promises.len() != 1 || !promises.contains_key(REPLY_COMPLETION_KEY) {
                 return Err(DomainError::InvariantViolation(format!(
                     "joined workflow tool invocation must use the single reserved completion key `{REPLY_COMPLETION_KEY}`"
-                )));
-            }
-            let promise_id = promises
-                .get(REPLY_COMPLETION_KEY)
-                .expect("joined reply key was checked above");
-            let expected =
-                workflow_tool_promise_id(&invocation.invocation_id, REPLY_COMPLETION_KEY);
-            if promise_id != &expected {
-                return Err(DomainError::InvariantViolation(format!(
-                    "workflow tool completion promise {} is not the canonical derivation for key `{REPLY_COMPLETION_KEY}`",
-                    promise_id
                 )));
             }
             Ok(())
@@ -1765,12 +1769,12 @@ fn validate_completion_promises(
                     "workflow tool reply key source must use the single reserved completion key `{REPLY_COMPLETION_KEY}`"
                 )));
             }
+            let mut seen = BTreeSet::new();
             for (key, promise_id) in promises {
                 validate_completion_key(key)?;
-                let expected = workflow_tool_promise_id(&invocation.invocation_id, key);
-                if promise_id != &expected {
+                if !seen.insert(promise_id) {
                     return Err(DomainError::InvariantViolation(format!(
-                        "workflow tool completion promise for key `{key}` is not the canonical derivation of its invocation"
+                        "workflow tool completion promise {promise_id} is used for more than one key"
                     )));
                 }
             }
@@ -2119,6 +2123,11 @@ fn update_completion_fingerprint(hasher: &mut Sha256, completion: &WorkflowToolC
                 WorkflowToolCompletionKeySource::StringArray { pointer } => {
                     update_digest_part(hasher, b"string_array");
                     update_digest_part(hasher, pointer.as_bytes());
+                }
+                WorkflowToolCompletionKeySource::ArrayItemField { pointer, field } => {
+                    update_digest_part(hasher, b"array_item_field");
+                    update_digest_part(hasher, pointer.as_bytes());
+                    update_digest_part(hasher, field.as_bytes());
                 }
                 WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix } => {
                     update_digest_part(hasher, b"array_indices");
@@ -2608,7 +2617,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_promise_map_must_be_canonical() {
+    fn completion_promise_map_matches_the_binding_and_is_distinct() {
         let universe_id = Uuid::from_u128(1);
         let receiver = endpoint("service::approvals-1");
         let binding = WorkflowToolBinding::admit(
@@ -2658,27 +2667,48 @@ mod tests {
         // Missing map on a promise-bearing binding.
         assert!(validate_completion_promises(&binding, &invocation).is_err());
 
-        // Canonical single-reply map passes.
-        let canonical = workflow_tool_promise_id(&invocation_id, REPLY_COMPLETION_KEY);
+        // A single-reply map with a counter id passes.
         invocation.completion_promises = Some(BTreeMap::from([(
             REPLY_COMPLETION_KEY.to_owned(),
-            canonical.clone(),
+            PromiseId::from_number(1),
         )]));
-        validate_completion_promises(&binding, &invocation).expect("canonical map");
+        validate_completion_promises(&binding, &invocation).expect("reply map");
 
         // Wrong key for the singleton reply source.
         invocation.completion_promises = Some(BTreeMap::from([(
             "job-1".to_owned(),
-            workflow_tool_promise_id(&invocation_id, "job-1"),
+            PromiseId::from_number(1),
         )]));
         assert!(validate_completion_promises(&binding, &invocation).is_err());
 
-        // Non-canonical promise id.
-        invocation.completion_promises = Some(BTreeMap::from([(
-            REPLY_COMPLETION_KEY.to_owned(),
-            PromiseId::new("forged"),
-        )]));
-        assert!(validate_completion_promises(&binding, &invocation).is_err());
+        // A keyed set must not reuse one promise id for two keys.
+        let keyed = WorkflowToolBinding::admit(
+            universe_id,
+            definition("submit", "submit_orders"),
+            WorkflowToolTarget::Bound {
+                receiver: endpoint("service::orders-1"),
+                dispatch: BoundWorkflowToolDispatch::Push,
+            },
+            WorkflowToolCompletion::Promises {
+                reply_schema_ref: None,
+                deadline_after_ms: None,
+                max_promises: 4,
+                key_source: WorkflowToolCompletionKeySource::StringArray {
+                    pointer: "/orders".to_owned(),
+                },
+            },
+        )
+        .expect("keyed binding");
+        invocation.completion_promises = Some(BTreeMap::from([
+            ("a".to_owned(), PromiseId::from_number(2)),
+            ("b".to_owned(), PromiseId::from_number(2)),
+        ]));
+        assert!(validate_completion_promises(&keyed, &invocation).is_err());
+        invocation.completion_promises = Some(BTreeMap::from([
+            ("a".to_owned(), PromiseId::from_number(2)),
+            ("b".to_owned(), PromiseId::from_number(3)),
+        ]));
+        validate_completion_promises(&keyed, &invocation).expect("distinct keyed map");
 
         // Notify bindings must not carry a map.
         let notify = WorkflowToolBinding::admit_bound_notify(
@@ -2689,7 +2719,7 @@ mod tests {
         .expect("notify binding");
         invocation.completion_promises = Some(BTreeMap::from([(
             REPLY_COMPLETION_KEY.to_owned(),
-            canonical,
+            PromiseId::from_number(1),
         )]));
         assert!(validate_completion_promises(&notify, &invocation).is_err());
     }

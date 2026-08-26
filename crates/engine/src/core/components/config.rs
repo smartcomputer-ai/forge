@@ -137,7 +137,7 @@ pub struct FeaturesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<WebFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet: Option<FleetFeature>,
+    pub subagents: Option<SubagentsFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<TimersFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -274,26 +274,108 @@ pub struct WebSearchFeature {
     pub blocked_domains: Vec<String>,
 }
 
-/// Grants the Fleet subagent control plane
-/// (agent_spawn/send/read/list/cancel and profile_list/read).
+/// Grants sub-agent delegation: `agent_run` (joined) and `agent_spawn`
+/// (promise) over the allowlisted agent profiles, bounded by root-scoped,
+/// attenuating limits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FleetFeature {
+pub struct SubagentsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
-    #[serde(default, skip_serializing_if = "FleetProfilesConfig::is_default")]
-    pub profiles: FleetProfilesConfig,
-    #[serde(default, skip_serializing_if = "FleetSpawnConfig::is_default")]
-    pub spawn: FleetSpawnConfig,
+    /// The agent menu: profiles the model may run. Ids must name existing
+    /// profiles at admission; the list is the authority.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agents: Vec<SubagentAgentConfig>,
+    #[serde(flatten)]
+    pub limits: SubagentLimits,
 }
 
-impl Default for FleetFeature {
+impl Default for SubagentsFeature {
     fn default() -> Self {
         Self {
             version: CURRENT_FEATURE_VERSION,
-            profiles: FleetProfilesConfig::default(),
-            spawn: FleetSpawnConfig::default(),
+            agents: Vec::new(),
+            limits: SubagentLimits::default(),
         }
     }
+}
+
+impl SubagentsFeature {
+    pub fn agent_allowed(&self, profile_id: &str) -> bool {
+        self.agents
+            .iter()
+            .any(|agent| agent.profile_id == profile_id)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentAgentConfig {
+    pub profile_id: String,
+}
+
+/// Root-scoped sub-agent limits. Every descendant of a root session counts
+/// against the root; a nested grant attenuates (element-wise minimum with
+/// the limits pinned on its origin) and never widens.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubagentLimits {
+    /// A child at depth `d` may spawn only while `d + 1 <= max_depth`.
+    #[serde(default = "default_subagent_max_depth")]
+    pub max_depth: u32,
+    /// Lifetime total of sessions ever created under the root.
+    #[serde(default = "default_subagent_max_descendants")]
+    pub max_descendants: u32,
+    /// Open sessions under the root, excluding the root itself.
+    #[serde(default = "default_subagent_max_concurrent")]
+    pub max_concurrent: u32,
+    /// Per-child run deadline; bounded by the execution binding's ceiling.
+    #[serde(default = "default_subagent_deadline_ms")]
+    pub deadline_ms: u64,
+}
+
+pub const SUBAGENT_DEFAULT_MAX_DEPTH: u32 = 2;
+pub const SUBAGENT_DEFAULT_MAX_DESCENDANTS: u32 = 16;
+pub const SUBAGENT_DEFAULT_MAX_CONCURRENT: u32 = 4;
+pub const SUBAGENT_DEFAULT_DEADLINE_MS: u64 = 60 * 60 * 1_000;
+/// Hard bound the execution binding enforces; a grant's `deadline_ms` may
+/// not exceed it.
+pub const SUBAGENT_DEADLINE_CEILING_MS: u64 = 24 * 60 * 60 * 1_000;
+
+impl Default for SubagentLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: SUBAGENT_DEFAULT_MAX_DEPTH,
+            max_descendants: SUBAGENT_DEFAULT_MAX_DESCENDANTS,
+            max_concurrent: SUBAGENT_DEFAULT_MAX_CONCURRENT,
+            deadline_ms: SUBAGENT_DEFAULT_DEADLINE_MS,
+        }
+    }
+}
+
+impl SubagentLimits {
+    /// Element-wise minimum: the effective limits of a nested grant.
+    pub fn attenuated_by(self, outer: SubagentLimits) -> Self {
+        Self {
+            max_depth: self.max_depth.min(outer.max_depth),
+            max_descendants: self.max_descendants.min(outer.max_descendants),
+            max_concurrent: self.max_concurrent.min(outer.max_concurrent),
+            deadline_ms: self.deadline_ms.min(outer.deadline_ms),
+        }
+    }
+}
+
+fn default_subagent_max_depth() -> u32 {
+    SUBAGENT_DEFAULT_MAX_DEPTH
+}
+
+fn default_subagent_max_descendants() -> u32 {
+    SUBAGENT_DEFAULT_MAX_DESCENDANTS
+}
+
+fn default_subagent_max_concurrent() -> u32 {
+    SUBAGENT_DEFAULT_MAX_CONCURRENT
+}
+
+fn default_subagent_deadline_ms() -> u64 {
+    SUBAGENT_DEFAULT_DEADLINE_MS
 }
 
 /// Grants timer promises through the sleep tool plus the base concurrency
@@ -377,81 +459,8 @@ pub struct McpServerLink {
     pub defer_loading: Option<bool>,
 }
 
-/// Fleet profile visibility policy for spawn/list/read.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FleetProfilesConfig {
-    /// None means all named profiles are visible/spawnable; Some(empty) means none.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deny: Vec<String>,
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub inline: bool,
-}
-
-impl Default for FleetProfilesConfig {
-    fn default() -> Self {
-        Self {
-            allow: None,
-            deny: Vec::new(),
-            inline: true,
-        }
-    }
-}
-
-impl FleetProfilesConfig {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-
-    pub fn named_profile_allowed(&self, profile_id: &str) -> bool {
-        let allowed = self
-            .allow
-            .as_ref()
-            .is_none_or(|allow| allow.iter().any(|allowed| allowed == profile_id));
-        let denied = self.deny.iter().any(|denied| denied == profile_id);
-        allowed && !denied
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FleetSpawnConfig {
-    /// None means all spawn bases are allowed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bases: Option<Vec<FleetSpawnBase>>,
-}
-
-impl FleetSpawnConfig {
-    pub fn is_default(&self) -> bool {
-        self == &Self::default()
-    }
-
-    pub fn base_allowed(&self, base: FleetSpawnBase) -> bool {
-        self.bases
-            .as_ref()
-            .is_none_or(|bases| bases.contains(&base))
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FleetSpawnBase {
-    #[serde(rename = "self")]
-    Self_,
-    Session,
-    Profile,
-}
-
 fn default_feature_version() -> u32 {
     CURRENT_FEATURE_VERSION
-}
-
-fn default_true() -> bool {
-    true
-}
-
-fn is_true(value: &bool) -> bool {
-    *value
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -600,8 +609,9 @@ fn validate_features(
         validate_feature_version("web", web.version)?;
         validate_web_feature(web, api_kind)?;
     }
-    if let Some(fleet) = &features.fleet {
-        validate_feature_version("fleet", fleet.version)?;
+    if let Some(subagents) = &features.subagents {
+        validate_feature_version("subagents", subagents.version)?;
+        validate_subagents_feature(subagents)?;
     }
     if let Some(timers) = &features.timers {
         validate_feature_version("timers", timers.version)?;
@@ -612,6 +622,41 @@ fn validate_features(
     if let Some(mcp) = &features.mcp {
         validate_feature_version("mcp", mcp.version)?;
         validate_mcp_feature(mcp)?;
+    }
+    Ok(())
+}
+
+fn validate_subagents_feature(subagents: &SubagentsFeature) -> Result<(), DomainError> {
+    if subagents.agents.is_empty() {
+        return Err(DomainError::InvariantViolation(
+            "subagents feature must list at least one agent profile".to_owned(),
+        ));
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    for agent in &subagents.agents {
+        if agent.profile_id.trim().is_empty() {
+            return Err(DomainError::InvariantViolation(
+                "subagents agent profile id must be non-empty".to_owned(),
+            ));
+        }
+        if !seen.insert(agent.profile_id.as_str()) {
+            return Err(DomainError::InvariantViolation(format!(
+                "subagents agent profile id is listed twice: {}",
+                agent.profile_id
+            )));
+        }
+    }
+    let limits = &subagents.limits;
+    if limits.max_depth == 0 || limits.max_descendants == 0 || limits.max_concurrent == 0 {
+        return Err(DomainError::InvariantViolation(
+            "subagents limits maxDepth, maxDescendants, and maxConcurrent must be at least 1"
+                .to_owned(),
+        ));
+    }
+    if limits.deadline_ms == 0 || limits.deadline_ms > SUBAGENT_DEADLINE_CEILING_MS {
+        return Err(DomainError::InvariantViolation(format!(
+            "subagents deadlineMs must be between 1 and {SUBAGENT_DEADLINE_CEILING_MS}"
+        )));
     }
     Ok(())
 }
@@ -1085,6 +1130,37 @@ mod tests {
             .expect_err("unknown feature version must fail validation");
 
         assert!(matches!(error, DomainError::InvariantViolation(_)));
+    }
+
+    #[test]
+    fn subagent_deadline_accepts_24_hours_and_rejects_larger_values() {
+        let mut config = config(ProviderApiKind::OpenAiResponses, None);
+        config.features.subagents = Some(SubagentsFeature {
+            agents: vec![SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            limits: SubagentLimits {
+                deadline_ms: SUBAGENT_DEADLINE_CEILING_MS,
+                ..SubagentLimits::default()
+            },
+            ..SubagentsFeature::default()
+        });
+
+        config
+            .validate()
+            .expect("24-hour deadline must be accepted");
+
+        config
+            .features
+            .subagents
+            .as_mut()
+            .expect("subagents feature")
+            .limits
+            .deadline_ms = SUBAGENT_DEADLINE_CEILING_MS + 1;
+        assert!(matches!(
+            config.validate(),
+            Err(DomainError::InvariantViolation(_))
+        ));
     }
 
     #[test]

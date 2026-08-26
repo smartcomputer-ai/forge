@@ -76,11 +76,16 @@ for (const preparation of plan.preparations) {
   runChecked(preparation.name, preparation.command, preparation.args, preparation.env);
 }
 
-for (const processPlan of plan.processes) {
-  startProcess(processPlan);
-}
-
 try {
+  for (const processPlan of plan.processes) {
+    if (processPlan.startAfter) {
+      console.log(
+        `[startup] waiting for ${processPlan.startAfter.name} before ${processPlan.name}`,
+      );
+      await waitForService(processPlan.startAfter);
+    }
+    startProcess(processPlan);
+  }
   await waitForReadiness(plan);
 } catch (error) {
   console.error(`[readiness] ${error.message}`);
@@ -329,6 +334,28 @@ function createPlan(profile, sourceEnv) {
     processes.push(
       channelsProcess("channels-workflows", "workflows", 9_090, env, tsx),
       channelsProcess("channels-activities", "activities", 9_093, env, tsx),
+      {
+        name: "bots-workflows",
+        command: tsx,
+        args: ["platform/bots/src/runtime/main.ts", "workflows"],
+        cwd: repoRoot,
+        env,
+      },
+      {
+        name: "bots-activities",
+        command: tsx,
+        args: ["platform/bots/src/runtime/main.ts", "activities"],
+        cwd: repoRoot,
+        env,
+        // Temporal may already have due schedule work when the stack starts.
+        // Do not poll for it until the gateway needed by those activities is
+        // accepting requests, or a normal cold start produces a noisy first
+        // attempt failure before the runtime binds its port.
+        startAfter: {
+          name: "runtime gateway",
+          url: `http://127.0.0.1:${runtimePort}/health`,
+        },
+      },
     );
     for (const connector of connectorNames) {
       const metricsPort = connector === "telegram" ? 9_091 : 9_092;

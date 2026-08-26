@@ -276,20 +276,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "fleet": {
+            "mcp": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/FleetFeature"
+                  "$ref": "#/definitions/McpFeature"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "mcp": {
+            "subagents": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/McpFeature"
+                  "$ref": "#/definitions/SubagentsFeature"
                 },
                 {
                   "type": "null"
@@ -324,98 +324,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-          "properties": {
-            "profiles": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetProfilesConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "spawn": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetSpawnConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "FleetProfilesConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "allow": {
-              "description": "Absent means all named profiles are visible/readable/spawnable.",
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "deny": {
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": "array"
-            },
-            "inline": {
-              "description": "Defaults to true when omitted.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetSpawnBase": {
-          "enum": [
-            "self",
-            "session",
-            "profile"
-          ],
-          "type": "string"
-        },
-        "FleetSpawnConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "bases": {
-              "description": "Absent means all bases are allowed.",
-              "items": {
-                "$ref": "#/definitions/FleetSpawnBase"
-              },
-              "type": [
-                "array",
-                "null"
               ]
             }
           },
@@ -662,6 +570,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
@@ -899,6 +823,73 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Absent on input means the deployment default model. Documents read\nback from a session always carry the model; the provider api kind is\npinned for the session's lifetime."
             }
           },
+          "type": "object"
+        },
+        "SubagentAgentRef": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            }
+          },
+          "required": [
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "SubagentsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+          "properties": {
+            "agents": {
+              "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+              "items": {
+                "$ref": "#/definitions/SubagentAgentRef"
+              },
+              "type": "array"
+            },
+            "deadlineMs": {
+              "default": 3600000,
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxConcurrent": {
+              "default": 4,
+              "description": "Open sessions under the root at any time, excluding the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDepth": {
+              "default": 2,
+              "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDescendants": {
+              "default": 16,
+              "description": "Lifetime total of sessions ever created under the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agents"
+          ],
           "type": "object"
         },
         "TimersFeature": {
@@ -1247,6 +1238,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "integer",
             "null"
           ]
+        },
+        "parentSessionId": {
+          "description": "Only sub-agent sessions delegated directly by this session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootSessionId": {
+          "description": "Only sub-agent sessions whose lineage root is this session.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -1418,20 +1423,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "fleet": {
+            "mcp": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/FleetFeature"
+                  "$ref": "#/definitions/McpFeature"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "mcp": {
+            "subagents": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/McpFeature"
+                  "$ref": "#/definitions/SubagentsFeature"
                 },
                 {
                   "type": "null"
@@ -1466,98 +1471,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-          "properties": {
-            "profiles": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetProfilesConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "spawn": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetSpawnConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "FleetProfilesConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "allow": {
-              "description": "Absent means all named profiles are visible/readable/spawnable.",
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "deny": {
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": "array"
-            },
-            "inline": {
-              "description": "Defaults to true when omitted.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetSpawnBase": {
-          "enum": [
-            "self",
-            "session",
-            "profile"
-          ],
-          "type": "string"
-        },
-        "FleetSpawnConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "bases": {
-              "description": "Absent means all bases are allowed.",
-              "items": {
-                "$ref": "#/definitions/FleetSpawnBase"
-              },
-              "type": [
-                "array",
-                "null"
               ]
             }
           },
@@ -1798,6 +1711,73 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Absent on input means the deployment default model. Documents read\nback from a session always carry the model; the provider api kind is\npinned for the session's lifetime."
             }
           },
+          "type": "object"
+        },
+        "SubagentAgentRef": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            }
+          },
+          "required": [
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "SubagentsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+          "properties": {
+            "agents": {
+              "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+              "items": {
+                "$ref": "#/definitions/SubagentAgentRef"
+              },
+              "type": "array"
+            },
+            "deadlineMs": {
+              "default": 3600000,
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxConcurrent": {
+              "default": 4,
+              "description": "Open sessions under the root at any time, excluding the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDepth": {
+              "default": 2,
+              "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDescendants": {
+              "default": 16,
+              "description": "Lifetime total of sessions ever created under the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agents"
+          ],
           "type": "object"
         },
         "TimersFeature": {
@@ -2341,6 +2321,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "kind"
               ],
               "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
+              ],
+              "type": "object"
             }
           ]
         },
@@ -2567,6 +2570,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "blobRef",
                 "mime",
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
               ],
               "type": "object"
             }
@@ -2896,6 +2922,29 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "blobRef",
                 "mime",
                 "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+              "properties": {
+                "text": {
+                  "description": "The catalog body, plain text or Markdown.",
+                  "type": "string"
+                },
+                "title": {
+                  "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+                  "type": "string"
+                },
+                "type": {
+                  "const": "catalog",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "title",
+                "text"
               ],
               "type": "object"
             }
@@ -3279,20 +3328,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "fleet": {
+            "mcp": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/FleetFeature"
+                  "$ref": "#/definitions/McpFeature"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "mcp": {
+            "subagents": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/McpFeature"
+                  "$ref": "#/definitions/SubagentsFeature"
                 },
                 {
                   "type": "null"
@@ -3327,98 +3376,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-          "properties": {
-            "profiles": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetProfilesConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "spawn": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetSpawnConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "FleetProfilesConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "allow": {
-              "description": "Absent means all named profiles are visible/readable/spawnable.",
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "deny": {
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": "array"
-            },
-            "inline": {
-              "description": "Defaults to true when omitted.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetSpawnBase": {
-          "enum": [
-            "self",
-            "session",
-            "profile"
-          ],
-          "type": "string"
-        },
-        "FleetSpawnConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "bases": {
-              "description": "Absent means all bases are allowed.",
-              "items": {
-                "$ref": "#/definitions/FleetSpawnBase"
-              },
-              "type": [
-                "array",
-                "null"
               ]
             }
           },
@@ -3665,6 +3622,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
@@ -3902,6 +3875,73 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Absent on input means the deployment default model. Documents read\nback from a session always carry the model; the provider api kind is\npinned for the session's lifetime."
             }
           },
+          "type": "object"
+        },
+        "SubagentAgentRef": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            }
+          },
+          "required": [
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "SubagentsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+          "properties": {
+            "agents": {
+              "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+              "items": {
+                "$ref": "#/definitions/SubagentAgentRef"
+              },
+              "type": "array"
+            },
+            "deadlineMs": {
+              "default": 3600000,
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxConcurrent": {
+              "default": 4,
+              "description": "Open sessions under the root at any time, excluding the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDepth": {
+              "default": 2,
+              "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDescendants": {
+              "default": 16,
+              "description": "Lifetime total of sessions ever created under the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agents"
+          ],
           "type": "object"
         },
         "TimersFeature": {
@@ -5221,20 +5261,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "fleet": {
+            "mcp": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/FleetFeature"
+                  "$ref": "#/definitions/McpFeature"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "mcp": {
+            "subagents": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/McpFeature"
+                  "$ref": "#/definitions/SubagentsFeature"
                 },
                 {
                   "type": "null"
@@ -5269,98 +5309,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-          "properties": {
-            "profiles": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetProfilesConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "spawn": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetSpawnConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "FleetProfilesConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "allow": {
-              "description": "Absent means all named profiles are visible/readable/spawnable.",
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "deny": {
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": "array"
-            },
-            "inline": {
-              "description": "Defaults to true when omitted.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetSpawnBase": {
-          "enum": [
-            "self",
-            "session",
-            "profile"
-          ],
-          "type": "string"
-        },
-        "FleetSpawnConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "bases": {
-              "description": "Absent means all bases are allowed.",
-              "items": {
-                "$ref": "#/definitions/FleetSpawnBase"
-              },
-              "type": [
-                "array",
-                "null"
               ]
             }
           },
@@ -5552,6 +5500,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "required": [
                 "type",
                 "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },
@@ -5760,6 +5724,73 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Absent on input means the deployment default model. Documents read\nback from a session always carry the model; the provider api kind is\npinned for the session's lifetime."
             }
           },
+          "type": "object"
+        },
+        "SubagentAgentRef": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            }
+          },
+          "required": [
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "SubagentsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+          "properties": {
+            "agents": {
+              "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+              "items": {
+                "$ref": "#/definitions/SubagentAgentRef"
+              },
+              "type": "array"
+            },
+            "deadlineMs": {
+              "default": 3600000,
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxConcurrent": {
+              "default": 4,
+              "description": "Open sessions under the root at any time, excluding the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDepth": {
+              "default": 2,
+              "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDescendants": {
+              "default": 16,
+              "description": "Lifetime total of sessions ever created under the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agents"
+          ],
           "type": "object"
         },
         "TimersFeature": {
@@ -6406,20 +6437,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "fleet": {
+            "mcp": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/FleetFeature"
+                  "$ref": "#/definitions/McpFeature"
                 },
                 {
                   "type": "null"
                 }
               ]
             },
-            "mcp": {
+            "subagents": {
               "anyOf": [
                 {
-                  "$ref": "#/definitions/McpFeature"
+                  "$ref": "#/definitions/SubagentsFeature"
                 },
                 {
                   "type": "null"
@@ -6454,98 +6485,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 {
                   "type": "null"
                 }
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetFeature": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-          "properties": {
-            "profiles": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetProfilesConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "spawn": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/FleetSpawnConfig"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "version": {
-              "default": 1,
-              "format": "uint32",
-              "minimum": 0,
-              "type": "integer"
-            }
-          },
-          "type": "object"
-        },
-        "FleetProfilesConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "allow": {
-              "description": "Absent means all named profiles are visible/readable/spawnable.",
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "deny": {
-              "items": {
-                "$ref": "#/definitions/ProfileId"
-              },
-              "type": "array"
-            },
-            "inline": {
-              "description": "Defaults to true when omitted.",
-              "type": [
-                "boolean",
-                "null"
-              ]
-            }
-          },
-          "type": "object"
-        },
-        "FleetSpawnBase": {
-          "enum": [
-            "self",
-            "session",
-            "profile"
-          ],
-          "type": "string"
-        },
-        "FleetSpawnConfig": {
-          "additionalProperties": {
-            "not": {}
-          },
-          "properties": {
-            "bases": {
-              "description": "Absent means all bases are allowed.",
-              "items": {
-                "$ref": "#/definitions/FleetSpawnBase"
-              },
-              "type": [
-                "array",
-                "null"
               ]
             }
           },
@@ -6737,6 +6676,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "required": [
                 "type",
                 "environmentId"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "properties": {
+                "type": {
+                  "const": "inherit",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
               ],
               "type": "object"
             },
@@ -6945,6 +6900,73 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Absent on input means the deployment default model. Documents read\nback from a session always carry the model; the provider api kind is\npinned for the session's lifetime."
             }
           },
+          "type": "object"
+        },
+        "SubagentAgentRef": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "properties": {
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            }
+          },
+          "required": [
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "SubagentsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+          "properties": {
+            "agents": {
+              "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+              "items": {
+                "$ref": "#/definitions/SubagentAgentRef"
+              },
+              "type": "array"
+            },
+            "deadlineMs": {
+              "default": 3600000,
+              "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxConcurrent": {
+              "default": 4,
+              "description": "Open sessions under the root at any time, excluding the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDepth": {
+              "default": 2,
+              "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxDescendants": {
+              "default": 16,
+              "description": "Lifetime total of sessions ever created under the root.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "version": {
+              "default": 1,
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "agents"
+          ],
           "type": "object"
         },
         "TimersFeature": {
@@ -7868,7 +7890,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_auth_grants_import",
     "method": "auth/grants/import",
     "summary": "Import a static bearer grant",
-    "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API.",
+    "description": "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases.",
     "paramsType": "AuthGrantImportParams",
     "resultType": "AgentApiOutcome<AuthGrantImportResponse>",
     "inputSchema": {
@@ -7893,6 +7915,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "integer",
             "null"
           ]
+        },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
         },
         "grantId": {
           "type": [
@@ -7928,7 +7958,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "required": [
         "token"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -8163,7 +8202,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_auth_flows_start",
     "method": "auth/flows/start",
     "summary": "Start an OAuth authorization flow",
-    "description": "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
+    "description": "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion.",
     "paramsType": "AuthFlowStartParams",
     "resultType": "AgentApiOutcome<AuthFlowStartResponse>",
     "inputSchema": {
@@ -8178,6 +8217,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "clientId": {
           "type": "string"
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "scopes": {
           "items": {
             "type": "string"
@@ -8191,7 +8238,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "required": [
         "clientId"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -8466,6 +8522,14 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "grantId": {
           "type": [
             "string",
@@ -8484,7 +8548,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "providerId",
         "installationId"
       ],
-      "type": "object"
+      "type": "object",
+      "definitions": {
+        "AuthGrantExposure": {
+          "enum": [
+            "brokered",
+            "retrievable"
+          ],
+          "type": "string"
+        }
+      }
     }
   }
 ];

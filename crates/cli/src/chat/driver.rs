@@ -798,10 +798,6 @@ impl ChatSessionDriver {
                 )));
                 events.push(self.status_event("queued"));
             }
-            SessionEventKindView::MessageBuffered { .. }
-            | SessionEventKindView::MessageConsumedByAwait { .. }
-            | SessionEventKindView::MessagePromotedToRun { .. }
-            | SessionEventKindView::MessageCancelled { .. } => {}
             SessionEventKindView::RunStarted { run_id, .. } => {
                 events.push(ChatEvent::RunChanged(self.run_view_from_status(
                     run_id,
@@ -1156,6 +1152,13 @@ fn project_turns(session: &SessionView, settings: &ChatDraftSettings) -> Vec<Cha
                         id: format!("{}:input:{index}", run.id),
                         role: "user".into(),
                         content: text.clone(),
+                        ref_: None,
+                    },
+                    // Context-only; never valid run input, shown defensively.
+                    InputItem::Catalog { title, .. } => ChatMessageView {
+                        id: format!("{}:input:{index}", run.id),
+                        role: "user".into(),
+                        content: format!("catalog: {title}"),
                         ref_: None,
                     },
                     InputItem::TextRef { blob_ref } => ChatMessageView {
@@ -1855,6 +1858,8 @@ mod tests {
             text: None,
             display: None,
             source: None,
+            supersedes: None,
+            superseded_by: None,
         }
     }
 
@@ -1873,6 +1878,8 @@ mod tests {
         let run = api::RunView {
             id: "run_7".into(),
             status: api::RunStatus::Running,
+            started_at_ms: None,
+            completed_at_ms: None,
             source: api::RunViewSource::Input { items: Vec::new() },
             entries: Vec::new(),
             tool_batches: vec![ToolBatchView {
@@ -1896,6 +1903,7 @@ mod tests {
                     }),
                 }],
             }],
+            usage: None,
         };
 
         let chains = project_tool_chains(&run);
@@ -1927,6 +1935,8 @@ mod tests {
         let run = api::RunView {
             id: "run_7".into(),
             status: api::RunStatus::Completed,
+            started_at_ms: None,
+            completed_at_ms: None,
             source: api::RunViewSource::Input { items: Vec::new() },
             entries: vec![ContextEntryView {
                 id: "item_43".into(),
@@ -1954,8 +1964,11 @@ mod tests {
                     error: None,
                 }),
                 source: None,
+                supersedes: None,
+                superseded_by: None,
             }],
             tool_batches: Vec::new(),
+            usage: None,
         };
 
         let chains = project_tool_chains(&run);
@@ -2013,6 +2026,8 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Running,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: Vec::new(),
                 tool_batches: vec![
@@ -2029,10 +2044,12 @@ mod tests {
                         calls: vec![call("call_2", ToolItemStatus::Running)],
                     },
                 ],
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
 
         let settings = ChatDraftSettings {
@@ -2119,16 +2136,20 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Completed,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: vec![
                     reasoning_state_entry("item_1", "I should inspect the crate layout first."),
                     reasoning_state_entry("item_2", "reasoning state rs_abc123"),
                 ],
                 tool_batches: Vec::new(),
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),
@@ -2168,13 +2189,17 @@ mod tests {
             runs: vec![api::RunView {
                 id: "run_1".into(),
                 status: api::RunStatus::Completed,
+                started_at_ms: None,
+                completed_at_ms: None,
                 source: api::RunViewSource::Input { items: Vec::new() },
                 entries: vec![reasoning_state_entry("item_1", "reasoning state rs_abc123")],
                 tool_batches: Vec::new(),
+                usage: None,
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
             management: None,
+            origin: None,
         };
         let settings = ChatDraftSettings {
             provider: "openai".into(),

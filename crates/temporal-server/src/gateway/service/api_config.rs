@@ -14,7 +14,42 @@ impl GatewayAgentApi {
             .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
         self.validate_workspace_link_targets(&config.features)
             .await?;
+        self.validate_subagent_agents(&config.features).await?;
         Ok(config)
+    }
+
+    /// Every allowlisted sub-agent profile must exist when the grant is
+    /// admitted; the list is the authority, so a dangling id is a config
+    /// error, not a spawn-time surprise.
+    pub(super) async fn validate_subagent_agents(
+        &self,
+        features: &engine::FeaturesConfig,
+    ) -> Result<(), AgentApiError> {
+        let Some(subagents) = features.subagents.as_ref() else {
+            return Ok(());
+        };
+        for agent in &subagents.agents {
+            let profile_id =
+                api::ProfileId::try_new(agent.profile_id.clone()).map_err(|error| {
+                    AgentApiError::invalid_request(format!(
+                        "invalid subagents agent profile id {:?}: {error}",
+                        agent.profile_id
+                    ))
+                })?;
+            self.read_profile(ProfileReadParams { profile_id })
+                .await
+                .map_err(|error| {
+                    if is_not_found(&error) {
+                        AgentApiError::invalid_request(format!(
+                            "subagents agent profile does not exist: {}",
+                            agent.profile_id
+                        ))
+                    } else {
+                        error
+                    }
+                })?;
+        }
+        Ok(())
     }
 }
 
@@ -157,17 +192,24 @@ fn features_from_api(
                 blocked_domains: search.blocked_domains,
             }),
         }),
-        fleet: features.fleet.map(|fleet| engine::FleetFeature {
-            version: fleet.version,
-            profiles: fleet
-                .profiles
-                .map(fleet_profiles_config_from_api)
-                .unwrap_or_default(),
-            spawn: fleet
-                .spawn
-                .map(fleet_spawn_config_from_api)
-                .unwrap_or_default(),
-        }),
+        subagents: features
+            .subagents
+            .map(|subagents| engine::SubagentsFeature {
+                version: subagents.version,
+                agents: subagents
+                    .agents
+                    .into_iter()
+                    .map(|agent| engine::SubagentAgentConfig {
+                        profile_id: agent.profile_id.as_str().to_owned(),
+                    })
+                    .collect(),
+                limits: engine::SubagentLimits {
+                    max_depth: subagents.max_depth,
+                    max_descendants: subagents.max_descendants,
+                    max_concurrent: subagents.max_concurrent,
+                    deadline_ms: subagents.deadline_ms,
+                },
+            }),
         timers: features.timers.map(|timers| engine::TimersFeature {
             version: timers.version,
         }),
@@ -263,16 +305,17 @@ pub(super) fn apply_run_limits_config(run_config: &mut RunConfig, limits: RunLim
 
 /// Known reasoning effort tiers per provider api kind. Enforced at the
 /// admission boundary so typos fail the put/run request, not the first
-/// generation; the runtime adapters validate again when materializing.
+/// generation; the vocabulary is the runtime adapters' own so admission
+/// never accepts a tier the adapter rejects (or the reverse).
 pub(super) fn validate_reasoning_effort(
     api_kind: &ProviderApiKind,
     effort: &str,
 ) -> Result<(), AgentApiError> {
     let supported: &[&str] = match api_kind {
-        ProviderApiKind::OpenAiResponses => &["none", "low", "medium", "high", "xhigh"],
-        ProviderApiKind::AnthropicMessages => &["none", "low", "medium", "high", "max"],
+        ProviderApiKind::OpenAiResponses => llm_runtime::params::OPENAI_REASONING_EFFORT_TIERS,
+        ProviderApiKind::AnthropicMessages => llm_runtime::params::ANTHROPIC_REASONING_EFFORT_TIERS,
         ProviderApiKind::OpenAiCompletions => {
-            &["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+            llm_runtime::params::OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS
         }
     };
     if supported.contains(&effort) {
@@ -282,40 +325,6 @@ pub(super) fn validate_reasoning_effort(
             "unsupported reasoning effort {effort:?} for {api_kind:?}; supported: {}",
             supported.join(", ")
         )))
-    }
-}
-
-fn fleet_profiles_config_from_api(
-    profiles: api::FleetProfilesConfig,
-) -> engine::FleetProfilesConfig {
-    engine::FleetProfilesConfig {
-        allow: profiles.allow.map(|allow| {
-            allow
-                .into_iter()
-                .map(|profile_id| profile_id.as_str().to_owned())
-                .collect()
-        }),
-        deny: profiles
-            .deny
-            .into_iter()
-            .map(|profile_id| profile_id.as_str().to_owned())
-            .collect(),
-        inline: profiles.inline.unwrap_or(true),
-    }
-}
-
-fn fleet_spawn_config_from_api(spawn: api::FleetSpawnConfig) -> engine::FleetSpawnConfig {
-    engine::FleetSpawnConfig {
-        bases: spawn.bases.map(|bases| {
-            bases
-                .into_iter()
-                .map(|base| match base {
-                    api::FleetSpawnBase::Self_ => engine::FleetSpawnBase::Self_,
-                    api::FleetSpawnBase::Session => engine::FleetSpawnBase::Session,
-                    api::FleetSpawnBase::Profile => engine::FleetSpawnBase::Profile,
-                })
-                .collect()
-        }),
     }
 }
 
@@ -375,5 +384,38 @@ mod tests {
     #[test]
     fn completions_rejects_unknown_reasoning_effort() {
         assert!(validate_reasoning_effort(&ProviderApiKind::OpenAiCompletions, "ultra").is_err());
+    }
+
+    #[test]
+    fn anthropic_accepts_current_effort_vocabulary_including_xhigh() {
+        for effort in ["none", "low", "medium", "high", "xhigh", "max"] {
+            validate_reasoning_effort(&ProviderApiKind::AnthropicMessages, effort)
+                .unwrap_or_else(|error| panic!("{effort} should be supported: {error}"));
+        }
+        assert!(validate_reasoning_effort(&ProviderApiKind::AnthropicMessages, "minimal").is_err());
+    }
+
+    #[test]
+    fn admission_effort_vocabulary_matches_runtime_adapters() {
+        for (api_kind, tiers) in [
+            (
+                ProviderApiKind::OpenAiResponses,
+                llm_runtime::params::OPENAI_REASONING_EFFORT_TIERS,
+            ),
+            (
+                ProviderApiKind::AnthropicMessages,
+                llm_runtime::params::ANTHROPIC_REASONING_EFFORT_TIERS,
+            ),
+            (
+                ProviderApiKind::OpenAiCompletions,
+                llm_runtime::params::OPENAI_COMPLETIONS_REASONING_EFFORT_TIERS,
+            ),
+        ] {
+            for effort in tiers {
+                validate_reasoning_effort(&api_kind, effort)
+                    .unwrap_or_else(|error| panic!("{api_kind:?} {effort}: {error}"));
+            }
+            assert!(validate_reasoning_effort(&api_kind, "ultra").is_err());
+        }
     }
 }

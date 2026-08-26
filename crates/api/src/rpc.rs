@@ -18,6 +18,12 @@ pub enum AgentApiErrorKind {
     /// workflow) so clients/bridges treat it as a session recovery problem
     /// rather than an ordinary "answer this message" failure.
     SessionBootstrapFailed,
+    /// The environment exists but is not reachable yet: it is still
+    /// provisioning/booting, or it was powered down and a wake (desired
+    /// power `running`) has been initiated by this request. Distinct from
+    /// `Rejected` so clients retry with backoff instead of failing —
+    /// polling and automation callers lean on this for wake-on-use.
+    EnvironmentNotReady,
     Internal,
 }
 
@@ -81,6 +87,10 @@ impl AgentApiError {
         Self::new(AgentApiErrorKind::SessionBootstrapFailed, message)
     }
 
+    pub fn environment_not_ready(message: impl Into<String>) -> Self {
+        Self::new(AgentApiErrorKind::EnvironmentNotReady, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(AgentApiErrorKind::Internal, message)
     }
@@ -98,6 +108,7 @@ impl AgentApiError {
             | AgentApiErrorKind::TranscodeFailure
             | AgentApiErrorKind::TranscriptionFailure => -32010,
             AgentApiErrorKind::SessionBootstrapFailed => -32011,
+            AgentApiErrorKind::EnvironmentNotReady => -32012,
             AgentApiErrorKind::Internal => -32603,
         }
     }
@@ -205,19 +216,25 @@ impl From<AgentApiError> for JsonRpcError {
     }
 }
 
-/// Authorization scope of a JSON-RPC method: universe-scoped methods act
-/// inside the request's resolved universe; operator-scoped methods address
-/// the deployment itself and never resolve one.
+/// Authorization scope of a JSON-RPC method. Service methods resolve a
+/// universe like ordinary universe methods, but are admitted only for trusted
+/// service callers at the HTTP edge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MethodScope {
     Universe,
+    Service,
     Operator,
+}
+
+pub fn is_service_method(method: &str) -> bool {
+    method == METHOD_AUTH_GRANTS_LEASE
 }
 
 impl MethodScope {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Universe => "universe",
+            Self::Service => "service",
             Self::Operator => "operator",
         }
     }
@@ -272,7 +289,11 @@ macro_rules! api_methods {
                 $(
                     MethodSpec {
                         method: $method_const,
-                        scope: MethodScope::Universe,
+                        scope: if $method_const == METHOD_AUTH_GRANTS_LEASE {
+                            MethodScope::Service
+                        } else {
+                            MethodScope::Universe
+                        },
                         summary: $summary,
                         description: $description,
                         params_type: stringify!($params),
@@ -366,7 +387,7 @@ api_methods! {
     METHOD_ENVIRONMENTS_TEMPLATES_READ => read_environment_template(EnvironmentTemplateReadParams) -> EnvironmentTemplateReadResponse =>
         ["Read an environment template", "Returns one immutable template version from the selected bound provider controller."],
     METHOD_ENVIRONMENTS_JOBS_CREATE => create_environment_jobs(EnvironmentJobCreateParams) -> EnvironmentJobCreateResponse =>
-        ["Create environment jobs", "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session."],
+        ["Create environment jobs", "Starts a dependency-aware job group on one environment instance, injecting the environment's configured credentials at provider start. requestId is the retry identity; jobs are owned by the instance rather than a session. A powered-down environment is woken on use: the call fails with environment_not_ready while the wake is in progress; retry with backoff."],
     METHOD_ENVIRONMENTS_JOBS_READ => read_environment_jobs(EnvironmentJobReadParams) -> EnvironmentJobReadResponse =>
         ["Read environment jobs", "Reads selected job handles with bounded output, optional sequence continuation, and optional artifacts; use returned status/sequence data for polling."],
     METHOD_ENVIRONMENTS_JOBS_CANCEL => cancel_environment_jobs(EnvironmentJobCancelParams) -> EnvironmentJobCancelResponse =>
@@ -412,7 +433,9 @@ api_methods! {
     METHOD_MCP_SERVERS_DELETE => delete_mcp_server(McpServerDeleteParams) -> McpServerDeleteResponse =>
         ["Delete an MCP server record", "Deletes the catalog document. Existing session configs that reference it are not silently rewritten and may need explicit reconfiguration."],
     METHOD_AUTH_GRANTS_IMPORT => import_auth_grant(AuthGrantImportParams) -> AuthGrantImportResponse =>
-        ["Import a static bearer grant", "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. The token can never be read back through the API."],
+        ["Import a static bearer grant", "Accepts a plaintext token, encrypts it immediately, and returns only grant metadata/token-presence flags. Brokered is the default; retrievable exposure is immutable and permits service-only leases."],
+    METHOD_AUTH_GRANTS_LEASE => lease_auth_grant(AuthGrantLeaseParams) -> AuthGrantLeaseResponse =>
+        ["Lease a retrievable authentication grant", "Service callers only. Resolves the current access token through the broker, records the lease, and returns it once. Cache only in memory until expiry minus margin (or at most five minutes without expiry), re-lease after target 401/403, and never persist or place the token in workflow payloads."],
     METHOD_AUTH_GRANTS_READ => read_auth_grant(AuthGrantReadParams) -> AuthGrantReadResponse =>
         ["Read authentication grant metadata", "Returns principal, provider binding, scopes, audience, expiry, status, and token-presence flags; access and refresh token values are never returned."],
     METHOD_AUTH_GRANTS_LIST => list_auth_grants(AuthGrantListParams) -> AuthGrantListResponse =>
@@ -428,7 +451,7 @@ api_methods! {
     METHOD_AUTH_CLIENTS_DELETE => delete_auth_client(AuthClientDeleteParams) -> AuthClientDeleteResponse =>
         ["Delete an OAuth client", "Deletes the client registration and its stored client secret; grants already created from it remain separate records."],
     METHOD_AUTH_FLOWS_START => start_auth_flow(AuthFlowStartParams) -> AuthFlowStartResponse =>
-        ["Start an OAuth authorization flow", "Creates a short-lived PKCE flow and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion."],
+        ["Start an OAuth authorization flow", "Creates a short-lived PKCE flow carrying the immutable grant exposure choice and returns a browser authorization URL containing one-time state. Treat the URL as sensitive and poll auth/flows/read for completion."],
     METHOD_AUTH_FLOWS_READ => read_auth_flow_status(AuthFlowStatusParams) -> AuthFlowStatusResponse =>
         ["Read OAuth flow status", "Polls a flow's pending/completed/failed/expired state and returns the resulting grant id when authorization succeeds; no token value is exposed."],
     METHOD_AUTH_PROVIDERS_CREATE => create_auth_provider(AuthProviderCreateParams) -> AuthProviderCreateResponse =>

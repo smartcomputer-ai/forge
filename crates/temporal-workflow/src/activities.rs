@@ -14,8 +14,9 @@ use crate::{
     EnvironmentJobStartActivityResult, LlmGenerateActivityRequest,
     PreprocessRunInputActivityRequest, PreprocessRunInputActivityResult, PutBlobRequest,
     ReadBlobRequest, ReadBlobResult, RuntimeProjectionRefreshActivityRequest,
-    RuntimeProjectionRefreshActivityResult, ToolInvokeBatchActivityRequest,
-    ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
+    RuntimeProjectionRefreshActivityResult, SubagentCloseActivityRequest,
+    SubagentPrepareActivityRequest, SubagentPrepareActivityResult, SubagentResolveActivityRequest,
+    ToolInvokeBatchActivityRequest, ToolInvokeCallActivityRequest, ToolInvokeCallActivityResult,
     ToolPreparePromiseControlsActivityRequest, WorkflowToolExecutionCancelRequest,
     WorkflowToolExecutionCheckRequest, WorkflowToolReplyValidationRequest,
     WorkflowToolReplyValidationResult, WorkflowToolStartActivityRequest,
@@ -50,6 +51,9 @@ pub const ACTIVITY_CHECK_WORKFLOW_TOOL_EXECUTION: &str =
 pub const ACTIVITY_CANCEL_WORKFLOW_TOOL_EXECUTION: &str =
     "WorkflowActivities::cancel_workflow_tool_execution";
 pub const ACTIVITY_AWAIT_ENVIRONMENT_READY: &str = "WorkflowActivities::await_environment_ready";
+pub const ACTIVITY_SUBAGENT_PREPARE: &str = "WorkflowActivities::subagent_prepare";
+pub const ACTIVITY_SUBAGENT_RESOLVE: &str = "WorkflowActivities::subagent_resolve";
+pub const ACTIVITY_SUBAGENT_CLOSE: &str = "WorkflowActivities::subagent_close";
 
 pub struct WorkflowActivities;
 
@@ -238,6 +242,36 @@ impl WorkflowActivities {
     pub async fn cancel_workflow_tool_execution(
         _ctx: ActivityContext,
         _request: WorkflowToolExecutionCancelRequest,
+    ) -> Result<(), ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Validate the pinned sub-agent grant, reserve the root-scoped tree
+    /// slot, create the child session from the pinned profile, and start
+    /// its run with a notify intent back to the execution.
+    #[activity(name = ACTIVITY_SUBAGENT_PREPARE)]
+    pub async fn subagent_prepare(
+        _ctx: ActivityContext,
+        _request: SubagentPrepareActivityRequest,
+    ) -> Result<SubagentPrepareActivityResult, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Build the child's result envelope, close the child, and return the
+    /// parent's `reply` resolution.
+    #[activity(name = ACTIVITY_SUBAGENT_RESOLVE)]
+    pub async fn subagent_resolve(
+        _ctx: ActivityContext,
+        _request: SubagentResolveActivityRequest,
+    ) -> Result<engine::PromiseResolution, ActivityError> {
+        unimplemented!("workflow activity definition only")
+    }
+
+    /// Force-close the child session (cancelled delegation).
+    #[activity(name = ACTIVITY_SUBAGENT_CLOSE)]
+    pub async fn subagent_close(
+        _ctx: ActivityContext,
+        _request: SubagentCloseActivityRequest,
     ) -> Result<(), ActivityError> {
         unimplemented!("workflow activity definition only")
     }

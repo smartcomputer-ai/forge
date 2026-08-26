@@ -21,13 +21,15 @@ use crate::{
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
     params::{openai_reasoning_from_effort, openai_responses_params},
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::LlmGenerationExecution,
+    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
     },
 };
 
 const PROVIDER_KIND_MESSAGE: &str = "openai.responses.message";
+/// A model-authored refusal rendered as the assistant message.
+const PROVIDER_KIND_REFUSAL: &str = "openai.responses.refusal";
 const PROVIDER_KIND_FUNCTION_CALL: &str = "openai.responses.function_call";
 const MEDIA_TYPE_JSON: &str = "application/json";
 const MEDIA_TYPE_TEXT: &str = "text/plain";
@@ -133,7 +135,10 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
             });
         }
 
-        let provider_request = self.materialize_create_request(&request.request).await?;
+        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        // Route every turn of a session to the same prompt cache (P137).
+        provider_request.prompt_cache_key =
+            Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let (send_request, redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
@@ -259,6 +264,7 @@ pub async fn materialize_create_request(
         service_tier,
         context_management: context_management_from_compaction(request.compaction.as_ref()),
         extra,
+        prompt_cache_key: None,
     })
 }
 
@@ -439,25 +445,30 @@ async fn materialize_input_item(
         ContextEntryKind::VfsCatalog => {
             let catalog =
                 crate::environment_prompts::read_vfs_catalog(blobs, &item.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::environment_prompts::vfs_catalog_text(&catalog),
-                ),
-                extra: Default::default(),
-            }))
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::environment_prompts::vfs_catalog_text(&catalog),
+            )))
         }
         ContextEntryKind::SkillCatalog => {
             let catalog =
                 crate::skill_prompts::read_skill_catalog(blobs, &item.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(crate::skill_prompts::skill_catalog_text(
-                    &catalog,
-                )),
-                extra: Default::default(),
-            }))
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::skill_prompts::skill_catalog_text(&catalog),
+            )))
         }
+        ContextEntryKind::SubagentCatalog => {
+            let catalog =
+                crate::subagent_prompts::read_subagent_catalog(blobs, &item.content_ref).await?;
+            Ok(developer_message(crate::catalog_prompts::catalog_text(
+                item,
+                crate::subagent_prompts::subagent_catalog_text(&catalog),
+            )))
+        }
+        ContextEntryKind::Catalog { .. } => Ok(developer_message(
+            crate::catalog_prompts::external_catalog_text(blobs, item, &item.content_ref).await?,
+        )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
             let text = read_text(blobs, &item.content_ref).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {
@@ -774,13 +785,54 @@ pub async fn result_from_response(
         }
     }
 
+    let finish = finish_reason(&response.parsed, !tool_calls.is_empty());
     let status = generation_status(response.parsed.status);
-    let failure_ref = if status == LlmGenerationStatus::Failed {
-        Some(provider_failure_ref(blobs, &response.parsed).await?)
-    } else {
-        None
-    };
     let usage = response.parsed.usage.as_ref().map(llm_usage);
+    let (status, failure_ref, context_entries, tool_calls) =
+        if status == LlmGenerationStatus::Failed {
+            (
+                status,
+                Some(provider_failure_ref(blobs, &response.parsed).await?),
+                context_entries,
+                tool_calls,
+            )
+        } else if finish == LlmFinish::ContentFilter {
+            // A content filter is terminal for the turn, the same as a provider
+            // refusal: fail it with the reason instead of completing as an empty
+            // or partial answer, drop the partial content, and never fall back
+            // to another model.
+            (
+                LlmGenerationStatus::Failed,
+                Some(content_filter_failure_ref(blobs, request, &response.parsed.id).await?),
+                Vec::new(),
+                Vec::new(),
+            )
+        } else if finish == LlmFinish::Length {
+            // Cut off at the output cap: fail the turn but keep the partial
+            // text; function calls from an unfinished turn have no outputs to
+            // replay against and are dropped with the reasoning items.
+            let failure_ref = put_text(
+                blobs,
+                truncation_failure_text(
+                    request.run_id,
+                    request.turn_id,
+                    "OpenAI Responses",
+                    &response.parsed.id,
+                    request.request.output_limit.map(u64::from),
+                    usage.as_ref().and_then(|usage| usage.output_tokens),
+                    usage.as_ref().and_then(|usage| usage.reasoning_tokens),
+                ),
+            )
+            .await?;
+            (
+                LlmGenerationStatus::Failed,
+                Some(failure_ref),
+                partial_output_entries(context_entries),
+                Vec::new(),
+            )
+        } else {
+            (status, None, context_entries, tool_calls)
+        };
     Ok(LlmGenerationResult {
         run_id: request.run_id,
         turn_id: request.turn_id,
@@ -789,7 +841,7 @@ pub async fn result_from_response(
         context_entries,
         facts: LlmGenerationFacts {
             provider_response_id: Some(response.parsed.id.clone()),
-            finish: finish_reason(&response.parsed, !tool_calls.is_empty()),
+            finish,
             usage,
             tool_calls,
             context_token_estimate: response
@@ -835,6 +887,24 @@ pub async fn result_from_compact_response(
         failure_ref: None,
         context_entries,
     })
+}
+
+/// Failure text for a `content_filter` stop, in the worker's provider-error
+/// blob layout so clients render it like any other model failure.
+async fn content_filter_failure_ref(
+    blobs: &dyn BlobStore,
+    request: &LlmGenerationRequest,
+    response_id: &str,
+) -> LlmAdapterResult<BlobRef> {
+    put_text(
+        blobs,
+        format!(
+            "core agent LLM generation failed\nrun_id={}\nturn_id={}\n\
+             error=OpenAI Responses stopped response {response_id} for content_filter\n",
+            request.run_id, request.turn_id
+        ),
+    )
+    .await
 }
 
 async fn provider_failure_ref(
@@ -905,6 +975,21 @@ async fn assistant_context_entry(
     } else {
         text
     };
+    // A model-authored refusal (`{"type": "refusal"}` parts) is the visible
+    // answer, as with Chat Completions' `refusal` field: render it so the
+    // turn never looks empty. Server-side filtering is a `content_filter`
+    // stop and fails the turn instead.
+    let (text, provider_kind) = if text.is_empty() {
+        let refusal = item
+            .content
+            .iter()
+            .filter_map(|content| content.refusal.as_deref())
+            .collect::<Vec<_>>()
+            .join("");
+        (refusal, PROVIDER_KIND_REFUSAL)
+    } else {
+        (text, PROVIDER_KIND_MESSAGE)
+    };
     if text.is_empty() {
         return Ok(None);
     }
@@ -917,7 +1002,7 @@ async fn assistant_context_entry(
         content_ref,
         media_type: Some(MEDIA_TYPE_TEXT.to_string()),
         preview: Some(text),
-        provider_kind: Some(PROVIDER_KIND_MESSAGE.to_string()),
+        provider_kind: Some(provider_kind.to_string()),
         provider_item_id: item.id.clone(),
         token_estimate: None,
     }))
@@ -1151,6 +1236,15 @@ fn u64_to_u32(value: u64) -> u32 {
     value.min(u64::from(u32::MAX)) as u32
 }
 
+/// A developer-role text item; catalogs and instructions render this way.
+fn developer_message(text: String) -> oai::ResponseInputItem {
+    oai::ResponseInputItem::Message(oai::InputMessage {
+        role: oai::MessageRole::Developer,
+        content: oai::InputMessageContent::Text(text),
+        extra: Default::default(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1249,6 +1343,7 @@ mod tests {
             provider_kind: item.provider_kind.clone(),
             provider_item_id: item.provider_item_id.clone(),
             token_estimate: item.token_estimate.clone(),
+            supersedes: None,
         }
     }
 
@@ -1395,6 +1490,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let item = ContextEntry {
             key: None,
@@ -1412,6 +1508,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let mut request = intent_request(vec![instructions_item, item]);
         request.tools = vec![ToolSpec {
@@ -1941,6 +2038,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let user_item = ContextEntry {
             key: None,
@@ -1958,6 +2056,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let activation_item = ContextEntry {
             key: None,
@@ -1975,6 +2074,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let request = intent_request(vec![catalog_item, user_item, activation_item]);
 
@@ -2019,6 +2119,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let raw_json = json!({
             "id": "resp_1",
@@ -2171,6 +2272,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let raw_json = json!({
             "id": "cmp_resp_1",
@@ -2245,6 +2347,137 @@ mod tests {
                 "model": "gpt-5.1",
                 "input": [{ "role": "user", "content": "Summarize the prior work." }]
             })
+        );
+    }
+
+    /// An incomplete response stopped for `content_filter` fails the turn
+    /// like a provider refusal instead of completing with partial output.
+    /// An incomplete response stopped for `max_output_tokens` fails the turn
+    /// but keeps the partial text; the dangling function call is dropped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn max_output_tokens_stop_fails_the_turn_but_keeps_partial_text() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "resp_cut",
+            "object": "response",
+            "status": "incomplete",
+            "incomplete_details": { "reason": "max_output_tokens" },
+            "output": [
+                {
+                    "type": "message",
+                    "id": "msg_1",
+                    "role": "assistant",
+                    "status": "incomplete",
+                    "content": [{ "type": "output_text", "text": "The bicycle was", "annotations": [] }]
+                },
+                {
+                    "type": "function_call",
+                    "id": "fc_1",
+                    "call_id": "call_1",
+                    "name": "read_file",
+                    "arguments": "{\"path\":\"Cargo.toml\"}"
+                }
+            ],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 32,
+                "total_tokens": 42,
+                "output_tokens_details": { "reasoning_tokens": 8 }
+            }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("response"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: {
+                let mut request = intent_request(Vec::new());
+                request.output_limit = Some(32);
+                request
+            },
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::Length);
+        assert!(result.facts.tool_calls.is_empty(), "no tool call may run");
+        assert_eq!(
+            result.context_entries.len(),
+            1,
+            "{:?}",
+            result.context_entries
+        );
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("The bicycle was")
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(
+            failure.contains("cut off at max output tokens 32 after 32 output tokens (8 thinking)"),
+            "{failure}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn content_filter_stop_fails_the_turn() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "resp_filtered",
+            "object": "response",
+            "status": "incomplete",
+            "incomplete_details": { "reason": "content_filter" },
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "status": "incomplete",
+                "content": [{ "type": "output_text", "text": "partial", "annotations": [] }]
+            }],
+            "usage": { "input_tokens": 10, "output_tokens": 1, "total_tokens": 11 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("response"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(4),
+            turn_id: TurnId::new(9),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.facts.finish, LlmFinish::ContentFilter);
+        assert!(
+            result.context_entries.is_empty(),
+            "partial content must not land in the session log"
+        );
+        let failure = blobs
+            .read_text(&result.failure_ref.expect("failure ref"))
+            .await
+            .expect("failure text");
+        assert!(failure.contains("run_id=4"), "{failure}");
+        assert!(failure.contains("turn_id=9"), "{failure}");
+        assert!(
+            failure.contains("stopped response resp_filtered for content_filter"),
+            "{failure}"
         );
     }
 
@@ -2550,6 +2783,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let entries = vec![
             entry(1, image_ref, Some("image/png")),
@@ -2595,6 +2829,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let input = materialize_input_items(&blobs, &entries)
@@ -2631,6 +2866,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         }];
 
         let input = materialize_input_items(&blobs, &entries)
@@ -2643,6 +2879,55 @@ mod tests {
             value["content"][0]["text"],
             json!("[document: notes.md]\n# Notes\nhello")
         );
+    }
+
+    /// A model-authored refusal part is the visible answer (as with Chat
+    /// Completions' `refusal` field); it must not render as an empty turn.
+    #[tokio::test(flavor = "current_thread")]
+    async fn refusal_content_part_renders_as_the_assistant_message() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_json = json!({
+            "id": "resp_refusal",
+            "object": "response",
+            "status": "completed",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{ "type": "refusal", "refusal": "I can't help with that." }]
+            }],
+            "usage": { "input_tokens": 10, "output_tokens": 6, "total_tokens": 16 }
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("response"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Succeeded);
+        assert_eq!(result.facts.finish, LlmFinish::Stop);
+        assert_eq!(result.context_entries.len(), 1);
+        let entry = &result.context_entries[0];
+        assert!(matches!(
+            entry.kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(entry.preview.as_deref(), Some("I can't help with that."));
+        assert_eq!(entry.provider_kind.as_deref(), Some(PROVIDER_KIND_REFUSAL));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2754,6 +3039,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
         let entries = vec![entry(1, first_ref), entry(2, second_ref)];
 
@@ -2796,6 +3082,7 @@ mod tests {
             provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
+            supersedes: None,
         };
 
         let item = materialize_input_item(&blobs, &entry)
@@ -2815,5 +3102,96 @@ mod tests {
             .decode(encoded)
             .expect("valid base64");
         assert_eq!(decoded, image_bytes);
+    }
+
+    fn catalog_entry(id: u64, content_ref: BlobRef, supersedes: Option<u64>) -> ContextEntry {
+        ContextEntry {
+            key: Some(engine::ContextEntryKey::new("bot:directory")),
+            entry_id: ContextEntryId::new(id),
+            kind: ContextEntryKind::Catalog {
+                title: "Bot directory".to_string(),
+            },
+            source: ContextEntrySource::ContextEdit,
+            content_ref,
+            media_type: Some("text/markdown".to_string()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: supersedes.map(ContextEntryId::new),
+        }
+    }
+
+    /// A catalog update must append, never rewrite: every input item before
+    /// it is byte-identical, and only the successor carries the update
+    /// header. This is what keeps OpenAI's automatic prefix cache warm on
+    /// long-lived sessions.
+    #[tokio::test(flavor = "current_thread")]
+    async fn superseding_catalog_appends_without_moving_the_rendered_prefix() {
+        let blobs = InMemoryBlobStore::new();
+        let v1_ref = text_blob(&blobs, "- infra: accepts events addressed by you").await;
+        let v2_ref = text_blob(
+            &blobs,
+            "- infra: accepts events addressed by you\n- comms: subscribes",
+        )
+        .await;
+        let input_ref = text_blob(&blobs, "Who can I reach?").await;
+        let user = ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(2),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
+            },
+            source: ContextEntrySource::RunInput {
+                run_id: RunId::new(1),
+                input_index: 0,
+            },
+            content_ref: input_ref,
+            media_type: None,
+            preview: None,
+            provider_kind: None,
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+
+        let before = materialize_create_request(
+            &blobs,
+            &intent_request(vec![catalog_entry(1, v1_ref.clone(), None), user.clone()]),
+        )
+        .await
+        .expect("request before the update");
+        let after = materialize_create_request(
+            &blobs,
+            &intent_request(vec![
+                catalog_entry(1, v1_ref, None),
+                user,
+                catalog_entry(3, v2_ref, Some(1)),
+            ]),
+        )
+        .await
+        .expect("request after the update");
+
+        let before_items = serde_json::to_value(&before.input)
+            .expect("json")
+            .as_array()
+            .cloned()
+            .expect("items");
+        let after_items = serde_json::to_value(&after.input)
+            .expect("json")
+            .as_array()
+            .cloned()
+            .expect("items");
+        assert_eq!(after_items.len(), before_items.len() + 1);
+        assert_eq!(&after_items[..before_items.len()], &before_items[..]);
+        let successor =
+            serde_json::to_string(after_items.last().expect("successor")).expect("json");
+        assert!(successor.contains(crate::catalog_prompts::CATALOG_UPDATE_HEADER));
+        assert!(successor.contains("Bot directory:"));
+        assert!(
+            !serde_json::to_string(&before_items[0])
+                .expect("json")
+                .contains("Updated catalog")
+        );
     }
 }

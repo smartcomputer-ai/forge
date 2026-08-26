@@ -9,6 +9,7 @@ pub use crate::session::{
 macro_rules! string_id {
     ($name:ident, $validator:ident) => {
         #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
         pub struct $name(String);
 
         impl $name {
@@ -92,6 +93,7 @@ macro_rules! numeric_id {
             Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
         )]
         #[serde(transparent)]
+        #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
         pub struct $name(u64);
 
         impl $name {
@@ -131,7 +133,6 @@ string_id!(
 );
 
 numeric_id!(RunId);
-numeric_id!(MessageId);
 numeric_id!(SteeringId);
 numeric_id!(TurnId);
 numeric_id!(ToolBatchId);
@@ -140,11 +141,12 @@ numeric_id!(ContextItemId);
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdCursors {
     pub last_run_id: u64,
-    pub last_message_id: u64,
     pub last_steering_id: u64,
     pub last_turn_id: u64,
     pub last_tool_batch_id: u64,
     pub last_context_item_id: u64,
+    #[serde(default)]
+    pub last_promise_id: u64,
 }
 
 fn validate_tool_name(kind: &'static str, value: &str) -> Result<(), StringIdError> {

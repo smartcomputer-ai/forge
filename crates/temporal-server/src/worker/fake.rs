@@ -1,7 +1,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -112,6 +112,7 @@ pub struct FakeLlm {
     failing_parallel_call: Option<usize>,
     transient_failures_remaining: Arc<AtomicUsize>,
     generation_delay: Duration,
+    stalled: Arc<AtomicBool>,
     counters: FakeRuntimeCounters,
 }
 
@@ -124,8 +125,18 @@ impl FakeLlm {
             failing_parallel_call: None,
             transient_failures_remaining: Arc::new(AtomicUsize::new(0)),
             generation_delay: Duration::ZERO,
+            stalled: Arc::new(AtomicBool::new(false)),
             counters: FakeRuntimeCounters::default(),
         }
+    }
+
+    /// While `stalled` is set, every generate call hangs forever (it counts
+    /// as started and, once the activity abandons it, as abandoned). Live
+    /// tests use this to drive provider activities into Temporal's timeouts
+    /// and then clear the switch to let the session recover.
+    pub fn with_stall_switch(mut self, stalled: Arc<AtomicBool>) -> Self {
+        self.stalled = stalled;
+        self
     }
 
     /// Sleep this long inside every generate call before producing the
@@ -316,6 +327,9 @@ impl CoreAgentLlm for FakeLlm {
             &self.counters.generations_completed,
             &self.counters.generations_abandoned,
         );
+        if self.stalled.load(Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
         if !self.generation_delay.is_zero() {
             tokio::time::sleep(self.generation_delay).await;
         }

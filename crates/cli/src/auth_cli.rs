@@ -680,6 +680,7 @@ async fn grant_import(args: AuthGrantImportArgs) -> Result<()> {
     let api = HttpAgentApi::new(args.api_url.clone());
     let response = api
         .import_auth_grant(api::AuthGrantImportParams {
+            exposure: api::AuthGrantExposure::Brokered,
             grant_id: args.grant_id.clone(),
             provider_id: args.provider_id.clone(),
             token,
@@ -876,6 +877,7 @@ async fn login(args: AuthLoginArgs) -> Result<()> {
     let api = HttpAgentApi::new(args.api_url.clone());
     let started = api
         .start_auth_flow(api::AuthFlowStartParams {
+            exposure: api::AuthGrantExposure::Brokered,
             client_id: args.client_id.clone(),
             scopes: if args.scopes.is_empty() {
                 None
@@ -1201,6 +1203,7 @@ async fn github_installation_grant(args: AuthGithubInstallationGrantArgs) -> Res
     let api = HttpAgentApi::new(args.api_url);
     let response = api
         .grant_github_installation(api::AuthGitHubInstallationGrantParams {
+            exposure: api::AuthGrantExposure::Brokered,
             provider_id: args.provider_id,
             installation_id: args.installation_id,
             grant_id: args.grant_id,

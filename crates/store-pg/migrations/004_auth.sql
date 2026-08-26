@@ -65,6 +65,11 @@ CREATE TABLE IF NOT EXISTS auth_grants (
     oauth_client_id text,
     expires_at_ms bigint,
     status text NOT NULL DEFAULT 'active',
+    -- Creation-time authority boundary. Retrievable grants may be leased to
+    -- trusted service workers; brokered grants never expose plaintext.
+    exposure text NOT NULL DEFAULT 'brokered',
+    last_leased_at_ms bigint,
+    lease_count bigint NOT NULL DEFAULT 0,
     metadata_json jsonb NOT NULL DEFAULT '{}',
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
@@ -81,8 +86,6 @@ CREATE TABLE IF NOT EXISTS auth_grants (
                 'static_bearer',
                 'mcp_oauth',
                 'github_app',
-                'github_app_user',
-                'github_oauth_app',
                 'custom_oauth',
                 'model_api_key',
                 'model_oauth'
@@ -98,6 +101,12 @@ CREATE TABLE IF NOT EXISTS auth_grants (
         CHECK (audience IS NULL OR audience <> ''),
     CONSTRAINT auth_grants_status_known
         CHECK (status IN ('active', 'needs_reauth', 'revoked', 'failed')),
+    CONSTRAINT auth_grants_exposure_known
+        CHECK (exposure IN ('brokered', 'retrievable')),
+    CONSTRAINT auth_grants_last_leased_at_ms_nonnegative
+        CHECK (last_leased_at_ms IS NULL OR last_leased_at_ms >= 0),
+    CONSTRAINT auth_grants_lease_count_nonnegative
+        CHECK (lease_count >= 0),
     CONSTRAINT auth_grants_metadata_is_object
         CHECK (jsonb_typeof(metadata_json) = 'object'),
     CONSTRAINT auth_grants_expires_at_ms_nonnegative
@@ -164,8 +173,6 @@ CREATE TABLE IF NOT EXISTS auth_clients (
         CHECK (
             provider_kind IN (
                 'mcp_oauth',
-                'github_app_user',
-                'github_oauth_app',
                 'custom_oauth'
             )
         ),
@@ -209,6 +216,7 @@ CREATE TABLE IF NOT EXISTS auth_flows (
     redirect_uri text NOT NULL,
     scopes text[] NOT NULL DEFAULT '{}',
     audience text,
+    grant_exposure text NOT NULL DEFAULT 'brokered',
     grant_id text,
     error text,
     expires_at_ms bigint NOT NULL,
@@ -229,8 +237,6 @@ CREATE TABLE IF NOT EXISTS auth_flows (
         CHECK (
             provider_kind IN (
                 'mcp_oauth',
-                'github_app_user',
-                'github_oauth_app',
                 'custom_oauth'
             )
         ),
@@ -244,6 +250,8 @@ CREATE TABLE IF NOT EXISTS auth_flows (
         CHECK (redirect_uri <> ''),
     CONSTRAINT auth_flows_audience_not_empty
         CHECK (audience IS NULL OR audience <> ''),
+    CONSTRAINT auth_flows_grant_exposure_known
+        CHECK (grant_exposure IN ('brokered', 'retrievable')),
     CONSTRAINT auth_flows_outcome_exclusive
         CHECK (grant_id IS NULL OR error IS NULL),
     CONSTRAINT auth_flows_outcome_requires_completion
@@ -299,11 +307,10 @@ CREATE TABLE IF NOT EXISTS auth_providers (
                 'static_bearer',
                 'mcp_oauth',
                 'github_app',
-                'github_app_user',
-                'github_oauth_app',
                 'custom_oauth',
                 'model_api_key',
-                'model_oauth'
+                'model_oauth',
+                'model_endpoint'
             )
         ),
     CONSTRAINT auth_providers_display_name_not_empty
@@ -328,39 +335,13 @@ COMMENT ON COLUMN auth_grants.audience IS
     'Normalized resource the grant is bound to (for MCP: the server resource URL). NULL means unrestricted.';
 COMMENT ON COLUMN auth_grants.oauth_client_id IS
     'OAuth client configuration the grant was minted through; used for refresh.';
+COMMENT ON COLUMN auth_grants.exposure IS
+    'Immutable creation-time authority: brokered grants stay inside the token broker; retrievable grants may be leased to trusted services.';
+COMMENT ON COLUMN auth_grants.last_leased_at_ms IS
+    'Most recent successful service lease, for operator audit only.';
+COMMENT ON COLUMN auth_grants.lease_count IS
+    'Number of successful service leases, for operator audit only.';
 COMMENT ON TABLE auth_clients IS
     'Universe-scoped OAuth client configurations; secrets live in auth_secrets.';
 COMMENT ON TABLE auth_flows IS
     'One-time authorization-code flows; stores the state hash, never the state or tokens.';
-
--- The scripts re-run idempotently at startup, so widening a kind list must
--- also swap the constraint on databases created before the new kind existed
--- (P69 G6 added 'model_api_key'). DROP + ADD as a pair stays idempotent.
-ALTER TABLE auth_grants DROP CONSTRAINT IF EXISTS auth_grants_provider_kind_known;
-ALTER TABLE auth_grants ADD CONSTRAINT auth_grants_provider_kind_known
-    CHECK (
-        provider_kind IN (
-            'static_bearer',
-            'mcp_oauth',
-            'github_app',
-            'github_app_user',
-            'github_oauth_app',
-            'custom_oauth',
-            'model_api_key',
-            'model_oauth'
-        )
-    );
-ALTER TABLE auth_providers DROP CONSTRAINT IF EXISTS auth_providers_provider_kind_known;
-ALTER TABLE auth_providers ADD CONSTRAINT auth_providers_provider_kind_known
-    CHECK (
-        provider_kind IN (
-            'static_bearer',
-            'mcp_oauth',
-            'github_app',
-            'github_app_user',
-            'github_oauth_app',
-            'custom_oauth',
-            'model_api_key',
-            'model_oauth'
-        )
-    );

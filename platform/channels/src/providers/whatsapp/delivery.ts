@@ -114,10 +114,12 @@ async function deliver(
     }
     case "react": {
       const messageId = nonEmptyMessageId(command.operation.messageId);
+      // The key must say whose message it is; the conversation workflow
+      // knows from the message number's direction.
       await config.api.sendMessage(jid, {
         react: {
           text: command.operation.emoji,
-          key: { remoteJid: jid, id: messageId, fromMe: false },
+          key: { remoteJid: jid, id: messageId, fromMe: command.operation.fromMe },
         },
       });
       return { version: 1, provider: "whatsapp", messageIds: [messageId] };

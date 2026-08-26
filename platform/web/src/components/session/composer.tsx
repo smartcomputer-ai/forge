@@ -1,4 +1,4 @@
-import { useState, type KeyboardEvent } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
@@ -23,6 +23,7 @@ export function SessionComposer({
   stopping = false,
   disabled = false,
   disabledReason,
+  banner,
   error,
   onSend,
   onStop,
@@ -37,6 +38,9 @@ export function SessionComposer({
   stopping?: boolean;
   disabled?: boolean;
   disabledReason?: string;
+  /// Rendered above the input, inside the composer block (e.g. the
+  /// managed-session direct-input override).
+  banner?: ReactNode;
   error: string | null;
   onSend: (text: string, mode: ComposerMode | null) => void;
   onStop: () => void;
@@ -76,8 +80,9 @@ export function SessionComposer({
 
   return (
     <div className="shrink-0 border-t px-4 py-3 md:px-8">
+      {banner}
       {error && <p className="pb-2 text-xs text-destructive">{error}</p>}
-      {disabled && disabledReason && (
+      {disabled && disabledReason && !banner && (
         <p className="pb-2 text-xs text-muted-foreground">{disabledReason}</p>
       )}
       <div className="flex items-end gap-2">

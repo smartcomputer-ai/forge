@@ -132,8 +132,16 @@ pub enum WorkflowToolCompletionInput {
     deny_unknown_fields
 )]
 pub enum WorkflowToolCompletionKeySourceInput {
+    /// The single reserved `reply` key.
     Reply,
+    /// A JSON Pointer to an array of unique completion-key strings.
     StringArray { pointer: String },
+    /// A JSON Pointer to an array of objects; the named string field of
+    /// every item is its completion key, so the model's own name for a work
+    /// item keys that item's promise.
+    ArrayItemField { pointer: String, field: String },
+    /// A JSON Pointer to an array; keys are `prefix` joined with each item's
+    /// zero-based index.
     ArrayIndices { pointer: String, prefix: String },
 }
 
@@ -300,7 +308,7 @@ pub struct FeaturesConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web: Option<WebFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet: Option<FleetFeature>,
+    pub subagents: Option<SubagentsFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timers: Option<TimersFeature>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -410,47 +418,54 @@ pub struct WebSearchFeature {
     pub blocked_domains: Vec<String>,
 }
 
-/// Grants the Fleet subagent control plane
-/// (agent_spawn/send/read/list/cancel and profile_list/read).
+/// Grants sub-agent delegation: `agent_run` (joined, result inline) and
+/// `agent_spawn` (promise, joined with `await`) over the listed agent
+/// profiles. Limits are root-scoped and attenuating: every descendant of a
+/// root session counts against the root, and a nested grant can narrow but
+/// never widen the limits pinned on its origin.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FleetFeature {
+pub struct SubagentsFeature {
     #[serde(default = "default_feature_version")]
     pub version: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub profiles: Option<FleetProfilesConfig>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spawn: Option<FleetSpawnConfig>,
+    /// The agent menu. Every id must name an existing profile; the model
+    /// picks by id and reads descriptions from the sub-agent catalog.
+    pub agents: Vec<SubagentAgentRef>,
+    /// A child at depth `d` may spawn only while `d + 1 <= maxDepth`.
+    #[serde(default = "default_subagent_max_depth")]
+    pub max_depth: u32,
+    /// Lifetime total of sessions ever created under the root.
+    #[serde(default = "default_subagent_max_descendants")]
+    pub max_descendants: u32,
+    /// Open sessions under the root at any time, excluding the root.
+    #[serde(default = "default_subagent_max_concurrent")]
+    pub max_concurrent: u32,
+    /// Per-child run deadline in milliseconds; at most the execution
+    /// ceiling of 24 hours.
+    #[serde(default = "default_subagent_deadline_ms")]
+    pub deadline_ms: u64,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FleetProfilesConfig {
-    /// Absent means all named profiles are visible/readable/spawnable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allow: Option<Vec<ProfileId>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub deny: Vec<ProfileId>,
-    /// Defaults to true when omitted.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inline: Option<bool>,
+pub struct SubagentAgentRef {
+    pub profile_id: ProfileId,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct FleetSpawnConfig {
-    /// Absent means all bases are allowed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub bases: Option<Vec<FleetSpawnBase>>,
+fn default_subagent_max_depth() -> u32 {
+    2
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum FleetSpawnBase {
-    #[serde(rename = "self")]
-    Self_,
-    Session,
-    Profile,
+fn default_subagent_max_descendants() -> u32 {
+    16
+}
+
+fn default_subagent_max_concurrent() -> u32 {
+    4
+}
+
+fn default_subagent_deadline_ms() -> u64 {
+    60 * 60 * 1_000
 }
 
 /// Grants timer promises through the sleep tool plus the base concurrency
@@ -740,6 +755,12 @@ pub struct SessionListParams {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
+    /// Only sub-agent sessions whose lineage root is this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root_session_id: Option<SessionId>,
+    /// Only sub-agent sessions delegated directly by this session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<SessionId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -763,8 +784,54 @@ pub struct SessionSummaryView {
     /// True only when immutable lifecycle ownership was admitted with a
     /// lifecycle controller at managed-session creation.
     pub managed: bool,
+    /// Sub-agent lineage; absent for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOriginView>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+/// Typed provenance of a delegated (sub-agent) session: who created it,
+/// under which root, at what depth, and the effective limits it was spawned
+/// with. Provenance, never ownership — the child is an ordinary session.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionOriginView {
+    pub kind: SessionOriginKind,
+    pub parent_session_id: SessionId,
+    pub parent_run_id: RunId,
+    /// Nearest ancestor without an origin; root-scoped limits count every
+    /// session naming this root.
+    pub root_session_id: SessionId,
+    /// Absolute depth from the root; a root's direct child is 1.
+    pub depth: u32,
+    /// The workflow-tool invocation that created the child.
+    pub invocation_id: String,
+    pub agent: SubagentAgentPin,
+    pub limits: SubagentLimitsView,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionOriginKind {
+    Subagent,
+}
+
+/// The profile a sub-agent was spawned from, pinned at its revision.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentAgentPin {
+    pub profile_id: ProfileId,
+    pub revision: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SubagentLimitsView {
+    pub max_depth: u32,
+    pub max_descendants: u32,
+    pub max_concurrent: u32,
+    pub deadline_ms: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -975,21 +1042,6 @@ pub enum SessionEventKindView {
     RunStarted {
         run_id: RunId,
     },
-    MessageBuffered {
-        message_id: String,
-        submission_id: Option<String>,
-    },
-    MessageConsumedByAwait {
-        message_id: String,
-        run_id: RunId,
-    },
-    MessagePromotedToRun {
-        message_id: String,
-        run_id: RunId,
-    },
-    MessageCancelled {
-        message_id: String,
-    },
     RunSteeringAccepted {
         run_id: RunId,
         steering_id: String,
@@ -1043,6 +1095,10 @@ pub enum SessionEventKindView {
         run_id: RunId,
         turn_id: String,
         status: String,
+        /// Provider token usage for this generation, including the
+        /// prompt-cache read/write counts, when the provider reported it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<LlmUsageView>,
     },
     TurnCompleted {
         turn_id: String,

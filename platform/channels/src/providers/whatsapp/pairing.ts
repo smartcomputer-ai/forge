@@ -1,4 +1,4 @@
-import type { ChannelControlPlane } from "../../control-plane/bindings.js";
+import type { ChannelControlPlane } from "../../control-plane/chat-triggers.js";
 import { PAIRING_REQUIRED_REPLY } from "../../ingress/admit.js";
 
 export interface WhatsAppPairingAnnouncementConfig {

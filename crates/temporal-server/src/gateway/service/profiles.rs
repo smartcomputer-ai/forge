@@ -156,6 +156,12 @@ impl GatewayAgentApi {
                     .apply_profile_active_environment(session_id, environment_id.clone())
                     .await?;
             }
+            Some(ProfileEnvironment::Inherit {}) => {
+                let environment_id = self.resolve_inherited_environment(session_id).await?;
+                applied.active_environment_changed = self
+                    .apply_inherited_environment(session_id, environment_id)
+                    .await?;
+            }
             Some(ProfileEnvironment::Provision {
                 provider_id,
                 template_id,

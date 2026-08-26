@@ -42,7 +42,7 @@ import { supportsOpenAiProcessingTier } from "@/lib/sessions/run-options";
 import { cn } from "@/lib/utils";
 
 export type SessionConfig = Record<string, unknown>;
-type FeatureName = "vfs" | "web" | "fleet" | "timers" | "environments" | "mcp";
+type FeatureName = "vfs" | "web" | "subagents" | "timers" | "environments" | "mcp";
 
 export type McpServerOption = {
   serverId: string;
@@ -116,9 +116,9 @@ const featureInfo: Record<
     description: "Grant independent web search and fetch capabilities.",
     icon: Globe2,
   },
-  fleet: {
-    title: "Fleet",
-    description: "Allow the agent to inspect and coordinate subagents and profiles.",
+  subagents: {
+    title: "Sub-agents",
+    description: "Let the agent run listed profiles as sub-agents (agent_run / agent_spawn) within root-scoped limits.",
     icon: Network,
   },
   timers: {
@@ -150,6 +150,13 @@ function string(value: unknown): string {
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function subagentProfileIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === "string" ? item : string(record(item).profileId)).trim())
+    .filter(Boolean);
 }
 
 function commaList(value: unknown): string {
@@ -294,19 +301,13 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
       // A web capability with neither sub-grant is rejected by the engine.
       if (!("fetch" in next) && !("search" in next)) continue;
     }
-    if (name === "fleet") {
-      const profiles = record(feature.profiles);
-      const profilesResult: RecordValue = {};
-      for (const key of ["allow", "deny"] as const) {
-        const values = stringList(profiles[key]).filter(Boolean);
-        if (values.length) profilesResult[key] = values;
+    if (name === "subagents") {
+      const agents = subagentProfileIds(feature.agents);
+      next.agents = agents.map((profileId) => ({ profileId }));
+      for (const key of ["maxDepth", "maxDescendants", "maxConcurrent", "deadlineMs"] as const) {
+        const value = parseNumber(numberString(feature[key]));
+        if (value !== undefined && value > 0) next[key] = value;
       }
-      if (profiles.inline === false) profilesResult.inline = false;
-      if (omitEmptyRecord(profilesResult)) next.profiles = profilesResult;
-      const bases = stringList(record(feature.spawn).bases).filter((item) =>
-        ["self", "session", "profile"].includes(item),
-      );
-      if (bases.length) next.spawn = { bases };
     }
     if (name === "environments") {
       const providers = stringList(feature.providers).filter(Boolean);
@@ -356,6 +357,10 @@ function configError(config: SessionConfig | undefined): string | null {
   const mcp = record(record(config.features).mcp);
   if ("mcp" in record(config.features) && (!Array.isArray(mcp.servers) || mcp.servers.some((server) => !string(record(server).serverId)))) {
     return "Each enabled MCP server needs a server id.";
+  }
+  const subagents = record(record(config.features).subagents);
+  if ("subagents" in record(config.features) && !subagentProfileIds(subagents.agents).length) {
+    return "Sub-agents require at least one agent profile.";
   }
   const linkError = workspaceLinksError(workspaceLinksFromConfig(config));
   if (linkError) return linkError;
@@ -498,7 +503,7 @@ export function SessionConfigEditor({
                 />
               )}
               {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
-              {name === "fleet" && <FleetFields feature={record(features.fleet)} profiles={profiles} patch={(fn) => patchFeature("fleet", fn)} />}
+              {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
               {name === "environments" && <EnvironmentFields feature={record(features.environments)} providers={environmentProviders} patch={(fn) => patchFeature("environments", fn)} />}
               {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
             </FeaturePanel>
@@ -1297,7 +1302,7 @@ function WebFields({ feature, patch }: { feature: RecordValue; patch: (fn: (feat
   );
 }
 
-function FleetFields({
+function SubagentFields({
   feature,
   profiles,
   patch,
@@ -1306,64 +1311,46 @@ function FleetFields({
   profiles: ProfileOption[];
   patch: (fn: (feature: RecordValue) => void) => void;
 }) {
-  const policy = record(feature.profiles);
-  const spawn = record(feature.spawn);
-  const bases = stringList(spawn.bases);
-  const updateProfiles = (key: "allow" | "deny", values: string[]) =>
-    patch((next) => {
-      const item = record(next.profiles);
-      if (values.length) item[key] = values;
-      else delete item[key];
-      if (Object.keys(item).length) next.profiles = item;
-      else delete next.profiles;
-    });
-
+  const agents = subagentProfileIds(feature.agents);
+  const limits = [
+    { key: "maxDepth", label: "Max depth", placeholder: "2", hint: "How deep sub-agents may nest below this session." },
+    { key: "maxDescendants", label: "Max descendants", placeholder: "16", hint: "Lifetime total of sub-agent sessions under the root." },
+    { key: "maxConcurrent", label: "Max concurrent", placeholder: "4", hint: "Open sub-agent sessions under the root at once." },
+    { key: "deadlineMs", label: "Deadline (ms)", placeholder: "3600000", hint: "Per-child run deadline; at most 24 hours." },
+  ] as const;
   return (
     <div className="grid gap-4 sm:grid-cols-2">
-      <Field>
-        <FieldLabel>Allowed profiles</FieldLabel>
+      <Field className="sm:col-span-2">
+        <FieldLabel>Agents</FieldLabel>
         <ProfileMultiSelect
-          value={stringList(policy.allow)}
+          value={agents}
           profiles={profiles}
-          onChange={(values) => updateProfiles("allow", values)}
-          placeholder="All profiles"
-        />
-        <FieldDescription className="text-xs">Empty allows every named profile.</FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel>Denied profiles</FieldLabel>
-        <ProfileMultiSelect
-          value={stringList(policy.deny)}
-          profiles={profiles}
-          onChange={(values) => updateProfiles("deny", values)}
-          placeholder="No denied profiles"
-        />
-        <FieldDescription className="text-xs">Denied profiles take precedence.</FieldDescription>
-      </Field>
-      <Label className="gap-2 font-normal">
-        <Checkbox
-          checked={policy.inline !== false}
-          onCheckedChange={(checked) => patch((next) => {
-            const item = record(next.profiles);
-            if (checked === true) delete item.inline;
-            else item.inline = false;
-            if (Object.keys(item).length) next.profiles = item;
-            else delete next.profiles;
-          })}
-        />
-        Allow inline agents
-      </Label>
-      <Field>
-        <FieldLabel>Spawn bases</FieldLabel>
-        <SpawnBaseMultiSelect
-          value={bases}
           onChange={(values) => patch((next) => {
-            if (values.length) next.spawn = { bases: values };
-            else delete next.spawn;
+            next.agents = values;
           })}
+          placeholder="Pick the profiles the agent may run"
         />
-        <FieldDescription className="text-xs">Empty allows self, session, and profile bases.</FieldDescription>
+        <FieldDescription className="text-xs">
+          The agent menu. Every listed profile must exist; the model sees ids and descriptions in its sub-agent catalog.
+        </FieldDescription>
       </Field>
+      {limits.map((limit) => (
+        <Field key={limit.key}>
+          <FieldLabel>{limit.label}</FieldLabel>
+          <Input
+            type="number"
+            min="1"
+            placeholder={limit.placeholder}
+            value={numberString(feature[limit.key])}
+            onChange={(e) => patch((next) => {
+              const value = parseNumber(e.target.value);
+              if (value === undefined) delete next[limit.key];
+              else next[limit.key] = value;
+            })}
+          />
+          <FieldDescription className="text-xs">{limit.hint}</FieldDescription>
+        </Field>
+      ))}
     </div>
   );
 }
@@ -1425,45 +1412,6 @@ function ProfileMultiSelect({
 
 function profileLabel(profile: ProfileOption | undefined, profileId: string): string {
   return profile?.displayName || profileId;
-}
-
-const spawnBaseOptions = [
-  { value: "self", label: "Self" },
-  { value: "session", label: "Session" },
-  { value: "profile", label: "Profile" },
-] as const;
-
-function SpawnBaseMultiSelect({
-  value,
-  onChange,
-}: {
-  value: string[];
-  onChange: (value: string[]) => void;
-}) {
-  const labels = new Map(spawnBaseOptions.map((option) => [option.value, option.label]));
-  const items = spawnBaseOptions.map((option) => option.value);
-  return (
-    <Combobox items={items} multiple value={value} onValueChange={onChange}>
-      <ComboboxChips>
-        <ComboboxValue>
-          {value.map((base) => (
-            <ComboboxChip key={base}>{labels.get(base as (typeof items)[number]) ?? base}</ComboboxChip>
-          ))}
-        </ComboboxValue>
-        <ComboboxChipsInput placeholder={value.length ? "Add base" : "All spawn bases"} />
-      </ComboboxChips>
-      <ComboboxContent>
-        <ComboboxEmpty>No matching bases.</ComboboxEmpty>
-        <ComboboxList>
-          {(base: string) => (
-            <ComboboxItem key={base} value={base}>
-              {labels.get(base as (typeof items)[number]) ?? base}
-            </ComboboxItem>
-          )}
-        </ComboboxList>
-      </ComboboxContent>
-    </Combobox>
-  );
 }
 
 function EnvironmentFields({

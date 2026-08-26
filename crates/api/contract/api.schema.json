@@ -58,6 +58,11 @@
           "const": "session_bootstrap_failed",
           "description": "The session's agent workflow exists but failed during bootstrap\n(rehydration) and cannot serve runs. Distinct from `NotFound` (no\nworkflow) so clients/bridges treat it as a session recovery problem\nrather than an ordinary \"answer this message\" failure.",
           "type": "string"
+        },
+        {
+          "const": "environment_not_ready",
+          "description": "The environment exists but is not reachable yet: it is still\nprovisioning/booting, or it was powered down and a wake (desired\npower `running`) has been initiated by this request. Distinct from\n`Rejected` so clients retry with backoff instead of failing —\npolling and automation callers lean on this for wake-on-use.",
+          "type": "string"
         }
       ]
     },
@@ -207,6 +212,23 @@
         },
         "result": {
           "$ref": "#/definitions/AuthGrantImportResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfAuthGrantLeaseResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/AuthGrantLeaseResponse"
         }
       },
       "required": [
@@ -2066,6 +2088,14 @@
         "clientId": {
           "type": "string"
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "scopes": {
           "items": {
             "type": "string"
@@ -2191,6 +2221,14 @@
             "null"
           ]
         },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
+        },
         "grantId": {
           "type": [
             "string",
@@ -2245,6 +2283,13 @@
       },
       "type": "object"
     },
+    "AuthGrantExposure": {
+      "enum": [
+        "brokered",
+        "retrievable"
+      ],
+      "type": "string"
+    },
     "AuthGrantImportParams": {
       "description": "Import a static bearer credential as an auth grant. This is the one\ndeliberate inbound-plaintext path: `token` is encrypted on receipt and is\nnever returned by any method. `Debug` output redacts the token; request\nlogging must never echo these params.",
       "properties": {
@@ -2266,6 +2311,14 @@
             "integer",
             "null"
           ]
+        },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/AuthGrantExposure"
+            }
+          ],
+          "default": "brokered"
         },
         "grantId": {
           "type": [
@@ -2311,6 +2364,50 @@
       },
       "required": [
         "grant"
+      ],
+      "type": "object"
+    },
+    "AuthGrantLeaseParams": {
+      "description": "Request a current access-token lease for a retrievable grant. Callers must\ncache only in memory until shortly before `expiresAtMs` (or for at most\nfive minutes when it is absent), re-lease after target 401/403 responses,\nand never persist the token or place it in a workflow payload.",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grantId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "grantId"
+      ],
+      "type": "object"
+    },
+    "AuthGrantLeaseResponse": {
+      "properties": {
+        "expiresAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "grantId": {
+          "type": "string"
+        },
+        "providerKind": {
+          "$ref": "#/definitions/AuthProviderKind"
+        },
+        "token": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "token",
+        "grantId",
+        "providerKind"
       ],
       "type": "object"
     },
@@ -2419,6 +2516,9 @@
             "null"
           ]
         },
+        "exposure": {
+          "$ref": "#/definitions/AuthGrantExposure"
+        },
         "grantId": {
           "type": "string"
         },
@@ -2427,6 +2527,18 @@
         },
         "hasRefreshToken": {
           "type": "boolean"
+        },
+        "lastLeasedAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "leaseCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
         },
         "metadata": {
           "description": "Non-secret provider-specific metadata (for GitHub App installation\ngrants: installation id, account, permissions, repository selection)."
@@ -2464,10 +2576,12 @@
         "grantId",
         "providerId",
         "providerKind",
+        "exposure",
         "principal",
         "hasAccessToken",
         "hasRefreshToken",
         "status",
+        "leaseCount",
         "createdAtMs",
         "updatedAtMs"
       ],
@@ -3312,6 +3426,35 @@
         },
         {
           "properties": {
+            "type": {
+              "const": "subagentCatalog",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "A client-owned catalog published through `session/context/append`.",
+          "properties": {
+            "title": {
+              "type": "string"
+            },
+            "type": {
+              "const": "catalog",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
             "catalogId": {
               "type": "string"
             },
@@ -3604,6 +3747,20 @@
             }
           ],
           "description": "Where the entry came from: run input, a steering batch, model output,\na tool result, reasoning state, a context edit, or the runtime. Lets\ntranscripts render steering distinctly from the run's first input."
+        },
+        "supersededBy": {
+          "description": "For a catalog entry that a newer version has updated: that newer\nentry. Present only on state views (`session/read`), where the whole\nactive context is known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "supersedes": {
+          "description": "For a catalog entry: the earlier version of the same keyed catalog\nthat this entry updates. The earlier entry stays in context until a\nrewrite drops it.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "text": {
           "type": [
@@ -4955,20 +5112,20 @@
             }
           ]
         },
-        "fleet": {
+        "mcp": {
           "anyOf": [
             {
-              "$ref": "#/definitions/FleetFeature"
+              "$ref": "#/definitions/McpFeature"
             },
             {
               "type": "null"
             }
           ]
         },
-        "mcp": {
+        "subagents": {
           "anyOf": [
             {
-              "$ref": "#/definitions/McpFeature"
+              "$ref": "#/definitions/SubagentsFeature"
             },
             {
               "type": "null"
@@ -5003,92 +5160,6 @@
             {
               "type": "null"
             }
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "FleetFeature": {
-      "additionalProperties": false,
-      "description": "Grants the Fleet subagent control plane\n(agent_spawn/send/read/list/cancel and profile_list/read).",
-      "properties": {
-        "profiles": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/FleetProfilesConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "spawn": {
-          "anyOf": [
-            {
-              "$ref": "#/definitions/FleetSpawnConfig"
-            },
-            {
-              "type": "null"
-            }
-          ]
-        },
-        "version": {
-          "default": 1,
-          "format": "uint32",
-          "minimum": 0,
-          "type": "integer"
-        }
-      },
-      "type": "object"
-    },
-    "FleetProfilesConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "allow": {
-          "description": "Absent means all named profiles are visible/readable/spawnable.",
-          "items": {
-            "$ref": "#/definitions/ProfileId"
-          },
-          "type": [
-            "array",
-            "null"
-          ]
-        },
-        "deny": {
-          "items": {
-            "$ref": "#/definitions/ProfileId"
-          },
-          "type": "array"
-        },
-        "inline": {
-          "description": "Defaults to true when omitted.",
-          "type": [
-            "boolean",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "FleetSpawnBase": {
-      "enum": [
-        "self",
-        "session",
-        "profile"
-      ],
-      "type": "string"
-    },
-    "FleetSpawnConfig": {
-      "additionalProperties": false,
-      "properties": {
-        "bases": {
-          "description": "Absent means all bases are allowed.",
-          "items": {
-            "$ref": "#/definitions/FleetSpawnBase"
-          },
-          "type": [
-            "array",
-            "null"
           ]
         }
       },
@@ -5355,6 +5426,29 @@
             "kind"
           ],
           "type": "object"
+        },
+        {
+          "description": "A client-owned catalog document: what the model may pick from (a\ndirectory, a roster, a menu), rendered by the client as text. Accepted\nonly by `session/context/append` under a client key; run input rejects\nit. A changed catalog supersedes the earlier version instead of\nreplacing it, so the earlier version stays rendered and the provider\nprefix cache holds; superseded versions are dropped at the next\ncontext rewrite or beyond a per-key cap.",
+          "properties": {
+            "text": {
+              "description": "The catalog body, plain text or Markdown.",
+              "type": "string"
+            },
+            "title": {
+              "description": "Short name shown as the catalog's heading, e.g. \"Bot directory\".",
+              "type": "string"
+            },
+            "type": {
+              "const": "catalog",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "title",
+            "text"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -5397,6 +5491,62 @@
           ]
         },
         "maxTurns": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "LlmUsageView": {
+      "description": "Provider-reported token usage for one generation or a sum of them. Every\nfield is optional because providers report different subsets; counts\nthat a provider reports separately (Anthropic's cache read/write) are\nfolded into `input_tokens` so the field always means \"prompt tokens\nbilled on this request, cached or not\".",
+      "properties": {
+        "cacheWriteInputTokens": {
+          "description": "Prompt tokens written into the provider's prompt cache (Anthropic).",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "cachedInputTokens": {
+          "description": "Prompt tokens served from the provider's prompt cache.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "inputTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "reasoningTokens": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "totalTokens": {
           "format": "uint32",
           "minimum": 0,
           "type": [
@@ -7119,6 +7269,20 @@
         },
         {
           "additionalProperties": false,
+          "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+          "properties": {
+            "type": {
+              "const": "inherit",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
           "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
           "properties": {
             "credentials": {
@@ -7705,6 +7869,15 @@
     },
     "RunView": {
       "properties": {
+        "completedAtMs": {
+          "description": "When the run reached a terminal state, derived from its committed\ncompleted, failed, or cancelled event. Absent for non-terminal runs.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "entries": {
           "default": [],
           "items": {
@@ -7718,6 +7891,15 @@
         "source": {
           "$ref": "#/definitions/RunViewSource"
         },
+        "startedAtMs": {
+          "description": "When the run left the queue and began executing, derived from the\ncommitted `runStarted` event. Absent while the run is queued.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "status": {
           "$ref": "#/definitions/RunStatus"
         },
@@ -7726,6 +7908,17 @@
             "$ref": "#/definitions/ToolBatchView"
           },
           "type": "array"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LlmUsageView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Provider token usage summed over the run's completed generations;\nabsent until the first generation reports usage. The cached share\n(`cachedInputTokens / inputTokens`) is the prompt-cache hit rate."
         }
       },
       "required": [
@@ -8336,84 +8529,6 @@
         },
         {
           "properties": {
-            "messageId": {
-              "type": "string"
-            },
-            "submissionId": {
-              "type": [
-                "string",
-                "null"
-              ]
-            },
-            "type": {
-              "const": "messageBuffered",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "messageId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "messageId": {
-              "type": "string"
-            },
-            "runId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "messageConsumedByAwait",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "messageId",
-            "runId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "messageId": {
-              "type": "string"
-            },
-            "runId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "messagePromotedToRun",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "messageId",
-            "runId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "messageId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "messageCancelled",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "messageId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "input": {
               "items": {
                 "$ref": "#/definitions/ContextEntryInputView"
@@ -8683,6 +8798,17 @@
             "type": {
               "const": "turnGenerationCompleted",
               "type": "string"
+            },
+            "usage": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/LlmUsageView"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Provider token usage for this generation, including the\nprompt-cache read/write counts, when the provider reported it."
             }
           },
           "required": [
@@ -9795,6 +9921,20 @@
             "integer",
             "null"
           ]
+        },
+        "parentSessionId": {
+          "description": "Only sub-agent sessions delegated directly by this session.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rootSessionId": {
+          "description": "Only sub-agent sessions whose lineage root is this session.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "type": "object"
@@ -9816,6 +9956,57 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "SessionOriginKind": {
+      "enum": [
+        "subagent"
+      ],
+      "type": "string"
+    },
+    "SessionOriginView": {
+      "description": "Typed provenance of a delegated (sub-agent) session: who created it,\nunder which root, at what depth, and the effective limits it was spawned\nwith. Provenance, never ownership — the child is an ordinary session.",
+      "properties": {
+        "agent": {
+          "$ref": "#/definitions/SubagentAgentPin"
+        },
+        "depth": {
+          "description": "Absolute depth from the root; a root's direct child is 1.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "invocationId": {
+          "description": "The workflow-tool invocation that created the child.",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/SessionOriginKind"
+        },
+        "limits": {
+          "$ref": "#/definitions/SubagentLimitsView"
+        },
+        "parentRunId": {
+          "type": "string"
+        },
+        "parentSessionId": {
+          "type": "string"
+        },
+        "rootSessionId": {
+          "description": "Nearest ancestor without an origin; root-scoped limits count every\nsession naming this root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "parentSessionId",
+        "parentRunId",
+        "rootSessionId",
+        "depth",
+        "invocationId",
+        "agent",
+        "limits"
+      ],
       "type": "object"
     },
     "SessionReadParams": {
@@ -9951,6 +10142,17 @@
           "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
           "type": "boolean"
         },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionOriginView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sub-agent lineage; absent for root sessions."
+        },
         "updatedAtMs": {
           "format": "uint64",
           "minimum": 0,
@@ -10033,6 +10235,17 @@
             }
           ],
           "description": "Immutable workflow-backed tool declaration. A lifecycle controller\nindicates external session ownership; tool-only declarations do not."
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionOriginView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sub-agent lineage; absent for root sessions."
         },
         "runs": {
           "default": [],
@@ -10312,6 +10525,118 @@
           "type": "array"
         }
       },
+      "type": "object"
+    },
+    "SubagentAgentPin": {
+      "description": "The profile a sub-agent was spawned from, pinned at its revision.",
+      "properties": {
+        "profileId": {
+          "$ref": "#/definitions/ProfileId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "profileId",
+        "revision"
+      ],
+      "type": "object"
+    },
+    "SubagentAgentRef": {
+      "additionalProperties": false,
+      "properties": {
+        "profileId": {
+          "$ref": "#/definitions/ProfileId"
+        }
+      },
+      "required": [
+        "profileId"
+      ],
+      "type": "object"
+    },
+    "SubagentLimitsView": {
+      "properties": {
+        "deadlineMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxConcurrent": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDepth": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDescendants": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "maxDepth",
+        "maxDescendants",
+        "maxConcurrent",
+        "deadlineMs"
+      ],
+      "type": "object"
+    },
+    "SubagentsFeature": {
+      "additionalProperties": false,
+      "description": "Grants sub-agent delegation: `agent_run` (joined, result inline) and\n`agent_spawn` (promise, joined with `await`) over the listed agent\nprofiles. Limits are root-scoped and attenuating: every descendant of a\nroot session counts against the root, and a nested grant can narrow but\nnever widen the limits pinned on its origin.",
+      "properties": {
+        "agents": {
+          "description": "The agent menu. Every id must name an existing profile; the model\npicks by id and reads descriptions from the sub-agent catalog.",
+          "items": {
+            "$ref": "#/definitions/SubagentAgentRef"
+          },
+          "type": "array"
+        },
+        "deadlineMs": {
+          "default": 3600000,
+          "description": "Per-child run deadline in milliseconds; at most the execution\nceiling of 24 hours.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxConcurrent": {
+          "default": 4,
+          "description": "Open sessions under the root at any time, excluding the root.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDepth": {
+          "default": 2,
+          "description": "A child at depth `d` may spawn only while `d + 1 <= maxDepth`.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxDescendants": {
+          "default": 16,
+          "description": "Lifetime total of sessions ever created under the root.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "version": {
+          "default": 1,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "agents"
+      ],
       "type": "object"
     },
     "TimersFeature": {
@@ -11291,6 +11616,7 @@
       "oneOf": [
         {
           "additionalProperties": false,
+          "description": "The single reserved `reply` key.",
           "properties": {
             "type": {
               "const": "reply",
@@ -11304,6 +11630,7 @@
         },
         {
           "additionalProperties": false,
+          "description": "A JSON Pointer to an array of unique completion-key strings.",
           "properties": {
             "pointer": {
               "type": "string"
@@ -11321,6 +11648,29 @@
         },
         {
           "additionalProperties": false,
+          "description": "A JSON Pointer to an array of objects; the named string field of\nevery item is its completion key, so the model's own name for a work\nitem keys that item's promise.",
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "pointer": {
+              "type": "string"
+            },
+            "type": {
+              "const": "arrayItemField",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "pointer",
+            "field"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A JSON Pointer to an array; keys are `prefix` joined with each item's\nzero-based index.",
           "properties": {
             "pointer": {
               "type": "string"

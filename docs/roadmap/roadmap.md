@@ -1,6 +1,106 @@
 # Lightspeed Roadmap
 
 ## Work
+- [x] [P139](p139-channels-as-bot-triggers.md) — Channels as bot triggers
+  (implemented 2026-08-26): a chat connection is a `chat` trigger on a bot,
+  `channel_bindings` is deleted, every message is an admitted event
+  (`perKey` session per conversation, trigger coalescing, media refs),
+  the conversation workflow stays the receiver for `message_*` through
+  declarations carried on the event, and the controller sends
+  `started`/`finished` receipts to the endpoint for typing and the
+  no-tool-used reply fallback. Chat sessions never expire by default.
+  Replaces P131 §5. Same-day follow-up: `bot_activity` removed in favour
+  of a write-once `outcome` on event rows, filter misses never stored,
+  `bot_filter_test` takes a payload.
+- [x] [P138](p138-model-facing-ids.md) — model-facing ids (implemented
+  2026-08-26): `PromiseId` is a session counter (`promise_7`) numbered by
+  executors from the tool batch's `promise_id_base` and checked by the
+  reducer, with the producer token and the `sourceResolution` emission id
+  (now holder-scoped, contract v2) following; workflow-tool
+  acknowledgements show only the promise(s) the model needs; `job_submit`
+  promises keyed by the model's own `job_id` (`ArrayItemField` key
+  source); job handles default to the active environment. Environment
+  names left as a separate decision; bot-side ids are P135 §8.
+- [x] [P137](p137-prompt-caching.md) — prompt caching (implemented 2026-08-26):
+  adapter-placed Anthropic breakpoints (system / last tool / moving
+  last-message, `prompt_cache_ttl` param for `1h`), `prompt_cache_key` =
+  session id on both OpenAI adapters, `LlmUsage` on `RunView` and
+  `turnGenerationCompleted` (web run marker, bot delivery detail), a
+  broken-prefix warning in the LLM activity, and per-provider caching live
+  suites proving ≥ 80 % cache reads across turns, a tool round trip, and a
+  superseded catalog.
+- [x] [P136](p136-context-catalogs.md) — context catalogs (implemented
+  2026-08-26): the VFS, skill, and sub-agent catalogs are keyed entries at
+  the front of the message list, and a keyed replace removes the old entry
+  mid-context and pushes the new one at the tail — every catalog change
+  re-reads a long-lived session uncached. Append-with-supersede for catalog
+  kinds: the old entry stays rendered byte-for-byte, the successor carries a
+  "supersedes" header, superseded entries are the first thing compaction
+  drops, capped per key; instructions and client keyed appends unchanged.
+  The same mechanism is exposed to clients as `InputItem::Catalog` on
+  `session/context/append` (external catalogs; P135's bot directory is
+  the first consumer).
+- [x] [P135](p135-bot-federation.md) — bot federation (proposed and
+  implemented 2026-08-26): bot ↔ bot as events through admission only —
+  one `bot` inbox trigger per bot (`from` allowlist; filter, route,
+  coalesce, deliver as for webhooks), `bot_emit { to, reply }` joined
+  with typed refusals, deterministic per-receiver ids, `hops` bound,
+  sender rate cap, a `bot:directory` catalog through P136's external
+  catalog, deterministic resolution receipts (`bot.reply`) with a logical
+  return route, one shared admission pipeline for every event path;
+  bots addressed by an authored `botId` plus `displayName`, model-facing
+  tool results without digests. No cross-bot authority (the `manage`
+  grant is a later note), no `bot_ask`, no publish/subscribe until a use
+  case asks.
+- [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
+  replaced by a governed, profile-grantable delegation kernel. Two tools
+  shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
+  a start-on-call `SubagentExecutionWorkflow`, so the session workflow and
+  engine gain no delegation code; `features.subagents` with an allowlisted
+  agent menu (a refreshed catalog context entry) and root-scoped,
+  attenuating limits; typed `SessionOrigin` lineage on session views and
+  `session/list` (replacing `session_links`); one-shot children closed by
+  the execution; `inherit` profile environment intent. Removes fleet,
+  `PromiseSource::Run`, and the mailbox.
+- [ ] [P133](p133-retrievable-grant-leases.md) — retrievable grants: an
+  immutable creation-time `exposure: brokered | retrievable` on auth grants,
+  a broker-backed `auth/grants/lease` returning `{token, expiresAtMs}`
+  (never refresh tokens), a new `service` method scope admitted only for
+  service-account callers (structurally hidden from Configurator MCP and
+  browser sessions), lease audit counters, and an in-memory caching
+  contract; bots poll/webhook credentials and Channels move onto grant ids
+  and the platform's plaintext secret fields are removed.
+- [x] [P132](p132-workflow-contract-export.md) — workflow contract export:
+  publish the `deliver_emission` protocol (envelope, producer types, id
+  derivations with known-answer vectors, workflow-id scheme, start-on-call
+  recipe/recovery types) from `temporal-workflow` as committed artifacts
+  with a staleness test, generate `@lightspeed/agent-client/workflow`, and
+  delete the hand-mirrored Bots/Channels `contracts/emissions.ts`. The
+  Temporal transport and producer authorization stay; an HTTP reply method
+  is deferred.
+- [ ] [P131](p131-bot-trigger-long-tail.md) — bot trigger long tail: `poll`
+  primitive (interval + cursor over the schedule machinery), inbound email
+  trigger, guardrailed agent-authored pollers as daemon jobs in the bot's
+  provisioned environment (Gumloop guardrail set, approval-gated), thin
+  webhook presets (Slack, Linear, Stripe, Sentry); the Channels bridge
+  (chat platforms as event sources) shipped as P139. Extracted from P130's slice 5;
+  recommended order: poll first, pollers after real usage.
+- [ ] [P130](p130-bots.md) — Bots: a proactive layer over managed sessions.
+  Bot = record (brief, profile, triggers, routing/coalescing policy, budgets)
+  plus one controller workflow owning its managed sessions. Slices 1-4
+  implemented 2026-08-20..23: controller with dedupe/budget/serial lanes,
+  schedule (Temporal Schedules) + webhook + endpoint triggers with CEL
+  filters, perKey/perEvent routed sessions, coalescing with full-batch
+  delivery, steer/append busy policies, flood breaker, replay, routed-session
+  retention, `bot_*` self-configuration tools, and a platform web UI. Later
+  additions (2026-08-24): event-input redesign (#N seqs, rendered prompts,
+  run-scoped resolve, bot_event_read), `selfConfig`/`selfEmit` capability
+  grants, schedule-flood breaker, CEL save-time validation, `bot:self` rate
+  cap, routed-session declaration rotation. Open: webhook secret sealing
+  (deferred by decision; P133), tier-2 per-trigger prompt projections, and a
+  model-supplied trigger secret (2026-08-25 review; the same review's
+  non-durable-admission finding was fixed that day); the trigger long tail
+  moved to P131.
 - [x] [P129](p129-active-run-control.md) — active-run control: make
   cancel, steer, and queue work end to end (both phases done and
   live-validated 2026-08-19). Phase 1: the session workflow
@@ -127,6 +227,8 @@
   explicit API/history reads
 
 ## Fleet (sub-agents)
+
+Superseded by [P134](p134-subagents.md); the entries below are history.
 - [x] [P82](p82-session-graph-fork-clone.md) — session graph foundation: clone, fork (by-reference), and links in the store
 - [x] [P83](p83-fleet-subagent-control-plane.md) — agent-facing Fleet control plane (spawn/task/read/list/cancel) on top of P82
 - [x] [P84](p84-fleet-wait-and-callbacks.md) — first cut complete: `agent_send`, generic deferred tool batches, `RunSubscription` workflow primitives, `agent_wait` DTO/preflight/parking/resume, and live Mode I/Mode W coverage

@@ -321,7 +321,7 @@ pub enum ToolExecutionClass {
     /// Bounded interactive operation (filesystem, control, concurrency).
     #[default]
     Interactive,
-    /// Bounded network-shaped call (web, environment jobs, fleet messaging).
+    /// Bounded network-shaped call (web, environment jobs).
     RemoteInteractive,
     /// Environment process execution; its deadline derives from the validated
     /// process timeout clamped to the deployment-owned ceiling.
@@ -642,6 +642,12 @@ pub struct ActiveToolBatch {
     pub run_id: RunId,
     pub turn_id: TurnId,
     pub calls: Vec<ToolCallState>,
+    /// First promise id this batch's executors may mint: one past the
+    /// session cursor when the batch was created. Every dispatch of the
+    /// batch (including per-call re-dispatch) numbers from here, so results
+    /// applied in any order stay above every earlier batch's promises.
+    #[serde(default)]
+    pub promise_id_base: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1010,6 +1016,7 @@ fn tool_result_context_entries(
 }
 
 pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(), DomainError> {
+    let next_promise_id_base = state.id_cursors.last_promise_id + 1;
     match event {
         Event::BatchStarted {
             run_id,
@@ -1123,6 +1130,7 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                         run_id: *run_id,
                         turn_id: *turn_id,
                         calls: call_states,
+                        promise_id_base: next_promise_id_base,
                     },
                 );
                 active_run.active_tool_batch_id = Some(*batch_id);
@@ -1518,10 +1526,9 @@ fn defer_tool_batch(
             }
         }
         ToolBatchSuspension::JoinedWorkflowCalls { calls, spec } => {
-            if calls.is_empty() || spec.mode != crate::AwaitMode::All || spec.mailbox {
+            if calls.is_empty() || spec.mode != crate::AwaitMode::All {
                 return Err(DomainError::InvariantViolation(
-                    "joined workflow suspension requires non-empty all-of Promise wait without mailbox"
-                        .into(),
+                    "joined workflow suspension requires a non-empty all-of Promise wait".into(),
                 ));
             }
             let mut call_ids = BTreeSet::new();

@@ -24,6 +24,7 @@ mod provider_controllers;
 mod session_jobs;
 mod session_toolset;
 mod skills;
+mod subagents_api;
 mod vfs_api;
 mod workflow;
 
@@ -31,8 +32,9 @@ use api_config::engine_session_config_from_api;
 #[cfg(test)]
 use api_config::*;
 use auth_api::{
-    api_auth_provider_kind, auth_grant_import_draft, auth_grant_view, map_auth_error,
-    parse_auth_grant_id, registry_auth_grant_status_for_filter,
+    api_auth_provider_kind, auth_grant_import_draft, auth_grant_view, map_auth_broker_error,
+    map_auth_error, parse_auth_grant_id, registry_auth_grant_exposure,
+    registry_auth_grant_status_for_filter, require_retrievable_grant,
 };
 use blobs::{has_blobs, put_blobs, read_blob};
 use common::now_ms;
@@ -87,9 +89,11 @@ use api_projection::{
 };
 use async_trait::async_trait;
 use auth::{
-    AuthFlowStore, AuthGrantStore, AuthProviderStore, GitHubApiClient, HttpGitHubApiClient,
-    HttpOAuthMetadataClient, HttpOAuthTokenClient, McpOAuthDriver, OAuthClientStore,
-    OAuthFlowService, OAuthMetadataClient, OAuthTokenClient, SecretStore, StartAuthFlow,
+    AuthFlowStore, AuthGrantStore, AuthProviderStore, AuthTokenBroker, GitHubApiClient,
+    GitHubAppRuntime, GrantRefreshLock, HttpGitHubApiClient, HttpOAuthMetadataClient,
+    HttpOAuthTokenClient, McpOAuthDriver, OAuthClientStore, OAuthFlowService, OAuthMetadataClient,
+    OAuthRefreshRuntime, OAuthTokenClient, RegistryTokenBroker, SecretStore, StartAuthFlow,
+    TokenAudience,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
@@ -175,6 +179,13 @@ fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummar
             engine::storage::SessionLifecycleStatus::Closed => SessionLifecycleStatus::Closed,
         },
         managed: record.managed,
+        origin: record
+            .origin
+            .as_ref()
+            .map(api_projection::session_origin_to_api)
+            .transpose()
+            .ok()
+            .flatten(),
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
     }
@@ -220,10 +231,6 @@ fn status_has_submission(
             .completed_runs
             .iter()
             .any(|run| run.submission_id.as_ref() == Some(submission_id))
-        || status
-            .consumed_message_submissions
-            .iter()
-            .any(|consumed| &consumed.submission_id == submission_id)
 }
 
 enum ExistingRunSubmission {
@@ -250,8 +257,7 @@ fn existing_run_submission(
         .filter(|run| run.submission_id.as_ref() == Some(submission_id))
     {
         return Some(
-            if active.origin == engine::RunOrigin::Requested
-                && active.source.matches_request(source)
+            if active.source.matches_request(source)
                 && &active.run_config == run_config
                 && active.notify_on_terminal == notify_on_terminal
             {
@@ -270,8 +276,7 @@ fn existing_run_submission(
         .iter()
         .find(|run| run.submission_id.as_ref() == Some(submission_id))
     {
-        if queued.origin != engine::RunOrigin::Requested
-            || !queued.source.matches_request(source)
+        if !queued.source.matches_request(source)
             || &queued.run_config != run_config
             || queued.notify_on_terminal != notify_on_terminal
         {
@@ -292,18 +297,6 @@ fn existing_run_submission(
                 run_id: completed.run_id,
                 status: completed.status,
             },
-        });
-    }
-    if let Some(message) = state
-        .runs
-        .messages
-        .iter()
-        .find(|message| message.submission_id.as_ref() == Some(submission_id))
-    {
-        let digest = engine::request_run_submission_digest(source, run_config, notify_on_terminal);
-        return Some(match message.submission_digest {
-            existing if existing != digest => ExistingRunSubmission::Reject,
-            _ => ExistingRunSubmission::Reject,
         });
     }
     None
@@ -612,6 +605,29 @@ impl GatewayAgentApiBuilder {
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
         });
+        let grants: Arc<dyn AuthGrantStore> = self.store.clone();
+        let secrets: Arc<dyn SecretStore> = self.store.clone();
+        let providers: Arc<dyn AuthProviderStore> = self.store.clone();
+        let auth_token_broker: Arc<dyn AuthTokenBroker> = Arc::new(
+            RegistryTokenBroker::new(
+                grants.clone(),
+                secrets.clone(),
+                self.store.clone() as Arc<dyn GrantRefreshLock>,
+            )
+            .with_oauth_refresh(OAuthRefreshRuntime::new(
+                self.store.clone() as Arc<dyn OAuthClientStore>,
+                token_client.clone(),
+            ))
+            .with_token_source(
+                auth::AuthProviderKind::GitHubApp,
+                Arc::new(GitHubAppRuntime::new(
+                    providers,
+                    github_api.clone(),
+                    grants,
+                    secrets,
+                )),
+            ),
+        );
         let discovery_openai = self.model_discovery_openai.unwrap_or_else(|| {
             Arc::new(
                 openai::Client::new(openai::Config::from_env_allow_missing_key())
@@ -645,6 +661,7 @@ impl GatewayAgentApiBuilder {
             events_wait_cap: self.events_wait_cap,
             public_base_url: self.public_base_url,
             oauth_flows,
+            auth_token_broker,
             mcp_oauth,
             github_api,
             model_discovery,
@@ -665,6 +682,7 @@ pub struct GatewayAgentApi {
     events_wait_cap: Duration,
     public_base_url: String,
     oauth_flows: OAuthFlowService,
+    auth_token_broker: Arc<dyn AuthTokenBroker>,
     mcp_oauth: McpOAuthDriver,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
@@ -770,13 +788,10 @@ impl GatewayAgentApi {
                 config.web_fetch = WebFetchToolConfig::enabled();
             }
         }
-        if features.fleet.is_some() {
-            config.fleet = tools::fleet::FleetToolsetConfig::enabled();
-        }
-        if features.timers.is_some() || features.fleet.is_some() {
-            // Fleet waiting depends on the base concurrency tools, so the
-            // fleet grant implies them; the timers grant adds nothing extra
-            // today beyond the same surface.
+        if features.timers.is_some() || features.subagents.is_some() {
+            // Joining spawned sub-agents depends on the base concurrency
+            // tools, so the subagents grant implies them; the timers grant
+            // adds nothing extra today beyond the same surface.
             config.concurrency = tools::concurrency::ConcurrencyToolsetConfig::timer();
         }
         if include_environment_tools {
@@ -809,26 +824,24 @@ impl GatewayAgentApi {
         }
     }
 
-    pub(crate) async fn start_session_for_fleet_with_profile(
+    /// Sub-agent child creation (P134): the child's store row already
+    /// exists with its origin (the execution's reservation); this opens its
+    /// workflow with the pinned profile applied. The execution closes the
+    /// child, so `close_on_terminal` stays off.
+    pub(crate) async fn start_session_for_subagent(
         &self,
         session_id: &SessionId,
-        close_on_terminal: bool,
-        profile: Option<ProfileSource>,
+        profile: ProfileSource,
     ) -> Result<(), AgentApiError> {
-        let workflow_tools = match self.load_session_state(session_id).await {
-            Ok(loaded) => managed_workflow_tools_from_state(&loaded.state)?,
-            Err(error) if is_not_found(&error) => None,
-            Err(error) => return Err(error),
-        };
         self.start_session_internal(
             SessionStartParams {
                 session_id: Some(session_id.as_str().to_owned()),
                 display_name: None,
                 config: None,
-                profile,
+                profile: Some(profile),
             },
-            close_on_terminal,
-            workflow_tools,
+            false,
+            None,
         )
         .await?;
         Ok(())
@@ -857,65 +870,12 @@ impl GatewayAgentApi {
         Ok(())
     }
 
-    pub(crate) async fn enqueue_run_for_fleet(
-        &self,
-        session_id: &SessionId,
-        input: Vec<InputItem>,
-        submission_id: SubmissionId,
-        notify_on_terminal: Vec<engine::RunTerminalNotifyIntent>,
-    ) -> Result<String, AgentApiError> {
-        let input = run_input_from_api(self.store.as_ref(), &input).await?;
-        let source = engine::RunRequestSource::Input { input };
-        let status_before_signal = self.query_status_optional(session_id).await?;
-        let baseline_admission_failures = status_before_signal
-            .as_ref()
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(
-            session_id,
-            CoreAgentCommand::RequestRun(engine::RunRequestCommand {
-                notify_on_terminal,
-                submission_id: Some(submission_id.clone()),
-                source,
-                run_config: RunConfig::default(),
-            }),
-        )
-        .await?;
-        let run_id = self
-            .wait_for_run_admitted(session_id, &submission_id, baseline_admission_failures)
-            .await?;
-        Ok(format!("run_{}", run_id.as_u64()))
-    }
-
-    pub(crate) async fn deliver_message_for_fleet(
-        &self,
-        session_id: &SessionId,
-        input: Vec<InputItem>,
-        submission_id: SubmissionId,
-    ) -> Result<(), AgentApiError> {
-        let input = run_input_from_api(self.store.as_ref(), &input).await?;
-        let status_before_signal = self.query_status_optional(session_id).await?;
-        let baseline_admission_failures = status_before_signal
-            .as_ref()
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(
-            session_id,
-            CoreAgentCommand::SubmitMessage(engine::SubmitMessageCommand {
-                submission_id: Some(submission_id.clone()),
-                input,
-            }),
-        )
-        .await?;
-        self.wait_for_message_admitted(session_id, &submission_id, baseline_admission_failures)
-            .await
-    }
-
-    /// Fleet-internal run start: identical to the public `session/runs/start`
+    /// Sub-agent run start: identical to the public `session/runs/start`
     /// boundary except that the admitted `RunRequestCommand` carries the
-    /// spawn's cross-session notify-intents. Public callers can request only
-    /// the single destination derived from the durable lifecycle controller.
-    pub(crate) async fn start_run_for_fleet(
+    /// execution's cross-session notify-intent. Public callers can request
+    /// only the single destination derived from the durable lifecycle
+    /// controller.
+    pub(crate) async fn start_run_for_subagent(
         &self,
         session_id: &SessionId,
         input: Vec<InputItem>,
@@ -1225,9 +1185,9 @@ impl GatewayAgentApi {
                     reply_schema_ref: None,
                     deadline_after_ms: None,
                     max_promises: engine::MAX_COMPLETION_PROMISES,
-                    key_source: WorkflowToolCompletionKeySource::ArrayIndices {
+                    key_source: WorkflowToolCompletionKeySource::ArrayItemField {
                         pointer: "/jobs".to_owned(),
-                        prefix: "job-".to_owned(),
+                        field: "job_id".to_owned(),
                     },
                 },
             ),
@@ -1269,6 +1229,140 @@ impl GatewayAgentApi {
             ));
         }
         Ok(declarations)
+    }
+
+    async fn core_subagent_workflow_tool_declarations(
+        &self,
+    ) -> Result<Vec<WorkflowToolDeclaration>, AgentApiError> {
+        let recipe_bytes = serde_json::to_vec(&temporal_workflow::WorkflowToolRecipeV1 {
+            workflow_type: tools::subagents::SUBAGENT_WORKFLOW_TYPE.to_owned(),
+            task_queue: self.task_queue.clone(),
+        })
+        .map_err(|error| {
+            AgentApiError::internal(format!("encode core subagent workflow recipe: {error}"))
+        })?;
+        let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe_bytes);
+        let recipe_ref = self
+            .store
+            .put_bytes(recipe_bytes)
+            .await
+            .map_err(map_blob_store_error)?;
+        // The binding carries the hard ceiling; the grant's `deadlineMs` is
+        // pinned per call and enforced inside the execution, so the
+        // immutable binding never has to change with the grant.
+        let definitions = [
+            (
+                tools::subagents::SubagentToolKind::Run,
+                WorkflowToolCompletion::Joined {
+                    reply_schema_ref: None,
+                    deadline_after_ms: engine::SUBAGENT_DEADLINE_CEILING_MS,
+                },
+            ),
+            (
+                tools::subagents::SubagentToolKind::Spawn,
+                WorkflowToolCompletion::Promises {
+                    reply_schema_ref: None,
+                    deadline_after_ms: Some(engine::SUBAGENT_DEADLINE_CEILING_MS),
+                    max_promises: 1,
+                    key_source: WorkflowToolCompletionKeySource::Reply,
+                },
+            ),
+        ];
+        let mut declarations = Vec::with_capacity(definitions.len());
+        for (kind, completion) in definitions {
+            let bundle = tools::subagents::subagent_tool_bundle(kind).map_err(|error| {
+                AgentApiError::internal(format!(
+                    "build core {} tool: {error}",
+                    kind.workflow_tool_id()
+                ))
+            })?;
+            store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
+            declarations.push(WorkflowToolDeclaration::new(
+                WorkflowToolDefinition {
+                    tool_id: WorkflowToolId::new(kind.workflow_tool_id()),
+                    revision: 1,
+                    semantic_type: kind.semantic_type().to_owned(),
+                    tool: bundle.spec,
+                },
+                WorkflowToolTarget::Start {
+                    start: WorkflowStartRef {
+                        recipe_format: temporal_workflow::WORKFLOW_TOOL_RECIPE_FORMAT_V1,
+                        revision: 1,
+                        recipe_ref: recipe_ref.clone(),
+                        recipe_fingerprint: recipe_fingerprint.clone(),
+                    },
+                },
+                completion,
+            ));
+        }
+        Ok(declarations)
+    }
+
+    async fn ensure_core_subagent_workflow_tools(
+        &self,
+        session_id: &SessionId,
+        state: &engine::CoreAgentState,
+    ) -> Result<(), AgentApiError> {
+        if has_all_core_subagent_bindings(state) {
+            return Ok(());
+        }
+        let baseline_failures = self
+            .query_status_optional(session_id)
+            .await?
+            .map(|status| status.admission_failures.len())
+            .unwrap_or(0);
+        let declarations = self.core_subagent_workflow_tool_declarations().await?;
+        for declaration in declarations {
+            if state
+                .workflow_tools
+                .bindings
+                .contains_key(&declaration.definition.tool_id)
+            {
+                continue;
+            }
+            self.submit_core_command(
+                session_id,
+                CoreAgentCommand::AdmitSystemWorkflowTool {
+                    session_universe_id: self.universe_id(),
+                    declaration,
+                },
+            )
+            .await?;
+        }
+        self.wait_for_core_subagent_bindings(session_id, baseline_failures)
+            .await
+    }
+
+    async fn wait_for_core_subagent_bindings(
+        &self,
+        session_id: &SessionId,
+        baseline_failures: usize,
+    ) -> Result<(), AgentApiError> {
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for core subagent workflow tool admission: {session_id}"
+                )));
+            }
+            if let Some(status) = self.query_status_optional(session_id).await? {
+                if status.admission_failures.len() > baseline_failures
+                    && let Some(failure) = status.admission_failures.last()
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
+                }
+                if let Some(error) = status.last_error {
+                    return Err(AgentApiError::internal(format!(
+                        "agent workflow reported error: {error}"
+                    )));
+                }
+            }
+            let loaded = self.load_session_state(session_id).await?;
+            if has_all_core_subagent_bindings(&loaded.state) {
+                return Ok(());
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
     }
 
     async fn ensure_core_environment_job_workflow_tools(
@@ -1666,6 +1760,9 @@ fn managed_workflow_tools_from_api(
                         WorkflowToolCompletionKeySourceInput::StringArray { pointer } => {
                             WorkflowToolCompletionKeySource::StringArray { pointer }
                         }
+                        WorkflowToolCompletionKeySourceInput::ArrayItemField { pointer, field } => {
+                            WorkflowToolCompletionKeySource::ArrayItemField { pointer, field }
+                        }
                         WorkflowToolCompletionKeySourceInput::ArrayIndices { pointer, prefix } => {
                             WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix }
                         }
@@ -1789,51 +1886,6 @@ fn validate_managed_session_retry(
     }
 }
 
-fn managed_workflow_tools_from_state(
-    state: &engine::CoreAgentState,
-) -> Result<Option<ManagedSessionWorkflowTools>, AgentApiError> {
-    let Some(version) = state.workflow_tools.managed_declaration_version else {
-        let has_non_system_bindings = state
-            .workflow_tools
-            .bindings
-            .keys()
-            .any(|tool_id| !state.workflow_tools.system_binding_ids.contains(tool_id));
-        if state.workflow_tools.session_universe_id.is_none()
-            && state.workflow_tools.managed_creation_fingerprint.is_none()
-            && state.workflow_tools.lifecycle_controller.is_none()
-            && !has_non_system_bindings
-        {
-            return Ok(None);
-        }
-        return Err(AgentApiError::internal(
-            "session has incomplete managed workflow-tool creation state",
-        ));
-    };
-    if state.workflow_tools.session_universe_id.is_none()
-        || state.workflow_tools.managed_creation_fingerprint.is_none()
-    {
-        return Err(AgentApiError::internal(
-            "session has incomplete managed workflow-tool creation state",
-        ));
-    }
-    Ok(Some(ManagedSessionWorkflowTools {
-        version,
-        lifecycle_controller: state.workflow_tools.lifecycle_controller.clone(),
-        tools: state
-            .workflow_tools
-            .bindings
-            .iter()
-            .filter(|(tool_id, _)| !state.workflow_tools.system_binding_ids.contains(*tool_id))
-            .map(|(_, binding)| binding)
-            .map(|binding| WorkflowToolDeclaration {
-                definition: binding.definition.clone(),
-                target: binding.target.clone(),
-                completion: binding.completion.clone(),
-            })
-            .collect(),
-    }))
-}
-
 fn is_core_environment_job_tool_id(tool_id: &str) -> bool {
     matches!(
         tool_id,
@@ -1843,6 +1895,66 @@ fn is_core_environment_job_tool_id(tool_id: &str) -> bool {
 
 fn is_core_environment_job_binding(binding: &engine::WorkflowToolBinding) -> bool {
     is_core_environment_job_tool_id(binding.definition.tool_id.as_str())
+}
+
+fn is_core_subagent_binding(binding: &engine::WorkflowToolBinding) -> bool {
+    tools::subagents::is_subagent_workflow_tool_id(binding.definition.tool_id.as_str())
+}
+
+fn has_all_core_subagent_bindings(state: &engine::CoreAgentState) -> bool {
+    [
+        tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID,
+        tools::subagents::AGENT_SPAWN_WORKFLOW_TOOL_ID,
+    ]
+    .into_iter()
+    .all(|tool_id| {
+        state
+            .workflow_tools
+            .bindings
+            .contains_key(&WorkflowToolId::new(tool_id))
+    })
+}
+
+fn validate_subagent_deadline_for_existing_bindings(
+    state: &engine::CoreAgentState,
+    features: &engine::FeaturesConfig,
+) -> Result<(), AgentApiError> {
+    let Some(requested_deadline_ms) = features
+        .subagents
+        .as_ref()
+        .map(|subagents| subagents.limits.deadline_ms)
+    else {
+        return Ok(());
+    };
+    let existing_ceiling_ms = [
+        tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID,
+        tools::subagents::AGENT_SPAWN_WORKFLOW_TOOL_ID,
+    ]
+    .into_iter()
+    .filter_map(|tool_id| {
+        state
+            .workflow_tools
+            .bindings
+            .get(&WorkflowToolId::new(tool_id))
+    })
+    .filter_map(|binding| match binding.completion {
+        WorkflowToolCompletion::Joined {
+            deadline_after_ms, ..
+        } => Some(deadline_after_ms),
+        WorkflowToolCompletion::Promises {
+            deadline_after_ms, ..
+        } => deadline_after_ms,
+        WorkflowToolCompletion::Accepted => None,
+    })
+    .min();
+    if let Some(ceiling_ms) = existing_ceiling_ms
+        && requested_deadline_ms > ceiling_ms
+    {
+        return Err(AgentApiError::invalid_request(format!(
+            "subagents deadlineMs {requested_deadline_ms} exceeds this session's immutable binding ceiling of {ceiling_ms} ms; create a new session to use the 24-hour ceiling"
+        )));
+    }
+    Ok(())
 }
 
 fn has_all_core_environment_job_bindings(state: &engine::CoreAgentState) -> bool {
@@ -2018,6 +2130,8 @@ impl AgentApiService for GatewayAgentApi {
         self.desired_mcp_tools(&config.features).await?;
         self.validate_workspace_link_targets(&config.features)
             .await?;
+        self.validate_subagent_agents(&config.features).await?;
+        validate_subagent_deadline_for_existing_bindings(&loaded.state, &config.features)?;
         if &config == current_config {
             // The config event is an idempotent no-op, but derived managed
             // context may still need repair after an interrupted refresh.
@@ -2090,9 +2204,28 @@ impl AgentApiService for GatewayAgentApi {
             .as_deref()
             .map(decode_session_list_cursor)
             .transpose()?;
+        let root_session_id = params
+            .root_session_id
+            .map(SessionId::try_new)
+            .transpose()
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!("invalid rootSessionId: {error}"))
+            })?;
+        let parent_session_id = params
+            .parent_session_id
+            .map(SessionId::try_new)
+            .transpose()
+            .map_err(|error| {
+                AgentApiError::invalid_request(format!("invalid parentSessionId: {error}"))
+            })?;
         let page = self
             .store
-            .list_sessions(engine::storage::ListSessions { cursor, limit })
+            .list_sessions(engine::storage::ListSessions {
+                cursor,
+                limit,
+                root_session_id,
+                parent_session_id,
+            })
             .await
             .map_err(map_session_store_error)?;
         Ok(AgentApiOutcome::new(SessionListResponse {
@@ -2352,12 +2485,7 @@ impl AgentApiService for GatewayAgentApi {
             match prepared {
                 PreparedAppend::Failed(result) => ordered.push(PreparedAppend::Failed(result)),
                 PreparedAppend::Ready { key, input, text } => {
-                    if let Some(active) = loaded
-                        .state
-                        .context
-                        .entries
-                        .iter()
-                        .find(|active| active.key.as_ref() == Some(&key))
+                    if let Some(active) = engine::current_context_entry(&loaded.state, &key)
                         .filter(|active| active_context_entry_matches_input(active, &input))
                     {
                         let effective = active_entry_input(active);
@@ -3286,6 +3414,61 @@ impl AgentApiService for GatewayAgentApi {
         }
     }
 
+    async fn lease_auth_grant(
+        &self,
+        params: AuthGrantLeaseParams,
+    ) -> Result<AgentApiOutcome<AuthGrantLeaseResponse>, AgentApiError> {
+        let grant_id = parse_auth_grant_id(params.grant_id)?;
+        let grant = self
+            .store
+            .read_grant(&grant_id)
+            .await
+            .map_err(map_auth_error)?;
+        require_retrievable_grant(&grant)?;
+
+        let audience = match grant.provider_kind {
+            auth::AuthProviderKind::McpOAuth => {
+                TokenAudience::McpResource(params.audience.ok_or_else(|| {
+                    AgentApiError::rejected("mcp_oauth grant leases require an audience")
+                })?)
+            }
+            auth::AuthProviderKind::GitHubApp => {
+                TokenAudience::GitHubApi(params.audience.ok_or_else(|| {
+                    AgentApiError::rejected("github_app grant leases require an audience")
+                })?)
+            }
+            _ => TokenAudience::ServiceLease(
+                params
+                    .audience
+                    .or_else(|| grant.audience.clone())
+                    .unwrap_or_else(|| "service:lease".to_owned()),
+            ),
+        };
+        let token = self
+            .auth_token_broker
+            .bearer_token(&grant_id, &audience)
+            .await
+            .map_err(map_auth_broker_error)?;
+        let leased = self
+            .store
+            .record_grant_lease(&grant_id, now_ms()?)
+            .await
+            .map_err(map_auth_error)?;
+        let principal = crate::gateway::principal::request_principal();
+        tracing::info!(
+            grant_id = %grant_id,
+            principal_kind = ?principal.kind,
+            principal_id = principal.id.as_deref().unwrap_or(""),
+            "auth grant leased"
+        );
+        Ok(AgentApiOutcome::new(AuthGrantLeaseResponse {
+            token: token.expose().to_owned(),
+            expires_at_ms: leased.expires_at_ms,
+            grant_id: grant_id.as_str().to_owned(),
+            provider_kind: api_auth_provider_kind(leased.provider_kind),
+        }))
+    }
+
     async fn list_auth_grants(
         &self,
         params: AuthGrantListParams,
@@ -3423,6 +3606,7 @@ impl AgentApiService for GatewayAgentApi {
                 redirect_uri: oauth_redirect_uri(&self.public_base_url),
                 scopes: params.scopes,
                 audience: params.audience,
+                grant_exposure: registry_auth_grant_exposure(params.exposure),
                 principal: crate::gateway::principal::request_principal(),
             })
             .await
@@ -3592,6 +3776,7 @@ impl AgentApiService for GatewayAgentApi {
             installation,
             params.grant_id,
             params.display_name,
+            registry_auth_grant_exposure(params.exposure),
             now_ms()?,
         )?;
         let record = self

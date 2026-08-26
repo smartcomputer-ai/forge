@@ -1,15 +1,21 @@
-import type { ChannelSessionStartV1, NormalizedInboundV1 } from "../contracts/channel.js";
+import type {
+  ChannelConversationStartV1,
+  NormalizedInboundV1,
+} from "../contracts/channel.js";
+import type { ChatHandleV1 } from "../contracts/bridge.js";
 import type {
   EmissionEnvelope,
-  RunStatus,
   WorkflowToolInvocation,
-} from "../contracts/emissions.js";
+} from "@lightspeed/agent-client/workflow";
 
 export interface ReceivedInvocation {
   invocation: WorkflowToolInvocation;
+  holderWorkflowId: string;
   producerSessionId: string;
   status: "received" | "delivering" | "resolved" | "failed" | "cancelled";
   providerMessageIds?: string[];
+  /** The number the send got (`chat.sent` row), when the tool was a send. */
+  sentSeq?: number;
   resolutionEmissionIds?: string[];
   error?: string;
 }
@@ -17,53 +23,55 @@ export interface ReceivedInvocation {
 export type ApplyEmissionEffect =
   | { type: "invocation_received"; invocationId: string }
   | { type: "invocation_cancelled"; invocationId: string; promiseId: string }
-  | {
-      type: "run_terminal";
-      token: string;
-      runId: number;
-      status: RunStatus;
-    }
   | { type: "none" };
 
-export interface ReceivedTurn {
+/** One inbound provider message on its way into the bot. */
+export interface ReceivedMessage {
   messageId: string;
-  submissionId?: string;
-  terminalToken?: string;
-  status: "pending" | "starting" | "active" | "terminal" | "failed";
-  runId?: string;
-  terminalStatus?: RunStatus;
+  status: "emitting" | "emitted" | "filtered" | "duplicate" | "refused" | "failed";
+  /** The bot's event number, once admitted: the handle the model uses. */
+  seq?: number;
+  /** The routed session admission chose (logical base id). */
+  sessionId?: string;
   error?: string;
 }
 
-export interface ReceivedRoomEvent {
-  messageId: string;
-  contextKeys: string[];
-  status: "appending" | "appended" | "failed";
-  contextRevision?: number;
-  activationText?: string;
-  error?: string;
-}
-
-export interface ChannelSessionSnapshot {
-  version: 1;
+/** A bot delivery this conversation was told about through `bot_delivery_v1`. */
+export interface DeliveryRecord {
+  status: "started" | "finished";
   sessionId: string;
-  bindingId: string;
-  managedSessionCreatedAtMs: number | null;
+  runId: string | null;
+  /** The lane's finish status (`handled`, `run_failed`, `steered`, …). */
+  outcome?: string;
+  fallback?: {
+    status: "reconciling" | "suppressed" | "delivered" | "failed";
+    providerMessageIds?: string[];
+    seq?: number;
+    error?: string;
+  };
+}
+
+export interface ConversationSnapshot {
+  version: 1;
+  triggerId: string;
+  botName: string;
+  conversationKey: string;
+  /** CAS ref of this conversation's receiver-bound tool declarations. */
+  toolsRef: string | null;
   inboundCount: number;
   duplicateInboundCount: number;
   duplicateEmissionCount: number;
   droppedInboundCount: number;
   overloadedInboundCount: number;
-  pendingTurnCount: number;
-  batchCount: number;
-  prunedRoomEventCount: number;
-  activation: ChannelSessionStartV1["activation"];
-  access: ChannelSessionStartV1["access"];
   deniedInboundCount: number;
+  emittedCount: number;
+  activation: ChannelConversationStartV1["activation"];
+  access: ChannelConversationStartV1["access"];
   protocolErrors: string[];
-  replyTargets: Record<string, { senderId: string; text: string }>;
-  turns: Record<string, ReceivedTurn>;
-  roomEvents: Record<string, ReceivedRoomEvent>;
+  messages: Record<string, ReceivedMessage>;
+  /** Message number → provider ids and direction, both ways. */
+  handles: Record<string, ChatHandleV1>;
+  deliveries: Record<string, DeliveryRecord>;
   policyResponses: Record<
     string,
     {
@@ -74,33 +82,26 @@ export interface ChannelSessionSnapshot {
     }
   >;
   invocations: Record<string, ReceivedInvocation>;
-  terminalTokens: string[];
   cancellations: string[];
-  fallbacks: Record<
-    string,
-    {
-      status: "reconciling" | "suppressed" | "delivered" | "failed";
-      providerMessageIds?: string[];
-      error?: string;
-    }
-  >;
 }
 
 export interface ChannelWorkflowState {
-  snapshot: ChannelSessionSnapshot;
+  snapshot: ConversationSnapshot;
   seenInboundIds: Set<string>;
   seenEmissionIds: Set<string>;
 }
 
-export interface ChannelWorkflowCarryV1 {
+export interface ConversationCarryV1 {
   version: 1;
-  snapshot: ChannelSessionSnapshot;
+  snapshot: ConversationSnapshot;
   seenInboundIds: string[];
   seenEmissionIds: string[];
 }
 
-export const MAX_CHANNEL_REPLY_TARGETS = 256;
+export const MAX_CHANNEL_HANDLES = 512;
 export const MAX_CHANNEL_INBOUND_INBOX = 256;
+const MAX_CARRIED_MESSAGES = 256;
+const MAX_CARRIED_DELIVERIES = 128;
 
 export function enqueueBoundedInbound<T extends NormalizedInboundV1>(
   state: ChannelWorkflowState,
@@ -116,16 +117,17 @@ export function enqueueBoundedInbound<T extends NormalizedInboundV1>(
 }
 
 export function initialWorkflowState(
-  start: ChannelSessionStartV1,
-  carry?: ChannelWorkflowCarryV1,
+  start: ChannelConversationStartV1,
+  conversationKey: string,
+  carry?: ConversationCarryV1,
 ): ChannelWorkflowState {
   if (carry !== undefined) {
     if (
       carry.version !== 1 ||
-      carry.snapshot.sessionId !== start.sessionId ||
-      carry.snapshot.bindingId !== start.bindingId
+      carry.snapshot.triggerId !== start.triggerId ||
+      carry.snapshot.conversationKey !== conversationKey
     ) {
-      throw new TypeError("channel workflow carry does not match the session");
+      throw new TypeError("conversation workflow carry does not match the conversation");
     }
     return {
       snapshot: cloneSnapshot(carry.snapshot),
@@ -136,67 +138,71 @@ export function initialWorkflowState(
   return {
     snapshot: {
       version: 1,
-      sessionId: start.sessionId,
-      bindingId: start.bindingId,
-      managedSessionCreatedAtMs: null,
+      triggerId: start.triggerId,
+      botName: start.botName,
+      conversationKey,
+      toolsRef: null,
       inboundCount: 0,
       duplicateInboundCount: 0,
       duplicateEmissionCount: 0,
       droppedInboundCount: 0,
       overloadedInboundCount: 0,
-      pendingTurnCount: 0,
-      batchCount: 0,
-      prunedRoomEventCount: 0,
       deniedInboundCount: 0,
+      emittedCount: 0,
       activation: {
         ...start.activation,
         triggerPrefixes: [...start.activation.triggerPrefixes],
         mentionNames: [...start.activation.mentionNames],
-        batching: { ...start.activation.batching },
       },
       access: { ...start.access },
       protocolErrors: [],
-      replyTargets: {},
-      turns: {},
-      roomEvents: {},
+      messages: {},
+      handles: {},
+      deliveries: {},
       policyResponses: {},
       invocations: {},
-      terminalTokens: [],
       cancellations: [],
-      fallbacks: {},
     },
     seenInboundIds: new Set(),
     seenEmissionIds: new Set(),
   };
 }
 
-export function compactWorkflowState(state: ChannelWorkflowState): ChannelWorkflowCarryV1 {
-  const compacted = snapshot(state);
-  compacted.protocolErrors = compacted.protocolErrors.slice(-128);
-  compacted.terminalTokens = compacted.terminalTokens.slice(-256);
+/** Keep the newest handles; older numbers still resolve through the activity. */
+export function rememberHandle(state: ChannelWorkflowState, seq: number, handle: ChatHandleV1): void {
+  state.snapshot.handles[String(seq)] = handle;
+  const keys = Object.keys(state.snapshot.handles);
+  for (const expired of keys.slice(0, Math.max(0, keys.length - MAX_CHANNEL_HANDLES))) {
+    delete state.snapshot.handles[expired];
+  }
+}
+
+export function compactWorkflowState(state: ChannelWorkflowState): ConversationCarryV1 {
+  const compacted = cloneSnapshot(state.snapshot);
+  compacted.protocolErrors = compacted.protocolErrors.slice(-32);
   compacted.cancellations = compacted.cancellations.slice(-256);
-  compacted.turns = compactRecord(
-    compacted.turns,
-    (turn) => turn.status !== "terminal" && turn.status !== "failed",
-    128,
-  );
-  compacted.invocations = compactRecord(
+  compacted.invocations = retainRecent(
     compacted.invocations,
     (invocation) => invocation.status === "received" || invocation.status === "delivering",
-    128,
+    64,
   );
-  compacted.fallbacks = compactRecord(
-    compacted.fallbacks,
-    (fallback) => fallback.status === "reconciling",
-    128,
+  compacted.messages = retainRecent(
+    compacted.messages,
+    (message) => message.status === "emitting",
+    MAX_CARRIED_MESSAGES,
   );
-  compacted.policyResponses = compactRecord(
+  compacted.deliveries = retainRecent(
+    compacted.deliveries,
+    (delivery) => delivery.status === "started" || delivery.fallback?.status === "reconciling",
+    MAX_CARRIED_DELIVERIES,
+  );
+  compacted.policyResponses = retainRecent(
     compacted.policyResponses,
     (response) => response.status === "delivering",
     64,
   );
-  compacted.replyTargets = Object.fromEntries(
-    Object.entries(compacted.replyTargets).slice(-MAX_CHANNEL_REPLY_TARGETS),
+  compacted.handles = Object.fromEntries(
+    Object.entries(compacted.handles).slice(-MAX_CHANNEL_HANDLES),
   );
   return {
     version: 1,
@@ -217,14 +223,6 @@ export function applyInbound(
   }
   state.seenInboundIds.add(dedupKey);
   state.snapshot.inboundCount += 1;
-  state.snapshot.replyTargets[inbound.messageId] = {
-    senderId: inbound.senderId,
-    text: inbound.text,
-  };
-  const replyTargetIds = Object.keys(state.snapshot.replyTargets);
-  for (const expiredId of replyTargetIds.slice(0, -MAX_CHANNEL_REPLY_TARGETS)) {
-    delete state.snapshot.replyTargets[expiredId];
-  }
   return dedupKey;
 }
 
@@ -251,33 +249,23 @@ export function applyEmission(
   switch (envelope.body.kind) {
     case "tool_invocation": {
       if (envelope.producer.kind !== "session") {
-        state.snapshot.protocolErrors.push("tool invocation producer is not a session");
+        state.snapshot.protocolErrors.push("tool invocation must be produced by a session");
         return { type: "none" };
       }
-      const { invocation } = envelope.body;
+      const invocation = envelope.body.invocation;
       state.snapshot.invocations[invocation.invocation_id] = {
         invocation,
+        holderWorkflowId: envelope.body.holder_workflow_id,
         producerSessionId: envelope.producer.session_id,
         status: "received",
       };
       return { type: "invocation_received", invocationId: invocation.invocation_id };
     }
-    case "run_terminal": {
-      const terminal = envelope.body;
-      state.snapshot.terminalTokens.push(terminal.token);
-      for (const turn of Object.values(state.snapshot.turns)) {
-        if (turn.terminalToken === terminal.token) {
-          turn.status = "terminal";
-          turn.terminalStatus = terminal.status;
-        }
-      }
-      return {
-        type: "run_terminal",
-        token: terminal.token,
-        runId: terminal.run_id,
-        status: terminal.status,
-      };
-    }
+    case "run_terminal":
+      // The bot controller is the session's lifecycle controller; a terminal
+      // here means a declaration named this workflow where it should not.
+      state.snapshot.protocolErrors.push("conversation received a run terminal it does not own");
+      return { type: "none" };
     case "invocation_cancellation":
       state.snapshot.cancellations.push(
         `${envelope.body.invocation_id}:${envelope.body.completion_key}`,
@@ -288,55 +276,55 @@ export function applyEmission(
         promiseId: envelope.body.promise_id,
       };
     case "source_resolution":
-      state.snapshot.protocolErrors.push("controller received an unexpected source resolution");
+      state.snapshot.protocolErrors.push("conversation received an unexpected source resolution");
       return { type: "none" };
   }
 }
 
-export function snapshot(state: ChannelWorkflowState): ChannelSessionSnapshot {
+export function snapshot(state: ChannelWorkflowState): ConversationSnapshot {
   return cloneSnapshot(state.snapshot);
 }
 
-function cloneSnapshot(source: ChannelSessionSnapshot): ChannelSessionSnapshot {
+function cloneSnapshot(source: ConversationSnapshot): ConversationSnapshot {
   return {
     ...source,
-    protocolErrors: [...source.protocolErrors],
     activation: {
       ...source.activation,
       triggerPrefixes: [...source.activation.triggerPrefixes],
       mentionNames: [...source.activation.mentionNames],
-      batching: { ...source.activation.batching },
     },
     access: { ...source.access },
-    replyTargets: Object.fromEntries(
-      Object.entries(source.replyTargets).map(([id, target]) => [id, { ...target }]),
+    protocolErrors: [...source.protocolErrors],
+    messages: Object.fromEntries(
+      Object.entries(source.messages).map(([key, message]) => [key, { ...message }]),
     ),
-    turns: Object.fromEntries(
-      Object.entries(source.turns).map(([id, turn]) => [id, { ...turn }]),
+    handles: Object.fromEntries(
+      Object.entries(source.handles).map(([key, handle]) => [
+        key,
+        { ...handle, providerMessageIds: [...handle.providerMessageIds] },
+      ]),
     ),
-    invocations: Object.fromEntries(
-      Object.entries(source.invocations).map(([id, entry]) => [
-        id,
+    deliveries: Object.fromEntries(
+      Object.entries(source.deliveries).map(([key, delivery]) => [
+        key,
         {
-          ...entry,
-          ...(entry.providerMessageIds === undefined
+          ...delivery,
+          ...(delivery.fallback === undefined
             ? {}
-            : { providerMessageIds: [...entry.providerMessageIds] }),
-          ...(entry.resolutionEmissionIds === undefined
-            ? {}
-            : { resolutionEmissionIds: [...entry.resolutionEmissionIds] }),
+            : {
+                fallback: {
+                  ...delivery.fallback,
+                  ...(delivery.fallback.providerMessageIds === undefined
+                    ? {}
+                    : { providerMessageIds: [...delivery.fallback.providerMessageIds] }),
+                },
+              }),
         },
       ]),
     ),
-    roomEvents: Object.fromEntries(
-      Object.entries(source.roomEvents).map(([id, event]) => [
-        id,
-        { ...event, contextKeys: [...event.contextKeys] },
-      ]),
-    ),
     policyResponses: Object.fromEntries(
-      Object.entries(source.policyResponses).map(([id, response]) => [
-        id,
+      Object.entries(source.policyResponses).map(([key, response]) => [
+        key,
         {
           ...response,
           ...(response.providerMessageIds === undefined
@@ -345,31 +333,32 @@ function cloneSnapshot(source: ChannelSessionSnapshot): ChannelSessionSnapshot {
         },
       ]),
     ),
-    terminalTokens: [...source.terminalTokens],
-    cancellations: [...source.cancellations],
-    fallbacks: Object.fromEntries(
-      Object.entries(source.fallbacks).map(([token, fallback]) => [
-        token,
+    invocations: Object.fromEntries(
+      Object.entries(source.invocations).map(([key, invocation]) => [
+        key,
         {
-          ...fallback,
-          ...(fallback.providerMessageIds === undefined
+          ...invocation,
+          invocation: { ...invocation.invocation },
+          ...(invocation.providerMessageIds === undefined
             ? {}
-            : { providerMessageIds: [...fallback.providerMessageIds] }),
+            : { providerMessageIds: [...invocation.providerMessageIds] }),
+          ...(invocation.resolutionEmissionIds === undefined
+            ? {}
+            : { resolutionEmissionIds: [...invocation.resolutionEmissionIds] }),
         },
       ]),
     ),
+    cancellations: [...source.cancellations],
   };
 }
 
-function compactRecord<T>(
-  source: Record<string, T>,
-  retain: (value: T) => boolean,
-  completedLimit: number,
+function retainRecent<T>(
+  entries: Record<string, T>,
+  keep: (entry: T) => boolean,
+  limit: number,
 ): Record<string, T> {
-  const entries = Object.entries(source);
-  const retained = new Set(entries.filter(([, value]) => retain(value)).map(([key]) => key));
-  for (const [key] of entries.filter(([, value]) => !retain(value)).slice(-completedLimit)) {
-    retained.add(key);
-  }
-  return Object.fromEntries(entries.filter(([key]) => retained.has(key)));
+  const list = Object.entries(entries);
+  const kept = list.filter(([, entry]) => keep(entry));
+  const rest = list.filter(([, entry]) => !keep(entry)).slice(-limit);
+  return Object.fromEntries([...rest, ...kept]);
 }

@@ -33,7 +33,11 @@ export function TranscriptEntryView({ entry }: { entry: TranscriptEntry }) {
       );
     case "system":
       return (
-        <Marker variant="separator">
+        <Marker
+          variant="separator"
+          className={entry.superseded ? "opacity-50" : undefined}
+          title={entry.superseded ? "Superseded by a newer version" : undefined}
+        >
           <MarkerContent>{entry.text}</MarkerContent>
         </Marker>
       );

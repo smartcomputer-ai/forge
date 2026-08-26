@@ -203,9 +203,11 @@ pub(super) async fn prepare_workflow_tool(
             params
                 .jobs
                 .iter()
-                .enumerate()
-                .map(|(index, job)| {
-                    let completion_key = format!("job-{index}");
+                .map(|job| {
+                    // The model's job id is the completion key (the
+                    // binding's `ArrayItemField` source), so the promise
+                    // map it received is keyed by the names it chose.
+                    let completion_key = job.job_id.as_str().to_owned();
                     let promise_id = completion_promises.get(&completion_key).ok_or_else(|| {
                         activity_error(anyhow::anyhow!(
                             "job_submit is missing completion key {completion_key}"

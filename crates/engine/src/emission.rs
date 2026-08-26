@@ -10,9 +10,12 @@ use crate::{
     WorkflowToolInvocation, WorkflowToolInvocationId,
 };
 
-const EMISSION_ID_PREFIX: &str = "emission:sha256:";
+/// Prefix of every digest-derived emission id (tool-invocation emissions
+/// reuse the invocation id verbatim instead).
+pub const EMISSION_ID_PREFIX: &str = "emission:sha256:";
 const EMISSION_ID_HEX_LEN: usize = 64;
-const EMISSION_HASH_DOMAIN: &[u8] = b"lightspeed.emission.v1";
+/// Domain-separation tag hashed first into every derived emission id.
+pub const EMISSION_HASH_DOMAIN: &str = "lightspeed.emission.v1";
 
 /// Stable identity for one cross-workflow emission.
 ///
@@ -20,6 +23,7 @@ const EMISSION_HASH_DOMAIN: &[u8] = b"lightspeed.emission.v1";
 /// producer/source identity. They are safe to recompute after activity retry,
 /// worker restart, or workflow continue-as-new.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct EmissionId(String);
 
 impl EmissionId {
@@ -38,7 +42,7 @@ impl EmissionId {
 
     fn from_parts(kind: &[u8], parts: &[&[u8]]) -> Self {
         let mut digest = Sha256::new();
-        update_digest_part(&mut digest, EMISSION_HASH_DOMAIN);
+        update_digest_part(&mut digest, EMISSION_HASH_DOMAIN.as_bytes());
         update_digest_part(&mut digest, kind);
         for part in parts {
             update_digest_part(&mut digest, part);
@@ -68,9 +72,13 @@ impl EmissionId {
         )
     }
 
+    /// Promise ids are session-scoped counters, so the holder workflow id
+    /// is part of the identity: one producer resolving `promise_7` for two
+    /// holders sends two distinct emissions.
     pub fn for_source_resolution(
         universe_id: Uuid,
         workflow_id: &str,
+        holder_workflow_id: &str,
         promise_id: &PromiseId,
     ) -> Self {
         let universe = universe_id.to_string();
@@ -79,6 +87,7 @@ impl EmissionId {
             &[
                 universe.as_bytes(),
                 workflow_id.as_bytes(),
+                holder_workflow_id.as_bytes(),
                 promise_id.as_str().as_bytes(),
             ],
         )
@@ -139,6 +148,7 @@ pub enum EmissionIdError {
 /// Durable producer identity carried with every emission.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub enum EmissionProducer {
     /// A session-log-backed emission. `log_seq` is the exact sequence of the
     /// event that produced the fact.
@@ -172,6 +182,9 @@ impl EmissionProducer {
 /// contracts land. This first slice folds the two existing transports.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
+// Invocation payloads intentionally keep their durable wire shape inline.
+#[allow(clippy::large_enum_variant)]
 pub enum EmissionBody {
     RunTerminal {
         token: String,
@@ -186,6 +199,10 @@ pub enum EmissionBody {
     },
     ToolInvocation {
         invocation: WorkflowToolInvocation,
+        /// Workflow id of the session that emitted the invocation — the
+        /// endpoint a receiver signals its reply to. Supplied by the
+        /// substrate adapter; the engine treats it as opaque.
+        holder_workflow_id: String,
     },
     /// Best-effort notice to a bound receiver that the session already
     /// resolved one keyed completion promise as cancelled. The receiver may
@@ -201,6 +218,7 @@ pub enum EmissionBody {
 /// Bounded cross-workflow fact delivered through the fixed
 /// `deliver_emission` signal.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct EmissionEnvelope {
     pub emission_id: EmissionId,
     pub producer: EmissionProducer,
@@ -240,10 +258,16 @@ impl EmissionEnvelope {
     pub fn source_resolution(
         universe_id: Uuid,
         workflow_id: String,
+        holder_workflow_id: &str,
         promise_id: PromiseId,
         resolution: PromiseResolution,
     ) -> Self {
-        let emission_id = EmissionId::for_source_resolution(universe_id, &workflow_id, &promise_id);
+        let emission_id = EmissionId::for_source_resolution(
+            universe_id,
+            &workflow_id,
+            holder_workflow_id,
+            &promise_id,
+        );
         Self {
             emission_id,
             producer: EmissionProducer::Workflow {
@@ -286,6 +310,7 @@ impl EmissionEnvelope {
         session_id: SessionId,
         log_seq: EventSeq,
         invocation: WorkflowToolInvocation,
+        holder_workflow_id: String,
     ) -> Self {
         let emission_id = EmissionId::for_tool_invocation(&invocation.invocation_id);
         Self {
@@ -295,7 +320,10 @@ impl EmissionEnvelope {
                 session_id,
                 log_seq,
             },
-            body: EmissionBody::ToolInvocation { invocation },
+            body: EmissionBody::ToolInvocation {
+                invocation,
+                holder_workflow_id,
+            },
         }
     }
 }
@@ -341,24 +369,36 @@ mod tests {
     }
 
     #[test]
-    fn source_resolution_ids_include_producer_and_promise() {
+    fn source_resolution_ids_include_producer_holder_and_promise() {
         let first = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-a",
+            "universe/session_a",
             &PromiseId::new("promise_1"),
         );
         let other_source = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-b",
+            "universe/session_a",
+            &PromiseId::new("promise_1"),
+        );
+        // Promise ids are session counters: the same producer resolving
+        // `promise_1` for two holders must send two distinct emissions.
+        let other_holder = EmissionId::for_source_resolution(
+            universe(1),
+            "universe/envjob-a",
+            "universe/session_b",
             &PromiseId::new("promise_1"),
         );
         let other_promise = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-a",
+            "universe/session_a",
             &PromiseId::new("promise_2"),
         );
 
         assert_ne!(first, other_source);
+        assert_ne!(first, other_holder);
         assert_ne!(first, other_promise);
     }
 
@@ -379,6 +419,7 @@ mod tests {
         let envelope = EmissionEnvelope::source_resolution(
             universe(1),
             "universe/envjob-a".to_owned(),
+            "universe/session_a",
             PromiseId::new("promise_1"),
             PromiseResolution::Resolved {
                 payload_ref: Some(BlobRef::from_bytes(b"done")),

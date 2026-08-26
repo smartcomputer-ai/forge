@@ -27,7 +27,7 @@ pub(super) fn reconcile_polls_for_state(state: &mut AgentSessionWorkflow, now_ms
                 promise.promise_id.as_str().to_owned(),
                 promise.source.clone(),
             )),
-            engine::PromiseSource::Run { .. } | engine::PromiseSource::Workflow { .. } => None,
+            engine::PromiseSource::Workflow { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     state
@@ -122,7 +122,7 @@ pub(super) async fn process_due(
                 }
                 check
             }
-            engine::PromiseSource::Run { .. } | engine::PromiseSource::Workflow { .. } => continue,
+            engine::PromiseSource::Workflow { .. } => continue,
         };
         match check {
             engine::PromiseSourceCheckResult::Pending => {
@@ -201,28 +201,6 @@ pub(super) async fn flush_pending_promise_cancellations(
     let pending = ctx.state_mut(|state| std::mem::take(&mut state.pending_promise_cancellations));
     for pending in pending {
         match pending.source {
-            engine::PromiseSource::Run {
-                target_session_id,
-                target_run_id,
-            } => {
-                let Some((universe_id, _)) = split_workflow_id(ctx.workflow_id()) else {
-                    continue;
-                };
-                let Ok(session_id) = engine::SessionId::try_new(target_session_id) else {
-                    continue;
-                };
-                let workflow_id = compose_workflow_id(universe_id, &session_id);
-                let admission = AgentAdmission {
-                    command: CoreAgentCommand::CancelRun {
-                        run_id: engine::RunId::new(target_run_id),
-                    },
-                    correlation_token: None,
-                };
-                let _ = ctx
-                    .external_workflow(workflow_id, None)
-                    .signal(AgentSessionWorkflow::submit_admissions, vec![admission])
-                    .await;
-            }
             engine::PromiseSource::Timer { .. } => {}
             engine::PromiseSource::Workflow {
                 producer_workflow_id,
@@ -379,9 +357,16 @@ fn queue_resolution(
     resolution: engine::PromiseResolution,
 ) {
     ctx.state_mut(|state| {
+        let promise_id = match engine::PromiseId::try_new(promise_id) {
+            Ok(promise_id) => promise_id,
+            Err(error) => {
+                state.last_error = Some(format!("cannot queue promise resolution: {error}"));
+                return;
+            }
+        };
         state.pending_admissions.push(AgentAdmission {
             command: CoreAgentCommand::ResolvePromise {
-                promise_id: engine::PromiseId::new(promise_id),
+                promise_id,
                 resolution,
             },
             correlation_token: None,
@@ -397,7 +382,6 @@ fn initial_check_at_ms(source: &engine::PromiseSource, now_ms: u64) -> u64 {
     match source {
         engine::PromiseSource::Timer { fire_at_ms } => *fire_at_ms,
         engine::PromiseSource::Workflow { .. } => now_ms + WORKFLOW_EXECUTION_RECOVERY_POLL_MS,
-        engine::PromiseSource::Run { .. } => now_ms,
     }
 }
 
@@ -406,6 +390,5 @@ fn advance(poll: &mut PromiseSourcePoll, now_ms: u64) {
     poll.next_check_at_ms = match &poll.source {
         engine::PromiseSource::Timer { fire_at_ms } => *fire_at_ms,
         engine::PromiseSource::Workflow { .. } => now_ms + WORKFLOW_EXECUTION_RECOVERY_POLL_MS,
-        engine::PromiseSource::Run { .. } => now_ms,
     };
 }

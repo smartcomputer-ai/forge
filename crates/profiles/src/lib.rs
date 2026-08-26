@@ -175,6 +175,7 @@ fn validate_profile_environment(environment: &ProfileEnvironment) -> Result<(), 
         ProfileEnvironment::Existing { environment_id } => {
             validate_nonempty_string("environment.environmentId", environment_id)
         }
+        ProfileEnvironment::Inherit {} => Ok(()),
         ProfileEnvironment::Provision {
             provider_id,
             template_id,

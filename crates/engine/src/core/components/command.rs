@@ -6,8 +6,7 @@ use uuid::Uuid;
 use crate::{
     BlobRef, ContextEntryInput, ContextEntryKey, EnvironmentId, ManagedSessionWorkflowTools,
     PromiseId, PromiseResolution, ResumeToolBatchCommand, RunId, RunRequestCommand, SessionConfig,
-    SubmitMessageCommand, ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration,
-    WorkflowToolInvocationId,
+    ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration, WorkflowToolInvocationId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,7 +73,6 @@ pub enum CoreAgentCommand {
     },
     CompactContext,
     RequestRun(RunRequestCommand),
-    SubmitMessage(SubmitMessageCommand),
     RequestRunSteering {
         input: Vec<ContextEntryInput>,
     },

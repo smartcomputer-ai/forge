@@ -52,7 +52,16 @@ CREATE TABLE IF NOT EXISTS environments (
     daemon_connection_json jsonb,
     display_name text,
     status text NOT NULL,
+    -- Lightspeed-owned power intent and optional staged idle policy. Observed
+    -- power remains in status; activity is read from the daemon on demand.
+    desired_power text NOT NULL DEFAULT 'running',
+    idle_policy_json jsonb,
     current_incarnation_id text NOT NULL,
+    -- Profile-provisioning provenance and optional close trigger. No session
+    -- FK: the environment must be able to outlive deletion of its origin.
+    origin_session_id text,
+    origin_profile_id text,
+    origin_close_with_session boolean NOT NULL DEFAULT false,
     public_ingress_enabled boolean NOT NULL DEFAULT false,
     public_endpoint text,
     metadata_json jsonb NOT NULL DEFAULT '{}',
@@ -60,8 +69,6 @@ CREATE TABLE IF NOT EXISTS environments (
     updated_at_ms bigint NOT NULL,
     PRIMARY KEY (universe_id, environment_id),
     UNIQUE (universe_id, request_id),
-    FOREIGN KEY (universe_id, binding_id)
-        REFERENCES environment_provider_bindings (universe_id, binding_id) ON DELETE RESTRICT,
     CONSTRAINT environments_ids_format CHECK (
         environment_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
         AND request_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
@@ -73,9 +80,21 @@ CREATE TABLE IF NOT EXISTS environments (
         OR (source_kind = 'external' AND provider_id IS NULL AND binding_id IS NULL AND jsonb_typeof(daemon_connection_json) = 'object')
     ),
     CONSTRAINT environments_status_known CHECK (status IN (
-        'provisioning', 'booting', 'ready', 'offline',
+        'provisioning', 'booting', 'ready', 'paused', 'suspended', 'offline',
         'closing', 'closed', 'failed', 'unknown'
     )),
+    CONSTRAINT environments_desired_power_known
+        CHECK (desired_power IN ('running', 'paused', 'suspended', 'stopped')),
+    CONSTRAINT environments_idle_policy_object
+        CHECK (idle_policy_json IS NULL OR jsonb_typeof(idle_policy_json) = 'object'),
+    CONSTRAINT environments_power_provisioned_only CHECK (
+        source_kind = 'provisioned'
+        OR (desired_power = 'running' AND idle_policy_json IS NULL)
+    ),
+    CONSTRAINT environments_origin_session_shape CHECK (
+        (origin_session_id IS NULL AND origin_profile_id IS NULL AND origin_close_with_session = false)
+        OR (origin_session_id IS NOT NULL AND origin_session_id <> '')
+    ),
     CONSTRAINT environments_metadata_object
         CHECK (jsonb_typeof(metadata_json) = 'object'),
     CONSTRAINT environments_public_ingress_fields CHECK (
@@ -90,6 +109,18 @@ CREATE TABLE IF NOT EXISTS environments (
 CREATE INDEX IF NOT EXISTS environments_binding_status_idx
     ON environments (universe_id, binding_id, status, environment_id);
 
+CREATE INDEX IF NOT EXISTS environments_origin_session_idx
+    ON environments (universe_id, origin_session_id)
+    WHERE origin_session_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS environments_close_with_session_idx
+    ON environments (universe_id)
+    WHERE origin_close_with_session = true AND status NOT IN ('closing', 'closed');
+
+CREATE INDEX IF NOT EXISTS environments_idle_policy_idx
+    ON environments (universe_id)
+    WHERE idle_policy_json IS NOT NULL AND status = 'ready';
+
 CREATE TABLE IF NOT EXISTS environment_incarnations (
     universe_id uuid NOT NULL,
     environment_id text NOT NULL,
@@ -98,6 +129,7 @@ CREATE TABLE IF NOT EXISTS environment_incarnations (
     provider_target_id text,
     template_id text,
     adoption_source_target text,
+    power_states_json jsonb NOT NULL DEFAULT '[]',
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
     PRIMARY KEY (universe_id, environment_id, incarnation_id),
@@ -134,6 +166,8 @@ CREATE TABLE IF NOT EXISTS environment_incarnations (
             AND adoption_source_target IS NULL
         )
     ),
+    CONSTRAINT environment_incarnations_power_states_array
+        CHECK (jsonb_typeof(power_states_json) = 'array'),
     CONSTRAINT environment_incarnations_times_valid CHECK (
         created_at_ms >= 0 AND updated_at_ms >= created_at_ms
     )
@@ -184,9 +218,6 @@ CREATE TABLE IF NOT EXISTS environment_credentials (
     )
 );
 
-DROP TABLE IF EXISTS environment_jobs;
-DROP TABLE IF EXISTS environment_job_groups;
-
 COMMENT ON TABLE environment_providers IS
     'Operator-registered provider identity and controller connection; protocol and presence are observed transiently.';
 COMMENT ON COLUMN environment_providers.metadata_json IS
@@ -205,5 +236,11 @@ COMMENT ON COLUMN environment_incarnations.adoption_source_target IS
     'Provider-native source reference for an explicit operator-managed adoption; retained for idempotent lifecycle retries.';
 COMMENT ON COLUMN environments.public_endpoint IS
     'Provider-realized public HTTPS endpoint; port, private target, proxy configuration, TLS, health, and policy remain provider-owned.';
+COMMENT ON COLUMN environments.desired_power IS
+    'Lightspeed-owned power intent (running|paused|suspended|stopped); converged by the lifecycle reconciler, observed state is status.';
+COMMENT ON COLUMN environments.idle_policy_json IS
+    'Optional staged idle policy {pauseAfterMs,suspendAfterMs,stopAfterMs,closeAfterMs}; applied by the power reaper from the daemon idle report.';
+COMMENT ON COLUMN environment_incarnations.power_states_json IS
+    'Provider-reported power states this target supports, observed with the target id.';
 COMMENT ON TABLE environment_credentials IS
     'Universe-owned credential bindings for an environment.';

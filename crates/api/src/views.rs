@@ -30,6 +30,9 @@ pub struct SessionView {
     /// indicates external session ownership; tool-only declarations do not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub management: Option<SessionManagementView>,
+    /// Sub-agent lineage; absent for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<SessionOriginView>,
 }
 
 /// Managed-session reads use the same immutable declaration document accepted
@@ -59,11 +62,48 @@ pub enum SessionStatus {
 pub struct RunView {
     pub id: RunId,
     pub status: RunStatus,
+    /// When the run left the queue and began executing, derived from the
+    /// committed `runStarted` event. Absent while the run is queued.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// When the run reached a terminal state, derived from its committed
+    /// completed, failed, or cancelled event. Absent for non-terminal runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
     pub source: RunViewSource,
     #[serde(default)]
     pub entries: Vec<ContextEntryView>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_batches: Vec<ToolBatchView>,
+    /// Provider token usage summed over the run's completed generations;
+    /// absent until the first generation reports usage. The cached share
+    /// (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsageView>,
+}
+
+/// Provider-reported token usage for one generation or a sum of them. Every
+/// field is optional because providers report different subsets; counts
+/// that a provider reports separately (Anthropic's cache read/write) are
+/// folded into `input_tokens` so the field always means "prompt tokens
+/// billed on this request, cached or not".
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LlmUsageView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u32>,
+    /// Prompt tokens served from the provider's prompt cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cached_input_tokens: Option<u32>,
+    /// Prompt tokens written into the provider's prompt cache (Anthropic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -181,6 +221,19 @@ pub enum InputItem {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
+    /// A client-owned catalog document: what the model may pick from (a
+    /// directory, a roster, a menu), rendered by the client as text. Accepted
+    /// only by `session/context/append` under a client key; run input rejects
+    /// it. A changed catalog supersedes the earlier version instead of
+    /// replacing it, so the earlier version stays rendered and the provider
+    /// prefix cache holds; superseded versions are dropped at the next
+    /// context rewrite or beyond a per-key cap.
+    Catalog {
+        /// Short name shown as the catalog's heading, e.g. "Bot directory".
+        title: String,
+        /// The catalog body, plain text or Markdown.
+        text: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -221,6 +274,11 @@ pub enum ContextEntryKindView {
     Instructions,
     VfsCatalog,
     SkillCatalog,
+    SubagentCatalog,
+    /// A client-owned catalog published through `session/context/append`.
+    Catalog {
+        title: String,
+    },
     SkillActivation {
         catalog_id: String,
         skill_id: SkillId,
@@ -292,6 +350,16 @@ pub struct ContextEntryView {
     /// transcripts render steering distinctly from the run's first input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<ContextEntrySourceView>,
+    /// For a catalog entry: the earlier version of the same keyed catalog
+    /// that this entry updates. The earlier entry stays in context until a
+    /// rewrite drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes: Option<ItemId>,
+    /// For a catalog entry that a newer version has updated: that newer
+    /// entry. Present only on state views (`session/read`), where the whole
+    /// active context is known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<ItemId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

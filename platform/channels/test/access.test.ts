@@ -36,10 +36,12 @@ describe("Channels sender policy", () => {
   });
 
   it("parses workflow-owned control commands including bot suffixes", () => {
-    expect(parseChannelControlCommand("/activation@lightspeed_bot silent")).toEqual({
+    expect(parseChannelControlCommand("/activation@lightspeed_bot always")).toEqual({
       kind: "activation",
-      mode: "silent",
+      mode: "always",
     });
+    // Silent rooms are not a mode; the help text explains the two that are.
+    expect(parseChannelControlCommand("/activation silent")).toEqual({ kind: "activation_help" });
     expect(parseChannelControlCommand("/activation invalid")).toEqual({
       kind: "activation_help",
     });

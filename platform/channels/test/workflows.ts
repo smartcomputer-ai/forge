@@ -1,7 +1,7 @@
 import { defineQuery, defineSignal, setHandler, condition } from "@temporalio/workflow";
-import type { EmissionEnvelope } from "../src/contracts/emissions.js";
+import type { EmissionEnvelope } from "@lightspeed/agent-client/workflow";
 
-export { channelSessionWorkflowV1 } from "../src/workflows/channel-session.js";
+export { channelConversationWorkflowV1 } from "../src/workflows/conversation.js";
 
 const emissionSignal = defineSignal<[EmissionEnvelope]>("deliver_emission");
 const holderStateQuery = defineQuery<EmissionEnvelope[]>("holder_state");

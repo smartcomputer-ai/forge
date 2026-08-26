@@ -20,8 +20,8 @@ Use these files as the index:
 - `Cargo.toml` — workspace membership.
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
-  shared inputs, database schema, Channels workers, Configurator MCP, and the
-  mechanically imported Foundry candidate.
+  shared inputs, database schema, Channels workers, Bots workers, and
+  Configurator MCP.
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.
 - `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware
@@ -55,6 +55,7 @@ cargo test -p llm-clients -- --nocapture
 npm install
 npm run check
 npm run test:integration:channels
+npm run test:integration:bots
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
@@ -86,17 +87,30 @@ cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
 
+`temporal_live_slow` holds live tests that wait out production activity
+budgets (the LLM schedule-to-close test takes ~30 minutes); run it on its own,
+never as part of a routine live pass:
+
+```bash
+cargo test -p temporal-server --test temporal_live_slow -- --ignored --test-threads=1
+```
+
 After changing `api` wire types, regenerate the committed contract artifacts
 under `crates/api/contract/` (`cargo test -p api` fails while they are stale):
 
 ```bash
 cargo run -p api --bin export-schema
+cargo run -p temporal-workflow --bin export-workflow-contract
 ```
 
 The export includes JSON Schema, the method manifest, OpenRPC, and the generated
 human reference at `crates/api/contract/api-reference.md`. Method-level summaries
 and descriptions belong in the Rust method manifest; parameter/field docs
 belong on the Rust wire DTOs so every generated consumer stays aligned.
+The workflow export includes the receiver-side emission schema, constants and
+derivation vectors, and its generated integrator reference under
+`crates/temporal-workflow/contract/`; `cargo test -p temporal-workflow` fails
+while those committed artifacts are stale.
 
 After changing the API contract, regenerate and verify every TypeScript
 consumer from the repository root:
@@ -261,6 +275,113 @@ Release construction, snapshots, and tagged publication are documented in
   immutable bindings, emissions, keyed Promises, workflow starts, replies,
   deadlines, and cancellation. Do not add feature-specific transports or
   compile external plugin workflow types into the stable session worker.
+- Sub-agents (P134) are attached delegation on that protocol, distinct from
+  bots' durable orchestration. `features.subagents` is the authority: an
+  allowlisted agent menu plus root-scoped, attenuating limits. `agent_run`
+  (joined) and `agent_spawn` (promise) are system start-on-call bindings
+  whose `SubagentExecutionWorkflow` creates the child from the pinned
+  profile revision, records typed lineage (`SessionOrigin` — provenance,
+  never ownership), resolves the parent's `reply` promise, and closes the
+  child. Children are one-shot; cancellation from any direction closes the
+  child. Do not add a parent-side delegation transport, child↔parent
+  messaging, an agent graph surface, or an enum menu in the tool schema —
+  the menu is a refreshed catalog context entry.
+- Bot federation (P135) is events through admission, never authority: a
+  bot addresses another with `bot_emit { to }` through the receiver's
+  single `bot`-kind inbox trigger (at most one per bot), which owns
+  filter, route, coalesce, and delivery policy. `bot_emit` is joined and
+  returns `{ to, seq }` or a typed refusal; the sender rate cap and
+  `MAX_BOT_HOPS` bound every exchange. Every event path — webhook, poll,
+  schedule, self and addressed emits, receipts — goes through
+  `platform/bots/src/admission.ts` (`storeBotEvent` / `admitTriggerEvent`).
+  Replies are deterministic receipts (`bot.reply`) sent by the receiver's
+  controller when the delivery finishes, routed by a logical session
+  (base id, never a generation); no `bot_ask`, no joined cross-bot call,
+  no bot configures or creates another. Discovery is the `bot:directory`
+  catalog (only bots whose inbox accepts the reader). Bots are addressed
+  by an authored, immutable `botId` (`bots.name`) plus a mutable
+  `displayName`; the uuid row key never leaves the database, and
+  model-facing `bot_*` results carry `#N` and labels, never digests
+  (`activities/tool-views.ts`).
+- Channels are bot triggers (P139). A chat connection is a `bot_triggers`
+  row of kind `chat` (account, scope, activation, access, pairing); there
+  is no binding record and no channel-owned session. Every activated
+  message is one event through `admitTriggerEvent` (id
+  `chat:<trigger>:…`), routed `perKey` per conversation into
+  `bot:v1:<bot>:k-…`; the conversation workflow
+  (`channelConversationWorkflowV1`) is the *receiver* of that session's
+  `message_*` tools, whose declarations travel on the event (`tools` CAS
+  ref) and are merged verbatim at `ensureRoutedSession`. The controller
+  signals `bot_delivery_v1` `started` / `finished` receipts to the event's
+  `notify` endpoint (typing, and the text-reply fallback when no
+  `message_*` tool was used); a run that used a carried tool counts as
+  `handled`. Messages are named to the model by the bot's `#N` in both
+  directions — inbound is the event, a send is an archived `chat.sent`
+  row — and `message_send { text, replyTo: 17 }` resolves numbers to
+  provider ids inside the conversation workflow. Per-trigger
+  `sessionTtlMs` (0 = never, the chat default) overrides
+  `routedSessionTtlMs`. Do not reintroduce bindings, a channel-owned
+  session, provider message ids in tool arguments, or a second lifecycle
+  controller.
+- Bot decisions live in the controller's Temporal history; Postgres is the
+  read model. `bot_events` is the bot's numbered log of what arrived and
+  what it sent, each row with a write-once `outcome` (the model's
+  `handled`… or the system's `steered` / `run_failed` / `archived`; null =
+  pending) written when the delivery finishes; trigger incidents are
+  trigger state (`disabled_reason`, `last_filter_error`); controller state
+  is the live snapshot. A filter miss is never stored. Do not reintroduce
+  an activity/audit table or archived filter misses.
+- Catalogs (VFS, skill, sub-agent, and client `Catalog` entries) are
+  append-with-supersede: a keyed catalog write appends the new version with
+  `supersedes` set and leaves the earlier one active and rendered
+  byte-for-byte, so the provider prefix cache holds on long-lived sessions;
+  superseded versions are compactable, capped per key, and cleared by
+  `RemoveContext`. Look up "the current entry for a key" with
+  `current_context_entry` (newest), never the first match. Clients publish
+  their own catalogs (a bot directory, a roster) as `InputItem::Catalog` on
+  `session/context/append`; run input rejects them. Do not reintroduce
+  in-place catalog rewrites or catalogs in the system prompt.
+- Model-facing ids are counters and names, never hashes. `PromiseId` is a
+  session counter (`promise_<n>`) that executors number from the tool
+  batch's `promise_id_base` (a per-call dispatch owns slot `base + index`)
+  and the reducer accepts only at or above that base and never twice;
+  producer correlation lives on `PromiseSource`, and the `sourceResolution`
+  emission id includes the holder workflow id. Workflow-tool
+  acknowledgements show the model only its promise handle(s); invocation
+  and execution digests stay in `output_json`. `job_submit` promises are
+  keyed by the model's own `job_id` (`ArrayItemField`), and job handles
+  default to the active environment. Do not reintroduce digest-shaped ids
+  or index-derived keys in anything the model must copy back.
+- Prompt caching is the adapters' job, and the rendered prefix must stay
+  stable to keep it. The Anthropic adapter places `cache_control`
+  breakpoints on every request (system prompt, last tool, last block of the
+  last message; TTL from `prompt_cache_ttl`); the OpenAI adapters send the
+  session id as `prompt_cache_key`. Markers are placement, not content —
+  tests about lowering strip them. Anything that rewrites context before
+  the tail (an instructions rewrite, compaction, an in-place catalog
+  replace) invalidates the cache from that point; append instead where you
+  can. Usage, including cache reads and writes, is on `RunView.usage` and
+  `turnGenerationCompleted`; the LLM activity warns when a large prompt
+  misses right after a hit.
+- Anthropic thinking must stay visible: the adapter derives adaptive thinking
+  with `display: summarized` from `reasoningEffort` (current models omit the
+  summary by default, which leaves every reasoning entry blank), maps
+  `reasoningEffort: none` to `thinking: disabled` (Claude Opus 5 thinks when
+  a request carries no thinking config), accepts `xhigh`, and surfaces
+  `output_tokens_details.thinking_tokens` as `reasoning_tokens`. Thinking
+  counts toward `max_tokens`, so the adapter's default output cap and the
+  compaction cap leave room for it. A content-filter stop on any provider
+  (an Anthropic `refusal`, an OpenAI `content_filter`) fails the turn — the
+  engine maps `LlmFinish::ContentFilter` to a failed turn and the adapters
+  attach the provider's category/explanation — never an empty "successful"
+  answer, and never a server-side fallback to another model. A cut-off at
+  the output cap (`LlmFinish::Length`) fails the turn the same way but keeps
+  the assistant's partial text in the log; tool calls without results and
+  unfinished thinking are dropped because they are not replay-safe. Live
+  coverage lives in
+  `crates/llm-runtime/tests/anthropic_messages_live.rs` (thinking replay and
+  the thinking-through-tools round trip, default model `claude-opus-5`);
+  keep those asserting on summary text, not just block presence.
 - Session config is a sparse, capability-oriented document (core sections plus
   default-off feature grants) replaced whole via `session/config/put` with an
   expected revision. Do not reintroduce field-level patch vocabulary; registry

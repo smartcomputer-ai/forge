@@ -1,5 +1,17 @@
 import type { ChannelProvider, ChannelRoute } from "./channel.js";
+import { CHANNEL_EDIT_TOOL_ID, CHANNEL_REACT_TOOL_ID, CHANNEL_SEND_TOOL_ID } from "./tools.js";
 
+/**
+ * What the model asked for: messages by number (`#N`). The conversation
+ * workflow resolves numbers to provider ids before anything reaches a
+ * provider worker.
+ */
+export type ChannelToolOperation =
+  | { type: "send"; text: string; replyTo: number | null }
+  | { type: "edit"; message: number; text: string }
+  | { type: "react"; message: number; emoji: string };
+
+/** What a provider worker executes: provider message ids and their direction. */
 export type ChannelDeliveryOperation =
   | {
       type: "send";
@@ -8,7 +20,7 @@ export type ChannelDeliveryOperation =
       replyContext?: { senderId: string; text: string };
     }
   | { type: "edit"; messageId: string; text: string }
-  | { type: "react"; messageId: string; emoji: string };
+  | { type: "react"; messageId: string; emoji: string; fromMe: boolean };
 
 export interface ChannelDeliveryCommandV1 {
   version: 1;
@@ -38,24 +50,24 @@ export class ChannelDeliveryError extends Error {
   }
 }
 
-export function parseToolOperation(toolId: string, value: unknown): ChannelDeliveryOperation {
+export function parseToolOperation(toolId: string, value: unknown): ChannelToolOperation {
   const args = record(value, "tool arguments");
   switch (toolId) {
-    case "channels.message_send.v1": {
+    case CHANNEL_SEND_TOOL_ID: {
       const text = nonEmptyString(args.text, "text");
-      const replyTo = optionalNullableString(args.replyTo, "replyTo");
-      return { type: "send", text, ...(replyTo === undefined ? {} : { replyTo }) };
+      const replyTo = args.replyTo === undefined || args.replyTo === null ? null : handle(args.replyTo, "replyTo");
+      return { type: "send", text, replyTo };
     }
-    case "channels.message_edit.v1":
+    case CHANNEL_EDIT_TOOL_ID:
       return {
         type: "edit",
-        messageId: nonEmptyString(args.messageId, "messageId"),
+        message: handle(args.message, "message"),
         text: nonEmptyString(args.text, "text"),
       };
-    case "channels.message_react.v1":
+    case CHANNEL_REACT_TOOL_ID:
       return {
         type: "react",
-        messageId: nonEmptyString(args.messageId, "messageId"),
+        message: handle(args.message, "message"),
         emoji: nonEmptyString(args.emoji, "emoji"),
       };
     default:
@@ -102,9 +114,9 @@ function nonEmptyString(value: unknown, name: string): string {
   return value;
 }
 
-function optionalNullableString(value: unknown, name: string): string | null | undefined {
-  if (value === undefined || value === null) {
-    return value;
+function handle(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw new TypeError(`${name} must be a message number (the #N of a message)`);
   }
-  return nonEmptyString(value, name);
+  return value;
 }

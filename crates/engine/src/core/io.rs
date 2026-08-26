@@ -102,10 +102,16 @@ pub struct ToolInvocationBatchRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_environment_id: Option<EnvironmentId>,
     pub environment_policy: Option<EnvironmentPolicyRuntime>,
-    /// Admitted Fleet policy for this tool batch. Runtime executors consume
-    /// this projection directly instead of reconstructing the owning session.
+    /// Admitted sub-agent grant for this tool batch. Runtime executors pin
+    /// it into sub-agent invocations instead of reconstructing the owning
+    /// session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet_policy: Option<crate::FleetFeature>,
+    pub subagents_policy: Option<crate::SubagentsFeature>,
+    /// First promise id the executors of this dispatch may mint (see
+    /// `ActiveToolBatch::promise_id_base`). A batch-unit dispatch counts up
+    /// from here across all its calls; a per-call dispatch gets its own
+    /// slot (`base + call index`) and may create at most one promise.
+    pub promise_id_base: u64,
     pub calls: Vec<ToolInvocationRequest>,
 }
 
@@ -268,7 +274,7 @@ impl ToolInvocationBatchRequest {
 /// The record carries the stable session/run/turn/batch/call identity plus the
 /// batch-scoped runtime facts the call needs. Sibling summaries let the
 /// execution boundary enforce cross-call batch rules (environment-selection
-/// exclusivity, duplicate fleet messages) without a batch-level activity.
+/// exclusivity) without a batch-level activity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvocationCallRequest {
     pub session_id: SessionId,
@@ -281,7 +287,10 @@ pub struct ToolInvocationCallRequest {
     pub active_environment_id: Option<EnvironmentId>,
     pub environment_policy: Option<EnvironmentPolicyRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fleet_policy: Option<crate::FleetFeature>,
+    pub subagents_policy: Option<crate::SubagentsFeature>,
+    /// The one promise id this call may mint: the batch base plus the
+    /// call's index, so sibling per-call dispatches never collide.
+    pub promise_id_base: u64,
     pub call: ToolInvocationRequest,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sibling_calls: Vec<ToolCallSummary>,
@@ -310,7 +319,8 @@ impl ToolInvocationCallRequest {
             workspace_links: self.workspace_links,
             active_environment_id: self.active_environment_id,
             environment_policy: self.environment_policy,
-            fleet_policy: self.fleet_policy,
+            subagents_policy: self.subagents_policy,
+            promise_id_base: self.promise_id_base,
             calls: vec![self.call],
         }
     }
@@ -344,7 +354,8 @@ impl ToolInvocationBatchRequest {
             workspace_links: self.workspace_links.clone(),
             active_environment_id: self.active_environment_id.clone(),
             environment_policy: self.environment_policy.clone(),
-            fleet_policy: self.fleet_policy.clone(),
+            subagents_policy: self.subagents_policy.clone(),
+            promise_id_base: self.promise_id_base + index as u64,
             call,
             sibling_calls,
             execution,
@@ -506,10 +517,11 @@ mod tests {
             run_id: RunId::new(1),
             turn_id: TurnId::new(2),
             batch_id: ToolBatchId::new(3),
+            promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-a")),
             environment_policy: Some(EnvironmentPolicyRuntime::v1(None)),
-            fleet_policy: None,
+            subagents_policy: None,
             calls: call_ids
                 .iter()
                 .map(|call_id| ToolInvocationRequest {
@@ -597,5 +609,46 @@ mod tests {
 
         assert_eq!(result.call_id, ToolCallId::new("call_a"));
         assert_eq!(result.status, ToolCallStatus::Succeeded);
+    }
+}
+
+#[cfg(test)]
+mod promise_base_tests {
+    use super::*;
+
+    fn call(id: &str) -> ToolInvocationRequest {
+        ToolInvocationRequest {
+            call_id: ToolCallId::new(id),
+            tool_name: ToolName::new("sleep"),
+            arguments_ref: BlobRef::from_bytes(b"{}"),
+            workflow_tool: None,
+            promise_control: None,
+        }
+    }
+
+    #[test]
+    fn per_call_requests_get_their_own_promise_slot_and_rebuild_the_batch_base() {
+        let batch = ToolInvocationBatchRequest {
+            session_id: SessionId::new("session-1"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            batch_id: ToolBatchId::new(1),
+            workspace_links: Vec::new(),
+            active_environment_id: None,
+            environment_policy: None,
+            subagents_policy: None,
+            promise_id_base: 7,
+            calls: vec![call("a"), call("b"), call("c")],
+        };
+        let third = batch
+            .call_request(2, ToolExecutionSpec::default())
+            .expect("third call");
+        assert_eq!(third.promise_id_base, 9);
+        assert_eq!(third.into_batch_request().promise_id_base, 9);
+        assert!(
+            batch
+                .call_request(3, ToolExecutionSpec::default())
+                .is_none()
+        );
     }
 }

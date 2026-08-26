@@ -289,6 +289,7 @@ pub(super) fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         provider_kind: input.provider_kind,
         provider_item_id: input.provider_item_id,
         token_estimate: input.token_estimate,
+        supersedes: None,
     }
 }
 
@@ -297,6 +298,7 @@ pub(super) fn active_skill_catalog_ref(state: &engine::CoreAgentState) -> Option
         .context
         .entries
         .iter()
+        .rev()
         .find(|entry| {
             entry
                 .key
