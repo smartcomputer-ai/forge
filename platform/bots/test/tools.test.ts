@@ -58,9 +58,10 @@ describe("bot tool declarations", () => {
     const resolve = tools.find((tool) => tool.definition.toolId === BOT_EVENT_RESOLVE_TOOL_ID);
     expect(resolve?.target).toMatchObject({ type: "bound", dispatch: "pull" });
     expect(resolve?.completion).toEqual({ type: "accepted" });
+    // bot_emit is joined: the model reads the stored #N or the rate-cap refusal.
     const emit = tools.find((tool) => tool.definition.toolId === BOT_EMIT_TOOL_ID);
     expect(emit?.target).toMatchObject({ dispatch: "push" });
-    expect(emit?.completion).toEqual({ type: "accepted" });
+    expect(emit?.completion).toMatchObject({ type: "joined" });
     expect(emit?.definition.tool.kind).toMatchObject({ type: "function", strict: false });
     // Strict only where the schema has no optional fields; tools with real
     // optionals opt out instead of null-stuffing `required`.
@@ -79,7 +80,7 @@ describe("bot tool declarations", () => {
       ]),
     );
     const joined = tools.filter((tool) => tool.completion.type === "joined");
-    expect(joined).toHaveLength(8);
+    expect(joined).toHaveLength(9);
     for (const tool of joined) {
       expect(tool.completion).toMatchObject({ deadlineAfterMs: BOT_TOOL_REPLY_DEADLINE_MS });
       expect(tool.target).toMatchObject({ dispatch: "push" });

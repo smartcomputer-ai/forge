@@ -30,7 +30,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 8;
+export const BOT_TOOLS_REVISION = 9;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -43,8 +43,12 @@ const BLOB_REF = /^sha256:[0-9a-f]{64}$/;
 export interface BotStartV1 {
   version: 1;
   universeId: string;
+  /** Platform row key; never shown to models or clients. */
   botId: string;
+  /** Authored, immutable bot id (`botId` on the platform wire); identities derive from it. */
   botName: string;
+  /** Mutable label; display data only, applied to session display names. */
+  displayName: string | null;
   profileId: string;
   /** Standing instructions appended to the profile's instructions. */
   brief: string | null;
@@ -335,7 +339,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   eventRead:
     "Read one stored event by its #N. Returns the full archived envelope (data, headers); narrow with path (e.g. data.pull_request.body) and cap size with maxBytes.",
   briefPut: "Replace this bot's standing brief (its job description). Applied to sessions at the next idle boundary.",
-  emit: "Post an event to this bot itself (tagged as self-originated). Optionally route it to a keyed session.",
+  emit: "Post an event to this bot itself (tagged as self-originated). Optionally route it to a keyed session. Returns the stored event's #N, or a refusal (rate cap) you can read.",
 } as const;
 
 const NULLABLE_STRING = { type: ["string", "null"] } as const;
@@ -585,7 +589,7 @@ const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
     name: "bot_emit",
     schema: "emitInput",
     description: "emit",
-    completion: "accepted-push",
+    completion: "joined",
     strict: false,
   },
 ];

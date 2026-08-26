@@ -40,6 +40,8 @@ export function BotSettingsDialog({
     queryFn: () => api<ProfileSummary[]>("GET", `/api/v1/universes/${universeId}/profiles`),
     enabled: open,
   });
+  const [displayName, setDisplayName] = useState(bot.displayName ?? "");
+  const [description, setDescription] = useState(bot.description ?? "");
   const [profileId, setProfileId] = useState(bot.profileId);
   const [brief, setBrief] = useState(bot.brief ?? "");
   const [runsPerDay, setRunsPerDay] = useState(bot.runsPerDay?.toString() ?? "");
@@ -56,7 +58,9 @@ export function BotSettingsDialog({
   const [error, setError] = useState<string | null>(null);
   const save = useMutation({
     mutationFn: () =>
-      api<{ bot: Bot }>("PATCH", `/api/v1/bots/${bot.id}`, {
+      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, {
+        displayName: displayName.trim() ? displayName.trim() : null,
+        description: description.trim() ? description.trim() : null,
         profileId,
         brief: brief.trim() ? brief.trim() : null,
         runsPerDay: runsPerDay.trim() ? Number(runsPerDay) : null,
@@ -74,9 +78,9 @@ export function BotSettingsDialog({
         enabled,
       }),
     onSuccess: async ({ bot: updated }) => {
-      queryClient.setQueryData(["bot", bot.id], { bot: updated });
+      queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
       await queryClient.invalidateQueries({ queryKey: ["bots", updated.universeId] });
-      await queryClient.invalidateQueries({ queryKey: ["bot-state", bot.id] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] });
       setError(null);
       onOpenChange(false);
     },
@@ -93,6 +97,28 @@ export function BotSettingsDialog({
           </DialogDescription>
         </DialogHeader>
         <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
+          <Field>
+            <FieldLabel htmlFor="bot-settings-display-name">Display name</FieldLabel>
+            <Input
+              id="bot-settings-display-name"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              placeholder={bot.botId}
+            />
+            <FieldDescription>
+              Label only. The bot id <code className="font-mono">{bot.botId}</code> is what other
+              bots, briefs, and URLs reference and cannot change.
+            </FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="bot-settings-description">Description</FieldLabel>
+            <Input
+              id="bot-settings-description"
+              value={description}
+              onChange={(event) => setDescription(event.target.value)}
+              placeholder="One line other bots read when deciding whether to address this bot."
+            />
+          </Field>
           <Field>
             <FieldLabel>Profile</FieldLabel>
             <Select value={profileId} onValueChange={(value) => value && setProfileId(value)}>

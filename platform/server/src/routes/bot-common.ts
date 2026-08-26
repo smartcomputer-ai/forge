@@ -41,6 +41,7 @@ export function botStart(bot: BotRow, universeId: string): BotStartV1 {
     universeId,
     botId: bot.id,
     botName: bot.name,
+    displayName: bot.displayName,
     profileId: bot.profileId,
     brief: bot.brief,
     runsPerDay: bot.runsPerDay,

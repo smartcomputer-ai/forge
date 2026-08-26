@@ -15,10 +15,12 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 export function SendEventDialog({
+  universeId,
   botId,
   open,
   onOpenChange,
 }: {
+  universeId: string;
   botId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -32,7 +34,7 @@ export function SendEventDialog({
     mutationFn: () => {
       let parsed: unknown = undefined;
       if (data.trim()) parsed = JSON.parse(data);
-      return api("POST", `/api/v1/bots/${botId}/events`, {
+      return api("POST", `/api/v1/universes/${universeId}/bots/${botId}/events`, {
         kind: kind.trim(),
         summary: summary.trim(),
         ...(parsed === undefined ? {} : { data: parsed }),
@@ -43,8 +45,8 @@ export function SendEventDialog({
       setData("");
       setError(null);
       onOpenChange(false);
-      await queryClient.invalidateQueries({ queryKey: ["bot-state", botId] });
-      await queryClient.invalidateQueries({ queryKey: ["bot-activity", botId] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, botId] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-activity", universeId, botId] });
     },
     onError: (err) => setError(err instanceof Error ? err.message : String(err)),
   });

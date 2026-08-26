@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { and, count, desc, eq, getTableColumns, lt, or } from "drizzle-orm";
 import { z } from "zod";
 import { schema } from "@lightspeed/platform-db";
@@ -15,6 +15,7 @@ import {
   triggerCreateInput,
   triggerUpdateInput,
   updateTrigger,
+  webhookIngestPath,
 } from "@lightspeed/bots/config";
 import type { BotSnapshot } from "@lightspeed/bots/workflows";
 import {
@@ -33,13 +34,21 @@ import {
   recordActivity,
   signalBotConfig,
   type BotRow,
+  type BotTriggerRow,
 } from "./bot-common.js";
 
 const { bots, botTriggers, botEvents, botActivity } = schema;
 
-const botName = botNameInput;
+/// A bot's authored id (`botId` on the wire, `bots.name` in the row) is
+/// immutable and universe-unique, like a profile id; `displayName` is the
+/// mutable label. The uuid row key never leaves the database.
+const botIdInput = botNameInput;
+const displayNameInput = z.string().trim().min(1).max(200);
+const descriptionInput = z.string().trim().min(1).max(500);
 const botCreateSchema = z.object({
-  name: botName,
+  botId: botIdInput,
+  displayName: displayNameInput.nullish(),
+  description: descriptionInput.nullish(),
   profileId: z.string().trim().min(1),
   brief: z.string().trim().min(1).max(20_000).nullish(),
   runsPerDay: z.number().int().min(1).max(10_000).nullish(),
@@ -50,6 +59,8 @@ const botCreateSchema = z.object({
 });
 const botUpdateSchema = z
   .object({
+    displayName: displayNameInput.nullable().optional(),
+    description: descriptionInput.nullable().optional(),
     profileId: z.string().trim().min(1).optional(),
     brief: z.string().trim().min(1).max(20_000).nullable().optional(),
     runsPerDay: z.number().int().min(1).max(10_000).nullable().optional(),
@@ -77,9 +88,31 @@ const historyCursorSchema = z.object({
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
 
+type BotContext = Context<{ Variables: ApiVariables }>;
+
+/** Wire shape of a bot: the authored id as `botId`; the row key stays inside. */
+export function botView<T extends BotRow>(row: T) {
+  const { id: _id, name, ...rest } = row;
+  return { botId: name, ...rest };
+}
+
+/**
+ * Wire shape of a trigger: addressed by name. The row key survives only
+ * inside the webhook ingest path, which is a capability URL and opaque on
+ * purpose.
+ */
+export function triggerView(trigger: BotTriggerRow) {
+  const { id: _id, botId: _botId, ...rest } = trigger;
+  return {
+    ...rest,
+    ...(trigger.kind === "webhook" ? { ingestPath: webhookIngestPath(trigger) } : {}),
+  };
+}
+
+/// Bot routes are universe-scoped and addressed by the authored id:
+/// /universes/:id/bots/:botId/…, triggers by /triggers/:triggerName.
 export function botRoutes(ctx: AppContext) {
   const byUniverse = new Hono<{ Variables: ApiVariables }>();
-  const byId = new Hono<{ Variables: ApiVariables }>();
 
   byUniverse.get("/:id/bots", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), false);
@@ -94,7 +127,7 @@ export function botRoutes(ctx: AppContext) {
       .where(eq(bots.universeId, access.universe.id))
       .groupBy(bots.id)
       .orderBy(bots.name);
-    return c.json({ bots: rows });
+    return c.json({ bots: rows.map(botView) });
   });
 
   byUniverse.post("/:id/bots", async (c) => {
@@ -110,7 +143,9 @@ export function botRoutes(ctx: AppContext) {
       .insert(bots)
       .values({
         universeId: access.universe.id,
-        name: body.data.name,
+        name: body.data.botId,
+        displayName: body.data.displayName ?? null,
+        description: body.data.description ?? null,
         profileId: body.data.profileId,
         brief: body.data.brief ?? null,
         runsPerDay: body.data.runsPerDay ?? null,
@@ -121,7 +156,7 @@ export function botRoutes(ctx: AppContext) {
       })
       .onConflictDoNothing()
       .returning();
-    if (!bot) return c.json({ error: "a bot with that name already exists" }, 409);
+    if (!bot) return c.json({ error: "a bot with that id already exists" }, 409);
 
     try {
       await signalBotConfig(botStart(bot, access.universe.lightspeedUniverseId));
@@ -132,28 +167,39 @@ export function botRoutes(ctx: AppContext) {
         502,
       );
     }
-    return c.json({ bot }, 201);
+    return c.json({ bot: botView(bot) }, 201);
   });
 
-  async function botForSession(
-    c: Parameters<typeof universeForSession>[1],
-    botIdParam: string,
-    write: boolean,
-  ) {
-    const [bot] = await ctx.db.select().from(bots).where(eq(bots.id, botIdParam)).limit(1);
-    if (!bot) return null;
-    const access = await universeForSession(ctx, c, bot.universeId, write);
-    return access ? { bot, access } : null;
+  async function botForUniverse(c: BotContext, write: boolean) {
+    const universeId = c.req.param("id") ?? "";
+    const botId = c.req.param("botId") ?? "";
+    const access = await universeForSession(ctx, c, universeId, write);
+    if (!access) return null;
+    const [bot] = await ctx.db
+      .select()
+      .from(bots)
+      .where(and(eq(bots.universeId, access.universe.id), eq(bots.name, botId)))
+      .limit(1);
+    return bot ? { bot, access } : null;
   }
 
-  byId.get("/:id", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), false);
+  async function triggerForBot(bot: BotRow, name: string): Promise<BotTriggerRow | null> {
+    const [trigger] = await ctx.db
+      .select()
+      .from(botTriggers)
+      .where(and(eq(botTriggers.botId, bot.id), eq(botTriggers.name, name)))
+      .limit(1);
+    return trigger ?? null;
+  }
+
+  byUniverse.get("/:id/bots/:botId", async (c) => {
+    const found = await botForUniverse(c, false);
     if (!found) return c.json({ error: "not found" }, 404);
-    return c.json({ bot: found.bot });
+    return c.json({ bot: botView(found.bot) });
   });
 
-  byId.patch("/:id", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.patch("/:id/bots/:botId", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
     const body = await parseBody(c, botUpdateSchema);
     if (!body.ok) return body.response;
@@ -173,6 +219,8 @@ export function botRoutes(ctx: AppContext) {
       await ctx.db
         .update(bots)
         .set({
+          displayName: found.bot.displayName,
+          description: found.bot.description,
           profileId: found.bot.profileId,
           brief: found.bot.brief,
           runsPerDay: found.bot.runsPerDay,
@@ -194,7 +242,7 @@ export function botRoutes(ctx: AppContext) {
         502,
       );
     }
-    return c.json({ bot });
+    return c.json({ bot: botView(bot) });
   });
 
   async function reconcileSchedules(bot: BotRow, universeId: string): Promise<void> {
@@ -219,8 +267,8 @@ export function botRoutes(ctx: AppContext) {
     };
   }
 
-  byId.get("/:id/triggers", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), false);
+  byUniverse.get("/:id/bots/:botId/triggers", async (c) => {
+    const found = await botForUniverse(c, false);
     if (!found) return c.json({ error: "not found" }, 404);
     const triggers = await ctx.db
       .select()
@@ -228,11 +276,13 @@ export function botRoutes(ctx: AppContext) {
       .where(eq(botTriggers.botId, found.bot.id))
       .orderBy(botTriggers.name);
     const manage = canManageRole(found.access.role);
-    return c.json({ triggers: manage ? triggers : triggers.map(redactTriggerSecrets) });
+    return c.json({
+      triggers: (manage ? triggers : triggers.map(redactTriggerSecrets)).map(triggerView),
+    });
   });
 
-  byId.post("/:id/triggers", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.post("/:id/bots/:botId/triggers", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
     const body = await parseBody(c, triggerCreateInput);
     if (!body.ok) return body.response;
@@ -242,20 +292,16 @@ export function botRoutes(ctx: AppContext) {
         triggerConfigDeps(found.access.universe, temporal),
         { bot: found.bot, universeId: found.access.universe.lightspeedUniverseId, input: body.data },
       );
-      return c.json({ trigger }, 201);
+      return c.json({ trigger: triggerView(trigger) }, 201);
     } catch (error) {
       return configErrorResponse(c, error);
     }
   });
 
-  byId.patch("/:id/triggers/:triggerId", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.patch("/:id/bots/:botId/triggers/:triggerName", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
-    const [existing] = await ctx.db
-      .select()
-      .from(botTriggers)
-      .where(and(eq(botTriggers.id, c.req.param("triggerId")), eq(botTriggers.botId, found.bot.id)))
-      .limit(1);
+    const existing = await triggerForBot(found.bot, c.req.param("triggerName") ?? "");
     if (!existing) return c.json({ error: "not found" }, 404);
     const body = await parseBody(c, triggerUpdateInput);
     if (!body.ok) return body.response;
@@ -270,20 +316,16 @@ export function botRoutes(ctx: AppContext) {
           input: body.data,
         },
       );
-      return c.json({ trigger });
+      return c.json({ trigger: triggerView(trigger) });
     } catch (error) {
       return configErrorResponse(c, error);
     }
   });
 
-  byId.delete("/:id/triggers/:triggerId", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.delete("/:id/bots/:botId/triggers/:triggerName", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
-    const [existing] = await ctx.db
-      .select()
-      .from(botTriggers)
-      .where(and(eq(botTriggers.id, c.req.param("triggerId")), eq(botTriggers.botId, found.bot.id)))
-      .limit(1);
+    const existing = await triggerForBot(found.bot, c.req.param("triggerName") ?? "");
     if (!existing) return c.json({ error: "not found" }, 404);
     try {
       const temporal = await getTemporal();
@@ -297,8 +339,8 @@ export function botRoutes(ctx: AppContext) {
     }
   });
 
-  byId.get("/:id/state", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), false);
+  byUniverse.get("/:id/bots/:botId/state", async (c) => {
+    const found = await botForUniverse(c, false);
     if (!found) return c.json({ error: "not found" }, 404);
     const temporal = await getTemporal();
     const handle = temporal.workflow.getHandle(
@@ -317,8 +359,8 @@ export function botRoutes(ctx: AppContext) {
     return c.json({ state, lineage });
   });
 
-  byId.post("/:id/events", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.post("/:id/bots/:botId/events", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
     if (!found.bot.enabled) return c.json({ error: "bot is disabled" }, 409);
     const body = await parseBody(c, eventCreateSchema);
@@ -343,8 +385,8 @@ export function botRoutes(ctx: AppContext) {
     return c.json({ event, document, duplicate }, 202);
   });
 
-  byId.post("/:id/events/replay", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), true);
+  byUniverse.post("/:id/bots/:botId/events/replay", async (c) => {
+    const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
     if (!found.bot.enabled) return c.json({ error: "bot is disabled" }, 409);
     const body = await parseBody(c, z.object({ eventId: z.string().trim().min(1).max(200) }));
@@ -393,8 +435,8 @@ export function botRoutes(ctx: AppContext) {
     return c.json({ event, original: stored.eventId }, 202);
   });
 
-  byId.get("/:id/events", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), false);
+  byUniverse.get("/:id/bots/:botId/events", async (c) => {
+    const found = await botForUniverse(c, false);
     if (!found) return c.json({ error: "not found" }, 404);
     const limit = historyLimit(c.req.query("limit"));
     const cursor = decodeHistoryCursor(c.req.query("cursor"));
@@ -416,14 +458,15 @@ export function botRoutes(ctx: AppContext) {
       .orderBy(desc(botEvents.receivedAt), desc(botEvents.id))
       .limit(limit + 1);
     const events = rows.slice(0, limit);
+    const last = events.at(-1);
     return c.json({
-      events,
-      nextCursor: rows.length > limit ? encodeHistoryCursor(events.at(-1)!.receivedAt, events.at(-1)!.id) : null,
+      events: events.map(({ botId: _botId, triggerId: _triggerId, ...event }) => event),
+      nextCursor: rows.length > limit && last ? encodeHistoryCursor(last.receivedAt, last.id) : null,
     });
   });
 
-  byId.get("/:id/activity", async (c) => {
-    const found = await botForSession(c, c.req.param("id"), false);
+  byUniverse.get("/:id/bots/:botId/activity", async (c) => {
+    const found = await botForUniverse(c, false);
     if (!found) return c.json({ error: "not found" }, 404);
     const eventId = c.req.query("eventId");
     const limit = historyLimit(c.req.query("limit"));
@@ -449,15 +492,14 @@ export function botRoutes(ctx: AppContext) {
       .orderBy(desc(botActivity.createdAt), desc(botActivity.id))
       .limit(limit + 1);
     const activity = rows.slice(0, limit);
+    const last = activity.at(-1);
     return c.json({
-      activity,
-      nextCursor: rows.length > limit
-        ? encodeHistoryCursor(activity.at(-1)!.createdAt, activity.at(-1)!.id)
-        : null,
+      activity: activity.map(({ botId: _botId, ...entry }) => entry),
+      nextCursor: rows.length > limit && last ? encodeHistoryCursor(last.createdAt, last.id) : null,
     });
   });
 
-  return { byUniverse, byId };
+  return { byUniverse };
 }
 
 export function historyLimit(raw: string | undefined): number {
@@ -543,4 +585,3 @@ async function botSessionLineage(
   );
   return Object.fromEntries(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== null));
 }
-

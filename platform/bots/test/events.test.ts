@@ -15,6 +15,7 @@ const start: BotStartV1 = {
   universeId: "0f1e2d3c-4b5a-4c6d-8e7f-90a1b2c3d4e5",
   botId: "bot-1",
   botName: "ops",
+  displayName: null,
   profileId: "profile-1",
   brief: null,
   runsPerDay: 10,

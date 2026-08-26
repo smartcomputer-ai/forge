@@ -111,8 +111,16 @@ export interface BotRunUsage {
   cachedInputTokens: number;
 }
 
+export interface RenameBotSessionInput {
+  universeId: string;
+  sessionId: string;
+  displayName: string;
+}
+
 export interface BotLightspeedActivities {
   ensureBotSession(input: EnsureBotSessionInput): Promise<EnsureBotSessionResult>;
+  /** Label-only: sets a managed session's display name; identity never moves. */
+  renameBotSession(input: RenameBotSessionInput): Promise<void>;
   readBotSessionStatus(input: ReadSessionInput): Promise<{ status: SessionStatus }>;
   /** Usage of one finished run, or null when the provider reported none. */
   readBotRunUsage(input: ReadRunUsageInput): Promise<BotRunUsage | null>;
@@ -194,6 +202,13 @@ export function createBotLightspeedActivities(
         });
       }
       return { profileRevision: profile.revision };
+    },
+
+    async renameBotSession(input) {
+      await clientForUniverse(config, input.universeId).call("session/rename", {
+        sessionId: input.sessionId,
+        displayName: input.displayName,
+      });
     },
 
     async readBotSessionStatus(input) {

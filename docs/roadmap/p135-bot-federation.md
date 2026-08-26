@@ -2,7 +2,8 @@
 
 **Status**
 
-- Proposed 2026-08-26, recommendation-first design. Not implemented.
+- Proposed 2026-08-26, recommendation-first design. **Slice 1 (identity
+  and ids) implemented 2026-08-26**; slices 2–3 not started.
 - Three revisions the same day, each after review:
   1. The first draft allowed bot → bot *configuration* behind a `manage`
      grant while deferring *creation*. Lukas asked why one and not the
@@ -404,14 +405,27 @@ through admission or a promise through P134.
 
 ## Slices
 
-1. **Identity and ids** (~0.5 d, independent — can ship before anything
-   else): §9 — `botId` / `displayName` / `description` on the wire,
-   universe-scoped routes addressed by `botId` and `triggerName`, web
-   URLs and dialogs, `displayName` in `botUpdateSchema` with the
-   controller applying `session/rename`; §8 — the subtractions in the
-   tool activity and `BotControllerSummary`, plus a test that no
-   model-facing bot tool result or event rendering contains a uuid or a
-   ≥32-hex digest. Temporal and session identities do not change.
+1. **Identity and ids** — **done 2026-08-26.** §9: `bots.display_name`
+   and `bots.description` columns (migration `0003_bot_display_name`,
+   platform schema revision 4); the wire carries `botId` (the authored
+   `name`), `displayName`, `description`, and no uuid; routes are
+   `/api/v1/universes/:id/bots/:botId/…` with triggers by
+   `:triggerName` and webhook triggers carrying `ingestPath`; the web
+   addresses `/u/<slug>/bots/<botId>`, the create dialog derives the id
+   from the display name until edited (as profiles do), settings edit
+   the label and description; `BotStartV1.displayName` is required and
+   the controller applies a change with a new `renameBotSession`
+   activity (`session/rename`) to every managed session, recording
+   `renamed`. §8: `platform/bots/src/activities/tool-views.ts` holds
+   every model-facing shape as a pure function (`bot_status` by `botId`
+   and labels, deliveries as `#N`s, no `profileId`; `bot_event_list` /
+   `bot_filter_test` / `bot_event_read` without `eventId` or session
+   ids; triggers without row keys; `bot_emit` → `{ seq }`) and
+   `test/tool-views.test.ts` asserts no uuid and no ≥32-hex digest over
+   webhook, poll, schedule, self, and federation event rows plus the
+   event rendering. Pulled forward from §2: `bot_emit` is **joined**
+   (`BOT_TOOLS_REVISION` 9), so the rate-cap refusal reaches the model.
+   Temporal and session identities did not change; no stack reset.
 2. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
    form, create-dialog checkbox); `bot_emit { to }` joined with typed
    refusals; shared admission function in the bots package; `emit` grant

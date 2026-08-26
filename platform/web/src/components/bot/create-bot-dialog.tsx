@@ -22,7 +22,17 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+
+/** A bot id is authored like a profile id: derived from the display name until edited, then immutable. */
+function botIdFrom(displayName: string): string {
+  return displayName
+    .toLowerCase()
+    .normalize("NFKD")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 64);
+}
 
 export function CreateBotDialog({
   universeId,
@@ -42,28 +52,39 @@ export function CreateBotDialog({
     queryFn: () => api<ProfileSummary[]>("GET", `/api/v1/universes/${universeId}/profiles`),
     enabled: open,
   });
-  const [name, setName] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [botId, setBotId] = useState("");
+  const [idTouched, setIdTouched] = useState(false);
+  const [description, setDescription] = useState("");
   const [profileId, setProfileId] = useState("");
   const [brief, setBrief] = useState("");
   const [runsPerDay, setRunsPerDay] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
+  const idInvalid = botId.trim().length > 0 && !ID_PATTERN.test(botId.trim());
+  const reset = () => {
+    setDisplayName("");
+    setBotId("");
+    setIdTouched(false);
+    setDescription("");
+    setBrief("");
+    setRunsPerDay("");
+    setError(null);
+  };
   const create = useMutation({
     mutationFn: () =>
       api<{ bot: Bot }>("POST", `/api/v1/universes/${universeId}/bots`, {
-        name: name.trim(),
+        botId: botId.trim(),
+        ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+        ...(description.trim() ? { description: description.trim() } : {}),
         profileId,
         ...(brief.trim() ? { brief: brief.trim() } : {}),
         ...(runsPerDay.trim() ? { runsPerDay: Number(runsPerDay) } : {}),
       }),
     onSuccess: async ({ bot }) => {
       await queryClient.invalidateQueries({ queryKey: ["bots", universeId] });
-      setName("");
-      setBrief("");
-      setRunsPerDay("");
-      setError(null);
+      reset();
       onOpenChange(false);
-      navigate(`/u/${slug}/bots/${bot.id}`);
+      navigate(`/u/${slug}/bots/${bot.botId}`);
     },
     onError: (err) => setError(err.message),
   });
@@ -87,21 +108,49 @@ export function CreateBotDialog({
         >
           <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
             <Field>
-              <FieldLabel htmlFor="bot-name">Name</FieldLabel>
+              <FieldLabel htmlFor="bot-display-name">Display name</FieldLabel>
               <Input
-                id="bot-name"
-                value={name}
-                onChange={(event) => setName(event.target.value)}
-                aria-invalid={nameInvalid || undefined}
+                id="bot-display-name"
+                value={displayName}
+                onChange={(event) => {
+                  setDisplayName(event.target.value);
+                  if (!idTouched) setBotId(event.target.value ? botIdFrom(event.target.value) : "");
+                }}
+                placeholder="Triage"
                 autoFocus
               />
-              {nameInvalid ? (
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bot-id">Bot id</FieldLabel>
+              <Input
+                id="bot-id"
+                value={botId}
+                onChange={(event) => {
+                  setBotId(event.target.value);
+                  setIdTouched(event.target.value.length > 0);
+                }}
+                placeholder="triage"
+                className="font-mono"
+                aria-invalid={idInvalid || undefined}
+              />
+              {idInvalid ? (
                 <p className="text-xs text-destructive">
                   Use lowercase letters, numbers, and dashes, starting with a letter or number.
                 </p>
               ) : (
-                <FieldDescription>Lowercase letters, numbers, and dashes.</FieldDescription>
+                <FieldDescription>
+                  What other bots, briefs, and URLs reference — cannot be changed later.
+                </FieldDescription>
               )}
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="bot-description">Description (optional)</FieldLabel>
+              <Input
+                id="bot-description"
+                value={description}
+                onChange={(event) => setDescription(event.target.value)}
+                placeholder="One line other bots read when deciding whether to address this bot."
+              />
             </Field>
             <Field>
               <FieldLabel>Profile</FieldLabel>
@@ -150,7 +199,7 @@ export function CreateBotDialog({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={create.isPending || !name.trim() || nameInvalid || !profileId}>
+              <Button type="submit" disabled={create.isPending || !botId.trim() || idInvalid || !profileId}>
                 {create.isPending ? "Creating…" : "Create"}
               </Button>
             </DialogFooter>

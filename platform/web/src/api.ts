@@ -562,9 +562,13 @@ export interface ChannelsStatus {
 
 /// Bots: durable event routers that own managed sessions.
 export interface Bot {
-  id: string;
+  /** Authored, immutable, universe-unique id: what models say and URLs use. */
+  botId: string;
   universeId: string;
-  name: string;
+  /** Mutable label; falls back to the id. */
+  displayName: string | null;
+  /** One line other bots read about this bot. */
+  description: string | null;
   profileId: string;
   brief: string | null;
   runsPerDay: number | null;
@@ -581,6 +585,10 @@ export interface Bot {
 
 export interface BotListItem extends Bot {
   triggerCount: number;
+}
+
+export function botLabel(bot: Pick<Bot, "botId" | "displayName">): string {
+  return bot.displayName ?? bot.botId;
 }
 
 export interface BotScheduleSpec {
@@ -638,8 +646,7 @@ export interface BotCoalesce {
 }
 
 export interface BotTrigger {
-  id: string;
-  botId: string;
+  /** Authored id; the API addresses triggers by it. */
   name: string;
   kind: "schedule" | "webhook" | "poll";
   spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec;
@@ -652,6 +659,8 @@ export interface BotTrigger {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  /** Webhook kind: the ingest path (capability URL) senders post to. */
+  ingestPath?: string;
 }
 
 export interface BotEventRef {
@@ -708,6 +717,7 @@ export type BotLineage = Record<string, BotSessionLineage>;
 
 export interface BotState {
   botName: string;
+  displayName: string | null;
   profileId: string;
   sessionId: string;
   sessions: BotManagedSession[];
@@ -737,12 +747,10 @@ export interface BotState {
 
 export interface BotEventEnvelope {
   id: string;
-  botId: string;
   eventId: string;
   /** Per-bot sequence number (#N); null only for pre-numbering rows. */
   seq: number | null;
   promptRef: string | null;
-  triggerId: string | null;
   kind: string;
   source: string;
   occurredAt: string;
@@ -758,7 +766,6 @@ export interface BotEventPage {
 
 export interface BotActivityEntry {
   id: string;
-  botId: string;
   kind: string;
   eventId: string | null;
   runId: string | null;

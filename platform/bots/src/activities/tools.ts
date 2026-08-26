@@ -45,6 +45,14 @@ import {
 } from "../rendering.js";
 import { evaluateFilter, type FilterContext } from "../webhooks.js";
 import {
+  botStatusView,
+  eventEnvelopeView,
+  eventListRowView,
+  filterResultView,
+  triggerToolView,
+  type BotControllerSummary,
+} from "./tool-views.js";
+import {
   GrantReferenceError,
   validateRetrievableGrant,
 } from "../credentials.js";
@@ -58,14 +66,7 @@ export interface BotToolActivitiesConfig {
   fetch?: typeof fetch;
 }
 
-/** Controller-side state the activity cannot read from the database. */
-export interface BotControllerSummary {
-  sessions: { sessionId: string; label: string; kind: string }[];
-  activeDeliveries: { id: string; eventCount: number; sessionId: string }[];
-  buffers: { key: string; count: number; flushAtMs: number }[];
-  runsToday: number;
-  eventsProcessed: number;
-}
+export type { BotControllerSummary } from "./tool-views.js";
 
 export interface ExecuteBotToolInput {
   universeId: string;
@@ -134,19 +135,10 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
   }
 
   function triggerView(trigger: BotTriggerRow) {
-    const redacted = redactTriggerSecrets(trigger);
-    return {
-      id: trigger.id,
-      name: trigger.name,
-      kind: trigger.kind,
-      spec: redacted.spec,
-      filter: trigger.filter,
-      route: trigger.route,
-      coalesce: trigger.coalesce,
-      deliver: trigger.deliver,
-      enabled: trigger.enabled,
-      ...(trigger.kind === "webhook" ? { ingestUrl: ingestUrl(trigger) } : {}),
-    };
+    return triggerToolView(
+      redactTriggerSecrets(trigger),
+      trigger.kind === "webhook" ? ingestUrl(trigger) : null,
+    );
   }
 
   async function loadBot(botId: string) {
@@ -220,24 +212,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
     }
     switch (input.toolId) {
       case BOT_STATUS_TOOL_ID: {
-        return {
-          bot: {
-            name: bot.name,
-            enabled: bot.enabled,
-            profileId: bot.profileId,
-            brief: bot.brief,
-            runsPerDay: bot.runsPerDay,
-            runsToday: input.controller.runsToday,
-            breaker: bot.breaker,
-            routedSessionTtlMs: bot.routedSessionTtlMs,
-            selfConfig: bot.selfConfig,
-            selfEmit: bot.selfEmit,
-            eventsProcessed: input.controller.eventsProcessed,
-          },
-          sessions: input.controller.sessions,
-          activeDeliveries: input.controller.activeDeliveries,
-          buffers: input.controller.buffers,
-        };
+        return botStatusView(bot, input.controller);
       }
       case BOT_TRIGGER_LIST_TOOL_ID: {
         const triggers = await config.db
@@ -302,16 +277,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
             data: document?.data,
             headers: document?.headers ?? {},
           };
-          const outcome = evaluateFilter(filter, context);
-          return {
-            ...(row.seq === null ? {} : { seq: row.seq }),
-            eventId: row.eventId,
-            kind: row.kind,
-            source: row.source,
-            summary: document?.summary ?? null,
-            matched: outcome.matched,
-            ...(outcome.error === undefined ? {} : { error: outcome.error }),
-          };
+          return filterResultView(row, document, evaluateFilter(filter, context));
         });
         return {
           filter,
@@ -325,16 +291,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         const limit = typeof args.limit === "number" ? args.limit : 20;
         const samples = await recentEnvelopes(lightspeedUniverseId, bot.id, limit);
         return {
-          events: samples.map(({ row, document }) => ({
-            ...(row.seq === null ? {} : { seq: row.seq }),
-            eventId: row.eventId,
-            kind: row.kind,
-            source: row.source,
-            occurredAt: row.occurredAt.toISOString(),
-            receivedAt: row.receivedAt.toISOString(),
-            session: row.session,
-            summary: document?.summary ?? null,
-          })),
+          events: samples.map(({ row, document }) => eventListRowView(row, document)),
         };
       }
       case BOT_EVENT_READ_TOOL_ID: {
@@ -364,20 +321,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
         if (document === null) {
           throw new BotConfigError(`the stored document for event #${seq} could not be read`, 502);
         }
-        const envelope: Record<string, unknown> = {
-          seq: row.seq,
-          eventId: row.eventId,
-          kind: row.kind,
-          source: row.source,
-          occurredAt: row.occurredAt.toISOString(),
-          receivedAt: row.receivedAt.toISOString(),
-          ...(row.session === null ? {} : { session: row.session }),
-          summary: document.summary,
-          ...(document.correlationId == null ? {} : { correlationId: document.correlationId }),
-          ...(document.links === undefined ? {} : { links: document.links }),
-          ...(document.data === undefined ? {} : { data: document.data }),
-          ...(document.headers === undefined ? {} : { headers: document.headers }),
-        };
+        const envelope = eventEnvelopeView(row, document);
         const path = typeof args.path === "string" && args.path.length > 0 ? args.path : null;
         const target = path === null ? envelope : resolvePath(envelope, path);
         if (target === undefined) {
@@ -424,6 +368,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           universeId: lightspeedUniverseId,
           botId: updated.id,
           botName: updated.name,
+          displayName: updated.displayName,
           profileId: updated.profileId,
           brief: updated.brief,
           runsPerDay: updated.runsPerDay,
@@ -501,6 +446,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           universeId: lightspeedUniverseId,
           botId: bot.id,
           botName: bot.name,
+          displayName: bot.displayName,
           profileId: bot.profileId,
           brief: bot.brief,
           runsPerDay: bot.runsPerDay,
@@ -523,7 +469,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           stored: true,
         });
         await recordSelfConfig(bot.id, `emitted ${kind}: ${summary.slice(0, 120)}`, eventId);
-        return { eventId };
+        return { seq };
       }
       default:
         throw new BotConfigError(`unknown bot tool ${input.toolId}`, 400);

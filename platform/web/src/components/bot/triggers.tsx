@@ -48,8 +48,7 @@ function cronProblem(value: string): string | null {
 }
 
 function ingestUrl(trigger: BotTrigger): string {
-  const spec = trigger.spec as BotWebhookSpec;
-  return `${window.location.origin}/api/v1/hooks/bots/${trigger.id}/${spec.token}`;
+  return `${window.location.origin}${trigger.ingestPath ?? ""}`;
 }
 
 function routeLabel(route: BotRoute | null): string {
@@ -66,10 +65,12 @@ export type BotEnvStatus =
   | { kind: "existing"; environmentId: string };
 
 export function TriggersSection({
+  universeId,
   botId,
   manage,
   env,
 }: {
+  universeId: string;
   botId: string;
   manage: boolean;
   env: BotEnvStatus;
@@ -79,20 +80,21 @@ export function TriggersSection({
   const [editing, setEditing] = useState<BotTrigger | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const triggers = useQuery({
-    queryKey: ["bot-triggers", botId],
-    queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/bots/${botId}/triggers`),
+    queryKey: ["bot-triggers", universeId, botId],
+    queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/universes/${universeId}/bots/${botId}/triggers`),
   });
   const invalidate = () => Promise.all([
-    queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] }),
+    queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
     queryClient.invalidateQueries({ queryKey: ["bots"] }),
   ]);
   const toggle = useMutation({
     mutationFn: (trigger: BotTrigger) =>
-      api("PATCH", `/api/v1/bots/${botId}/triggers/${trigger.id}`, { enabled: !trigger.enabled }),
+      api("PATCH", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`, { enabled: !trigger.enabled }),
     onSuccess: invalidate,
   });
   const remove = useMutation({
-    mutationFn: (triggerId: string) => api("DELETE", `/api/v1/bots/${botId}/triggers/${triggerId}`),
+    mutationFn: (triggerName: string) =>
+      api("DELETE", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${triggerName}`),
     onSuccess: () => {
       setPendingDelete(null);
       return invalidate();
@@ -119,7 +121,7 @@ export function TriggersSection({
       )}
       {triggers.error && <p className="text-xs text-destructive">{triggers.error.message}</p>}
       {triggers.data?.triggers.map((trigger) => (
-        <div key={trigger.id} className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs">
+        <div key={trigger.name} className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs">
           <div className="flex min-w-0 items-center gap-2">
             {trigger.kind === "schedule" ? (
               <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
@@ -147,11 +149,11 @@ export function TriggersSection({
                 >
                   {trigger.enabled ? <Pause /> : <Play />}
                 </Button>
-                {pendingDelete === trigger.id ? (
+                {pendingDelete === trigger.name ? (
                   <Button
                     variant="destructive"
                     size="xs"
-                    onClick={() => remove.mutate(trigger.id)}
+                    onClick={() => remove.mutate(trigger.name)}
                     disabled={remove.isPending}
                   >
                     Delete?
@@ -160,7 +162,7 @@ export function TriggersSection({
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    onClick={() => setPendingDelete(trigger.id)}
+                    onClick={() => setPendingDelete(trigger.name)}
                     aria-label="Delete trigger"
                   >
                     <Trash2 />
@@ -178,9 +180,10 @@ export function TriggersSection({
           )}
         </div>
       ))}
-      {manage && <AddTriggerDialog botId={botId} env={env} open={addOpen} onOpenChange={setAddOpen} />}
+      {manage && <AddTriggerDialog universeId={universeId} botId={botId} env={env} open={addOpen} onOpenChange={setAddOpen} />}
       {manage && editing && (
         <EditTriggerDialog
+          universeId={universeId}
           botId={botId}
           trigger={editing}
           open
@@ -889,11 +892,13 @@ function PollFields({
 }
 
 function AddTriggerDialog({
+  universeId,
   botId,
   env,
   open,
   onOpenChange,
 }: {
+  universeId: string;
   botId: string;
   env: BotEnvStatus;
   open: boolean;
@@ -935,7 +940,7 @@ function AddTriggerDialog({
       if (!kind) throw new Error("Choose a trigger type.");
       return api(
         "POST",
-        `/api/v1/bots/${botId}/triggers`,
+        `/api/v1/universes/${universeId}/bots/${botId}/triggers`,
         kind === "schedule"
           ? {
               name: name.trim(),
@@ -951,7 +956,7 @@ function AddTriggerDialog({
     },
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
         queryClient.invalidateQueries({ queryKey: ["bots"] }),
       ]);
       reset();
@@ -1210,11 +1215,13 @@ function TriggerKindChoice({
 }
 
 function EditTriggerDialog({
+  universeId,
   botId,
   trigger,
   open,
   onOpenChange,
 }: {
+  universeId: string;
   botId: string;
   trigger: BotTrigger;
   open: boolean;
@@ -1240,7 +1247,7 @@ function EditTriggerDialog({
     mutationFn: () =>
       api(
         "PATCH",
-        `/api/v1/bots/${botId}/triggers/${trigger.id}`,
+        `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`,
         trigger.kind === "schedule"
           ? {
               spec: oneShotAt
@@ -1252,7 +1259,7 @@ function EditTriggerDialog({
             : webhookPayload(webhook),
       ),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["bot-triggers", botId] });
+      await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
       setError(null);
       onOpenChange(false);
     },

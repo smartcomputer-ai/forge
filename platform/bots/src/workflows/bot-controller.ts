@@ -22,7 +22,6 @@ import {
 import {
   BOT_CONFIG_SIGNAL,
   BOT_CONTROLLER_WORKFLOW,
-  BOT_EMIT_TOOL_ID,
   BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_EVENT_SIGNAL,
   BOT_PUSHED_TOOL_IDS,
@@ -108,6 +107,7 @@ export interface BotActiveDeliverySnapshot {
 
 export interface BotSnapshot {
   botName: string;
+  displayName: string | null;
   profileId: string;
   sessionId: string;
   sessions: BotManagedSession[];
@@ -260,6 +260,8 @@ export async function botControllerWorkflowV1(
   let laneTick = 0;
   let setupStatus: "initializing" | "degraded" | "ready" = "initializing";
   let configDirty = true;
+  // A display-name change is label-only; it renames sessions, never rotates them.
+  let renameDirty = false;
   let lastError: string | null = null;
 
   function utcDay(): string {
@@ -338,6 +340,11 @@ export async function botControllerWorkflowV1(
     const next = new Date(now);
     next.setUTCHours(24, 0, 0, 0);
     return Math.max(1_000, next.getTime() - now);
+  }
+
+  /** Session display names carry the label, never the id. */
+  function botLabel(): string {
+    return `bot ${config.displayName ?? config.botName}`;
   }
 
   function routedBase(target: string): string {
@@ -472,6 +479,7 @@ export async function botControllerWorkflowV1(
     ) {
       throw new TypeError("bot identity cannot change");
     }
+    if (next.displayName !== config.displayName) renameDirty = true;
     config = next;
     configDirty = true;
   });
@@ -480,6 +488,7 @@ export async function botControllerWorkflowV1(
   });
   setHandler(botStateQuery, () => ({
     botName: config.botName,
+    displayName: config.displayName,
     profileId: config.profileId,
     sessionId,
     sessions: [{ sessionId, label: "main", kind: "main" as const }, ...extraSessions],
@@ -549,7 +558,7 @@ export async function botControllerWorkflowV1(
         const ensured = await activities.ensureBotSession({
           universeId: config.universeId,
           sessionId,
-          displayName: `bot ${config.botName}`,
+          displayName: botLabel(),
           profileId: config.profileId,
           botName: config.botName,
           brief: config.brief,
@@ -680,20 +689,22 @@ export async function botControllerWorkflowV1(
     }
   }
 
+  /**
+   * What the tool activity may show the model: labels and `#N`s only.
+   * Session ids, delivery ids, and buffer keys stay here.
+   */
   function controllerSummary() {
     return {
-      sessions: [{ sessionId, label: "main", kind: "main" }, ...extraSessions].map((session) => ({
-        sessionId: session.sessionId,
+      sessions: [{ label: "main", kind: "main" }, ...extraSessions].map((session) => ({
         label: session.label,
         kind: session.kind,
       })),
       activeDeliveries: [...activeBySession.values()].map((active) => ({
-        id: active.delivery.id,
-        eventCount: active.delivery.events.length,
-        sessionId: active.sessionId,
+        events: active.delivery.events.flatMap((event) => (event.seq === undefined ? [] : [event.seq])),
+        session: active.delivery.session?.label ?? "main",
       })),
-      buffers: [...buffers.entries()].map(([key, buffer]) => ({
-        key,
+      buffers: [...buffers.values()].map((buffer) => ({
+        session: buffer.session?.label ?? "main",
         count: buffer.events.length,
         flushAtMs: Math.min(
           buffer.lastAtMs + buffer.params.debounceMs,
@@ -706,16 +717,42 @@ export async function botControllerWorkflowV1(
   }
 
   /**
+   * Apply a display-name change to every managed session. Label-only and
+   * best effort: the bot id, workflow id, and session ids never move, so a
+   * failed rename costs a stale label, never a delivery.
+   */
+  async function applyDisplayName(): Promise<void> {
+    renameDirty = false;
+    const targets = [{ sessionId, label: "main", kind: "main" as const }, ...extraSessions];
+    for (const target of targets) {
+      const displayName =
+        target.kind === "main" ? botLabel() : `${botLabel()} · ${target.label}`;
+      try {
+        await activities.renameBotSession({
+          universeId: config.universeId,
+          sessionId: target.sessionId,
+          displayName,
+        });
+      } catch (error) {
+        lastError = errorMessage(error);
+      }
+    }
+    await record("renamed", {
+      detail: `display name is now "${config.displayName ?? config.botName}"`,
+    });
+  }
+
+  /**
    * Answer a pushed bot_* invocation from the controller's own state and
    * activities, then resolve the session's parked call by signalling the
    * session workflow directly. Runs as its own lane, independent of delivery
-   * and terminal handling.
+   * and terminal handling. Every pushed tool is joined — including
+   * `bot_emit`, whose refusals (the rate cap) the model must read.
    */
   async function handleInvocation(
     invocation: WorkflowToolInvocation,
     holderWorkflowId: string,
   ): Promise<void> {
-    const joined = invocation.tool_id !== BOT_EMIT_TOOL_ID;
     let resolution:
       | { kind: "resolved"; payload_ref: string | null }
       | { kind: "failed"; error_ref: string | null };
@@ -744,7 +781,6 @@ export async function botControllerWorkflowV1(
       await record("tool_failed", { detail: `${invocation.tool_id}: ${lastError}` });
       resolution = { kind: "failed", error_ref: null };
     }
-    if (!joined) return;
     try {
       const holder = getExternalWorkflowHandle(holderWorkflowId);
       await holder.signal(
@@ -797,7 +833,7 @@ export async function botControllerWorkflowV1(
         await activities.ensureBotSession({
           universeId: config.universeId,
           sessionId: sessionIdToEnsure,
-          displayName: `bot ${config.botName} · ${target.label}`,
+          displayName: `${botLabel()} · ${target.label}`,
           profileId: config.profileId,
           botName: config.botName,
           brief: config.brief,
@@ -1208,6 +1244,7 @@ export async function botControllerWorkflowV1(
     flushRipeBuffers();
     await sweepRoutedSessions();
     await refreshDescendantsToday();
+    if (renameDirty) await applyDisplayName();
     if (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) {
       await waitUntilSessionIdle(sessionId).catch(() => undefined);
       await reconcileSession();

@@ -2,7 +2,7 @@ import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { NavLink, useParams } from "react-router-dom";
-import { api, type Bot, type BotListItem, type BotLineage,
+import { api, botLabel, type Bot, type BotListItem, type BotLineage,
   type BotState } from "@/api";
 import { BotDetail } from "@/components/bot/detail";
 import { CreateBotDialog } from "@/components/bot/create-bot-dialog";
@@ -39,7 +39,7 @@ export function BotsPage({ admin }: { admin: boolean }) {
       </aside>
       <section className={cn("min-w-0 flex-1 flex-col", botId ? "flex" : "hidden md:flex")}>
         {botId ? (
-          <BotWorkspace key={botId} slug={slug!} botId={botId} manage={manage} />
+          <BotWorkspace key={botId} universeId={universe.id} slug={slug!} botId={botId} manage={manage} />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-sm text-muted-foreground">
             <BotFace size={40} className="text-muted-foreground/60" />
@@ -97,16 +97,16 @@ function BotsPane({
           {bots.data?.bots.map((bot) => {
             const preview = bot.brief?.trim() || "No standing brief";
             return (
-              <li key={bot.id}>
+              <li key={bot.botId}>
                 <NavLink
-                  to={`/u/${slug}/bots/${bot.id}`}
+                  to={`/u/${slug}/bots/${bot.botId}`}
                   className={cn(
                     "block min-w-0 border-b px-4 py-3 text-sm hover:bg-muted/50",
-                    bot.id === activeId && "bg-muted",
+                    bot.botId === activeId && "bg-muted",
                   )}
                 >
                   <span className="flex min-w-0 items-center gap-2">
-                    <span className="min-w-0 truncate font-medium">{bot.name}</span>
+                    <span className="min-w-0 truncate font-medium">{botLabel(bot)}</span>
                     <Badge variant="secondary" className="max-w-28 truncate" title={`Profile: ${bot.profileId}`}>
                       {bot.profileId}
                     </Badge>
@@ -137,21 +137,27 @@ function BotsPane({
 }
 
 function BotWorkspace({
+  universeId,
   slug,
   botId,
   manage,
 }: {
+  universeId: string;
   slug: string;
   botId: string;
   manage: boolean;
 }) {
   const bot = useQuery({
-    queryKey: ["bot", botId],
-    queryFn: () => api<{ bot: Bot }>("GET", `/api/v1/bots/${botId}`),
+    queryKey: ["bot", universeId, botId],
+    queryFn: () => api<{ bot: Bot }>("GET", `/api/v1/universes/${universeId}/bots/${botId}`),
   });
   const state = useQuery({
-    queryKey: ["bot-state", botId],
-    queryFn: () => api<{ state: BotState; lineage?: BotLineage }>("GET", `/api/v1/bots/${botId}/state`),
+    queryKey: ["bot-state", universeId, botId],
+    queryFn: () =>
+      api<{ state: BotState; lineage?: BotLineage }>(
+        "GET",
+        `/api/v1/universes/${universeId}/bots/${botId}/state`,
+      ),
     refetchInterval: 3_000,
     retry: true,
   });

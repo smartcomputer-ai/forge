@@ -28,7 +28,12 @@ export const bots = pgTable(
     universeId: uuid("universe_id")
       .notNull()
       .references(() => universes.id, { onDelete: "cascade" }),
+    /** Authored, immutable, universe-unique id (`botId` on the wire); every Temporal and session identity derives from it. */
     name: text("name").notNull(),
+    /** Mutable label for humans; falls back to the id. Never identity. */
+    displayName: text("display_name"),
+    /** One line other bots read in the directory; the brief is the job description for this bot. */
+    description: text("description"),
     profileId: text("profile_id").notNull(),
     /** Standing instructions appended to the profile's instructions. */
     brief: text("brief"),

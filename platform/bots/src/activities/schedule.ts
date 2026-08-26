@@ -168,6 +168,7 @@ export function createBotScheduleActivities(
         universeId: row.lightspeedUniverseId,
         botId: row.bot.id,
         botName: row.bot.name,
+        displayName: row.bot.displayName,
         profileId: row.bot.profileId,
         brief: row.bot.brief,
         runsPerDay: row.bot.runsPerDay,

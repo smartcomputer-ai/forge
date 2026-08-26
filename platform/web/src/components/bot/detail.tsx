@@ -13,6 +13,7 @@ import {
 import { Link, NavLink } from "react-router-dom";
 import {
   api,
+  botLabel,
   type Bot,
   type BotActivityEntry,
   type BotActivityPage,
@@ -55,11 +56,11 @@ export function BotDetail({
   const [view, setView] = useState<BotView>("overview");
   const queryClient = useQueryClient();
   const activityPages = useInfiniteQuery({
-    queryKey: ["bot-activity", bot.id],
+    queryKey: ["bot-activity", bot.universeId, bot.botId],
     queryFn: ({ pageParam }) =>
       api<BotActivityPage>(
         "GET",
-        `/api/v1/bots/${bot.id}/activity?limit=50${
+        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/activity?limit=50${
           pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
         }`,
       ),
@@ -68,11 +69,11 @@ export function BotDetail({
     enabled: view === "activity",
   });
   const eventPages = useInfiniteQuery({
-    queryKey: ["bot-events", bot.id],
+    queryKey: ["bot-events", bot.universeId, bot.botId],
     queryFn: ({ pageParam }) =>
       api<BotEventPage>(
         "GET",
-        `/api/v1/bots/${bot.id}/events?limit=50${
+        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events?limit=50${
           pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
         }`,
       ),
@@ -84,12 +85,12 @@ export function BotDetail({
   const events = eventPages.data?.pages.flatMap((page) => page.events) ?? [];
   const replay = useMutation({
     mutationFn: (eventId: string) =>
-      api("POST", `/api/v1/bots/${bot.id}/events/replay`, { eventId }),
+      api("POST", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events/replay`, { eventId }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bot-state", bot.id] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-activity", bot.id] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-events", bot.id] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-activity", bot.universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-events", bot.universeId, bot.botId] }),
       ]);
     },
   });
@@ -100,7 +101,10 @@ export function BotDetail({
         <NavLink to={`/u/${slug}/bots`} className="md:hidden" aria-label="Back to bots">
           <ChevronRight className="size-4 rotate-180" />
         </NavLink>
-        <span className="min-w-0 truncate text-sm font-semibold">{bot.name}</span>
+        <span className="min-w-0 truncate text-sm font-semibold">{botLabel(bot)}</span>
+        {bot.displayName && (
+          <code className="hidden truncate text-xs text-muted-foreground sm:inline">{bot.botId}</code>
+        )}
         <BotStatusBadge status={state?.controllerStatus} />
         {manage && (
           <div className="ml-auto flex items-center gap-1">
@@ -162,7 +166,7 @@ export function BotDetail({
       {manage && (
         <>
           <BotSettingsDialog universeId={bot.universeId} bot={bot} open={settingsOpen} onOpenChange={setSettingsOpen} />
-          <SendEventDialog botId={bot.id} open={eventOpen} onOpenChange={setEventOpen} />
+          <SendEventDialog universeId={bot.universeId} botId={bot.botId} open={eventOpen} onOpenChange={setEventOpen} />
         </>
       )}
     </div>
@@ -338,7 +342,7 @@ function BotOverview({
           );
         }) : <p className="text-xs text-muted-foreground">Waiting for the controller…</p>}
       </DetailSection>
-      <TriggersSection botId={bot.id} manage={manage} env={env} />
+      <TriggersSection universeId={bot.universeId} botId={bot.botId} manage={manage} env={env} />
     </div>
   );
 }

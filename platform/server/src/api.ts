@@ -73,7 +73,6 @@ export function buildApp(ctx: AppContext) {
   api.route("/universes", gatewayRoutes(ctx));
   api.route("/universes", botsApi.byUniverse);
   api.route("/bindings", bindings.byId);
-  api.route("/bots", botsApi.byId);
   api.route("/admin", environmentOperatorRoutes(ctx));
   api.route("/channel-accounts", channelAccountRoutes(ctx));
 
