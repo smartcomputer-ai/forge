@@ -408,6 +408,7 @@ impl SessionTools {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn read_environment_jobs(
         &self,
         session_id: &SessionId,

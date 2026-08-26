@@ -2646,7 +2646,7 @@ mod tests {
                 40,
             )
             .expect("no-op upsert");
-        assert!(matches!(noop, CoreAgentAction::Idle { .. }));
+        assert!(matches!(noop, CoreAgentAction::Idle));
     }
 
     #[test]

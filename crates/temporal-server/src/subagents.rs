@@ -576,6 +576,13 @@ mod tests {
 
     const UNIVERSE: uuid::Uuid = uuid::Uuid::from_u128(11);
 
+    type StartedRun = (
+        String,
+        Vec<InputItem>,
+        SubmissionId,
+        Vec<RunTerminalNotifyIntent>,
+    );
+
     /// Counting fake of the hosted child API.
     #[derive(Default)]
     struct FakeChildRuntime {
@@ -583,14 +590,7 @@ mod tests {
         start_session_error: Mutex<Option<AgentApiError>>,
         close_error: Mutex<Option<AgentApiError>>,
         started_sessions: Mutex<Vec<(String, ProfileSource)>>,
-        started_runs: Mutex<
-            Vec<(
-                String,
-                Vec<InputItem>,
-                SubmissionId,
-                Vec<RunTerminalNotifyIntent>,
-            )>,
-        >,
+        started_runs: Mutex<Vec<StartedRun>>,
         closed: Mutex<Vec<(String, bool)>>,
     }
 

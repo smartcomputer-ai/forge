@@ -183,6 +183,8 @@ impl EmissionProducer {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
+// Invocation payloads intentionally keep their durable wire shape inline.
+#[allow(clippy::large_enum_variant)]
 pub enum EmissionBody {
     RunTerminal {
         token: String,

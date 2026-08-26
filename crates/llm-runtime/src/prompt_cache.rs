@@ -35,7 +35,7 @@ mod tests {
 
     #[test]
     fn long_session_ids_hash_to_a_stable_short_key() {
-        let id = SessionId::new(&"x".repeat(120));
+        let id = SessionId::new("x".repeat(120));
         let key = prompt_cache_key(&id);
         assert!(key.len() <= MAX_PROMPT_CACHE_KEY_LEN);
         assert!(key.starts_with("session-"));

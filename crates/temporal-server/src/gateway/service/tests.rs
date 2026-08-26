@@ -113,17 +113,19 @@ fn legacy_subagent_bindings_retain_their_immutable_deadline_ceiling() {
     .expect("legacy subagent binding");
     let mut state = engine::CoreAgentState::new();
     state.workflow_tools.bindings.insert(tool_id, binding);
-    let mut features = engine::FeaturesConfig::default();
-    features.subagents = Some(engine::SubagentsFeature {
-        agents: vec![engine::SubagentAgentConfig {
-            profile_id: "reviewer".to_owned(),
-        }],
-        limits: engine::SubagentLimits {
-            deadline_ms: LEGACY_CEILING_MS,
-            ..engine::SubagentLimits::default()
-        },
-        ..engine::SubagentsFeature::default()
-    });
+    let mut features = engine::FeaturesConfig {
+        subagents: Some(engine::SubagentsFeature {
+            agents: vec![engine::SubagentAgentConfig {
+                profile_id: "reviewer".to_owned(),
+            }],
+            limits: engine::SubagentLimits {
+                deadline_ms: LEGACY_CEILING_MS,
+                ..engine::SubagentLimits::default()
+            },
+            ..engine::SubagentsFeature::default()
+        }),
+        ..engine::FeaturesConfig::default()
+    };
 
     validate_subagent_deadline_for_existing_bindings(&state, &features)
         .expect("legacy ceiling remains valid");

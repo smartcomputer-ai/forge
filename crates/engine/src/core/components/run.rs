@@ -11,6 +11,8 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+// Accepted run payloads intentionally keep their durable event shape inline.
+#[allow(clippy::large_enum_variant)]
 pub enum Event {
     Accepted(AcceptedRunEvent),
     Started {

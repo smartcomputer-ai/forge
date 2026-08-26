@@ -2213,6 +2213,54 @@ fn patch_target(patch: &str) -> Option<String> {
     })
 }
 
+/// Map each superseded catalog version to the newer entry that updated it.
+fn superseded_by_map(entries: &[&ContextEntry]) -> BTreeMap<ContextEntryId, ContextEntryId> {
+    entries
+        .iter()
+        .filter_map(|entry| entry.supersedes.map(|older| (older, entry.entry_id)))
+        .collect()
+}
+
+/// Project provider usage. Every adapter already reports `input_tokens` as
+/// the whole prompt (the Anthropic adapter folds its separately reported
+/// cache read/write counts in and keeps the uncached count in
+/// `cache_miss_input_tokens`), so this is a field copy.
+fn llm_usage_to_api(usage: &engine::LlmUsage) -> LlmUsageView {
+    LlmUsageView {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        total_tokens: usage.total_tokens,
+        cached_input_tokens: usage.cached_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
+    }
+}
+
+/// Sum usage over a run's completed generations; `None` when no generation
+/// reported usage.
+fn sum_llm_usage<'a>(usages: impl Iterator<Item = &'a engine::LlmUsage>) -> Option<LlmUsageView> {
+    let mut total: Option<LlmUsageView> = None;
+    for usage in usages {
+        let view = llm_usage_to_api(usage);
+        let acc = total.get_or_insert_with(LlmUsageView::default);
+        fn add(acc: &mut Option<u32>, value: Option<u32>) {
+            if let Some(value) = value {
+                *acc = Some(acc.unwrap_or(0).saturating_add(value));
+            }
+        }
+        add(&mut acc.input_tokens, view.input_tokens);
+        add(&mut acc.output_tokens, view.output_tokens);
+        add(&mut acc.reasoning_tokens, view.reasoning_tokens);
+        add(&mut acc.total_tokens, view.total_tokens);
+        add(&mut acc.cached_input_tokens, view.cached_input_tokens);
+        add(
+            &mut acc.cache_write_input_tokens,
+            view.cache_write_input_tokens,
+        );
+    }
+    total
+}
+
 #[cfg(test)]
 mod tests {
     use engine::{
@@ -3119,52 +3167,4 @@ mod tests {
             supersedes: None,
         }
     }
-}
-
-/// Map each superseded catalog version to the newer entry that updated it.
-fn superseded_by_map(entries: &[&ContextEntry]) -> BTreeMap<ContextEntryId, ContextEntryId> {
-    entries
-        .iter()
-        .filter_map(|entry| entry.supersedes.map(|older| (older, entry.entry_id)))
-        .collect()
-}
-
-/// Project provider usage. Every adapter already reports `input_tokens` as
-/// the whole prompt (the Anthropic adapter folds its separately reported
-/// cache read/write counts in and keeps the uncached count in
-/// `cache_miss_input_tokens`), so this is a field copy.
-fn llm_usage_to_api(usage: &engine::LlmUsage) -> LlmUsageView {
-    LlmUsageView {
-        input_tokens: usage.input_tokens,
-        output_tokens: usage.output_tokens,
-        reasoning_tokens: usage.reasoning_tokens,
-        total_tokens: usage.total_tokens,
-        cached_input_tokens: usage.cached_input_tokens,
-        cache_write_input_tokens: usage.cache_write_input_tokens,
-    }
-}
-
-/// Sum usage over a run's completed generations; `None` when no generation
-/// reported usage.
-fn sum_llm_usage<'a>(usages: impl Iterator<Item = &'a engine::LlmUsage>) -> Option<LlmUsageView> {
-    let mut total: Option<LlmUsageView> = None;
-    for usage in usages {
-        let view = llm_usage_to_api(usage);
-        let acc = total.get_or_insert_with(LlmUsageView::default);
-        fn add(acc: &mut Option<u32>, value: Option<u32>) {
-            if let Some(value) = value {
-                *acc = Some(acc.unwrap_or(0).saturating_add(value));
-            }
-        }
-        add(&mut acc.input_tokens, view.input_tokens);
-        add(&mut acc.output_tokens, view.output_tokens);
-        add(&mut acc.reasoning_tokens, view.reasoning_tokens);
-        add(&mut acc.total_tokens, view.total_tokens);
-        add(&mut acc.cached_input_tokens, view.cached_input_tokens);
-        add(
-            &mut acc.cache_write_input_tokens,
-            view.cache_write_input_tokens,
-        );
-    }
-    total
 }

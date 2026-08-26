@@ -238,9 +238,8 @@ mod tests {
             .into_iter()
             .filter(|spec| spec.scope == crate::MethodScope::Operator)
         {
-            assert_eq!(
+            assert!(
                 crate::is_operator_method(spec.method),
-                true,
                 "scope of {} must match its method-name prefix",
                 spec.method
             );
