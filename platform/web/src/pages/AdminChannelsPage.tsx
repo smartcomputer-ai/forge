@@ -133,7 +133,7 @@ export function AdminChannelsPage() {
           <CardHeader>
             <CardTitle>Channel accounts</CardTitle>
             <CardDescription>
-              Bindings target one stable provider account. Secret values stay outside Postgres.
+              Chat triggers on bots target one stable provider account. Secret values stay outside Postgres.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
@@ -240,7 +240,7 @@ function CreateAccountDialog({
           <DialogTitle>Add channel account</DialogTitle>
           <DialogDescription>
             Registers a provider account for the Channels connectors. Universe owners
-            route conversations to it from their Channels settings.
+            connect conversations to it with a chat trigger on one of their bots.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">

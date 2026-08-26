@@ -97,11 +97,50 @@ export type BotPollTriggerSpec = {
 export type BotInboxTriggerSpec = {
   from?: string[];
 };
+/**
+ * A chat connection: a provider account, which conversations it serves, how
+ * the bot activates in groups, who may talk to it, and the pairing gate.
+ * Routing, coalescing, filters, and delivery policy are the trigger's
+ * generic columns; the bot's profile and brief are the bot's.
+ */
+export type BotChatTriggerSpec = {
+  channelAccountId: string;
+  matchScope: "direct" | "group" | null;
+  activation: {
+    group?: "mention" | "always";
+    triggerPrefixes?: string[];
+    mentionNames?: string[];
+  } | null;
+  access: {
+    turn?: "conversation" | "members";
+    control?: "none" | "members" | "admins" | "owners";
+  } | null;
+  /** Null pairs implicitly (an open connection). */
+  pairingCode: string | null;
+  /** Lower wins among matching chat triggers on one account. */
+  priority: number;
+};
 export type BotTriggerSpec =
   | BotScheduleTriggerSpec
   | BotWebhookTriggerSpec
   | BotPollTriggerSpec
-  | BotInboxTriggerSpec;
+  | BotInboxTriggerSpec
+  | BotChatTriggerSpec;
+
+/** A prepared attachment carried by an event into the run input; bytes live in CAS. */
+export type BotEventMedia = {
+  blobRef: string;
+  kind: "image" | "audio" | "document";
+  mime: string;
+  name?: string | null;
+};
+
+/**
+ * Delivery receipts for the admitting source: a workflow endpoint signalled
+ * with `started` / `finished` and the caller's opaque token. Never on the
+ * wire and never shown to the model.
+ */
+export type BotEventNotify = { workflowId: string; workflowKind: string; token: string };
 
 /** Poll cursor state: Lightspeed-owned, operator-visible, resettable. */
 export type BotPollCursorState = {
@@ -131,7 +170,7 @@ export const botTriggers = pgTable(
       .references(() => bots.id, { onDelete: "cascade" }),
     name: text("name").notNull(),
     /** `bot` is the inbox for events other bots address here; at most one per bot. */
-    kind: text("kind", { enum: ["schedule", "webhook", "poll", "bot"] }).notNull(),
+    kind: text("kind", { enum: ["schedule", "webhook", "poll", "bot", "chat"] }).notNull(),
     /** Per-kind configuration document. */
     spec: jsonb("spec").$type<BotTriggerSpec>().notNull(),
     /** CEL over {event, data, headers}; non-matching events archive instead of delivering. */
@@ -148,6 +187,11 @@ export const botTriggers = pgTable(
     deliver: jsonb("deliver").$type<{ whenBusy: "queue" | "steer" | "append" }>(),
     /** Poll kind only: the advancing cursor; null until the baseline poll. */
     cursor: jsonb("cursor").$type<BotPollCursorState>(),
+    /**
+     * Retention of the sessions this trigger routes to: null inherits the
+     * bot's `routedSessionTtlMs`, 0 keeps them open indefinitely (chat).
+     */
+    sessionTtlMs: integer("session_ttl_ms"),
     enabled: boolean("enabled").default(true).notNull(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -196,6 +240,16 @@ export const botEvents = pgTable(
     replyTo: jsonb("reply_to").$type<{ botId: string; session?: { sessionId: string; label: string } }>(),
     /** Public correlation of a receipt: the asked event's #N at the answering bot. */
     inReplyTo: jsonb("in_reply_to").$type<{ bot: string; seq: number }>(),
+    /** Prepared attachments appended to the run input after the rendering. */
+    media: jsonb("media").$type<BotEventMedia[]>(),
+    /**
+     * CAS ref of receiver-bound tool declarations the routed session is
+     * created with (a chat conversation's `message_*` tools). Opaque here;
+     * identical for every event of one routed session by construction.
+     */
+    tools: text("tools"),
+    /** Private delivery-receipt route of the admitting source. */
+    notify: jsonb("notify").$type<BotEventNotify>(),
     receivedAt: createdAt(),
   },
   (t) => [

@@ -303,6 +303,26 @@ Release construction, snapshots, and tagged publication are documented in
   `displayName`; the uuid row key never leaves the database, and
   model-facing `bot_*` results carry `#N` and labels, never digests
   (`activities/tool-views.ts`).
+- Channels are bot triggers (P139). A chat connection is a `bot_triggers`
+  row of kind `chat` (account, scope, activation, access, pairing); there
+  is no binding record and no channel-owned session. Every activated
+  message is one event through `admitTriggerEvent` (id
+  `chat:<trigger>:…`), routed `perKey` per conversation into
+  `bot:v1:<bot>:k-…`; the conversation workflow
+  (`channelConversationWorkflowV1`) is the *receiver* of that session's
+  `message_*` tools, whose declarations travel on the event (`tools` CAS
+  ref) and are merged verbatim at `ensureRoutedSession`. The controller
+  signals `bot_delivery_v1` `started` / `finished` receipts to the event's
+  `notify` endpoint (typing, and the text-reply fallback when no
+  `message_*` tool was used); a run that used a carried tool counts as
+  `handled`. Messages are named to the model by the bot's `#N` in both
+  directions — inbound is the event, a send is an archived `chat.sent`
+  row — and `message_send { text, replyTo: 17 }` resolves numbers to
+  provider ids inside the conversation workflow. Per-trigger
+  `sessionTtlMs` (0 = never, the chat default) overrides
+  `routedSessionTtlMs`. Do not reintroduce bindings, a channel-owned
+  session, provider message ids in tool arguments, or a second lifecycle
+  controller.
 - Catalogs (VFS, skill, sub-agent, and client `Catalog` entries) are
   append-with-supersede: a keyed catalog write appends the new version with
   `supersedes` set and leaves the earlier one active and rendered

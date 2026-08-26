@@ -1,14 +1,9 @@
 import {
   LightspeedClient,
   type ContextEntryView,
-  type ManagedSessionStartParams,
   type SessionView,
 } from "@lightspeed/agent-client";
-import type {
-  EnsureManagedSessionInput,
-  EnsureManagedSessionResult,
-  LightspeedActivities,
-} from "../contracts/managed-session.js";
+import type { LightspeedActivities } from "../contracts/bridge.js";
 import {
   CHANNEL_TOOL_DESCRIPTIONS,
   CHANNEL_TOOL_SCHEMAS,
@@ -26,30 +21,6 @@ export interface LightspeedActivityConfig {
 
 export function createLightspeedActivities(config: LightspeedActivityConfig): LightspeedActivities {
   return {
-    async ensureManagedSession(input) {
-      const client = clientForUniverse(config, input.universeId);
-      const toolRefs = await putToolAssets(client);
-      const params: ManagedSessionStartParams = {
-        sessionId: input.sessionId,
-        workflowTools: {
-          version: 1,
-          lifecycleController: input.controller,
-          tools: channelWorkflowTools(input.controller, toolRefs.schemas, toolRefs.descriptions),
-        },
-      };
-      if (input.displayName !== undefined) {
-        params.displayName = input.displayName;
-      }
-      if (input.profileId !== undefined) {
-        params.profile = { kind: "named", profileId: input.profileId };
-      }
-
-      const response = await client.call("session/managed/start", params);
-      return {
-        sessionId: response.result.session.id,
-        createdAtMs: response.result.session.createdAtMs,
-      };
-    },
     async readJsonBlob(input) {
       const client = clientForUniverse(config, input.universeId);
       const response = await client.call("blobs/read", { blobRef: input.blobRef });
@@ -76,84 +47,40 @@ export function createLightspeedActivities(config: LightspeedActivityConfig): Li
       }
       return { blobRef: blob.blobRef };
     },
-    async startChannelRun(input) {
-      if (input.items.length === 0) {
-        throw new TypeError("startChannelRun requires at least one input item");
-      }
+    async putChatToolDeclarations(input) {
       const client = clientForUniverse(config, input.universeId);
-      const response = await client.call("session/runs/start", {
-        sessionId: input.sessionId,
-        source: { type: "input", items: input.items },
-        submissionId: input.submissionId,
-        notifyOnTerminal: { token: input.terminalToken },
+      const refs = await putToolAssets(client);
+      const declarations = channelWorkflowTools(input.receiver, refs.schemas, refs.descriptions);
+      const response = await client.call("blobs/put", {
+        blobs: [
+          { bytesBase64: Buffer.from(JSON.stringify(declarations), "utf8").toString("base64") },
+        ],
       });
-      return { runId: response.result.run.id };
-    },
-    async appendChannelContext(input) {
-      if (input.entries.length === 0) {
-        throw new TypeError("appendChannelContext requires at least one entry");
+      const blob = response.result.blobs?.[0];
+      if (blob === undefined) {
+        throw new Error("blobs/put omitted the tool declaration blob");
       }
-      const client = clientForUniverse(config, input.universeId);
-      const response = await client.call("session/context/append", {
-        sessionId: input.sessionId,
-        entries: input.entries,
-      });
       return {
-        contextRevision: response.result.contextRevision,
-        results: response.result.results.map((result) => {
-          if (result.status === "failed") {
-            throw new Error(
-              `context append failed for ${result.key}: ${result.failure?.message ?? "unknown failure"}`,
-            );
-          }
-          return {
-            key: result.key,
-            status: result.status,
-            ...(result.activationText == null ? {} : { activationText: result.activationText }),
-          };
-        }),
+        toolsRef: blob.blobRef,
+        toolIds: declarations.map((declaration) => declaration.definition.toolId),
       };
     },
-    async removeChannelContext(input) {
-      if (input.keys.length === 0) {
-        return { contextRevision: 0, results: [] };
-      }
-      const client = clientForUniverse(config, input.universeId);
-      const response = await client.call("session/context/remove", {
-        sessionId: input.sessionId,
-        keys: input.keys,
-      });
-      return {
-        contextRevision: response.result.contextRevision,
-        results: response.result.results.map((result) => {
-          if (result.status === "failed") {
-            throw new Error(
-              `context remove failed for ${result.key}: ${result.failure?.message ?? "unknown failure"}`,
-            );
-          }
-          return { key: result.key, status: result.status };
-        }),
-      };
-    },
-    async reconcileTerminalRun(input) {
-      if (input.status === "failed") {
+    async reconcileDelivery(input) {
+      if (input.status === "run_failed") {
         return { action: "deliver", text: "I couldn't complete that request." };
       }
-      if (input.status === "cancelled") {
-        return { action: "deliver", text: "That request was cancelled." };
+      if (input.runId === null) {
+        return { action: "suppress", reason: "no_run" };
       }
       const client = clientForUniverse(config, input.universeId);
       const response = await client.call("session/read", { sessionId: input.sessionId });
-      // Terminal workflow emissions use the engine's numeric run id, while
-      // SessionView exposes the public API id (`run_<number>`).
-      const runId = `run_${input.runId}`;
-      if (runUsedMessagingTool(response.result.session, runId)) {
+      if (runUsedMessagingTool(response.result.session, input.runId)) {
         return { action: "suppress", reason: "messaging_tool" };
       }
       return {
         action: "deliver",
         text:
-          extractAssistantText(response.result.session, runId) ??
+          extractAssistantText(response.result.session, input.runId) ??
           "Lightspeed completed the run, but no assistant text was available.",
       };
     },
@@ -197,7 +124,7 @@ function assistantTexts(entries: readonly ContextEntryView[] | undefined): strin
 
 type RpcClient = Pick<LightspeedClient, "call">;
 
-async function putToolAssets(client: RpcClient): Promise<{
+export async function putToolAssets(client: RpcClient): Promise<{
   schemas: ChannelToolSchemaRefs;
   descriptions: ChannelToolDescriptionRefs;
 }> {

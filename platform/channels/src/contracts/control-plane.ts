@@ -1,11 +1,12 @@
 import type { ChannelRoute } from "./channel.js";
 
-export interface AssertBindingActiveInput {
-  bindingId: string;
+export interface AssertTriggerActiveInput {
+  triggerId: string;
   route: ChannelRoute;
   scope: "direct" | "group";
 }
 
 export interface ControlPlaneActivities {
-  assertBindingActive(input: AssertBindingActiveInput): Promise<void>;
+  /** Fails non-retryably when the chat trigger no longer serves this conversation. */
+  assertTriggerActive(input: AssertTriggerActiveInput): Promise<void>;
 }

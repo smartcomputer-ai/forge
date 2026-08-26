@@ -37,7 +37,7 @@ import {
   type BotTriggerRow,
 } from "./bot-common.js";
 
-const { bots, botTriggers, botEvents, botActivity } = schema;
+const { bots, botTriggers, botEvents, botActivity, channelAccounts } = schema;
 
 /// A bot's authored id (`botId` on the wire, `bots.name` in the row) is
 /// immutable and universe-unique, like a profile id; `displayName` is the
@@ -103,11 +103,15 @@ export function botView<T extends BotRow>(row: T) {
  * inside the webhook ingest path, which is a capability URL and opaque on
  * purpose.
  */
-export function triggerView(trigger: BotTriggerRow) {
+export function triggerView(
+  trigger: BotTriggerRow,
+  channelAccount?: { id: string; provider: string; accountId: string; displayName: string } | null,
+) {
   const { id: _id, botId: _botId, ...rest } = trigger;
   return {
     ...rest,
     ...(trigger.kind === "webhook" ? { ingestPath: webhookIngestPath(trigger) } : {}),
+    ...(trigger.kind === "chat" ? { channelAccount: channelAccount ?? null } : {}),
   };
 }
 
@@ -191,6 +195,38 @@ export function botRoutes(ctx: AppContext) {
       .where(and(eq(bots.universeId, access.universe.id), eq(bots.name, botId)))
       .limit(1);
     return bot ? { bot, access } : null;
+  }
+
+  /** Wire views with each chat trigger's account attached (provider, id, label). */
+  async function triggerViews(triggers: BotTriggerRow[]) {
+    const accountIds = [
+      ...new Set(
+        triggers
+          .filter((trigger) => trigger.kind === "chat")
+          .map((trigger) => (trigger.spec as { channelAccountId: string }).channelAccountId),
+      ),
+    ];
+    const accounts =
+      accountIds.length === 0
+        ? []
+        : await ctx.db
+            .select({
+              id: channelAccounts.id,
+              provider: channelAccounts.provider,
+              accountId: channelAccounts.accountId,
+              displayName: channelAccounts.displayName,
+            })
+            .from(channelAccounts)
+            .where(inArray(channelAccounts.id, accountIds));
+    const byId = new Map(accounts.map((account) => [account.id, account]));
+    return triggers.map((trigger) =>
+      triggerView(
+        trigger,
+        trigger.kind === "chat"
+          ? (byId.get((trigger.spec as { channelAccountId: string }).channelAccountId) ?? null)
+          : undefined,
+      ),
+    );
   }
 
   async function triggerForBot(bot: BotRow, name: string): Promise<BotTriggerRow | null> {
@@ -287,7 +323,7 @@ export function botRoutes(ctx: AppContext) {
       .orderBy(botTriggers.name);
     const manage = canManageRole(found.access.role);
     return c.json({
-      triggers: (manage ? triggers : triggers.map(redactTriggerSecrets)).map(triggerView),
+      triggers: await triggerViews(manage ? triggers : triggers.map(redactTriggerSecrets)),
     });
   });
 
@@ -302,7 +338,7 @@ export function botRoutes(ctx: AppContext) {
         triggerConfigDeps(found.access.universe, temporal),
         { bot: found.bot, universeId: found.access.universe.lightspeedUniverseId, input: body.data },
       );
-      return c.json({ trigger: triggerView(trigger) }, 201);
+      return c.json({ trigger: (await triggerViews([trigger]))[0] }, 201);
     } catch (error) {
       return configErrorResponse(c, error);
     }
@@ -326,7 +362,7 @@ export function botRoutes(ctx: AppContext) {
           input: body.data,
         },
       );
-      return c.json({ trigger: triggerView(trigger) });
+      return c.json({ trigger: (await triggerViews([trigger]))[0] });
     } catch (error) {
       return configErrorResponse(c, error);
     }

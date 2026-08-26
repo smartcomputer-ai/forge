@@ -1,24 +1,29 @@
 import type { WorkflowClient } from "@temporalio/client";
-import type { NormalizedInboundV1 } from "../contracts/channel.js";
+import { conversationLabel, type NormalizedInboundV1 } from "../contracts/channel.js";
 import type {
   ChannelControlPlane,
-  ResolvedChannelBinding,
-} from "../control-plane/bindings.js";
-import { channelSessionIdentity } from "../identity/ids.js";
+  ResolvedChatTrigger,
+} from "../control-plane/chat-triggers.js";
+import { channelConversationIdentity } from "../identity/ids.js";
 import { signalInbound, type SignalInboundResult } from "./signal.js";
 
 export type AdmitInboundResult =
   | { status: "unbound" }
   | { status: "pairing_required" }
   | { status: "pairing_pending" }
-  | { status: "paired"; binding: ResolvedChannelBinding }
+  | { status: "paired"; trigger: ResolvedChatTrigger }
   | {
       status: "admitted";
-      binding: ResolvedChannelBinding;
+      trigger: ResolvedChatTrigger;
       workflowId: string;
       signaledRunId: string;
     };
 
+/**
+ * Resolve the chat trigger for a provider message and hand the message to
+ * its conversation workflow by signal-with-start. Provider acknowledgement
+ * is safe only after this resolves.
+ */
 export async function admitInbound(
   client: WorkflowClient,
   controlPlane: ChannelControlPlane,
@@ -28,32 +33,26 @@ export async function admitInbound(
   if (decision.status !== "bound") {
     return decision;
   }
-  const binding = decision.binding;
-  const identity = channelSessionIdentity({
-    universeId: binding.universeId,
-    provider: inbound.route.provider,
-    accountId: inbound.route.accountId,
-    sessionKey: binding.sessionKey,
-  });
+  const trigger = decision.trigger;
+  const identity = channelConversationIdentity(trigger.universeId, inbound.route);
   const signaled: SignalInboundResult = await signalInbound(
     client,
     {
       version: 1,
-      universeId: binding.universeId,
-      bindingId: binding.bindingId,
-      displayName: `${inbound.route.provider}: ${binding.universeName}`,
-      ...(binding.profileId === null ? {} : { profileId: binding.profileId }),
-      sessionId: identity.sessionId,
-      sessionKey: binding.sessionKey,
+      universeId: trigger.universeId,
+      triggerId: trigger.triggerId,
+      botId: trigger.botId,
+      botName: trigger.botName,
       scope: inbound.isDirect ? "direct" : "group",
-      activation: binding.activation,
-      access: binding.access,
-      initialRoute: inbound.route,
+      activation: trigger.activation,
+      access: trigger.access,
+      route: inbound.route,
+      label: conversationLabel(inbound),
       deliveryTaskQueue: identity.deliveryTaskQueue,
     },
-    { ...inbound, authorization: binding.authorization },
+    { ...inbound, authorization: trigger.authorization },
   );
-  return { status: "admitted", binding, ...signaled };
+  return { status: "admitted", trigger, ...signaled };
 }
 
 export const PAIRING_REQUIRED_REPLY =

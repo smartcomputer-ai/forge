@@ -4,26 +4,49 @@ import type {
 } from "@lightspeed/agent-client";
 
 export const CHANNEL_TOOL_DEADLINE_MS = 120_000;
+/**
+ * Declaration revision of the `message_*` tools. Declarations are immutable
+ * per session; the bot controller rotates a routed session whose carried
+ * declarations no longer match, so a bump here rolls out on the next message.
+ */
+export const CHANNEL_TOOLS_REVISION = 2;
 
+export const CHANNEL_SEND_TOOL_ID = "channels.message_send.v1";
+export const CHANNEL_EDIT_TOOL_ID = "channels.message_edit.v1";
+export const CHANNEL_REACT_TOOL_ID = "channels.message_react.v1";
+export const CHANNEL_NOOP_TOOL_ID = "channels.message_noop.v1";
+export const CHANNEL_TOOL_IDS: readonly string[] = [
+  CHANNEL_SEND_TOOL_ID,
+  CHANNEL_EDIT_TOOL_ID,
+  CHANNEL_REACT_TOOL_ID,
+  CHANNEL_NOOP_TOOL_ID,
+];
+
+/**
+ * Messages are named to the model by the bot's event number: `#17` in an
+ * event header is the message to reply to, and a send returns the number of
+ * the message it created. Provider message ids never reach the model.
+ */
 export const CHANNEL_TOOL_DESCRIPTIONS = {
   send:
-    "Send a message to the current channel conversation. Use an exact provider message id from an inbound envelope for replyTo, or null. This completes after the provider acknowledges delivery and returns the provider message ids.",
+    "Send a message to this conversation. replyTo is the number of the message to reply to (the #N in its event header, or the number a previous send returned), or null. Completes after the provider acknowledges delivery and returns the new message's number.",
   edit:
-    "Edit a message previously sent by this channel account. Use the exact provider message id. This completes after the provider acknowledges the edit.",
+    "Edit a message you sent earlier in this conversation, by the number your send returned. Completes after the provider acknowledges the edit.",
   react:
-    "React to a channel message. Use the exact provider message id shown after # in the inbound envelope. This completes after the provider acknowledges the reaction.",
-  noop: "Deliberately send no reply to the channel.",
+    "React to a message in this conversation by its number (the #N in its event header, or the number a send returned). Completes after the provider acknowledges the reaction.",
+  noop: "Deliberately send no reply to the conversation.",
 } as const;
 
 export const CHANNEL_TOOL_SCHEMAS = {
   sendInput: {
     type: "object",
-    description: "Send a message to the current channel conversation.",
+    description: "Send a message to this conversation.",
     properties: {
       text: { type: "string", minLength: 1, description: "Message text in Markdown." },
       replyTo: {
-        type: ["string", "null"],
-        description: "Optional provider message id to reply to.",
+        type: ["integer", "null"],
+        minimum: 1,
+        description: "Number of the message to reply to, or null.",
       },
     },
     // Strict function schemas must require every declared property. Optional
@@ -34,45 +57,47 @@ export const CHANNEL_TOOL_SCHEMAS = {
   },
   editInput: {
     type: "object",
-    description: "Edit a message previously sent by this channel account.",
+    description: "Edit a message you sent earlier.",
     properties: {
-      messageId: { type: "string", minLength: 1 },
+      message: { type: "integer", minimum: 1, description: "Number returned by the send." },
       text: { type: "string", minLength: 1, description: "Replacement text in Markdown." },
     },
-    required: ["messageId", "text"],
+    required: ["message", "text"],
     additionalProperties: false,
   },
   reactInput: {
     type: "object",
-    description: "React to a channel message.",
+    description: "React to a message.",
     properties: {
-      messageId: { type: "string", minLength: 1 },
+      message: { type: "integer", minimum: 1, description: "Number of the message." },
       emoji: { type: "string", minLength: 1 },
     },
-    required: ["messageId", "emoji"],
+    required: ["message", "emoji"],
     additionalProperties: false,
   },
   noopInput: {
     type: "object",
-    description: "Deliberately send no reply to the channel.",
+    description: "Deliberately send no reply to the conversation.",
     properties: {
       reason: { type: "string" },
     },
     required: ["reason"],
     additionalProperties: false,
   },
-  deliveryReceipt: {
+  sendReceipt: {
     type: "object",
     properties: {
-      provider: { type: "string", enum: ["telegram", "whatsapp"] },
-      messageIds: {
-        type: "array",
-        items: { type: "string", minLength: 1 },
-        minItems: 1,
-        maxItems: 32,
-      },
+      sent: { type: "integer", minimum: 1, description: "Number of the message just sent." },
     },
-    required: ["provider", "messageIds"],
+    required: ["sent"],
+    additionalProperties: false,
+  },
+  messageReceipt: {
+    type: "object",
+    properties: {
+      message: { type: "integer", minimum: 1 },
+    },
+    required: ["message"],
     additionalProperties: false,
   },
 } as const;
@@ -82,6 +107,12 @@ export type ChannelToolSchemaRefs = Record<ChannelToolSchemaName, string>;
 export type ChannelToolDescriptionName = keyof typeof CHANNEL_TOOL_DESCRIPTIONS;
 export type ChannelToolDescriptionRefs = Record<ChannelToolDescriptionName, string>;
 
+/**
+ * The declarations a conversation carries into the bot's routed session:
+ * bound to this conversation workflow as receiver, so `message_send` needs
+ * no route argument. The array is stored in CAS and referenced by the event;
+ * the bot controller merges it verbatim after its own tools.
+ */
 export function channelWorkflowTools(
   receiver: WorkflowEndpointInput,
   schemas: ChannelToolSchemaRefs,
@@ -93,10 +124,11 @@ export function channelWorkflowTools(
     name: string,
     inputSchemaRef: string,
     descriptionRef: string,
+    replySchemaRef: string,
   ): WorkflowToolDeclarationInput => ({
     definition: {
       toolId,
-      revision: 1,
+      revision: CHANNEL_TOOLS_REVISION,
       semanticType,
       tool: {
         name,
@@ -113,36 +145,39 @@ export function channelWorkflowTools(
     completion: {
       type: "joined",
       deadlineAfterMs: CHANNEL_TOOL_DEADLINE_MS,
-      replySchemaRef: schemas.deliveryReceipt,
+      replySchemaRef,
     },
   });
 
   return [
     joined(
-      "channels.message_send.v1",
+      CHANNEL_SEND_TOOL_ID,
       "channels.message.send.v1",
       "message_send",
       schemas.sendInput,
       descriptions.send,
+      schemas.sendReceipt,
     ),
     joined(
-      "channels.message_edit.v1",
+      CHANNEL_EDIT_TOOL_ID,
       "channels.message.edit.v1",
       "message_edit",
       schemas.editInput,
       descriptions.edit,
+      schemas.messageReceipt,
     ),
     joined(
-      "channels.message_react.v1",
+      CHANNEL_REACT_TOOL_ID,
       "channels.message.react.v1",
       "message_react",
       schemas.reactInput,
       descriptions.react,
+      schemas.messageReceipt,
     ),
     {
       definition: {
-        toolId: "channels.message_noop.v1",
-        revision: 1,
+        toolId: CHANNEL_NOOP_TOOL_ID,
+        revision: CHANNEL_TOOLS_REVISION,
         semanticType: "channels.message.noop.v1",
         tool: {
           name: "message_noop",

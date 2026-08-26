@@ -30,6 +30,7 @@ function inbox(overrides: Partial<BotTriggerRow> = {}): BotTriggerRow {
     coalesce: null,
     deliver: null,
     cursor: null,
+    sessionTtlMs: null,
     enabled: true,
     createdAt: new Date("2026-08-26T10:00:00Z"),
     updatedAt: new Date("2026-08-26T10:00:00Z"),

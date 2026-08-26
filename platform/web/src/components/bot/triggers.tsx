@@ -1,9 +1,10 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, Copy, Inbox, Pause, Pencil, Play, Plus, RefreshCw, Terminal, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, Copy, Inbox, MessageCircle, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
   botLabel,
+  type BotChatSpec,
   type BotListItem,
   type BotPollSpec,
   type BotRoute,
@@ -11,9 +12,11 @@ import {
   type BotTrigger,
   type BotInboxSpec,
   type BotWebhookSpec,
+  type ChannelAccount,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Combobox,
   ComboboxChip,
@@ -35,6 +38,7 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import {
   Select,
   SelectContent,
@@ -69,6 +73,30 @@ function routeLabel(route: BotRoute | null): string {
   if (route === null || route.policy === "bot") return "main session";
   if (route.policy === "perEvent") return "session per event";
   return route.key ? `session per key: ${route.key}` : "session per key";
+}
+
+/** Chat triggers never route to the main session: the default key is the conversation. */
+function chatRouteLabel(route: BotRoute | null): string {
+  if (route?.policy === "perEvent") return "session per message";
+  return route?.policy === "perKey" && route.key ? `session per key: ${route.key}` : "session per conversation";
+}
+
+function sessionTtlLabel(ttlMs: number | null): string {
+  if (ttlMs === null) return "inherits the bot's retention";
+  if (ttlMs === 0) return "sessions kept forever";
+  return `idle sessions close after ${Math.round(ttlMs / 3_600_000)}h`;
+}
+
+/** Unambiguous alphanumerics (no 0/O, 1/l/I), the same alphabet the server mints with. */
+export const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+export function mintPairingCode(length = 12): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(length));
+  let code = "";
+  for (const byte of bytes) {
+    code += PAIRING_ALPHABET[byte % PAIRING_ALPHABET.length];
+  }
+  return code;
 }
 
 /** The bot profile's environment intent, as it affects exec pollers. */
@@ -125,7 +153,7 @@ export function TriggersSection({
       <div className="flex min-w-0 items-end gap-3">
         <div className="grid min-w-0 gap-0.5">
           <h2 className="text-sm font-semibold">Triggers</h2>
-          <p className="text-xs text-muted-foreground">Schedules and webhooks that wake this bot.</p>
+          <p className="text-xs text-muted-foreground">Schedules, webhooks, and chats that wake this bot.</p>
         </div>
         {manage && (
           <Button variant="outline" size="xs" className="ml-auto" onClick={() => setAddOpen(true)}>
@@ -135,7 +163,7 @@ export function TriggersSection({
       </div>
       {triggers.data?.triggers.length === 0 && (
         <p className="text-xs text-muted-foreground">
-          No triggers yet{manage ? " — add a schedule or webhook to make this bot proactive." : "."}
+          No triggers yet{manage ? " — add a schedule, webhook, or chat to make this bot reachable." : "."}
         </p>
       )}
       {triggers.error && <p className="text-xs text-destructive">{triggers.error.message}</p>}
@@ -146,6 +174,8 @@ export function TriggersSection({
               <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
             ) : trigger.kind === "bot" ? (
               <Inbox className="size-3.5 shrink-0 text-muted-foreground" />
+            ) : trigger.kind === "chat" ? (
+              <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" />
             ) : (
               <Webhook className="size-3.5 shrink-0 text-muted-foreground" />
             )}
@@ -198,6 +228,8 @@ export function TriggersSection({
             <PollRowDetail trigger={trigger} />
           ) : trigger.kind === "bot" ? (
             <InboxRowDetail trigger={trigger} />
+          ) : trigger.kind === "chat" ? (
+            <ChatRowDetail universeId={universeId} botId={botId} trigger={trigger} manage={manage} />
           ) : (
             <WebhookRowDetail trigger={trigger} manage={manage} />
           )}
@@ -270,13 +302,7 @@ function defaultInboxForm(): InboxFormState {
 function inboxFormFromTrigger(trigger: BotTrigger): InboxFormState {
   const spec = trigger.spec as BotInboxSpec;
   return {
-    routePolicy: trigger.route?.policy ?? "bot",
-    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
-    filter: trigger.filter ?? "",
-    whenBusy: trigger.deliver?.whenBusy ?? "queue",
-    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
-    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
-    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+    ...deliveryFormFromTrigger(trigger),
     fromMode: spec.from === undefined ? "any" : "selected",
     fromBotIds: spec.from ?? [],
   };
@@ -512,6 +538,361 @@ interface DeliveryFormState {
   debounceSeconds: string;
   maxWaitSeconds: string;
   maxCount: string;
+  /** Routed-session retention: inherit the bot's setting, keep forever, or close after idle hours. */
+  ttlMode: "inherit" | "forever" | "hours";
+  ttlHours: string;
+}
+
+interface ChatFormState extends DeliveryFormState {
+  channelAccountId: string;
+  scope: "any" | "direct" | "group";
+  groupActivation: "mention" | "always";
+  /** Comma- or newline-separated. */
+  prefixesText: string;
+  mentionNamesText: string;
+  accessTurn: "conversation" | "members";
+  accessControl: "none" | "members" | "admins" | "owners";
+  requirePairing: boolean;
+  priority: string;
+}
+
+function ChatRowDetail({
+  universeId,
+  botId,
+  trigger,
+  manage,
+}: {
+  universeId: string;
+  botId: string;
+  trigger: BotTrigger;
+  manage: boolean;
+}) {
+  const spec = trigger.spec as BotChatSpec;
+  const queryClient = useQueryClient();
+  const [copied, setCopied] = useState(false);
+  const rotate = useMutation({
+    mutationFn: () =>
+      api("PATCH", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`, {
+        spec: { ...spec, pairingCode: mintPairingCode() },
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
+  });
+  const account = trigger.channelAccount;
+  const scope =
+    spec.matchScope === "direct" ? "direct chats" : spec.matchScope === "group" ? "groups" : "direct chats and groups";
+  return (
+    <>
+      <p className="mt-1 text-muted-foreground wrap-anywhere">
+        {account ? (
+          <>
+            {account.provider} · {account.displayName}
+          </>
+        ) : (
+          <span className="text-destructive">account missing</span>
+        )}{" "}
+        · {scope}
+        {spec.matchScope !== "direct" &&
+          ` · groups: ${spec.activation?.group === "always" ? "every message" : "on mention"}`}
+        {" → "}
+        {chatRouteLabel(trigger.route)} · {sessionTtlLabel(trigger.sessionTtlMs)}
+        {trigger.coalesce &&
+          ` · batches ≤${trigger.coalesce.maxCount} over ${trigger.coalesce.debounceMs / 1000}s`}
+        {trigger.deliver && trigger.deliver.whenBusy !== "queue" && ` · busy: ${trigger.deliver.whenBusy}`}
+      </p>
+      {spec.pairingCode === null ? (
+        <p className="mt-1 text-muted-foreground">Open: any conversation on the account connects without pairing.</p>
+      ) : manage ? (
+        <div className="mt-1 flex min-w-0 max-w-full items-center gap-1 overflow-hidden">
+          <span className="shrink-0 text-muted-foreground">Pairing code</span>
+          <code className="min-w-0 truncate font-medium" title={spec.pairingCode}>
+            {spec.pairingCode}
+          </code>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Copy pairing code"
+            onClick={() => {
+              void navigator.clipboard.writeText(spec.pairingCode ?? "").then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1_500);
+              });
+            }}
+          >
+            {copied ? <Check /> : <Copy />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            aria-label="Rotate pairing code"
+            title="Mint a fresh pairing code; conversations already paired stay connected"
+            disabled={rotate.isPending}
+            onClick={() => rotate.mutate()}
+          >
+            <RotateCw />
+          </Button>
+          {rotate.error && <span className="text-destructive">{rotate.error.message}</span>}
+        </div>
+      ) : (
+        <p className="mt-1 text-muted-foreground">
+          Pairing code required — shown to people who manage this bot.
+        </p>
+      )}
+      {trigger.filter && (
+        <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">
+          filter: <code>{trigger.filter}</code>
+        </p>
+      )}
+    </>
+  );
+}
+
+function splitList(text: string): string[] {
+  return [...new Set(text.split(/[,\n]/).map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
+}
+
+function chatFormFromTrigger(trigger: BotTrigger): ChatFormState {
+  const spec = trigger.spec as BotChatSpec;
+  return {
+    ...deliveryFormFromTrigger(trigger),
+    channelAccountId: spec.channelAccountId,
+    scope: spec.matchScope ?? "any",
+    groupActivation: spec.activation?.group ?? "mention",
+    prefixesText: (spec.activation?.triggerPrefixes ?? []).join(", "),
+    mentionNamesText: (spec.activation?.mentionNames ?? []).join(", "),
+    accessTurn: spec.access?.turn ?? "conversation",
+    accessControl: spec.access?.control ?? "admins",
+    requirePairing: spec.pairingCode !== null,
+    priority: String(spec.priority),
+  };
+}
+
+/**
+ * The chat spec for create or update. `pairingCode` is omitted to keep an
+ * existing code (or let the server mint one on create), null to open the
+ * connection, and freshly minted when pairing is switched on for a trigger
+ * that was open.
+ */
+export function chatSpecPayload(
+  form: Omit<ChatFormState, keyof DeliveryFormState>,
+  existingCode: string | null | undefined,
+): Omit<BotChatSpec, "pairingCode" | "priority"> & { pairingCode?: string | null; priority?: number } {
+  const prefixes = splitList(form.prefixesText);
+  const mentionNames = splitList(form.mentionNamesText);
+  return {
+    channelAccountId: form.channelAccountId.trim(),
+    matchScope: form.scope === "any" ? null : form.scope,
+    activation: {
+      group: form.groupActivation,
+      ...(prefixes.length > 0 ? { triggerPrefixes: prefixes } : {}),
+      ...(mentionNames.length > 0 ? { mentionNames } : {}),
+    },
+    access: { turn: form.accessTurn, control: form.accessControl },
+    ...(form.requirePairing
+      ? existingCode === null
+        ? { pairingCode: mintPairingCode() }
+        : {}
+      : { pairingCode: null }),
+    ...(form.priority.trim() ? { priority: Math.round(Number(form.priority)) } : {}),
+  };
+}
+
+function chatPayload(form: ChatFormState, existingCode: string | null | undefined) {
+  return { spec: chatSpecPayload(form, existingCode), ...deliveryPayload(form) };
+}
+
+function chatFormProblem(form: ChatFormState): string | null {
+  if (!form.channelAccountId.trim()) return "Choose the messaging account this bot answers on.";
+  if (splitList(form.prefixesText).some((prefix) => prefix.length > 40)) {
+    return "Trigger prefixes are at most 40 characters.";
+  }
+  if (splitList(form.mentionNamesText).some((name) => name.length > 60)) {
+    return "Mention names are at most 60 characters.";
+  }
+  if (form.priority.trim()) {
+    const priority = Number(form.priority);
+    if (!Number.isInteger(priority) || priority < 0 || priority > 1000) {
+      return "Priority is a whole number from 0 to 1000.";
+    }
+  }
+  return deliveryFormProblem(form);
+}
+
+function ChatFields({
+  form,
+  setForm,
+}: {
+  form: ChatFormState;
+  setForm: (next: ChatFormState) => void;
+}) {
+  // Universe owners may list deployment accounts; the same picker Channels used.
+  const accounts = useQuery({
+    queryKey: ["channel-accounts"],
+    queryFn: () => api<ChannelAccount[]>("GET", "/api/v1/channel-accounts"),
+  });
+  const accountList = accounts.data ?? [];
+  const accountLabel = (id: string) => {
+    const account = accountList.find((candidate) => candidate.id === id);
+    return account ? `${account.provider} · ${account.displayName}` : id;
+  };
+  return (
+    <>
+      <Field>
+        <FieldLabel htmlFor="chat-account">Messaging account</FieldLabel>
+        <Select
+          value={form.channelAccountId}
+          onValueChange={(value) => setForm({ ...form, channelAccountId: (value as string | null) ?? "" })}
+        >
+          <SelectTrigger id="chat-account" className="w-full">
+            <SelectValue placeholder="Select an account">
+              {(value: string) => (value ? accountLabel(value) : "Select an account")}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectContent>
+            {accountList.map((account) => (
+              <SelectItem key={account.id} value={account.id} disabled={!account.enabled}>
+                {account.provider} · {account.displayName}
+                {!account.enabled && " (disabled)"}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <FieldDescription>
+          {accounts.error
+            ? accounts.error.message
+            : accounts.data && accountList.length === 0
+              ? "No provider accounts are registered; a deployment admin adds them under Admin › Channels."
+              : "A Telegram or WhatsApp account registered by a deployment admin."}
+        </FieldDescription>
+      </Field>
+      <div className="grid grid-cols-2 gap-3">
+        <Field>
+          <FieldLabel>Conversations</FieldLabel>
+          <Select
+            value={form.scope}
+            onValueChange={(value) => value && setForm({ ...form, scope: value as ChatFormState["scope"] })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Direct chats and groups</SelectItem>
+              <SelectItem value="direct">Direct chats only</SelectItem>
+              <SelectItem value="group">Groups only</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        {form.scope !== "direct" && (
+          <Field>
+            <FieldLabel>In groups, respond</FieldLabel>
+            <Select
+              value={form.groupActivation}
+              onValueChange={(value) =>
+                value && setForm({ ...form, groupActivation: value as ChatFormState["groupActivation"] })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="mention">When mentioned or prefixed</SelectItem>
+                <SelectItem value="always">To every message</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+        )}
+      </div>
+      {form.scope !== "direct" && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field>
+            <FieldLabel htmlFor="chat-prefixes">Trigger prefixes</FieldLabel>
+            <Input
+              id="chat-prefixes"
+              value={form.prefixesText}
+              onChange={(event) => setForm({ ...form, prefixesText: event.target.value })}
+              placeholder="/ask, /lightspeed"
+              className="font-mono"
+            />
+            <FieldDescription>Comma-separated; a message starting with one always activates the bot.</FieldDescription>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="chat-mention-names">Mention names</FieldLabel>
+            <Input
+              id="chat-mention-names"
+              value={form.mentionNamesText}
+              onChange={(event) => setForm({ ...form, mentionNamesText: event.target.value })}
+              placeholder="@mybot"
+            />
+            <FieldDescription>Extra names stripped from a mention before the text reaches the bot.</FieldDescription>
+          </Field>
+        </div>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <Field>
+          <FieldLabel>Who may talk to the bot</FieldLabel>
+          <Select
+            value={form.accessTurn}
+            onValueChange={(value) => value && setForm({ ...form, accessTurn: value as ChatFormState["accessTurn"] })}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="conversation">Anyone in a paired conversation</SelectItem>
+              <SelectItem value="members">Authorized members only</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+        <Field>
+          <FieldLabel>Control commands</FieldLabel>
+          <Select
+            value={form.accessControl}
+            onValueChange={(value) =>
+              value && setForm({ ...form, accessControl: value as ChatFormState["accessControl"] })
+            }
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="none">Nobody</SelectItem>
+              <SelectItem value="members">Members</SelectItem>
+              <SelectItem value="admins">Admins</SelectItem>
+              <SelectItem value="owners">Owners</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      </div>
+      <div className="grid grid-cols-[1fr_8rem] gap-3">
+        <Label className="gap-2 font-normal">
+          <Checkbox
+            checked={form.requirePairing}
+            onCheckedChange={(checked) => setForm({ ...form, requirePairing: checked === true })}
+          />
+          <span>
+            Require a pairing code
+            <span className="block text-xs text-muted-foreground">
+              A conversation connects once someone sends the code; the code is shown on the trigger
+              to people who manage this bot. Off: any conversation on the account connects.
+            </span>
+          </span>
+        </Label>
+        <Field>
+          <FieldLabel htmlFor="chat-priority">Priority</FieldLabel>
+          <Input
+            id="chat-priority"
+            type="number"
+            min={0}
+            max={1000}
+            value={form.priority}
+            onChange={(event) => setForm({ ...form, priority: event.target.value })}
+            placeholder="100"
+          />
+          <FieldDescription>Lower wins when several chat triggers match.</FieldDescription>
+        </Field>
+      </div>
+      <DeliveryFields form={form} setForm={setForm} chat />
+    </>
+  );
 }
 
 interface WebhookFormState extends DeliveryFormState {
@@ -547,7 +928,49 @@ const defaultDeliveryForm: DeliveryFormState = {
   debounceSeconds: "",
   maxWaitSeconds: "",
   maxCount: "",
+  ttlMode: "inherit",
+  ttlHours: "",
 };
+
+/// Chat defaults mirror the server's: a session per conversation kept
+/// forever, batched over a short quiet period, pairing required.
+const defaultChatForm: ChatFormState = {
+  ...defaultDeliveryForm,
+  routePolicy: "perKey",
+  debounceSeconds: "0.4",
+  maxWaitSeconds: "1.5",
+  maxCount: "8",
+  ttlMode: "forever",
+  channelAccountId: "",
+  scope: "any",
+  groupActivation: "mention",
+  prefixesText: "",
+  mentionNamesText: "",
+  accessTurn: "conversation",
+  accessControl: "admins",
+  requirePairing: true,
+  priority: "",
+};
+
+function deliveryFormFromTrigger(trigger: BotTrigger): DeliveryFormState {
+  return {
+    routePolicy: trigger.route?.policy ?? "bot",
+    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
+    filter: trigger.filter ?? "",
+    whenBusy: trigger.deliver?.whenBusy ?? "queue",
+    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
+    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
+    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+    ttlMode: trigger.sessionTtlMs === null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
+    ttlHours: trigger.sessionTtlMs ? String(Math.round(trigger.sessionTtlMs / 3_600_000)) : "",
+  };
+}
+
+export function sessionTtlMs(form: Pick<DeliveryFormState, "ttlMode" | "ttlHours">): number | null {
+  if (form.ttlMode === "inherit") return null;
+  if (form.ttlMode === "forever") return 0;
+  return Math.round(Number(form.ttlHours) * 3_600_000);
+}
 
 const defaultPollForm: PollFormState = {
   ...defaultDeliveryForm,
@@ -582,13 +1005,7 @@ function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
     items: spec.items ?? "",
     dedupe: spec.cursor.kind,
     dedupeField: spec.cursor.kind === "idSet" ? spec.cursor.id : spec.cursor.field,
-    routePolicy: trigger.route?.policy ?? "bot",
-    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
-    filter: trigger.filter ?? "",
-    whenBusy: trigger.deliver?.whenBusy ?? "queue",
-    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
-    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
-    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+    ...deliveryFormFromTrigger(trigger),
   };
 }
 
@@ -611,6 +1028,7 @@ function deliveryPayload(form: DeliveryFormState) {
         }
       : null,
     deliver: form.whenBusy === "queue" ? null : { whenBusy: form.whenBusy },
+    sessionTtlMs: form.routePolicy === "bot" ? null : sessionTtlMs(form),
   };
 }
 
@@ -679,13 +1097,17 @@ function pollFormProblem(form: PollFormState): string | null {
 function deliveryFormProblem(form: DeliveryFormState): string | null {
   if (form.debounceSeconds.trim() !== "") {
     const debounce = Number(form.debounceSeconds);
-    if (!Number.isFinite(debounce) || debounce < 1) {
-      return "Debounce must be at least 1 second.";
+    if (!Number.isFinite(debounce) || debounce < 0.1) {
+      return "Debounce must be at least 0.1 seconds.";
     }
     const maxWait = Number(form.maxWaitSeconds.trim() || form.debounceSeconds);
     if (!Number.isFinite(maxWait) || maxWait < debounce) {
       return "Max wait must be at least the debounce.";
     }
+  }
+  if (form.routePolicy !== "bot" && form.ttlMode === "hours") {
+    const hours = Number(form.ttlHours);
+    if (!Number.isFinite(hours) || hours < 1) return "Session retention must be at least 1 hour.";
   }
   return null;
 }
@@ -707,13 +1129,7 @@ function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
     header: spec.verification.scheme === "hmac-sha256" ? spec.verification.header : "",
     prefix: spec.verification.scheme === "hmac-sha256" ? (spec.verification.prefix ?? "") : "",
     preset: spec.preset === "github",
-    routePolicy: trigger.route?.policy ?? "bot",
-    routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
-    filter: trigger.filter ?? "",
-    whenBusy: trigger.deliver?.whenBusy ?? "queue",
-    debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
-    maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
-    maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
+    ...deliveryFormFromTrigger(trigger),
   };
 }
 
@@ -821,9 +1237,12 @@ function WebhookFields({
 function DeliveryFields<T extends DeliveryFormState>({
   form,
   setForm,
+  chat = false,
 }: {
   form: T;
   setForm: (next: T) => void;
+  /** Chat triggers route per conversation; the main session is not an option. */
+  chat?: boolean;
 }) {
   return (
     <>
@@ -837,9 +1256,18 @@ function DeliveryFields<T extends DeliveryFormState>({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="bot">Deliver to the main session</SelectItem>
-            <SelectItem value="perKey">One session per key</SelectItem>
-            <SelectItem value="perEvent">One session per event</SelectItem>
+            {chat ? (
+              <>
+                <SelectItem value="perKey">One session per conversation</SelectItem>
+                <SelectItem value="perEvent">One session per message</SelectItem>
+              </>
+            ) : (
+              <>
+                <SelectItem value="bot">Deliver to the main session</SelectItem>
+                <SelectItem value="perKey">One session per key</SelectItem>
+                <SelectItem value="perEvent">One session per event</SelectItem>
+              </>
+            )}
           </SelectContent>
         </Select>
       </Field>
@@ -850,13 +1278,50 @@ function DeliveryFields<T extends DeliveryFormState>({
             id="webhook-route-key"
             value={form.routeKey}
             onChange={(event) => setForm({ ...form, routeKey: event.target.value })}
-            placeholder="data.issue.number"
+            placeholder={chat ? "data.conversation.key" : "data.issue.number"}
             className="font-mono"
           />
           <FieldDescription>
-            CEL over event, data, and headers. GitHub triggers default to the PR or issue number.
+            {chat
+              ? "CEL over event, data, and headers. Defaults to the conversation (account, chat, and thread)."
+              : "CEL over event, data, and headers. GitHub triggers default to the PR or issue number."}
           </FieldDescription>
         </Field>
+      )}
+      {form.routePolicy !== "bot" && (
+        <div className="grid grid-cols-2 gap-3">
+          <Field>
+            <FieldLabel>Session retention</FieldLabel>
+            <Select
+              value={form.ttlMode}
+              onValueChange={(value) =>
+                value && setForm({ ...form, ttlMode: value as DeliveryFormState["ttlMode"] })
+              }
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="inherit">Inherit the bot's setting</SelectItem>
+                <SelectItem value="forever">Keep sessions forever</SelectItem>
+                <SelectItem value="hours">Close idle sessions after…</SelectItem>
+              </SelectContent>
+            </Select>
+          </Field>
+          {form.ttlMode === "hours" && (
+            <Field>
+              <FieldLabel htmlFor="trigger-ttl-hours">Idle hours</FieldLabel>
+              <Input
+                id="trigger-ttl-hours"
+                type="number"
+                min={1}
+                value={form.ttlHours}
+                onChange={(event) => setForm({ ...form, ttlHours: event.target.value })}
+                placeholder="24"
+              />
+            </Field>
+          )}
+        </div>
       )}
       <Field>
         <FieldLabel htmlFor="webhook-filter">Filter (optional)</FieldLabel>
@@ -877,7 +1342,8 @@ function DeliveryFields<T extends DeliveryFormState>({
           <Input
             id="webhook-debounce"
             type="number"
-            min={1}
+            min={0.1}
+            step={0.1}
             value={form.debounceSeconds}
             onChange={(event) => setForm({ ...form, debounceSeconds: event.target.value })}
             placeholder="Off"
@@ -888,7 +1354,8 @@ function DeliveryFields<T extends DeliveryFormState>({
           <Input
             id="webhook-maxwait"
             type="number"
-            min={1}
+            min={0.1}
+            step={0.1}
             value={form.maxWaitSeconds}
             onChange={(event) => setForm({ ...form, maxWaitSeconds: event.target.value })}
             placeholder="= debounce"
@@ -1118,7 +1585,7 @@ function AddTriggerDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | "bot" | null>(null);
+  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | "bot" | "chat" | null>(null);
   const [name, setName] = useState("");
   const [once, setOnce] = useState(false);
   const [at, setAt] = useState("");
@@ -1128,12 +1595,15 @@ function AddTriggerDialog({
   const [webhook, setWebhook] = useState<WebhookFormState>(defaultWebhookForm);
   const [poll, setPoll] = useState<PollFormState>(defaultPollForm);
   const [inbox, setInbox] = useState<InboxFormState>(defaultInboxForm);
+  const [chat, setChat] = useState<ChatFormState>(defaultChatForm);
   const [error, setError] = useState<string | null>(null);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
   const pollIssue = kind === "poll" ? pollFormProblem(poll) : null;
   const inboxIssue = kind === "bot" ? inboxFormProblem(inbox) : null;
+  const chatIssue = kind === "chat" ? chatFormProblem(chat) : null;
+  const formIssue = webhookIssue ?? pollIssue ?? inboxIssue ?? chatIssue;
   const reset = () => {
     setKind(null);
     setName("");
@@ -1145,6 +1615,7 @@ function AddTriggerDialog({
     setWebhook(defaultWebhookForm);
     setPoll(defaultPollForm);
     setInbox(defaultInboxForm());
+    setChat(defaultChatForm);
     setError(null);
   };
   const changeOpen = (next: boolean) => {
@@ -1169,7 +1640,9 @@ function AddTriggerDialog({
             ? { name: name.trim(), kind, ...pollPayload(poll) }
             : kind === "bot"
               ? { name: name.trim(), kind, ...inboxPayload(inbox) }
-              : { name: name.trim(), kind, ...webhookPayload(webhook) },
+              : kind === "chat"
+                ? { name: name.trim(), kind, ...chatPayload(chat, undefined) }
+                : { name: name.trim(), kind, ...webhookPayload(webhook) },
       );
     },
     onSuccess: async () => {
@@ -1193,7 +1666,9 @@ function AddTriggerDialog({
         ? pollIssue !== null
         : kind === "bot"
           ? inboxIssue !== null
-          : webhookIssue !== null);
+          : kind === "chat"
+            ? chatIssue !== null
+            : webhookIssue !== null);
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
@@ -1223,7 +1698,9 @@ function AddTriggerDialog({
                   ? "Fetch a source on an interval and wake the bot with new items."
                   : kind === "bot"
                     ? "Let other bots in this universe address this bot with bot_emit."
-                    : "Choose how this bot should receive events."}
+                    : kind === "chat"
+                      ? "Answer Telegram or WhatsApp conversations on an account, one session per conversation."
+                      : "Choose how this bot should receive events."}
           </DialogDescription>
         </DialogHeader>
         {!kind ? (
@@ -1240,6 +1717,12 @@ function AddTriggerDialog({
                 title="Webhook"
                 description="Receive token-protected or signed events from external systems."
                 onClick={() => setKind("webhook")}
+              />
+              <TriggerKindChoice
+                icon={<MessageCircle className="size-5" />}
+                title="Chat"
+                description="Connect a Telegram or WhatsApp account; each conversation becomes a session with reply tools."
+                onClick={() => setKind("chat")}
               />
               <TriggerKindChoice
                 icon={<Inbox className="size-5" />}
@@ -1387,14 +1870,14 @@ function AddTriggerDialog({
                 <PollFields form={poll} setForm={setPoll} />
               ) : kind === "bot" ? (
                 <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
+              ) : kind === "chat" ? (
+                <ChatFields form={chat} setForm={setChat} />
               ) : (
                 <WebhookFields form={webhook} setForm={setWebhook} />
               )}
             </div>
             <div className="grid gap-2 border-t p-4">
-              {(webhookIssue ?? pollIssue ?? inboxIssue) && (
-                <p className="text-xs text-destructive">{webhookIssue ?? pollIssue ?? inboxIssue}</p>
-              )}
+              {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
               {error && <p className="text-sm text-destructive">{error}</p>}
               <DialogFooter>
                 <Button type="button" variant="outline" onClick={() => setKind(null)}>
@@ -1476,11 +1959,16 @@ function EditTriggerDialog({
   const [inbox, setInbox] = useState<InboxFormState>(() =>
     trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
   );
+  const [chat, setChat] = useState<ChatFormState>(() =>
+    trigger.kind === "chat" ? chatFormFromTrigger(trigger) : defaultChatForm,
+  );
   const [error, setError] = useState<string | null>(null);
   const cronIssue = trigger.kind === "schedule" && !oneShotAt ? cronProblem(cron) : null;
   const webhookIssue = trigger.kind === "webhook" ? webhookFormProblem(webhook) : null;
   const pollIssue = trigger.kind === "poll" ? pollFormProblem(poll) : null;
   const inboxIssue = trigger.kind === "bot" ? inboxFormProblem(inbox) : null;
+  const chatIssue = trigger.kind === "chat" ? chatFormProblem(chat) : null;
+  const formIssue = webhookIssue ?? pollIssue ?? inboxIssue ?? chatIssue;
   const save = useMutation({
     mutationFn: () =>
       api(
@@ -1496,7 +1984,9 @@ function EditTriggerDialog({
             ? pollPayload(poll)
             : trigger.kind === "bot"
               ? inboxPayload(inbox)
-              : webhookPayload(webhook),
+              : trigger.kind === "chat"
+                ? chatPayload(chat, (trigger.spec as BotChatSpec).pairingCode)
+                : webhookPayload(webhook),
       ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
@@ -1512,7 +2002,9 @@ function EditTriggerDialog({
         ? pollIssue !== null
         : trigger.kind === "bot"
           ? inboxIssue !== null
-          : webhookIssue !== null;
+          : trigger.kind === "chat"
+            ? chatIssue !== null
+            : webhookIssue !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1526,7 +2018,9 @@ function EditTriggerDialog({
                 ? "Spec changes reset the cursor: the next fire re-baselines against the source."
                 : trigger.kind === "bot"
                   ? "Sender and routing changes apply to the next event another bot addresses here."
-                  : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
+                  : trigger.kind === "chat"
+                    ? "Account, activation, and access changes apply to the next message; paired conversations keep their sessions."
+                    : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -1588,14 +2082,14 @@ function EditTriggerDialog({
               <PollFields form={poll} setForm={setPoll} />
             ) : trigger.kind === "bot" ? (
               <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
+            ) : trigger.kind === "chat" ? (
+              <ChatFields form={chat} setForm={setChat} />
             ) : (
               <WebhookFields form={webhook} setForm={setWebhook} />
             )}
           </div>
           <div className="grid gap-2 border-t p-4">
-            {(webhookIssue ?? pollIssue ?? inboxIssue) && (
-              <p className="text-xs text-destructive">{webhookIssue ?? pollIssue ?? inboxIssue}</p>
-            )}
+            {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
             {error && <p className="text-sm text-destructive">{error}</p>}
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

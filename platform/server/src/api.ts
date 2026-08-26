@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import { schema } from "@lightspeed/platform-db";
 import type { AppContext, ApiVariables } from "./context.js";
-import { bindingRoutes } from "./routes/bindings.js";
 import { botHookRoutes } from "./routes/bot-hooks.js";
 import { botRoutes } from "./routes/bots.js";
 import { channelAccountRoutes } from "./routes/channel-accounts.js";
@@ -65,14 +64,11 @@ export function buildApp(ctx: AppContext) {
     return c.json({ connectors: await readChannelsStatus(ctx.env.channelsHealthUrls) });
   });
 
-  const bindings = bindingRoutes(ctx);
   const botsApi = botRoutes(ctx);
   api.route("/universes", universeRoutes(ctx));
   api.route("/universes", setupRoutes(ctx));
-  api.route("/universes", bindings.byUniverse);
   api.route("/universes", gatewayRoutes(ctx));
   api.route("/universes", botsApi.byUniverse);
-  api.route("/bindings", bindings.byId);
   api.route("/admin", environmentOperatorRoutes(ctx));
   api.route("/channel-accounts", channelAccountRoutes(ctx));
 

@@ -139,8 +139,8 @@ export const pollSpecInput = z.object({
 });
 export const coalesceInput = z
   .object({
-    debounceMs: z.number().int().min(1_000).max(604_800_000),
-    maxWaitMs: z.number().int().min(1_000).max(604_800_000),
+    debounceMs: z.number().int().min(100).max(604_800_000),
+    maxWaitMs: z.number().int().min(100).max(604_800_000),
     maxCount: z.number().int().min(2).max(100),
   })
   .refine((value) => value.maxWaitMs >= value.debounceMs, "maxWaitMs must cover debounceMs");
@@ -153,6 +153,29 @@ export const breakerInput = z.object({
 export const inboxSpecInput = z.object({
   from: z.array(botNameInput).max(100).optional(),
 });
+export const chatActivationInput = z.object({
+  group: z.enum(["mention", "always"]).optional(),
+  triggerPrefixes: z.array(z.string().trim().min(1).max(40)).max(20).optional(),
+  mentionNames: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+});
+export const chatAccessInput = z.object({
+  turn: z.enum(["conversation", "members"]).optional(),
+  control: z.enum(["none", "members", "admins", "owners"]).optional(),
+});
+/**
+ * Chat spec: the account, which conversations, activation, access, and the
+ * pairing gate. `pairingCode` omitted → the server mints one; null → open.
+ */
+export const chatSpecInput = z.object({
+  channelAccountId: z.uuid(),
+  matchScope: z.enum(["direct", "group"]).nullish(),
+  activation: chatActivationInput.nullish(),
+  access: chatAccessInput.nullish(),
+  pairingCode: z.string().trim().min(8).max(64).nullish(),
+  priority: z.number().int().min(0).max(1000).optional(),
+});
+/** Routed-session retention: null inherits the bot's `routedSessionTtlMs`; 0 never closes. */
+export const sessionTtlInput = z.number().int().min(0).max(31_536_000_000).nullish();
 export const triggerCreateInput = z.discriminatedUnion("kind", [
   z.object({
     name: botNameInput,
@@ -162,6 +185,7 @@ export const triggerCreateInput = z.discriminatedUnion("kind", [
     route: routeInput.nullish(),
     coalesce: coalesceInput.nullish(),
     deliver: deliverInput.nullish(),
+    sessionTtlMs: sessionTtlInput,
     enabled: z.boolean().default(true),
   }),
   z.object({
@@ -178,6 +202,7 @@ export const triggerCreateInput = z.discriminatedUnion("kind", [
     route: routeInput.nullish(),
     coalesce: coalesceInput.nullish(),
     deliver: deliverInput.nullish(),
+    sessionTtlMs: sessionTtlInput,
     enabled: z.boolean().default(true),
   }),
   z.object({
@@ -188,6 +213,18 @@ export const triggerCreateInput = z.discriminatedUnion("kind", [
     route: routeInput.nullish(),
     coalesce: coalesceInput.nullish(),
     deliver: deliverInput.nullish(),
+    sessionTtlMs: sessionTtlInput,
+    enabled: z.boolean().default(true),
+  }),
+  z.object({
+    name: botNameInput,
+    kind: z.literal("chat"),
+    spec: chatSpecInput,
+    filter: celInput.nullish(),
+    route: routeInput.nullish(),
+    coalesce: coalesceInput.nullish(),
+    deliver: deliverInput.nullish(),
+    sessionTtlMs: sessionTtlInput,
     enabled: z.boolean().default(true),
   }),
 ]);
@@ -199,9 +236,25 @@ export const triggerUpdateInput = z
     route: routeInput.nullable().optional(),
     coalesce: coalesceInput.nullable().optional(),
     deliver: deliverInput.nullable().optional(),
+    sessionTtlMs: sessionTtlInput,
     enabled: z.boolean().optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "at least one field is required");
+
+/** Chat conversations batch like Channels always did: a short quiet period, bounded wait. */
+export const CHAT_COALESCE_DEFAULT = { debounceMs: 400, maxWaitMs: 1_500, maxCount: 8 } as const;
+
+const PAIRING_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+
+/** A pairing code in unambiguous alphanumerics, 12 chars. */
+export function mintPairingCode(length = 12): string {
+  const bytes = randomBytes(length);
+  let code = "";
+  for (const byte of bytes) {
+    code += PAIRING_ALPHABET[byte % PAIRING_ALPHABET.length];
+  }
+  return code;
+}
 export type TriggerUpdateInput = z.infer<typeof triggerUpdateInput>;
 
 type ScheduleSpecRow = { cron: string | null; at: string | null; timezone: string; summary: string };
@@ -214,6 +267,71 @@ type WebhookSpecRow = {
   preset: "github" | null;
 };
 type RouteRow = { policy: "bot" } | { policy: "perKey"; key: string | null } | { policy: "perEvent" };
+type ChatSpecRow = {
+  channelAccountId: string;
+  matchScope: "direct" | "group" | null;
+  activation: { group?: "mention" | "always"; triggerPrefixes?: string[]; mentionNames?: string[] } | null;
+  access: { turn?: "conversation" | "members"; control?: "none" | "members" | "admins" | "owners" } | null;
+  pairingCode: string | null;
+  priority: number;
+};
+
+/// `pairingCode` omitted keeps the existing code (or mints one on create); null opens the connection.
+function normalizeChatSpec(spec: z.infer<typeof chatSpecInput>, existingCode: string | null | undefined): ChatSpecRow {
+  const activation =
+    spec.activation == null
+      ? null
+      : {
+          ...(spec.activation.group === undefined ? {} : { group: spec.activation.group }),
+          ...(spec.activation.triggerPrefixes === undefined
+            ? {}
+            : { triggerPrefixes: [...new Set(spec.activation.triggerPrefixes)] }),
+          ...(spec.activation.mentionNames === undefined
+            ? {}
+            : { mentionNames: [...new Set(spec.activation.mentionNames)] }),
+        };
+  const access =
+    spec.access == null
+      ? null
+      : {
+          ...(spec.access.turn === undefined ? {} : { turn: spec.access.turn }),
+          ...(spec.access.control === undefined ? {} : { control: spec.access.control }),
+        };
+  return {
+    channelAccountId: spec.channelAccountId,
+    matchScope: spec.matchScope ?? null,
+    activation,
+    access,
+    pairingCode:
+      spec.pairingCode === undefined
+        ? existingCode === undefined
+          ? mintPairingCode()
+          : existingCode
+        : spec.pairingCode,
+    priority: spec.priority ?? 100,
+  };
+}
+
+/** Chat triggers route per conversation; the main session cannot carry a conversation's reply tools. */
+function chatRoute(route: z.infer<typeof routeInput> | null | undefined): RouteRow {
+  if (route == null) return { policy: "perKey", key: null };
+  if (route.policy === "bot") {
+    throw new BotConfigError(
+      "chat triggers route per conversation (perKey or perEvent); the main session cannot take a chat",
+      400,
+    );
+  }
+  return normalizeRoute(route) ?? { policy: "perKey", key: null };
+}
+
+async function requireChannelAccount(deps: BotConfigDeps, channelAccountId: string): Promise<void> {
+  const [account] = await deps.db
+    .select({ id: schema.channelAccounts.id })
+    .from(schema.channelAccounts)
+    .where(eq(schema.channelAccounts.id, channelAccountId))
+    .limit(1);
+  if (!account) throw new BotConfigError("unknown channel account", 400);
+}
 type PollSpecRow = {
   source:
     | {
@@ -342,8 +460,13 @@ export function canManageRole(role: string): boolean {
 }
 
 /// Members who cannot manage the bot still see trigger shapes, but never the
-/// ingest token. Grant ids are non-secret stable references.
+/// ingest token or a pairing code. Grant ids are non-secret stable references.
 export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
+  if (trigger.kind === "chat") {
+    const spec = trigger.spec as ChatSpecRow;
+    if (spec.pairingCode === null) return trigger;
+    return { ...trigger, spec: { ...spec, pairingCode: "" } as BotTriggerRow["spec"] };
+  }
   if (trigger.kind === "poll") {
     const spec = trigger.spec as PollSpecRow;
     if (spec.source.kind !== "http" || spec.source.headers === undefined) return trigger;
@@ -376,7 +499,7 @@ export function redactTriggerSecrets(trigger: BotTriggerRow): BotTriggerRow {
 
 async function validateTriggerGrants(
   deps: BotConfigDeps,
-  spec: WebhookSpecRow | PollSpecRow | ScheduleSpecRow | InboxSpecRow,
+  spec: WebhookSpecRow | PollSpecRow | ScheduleSpecRow | InboxSpecRow | ChatSpecRow,
 ): Promise<void> {
   const grantIds = new Set<string>();
   if ("verification" in spec && spec.verification.scheme === "hmac-sha256") {
@@ -418,6 +541,7 @@ export async function createTrigger(
       );
     }
   }
+  if (input.kind === "chat") await requireChannelAccount(deps, input.spec.channelAccountId);
   const values =
     input.kind === "bot"
       ? {
@@ -429,6 +553,7 @@ export async function createTrigger(
           route: normalizeRoute(input.route),
           coalesce: input.coalesce ?? null,
           deliver: input.deliver ?? null,
+          sessionTtlMs: input.sessionTtlMs ?? null,
           enabled: input.enabled,
         }
       : input.kind === "poll"
@@ -441,6 +566,7 @@ export async function createTrigger(
           route: normalizeRoute(input.route),
           coalesce: input.coalesce ?? null,
           deliver: input.deliver ?? null,
+          sessionTtlMs: input.sessionTtlMs ?? null,
           enabled: input.enabled,
         }
       : input.kind === "schedule"
@@ -453,6 +579,21 @@ export async function createTrigger(
           route: null,
           coalesce: null,
           deliver: null,
+          sessionTtlMs: null,
+          enabled: input.enabled,
+        }
+      : input.kind === "chat"
+      ? {
+          botId: bot.id,
+          name: input.name,
+          kind: input.kind,
+          spec: normalizeChatSpec(input.spec, undefined),
+          filter: input.filter ?? null,
+          route: chatRoute(input.route),
+          coalesce: input.coalesce === undefined ? { ...CHAT_COALESCE_DEFAULT } : input.coalesce,
+          deliver: input.deliver ?? null,
+          // Conversations keep their session: 0 = never close.
+          sessionTtlMs: input.sessionTtlMs ?? 0,
           enabled: input.enabled,
         }
       : {
@@ -464,6 +605,7 @@ export async function createTrigger(
           route: normalizeRoute(input.route),
           coalesce: input.coalesce ?? null,
           deliver: input.deliver ?? null,
+          sessionTtlMs: input.sessionTtlMs ?? null,
           enabled: input.enabled,
         };
   await validateTriggerGrants(deps, values.spec);
@@ -494,19 +636,23 @@ export async function updateTrigger(
     (input.filter !== undefined ||
       input.route !== undefined ||
       input.coalesce !== undefined ||
-      input.deliver !== undefined)
+      input.deliver !== undefined ||
+      input.sessionTtlMs !== undefined)
   ) {
     throw new BotConfigError(
-      "filters, routes, coalescing, and delivery policy apply to webhook, poll, and bot triggers",
+      "filters, routes, coalescing, delivery policy, and retention apply to webhook, poll, bot, and chat triggers",
       400,
     );
   }
   const changes: Partial<BotTriggerRow> = {};
   if (input.enabled !== undefined) changes.enabled = input.enabled;
   if (input.filter !== undefined) changes.filter = input.filter;
-  if (input.route !== undefined) changes.route = normalizeRoute(input.route);
+  if (input.route !== undefined) {
+    changes.route = existing.kind === "chat" ? chatRoute(input.route) : normalizeRoute(input.route);
+  }
   if (input.coalesce !== undefined) changes.coalesce = input.coalesce;
   if (input.deliver !== undefined) changes.deliver = input.deliver;
+  if (input.sessionTtlMs !== undefined) changes.sessionTtlMs = input.sessionTtlMs;
   if (input.spec !== undefined) {
     if (existing.kind === "poll") {
       const parsed = pollSpecInput.safeParse(input.spec);
@@ -524,6 +670,11 @@ export async function updateTrigger(
       const parsed = inboxSpecInput.safeParse(input.spec);
       if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
       changes.spec = normalizeInboxSpec(parsed.data);
+    } else if (existing.kind === "chat") {
+      const parsed = chatSpecInput.safeParse(input.spec);
+      if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);
+      await requireChannelAccount(deps, parsed.data.channelAccountId);
+      changes.spec = normalizeChatSpec(parsed.data, (existing.spec as ChatSpecRow).pairingCode);
     } else {
       const parsed = webhookSpecInput.safeParse(input.spec);
       if (!parsed.success) throw new BotConfigError("validation failed", 400, parsed.error.issues);

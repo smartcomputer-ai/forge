@@ -2,7 +2,7 @@ import { Bot } from "grammy";
 import { Connection, WorkflowClient } from "@temporalio/client";
 import { NativeConnection, Worker } from "@temporalio/worker";
 import { createDb } from "@lightspeed/platform-db";
-import { createDbChannelControlPlane } from "../control-plane/bindings.js";
+import { createDbChannelControlPlane } from "../control-plane/chat-triggers.js";
 import { channelDeliveryTaskQueue } from "../identity/ids.js";
 import {
   admitInbound,

@@ -14,6 +14,12 @@ export const BOTS_ACTIVITY_TASK_QUEUE = "lightspeed-bots-activities-v1";
 export const BOT_EVENT_SIGNAL = "bot_event_v1";
 export const BOT_CONFIG_SIGNAL = "bot_config_v1";
 export const BOT_STATE_QUERY = "bot_state";
+/**
+ * Delivery receipts to an admitting source's workflow (`BotEvent.notify`):
+ * `started` when the run begins, `finished` when the delivery ends. A
+ * signal with the source's token — never an event, never admission.
+ */
+export const BOT_DELIVERY_SIGNAL = "bot_delivery_v1";
 
 export const BOT_EVENT_RESOLVE_TOOL_ID = "lightspeed.bots.event.resolve.v1";
 export const BOT_STATUS_TOOL_ID = "lightspeed.bots.status.v1";
@@ -30,7 +36,7 @@ export const BOT_EMIT_TOOL_ID = "lightspeed.bots.emit.v1";
  * Declarations are immutable per session, so a bump rotates the main session
  * to a successor instead of editing the live one.
  */
-export const BOT_TOOLS_REVISION = 9;
+export const BOT_TOOLS_REVISION = 10;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
@@ -67,7 +73,7 @@ export interface BotStartV1 {
   enabled: boolean;
 }
 
-export type BotTriggerKind = "schedule" | "webhook" | "poll" | "bot";
+export type BotTriggerKind = "schedule" | "webhook" | "poll" | "bot" | "chat";
 
 /** Federation loop bound: an event whose hop count would exceed this is refused. */
 export const MAX_BOT_HOPS = 8;
@@ -79,6 +85,31 @@ export const MAX_BOT_HOPS = 8;
 export interface BotInboxTriggerSpecV1 {
   /** Sender bot ids allowed to address this bot; absent = any bot in the universe. */
   from?: string[];
+}
+
+/**
+ * A chat connection: the provider account and conversations this trigger
+ * serves. Every message is one event; the bot's routed session for the
+ * conversation gets the conversation's `message_*` tools carried on the
+ * event. Routing, coalescing, filters, and delivery policy are the trigger's
+ * generic knobs.
+ */
+export interface ChatTriggerSpecV1 {
+  channelAccountId: string;
+  matchScope: "direct" | "group" | null;
+  activation: {
+    group?: "mention" | "always";
+    triggerPrefixes?: string[];
+    mentionNames?: string[];
+  } | null;
+  access: {
+    turn?: "conversation" | "members";
+    control?: "none" | "members" | "admins" | "owners";
+  } | null;
+  /** Null pairs implicitly (an open connection). */
+  pairingCode: string | null;
+  /** Lower wins among matching chat triggers on one account. */
+  priority: number;
 }
 
 export interface ScheduleTriggerSpecV1 {
@@ -140,7 +171,8 @@ export type BotTriggerSpecV1 =
   | ScheduleTriggerSpecV1
   | WebhookTriggerSpecV1
   | PollTriggerSpecV1
-  | BotInboxTriggerSpecV1;
+  | BotInboxTriggerSpecV1
+  | ChatTriggerSpecV1;
 
 /** Session routing for a trigger's events; absent means the main session. */
 export type BotRouteV1 =
@@ -152,7 +184,45 @@ export type BotRouteV1 =
 export interface BotEventSession {
   sessionId: string;
   label: string;
+  /**
+   * Retention of the routed session from the trigger: absent inherits the
+   * bot's `routedSessionTtlMs`, null never closes it.
+   */
+  ttlMs?: number | null;
 }
+
+/** A prepared attachment appended to the run input after the rendering; bytes live in CAS. */
+export interface BotEventMediaV1 {
+  blobRef: string;
+  kind: "image" | "audio" | "document";
+  mime: string;
+  name?: string | null;
+}
+
+/** Private receipt route of an admitting source: signalled `started` / `finished`. */
+export interface BotEventNotifyV1 {
+  workflowId: string;
+  workflowKind: string;
+  /** Opaque to bots; echoed on every receipt. */
+  token: string;
+}
+
+/** The `bot_delivery_v1` signal body a notified workflow receives. */
+export interface BotDeliveryReceiptV1 {
+  version: 1;
+  token: string;
+  phase: "started" | "finished";
+  deliveryId: string;
+  /** `#N`s of the delivery's events, when known. */
+  seqs: number[];
+  sessionId: string;
+  runId: string | null;
+  /** finished only: the lane's outcome (`handled`, `run_failed`, `steered`, `appended`, …). */
+  status?: string;
+  summary?: string | null;
+}
+
+export const MAX_BOT_EVENT_MEDIA = 8;
 
 /**
  * Coalescing directives computed at admission from the trigger row. Events
@@ -188,6 +258,16 @@ export interface BotEvent {
   hops?: number;
   /** The sender asked for a receipt when this delivery finishes. */
   reply?: boolean;
+  /** Prepared attachments appended to the run input after the rendering. */
+  media?: BotEventMediaV1[];
+  /**
+   * CAS ref of receiver-bound tool declarations a routed session is created
+   * with (a chat conversation's `message_*` tools). Opaque to bots; identical
+   * for every event of one routed session by construction.
+   */
+  tools?: string;
+  /** The admitting source asked for `started` / `finished` delivery receipts. */
+  notify?: boolean;
 }
 
 /**
@@ -260,6 +340,30 @@ export function validateBotEvent(event: BotEvent): void {
   if (event.reply !== undefined && typeof event.reply !== "boolean") {
     throw new TypeError("invalid bot event reply flag");
   }
+  if (event.notify !== undefined && typeof event.notify !== "boolean") {
+    throw new TypeError("invalid bot event notify flag");
+  }
+  if (event.tools !== undefined && !BLOB_REF.test(event.tools)) {
+    throw new TypeError("invalid bot event tools ref");
+  }
+  if (event.media !== undefined) {
+    if (!Array.isArray(event.media) || event.media.length > MAX_BOT_EVENT_MEDIA) {
+      throw new TypeError(`bot event media must be an array of at most ${MAX_BOT_EVENT_MEDIA}`);
+    }
+    for (const item of event.media) {
+      if (!BLOB_REF.test(item.blobRef)) throw new TypeError("invalid bot event media ref");
+      if (item.kind !== "image" && item.kind !== "audio" && item.kind !== "document") {
+        throw new TypeError("invalid bot event media kind");
+      }
+      if (!item.mime || item.mime.length > 200) throw new TypeError("invalid bot event media mime");
+      if (item.name != null && (typeof item.name !== "string" || item.name.length > 300)) {
+        throw new TypeError("invalid bot event media name");
+      }
+    }
+  }
+  if (event.session?.ttlMs != null && (!Number.isSafeInteger(event.session.ttlMs) || event.session.ttlMs < 1_000)) {
+    throw new TypeError("invalid bot event session ttlMs");
+  }
   if (
     event.deliver !== undefined &&
     event.deliver.whenBusy !== "queue" &&
@@ -301,6 +405,27 @@ export function botKeyedSessionId(botName: string, key: string): string {
 export function botPerEventSessionId(botName: string, eventId: string): string {
   requireName(botName);
   return `bot:v1:${botName}:e-${digest(eventId).slice(0, 12)}`;
+}
+
+/**
+ * Deterministic identity of one chat message at a bot: the provider message
+ * id is unique per conversation, and the trigger scopes the account.
+ */
+export function chatMessageEventId(triggerId: string, conversationKey: string, providerMessageId: string): string {
+  if (!triggerId) throw new TypeError("triggerId is required");
+  if (!conversationKey) throw new TypeError("conversationKey is required");
+  if (!providerMessageId) throw new TypeError("providerMessageId is required");
+  return `chat:${triggerId}:${digest(`${conversationKey}\n${providerMessageId}`).slice(0, 32)}`;
+}
+
+/**
+ * Identity of the bot's own send in a conversation, keyed by the tool
+ * invocation (stable across activity retries) so one send is one row.
+ */
+export function chatSentEventId(triggerId: string, invocationId: string): string {
+  if (!triggerId) throw new TypeError("triggerId is required");
+  if (!invocationId) throw new TypeError("invocationId is required");
+  return `chat-sent:${triggerId}:${digest(invocationId).slice(0, 32)}`;
 }
 
 export function botScheduleId(universeId: string, botName: string, triggerName: string): string {
@@ -362,7 +487,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   status:
     "Inspect this bot's state: enabled flag, run budget, sessions, coalescing buffers, active and recent deliveries.",
   triggerPut:
-    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks a source every intervalMs and delivers only new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). The poll source is url (HTTP JSON) or environmentId+argv (run a command in that environment; its stdout must be JSON). kind=bot is this bot's inbox for events other bots address to it (at most one; from lists the bot ids allowed, omit for any). Filters and route keys are CEL over event, data, headers.",
+    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks a source every intervalMs and delivers only new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). The poll source is url (HTTP JSON) or environmentId+argv (run a command in that environment; its stdout must be JSON). kind=bot is this bot's inbox for events other bots address to it (at most one; from lists the bot ids allowed, omit for any). kind=chat connects a messaging account (channelAccount from bot_trigger_list or the operator, e.g. telegram:mybot): every message becomes an event in a session per conversation with message_send/edit/react tools; the returned pairingCode must be sent in the chat once to pair it. Filters and route keys are CEL over event, data, headers.",
   triggerDelete: "Delete one of this bot's triggers by name.",
   triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
@@ -395,7 +520,30 @@ export const BOT_TOOL_SCHEMAS = {
     type: "object",
     properties: {
       name: { type: "string", minLength: 1 },
-      kind: { type: "string", enum: ["schedule", "webhook", "poll", "bot"] },
+      kind: { type: "string", enum: ["schedule", "webhook", "poll", "bot", "chat"] },
+      channelAccount: {
+        type: ["string", "null"],
+        description: "Chat kind: the messaging account as provider:accountId, e.g. telegram:mybot",
+      },
+      scope: {
+        type: ["string", "null"],
+        enum: ["direct", "group", null],
+        description: "Chat kind: serve only direct chats or only groups; omit for both",
+      },
+      groupActivation: {
+        type: ["string", "null"],
+        enum: ["mention", "always", null],
+        description: "Chat kind: in groups, act on mentions/prefixes only (default) or on every message",
+      },
+      pairing: {
+        type: ["boolean", "null"],
+        description: "Chat kind: require a pairing code before a conversation connects (default true)",
+      },
+      sessionTtlMs: {
+        type: ["integer", "null"],
+        description:
+          "Close this trigger's routed sessions after this idle time; 0 keeps them open (chat default); omit to inherit the bot's setting",
+      },
       from: {
         type: ["array", "null"],
         items: { type: "string" },
@@ -638,6 +786,9 @@ const BOT_TOOL_SPECS: readonly BotToolSpec[] = [
     strict: false,
   },
 ];
+
+/** Every `bot_*` tool name; carried receiver-bound declarations must not collide with these. */
+export const BOT_TOOL_NAMES: ReadonlySet<string> = new Set(BOT_TOOL_SPECS.map((spec) => spec.name));
 
 /** Tool ids the controller answers via pushed invocations (joined or accepted). */
 export const BOT_PUSHED_TOOL_IDS: ReadonlySet<string> = new Set(

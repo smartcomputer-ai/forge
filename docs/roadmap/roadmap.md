@@ -1,8 +1,8 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P139](p139-channels-as-bot-triggers.md) — Channels as bot triggers
-  (proposed 2026-08-26): a chat connection is a `chat` trigger on a bot,
+- [x] [P139](p139-channels-as-bot-triggers.md) — Channels as bot triggers
+  (implemented 2026-08-26): a chat connection is a `chat` trigger on a bot,
   `channel_bindings` is deleted, every message is an admitted event
   (`perKey` session per conversation, trigger coalescing, media refs),
   the conversation workflow stays the receiver for `message_*` through
@@ -80,8 +80,8 @@
   primitive (interval + cursor over the schedule machinery), inbound email
   trigger, guardrailed agent-authored pollers as daemon jobs in the bot's
   provisioned environment (Gumloop guardrail set, approval-gated), thin
-  webhook presets (Slack, Linear, Stripe, Sentry), and the Channels bridge
-  (chat platforms as event sources). Extracted from P130's slice 5;
+  webhook presets (Slack, Linear, Stripe, Sentry); the Channels bridge
+  (chat platforms as event sources) shipped as P139. Extracted from P130's slice 5;
   recommended order: poll first, pollers after real usage.
 - [ ] [P130](p130-bots.md) — Bots: a proactive layer over managed sessions.
   Bot = record (brief, profile, triggers, routing/coalescing policy, budgets)

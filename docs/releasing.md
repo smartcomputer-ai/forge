@@ -63,7 +63,9 @@ LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 The platform ledger was rebased on 2026-08-24 to one entry per product
 area: `0000_platform_baseline` (auth, universes, setup installations),
 `0001_channels` (`channel_accounts`, `channel_identities`, `channel_bindings`, `channel_pairings`), and
-`0002_bots`. Keep that shape: a new area gets its own migration, and its
+`0002_bots`; `0005_channels_as_bot_triggers` later dropped `channel_bindings`
+and re-keyed `channel_pairings` to `bot_triggers` (a chat connection is a
+`chat` trigger). Keep that shape: a new area gets its own migration, and its
 tables live in their own `platform/db/src/schema/<area>.ts`. A rebase invalidates the Drizzle ledger of every existing
 database: either reset the database (`./dev.sh reset` for development) or
 replace the rows in `drizzle.__drizzle_migrations` with one row per journal

@@ -4,12 +4,13 @@ import {
   LightspeedRpcError,
   type AgentProfile,
   type SessionStatus,
+  type WorkflowToolDeclarationInput,
 } from "@lightspeed/agent-client";
 
 import {
-  BOT_EVENT_RESOLVE_TOOL_ID,
   BOT_SESSION_DECLARATION_MISMATCH,
   BOT_TOOL_DESCRIPTIONS,
+  BOT_TOOL_NAMES,
   BOT_TOOL_SCHEMAS,
   botWorkflowTools,
   resolveBotProfile,
@@ -17,6 +18,9 @@ import {
   type BotToolDescriptionRefs,
   type BotToolSchemaRefs,
 } from "../contracts/bots.js";
+
+/** ApplicationFailure type: a carried declaration cannot be merged into the bot's toolset. */
+export const BOT_CARRIED_TOOLS_INVALID = "bot_carried_tools_invalid";
 
 export interface BotLightspeedConfig {
   endpoint: string;
@@ -36,10 +40,18 @@ export interface EnsureBotSessionInput {
   emit?: boolean;
   appliedProfileRevision?: number | null;
   controller: { workflowId: string; workflowKind: string };
+  /**
+   * CAS ref of receiver-bound declarations carried by the event that opens
+   * this routed session (a chat conversation's `message_*` tools). Merged
+   * verbatim after the bot's own tools; opaque here.
+   */
+  toolsRef?: string | null;
 }
 
 export interface EnsureBotSessionResult {
   profileRevision: number;
+  /** Tool ids of the carried declarations; a run that used one counts as handled. */
+  carriedToolIds: string[];
 }
 
 export interface StartBotRunInput {
@@ -168,6 +180,8 @@ export function createBotLightspeedActivities(
       const baseInstructions = await readProfileInstructions(client, profile);
       const resolvedProfile = resolveBotProfile(profile, baseInstructions, input);
       const refs = await putToolAssets(client);
+      const carried =
+        input.toolsRef == null ? [] : await readCarriedDeclarations(client, input.toolsRef);
       try {
         await client.call("session/managed/start", {
           sessionId: input.sessionId,
@@ -176,10 +190,13 @@ export function createBotLightspeedActivities(
           workflowTools: {
             version: 1,
             lifecycleController: input.controller,
-            tools: botWorkflowTools(input.controller, refs.schemas, refs.descriptions, {
-              selfConfig: input.selfConfig === true,
-              emit: input.emit === true,
-            }),
+            tools: [
+              ...botWorkflowTools(input.controller, refs.schemas, refs.descriptions, {
+                selfConfig: input.selfConfig === true,
+                emit: input.emit === true,
+              }),
+              ...carried,
+            ],
           },
         });
       } catch (error) {
@@ -201,7 +218,10 @@ export function createBotLightspeedActivities(
           profile: { kind: "inline", profile: resolvedProfile },
         });
       }
-      return { profileRevision: profile.revision };
+      return {
+        profileRevision: profile.revision,
+        carriedToolIds: carried.map((declaration) => declaration.definition.toolId),
+      };
     },
 
     async renameBotSession(input) {
@@ -334,10 +354,9 @@ export function createBotLightspeedActivities(
         });
         for (const event of response.result.events ?? []) {
           cursor = Math.max(cursor, event.cursor.seq);
-          if (
-            event.kind.type === "workflowToolEmitted" &&
-            event.kind.toolId === BOT_EVENT_RESOLVE_TOOL_ID
-          ) {
+          // Every bound-tool invocation, not only the controller's own: the
+          // caller correlates resolves and recognizes carried tools by id.
+          if (event.kind.type === "workflowToolEmitted") {
             invocations.push({
               invocationId: event.kind.invocationId,
               toolId: event.kind.toolId,
@@ -368,7 +387,30 @@ export function createBotLightspeedActivities(
 
 type RpcClient = Pick<LightspeedClient, "call">;
 
-type RunInputItem = { type: "text"; text: string } | { type: "textRef"; blobRef: string };
+type RunInputItem =
+  | { type: "text"; text: string }
+  | { type: "textRef"; blobRef: string }
+  | {
+      type: "media";
+      blobRef: string;
+      kind: "image" | "audio" | "document";
+      mime: string;
+      name?: string | null;
+    };
+
+/** One event as run input: its rendering, then any attachments it carried. */
+function eventInputItems(event: Pick<BotEvent, "ref" | "promptRef" | "media">): RunInputItem[] {
+  return [
+    { type: "textRef", blobRef: event.promptRef ?? event.ref },
+    ...(event.media ?? []).map((item) => ({
+      type: "media" as const,
+      blobRef: item.blobRef,
+      kind: item.kind,
+      mime: item.mime,
+      ...(item.name == null ? {} : { name: item.name }),
+    })),
+  ];
+}
 
 /**
  * A delivery is the event renderings themselves — the standing protocol
@@ -376,11 +418,10 @@ type RunInputItem = { type: "text"; text: string } | { type: "textRef"; blobRef:
  * so a single event needs no framing item at all. Only a batch gets a
  * one-line header binding it to one decision.
  */
-export function deliveryInputItems(events: Pick<BotEvent, "ref" | "promptRef">[]): RunInputItem[] {
-  const items: RunInputItem[] = events.map((event) => ({
-    type: "textRef",
-    blobRef: event.promptRef ?? event.ref,
-  }));
+export function deliveryInputItems(
+  events: Pick<BotEvent, "ref" | "promptRef" | "media">[],
+): RunInputItem[] {
+  const items: RunInputItem[] = events.flatMap(eventInputItems);
   if (events.length > 1) {
     items.unshift({
       type: "text",
@@ -390,17 +431,55 @@ export function deliveryInputItems(events: Pick<BotEvent, "ref" | "promptRef">[]
   return items;
 }
 
-export function steerInputItems(events: Pick<BotEvent, "ref" | "promptRef">[]): RunInputItem[] {
+export function steerInputItems(
+  events: Pick<BotEvent, "ref" | "promptRef" | "media">[],
+): RunInputItem[] {
   return [
     {
       type: "text",
       text: `${events.length} more event(s) arrived while you were working — fold them into your current work where relevant.`,
     },
-    ...events.map((event) => ({
-      type: "textRef" as const,
-      blobRef: event.promptRef ?? event.ref,
-    })),
+    ...events.flatMap(eventInputItems),
   ];
+}
+
+/**
+ * Carried declarations are opaque data authored by the admitting source.
+ * The only checks here are the ones that would otherwise fail inside the
+ * core with a worse message: the shape, and a name collision with `bot_*`.
+ */
+async function readCarriedDeclarations(
+  client: RpcClient,
+  toolsRef: string,
+): Promise<WorkflowToolDeclarationInput[]> {
+  const response = await client.call("blobs/read", { blobRef: toolsRef });
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(response.result.bytesBase64, "base64").toString("utf8"));
+  } catch {
+    throw ApplicationFailure.nonRetryable("carried tool declarations are not JSON", BOT_CARRIED_TOOLS_INVALID);
+  }
+  return validateCarriedDeclarations(parsed);
+}
+
+export function validateCarriedDeclarations(value: unknown): WorkflowToolDeclarationInput[] {
+  if (!Array.isArray(value)) {
+    throw ApplicationFailure.nonRetryable("carried tool declarations must be an array", BOT_CARRIED_TOOLS_INVALID);
+  }
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const declaration = entry as Partial<WorkflowToolDeclarationInput> | null;
+    const name = declaration?.definition?.tool?.name;
+    const toolId = declaration?.definition?.toolId;
+    if (typeof name !== "string" || typeof toolId !== "string" || declaration?.target === undefined) {
+      throw ApplicationFailure.nonRetryable("carried tool declaration is malformed", BOT_CARRIED_TOOLS_INVALID);
+    }
+    if (BOT_TOOL_NAMES.has(name) || seen.has(name)) {
+      throw ApplicationFailure.nonRetryable(`carried tool ${name} collides with a declared tool`, BOT_CARRIED_TOOLS_INVALID);
+    }
+    seen.add(name);
+  }
+  return value as WorkflowToolDeclarationInput[];
 }
 
 async function readProfileInstructions(client: RpcClient, profile: AgentProfile): Promise<string> {

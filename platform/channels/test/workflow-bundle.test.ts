@@ -8,7 +8,7 @@ it(
     const workflowsPath = fileURLToPath(new URL("../src/workflows/index.ts", import.meta.url));
     const bundle = await bundleWorkflowCode({ workflowsPath });
     expect(bundle.code.length).toBeGreaterThan(1_000);
-    expect(bundle.code).toContain("channelSessionWorkflowV1");
+    expect(bundle.code).toContain("channelConversationWorkflowV1");
   },
   30_000,
 );

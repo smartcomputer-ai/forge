@@ -2,6 +2,7 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { LightspeedClient } from "@lightspeed/agent-client";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { Client } from "@temporalio/client";
+import { BOT_DELIVERY_SIGNAL, type BotDeliveryReceiptV1 } from "../contracts/bots.js";
 import {
   BOT_DIRECTORY_KEY,
   BOT_DIRECTORY_TITLE,
@@ -52,6 +53,14 @@ export interface SendBotReceiptsInput {
   hops: number;
 }
 
+export interface SendDeliveryReceiptsInput {
+  /** Row key of the bot whose delivery changed state. */
+  botId: string;
+  /** Event ids in the delivery; only rows with a `notify` route are signalled. */
+  eventIds: string[];
+  receipt: Omit<BotDeliveryReceiptV1, "version" | "token">;
+}
+
 export interface BotFederationActivities {
   /**
    * Put the `bot:directory` catalog into a session before a delivery: the
@@ -62,6 +71,12 @@ export interface BotFederationActivities {
   publishBotDirectory(input: PublishBotDirectoryInput): Promise<{ entries: number }>;
   /** Admit one `bot.reply` receipt into each asking bot's session. */
   sendBotReceipts(input: SendBotReceiptsInput): Promise<{ sent: number }>;
+  /**
+   * Signal `bot_delivery_v1` to every admitting source that asked for
+   * receipts on the delivery's events — one signal per (workflow, token).
+   * A source that is gone is skipped; the delivery never waits on it.
+   */
+  sendDeliveryReceipts(input: SendDeliveryReceiptsInput): Promise<{ sent: number; skipped: number }>;
 }
 
 export function createBotFederationActivities(config: BotFederationConfig): BotFederationActivities {
@@ -182,6 +197,40 @@ export function createBotFederationActivities(config: BotFederationConfig): BotF
         sent += 1;
       }
       return { sent };
+    },
+
+    async sendDeliveryReceipts(input) {
+      if (input.eventIds.length === 0) return { sent: 0, skipped: 0 };
+      const rows = await config.db
+        .select({ notify: schema.botEvents.notify })
+        .from(schema.botEvents)
+        .where(
+          and(
+            eq(schema.botEvents.botId, input.botId),
+            inArray(schema.botEvents.eventId, input.eventIds),
+            isNotNull(schema.botEvents.notify),
+          ),
+        );
+      const targets = new Map<string, { workflowId: string; token: string }>();
+      for (const row of rows) {
+        if (row.notify === null) continue;
+        targets.set(`${row.notify.workflowId}\n${row.notify.token}`, {
+          workflowId: row.notify.workflowId,
+          token: row.notify.token,
+        });
+      }
+      let sent = 0;
+      let skipped = 0;
+      for (const target of targets.values()) {
+        const receipt: BotDeliveryReceiptV1 = { version: 1, token: target.token, ...input.receipt };
+        try {
+          await config.temporal.workflow.getHandle(target.workflowId).signal(BOT_DELIVERY_SIGNAL, receipt);
+          sent += 1;
+        } catch {
+          skipped += 1;
+        }
+      }
+      return { sent, skipped };
     },
   };
 }

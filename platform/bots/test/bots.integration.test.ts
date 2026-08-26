@@ -1512,6 +1512,164 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     }
   }, 60_000);
 
+  it("carries conversation tools into a routed session, sends delivery receipts, and keeps the chat open", async () => {
+    const chatBotName = "concierge";
+    const ensured: Array<{ sessionId: string; toolsRef: string | null | undefined }> = [];
+    const started: Array<{ sessionId: string; events: BotEvent[] }> = [];
+    const receipts: Array<{ eventIds: string[]; receipt: Record<string, unknown> }> = [];
+    let closes = 0;
+    const toolsRef = `sha256:${"7".repeat(64)}`;
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ensureBotSession: async (input: { sessionId: string; toolsRef?: string | null }) => {
+          ensured.push({ sessionId: input.sessionId, toolsRef: input.toolsRef });
+          return {
+            profileRevision: 1,
+            carriedToolIds: input.toolsRef ? ["channels.message_send.v1"] : [],
+          };
+        },
+        readBotSessionStatus: async () => ({ status: "idle" }),
+        startBotRun: async (input: { sessionId: string; events: BotEvent[] }) => {
+          started.push({ sessionId: input.sessionId, events: input.events });
+          return { runId: `run_${started.length}` };
+        },
+        // The run answered through the conversation's own tool and never
+        // called bot_event_resolve.
+        readWorkflowToolInvocations: async ({ afterSeq }: { afterSeq: number }) => ({
+          nextSeq: afterSeq + 10,
+          invocations:
+            afterSeq === 0
+              ? [
+                  {
+                    invocationId: `wti:sha256:${"9".repeat(64)}`,
+                    toolId: "channels.message_send.v1",
+                    runId: "run_1",
+                    argumentsRef: `sha256:${"c".repeat(64)}`,
+                  },
+                ]
+              : [],
+        }),
+        readJsonBlob: async () => ({}),
+        recordBotActivity: async () => undefined,
+        sendDeliveryReceipts: async (input: { eventIds: string[]; receipt: Record<string, unknown> }) => {
+          receipts.push(input);
+          return { sent: 1, skipped: 0 };
+        },
+        closeBotSession: async () => {
+          closes += 1;
+          return { closed: true };
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: chatBotName,
+        displayName: "Concierge",
+        profileId: "concierge-bot",
+        brief: null,
+        runsPerDay: null,
+        // The bot closes idle routed sessions quickly; the chat trigger says never.
+        routedSessionTtlMs: 1_000,
+        enabled: true,
+      };
+      const conversationSession = `${botSessionId(chatBotName)}:k-telegram-primary-123-0123abcd`;
+      const event: BotEvent = {
+        version: 1,
+        id: "chat-1",
+        ref: eventRef,
+        seq: 17,
+        promptRef: `sha256:${"e".repeat(64)}`,
+        session: { sessionId: conversationSession, label: "telegram dm · Lukas", ttlMs: null },
+        media: [{ blobRef: `sha256:${"9".repeat(64)}`, kind: "image", mime: "image/jpeg", name: "photo.jpg" }],
+        tools: toolsRef,
+        notify: true,
+      };
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId: botWorkflowId(universeId, chatBotName),
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [event],
+      });
+
+      const inFlight = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.activeDeliveries.some((active) => active.runId === "run_1"),
+      );
+      expect(inFlight.activeDeliveries[0]?.sessionId).toBe(conversationSession);
+      // The routed session was created with the conversation's declarations
+      // and the run input carried the attachment.
+      expect(ensured.find((entry) => entry.sessionId === conversationSession)?.toolsRef).toBe(toolsRef);
+      expect(started[0]?.events[0]?.media).toEqual(event.media);
+      const startedReceipt = await eventually(
+        async () => receipts,
+        (list) => list.some((entry) => entry.receipt.phase === "started"),
+      );
+      expect(startedReceipt[0]).toMatchObject({
+        eventIds: ["chat-1"],
+        receipt: { phase: "started", deliveryId: "chat-1", sessionId: conversationSession, runId: "run_1", seqs: [17] },
+      });
+
+      await handle.signal(
+        "deliver_emission",
+        sessionTerminalEmission(conversationSession, 1, botEventTerminalToken(event.id)),
+      );
+      const done = await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.eventsProcessed === 1,
+      );
+      // A reply through the carried tool counts as handled without bot_event_resolve.
+      expect(done.recentEvents[0]).toMatchObject({ id: "chat-1", status: "handled", seqs: [17] });
+      const finishedReceipt = await eventually(
+        async () => receipts,
+        (list) => list.some((entry) => entry.receipt.phase === "finished"),
+      );
+      expect(finishedReceipt.find((entry) => entry.receipt.phase === "finished")?.receipt).toMatchObject({
+        deliveryId: "chat-1",
+        sessionId: conversationSession,
+        runId: "run_1",
+        status: "handled",
+      });
+      expect(done.sessions.find((session) => session.sessionId === conversationSession)).toMatchObject({
+        label: "telegram dm · Lukas",
+        kind: "keyed",
+        ttlMs: null,
+        carriedToolIds: ["channels.message_send.v1"],
+      });
+
+      // Well past the bot's own retention: the conversation stays open.
+      await new Promise((resolve) => setTimeout(resolve, 2_500));
+      const later = await handle.query<BotSnapshot>(BOT_STATE_QUERY);
+      expect(later.sessions.map((session) => session.sessionId)).toContain(conversationSession);
+      expect(closes).toBe(0);
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        botWorkflowId(universeId, chatBotName),
+      );
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
 });
 
 function terminalEmission(runId: number, token: string): EmissionEnvelope {

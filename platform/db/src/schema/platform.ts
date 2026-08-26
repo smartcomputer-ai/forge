@@ -1,7 +1,6 @@
 import { relations } from "drizzle-orm";
 import { integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { organization, user } from "./auth.js";
-import { channelBindings } from "./channels.js";
 
 const createdAt = () => timestamp("created_at", { withTimezone: true }).defaultNow().notNull();
 const updatedAt = () =>
@@ -73,7 +72,6 @@ export const universesRelations = relations(universes, ({ one, many }) => ({
     fields: [universes.organizationId],
     references: [organization.id],
   }),
-  bindings: many(channelBindings),
   setupInstallations: many(universeSetupInstallations),
 }));
 

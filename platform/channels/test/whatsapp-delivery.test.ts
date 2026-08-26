@@ -55,7 +55,7 @@ describe("WhatsApp delivery activity", () => {
       command({ type: "edit", messageId: "wamid-1", text: "new" }),
     );
     await activities.deliverChannelMessage(
-      command({ type: "react", messageId: "wamid-2", emoji: "👍" }),
+      command({ type: "react", messageId: "wamid-2", emoji: "👍", fromMe: false }),
     );
     expect(sendMessage).toHaveBeenNthCalledWith(1, "family@g.us", {
       text: "new",
@@ -65,6 +65,15 @@ describe("WhatsApp delivery activity", () => {
       react: {
         text: "👍",
         key: { remoteJid: "family@g.us", id: "wamid-2", fromMe: false },
+      },
+    });
+    await activities.deliverChannelMessage(
+      command({ type: "react", messageId: "wamid-3", emoji: "✅", fromMe: true }),
+    );
+    expect(sendMessage).toHaveBeenNthCalledWith(3, "family@g.us", {
+      react: {
+        text: "✅",
+        key: { remoteJid: "family@g.us", id: "wamid-3", fromMe: true },
       },
     });
   });

@@ -36,6 +36,13 @@
       "when": 1787730066515,
       "tag": "0004_bot_federation",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1787749619639,
+      "tag": "0005_channels_as_bot_triggers",
+      "breakpoints": true
     }
   ]
 }

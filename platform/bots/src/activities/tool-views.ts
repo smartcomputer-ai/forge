@@ -52,16 +52,44 @@ export function botStatusView(bot: BotRow, controller: BotControllerSummary) {
   };
 }
 
-/** A trigger by its name; the caller passes the already-redacted row. */
-export function triggerToolView(trigger: BotTriggerRow, ingestUrl: string | null) {
+/** How a chat trigger's account is named to the model: `provider:accountId`, never the row key. */
+export interface ChatAccountLabel {
+  provider: string;
+  accountId: string;
+}
+
+export function channelAccountHandle(account: ChatAccountLabel): string {
+  return `${account.provider}:${account.accountId}`;
+}
+
+/**
+ * A trigger by its name; the caller passes the already-redacted row. A chat
+ * trigger's spec shows the account as `provider:accountId` (the same handle
+ * `bot_trigger_put` accepts) in place of the platform row key.
+ */
+export function triggerToolView(
+  trigger: BotTriggerRow,
+  ingestUrl: string | null,
+  chatAccount?: ChatAccountLabel | null,
+) {
+  const spec =
+    trigger.kind === "chat"
+      ? (() => {
+          const { channelAccountId: _channelAccountId, ...rest } = trigger.spec as {
+            channelAccountId: string;
+          } & Record<string, unknown>;
+          return { channelAccount: chatAccount ? channelAccountHandle(chatAccount) : null, ...rest };
+        })()
+      : trigger.spec;
   return {
     name: trigger.name,
     kind: trigger.kind,
-    spec: trigger.spec,
+    spec,
     filter: trigger.filter,
     route: trigger.route,
     coalesce: trigger.coalesce,
     deliver: trigger.deliver,
+    ...(trigger.sessionTtlMs === null ? {} : { sessionTtlMs: trigger.sessionTtlMs }),
     enabled: trigger.enabled,
     ...(ingestUrl === null ? {} : { ingestUrl }),
   };

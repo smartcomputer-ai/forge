@@ -505,24 +505,6 @@ export interface BlobContent {
   bytesBase64: string;
 }
 
-export interface Binding {
-  id: string;
-  universeId: string;
-  channelAccountId: string;
-  name: string;
-  matchScope: "direct" | "group" | null;
-  profileId: string | null;
-  sessionKey: string;
-  pairingCode: string | null;
-  priority: number;
-  enabled: boolean;
-  createdAt: string;
-  channelAccount: Pick<
-    ChannelAccount,
-    "id" | "provider" | "accountId" | "displayName" | "enabled"
-  >;
-}
-
 export interface ChannelAccount {
   id: string;
   provider: "telegram" | "whatsapp";
@@ -650,16 +632,43 @@ export interface BotInboxSpec {
   from?: string[];
 }
 
+/**
+ * Chat: a messaging account whose conversations wake this bot, one session
+ * per conversation. `pairingCode` is `""` for members who cannot manage the
+ * bot (blanked by the server) and `null` for an open connection.
+ */
+export interface BotChatSpec {
+  channelAccountId: string;
+  matchScope: "direct" | "group" | null;
+  activation: {
+    group?: "mention" | "always";
+    triggerPrefixes?: string[];
+    mentionNames?: string[];
+  } | null;
+  access: {
+    turn?: "conversation" | "members";
+    control?: "none" | "members" | "admins" | "owners";
+  } | null;
+  pairingCode: string | null;
+  /** Lower wins among matching chat triggers on one account. */
+  priority: number;
+}
+
 export interface BotTrigger {
   /** Authored id; the API addresses triggers by it. */
   name: string;
   /** `bot` is the inbox for events other bots address here; at most one per bot. */
-  kind: "schedule" | "webhook" | "poll" | "bot";
-  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec | BotInboxSpec;
+  kind: "schedule" | "webhook" | "poll" | "bot" | "chat";
+  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec | BotInboxSpec | BotChatSpec;
   filter: string | null;
   route: BotRoute | null;
   coalesce: BotCoalesce | null;
   deliver: { whenBusy: "queue" | "steer" | "append" } | null;
+  /**
+   * Retention of the sessions this trigger routes to: null inherits the bot's
+   * `routedSessionTtlMs`, 0 keeps them open forever (the chat default).
+   */
+  sessionTtlMs: number | null;
   /** Poll kind only: the advancing cursor; null until the baseline poll. */
   cursor?: BotPollCursorState | null;
   enabled: boolean;
@@ -667,6 +676,8 @@ export interface BotTrigger {
   updatedAt: string;
   /** Webhook kind: the ingest path (capability URL) senders post to. */
   ingestPath?: string;
+  /** Chat kind: the account the spec names, or null when it no longer exists. */
+  channelAccount?: Pick<ChannelAccount, "id" | "provider" | "accountId" | "displayName"> | null;
 }
 
 export interface BotEventRef {

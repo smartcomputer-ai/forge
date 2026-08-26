@@ -8,6 +8,8 @@ import {
   type BotCoalesceParamsV1,
   type BotEvent,
   type BotEventDocumentV1,
+  type BotEventMediaV1,
+  type BotEventNotifyV1,
   type BotEventSession,
   type BotInboxTriggerSpecV1,
   type BotStartV1,
@@ -228,6 +230,12 @@ export interface StoreBotEventInput {
   hops?: number;
   replyTo?: { botId: string; session?: BotEventSession };
   inReplyTo?: { bot: string; seq: number };
+  /** Prepared attachments appended to the run input after the rendering. */
+  media?: BotEventMediaV1[];
+  /** CAS ref of receiver-bound tool declarations for the routed session. */
+  tools?: string;
+  /** Private receipt route of the admitting source (`started` / `finished`). */
+  notify?: BotEventNotifyV1;
   /** Skip the controller signal (archived events: filtered at admission). */
   deliver?: boolean;
   /** Reuse an already-stored document ref (replays). */
@@ -282,6 +290,9 @@ export async function storeBotEvent(
       hops: input.hops ?? 0,
       replyTo: input.replyTo ?? null,
       inReplyTo: input.inReplyTo ?? null,
+      media: input.media ?? null,
+      tools: input.tools ?? null,
+      notify: input.notify ?? null,
     })
     .onConflictDoNothing()
     .returning();
@@ -315,6 +326,9 @@ export async function storeBotEvent(
     ...(input.whenBusy === undefined ? {} : { deliver: { whenBusy: input.whenBusy } }),
     ...(input.hops === undefined || input.hops === 0 ? {} : { hops: input.hops }),
     ...(input.replyTo === undefined ? {} : { reply: true }),
+    ...(input.media === undefined || input.media.length === 0 ? {} : { media: input.media }),
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
+    ...(input.notify === undefined ? {} : { notify: true }),
   };
   if (input.deliver !== false) {
     await wakeBotController({
@@ -339,6 +353,9 @@ export interface AdmitTriggerEventInput {
   senderBotId?: string;
   hops?: number;
   replyTo?: { botId: string; session?: BotEventSession };
+  media?: BotEventMediaV1[];
+  tools?: string;
+  notify?: BotEventNotifyV1;
 }
 
 export interface AdmitTriggerEventResult {
@@ -380,6 +397,9 @@ export async function admitTriggerEvent(
     ...(input.senderBotId === undefined ? {} : { senderBotId: input.senderBotId }),
     ...(input.hops === undefined ? {} : { hops: input.hops }),
     ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo }),
+    ...(input.media === undefined ? {} : { media: input.media }),
+    ...(input.tools === undefined ? {} : { tools: input.tools }),
+    ...(input.notify === undefined ? {} : { notify: input.notify }),
   };
 
   if (trigger.filter !== null) {
@@ -399,7 +419,11 @@ export async function admitTriggerEvent(
   }
 
   const preset =
-    trigger.kind === "webhook" ? ((trigger.spec as { preset?: "github" | null }).preset ?? null) : null;
+    trigger.kind === "webhook"
+      ? ((trigger.spec as { preset?: "github" | null }).preset ?? null)
+      : trigger.kind === "chat"
+        ? "chat"
+        : null;
   const routed = computeRouteSession(
     bot.name,
     trigger.route,
@@ -413,9 +437,15 @@ export async function admitTriggerEvent(
       detail: routed.error,
     });
   }
+  // Per-trigger retention rides on the routed target: null on the row
+  // inherits the bot's setting, 0 keeps the session open indefinitely.
+  const session =
+    routed.session === undefined || trigger.sessionTtlMs === null
+      ? routed.session
+      : { ...routed.session, ttlMs: trigger.sessionTtlMs === 0 ? null : trigger.sessionTtlMs };
   const { event, duplicate } = await storeBotEvent(deps, {
     ...base,
-    ...(routed.session === undefined ? {} : { session: routed.session }),
+    ...(session === undefined ? {} : { session }),
     ...(trigger.coalesce === null
       ? {}
       : {

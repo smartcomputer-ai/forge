@@ -62,6 +62,7 @@ import {
   filterResultView,
   triggerToolView,
   type BotControllerSummary,
+  type ChatAccountLabel,
 } from "./tool-views.js";
 import {
   GrantReferenceError,
@@ -147,10 +148,49 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
     return config.baseUrl ? `${config.baseUrl.replace(/\/$/, "")}${path}` : path;
   }
 
-  function triggerView(trigger: BotTriggerRow) {
+  /** The `provider:accountId` handle of a chat trigger's account, or null when the account is gone. */
+  async function chatAccountOf(trigger: BotTriggerRow): Promise<ChatAccountLabel | null> {
+    if (trigger.kind !== "chat") return null;
+    const spec = trigger.spec as { channelAccountId: string };
+    const [account] = await config.db
+      .select({ provider: schema.channelAccounts.provider, accountId: schema.channelAccounts.accountId })
+      .from(schema.channelAccounts)
+      .where(eq(schema.channelAccounts.id, spec.channelAccountId))
+      .limit(1);
+    return account ?? null;
+  }
+
+  /** Resolve a `provider:accountId` handle to the account row key. */
+  async function resolveChatAccount(handle: string): Promise<string> {
+    const separator = handle.indexOf(":");
+    const provider = separator === -1 ? "" : handle.slice(0, separator);
+    const accountId = separator === -1 ? "" : handle.slice(separator + 1);
+    if ((provider !== "telegram" && provider !== "whatsapp") || accountId.length === 0) {
+      throw new BotConfigError("channelAccount must be provider:accountId, e.g. telegram:mybot", 400);
+    }
+    const [account] = await config.db
+      .select({ id: schema.channelAccounts.id })
+      .from(schema.channelAccounts)
+      .where(
+        and(eq(schema.channelAccounts.provider, provider), eq(schema.channelAccounts.accountId, accountId)),
+      )
+      .limit(1);
+    if (!account) throw new BotConfigError(`no channel account ${handle}`, 404);
+    return account.id;
+  }
+
+  /**
+   * A trigger as the model sees it. The bot is its own manager under the
+   * self-configuration grant, so it keeps its chat pairing codes (it has to
+   * tell the human what to send); everything else is redacted as for a
+   * non-managing member.
+   */
+  async function triggerView(trigger: BotTriggerRow, selfConfig: boolean) {
+    const shown = trigger.kind === "chat" && selfConfig ? trigger : redactTriggerSecrets(trigger);
     return triggerToolView(
-      redactTriggerSecrets(trigger),
+      shown,
       trigger.kind === "webhook" ? ingestUrl(trigger) : null,
+      await chatAccountOf(trigger),
     );
   }
 
@@ -250,10 +290,21 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           .from(schema.botTriggers)
           .where(eq(schema.botTriggers.botId, bot.id))
           .orderBy(schema.botTriggers.name);
-        return { triggers: triggers.map(triggerView) };
+        return {
+          triggers: await Promise.all(triggers.map((trigger) => triggerView(trigger, bot.selfConfig))),
+        };
       }
       case BOT_TRIGGER_PUT_TOOL_ID: {
         const flat = parseTriggerPutArgs(args);
+        if (flat.create.kind === "chat") {
+          // The model names accounts as provider:accountId; the row key never
+          // reaches it in either direction.
+          const spec = flat.create.spec as { channelAccount: string } & Record<string, unknown>;
+          const channelAccountId = await resolveChatAccount(spec.channelAccount);
+          const { channelAccount: _handle, ...rest } = spec;
+          flat.create.spec = { ...rest, channelAccountId };
+          flat.update.spec = { ...rest, channelAccountId };
+        }
         const existing = await findTriggerByName(config.db, bot.id, flat.name);
         let trigger: BotTriggerRow;
         if (existing === undefined) {
@@ -282,7 +333,7 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
           });
           await recordSelfConfig(bot.id, `updated ${trigger.kind} trigger ${trigger.name}`);
         }
-        return { trigger: triggerView(trigger), created: existing === undefined };
+        return { trigger: await triggerView(trigger, bot.selfConfig), created: existing === undefined };
       }
       case BOT_TRIGGER_DELETE_TOOL_ID: {
         const name = requireString(args.name, "name");
@@ -553,15 +604,36 @@ export function createBotToolActivities(config: BotToolActivitiesConfig): BotToo
 /** Flatten the model-facing trigger_put arguments into the config inputs. */
 export function parseTriggerPutArgs(args: Record<string, unknown>): {
   name: string;
-  create: TriggerCreateInput | Record<string, unknown>;
-  update: TriggerUpdateInput | Record<string, unknown>;
+  create: (TriggerCreateInput | Record<string, unknown>) & { kind: string; spec?: unknown };
+  update: (TriggerUpdateInput | Record<string, unknown>) & { spec?: unknown };
 } {
   const name = requireString(args.name, "name");
   const kind = args.kind;
-  if (kind !== "schedule" && kind !== "webhook" && kind !== "poll" && kind !== "bot") {
-    throw new BotConfigError("kind must be schedule, webhook, poll, or bot", 400);
+  if (kind !== "schedule" && kind !== "webhook" && kind !== "poll" && kind !== "bot" && kind !== "chat") {
+    throw new BotConfigError("kind must be schedule, webhook, poll, bot, or chat", 400);
   }
   const enabled = typeof args.enabled === "boolean" ? args.enabled : undefined;
+  if (kind === "chat") {
+    const channelAccount = nullableString(args.channelAccount);
+    if (channelAccount === null) {
+      throw new BotConfigError("channelAccount (provider:accountId) is required for chat triggers", 400);
+    }
+    const scope = nullableString(args.scope);
+    const groupActivation = nullableString(args.groupActivation);
+    const spec = {
+      channelAccount,
+      matchScope: scope,
+      activation: groupActivation === null ? null : { group: groupActivation },
+      // Omitted → the platform mints a code; false → an open connection.
+      ...(args.pairing === false ? { pairingCode: null } : {}),
+    };
+    const common = pollWebhookCommon(args, enabled);
+    return {
+      name,
+      create: { name, kind, spec, ...common },
+      update: { spec, ...common },
+    };
+  }
   if (kind === "bot") {
     const from = Array.isArray(args.from)
       ? args.from.filter((entry): entry is string => typeof entry === "string" && entry.length > 0)
@@ -700,7 +772,15 @@ function pollWebhookCommon(
   const whenBusy = nullableString(args.whenBusy);
   const deliver = whenBusy && whenBusy !== "queue" ? { whenBusy } : null;
   const filter = nullableString(args.filter);
-  return { filter, route, coalesce, deliver, ...(enabled === undefined ? {} : { enabled }) };
+  const sessionTtlMs = nullableInteger(args.sessionTtlMs);
+  return {
+    filter,
+    route,
+    coalesce,
+    deliver,
+    ...(sessionTtlMs === null ? {} : { sessionTtlMs }),
+    ...(enabled === undefined ? {} : { enabled }),
+  };
 }
 
 function requireString(value: unknown, label: string): string {

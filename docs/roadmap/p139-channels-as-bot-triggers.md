@@ -2,6 +2,8 @@
 
 **Status**
 
+- **Implemented 2026-08-26**, all four slices in one pass; see the
+  implementation notes at the end of the Slices section.
 - Proposed 2026-08-26 from a design conversation with Lukas, after
   [P130](p130-bots.md) slices 1–4, [P134](p134-subagents.md), and
   [P135](p135-bot-federation.md) landed. Replaces the deferred "Channels
@@ -363,6 +365,55 @@ session's context unbounded today. Lands when someone wants silent rooms.
    accounts and status. Then, on demand: `bot`-routed chats (a paired
    conversation's tools on the main session, at most one per bot — the
    "DM me the digest" case), `silent` rooms (§9), thin Slack preset.
+
+### Implementation notes (2026-08-26)
+
+- **Records**: migration `0005_channels_as_bot_triggers` (platform schema
+  revision 6) drops `channel_bindings`, recreates `channel_pairings` keyed
+  by `trigger_id`, adds `bot_triggers.session_ttl_ms` (null inherits, 0
+  never closes) and `bot_events.media` / `tools` / `notify`. The `chat`
+  trigger kind lives in `platform/bots/src/config.ts` (`chatSpecInput`,
+  `CHAT_COALESCE_DEFAULT`, `mintPairingCode`; route `bot` refused, coalesce
+  defaults to 400 ms / 1.5 s / 8, `sessionTtlMs` defaults to 0). The
+  bindings API, CLI commands, and shared zod schemas are deleted; the
+  server attaches `channelAccount` to chat trigger views.
+- **Bots**: `BotEvent.media` / `tools` / `notify` and
+  `BotEventSession.ttlMs` (`contracts/bots.ts`, validated);
+  `admitTriggerEvent` passes them through and applies the `chat` route
+  preset (`data.conversation.key` / `.label`, `bot` forced to `perKey`);
+  `ensureBotSession` merges carried declarations after a collision check
+  (`validateCarriedDeclarations`) and reports `carriedToolIds`;
+  `deliveryInputItems` / `steerInputItems` append media items;
+  `readWorkflowToolInvocations` returns every bound-tool invocation;
+  `sendDeliveryReceipts` signals `bot_delivery_v1` per (workflow, token);
+  the controller sends `started` after `startBotRun` and `finished` from
+  `rememberDelivery`, treats a carried-tool call as `handled`, and sweeps
+  by per-session TTL. `bot_trigger_put kind=chat` takes
+  `channelAccount: provider:accountId`; `bot_trigger_list` shows the same
+  handle and, under `selfConfig`, the pairing code. Tools revision 10.
+- **Channels**: `channelConversationWorkflowV1` (`workflows/conversation.ts`)
+  replaces the session workflow: identity per (universe, provider,
+  account, chat, thread) with a readable `conversationKey`; control plane
+  over `bot_triggers where kind = 'chat'`; `emitChatEvent` /
+  `storeChatSent` / `resolveChatHandle` bridge activities
+  (`activities/bot-bridge.ts`) over the bots admission package;
+  `putChatToolDeclarations` stores the receiver-bound `message_*`
+  declarations (revision 2, integer handles, `{ sent: N }` / `{ message: N }`
+  receipts); `reconcileDelivery` keeps the text-reply fallback; WhatsApp
+  reactions take `fromMe` from the handle. The event summary is the
+  message line `Alice (14:02Z): text`; provider ids live only in `data`.
+  Silent rooms are gone (ambient group traffic is dropped).
+- **Web**: chat trigger kind on the bot page (account, scope, activation,
+  access, pairing with copy/rotate, retention, delivery fields); the
+  Channels settings page keeps accounts and points at bots.
+- **Verified**: bots unit (89) and Temporal integration (15 scenarios,
+  incl. carried tools + receipts + implicit handled + never-expiring chat
+  session, with replay); channels unit (97) and Temporal integration (2
+  scenarios: media + numbered send + fallback + duplicate receipt; group
+  activation + control commands + foreign-session refusal, with replay);
+  web typecheck/tests/build; `test:migrations` fresh + upgrade;
+  `npm run check`. Not yet run: a live Telegram/WhatsApp chat on the dev
+  stack.
 
 ## Tests
 

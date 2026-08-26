@@ -1,4 +1,4 @@
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { schema, type Db } from "@lightspeed/platform-db";
 import type { ChannelProvider, NormalizedInboundV1 } from "../contracts/channel.js";
 import type { ChannelRoute } from "../contracts/channel.js";
@@ -15,19 +15,29 @@ import {
   type ChannelMemberRole,
 } from "../policy/access.js";
 
-export interface ChannelBindingCandidate {
-  bindingId: string;
-  bindingName: string;
+/**
+ * The control plane resolves a conversation to a bot's `chat` trigger. A
+ * chat connection is a trigger row, never its own record: the trigger's
+ * spec carries the account, scope, activation, access, and pairing gate; the
+ * bot carries the profile; routing is the trigger's generic `route`.
+ */
+
+export interface ChatTriggerCandidate {
+  triggerId: string;
+  triggerName: string;
+  botId: string;
+  botName: string;
+  botEnabled: boolean;
   channelAccountId: string;
   accountProvider: ChannelProvider;
   accountId: string;
+  /** Lightspeed universe id. */
   universeId: string;
   universeName: string;
   universeActive: boolean;
   enabled: boolean;
   matchScope: "direct" | "group" | null;
-  profileId: string | null;
-  sessionKey: string;
+  priority: number;
   pairingRequired: boolean;
   pairingCode: string | null;
   paired: boolean;
@@ -36,83 +46,62 @@ export interface ChannelBindingCandidate {
   memberRole: ChannelMemberRole;
 }
 
-export interface ResolvedChannelBinding {
-  bindingId: string;
-  bindingName: string;
+export interface ResolvedChatTrigger {
+  triggerId: string;
+  triggerName: string;
+  botId: string;
+  botName: string;
   universeId: string;
   universeName: string;
-  profileId: string | null;
-  sessionKey: string;
   activation: ChannelActivationSettings;
   access: ChannelAccessSettings;
   authorization: ChannelAuthorization;
 }
 
-export interface ChannelBindingResolver {
-  resolve(inbound: NormalizedInboundV1): Promise<ResolvedChannelBinding | null>;
+export interface ChatTriggerResolver {
+  resolve(inbound: NormalizedInboundV1): Promise<ResolvedChatTrigger | null>;
 }
 
 export type ChannelAdmissionDecision =
-  | { status: "bound"; binding: ResolvedChannelBinding }
-  | { status: "paired"; binding: ResolvedChannelBinding }
+  | { status: "bound"; trigger: ResolvedChatTrigger }
+  | { status: "paired"; trigger: ResolvedChatTrigger }
   | { status: "pairing_required" }
   | { status: "pairing_pending" }
   | { status: "unbound" };
 
-export interface ChannelControlPlane extends ChannelBindingResolver {
+export interface ChannelControlPlane extends ChatTriggerResolver {
   admit(inbound: NormalizedInboundV1): Promise<ChannelAdmissionDecision>;
   pairingRequired(route: ChannelRoute, scope: "direct" | "group"): Promise<boolean>;
 }
 
 export type ChannelAdmissionPlan =
-  | { status: "bound"; binding: ResolvedChannelBinding }
-  | { status: "pair"; candidate: ChannelBindingCandidate }
+  | { status: "bound"; trigger: ResolvedChatTrigger }
+  | { status: "pair"; candidate: ChatTriggerCandidate }
   | { status: "pairing_required" }
   | { status: "pairing_pending" }
   | { status: "unbound" };
 
-export function selectChannelBinding(
-  candidates: readonly ChannelBindingCandidate[],
+export function selectChatTrigger(
+  candidates: readonly ChatTriggerCandidate[],
   route: ChannelRoute,
   isDirect: boolean,
-): ResolvedChannelBinding | null {
-  const scope = isDirect ? "direct" : "group";
-  const candidate = candidates.find(
-    (row) =>
-      row.enabled &&
-      row.universeActive &&
-      row.accountProvider === route.provider &&
-      row.accountId === route.accountId &&
-      (row.matchScope === null || row.matchScope === scope) &&
-      (!row.pairingRequired || row.paired),
+): ResolvedChatTrigger | null {
+  const candidate = matchingCandidates(candidates, route, isDirect).find(
+    (row) => !row.pairingRequired || row.paired,
   );
-  if (candidate === undefined) {
-    return null;
-  }
-  const access = resolveAccessSettings(candidate.access);
-  return {
-    bindingId: candidate.bindingId,
-    bindingName: candidate.bindingName,
-    universeId: candidate.universeId,
-    universeName: candidate.universeName,
-    profileId: candidate.profileId,
-    sessionKey: candidate.sessionKey,
-    activation: resolveActivationSettings(scope, candidate.activation),
-    access,
-    authorization: authorizeChannelSender(access, candidate.memberRole),
-  };
+  return candidate === undefined ? null : resolveCandidate(candidate, isDirect);
 }
 
 export function planChannelAdmission(
-  candidates: readonly ChannelBindingCandidate[],
+  candidates: readonly ChatTriggerCandidate[],
   inbound: NormalizedInboundV1,
 ): ChannelAdmissionPlan {
   const relevant = matchingCandidates(candidates, inbound.route, inbound.isDirect);
-  const pairable: ChannelBindingCandidate[] = [];
+  const pairable: ChatTriggerCandidate[] = [];
   for (const candidate of relevant) {
     if (!candidate.pairingRequired) {
       if (pairable.length === 0) {
-        return { status: "bound", binding: resolveCandidate(candidate, inbound.isDirect) };
+        return { status: "bound", trigger: resolveCandidate(candidate, inbound.isDirect) };
       }
       break;
     }
@@ -120,12 +109,11 @@ export function planChannelAdmission(
   }
   const alreadyPaired = pairable.find((candidate) => candidate.paired);
   if (alreadyPaired !== undefined) {
-    return { status: "bound", binding: resolveCandidate(alreadyPaired, inbound.isDirect) };
+    return { status: "bound", trigger: resolveCandidate(alreadyPaired, inbound.isDirect) };
   }
   const code = inbound.text.trim();
-  const matched = code.length === 0
-    ? undefined
-    : pairable.find((candidate) => candidate.pairingCode === code);
+  const matched =
+    code.length === 0 ? undefined : pairable.find((candidate) => candidate.pairingCode === code);
   if (matched !== undefined) {
     return { status: "pair", candidate: matched };
   }
@@ -137,15 +125,11 @@ export function planChannelAdmission(
     : { status: "pairing_pending" };
 }
 
-export function createDbBindingResolver(db: Db): ChannelBindingResolver {
-  return createDbChannelControlPlane(db);
-}
-
 export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
   return {
     async resolve(inbound) {
       const candidates = await readCandidates(db, inbound);
-      return selectChannelBinding(candidates, inbound.route, inbound.isDirect);
+      return selectChatTrigger(candidates, inbound.route, inbound.isDirect);
     },
     async admit(inbound) {
       const plan = planChannelAdmission(await readCandidates(db, inbound), inbound);
@@ -156,14 +140,14 @@ export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
         .insert(schema.channelPairings)
         .values({
           key: channelPairingKey(inbound.route),
-          bindingId: plan.candidate.bindingId,
+          triggerId: plan.candidate.triggerId,
           channelAccountId: plan.candidate.channelAccountId,
           chatId: inbound.route.chatId,
         })
         .onConflictDoUpdate({
           target: schema.channelPairings.key,
           set: {
-            bindingId: plan.candidate.bindingId,
+            triggerId: plan.candidate.triggerId,
             channelAccountId: plan.candidate.channelAccountId,
             chatId: inbound.route.chatId,
             updatedAt: new Date(),
@@ -171,7 +155,7 @@ export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
         });
       return {
         status: "paired",
-        binding: resolveCandidate({ ...plan.candidate, paired: true }, inbound.isDirect),
+        trigger: resolveCandidate({ ...plan.candidate, paired: true }, inbound.isDirect),
       };
     },
     async pairingRequired(route, scope) {
@@ -193,37 +177,39 @@ export function createDbChannelControlPlane(db: Db): ChannelControlPlane {
   };
 }
 
+const chatAccountId = sql<string>`(${schema.botTriggers.spec}->>'channelAccountId')::uuid`;
+const chatPriority = sql<number>`coalesce((${schema.botTriggers.spec}->>'priority')::int, 100)`;
+
 async function readCandidates(
   db: Db,
   inbound: NormalizedInboundV1,
-): Promise<ChannelBindingCandidate[]> {
+): Promise<ChatTriggerCandidate[]> {
   const route = inbound.route;
   const rows = await db
     .select({
-      bindingId: schema.channelBindings.id,
-      bindingName: schema.channelBindings.name,
+      triggerId: schema.botTriggers.id,
+      triggerName: schema.botTriggers.name,
+      spec: schema.botTriggers.spec,
+      enabled: schema.botTriggers.enabled,
+      botId: schema.bots.id,
+      botName: schema.bots.name,
+      botEnabled: schema.bots.enabled,
       channelAccountId: schema.channelAccounts.id,
       accountProvider: schema.channelAccounts.provider,
       accountId: schema.channelAccounts.accountId,
       universeId: schema.universes.lightspeedUniverseId,
       universeName: schema.universes.name,
       universeStatus: schema.universes.status,
-      enabled: schema.channelBindings.enabled,
-      matchScope: schema.channelBindings.matchScope,
-      profileId: schema.channelBindings.profileId,
-      sessionKey: schema.channelBindings.sessionKey,
-      pairingCode: schema.channelBindings.pairingCode,
       pairingKey: schema.channelPairings.key,
-      activation: schema.channelBindings.activation,
-      access: schema.channelBindings.access,
       memberRole: schema.member.role,
     })
-    .from(schema.channelBindings)
-    .innerJoin(schema.universes, eq(schema.universes.id, schema.channelBindings.universeId))
+    .from(schema.botTriggers)
+    .innerJoin(schema.bots, eq(schema.bots.id, schema.botTriggers.botId))
+    .innerJoin(schema.universes, eq(schema.universes.id, schema.bots.universeId))
     .innerJoin(
       schema.channelAccounts,
       and(
-        eq(schema.channelAccounts.id, schema.channelBindings.channelAccountId),
+        eq(schema.channelAccounts.id, chatAccountId),
         eq(schema.channelAccounts.provider, route.provider),
         eq(schema.channelAccounts.accountId, route.accountId),
         eq(schema.channelAccounts.enabled, true),
@@ -232,7 +218,7 @@ async function readCandidates(
     .leftJoin(
       schema.channelPairings,
       and(
-        eq(schema.channelPairings.bindingId, schema.channelBindings.id),
+        eq(schema.channelPairings.triggerId, schema.botTriggers.id),
         eq(schema.channelPairings.channelAccountId, schema.channelAccounts.id),
         eq(schema.channelPairings.chatId, route.chatId),
       ),
@@ -251,59 +237,73 @@ async function readCandidates(
         eq(schema.member.organizationId, schema.universes.organizationId),
       ),
     )
-    .where(eq(schema.channelBindings.enabled, true))
-    .orderBy(asc(schema.channelBindings.priority), asc(schema.channelBindings.createdAt));
-  return rows.map((row) => ({
-    bindingId: row.bindingId,
-    bindingName: row.bindingName,
-    channelAccountId: row.channelAccountId,
-    accountProvider: row.accountProvider,
-    accountId: row.accountId,
-    universeId: row.universeId,
-    universeName: row.universeName,
-    universeActive: row.universeStatus === "active",
-    enabled: row.enabled,
-    matchScope: row.matchScope,
-    profileId: row.profileId,
-    sessionKey: row.sessionKey,
-    pairingRequired: row.pairingCode !== null,
-    pairingCode: row.pairingCode,
-    paired: row.pairingKey !== null,
-    activation: row.activation,
-    access: row.access,
-    memberRole: memberRole(row.memberRole),
-  }));
+    .where(and(eq(schema.botTriggers.kind, "chat"), eq(schema.botTriggers.enabled, true)))
+    .orderBy(asc(chatPriority), asc(schema.botTriggers.createdAt));
+  return rows.map((row) => {
+    const spec = row.spec as {
+      matchScope?: "direct" | "group" | null;
+      priority?: number;
+      pairingCode?: string | null;
+      activation?: unknown;
+      access?: unknown;
+    };
+    return {
+      triggerId: row.triggerId,
+      triggerName: row.triggerName,
+      botId: row.botId,
+      botName: row.botName,
+      botEnabled: row.botEnabled,
+      channelAccountId: row.channelAccountId,
+      accountProvider: row.accountProvider,
+      accountId: row.accountId,
+      universeId: row.universeId,
+      universeName: row.universeName,
+      universeActive: row.universeStatus === "active",
+      enabled: row.enabled,
+      matchScope: spec.matchScope ?? null,
+      priority: spec.priority ?? 100,
+      pairingRequired: spec.pairingCode != null,
+      pairingCode: spec.pairingCode ?? null,
+      paired: row.pairingKey !== null,
+      activation: spec.activation ?? null,
+      access: spec.access ?? null,
+      memberRole: memberRole(row.memberRole),
+    };
+  });
 }
 
 function matchingCandidates(
-  candidates: readonly ChannelBindingCandidate[],
+  candidates: readonly ChatTriggerCandidate[],
   route: ChannelRoute,
   isDirect: boolean,
-): ChannelBindingCandidate[] {
+): ChatTriggerCandidate[] {
   const scope = isDirect ? "direct" : "group";
-  return candidates.filter(
-    (row) =>
-      row.enabled &&
-      row.universeActive &&
-      row.accountProvider === route.provider &&
-      row.accountId === route.accountId &&
-      (row.matchScope === null || row.matchScope === scope),
-  );
+  return candidates
+    .filter(
+      (row) =>
+        row.enabled &&
+        row.botEnabled &&
+        row.universeActive &&
+        row.accountProvider === route.provider &&
+        row.accountId === route.accountId &&
+        (row.matchScope === null || row.matchScope === scope),
+    )
+    .sort((a, b) => a.priority - b.priority);
 }
 
 function resolveCandidate(
-  candidate: ChannelBindingCandidate,
+  candidate: ChatTriggerCandidate,
   isDirect: boolean,
-): ResolvedChannelBinding {
+): ResolvedChatTrigger {
   const scope = isDirect ? "direct" : "group";
   const access = resolveAccessSettings(candidate.access);
   return {
-    bindingId: candidate.bindingId,
-    bindingName: candidate.bindingName,
+    triggerId: candidate.triggerId,
+    triggerName: candidate.triggerName,
+    botId: candidate.botId,
+    botName: candidate.botName,
     universeId: candidate.universeId,
     universeName: candidate.universeName,
-    profileId: candidate.profileId,
-    sessionKey: candidate.sessionKey,
     activation: resolveActivationSettings(scope, candidate.activation),
     access,
     authorization: authorizeChannelSender(access, candidate.memberRole),
@@ -312,7 +312,7 @@ function resolveCandidate(
 
 function shouldPromptForPairing(
   inbound: NormalizedInboundV1,
-  candidates: readonly ChannelBindingCandidate[],
+  candidates: readonly ChatTriggerCandidate[],
 ): boolean {
   if (inbound.isDirect || inbound.mentionedBot || inbound.isReplyToBot) {
     return true;

@@ -1,17 +1,20 @@
 import type { WorkflowClient } from "@temporalio/client";
 import { describe, expect, it, vi } from "vitest";
 import {
-  selectChannelBinding,
+  selectChatTrigger,
   planChannelAdmission,
-  type ChannelBindingCandidate,
+  type ChatTriggerCandidate,
   type ChannelControlPlane,
-} from "../src/control-plane/bindings.js";
+} from "../src/control-plane/chat-triggers.js";
 import type { NormalizedInboundV1 } from "../src/contracts/channel.js";
 import { admitInbound } from "../src/ingress/admit.js";
 
-const candidate: ChannelBindingCandidate = {
-  bindingId: "123e4567-e89b-42d3-a456-426614174000",
-  bindingName: "family",
+const candidate: ChatTriggerCandidate = {
+  triggerId: "123e4567-e89b-42d3-a456-426614174000",
+  triggerName: "family-chat",
+  botId: "0b54d227-08a2-45a8-9b3f-6a4c21d1a222",
+  botName: "concierge",
+  botEnabled: true,
   channelAccountId: "123e4567-e89b-42d3-a456-426614174001",
   accountProvider: "telegram",
   accountId: "primary",
@@ -20,16 +23,11 @@ const candidate: ChannelBindingCandidate = {
   universeActive: true,
   enabled: true,
   matchScope: "group",
-  profileId: "family-chat",
-  sessionKey: "family",
+  priority: 100,
   pairingRequired: true,
   pairingCode: "PairCode123",
   paired: true,
-  activation: {
-    group: "mention",
-    triggerPrefixes: ["/ask"],
-    batching: { debounceMs: 250, maxWaitMs: 1_000, maxMessages: 4 },
-  },
+  activation: { group: "mention", triggerPrefixes: ["/ask"] },
   access: { turn: "members", control: "admins" },
   memberRole: "admin",
 };
@@ -47,30 +45,42 @@ const inbound: NormalizedInboundV1 = {
   isReplyToBot: false,
 };
 
-describe("Channels binding admission", () => {
-  it("selects only active, matching, paired candidates in priority order", () => {
+describe("chat trigger admission", () => {
+  it("selects only active, matching, paired triggers of enabled bots in priority order", () => {
     expect(
-      selectChannelBinding([{ ...candidate, paired: false }, candidate], inbound.route, false),
+      selectChatTrigger([{ ...candidate, paired: false }, candidate], inbound.route, false),
     ).toMatchObject({
-      bindingName: "family",
+      triggerName: "family-chat",
+      botName: "concierge",
       universeId: candidate.universeId,
       authorization: { turnAllowed: true, controlAllowed: true, memberRole: "admin" },
     });
-    expect(selectChannelBinding([candidate], inbound.route, true)).toBeNull();
-    expect(selectChannelBinding([{ ...candidate, universeActive: false }], inbound.route, false)).toBeNull();
+    expect(selectChatTrigger([candidate], inbound.route, true)).toBeNull();
+    expect(selectChatTrigger([{ ...candidate, universeActive: false }], inbound.route, false)).toBeNull();
+    expect(selectChatTrigger([{ ...candidate, botEnabled: false }], inbound.route, false)).toBeNull();
     expect(
-      selectChannelBinding([candidate], { ...inbound.route, accountId: "secondary" }, false),
+      selectChatTrigger([candidate], { ...inbound.route, accountId: "secondary" }, false),
     ).toBeNull();
+    expect(
+      selectChatTrigger(
+        [
+          { ...candidate, triggerName: "later", priority: 200 },
+          { ...candidate, triggerName: "first", priority: 10 },
+        ],
+        inbound.route,
+        false,
+      ),
+    ).toMatchObject({ triggerName: "first" });
   });
 
-  it("resolves the platform binding before signal-with-start", async () => {
-    const resolved = selectChannelBinding([candidate], inbound.route, false);
+  it("resolves the chat trigger before signal-with-start", async () => {
+    const resolved = selectChatTrigger([candidate], inbound.route, false);
     if (resolved === null) {
-      throw new Error("expected fixture binding to resolve");
+      throw new Error("expected fixture trigger to resolve");
     }
     const resolver: ChannelControlPlane = {
       resolve: vi.fn(async () => resolved),
-      admit: vi.fn(async () => ({ status: "bound" as const, binding: resolved })),
+      admit: vi.fn(async () => ({ status: "bound" as const, trigger: resolved })),
       pairingRequired: vi.fn(async () => false),
     };
     const signalWithStart = vi.fn(async (..._args: unknown[]) => ({ signaledRunId: "run-1" }));
@@ -80,7 +90,7 @@ describe("Channels binding admission", () => {
 
     expect(result).toMatchObject({
       status: "admitted",
-      binding: { bindingName: "family" },
+      trigger: { triggerName: "family-chat" },
       signaledRunId: "run-1",
     });
     expect(signalWithStart).toHaveBeenCalledOnce();
@@ -88,20 +98,20 @@ describe("Channels binding admission", () => {
     expect(options).toMatchObject({
       args: [
         {
-          bindingId: candidate.bindingId,
-          profileId: "family-chat",
-          sessionKey: "family",
-          activation: {
-            mode: "mention",
-            triggerPrefixes: ["/ask"],
-            batching: { debounceMs: 250, maxWaitMs: 1_000, maxMessages: 4 },
-          },
+          triggerId: candidate.triggerId,
+          botId: candidate.botId,
+          botName: "concierge",
+          scope: "group",
+          activation: { mode: "mention", triggerPrefixes: ["/ask"], mentionNames: [] },
           access: { turn: "members", control: "admins" },
-          initialRoute: inbound.route,
+          route: inbound.route,
+          label: "telegram group · -100123",
         },
       ],
       signalArgs: [inbound],
     });
+    expect(JSON.stringify(options)).not.toContain("sessionKey");
+    expect(JSON.stringify(options)).not.toContain("profileId");
   });
 
   it("does not create a workflow for unbound traffic", async () => {
@@ -122,7 +132,7 @@ describe("Channels binding admission", () => {
         ...inbound,
         text: "PairCode123",
       }),
-    ).toMatchObject({ status: "pair", candidate: { bindingName: "family" } });
+    ).toMatchObject({ status: "pair", candidate: { triggerName: "family-chat" } });
     expect(
       planChannelAdmission([{ ...candidate, paired: false }], {
         ...inbound,
@@ -136,6 +146,9 @@ describe("Channels binding admission", () => {
         mentionedBot: false,
       }),
     ).toEqual({ status: "pairing_pending" });
+    expect(
+      planChannelAdmission([{ ...candidate, pairingRequired: false, pairingCode: null, paired: false }], inbound),
+    ).toMatchObject({ status: "bound" });
   });
 
   it("returns pairing responses without signaling Temporal", async () => {

@@ -10,7 +10,7 @@ export function parseChannelControlCommand(text: string): ChannelControlCommand 
   const activation = /^\/activation(?:@[\w_]+)?(?:\s+(\w+))?$/i.exec(trimmed);
   if (activation !== null) {
     const mode = (activation[1] ?? "").toLowerCase();
-    return mode === "mention" || mode === "always" || mode === "silent"
+    return mode === "mention" || mode === "always"
       ? { kind: "activation", mode }
       : { kind: "activation_help" };
   }

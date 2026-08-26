@@ -4,7 +4,7 @@ import {
   type ChannelInboundMediaV1,
 } from "./media.js";
 
-export const CHANNEL_SESSION_WORKFLOW = "channelSessionWorkflowV1";
+export const CHANNEL_CONVERSATION_WORKFLOW = "channelConversationWorkflowV1";
 export const CHANNELS_WORKFLOW_TASK_QUEUE = "lightspeed-channels-workflows-v1";
 export const CHANNELS_ACTIVITY_TASK_QUEUE = "lightspeed-channels-activities-v1";
 export const CHANNEL_INBOUND_SIGNAL = "channel_inbound_v1";
@@ -19,19 +19,29 @@ export interface ChannelRoute {
   threadId?: string;
 }
 
-/** Secret-free durable input for one channel-owned managed session. */
-export interface ChannelSessionStartV1 {
+/**
+ * Secret-free durable input for one conversation workflow: the chat trigger
+ * it serves (a bot's `chat`-kind trigger) and the conversation it fronts.
+ * The workflow owns nothing on the core side — the bot controller creates
+ * and controls the session; this workflow is the source of the conversation's
+ * events and the receiver of its `message_*` tools.
+ */
+export interface ChannelConversationStartV1 {
   version: 1;
+  /** Lightspeed universe id. */
   universeId: string;
-  bindingId: string;
-  displayName?: string;
-  profileId?: string;
-  sessionId: string;
-  sessionKey: string;
+  /** Platform row key of the `chat` trigger; internal, never model-facing. */
+  triggerId: string;
+  /** Platform row key of the bot; internal. */
+  botId: string;
+  /** Authored bot id; session ids derive from it. */
+  botName: string;
   scope: "direct" | "group";
   activation: import("../policy/activation.js").ChannelActivationSettings;
   access: import("../policy/access.js").ChannelAccessSettings;
-  initialRoute: ChannelRoute;
+  route: ChannelRoute;
+  /** Human label of the conversation (routed session label, display name). */
+  label: string;
   deliveryTaskQueue: string;
 }
 
@@ -126,7 +136,7 @@ export function parseAdmittedChannelInboundV1(value: unknown): AdmittedChannelIn
   };
 }
 
-function parseChannelRoute(value: unknown): ChannelRoute {
+export function parseChannelRoute(value: unknown): ChannelRoute {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new TypeError("channel route must be an object");
   }
@@ -140,6 +150,14 @@ function parseChannelRoute(value: unknown): ChannelRoute {
     requireString(route.threadId, "route.threadId");
   }
   return route as unknown as ChannelRoute;
+}
+
+/** The label a conversation gets from its first message: who it is with, never an id the model copies. */
+export function conversationLabel(inbound: NormalizedInboundV1): string {
+  const provider = inbound.route.provider;
+  if (inbound.isDirect) return `${provider} dm · ${inbound.senderName}`;
+  const thread = inbound.route.threadId === undefined ? "" : ` · thread ${inbound.route.threadId}`;
+  return `${provider} group · ${inbound.route.chatId}${thread}`;
 }
 
 function requireString(value: unknown, name: string): asserts value is string {

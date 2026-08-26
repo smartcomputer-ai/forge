@@ -60,6 +60,9 @@ function eventRow(overrides: Partial<BotEventRow>): BotEventRow {
     hops: 0,
     replyTo: null,
     inReplyTo: null,
+    media: null,
+    tools: null,
+    notify: null,
     receivedAt: new Date("2026-08-26T10:00:01Z"),
     ...overrides,
   };
@@ -172,6 +175,7 @@ describe("model-facing bot tool views", () => {
       coalesce: null,
       deliver: null,
       cursor: null,
+      sessionTtlMs: null,
       enabled: true,
       createdAt: new Date("2026-08-26T10:00:00Z"),
       updatedAt: new Date("2026-08-26T10:00:00Z"),

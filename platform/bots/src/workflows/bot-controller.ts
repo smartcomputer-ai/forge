@@ -96,6 +96,10 @@ export interface BotManagedSession {
   label: string;
   kind: "main" | "keyed" | "event";
   lastActiveAtMs?: number;
+  /** Retention from the trigger: absent inherits the bot's, null never closes. */
+  ttlMs?: number | null;
+  /** Receiver-bound tools the session was created with; a run that used one is handled. */
+  carriedToolIds?: string[];
 }
 
 export interface BotActiveDeliverySnapshot {
@@ -399,11 +403,16 @@ export async function botControllerWorkflowV1(
     return earliest;
   }
 
+  /** Effective retention of a routed session: the trigger's override, else the bot's. */
+  function sessionTtl(session: BotManagedSession): number | null {
+    return session.ttlMs === undefined ? (config.routedSessionTtlMs ?? null) : session.ttlMs;
+  }
+
   function nextRetentionDeadline(): number | null {
-    const ttl = config.routedSessionTtlMs ?? null;
-    if (ttl === null) return null;
     let earliest: number | null = null;
     for (const session of extraSessions) {
+      const ttl = sessionTtl(session);
+      if (ttl === null) continue;
       if (activeBySession.has(session.sessionId) || sidecarBySession.has(session.sessionId)) continue;
       const expiry = (session.lastActiveAtMs ?? 0) + ttl;
       if (earliest === null || expiry < earliest) earliest = expiry;
@@ -637,6 +646,19 @@ export async function botControllerWorkflowV1(
         active.resolution = { outcome: resolution.outcome, summary: resolution.summary };
       }
     }
+    if (active !== undefined && active.resolution === null) {
+      // A run that answered through a carried tool (a chat reply) handled
+      // its delivery; asking for bot_event_resolve on top is ceremony.
+      const carried = new Set(
+        extraSessions.find((session) => session.sessionId === target)?.carriedToolIds ?? [],
+      );
+      if (
+        carried.size > 0 &&
+        pulled.invocations.some((invocation) => invocation.runId === runId && carried.has(invocation.toolId))
+      ) {
+        active.resolution = { outcome: "handled", summary: null };
+      }
+    }
   }
 
   async function processEmissions(): Promise<void> {
@@ -842,12 +864,19 @@ export async function botControllerWorkflowV1(
   async function ensureRoutedSession(
     target: BotEventSession,
     resolvedId: string,
+    toolsRef?: string,
   ): Promise<string | null> {
     let sessionIdToEnsure = resolvedId;
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (ensuredExtra.has(sessionIdToEnsure)) return sessionIdToEnsure;
+      if (ensuredExtra.has(sessionIdToEnsure)) {
+        // A later event may carry a retention change for the same key.
+        const known = extraSessions.find((session) => session.sessionId === sessionIdToEnsure);
+        if (known !== undefined && target.ttlMs !== undefined) known.ttlMs = target.ttlMs;
+        return sessionIdToEnsure;
+      }
+      let ensured: { carriedToolIds?: string[] };
       try {
-        await activities.ensureBotSession({
+        ensured = await activities.ensureBotSession({
           universeId: config.universeId,
           sessionId: sessionIdToEnsure,
           displayName: `${botLabel()} · ${target.label}`,
@@ -863,6 +892,7 @@ export async function botControllerWorkflowV1(
             workflowId: workflowInfo().workflowId,
             workflowKind: BOT_CONTROLLER_WORKFLOW,
           },
+          toolsRef: toolsRef ?? null,
         });
       } catch (error) {
         if (isDeclarationMismatch(error) && attempt === 0) {
@@ -884,6 +914,10 @@ export async function botControllerWorkflowV1(
         label: target.label,
         kind: sessionIdToEnsure.includes(":e-") ? "event" : "keyed",
         lastActiveAtMs: Date.now(),
+        ...(target.ttlMs === undefined ? {} : { ttlMs: target.ttlMs }),
+        ...((ensured.carriedToolIds ?? []).length === 0
+          ? {}
+          : { carriedToolIds: ensured.carriedToolIds }),
       });
       if (extraSessions.length > EXTRA_SESSION_CAP) {
         const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
@@ -897,12 +931,12 @@ export async function botControllerWorkflowV1(
     return null;
   }
 
-  /** Close routed sessions idle past the retention window. */
+  /** Close routed sessions idle past their retention window. */
   async function sweepRoutedSessions(): Promise<void> {
-    const ttl = config.routedSessionTtlMs ?? null;
-    if (ttl === null) return;
     const now = Date.now();
     for (const session of [...extraSessions]) {
+      const ttl = sessionTtl(session);
+      if (ttl === null) continue;
       if (activeBySession.has(session.sessionId) || sidecarBySession.has(session.sessionId)) continue;
       if ((session.lastActiveAtMs ?? 0) + ttl > now) continue;
       let closed = false;
@@ -936,13 +970,61 @@ export async function botControllerWorkflowV1(
     }
   }
 
-  function rememberDelivery(delivery: BotDelivery, recent: BotRecentEventSnapshot): void {
+  function rememberDelivery(
+    delivery: BotDelivery,
+    recent: BotRecentEventSnapshot,
+    sessionIdOfDelivery: string,
+  ): void {
     recentEvents.push(recent);
     if (recentEvents.length > RECENT_EVENT_CAP) {
       recentEvents.splice(0, recentEvents.length - RECENT_EVENT_CAP);
     }
     eventsProcessed += 1;
     void settleReceipts(delivery, recent);
+    void notifyDelivery(delivery, {
+      phase: "finished",
+      sessionId: sessionIdOfDelivery,
+      runId: recent.runId ?? null,
+      status: recent.status,
+      summary: recent.summary ?? recent.failure ?? null,
+    });
+  }
+
+  /**
+   * `started` / `finished` receipts to the admitting source of any event in
+   * the delivery that asked for them (a chat conversation waiting to type and
+   * to send the fallback reply). Best effort: a missing source is skipped.
+   */
+  async function notifyDelivery(
+    delivery: BotDelivery,
+    receipt: {
+      phase: "started" | "finished";
+      sessionId: string;
+      runId: string | null;
+      status?: string;
+      summary?: string | null;
+    },
+  ): Promise<void> {
+    const asked = delivery.events.filter((event) => event.notify === true);
+    if (asked.length === 0) return;
+    try {
+      await activities.sendDeliveryReceipts({
+        botId: config.botId,
+        eventIds: asked.map((event) => event.id),
+        receipt: {
+          phase: receipt.phase,
+          deliveryId: delivery.id,
+          seqs: delivery.events.flatMap((event) => (event.seq === undefined ? [] : [event.seq])),
+          sessionId: receipt.sessionId,
+          runId: receipt.runId,
+          ...(receipt.status === undefined ? {} : { status: receipt.status }),
+          ...(receipt.summary === undefined ? {} : { summary: receipt.summary }),
+        },
+      });
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+    laneTick += 1;
   }
 
   /**
@@ -975,7 +1057,7 @@ export async function botControllerWorkflowV1(
       event.seq === undefined ? [] : [event.seq],
     );
     if (seqs.length > 0) recent.seqs = seqs;
-    rememberDelivery(active.delivery, recent);
+    rememberDelivery(active.delivery, recent, active.sessionId);
     activeBySession.delete(active.sessionId);
     touchSession(active.sessionId);
     laneTick += 1;
@@ -1002,7 +1084,7 @@ export async function botControllerWorkflowV1(
           ref: firstEvent.ref,
           status: "appended",
           eventCount,
-        });
+        }, target);
         return;
       }
 
@@ -1029,7 +1111,7 @@ export async function botControllerWorkflowV1(
             status: "steered",
             eventCount,
             ...(steered.runId === undefined ? {} : { runId: steered.runId }),
-          });
+          }, target);
           return;
         }
       }
@@ -1046,7 +1128,7 @@ export async function botControllerWorkflowV1(
         status: "run_failed",
         eventCount,
         failure: lastError,
-      });
+      }, target);
     } finally {
       sidecarBySession.delete(target);
       touchSession(target);
@@ -1065,7 +1147,7 @@ export async function botControllerWorkflowV1(
     let target = active.sessionId;
     try {
       if (delivery.session !== undefined) {
-        const ensured = await ensureRoutedSession(delivery.session, target);
+        const ensured = await ensureRoutedSession(delivery.session, target, firstEvent.tools);
         if (ensured === null) {
           await record("run_failed", {
             eventId: delivery.id,
@@ -1170,6 +1252,7 @@ export async function botControllerWorkflowV1(
         runsToday += 1;
         await record("run_started", { eventId: delivery.id, runId: run.runId });
         laneTick += 1;
+        void notifyDelivery(delivery, { phase: "started", sessionId: target, runId: run.runId });
       } catch (error) {
         // A direct run can win the narrow read/start race. Hold the lane
         // through a short delay, then requeue at the front for this session.

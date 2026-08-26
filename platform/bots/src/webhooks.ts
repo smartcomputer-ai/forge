@@ -165,13 +165,20 @@ export function evaluateFilter(
  * Returns undefined for the main session. Key errors fall back to a shared
  * "default" key so events are never dropped by a broken expression.
  */
+export type RoutePreset = "github" | "chat" | null | undefined;
+
 export function computeRouteSession(
   botName: string,
   route: BotTriggerRoute | null,
-  preset: "github" | null | undefined,
+  preset: RoutePreset,
   extraction: { eventId: string; data?: unknown },
   context: FilterContext,
 ): { session?: BotEventSession; error?: string } {
+  if (preset === "chat" && (route === null || route.policy === "bot")) {
+    // A chat conversation always gets its own session: its reply tools are
+    // bound to the conversation, which the main session cannot carry.
+    route = { policy: "perKey", key: null };
+  }
   if (route === null || route.policy === "bot") return {};
   if (route.policy === "perEvent") {
     return {
@@ -199,13 +206,20 @@ export function computeRouteSession(
   }
   key ??= presetRouteKey(preset, extraction.data) ?? "default";
   const result: { session: BotEventSession; error?: string } = {
-    session: { sessionId: botKeyedSessionId(botName, key), label: key },
+    session: {
+      sessionId: botKeyedSessionId(botName, key),
+      label: presetRouteLabel(preset, extraction.data) ?? key,
+    },
   };
   if (error !== undefined) result.error = error;
   return result;
 }
 
-function presetRouteKey(preset: "github" | null | undefined, data: unknown): string | undefined {
+function presetRouteKey(preset: RoutePreset, data: unknown): string | undefined {
+  if (preset === "chat") {
+    const conversation = asRecord(asRecord(data)?.conversation);
+    return typeof conversation?.key === "string" && conversation.key ? conversation.key : undefined;
+  }
   if (preset !== "github") return undefined;
   const body = asRecord(data);
   const pullRequest = asRecord(body?.pull_request);
@@ -215,6 +229,15 @@ function presetRouteKey(preset: "github" | null | undefined, data: unknown): str
   const repository = asRecord(body?.repository);
   if (typeof repository?.full_name === "string") return repository.full_name;
   return undefined;
+}
+
+/** A human label for the routed session where the preset knows one (a chat's name). */
+function presetRouteLabel(preset: RoutePreset, data: unknown): string | undefined {
+  if (preset !== "chat") return undefined;
+  const conversation = asRecord(asRecord(data)?.conversation);
+  return typeof conversation?.label === "string" && conversation.label
+    ? conversation.label.slice(0, 200)
+    : undefined;
 }
 
 function bodyDigestId(rawBody: Buffer): string {

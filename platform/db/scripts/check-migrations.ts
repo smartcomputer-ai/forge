@@ -75,6 +75,10 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await requireColumn(handle.pool, "bots", "emit");
     await requireColumn(handle.pool, "bots", "display_name");
     await requireColumn(handle.pool, "bot_events", "sender_bot_id");
+    await requireColumn(handle.pool, "bot_events", "notify");
+    await requireColumn(handle.pool, "bot_triggers", "session_ttl_ms");
+    await requireColumn(handle.pool, "channel_pairings", "trigger_id");
+    await requireNoTable(handle.pool, "channel_bindings");
   } finally {
     await handle.pool.end();
   }
@@ -114,6 +118,9 @@ async function checkUpgrade(
     // The rename in 0004 must land on an upgraded database too.
     await requireColumn(handle.pool, "bots", "emit");
     await requireColumn(handle.pool, "bot_events", "reply_to");
+    // 0005 drops channel bindings and re-keys pairings to chat triggers.
+    await requireColumn(handle.pool, "channel_pairings", "trigger_id");
+    await requireNoTable(handle.pool, "channel_bindings");
     await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();
@@ -159,6 +166,16 @@ async function requireTable(pool: pg.Pool, table: string): Promise<void> {
   );
   if (result.rows[0]?.relation !== table) {
     throw new Error(`migration did not create public.${table}`);
+  }
+}
+
+async function requireNoTable(pool: pg.Pool, table: string): Promise<void> {
+  const result = await pool.query<{ relation: string | null }>(
+    "select to_regclass($1) as relation",
+    [`public.${table}`],
+  );
+  if (result.rows[0]?.relation !== null) {
+    throw new Error(`migration left public.${table} in place`);
   }
 }
 

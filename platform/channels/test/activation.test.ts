@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { NormalizedInboundV1 } from "../src/contracts/channel.js";
 import {
   classifyInbound,
-  formatInboundEnvelope,
+  formatMessageLine,
   resolveActivationSettings,
 } from "../src/policy/activation.js";
 
@@ -20,43 +20,33 @@ const groupInbound: NormalizedInboundV1 = {
 };
 
 describe("Channels activation policy", () => {
-  it("forces direct sessions active while honoring bounded batching settings", () => {
-    expect(
-      resolveActivationSettings("direct", {
-        group: "silent",
-        batching: { debounceMs: 0, maxWaitMs: 10, maxMessages: 1 },
-      }),
-    ).toEqual({
+  it("forces direct conversations active and ignores group-only settings", () => {
+    expect(resolveActivationSettings("direct", { group: "always" })).toEqual({
       mode: "dm",
       triggerPrefixes: ["/ask", "/lightspeed"],
       mentionNames: [],
-      batching: { debounceMs: 0, maxWaitMs: 10, maxMessages: 1 },
-      roomContextLimit: 200,
     });
   });
 
-  it("keeps ambient group traffic as context and activates native mentions", () => {
+  it("drops ambient group traffic and activates native mentions", () => {
     const settings = resolveActivationSettings("group", {
       group: "mention",
       mentionNames: ["lightspeed"],
     });
-    expect(classifyInbound(groupInbound, settings)).toEqual({
-      kind: "roomEvent",
-      text: "ordinary group traffic",
-    });
+    expect(classifyInbound(groupInbound, settings)).toEqual({ kind: "drop", reason: "ambient" });
     expect(
       classifyInbound(
         { ...groupInbound, text: "@lightspeed, help please", mentionedBot: true },
         settings,
       ),
     ).toEqual({ kind: "userTurn", text: "help please" });
+    expect(
+      classifyInbound(groupInbound, resolveActivationSettings("group", { group: "always" })),
+    ).toEqual({ kind: "userTurn", text: "ordinary group traffic" });
   });
 
-  it("allows explicit prefixes even in silent groups", () => {
-    const settings = resolveActivationSettings("group", {
-      group: "silent",
-      triggerPrefixes: ["/ask"],
-    });
+  it("allows explicit prefixes and keeps media-only messages", () => {
+    const settings = resolveActivationSettings("group", { triggerPrefixes: ["/ask"] });
     expect(classifyInbound({ ...groupInbound, text: "/ask investigate" }, settings)).toEqual({
       kind: "userTurn",
       text: "investigate",
@@ -65,20 +55,27 @@ describe("Channels activation policy", () => {
       kind: "drop",
       reason: "empty-trigger",
     });
+    const photo: NormalizedInboundV1["media"] = [
+      { version: 1, provider: "telegram", fileId: "f", kind: "image", mime: "image/jpeg" },
+    ];
+    expect(
+      classifyInbound({ ...groupInbound, text: "", media: photo, isDirect: true }, settings),
+    ).toEqual({ kind: "userTurn", text: "" });
   });
 
-  it("renders stable channel envelopes for context and batches", () => {
-    expect(formatInboundEnvelope(groupInbound)).toBe(
-      "[telegram:group -100123 #42] Lukas (2023-11-14 22:13Z): ordinary group traffic",
-    );
+  it("renders the message line without provider ids", () => {
+    const line = formatMessageLine(groupInbound, "ordinary group traffic");
+    expect(line).toBe("Lukas (2023-11-14 22:13Z): ordinary group traffic");
+    expect(line).not.toContain("-100123");
+    expect(line).not.toContain("#42");
   });
 
   it("rejects malformed durable activation configuration", () => {
-    expect(() => resolveActivationSettings("group", { group: "sometimes" })).toThrow(
+    expect(() => resolveActivationSettings("group", { group: "silent" })).toThrow(
       "activation.group",
     );
-    expect(() =>
-      resolveActivationSettings("group", { batching: { maxMessages: 100 } }),
-    ).toThrow("between 1 and 32");
+    expect(() => resolveActivationSettings("group", { mentionNames: [7] })).toThrow(
+      "mentionNames",
+    );
   });
 });
