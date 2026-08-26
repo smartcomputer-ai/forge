@@ -87,4 +87,15 @@ CREATE UNIQUE INDEX "bot_events_bot_event_idx" ON "bot_events" USING btree ("bot
 CREATE UNIQUE INDEX "bot_events_bot_seq_idx" ON "bot_events" USING btree ("bot_id","seq");--> statement-breakpoint
 CREATE INDEX "bot_events_bot_received_idx" ON "bot_events" USING btree ("bot_id","created_at");--> statement-breakpoint
 CREATE INDEX "channel_pairings_account_chat_idx" ON "channel_pairings" USING btree ("channel_account_id","chat_id");--> statement-breakpoint
-CREATE INDEX "channel_pairings_trigger_idx" ON "channel_pairings" USING btree ("trigger_id");
+CREATE INDEX "channel_pairings_trigger_idx" ON "channel_pairings" USING btree ("trigger_id");--> statement-breakpoint
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'lightspeed_channels') THEN
+    GRANT SELECT ON "member", "universes", "channel_accounts", "channel_identities"
+      TO lightspeed_channels;
+    GRANT SELECT, INSERT, UPDATE, DELETE
+      ON "bots", "bot_triggers", "bot_events", "channel_pairings"
+      TO lightspeed_channels;
+  END IF;
+END
+$$;

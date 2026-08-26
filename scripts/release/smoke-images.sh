@@ -52,6 +52,10 @@ test "$(docker image inspect "$channels_image" \
 test "$(docker image inspect "$channels_image" --format '{{json .Config.Cmd}}')" = '["all"]'
 docker run --rm --entrypoint node "$channels_image" -e \
   'require("node:fs").accessSync("/app/node_modules/baileys/package.json")'
+docker run --rm --entrypoint node "$channels_image" --import tsx --input-type=module -e \
+  'await import("@lightspeed/bots/webhooks")'
+docker run --rm --entrypoint node "$channels_image" -e \
+  'require("node:fs").accessSync("/app/platform/bots/src/runtime/main.ts")'
 
 for role in workflows activities telegram whatsapp all; do
   expected="$role"

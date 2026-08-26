@@ -33,10 +33,12 @@ const upgradeName = checkedIdentifier(`lightspeed_platform_upgrade_${suffix}`);
 const admin = new pg.Client({ connectionString: baseUrl });
 const previousMigrations = await mkdtemp(path.join(tmpdir(), "lightspeed-platform-migrations-"));
 let adminConnected = false;
+let workerRoleCreated = false;
 
 try {
   await admin.connect();
   adminConnected = true;
+  workerRoleCreated = await ensureWorkerRole(admin);
   await createDatabase(admin, emptyName);
   await createDatabase(admin, upgradeName);
 
@@ -60,6 +62,7 @@ try {
   if (adminConnected) {
     await dropDatabase(admin, emptyName);
     await dropDatabase(admin, upgradeName);
+    if (workerRoleCreated) await admin.query("DROP ROLE lightspeed_channels");
   }
   await admin.end().catch(() => undefined);
   await rm(previousMigrations, { recursive: true, force: true });
@@ -82,6 +85,7 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await requireColumn(handle.pool, "bot_events", "outcome");
     await requireColumn(handle.pool, "bot_triggers", "disabled_reason");
     await requireNoTable(handle.pool, "bot_activity");
+    await requireWorkerGrants(handle.pool);
   } finally {
     await handle.pool.end();
   }
@@ -127,9 +131,42 @@ async function checkUpgrade(
     // Event outcomes replace the retired activity feed.
     await requireColumn(handle.pool, "bot_events", "outcome");
     await requireNoTable(handle.pool, "bot_activity");
+    await requireWorkerGrants(handle.pool);
     await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();
+  }
+}
+
+async function ensureWorkerRole(client: pg.Client): Promise<boolean> {
+  const result = await client.query<{ present: boolean }>(
+    "select exists (select 1 from pg_roles where rolname = 'lightspeed_channels') as present",
+  );
+  if (result.rows[0]?.present === true) return false;
+  await client.query("CREATE ROLE lightspeed_channels");
+  return true;
+}
+
+async function requireWorkerGrants(pool: pg.Pool): Promise<void> {
+  const readTables = ["member", "universes", "channel_accounts", "channel_identities"];
+  const managedTables = ["bots", "bot_triggers", "bot_events", "channel_pairings"];
+  for (const table of readTables) {
+    await requireTablePrivilege(pool, table, "SELECT");
+  }
+  for (const table of managedTables) {
+    for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
+      await requireTablePrivilege(pool, table, privilege);
+    }
+  }
+}
+
+async function requireTablePrivilege(pool: pg.Pool, table: string, privilege: string): Promise<void> {
+  const result = await pool.query<{ present: boolean }>(
+    "select has_table_privilege('lightspeed_channels', $1, $2) as present",
+    [`public.${table}`, privilege],
+  );
+  if (result.rows[0]?.present !== true) {
+    throw new Error(`lightspeed_channels lacks ${privilege} on public.${table}`);
   }
 }
 
