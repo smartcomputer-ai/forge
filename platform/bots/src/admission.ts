@@ -28,6 +28,30 @@ import { computeRouteSession, evaluateFilter, type FilterContext } from "./webho
  */
 
 export type BotEventRow = typeof schema.botEvents.$inferSelect;
+type PersistedBotEventNotify = NonNullable<BotEventRow["notify"]>;
+
+const NOTIFY_TOKEN_ENCODING = "base64url-v1" as const;
+
+/**
+ * PostgreSQL jsonb rejects U+0000 even when JSON.stringify escapes it. Receipt
+ * tokens are caller-owned opaque bytes-in-a-string, so encode them at the
+ * persistence boundary and decode them before signalling the caller back.
+ */
+export function persistBotEventNotify(notify: BotEventNotifyV1): PersistedBotEventNotify {
+  return {
+    workflowId: notify.workflowId,
+    workflowKind: notify.workflowKind,
+    token: Buffer.from(notify.token, "utf8").toString("base64url"),
+    tokenEncoding: NOTIFY_TOKEN_ENCODING,
+  };
+}
+
+/** Read both encoded rows and legacy rows whose tokens were already jsonb-safe. */
+export function restoreBotEventNotifyToken(notify: PersistedBotEventNotify): string {
+  return notify.tokenEncoding === NOTIFY_TOKEN_ENCODING
+    ? Buffer.from(notify.token, "base64url").toString("utf8")
+    : notify.token;
+}
 
 export interface AdmissionDeps {
   db: Db;
@@ -314,7 +338,7 @@ export async function storeBotEvent(
       inReplyTo: input.inReplyTo ?? null,
       media: input.media ?? null,
       tools: input.tools ?? null,
-      notify: input.notify ?? null,
+      notify: input.notify === undefined ? null : persistBotEventNotify(input.notify),
       // Archived rows are for the record (a chat send, a replay's original):
       // resolved at birth, never delivered.
       outcome: input.deliver === false ? "archived" : null,

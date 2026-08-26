@@ -140,7 +140,13 @@ export type BotEventMedia = {
  * with `started` / `finished` and the caller's opaque token. Never on the
  * wire and never shown to the model.
  */
-export type BotEventNotify = { workflowId: string; workflowKind: string; token: string };
+export type BotEventNotify = {
+  workflowId: string;
+  workflowKind: string;
+  /** Encoded when `tokenEncoding` is present; legacy rows contain the opaque token directly. */
+  token: string;
+  tokenEncoding?: "base64url-v1";
+};
 
 /** Poll cursor state: Lightspeed-owned, operator-visible, resettable. */
 export type BotPollCursorState = {

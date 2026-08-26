@@ -12,6 +12,7 @@ import {
   receiptDocument,
   receiptEventId,
   renderBotDirectory,
+  restoreBotEventNotifyToken,
   storeBotEvent,
   type AdmissionDeps,
 } from "../admission.js";
@@ -206,9 +207,10 @@ export function createBotFederationActivities(config: BotFederationConfig): BotF
       const targets = new Map<string, { workflowId: string; token: string }>();
       for (const row of rows) {
         if (row.notify === null) continue;
-        targets.set(`${row.notify.workflowId}\n${row.notify.token}`, {
+        const token = restoreBotEventNotifyToken(row.notify);
+        targets.set(`${row.notify.workflowId}\n${token}`, {
           workflowId: row.notify.workflowId,
-          token: row.notify.token,
+          token,
         });
       }
       let sent = 0;

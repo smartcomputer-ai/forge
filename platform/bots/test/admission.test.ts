@@ -8,6 +8,8 @@ import {
   receiptDocument,
   receiptEventId,
   renderBotDirectory,
+  persistBotEventNotify,
+  restoreBotEventNotifyToken,
   resolveInbox,
   type InboxTarget,
 } from "../src/admission.js";
@@ -129,6 +131,26 @@ describe("bot directory", () => {
 });
 
 describe("receipts", () => {
+  it("round-trips opaque tokens through PostgreSQL-safe jsonb", () => {
+    const token = ["telegram", "primary", "6071843755", "", "304"].join("\0");
+    const persisted = persistBotEventNotify({
+      workflowId: "lightspeed.channels.v1/x",
+      workflowKind: "channelConversationWorkflowV1",
+      token,
+    });
+
+    expect(persisted).toMatchObject({ tokenEncoding: "base64url-v1" });
+    expect(JSON.stringify(persisted)).not.toContain("\\u0000");
+    expect(restoreBotEventNotifyToken(persisted)).toBe(token);
+    expect(
+      restoreBotEventNotifyToken({
+        workflowId: "legacy",
+        workflowKind: "legacyWorkflowV1",
+        token: "legacy-safe-token",
+      }),
+    ).toBe("legacy-safe-token");
+  });
+
   it("builds a deterministic receipt from the delivery outcome", () => {
     const document = receiptDocument({
       answering: "infra",

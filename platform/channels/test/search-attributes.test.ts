@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { ChannelConversationStartV1 } from "../src/contracts/channel.js";
 import {
@@ -24,5 +25,16 @@ describe("conversation workflow search attributes", () => {
       ["LightspeedBotId", "concierge"],
     ]);
     expect(CHANNEL_SEARCH_ATTRIBUTE_NAMES).not.toContain("secret-chat");
+  });
+
+  it("registers every Channels index in the local Temporal namespace", () => {
+    const bootstrap = readFileSync(
+      new URL("../../../scripts/dev/infra/temporal-ensure.sh", import.meta.url),
+      "utf8",
+    );
+
+    for (const name of CHANNEL_SEARCH_ATTRIBUTE_NAMES) {
+      expect(bootstrap).toContain(name);
+    }
   });
 });
