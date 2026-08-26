@@ -109,6 +109,8 @@ import { cn } from "@/lib/utils";
 /// U4a+U4d: master-detail session chat. Pane = paged session list plus
 /// New session (sub-agent tree expansion arrives with engine D1 parent
 /// linkage); detail = live transcript (long-poll tail) with a composer.
+const SESSION_LIST_REFRESH_MS = 5_000;
+
 export function SessionsPage({ admin }: { admin: boolean }) {
   const { universe, slug, isLoading } = useActiveUniverse();
   const { sessionId } = useParams<{ sessionId: string }>();
@@ -170,9 +172,13 @@ function SessionList({
         `/api/v1/universes/${universeId}/sessions?limit=50${
           pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
         }`,
-      ),
+    ),
     initialPageParam: "",
     getNextPageParam: (last) => last.nextCursor ?? undefined,
+    // Sessions can be created by runtime workflows (not only by this browser),
+    // so frontend mutation invalidation alone cannot keep this list current.
+    refetchInterval: SESSION_LIST_REFRESH_MS,
+    refetchIntervalInBackground: false,
   });
   const [createOpen, setCreateOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(true);
