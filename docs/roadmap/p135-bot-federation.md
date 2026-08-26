@@ -17,6 +17,16 @@
   the bot itself (`selfConfig`) and to humans. The `manage` grant
   (configure *and* create, one grant) is kept below as the alternative to
   reach for if an ops-bot use case ever demands authority.
+- Same day, second review question: how does bot A know about B, and when?
+  Answered in §1 — a derived `bot:directory` in context (the P134 catalog
+  idea) replaces the pull-shaped `bot_list`. A keyed rewrite mid-context
+  would invalidate the provider prefix cache from the old position on a
+  session that lives for months, so the directory is published through
+  [P136](p136-context-catalogs.md)'s external catalog (supersede at the
+  tail, never a rewrite); the interim snapshot-plus-deltas design is
+  dropped. The brief says *when*, the directory says *who*, subscriptions
+  say *whether*. The caching work itself is
+  [P137](p137-prompt-caching.md). P135 slice 1 needs P136 slice 4 first.
 - Absorbs P131 workstream 6 (bot → bot events; its bot → bot configuration
   item is withdrawn by the position above) and the "Bot federation" note in
   `later/pNNN-fleet-vs-bots.md`.
@@ -143,10 +153,36 @@ all, self or otherwise; receivers protect themselves with subscriptions.
 The emission rate cap stays (breaker rate, else 60/hour) and counts every
 emit by the sender, not only self-addressed ones.
 
-`bot_list` (name, enabled, whether it accepts bot events, first line of its
-brief) becomes an always-on read tool so a sender knows whom it can
-address; the universe is the trust boundary and the listing carries no
-authority.
+**How a sender knows whom it can address** follows P134's answer for the
+agent menu — a catalog in context, not a tool the model must remember to
+call and not an enum in a schema — published through
+[P136](p136-context-catalogs.md)'s external catalog so it never rewrites
+the prefix of a session that lives for months:
+
+- **One key, `bot:directory`.** Before a delivery, the controller derives
+  the directory and puts it as `InputItem::Catalog` on
+  `session/context/append`; a same-content put is a no-op. One line per
+  bot in the universe — name, a one-line `description` (a new column — the
+  brief is the job description *for* the bot, the description is what
+  *other* bots see, the `whenToUse` line), enabled state, and its relation
+  to the reader, **derived from the receivers' `bot` triggers**: accepts
+  events addressed by me / subscribes to what I publish / not listening to
+  me.
+- **A change lands at the tail.** The engine keeps the previous version
+  rendered byte-for-byte and appends the new one with a "supersedes"
+  header; superseded copies are the first thing compaction drops and the
+  current one survives it. A bot therefore learns of a neighbour at the
+  tail of its context, at its next run, exactly as it learns of events
+  and replies — and nothing in the prefix moves.
+- **No run, no budget.** A directory change never wakes the bot; it is
+  read when the next delivery does.
+
+One declaration — the subscription — drives both routing and discovery, so
+there is no sender-side allowlist to keep in sync (an optional `emit: { to:
+[...] }` narrowing can be added if a deployment wants it). The universe is
+the trust boundary and the directory carries no authority; the brief says
+*when* to use a neighbour, the directory says *who* is there. Beyond ~50
+bots the directory lists the listening ones and points at the UI.
 
 ### 2. Replies are deterministic: the delivery outcome is the return path
 
@@ -276,9 +312,8 @@ or the reverse — has no principled boundary.
   `replied`.
 - Causation chain: from any event, walk `causationId` back to the external
   event and forward to every reply — the team's trace of one incident.
-- Later: a wiring view on the Bots page derived from `bot` triggers (who
-  listens to whom), and a bot directory as a refreshed context entry (the
-  `subagents.catalog` pattern) once `bot_list` proves too pull-shaped.
+- The Bots page draws the wiring graph from the same `bot` trigger rows
+  the directory is derived from (who listens to whom); later polish.
 
 ### 7. How it composes with sub-agents — the rules
 
@@ -351,25 +386,25 @@ through P134.
 - **Cross-universe federation.**
 - **The A2A adapter** — later, as another emit target / subscription source
   behind the same `bot_emit` and `bot` trigger, not a new tool family.
-- **Reply timeouts and a bot directory context entry** — later, on
-  evidence.
+- **Reply timeouts** — later, on evidence.
 
 ## Slices
 
 1. **Bus** (1.5 d): `bot` trigger kind (spec, validation, UI form, create
    dialog checkbox), `bot_emit { to, reply }` with fan-out admission over
    trigger rows, envelope fields and the two columns, deterministic
-   per-receiver ids, `emit` grant rename, `bot_list`, `emitted` /
+   per-receiver ids, `emit` grant rename, the `description` column and the
+   `bot:directory` catalog (P136 external catalog), `emitted` /
    `loop_cut` activity, `hops` cut, event chips. Migration replaces
    `self_emit` and adds the columns; dev databases reset.
 2. **Replies** (1 d): controller-side reply admission on delivery finish,
    admission-side dropped replies, return-address routing to the asking
    session, per-session reply coalescing, `replied` activity, reply chip,
    the `bot.*` system event vocabulary published on the bus.
-3. Later: reply timeouts, wiring view, directory catalog entry, A2A target;
+3. Later: reply timeouts, wiring view, A2A target;
    the `manage` alternative only on demonstrated demand.
 
-1 → 2 in order; each is independently shippable and dogfoodable (a two-bot
+1 → 2 in order, after P136 slice 4; each is independently shippable and dogfoodable (a two-bot
 exchange is visible after slice 1, useful after 2).
 
 ## Tests
@@ -378,7 +413,8 @@ exchange is visible after slice 1, useful after 2).
   addressed, `from` allowlist, disabled trigger, self-subscription);
   deterministic per-receiver ids across a retried invocation; `hops`
   propagation and the cut; reply document shape for each status;
-  `bot_list` output shape.
+  directory rendering (relations derived from subscription rows) and the
+  no-op put when nothing changed.
 - **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`): `a` addresses `b` with
   `reply: true` from a keyed session → `b` runs and resolves → the reply
   lands in `a`'s same keyed session as one delivery; `b`'s filter rejects

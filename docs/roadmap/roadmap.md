@@ -1,15 +1,37 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P137](p137-prompt-caching.md) — prompt caching (proposed 2026-08-26,
+  short by design): Anthropic gets no caching today (no `cache_control`
+  breakpoints anywhere in production), OpenAI caches automatically but
+  without `prompt_cache_key`, and usage facts are engine-only. Adapter-placed
+  Anthropic breakpoints (system / tools / moving last-message, `1h` TTL
+  knob), `prompt_cache_key` = session id, `LlmUsage` on the API, a
+  broken-prefix warning, and — the point — deterministic prefix-stability
+  tests plus per-provider live tests asserting hit rates across turns,
+  runs, tool calls, catalog changes, and compaction.
+- [ ] [P136](p136-context-catalogs.md) — context catalogs (proposed
+  2026-08-26): the VFS, skill, and sub-agent catalogs are keyed entries at
+  the front of the message list, and a keyed replace removes the old entry
+  mid-context and pushes the new one at the tail — every catalog change
+  re-reads a long-lived session uncached. Append-with-supersede for catalog
+  kinds: the old entry stays rendered byte-for-byte, the successor carries a
+  "supersedes" header, superseded entries are the first thing compaction
+  drops, capped per key; instructions and client keyed appends unchanged.
+  The same mechanism is exposed to clients as `InputItem::Catalog` on
+  `session/context/append` (external catalogs; P135's bot directory is
+  the first consumer).
 - [ ] [P135](p135-bot-federation.md) — bot federation (proposed 2026-08-26,
   recommendation-first): bot ↔ bot as events through admission only — a
   `bot` subscription trigger kind, `bot_emit { to, reply }` fan-out,
   deterministic replies from the receiver's delivery outcome (no joined
-  cross-bot call, sessions never park on bots), causation + hop bound,
-  `bot_list`. No cross-bot authority: neither configuring nor creating
-  other bots; a bot reshapes only itself (`selfConfig`), neighbours ask,
-  humans set scope. A `manage` grant (configure + create, one grant) is
-  recorded as the alternative if authority is ever demanded.
+  cross-bot call, sessions never park on bots), causation + hop bound, a
+  `bot:directory` catalog derived from subscriptions and published through
+  P136's external catalog (supersede at the tail, never a rewrite). No
+  cross-bot authority: neither configuring nor creating other bots; a bot
+  reshapes only itself (`selfConfig`), neighbours ask, humans set scope. A
+  `manage` grant (configure + create, one grant) is recorded as the
+  alternative if authority is ever demanded.
 - [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
