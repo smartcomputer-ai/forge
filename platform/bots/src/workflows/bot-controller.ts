@@ -752,6 +752,7 @@ export async function botControllerWorkflowV1(
         sourceResolutionEnvelope({
           universeId: config.universeId,
           producerWorkflowId: workflowInfo().workflowId,
+          holderWorkflowId,
           promiseId: replyPromiseId(invocation),
           resolution,
         }),

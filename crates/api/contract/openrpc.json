@@ -11598,6 +11598,7 @@
         "oneOf": [
           {
             "additionalProperties": false,
+            "description": "The single reserved `reply` key.",
             "properties": {
               "type": {
                 "const": "reply",
@@ -11611,6 +11612,7 @@
           },
           {
             "additionalProperties": false,
+            "description": "A JSON Pointer to an array of unique completion-key strings.",
             "properties": {
               "pointer": {
                 "type": "string"
@@ -11628,6 +11630,29 @@
           },
           {
             "additionalProperties": false,
+            "description": "A JSON Pointer to an array of objects; the named string field of\nevery item is its completion key, so the model's own name for a work\nitem keys that item's promise.",
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              },
+              "type": {
+                "const": "arrayItemField",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "pointer",
+              "field"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A JSON Pointer to an array; keys are `prefix` joined with each item's\nzero-based index.",
             "properties": {
               "pointer": {
                 "type": "string"

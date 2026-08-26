@@ -10,9 +10,8 @@ pub(super) async fn prepare(
     deps: Option<&SubagentActivityDeps>,
     request: SubagentPrepareActivityRequest,
 ) -> Result<SubagentPrepareActivityResult, ActivityError> {
-    let deps = deps.ok_or_else(|| {
-        activity_error(anyhow::anyhow!("subagent activities are not configured"))
-    })?;
+    let deps = deps
+        .ok_or_else(|| activity_error(anyhow::anyhow!("subagent activities are not configured")))?;
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|elapsed| elapsed.as_millis() as u64)
@@ -27,9 +26,8 @@ pub(super) async fn resolve(
     deps: Option<&SubagentActivityDeps>,
     request: SubagentResolveActivityRequest,
 ) -> Result<engine::PromiseResolution, ActivityError> {
-    let deps = deps.ok_or_else(|| {
-        activity_error(anyhow::anyhow!("subagent activities are not configured"))
-    })?;
+    let deps = deps
+        .ok_or_else(|| activity_error(anyhow::anyhow!("subagent activities are not configured")))?;
     deps.service
         .resolve(request.child, request.terminal)
         .await
@@ -40,9 +38,8 @@ pub(super) async fn close(
     deps: Option<&SubagentActivityDeps>,
     request: SubagentCloseActivityRequest,
 ) -> Result<(), ActivityError> {
-    let deps = deps.ok_or_else(|| {
-        activity_error(anyhow::anyhow!("subagent activities are not configured"))
-    })?;
+    let deps = deps
+        .ok_or_else(|| activity_error(anyhow::anyhow!("subagent activities are not configured")))?;
     deps.service
         .close(&request.session_id)
         .await

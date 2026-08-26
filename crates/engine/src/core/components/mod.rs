@@ -51,10 +51,10 @@ pub use lifecycle::{CoreAgentLifecycleEvent, CoreAgentStatus, LifecycleState};
 pub use llm::*;
 pub use log::*;
 pub use promise::{
-    PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND, Promise,
-    PromiseComponentState, PromiseEvent, PromiseId, PromiseOwnership, PromiseResolution,
-    PromiseScope, PromiseSource, PromiseStatus, promise_cancel_effect, promise_create_effect,
-    promise_detach_effect,
+    PROMISE_CANCEL_EFFECT_KIND, PROMISE_CREATE_EFFECT_KIND, PROMISE_DETACH_EFFECT_KIND,
+    PROMISE_ID_PREFIX, Promise, PromiseComponentState, PromiseEvent, PromiseId, PromiseIdAllocator,
+    PromiseIdError, PromiseOwnership, PromiseResolution, PromiseScope, PromiseSource,
+    PromiseStatus, promise_cancel_effect, promise_create_effect, promise_detach_effect,
 };
 pub use run::{
     AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, JoinedWorkflowCall,
@@ -86,5 +86,5 @@ pub use workflow_tool::{
     WorkflowToolConfigEvent, WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolEvent,
     WorkflowToolInvocation, WorkflowToolState, WorkflowToolTarget, completion_promise_source,
     read_tool_emissions, validate_completion_key, with_completion_deadline,
-    workflow_tool_emit_effect, workflow_tool_execution_id, workflow_tool_promise_id,
+    workflow_tool_emit_effect, workflow_tool_execution_id,
 };

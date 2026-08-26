@@ -296,6 +296,17 @@ Release construction, snapshots, and tagged publication are documented in
   their own catalogs (a bot directory, a roster) as `InputItem::Catalog` on
   `session/context/append`; run input rejects them. Do not reintroduce
   in-place catalog rewrites or catalogs in the system prompt.
+- Model-facing ids are counters and names, never hashes. `PromiseId` is a
+  session counter (`promise_<n>`) that executors number from the tool
+  batch's `promise_id_base` (a per-call dispatch owns slot `base + index`)
+  and the reducer accepts only at or above that base and never twice;
+  producer correlation lives on `PromiseSource`, and the `sourceResolution`
+  emission id includes the holder workflow id. Workflow-tool
+  acknowledgements show the model only its promise handle(s); invocation
+  and execution digests stay in `output_json`. `job_submit` promises are
+  keyed by the model's own `job_id` (`ArrayItemField`), and job handles
+  default to the active environment. Do not reintroduce digest-shaped ids
+  or index-derived keys in anything the model must copy back.
 - Prompt caching is the adapters' job, and the rendered prefix must stay
   stable to keep it. The Anthropic adapter places `cache_control`
   breakpoints on every request (system prompt, last tool, last block of the

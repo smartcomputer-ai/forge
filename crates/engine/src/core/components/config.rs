@@ -301,7 +301,9 @@ impl Default for SubagentsFeature {
 
 impl SubagentsFeature {
     pub fn agent_allowed(&self, profile_id: &str) -> bool {
-        self.agents.iter().any(|agent| agent.profile_id == profile_id)
+        self.agents
+            .iter()
+            .any(|agent| agent.profile_id == profile_id)
     }
 }
 

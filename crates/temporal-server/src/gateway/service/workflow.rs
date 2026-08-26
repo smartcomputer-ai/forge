@@ -468,8 +468,6 @@ impl GatewayAgentApi {
         }
     }
 
-
-
     pub(super) async fn wait_for_closed_session(
         &self,
         session_id: &SessionId,

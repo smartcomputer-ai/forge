@@ -132,8 +132,16 @@ pub enum WorkflowToolCompletionInput {
     deny_unknown_fields
 )]
 pub enum WorkflowToolCompletionKeySourceInput {
+    /// The single reserved `reply` key.
     Reply,
+    /// A JSON Pointer to an array of unique completion-key strings.
     StringArray { pointer: String },
+    /// A JSON Pointer to an array of objects; the named string field of
+    /// every item is its completion key, so the model's own name for a work
+    /// item keys that item's promise.
+    ArrayItemField { pointer: String, field: String },
+    /// A JSON Pointer to an array; keys are `prefix` joined with each item's
+    /// zero-based index.
     ArrayIndices { pointer: String, prefix: String },
 }
 

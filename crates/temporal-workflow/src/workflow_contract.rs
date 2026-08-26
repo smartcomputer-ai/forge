@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Layout version of the exported manifest (not of the protocol).
-pub const WORKFLOW_CONTRACT_VERSION: u32 = 1;
+pub const WORKFLOW_CONTRACT_VERSION: u32 = 2;
 
 /// The one signal every holder and receiver handles. The workflow attributes
 /// declare it as a literal (`#[signal(name = "deliver_emission")]`); this
@@ -112,7 +112,7 @@ fn manifest() -> Value {
             "framing": "sha256 over the hash domain, then the kind, then each part in order; every piece is prefixed by its byte length as an unsigned 64-bit big-endian integer. Universe ids are hashed as hyphenated lowercase UUID strings; run ids as 8-byte big-endian unsigned integers.",
             "kinds": {
                 "runTerminal": { "kind": "run_terminal", "parts": ["universeId:utf8", "sessionId:utf8", "runId:u64be", "token:utf8"] },
-                "sourceResolution": { "kind": "source_resolution", "parts": ["universeId:utf8", "producerWorkflowId:utf8", "promiseId:utf8"] },
+                "sourceResolution": { "kind": "source_resolution", "parts": ["universeId:utf8", "producerWorkflowId:utf8", "holderWorkflowId:utf8", "promiseId:utf8"] },
                 "invocationCancellation": { "kind": "invocation_cancellation", "parts": ["invocationId:utf8", "completionKey:utf8"] },
                 "toolInvocation": { "verbatim": "invocationId" },
             },
@@ -131,7 +131,7 @@ fn vectors() -> Value {
     let universe = Uuid::parse_str(VECTOR_UNIVERSE).expect("vector universe id");
     let session = SessionId::new(VECTOR_SESSION);
     let run_id = RunId::new(7);
-    let promise_id = PromiseId::new(format!("wtp:sha256:{}", "b".repeat(64)));
+    let promise_id = PromiseId::from_number(1);
     let invocation_id = WorkflowToolInvocationId::new(format!("wti:sha256:{}", "a".repeat(64)));
     let session_workflow_id = compose_workflow_id(universe, &session);
     let job_workflow_id =
@@ -188,6 +188,7 @@ fn vectors() -> Value {
         EmissionEnvelope::source_resolution(
             universe,
             VECTOR_PRODUCER.to_owned(),
+            &session_workflow_id,
             promise_id.clone(),
             PromiseResolution::Resolved { payload_ref: None },
         ),
@@ -214,6 +215,7 @@ fn vectors() -> Value {
             "runId": run_id.as_u64(),
             "token": VECTOR_TOKEN,
             "producerWorkflowId": VECTOR_PRODUCER,
+            "holderWorkflowId": session_workflow_id,
             "promiseId": promise_id.as_str(),
             "invocationId": invocation_id.as_str(),
             "completionKey": REPLY_COMPLETION_KEY,
@@ -223,7 +225,7 @@ fn vectors() -> Value {
         },
         "emissionIds": {
             "runTerminal": EmissionId::for_run_terminal(universe, &session, run_id, VECTOR_TOKEN).as_str(),
-            "sourceResolution": EmissionId::for_source_resolution(universe, VECTOR_PRODUCER, &promise_id).as_str(),
+            "sourceResolution": EmissionId::for_source_resolution(universe, VECTOR_PRODUCER, &session_workflow_id, &promise_id).as_str(),
             "toolInvocation": EmissionId::for_tool_invocation(&invocation_id).as_str(),
             "invocationCancellation": EmissionId::for_invocation_cancellation(&invocation_id, REPLY_COMPLETION_KEY).as_str(),
         },

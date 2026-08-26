@@ -190,7 +190,7 @@
       ]
     },
     "PromiseId": {
-      "description": "Stable identifier for a promise. Minted by the tool executor that creates\nthe promise (a deterministic digest of the creating call context) and\ncarried in the creation event, so replay re-derives identical ids.",
+      "description": "Stable identifier for a promise: a session-scoped counter rendered as\n`promise_<n>`, the same convention as `run_<n>`, so the model copies a\nshort handle rather than a digest. The engine hands every tool batch a\nbase one past the session cursor (`ToolInvocationBatchRequest::\npromise_id_base`); the executor numbers the promises it creates from\nthat base, and the reducer accepts a creation only at or above the\nbatch's base and never twice. Producer correlation lives on\n`PromiseSource`, not in the id.",
       "type": "string"
     },
     "PromiseResolution": {

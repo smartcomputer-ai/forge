@@ -33,12 +33,18 @@ pub(crate) fn subagent_catalog_text(catalog: &SubagentCatalogSnapshot) -> String
             .map(|name| format!(" ({name})"))
             .unwrap_or_default();
         text.push_str(&format!("- {}{name}\n", agent.profile_id));
-        match agent.description.as_deref().filter(|d| !d.trim().is_empty()) {
+        match agent
+            .description
+            .as_deref()
+            .filter(|d| !d.trim().is_empty())
+        {
             Some(description) => text.push_str(&format!("  {description}\n")),
             None => text.push_str("  (no description)\n"),
         }
         if agent.revision.is_none() {
-            text.push_str("  (this profile is currently missing; runs will fail until it is restored)\n");
+            text.push_str(
+                "  (this profile is currently missing; runs will fail until it is restored)\n",
+            );
         }
     }
     text.push_str(&format!(

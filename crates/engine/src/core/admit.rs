@@ -3,9 +3,9 @@
 use crate::{
     CommandError, CommandRejection, CommandRejectionKind, ContextEntrySource, ContextEvent,
     CoreAgentCommand, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError,
-    PromiseEvent, PromiseResolution, RunEvent, RunRequestSource, RunSource, RunStatus,
-    ToolConfigEvent, WorkflowToolConfigEvent,
+    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError, PromiseEvent,
+    PromiseResolution, RunEvent, RunRequestSource, RunSource, RunStatus, ToolConfigEvent,
+    WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
         tooling::validate_tool_map,

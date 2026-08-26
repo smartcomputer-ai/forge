@@ -325,7 +325,11 @@ fn job_submit_schema() -> Value {
                     "type": "object",
                     "properties": {
                         "name": { "type": ["string", "null"] },
-                        "job_id": { "type": "string", "description": "Durable provider job id." },
+                        "job_id": {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$",
+                            "description": "Your name for the job (for example \"build\"). It keys the job's promise in the result and identifies the job to job_read."
+                        },
                         "argv": { "type": "array", "items": { "type": "string" } },
                         "cwd": { "type": ["string", "null"] },
                         "env": { "type": "object", "additionalProperties": { "type": "string" } },
@@ -388,10 +392,13 @@ fn job_handle_schema() -> Value {
     json!({
         "type": "object",
         "properties": {
-            "environment_id": { "type": "string" },
-            "job_id": { "type": "string" }
+            "environment_id": {
+                "type": ["string", "null"],
+                "description": "Omit for this session's active environment (where job_submit and job_run start jobs); set it only to read a job in another environment."
+            },
+            "job_id": { "type": "string", "description": "The job id you gave job_submit, or the one job_run returned." }
         },
-        "required": ["environment_id", "job_id"],
+        "required": ["job_id"],
         "additionalProperties": false
     })
 }

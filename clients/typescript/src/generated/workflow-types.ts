@@ -48,9 +48,14 @@ export type EmissionBody =
  */
 export type RunStatus = "active" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
 /**
- * Stable identifier for a promise. Minted by the tool executor that creates
- * the promise (a deterministic digest of the creating call context) and
- * carried in the creation event, so replay re-derives identical ids.
+ * Stable identifier for a promise: a session-scoped counter rendered as
+ * `promise_<n>`, the same convention as `run_<n>`, so the model copies a
+ * short handle rather than a digest. The engine hands every tool batch a
+ * base one past the session cursor (`ToolInvocationBatchRequest::
+ * promise_id_base`); the executor numbers the promises it creates from
+ * that base, and the reducer accepts a creation only at or above the
+ * batch's base and never twice. Producer correlation lives on
+ * `PromiseSource`, not in the id.
  *
  * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
  * via the `definition` "PromiseId".

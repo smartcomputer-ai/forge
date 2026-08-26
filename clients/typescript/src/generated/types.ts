@@ -328,6 +328,11 @@ export type WorkflowToolCompletionKeySourceInput =
       type: "stringArray";
     }
   | {
+      field: string;
+      pointer: string;
+      type: "arrayItemField";
+    }
+  | {
       pointer: string;
       prefix: string;
       type: "arrayIndices";

@@ -33,6 +33,7 @@ describe("generated workflow contract", () => {
       emissionId.sourceResolution(
         inputs.universeId,
         inputs.producerWorkflowId,
+        inputs.holderWorkflowId,
         inputs.promiseId,
       ),
     ).toBe(WORKFLOW_CONTRACT_VECTORS.emissionIds.sourceResolution);
@@ -82,6 +83,7 @@ describe("generated workflow contract", () => {
     const envelope = sourceResolutionEnvelope({
       universeId: inputs.universeId,
       producerWorkflowId: inputs.producerWorkflowId,
+      holderWorkflowId: inputs.holderWorkflowId,
       promiseId: inputs.promiseId,
       resolution: { kind: "resolved", payload_ref: null },
     });

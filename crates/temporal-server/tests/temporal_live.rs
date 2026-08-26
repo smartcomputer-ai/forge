@@ -565,9 +565,8 @@ fn parse_agent_run_script(text: &str) -> Option<(&str, usize)> {
 
 fn parse_reply_promise(tool_result: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(tool_result).ok()?;
-    value["promises"][engine::REPLY_COMPLETION_KEY]
-        .as_str()
-        .map(ToOwned::to_owned)
+    // A reply-keyed acknowledgement shows the model one `promise` handle.
+    value["promise"].as_str().map(ToOwned::to_owned)
 }
 
 #[async_trait]

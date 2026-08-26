@@ -4,9 +4,9 @@ use engine::{
     storage::{
         AppendSessionEvents, AppendSessionEventsResult, CreateClonedSession, CreateForkedSession,
         CreateSession, ListSessions, ReadSessionEvents, SessionLifecycleStatus, SessionListCursor,
-        SessionListPage, SessionOrigin, SessionOriginCounts, SessionPage,
-        SessionRecord, SessionStore, SessionStoreError, apply_lifecycle_projection,
-        check_origin_limits, largest_safe_fork_seq, lifecycle_at_fork, validate_fork_point,
+        SessionListPage, SessionOrigin, SessionOriginCounts, SessionPage, SessionRecord,
+        SessionStore, SessionStoreError, apply_lifecycle_projection, check_origin_limits,
+        largest_safe_fork_seq, lifecycle_at_fork, validate_fork_point,
     },
 };
 use sqlx::{Postgres, Row, Transaction};
@@ -390,12 +390,9 @@ impl SessionStore for PgStore {
                 )
                 .await?;
             }
-            let counts = origin_counts_in_tx(
-                &mut tx,
-                self.config.universe_id,
-                &origin.root_session_id,
-            )
-            .await?;
+            let counts =
+                origin_counts_in_tx(&mut tx, self.config.universe_id, &origin.root_session_id)
+                    .await?;
             check_origin_limits(origin, counts)?;
         }
         let origin_columns = OriginColumns::from_origin(request.origin.as_ref())?;
@@ -492,7 +489,12 @@ impl SessionStore for PgStore {
             .bind(self.config.universe_id)
             .bind(cursor_updated_at_ms)
             .bind(cursor_session_id)
-            .bind(request.root_session_id.as_ref().map(|id| id.as_str().to_owned()))
+            .bind(
+                request
+                    .root_session_id
+                    .as_ref()
+                    .map(|id| id.as_str().to_owned()),
+            )
             .bind(
                 request
                     .parent_session_id
@@ -940,11 +942,11 @@ impl OriginColumns {
             });
         };
         Ok(Self {
-            json: Some(serde_json::to_value(origin).map_err(|error| {
-                SessionStoreError::Store {
+            json: Some(
+                serde_json::to_value(origin).map_err(|error| SessionStoreError::Store {
                     message: format!("encode session origin: {error}"),
-                }
-            })?),
+                })?,
+            ),
             root_session_id: Some(origin.root_session_id.as_str().to_owned()),
             parent_session_id: Some(origin.parent_session_id.as_str().to_owned()),
         })

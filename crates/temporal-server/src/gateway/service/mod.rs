@@ -1185,9 +1185,9 @@ impl GatewayAgentApi {
                     reply_schema_ref: None,
                     deadline_after_ms: None,
                     max_promises: engine::MAX_COMPLETION_PROMISES,
-                    key_source: WorkflowToolCompletionKeySource::ArrayIndices {
+                    key_source: WorkflowToolCompletionKeySource::ArrayItemField {
                         pointer: "/jobs".to_owned(),
-                        prefix: "job-".to_owned(),
+                        field: "job_id".to_owned(),
                     },
                 },
             ),
@@ -1759,6 +1759,9 @@ fn managed_workflow_tools_from_api(
                         }
                         WorkflowToolCompletionKeySourceInput::StringArray { pointer } => {
                             WorkflowToolCompletionKeySource::StringArray { pointer }
+                        }
+                        WorkflowToolCompletionKeySourceInput::ArrayItemField { pointer, field } => {
+                            WorkflowToolCompletionKeySource::ArrayItemField { pointer, field }
                         }
                         WorkflowToolCompletionKeySourceInput::ArrayIndices { pointer, prefix } => {
                             WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix }

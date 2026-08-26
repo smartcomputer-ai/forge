@@ -158,7 +158,7 @@ describe.runIf(runIntegration)("Channels self-receiver", () => {
         ],
       });
       const invocationId = `wti:sha256:${"a".repeat(64)}`;
-      const promiseId = `wtp:sha256:${"d".repeat(64)}`;
+      const promiseId = "promise_1";
       const pushed: EmissionEnvelope = {
         emission_id: invocationId,
         producer: {
@@ -263,7 +263,7 @@ describe.runIf(runIntegration)("Channels self-receiver", () => {
       expect(await holder.query<EmissionEnvelope[]>("holder_state")).toHaveLength(1);
 
       const cancelledInvocationId = `wti:sha256:${"1".repeat(64)}`;
-      const cancelledPromiseId = `wtp:sha256:${"2".repeat(64)}`;
+      const cancelledPromiseId = "promise_2";
       await channel.signal("deliver_emission", {
         emission_id: `emission:sha256:${"3".repeat(64)}`,
         producer: pushed.producer,

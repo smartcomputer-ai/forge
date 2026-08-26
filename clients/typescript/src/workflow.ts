@@ -51,16 +51,24 @@ export const emissionId = {
     ]);
   },
 
+  /**
+   * Promise ids are session-scoped counters (`promise_7`), so the holder
+   * workflow id is part of the emission identity: one producer resolving
+   * `promise_7` for two holders sends two distinct emissions.
+   */
   sourceResolution(
     universeId: string,
     producerWorkflowId: string,
+    holderWorkflowId: string,
     promiseId: string,
   ): string {
     requireNonEmpty(producerWorkflowId, "producerWorkflowId");
+    requireNonEmpty(holderWorkflowId, "holderWorkflowId");
     requireNonEmpty(promiseId, "promiseId");
     return derivedEmissionId("source_resolution", [
       utf8(normalizeUniverseId(universeId)),
       utf8(producerWorkflowId),
+      utf8(holderWorkflowId),
       utf8(promiseId),
     ]);
   },
@@ -83,6 +91,8 @@ export const emissionId = {
 export interface SourceResolutionEnvelopeInput {
   universeId: string;
   producerWorkflowId: string;
+  /** The Lightspeed session workflow that holds the promise. */
+  holderWorkflowId: string;
   promiseId: string;
   resolution: PromiseResolution;
 }
@@ -93,12 +103,14 @@ export function sourceResolutionEnvelope(
 ): EmissionEnvelope {
   const universeId = normalizeUniverseId(input.universeId);
   requireNonEmpty(input.producerWorkflowId, "producerWorkflowId");
+  requireNonEmpty(input.holderWorkflowId, "holderWorkflowId");
   requireNonEmpty(input.promiseId, "promiseId");
   parseResolution(input.resolution);
   return {
     emission_id: emissionId.sourceResolution(
       universeId,
       input.producerWorkflowId,
+      input.holderWorkflowId,
       input.promiseId,
     ),
     producer: {

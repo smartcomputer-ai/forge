@@ -1,14 +1,15 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P138](p138-model-facing-ids.md) — model-facing ids (proposed
-  2026-08-26): `PromiseId` becomes a session counter (`promise_7`) allocated
-  from a base on the tool batch request, with the producer token and the
-  `sourceResolution` emission id following; workflow-tool acknowledgements
-  show only the promise(s) the model needs; `job_submit` promises keyed by
-  the model's own `job_id` (`ArrayItemField` key source); job handles
-  default to the active environment; `bot_emit` returns `seq`. Environment
-  names left as a separate decision.
+- [x] [P138](p138-model-facing-ids.md) — model-facing ids (implemented
+  2026-08-26): `PromiseId` is a session counter (`promise_7`) numbered by
+  executors from the tool batch's `promise_id_base` and checked by the
+  reducer, with the producer token and the `sourceResolution` emission id
+  (now holder-scoped, contract v2) following; workflow-tool
+  acknowledgements show only the promise(s) the model needs; `job_submit`
+  promises keyed by the model's own `job_id` (`ArrayItemField` key
+  source); job handles default to the active environment. Environment
+  names left as a separate decision; bot-side ids are P135 §8.
 - [x] [P137](p137-prompt-caching.md) — prompt caching (implemented 2026-08-26):
   adapter-placed Anthropic breakpoints (system / last tool / moving
   last-message, `prompt_cache_ttl` param for `1h`), `prompt_cache_key` =

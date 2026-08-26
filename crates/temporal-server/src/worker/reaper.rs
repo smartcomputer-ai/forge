@@ -6,18 +6,13 @@
 //! workflow can repair by itself: missed signals, terminated workflows, or
 //! promise/source state that is only visible by scanning session logs.
 
-use std::{
-    collections::BTreeMap,
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core_agent_state};
 use async_trait::async_trait;
 use engine::{
     CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus, Promise,
-    PromiseId, PromiseResolution, PromiseScope, PromiseSource,
-    SessionId,
+    PromiseId, PromiseResolution, PromiseScope, PromiseSource, SessionId,
     storage::{
         AppendSessionEvents, ListSessions, SessionListCursor, SessionRecord, SessionStore,
         SessionStoreError,
@@ -263,9 +258,6 @@ fn promise_owner_live(state: &CoreAgentState, promise: &Promise) -> bool {
     }
 }
 
-
-
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SessionWorkflowStatus {
     Running,
@@ -362,7 +354,6 @@ async fn observe_active_projection_statuses(
     }
 }
 
-
 async fn apply_holder_repairs(
     universe_id: Uuid,
     store: Arc<dyn SessionStore>,
@@ -414,7 +405,6 @@ async fn apply_holder_repairs(
         }
     }
 }
-
 
 fn admissions(commands: Vec<CoreAgentCommand>) -> Vec<AgentAdmission> {
     commands
@@ -610,9 +600,7 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
-    use engine::{
-        ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus,
-    };
+    use engine::{ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus};
     use temporal_workflow::{DEFAULT_MODEL, default_run_config, default_session_config};
 
     use super::*;
@@ -725,7 +713,6 @@ mod tests {
         }
     }
 
-
     fn snapshots(
         states: impl IntoIterator<Item = (SessionId, CoreAgentState)>,
     ) -> BTreeMap<SessionId, LoadedSessionSnapshot> {
@@ -754,6 +741,4 @@ mod tests {
             })
             .collect()
     }
-
-
 }

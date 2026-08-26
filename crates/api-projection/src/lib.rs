@@ -1015,6 +1015,12 @@ fn workflow_tool_declaration_to_api(
                             pointer: pointer.clone(),
                         }
                     }
+                    engine::WorkflowToolCompletionKeySource::ArrayItemField { pointer, field } => {
+                        WorkflowToolCompletionKeySourceInput::ArrayItemField {
+                            pointer: pointer.clone(),
+                            field: field.clone(),
+                        }
+                    }
                     engine::WorkflowToolCompletionKeySource::ArrayIndices { pointer, prefix } => {
                         WorkflowToolCompletionKeySourceInput::ArrayIndices {
                             pointer: pointer.clone(),

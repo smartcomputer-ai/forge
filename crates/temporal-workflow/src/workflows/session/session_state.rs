@@ -36,7 +36,13 @@ impl AgentSessionWorkflow {
                         error_ref: failure_message_ref,
                     },
                 };
-                (engine::PromiseId::new(token), resolution)
+                let Ok(promise_id) = engine::PromiseId::try_new(token.clone()) else {
+                    self.last_error = Some(format!(
+                        "run-terminal emission carries a malformed promise token {token:?}"
+                    ));
+                    return;
+                };
+                (promise_id, resolution)
             }
             engine::EmissionBody::SourceResolution {
                 promise_id,

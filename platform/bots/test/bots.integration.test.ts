@@ -1129,7 +1129,7 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
         taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
       });
 
-      const promiseId = `wtp:sha256:${"9".repeat(64)}`;
+      const promiseId = "promise_9";
       await controller.signal("deliver_emission", {
         emission_id: `wti:sha256:${"7".repeat(64)}`,
         producer: { kind: "session", universe_id: universeId, session_id: mainSession, log_seq: 5 },

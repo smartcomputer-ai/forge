@@ -72,9 +72,13 @@ impl EmissionId {
         )
     }
 
+    /// Promise ids are session-scoped counters, so the holder workflow id
+    /// is part of the identity: one producer resolving `promise_7` for two
+    /// holders sends two distinct emissions.
     pub fn for_source_resolution(
         universe_id: Uuid,
         workflow_id: &str,
+        holder_workflow_id: &str,
         promise_id: &PromiseId,
     ) -> Self {
         let universe = universe_id.to_string();
@@ -83,6 +87,7 @@ impl EmissionId {
             &[
                 universe.as_bytes(),
                 workflow_id.as_bytes(),
+                holder_workflow_id.as_bytes(),
                 promise_id.as_str().as_bytes(),
             ],
         )
@@ -251,10 +256,16 @@ impl EmissionEnvelope {
     pub fn source_resolution(
         universe_id: Uuid,
         workflow_id: String,
+        holder_workflow_id: &str,
         promise_id: PromiseId,
         resolution: PromiseResolution,
     ) -> Self {
-        let emission_id = EmissionId::for_source_resolution(universe_id, &workflow_id, &promise_id);
+        let emission_id = EmissionId::for_source_resolution(
+            universe_id,
+            &workflow_id,
+            holder_workflow_id,
+            &promise_id,
+        );
         Self {
             emission_id,
             producer: EmissionProducer::Workflow {
@@ -356,24 +367,36 @@ mod tests {
     }
 
     #[test]
-    fn source_resolution_ids_include_producer_and_promise() {
+    fn source_resolution_ids_include_producer_holder_and_promise() {
         let first = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-a",
+            "universe/session_a",
             &PromiseId::new("promise_1"),
         );
         let other_source = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-b",
+            "universe/session_a",
+            &PromiseId::new("promise_1"),
+        );
+        // Promise ids are session counters: the same producer resolving
+        // `promise_1` for two holders must send two distinct emissions.
+        let other_holder = EmissionId::for_source_resolution(
+            universe(1),
+            "universe/envjob-a",
+            "universe/session_b",
             &PromiseId::new("promise_1"),
         );
         let other_promise = EmissionId::for_source_resolution(
             universe(1),
             "universe/envjob-a",
+            "universe/session_a",
             &PromiseId::new("promise_2"),
         );
 
         assert_ne!(first, other_source);
+        assert_ne!(first, other_holder);
         assert_ne!(first, other_promise);
     }
 
@@ -394,6 +417,7 @@ mod tests {
         let envelope = EmissionEnvelope::source_resolution(
             universe(1),
             "universe/envjob-a".to_owned(),
+            "universe/session_a",
             PromiseId::new("promise_1"),
             PromiseResolution::Resolved {
                 payload_ref: Some(BlobRef::from_bytes(b"done")),

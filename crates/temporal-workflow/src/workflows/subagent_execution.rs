@@ -302,6 +302,7 @@ async fn emit_resolution(
     let envelope = engine::EmissionEnvelope::source_resolution(
         universe_id,
         ctx.workflow_id().to_owned(),
+        &holder,
         reply_promise_id.clone(),
         resolution,
     );
@@ -348,7 +349,7 @@ mod tests {
     }
 
     fn reply_promise() -> PromiseId {
-        PromiseId::new("promise_reply_1")
+        PromiseId::new("promise_1")
     }
 
     fn invocation_id() -> WorkflowToolInvocationId {
@@ -513,6 +514,7 @@ mod tests {
                 EmissionEnvelope::source_resolution(
                     UNIVERSE,
                     "wte:other".to_owned(),
+                    "universe/parent-session",
                     reply_promise(),
                     PromiseResolution::Resolved { payload_ref: None },
                 )

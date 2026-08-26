@@ -702,6 +702,7 @@ pub fn next_tool_batch_request(
         run_id: batch.run_id,
         turn_id: batch.turn_id,
         batch_id: batch.batch_id,
+        promise_id_base: batch.promise_id_base,
         workspace_links: state
             .lifecycle
             .config
@@ -1324,6 +1325,45 @@ fn joined_workflow_resume_result(
     })
 }
 
+/// A tool result may only mint promise ids from its batch's slot: at or
+/// above the base recorded when the batch was created, and never one the
+/// session already holds. Executors number from
+/// `ToolInvocationBatchRequest::promise_id_base`; this is the reducer-side
+/// half of that contract.
+fn validate_minted_promise_id(
+    state: &CoreAgentState,
+    run_id: crate::RunId,
+    batch_id: crate::ToolBatchId,
+    promise_id: &crate::PromiseId,
+    minted_in_result: &mut BTreeSet<crate::PromiseId>,
+) -> Result<(), DomainError> {
+    let base = state
+        .runs
+        .active
+        .as_ref()
+        .filter(|active| active.run_id == run_id)
+        .and_then(|active| active.tool_batches.get(&batch_id))
+        .map(|batch| batch.promise_id_base)
+        .ok_or_else(|| {
+            DomainError::InvariantViolation(format!(
+                "tool batch {batch_id} of run {run_id} is not active"
+            ))
+        })?;
+    if promise_id.number() < base {
+        return Err(DomainError::InvariantViolation(format!(
+            "promise {promise_id} was minted below tool batch {batch_id}'s promise base {base}"
+        )));
+    }
+    if state.promises.promises.contains_key(promise_id)
+        || !minted_in_result.insert(promise_id.clone())
+    {
+        return Err(DomainError::InvariantViolation(format!(
+            "promise {promise_id} already exists"
+        )));
+    }
+    Ok(())
+}
+
 fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvocationResult {
     let error_ref = crate::unavailable_tool_result_ref();
     ToolInvocationResult {
@@ -1347,6 +1387,7 @@ fn tool_call_completed_proposals(
 ) -> Result<Vec<CoreAgentEventProposal>, DomainError> {
     let mut proposals = Vec::new();
     let mut resolved_promises = BTreeSet::new();
+    let mut minted_promises = BTreeSet::new();
     let mut pending_port_emissions = BTreeMap::<crate::WorkflowToolId, u32>::new();
     let mut joined_calls = Vec::new();
     let mut joined_promise_proposals = Vec::new();
@@ -1408,6 +1449,13 @@ fn tool_call_completed_proposals(
             if let Some(promise) =
                 crate::core::components::promise::promise_from_create_effect(effect, result.run_id)?
             {
+                validate_minted_promise_id(
+                    state,
+                    result.run_id,
+                    result.batch_id,
+                    &promise.promise_id,
+                    &mut minted_promises,
+                )?;
                 promise_proposals.push(CoreAgentEventProposal::new(
                     joins.clone(),
                     CoreAgentEvent::Promise(PromiseEvent::Created { promise }),
@@ -1538,6 +1586,13 @@ fn tool_call_completed_proposals(
                         ));
                     }
                     for (key, promise_id) in promises {
+                        validate_minted_promise_id(
+                            state,
+                            result.run_id,
+                            result.batch_id,
+                            promise_id,
+                            &mut minted_promises,
+                        )?;
                         let source =
                             crate::core::components::workflow_tool::completion_promise_source(
                                 binding,
@@ -2193,7 +2248,7 @@ mod tests {
 
     /// The promise the shared parked-await fixtures wait on; an await must
     /// name at least one run-scoped, model-owned promise.
-    const WAIT_PROMISE_ID: &str = "promise_wait";
+    const WAIT_PROMISE_ID: &str = "promise_1";
 
     fn wait_await_spec() -> AwaitSpec {
         AwaitSpec {
@@ -4957,7 +5012,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
-        let promise_id = crate::PromiseId::new("promise_done");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -5036,7 +5091,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
-        let promise_id = crate::PromiseId::new("promise_pending");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -5082,7 +5137,7 @@ mod tests {
                 deferred_await_outcome_with_spec(
                     &request,
                     AwaitSpec {
-                        promise_ids: vec![crate::PromiseId::new("missing")],
+                        promise_ids: vec![crate::PromiseId::new("promise_99")],
                         mode: AwaitMode::All,
                         deadline_at_ms: None,
                     },
@@ -5816,8 +5871,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id: invocation_id.clone(),
             tool_id: definition.tool_id,
@@ -6102,6 +6156,7 @@ mod tests {
             .get(&definition.tool_id)
             .cloned()
             .expect("binding");
+        let promise_ids = crate::PromiseIdAllocator::new(request.promise_id_base);
         let mut joined_ids = Vec::new();
         let mut results = Vec::new();
         for call in &request.calls {
@@ -6132,8 +6187,7 @@ mod tests {
                 &call.call_id,
                 &binding.binding_fingerprint,
             );
-            let promise_id =
-                crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+            let promise_id = promise_ids.allocate();
             let invocation = WorkflowToolInvocation {
                 invocation_id: invocation_id.clone(),
                 tool_id: definition.tool_id.clone(),
@@ -6343,8 +6397,7 @@ mod tests {
             &workflow_call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id,
             tool_id: definition.tool_id,
@@ -6475,8 +6528,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let invocation = WorkflowToolInvocation {
             invocation_id: invocation_id.clone(),
             tool_id: definition.tool_id,
@@ -6655,8 +6707,7 @@ mod tests {
             &call.call_id,
             &binding.binding_fingerprint,
         );
-        let promise_id =
-            crate::workflow_tool_promise_id(&invocation_id, crate::REPLY_COMPLETION_KEY);
+        let promise_id = crate::PromiseId::from_number(1);
         let execution_id =
             crate::workflow_tool_execution_id(&invocation_id, &start.recipe_fingerprint);
         let invocation = WorkflowToolInvocation {
@@ -6775,7 +6826,7 @@ mod tests {
         let run_id = request.run_id;
         let resumed = drive
             .resume_tool_batch_outcome(
-                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_a")),
+                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_1")),
                 90,
             )
             .expect("resume tool batch");
@@ -6789,10 +6840,96 @@ mod tests {
             .state()
             .promises
             .promises
-            .get(&crate::PromiseId::new("promise_a"))
+            .get(&crate::PromiseId::new("promise_1"))
             .expect("promise in state");
         assert_eq!(promise.status, crate::PromiseStatus::Pending);
         assert_eq!(promise.scope, crate::PromiseScope::Run { run_id });
+    }
+
+    fn promise_tool_result_with_ids(
+        request: &ToolInvocationBatchRequest,
+        numbers: &[u64],
+    ) -> ToolInvocationBatchResult {
+        let mut result = completed_tool_result(request);
+        result.results[0].effects = numbers
+            .iter()
+            .map(|number| {
+                crate::promise_create_effect(
+                    &crate::PromiseId::from_number(*number),
+                    &crate::PromiseSource::Timer {
+                        fire_at_ms: u64::MAX,
+                    },
+                    None,
+                )
+            })
+            .collect();
+        result
+    }
+
+    #[test]
+    fn tool_batch_promise_base_sits_above_the_cursor_and_the_cursor_follows_the_max() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert_eq!(request.promise_id_base, 1);
+
+        // Executors of parallel calls draw from the allocator in any order;
+        // every id at or above the base is accepted and the cursor follows
+        // the highest one.
+        let resumed = drive
+            .resume_tool_batch_outcome(
+                ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[3, 2])),
+                90,
+            )
+            .expect("resume tool batch");
+        commit_action(&mut drive, resumed);
+        let promises = &drive.state().promises.promises;
+        assert!(promises.contains_key(&crate::PromiseId::from_number(2)));
+        assert!(promises.contains_key(&crate::PromiseId::from_number(3)));
+        assert_eq!(drive.state().id_cursors.last_promise_id, 3);
+    }
+
+    #[test]
+    fn tool_result_promise_below_the_batch_base_is_an_invariant_violation() {
+        let session_id = SessionId::new("session-a");
+        let mut state = CoreAgentState::new();
+        state.id_cursors.last_promise_id = 5;
+        let mut drive = CoreAgentDrive::from_replayed(session_id, state, None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert_eq!(request.promise_id_base, 6);
+
+        assert!(
+            drive
+                .resume_tool_batch_outcome(
+                    ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[2])),
+                    90,
+                )
+                .is_err(),
+            "an id below the batch base could collide with an earlier promise"
+        );
+        let resumed = drive
+            .resume_tool_batch_outcome(
+                ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[6])),
+                90,
+            )
+            .expect("resume tool batch");
+        commit_action(&mut drive, resumed);
+        assert_eq!(drive.state().id_cursors.last_promise_id, 6);
+    }
+
+    #[test]
+    fn tool_result_reusing_a_promise_id_is_an_invariant_violation() {
+        let session_id = SessionId::new("session-a");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = drive_to_single_tool_invocation(&mut drive);
+        assert!(
+            drive
+                .resume_tool_batch_outcome(
+                    ToolBatchOutcome::completed(promise_tool_result_with_ids(&request, &[1, 1])),
+                    90,
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -6801,7 +6938,7 @@ mod tests {
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
         let request = drive_to_single_tool_invocation(&mut drive);
         let run_id = request.run_id;
-        let promise_id = crate::PromiseId::new("promise_a");
+        let promise_id = crate::PromiseId::new("promise_1");
         drive.state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -6843,7 +6980,7 @@ mod tests {
     fn run_terminal_cascade_skips_session_scoped_promises() {
         let mut state = CoreAgentState::new();
         let run_id = crate::RunId::new(1);
-        let promise_id = crate::PromiseId::new("promise_a");
+        let promise_id = crate::PromiseId::new("promise_1");
         state.promises.promises.insert(
             promise_id.clone(),
             crate::Promise {
@@ -6880,9 +7017,9 @@ mod tests {
     fn promise_control_argument_facts_join_only_requested_state() {
         let mut state = CoreAgentState::new();
         state.promises.promises.insert(
-            crate::PromiseId::new("known"),
+            crate::PromiseId::new("promise_1"),
             crate::Promise {
-                promise_id: crate::PromiseId::new("known"),
+                promise_id: crate::PromiseId::new("promise_1"),
                 source: crate::PromiseSource::Timer { fire_at_ms: 10 },
                 scope: crate::PromiseScope::Run {
                     run_id: RunId::new(4),
@@ -6899,6 +7036,7 @@ mod tests {
             run_id: RunId::new(4),
             turn_id: TurnId::new(1),
             batch_id: ToolBatchId::new(1),
+            promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: None,
             environment_policy: None,
@@ -6929,8 +7067,8 @@ mod tests {
                     crate::PromiseControlArgumentCallFacts::Parsed {
                         call_id: crate::ToolCallId::new("cancel"),
                         promise_ids: vec![
-                            crate::PromiseId::new("known"),
-                            crate::PromiseId::new("unknown"),
+                            crate::PromiseId::new("promise_1"),
+                            crate::PromiseId::new("promise_99"),
                         ],
                     },
                     crate::PromiseControlArgumentCallFacts::Invalid {
@@ -6969,7 +7107,7 @@ mod tests {
         let request = drive_to_single_tool_invocation(&mut drive);
         let resumed = drive
             .resume_tool_batch_outcome(
-                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_a")),
+                ToolBatchOutcome::completed(promise_tool_result(&request, "promise_1")),
                 90,
             )
             .expect("resume tool batch");
@@ -6979,7 +7117,7 @@ mod tests {
         let resolve = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_a"),
+                    promise_id: crate::PromiseId::new("promise_1"),
                     resolution: crate::PromiseResolution::Resolved {
                         payload_ref: Some(payload_ref.clone()),
                     },
@@ -6992,7 +7130,7 @@ mod tests {
             .state()
             .promises
             .promises
-            .get(&crate::PromiseId::new("promise_a"))
+            .get(&crate::PromiseId::new("promise_1"))
             .expect("promise in state");
         assert_eq!(promise.status, crate::PromiseStatus::Resolved);
         assert_eq!(promise.payload_ref.as_ref(), Some(&payload_ref));
@@ -7001,7 +7139,7 @@ mod tests {
         let late = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_a"),
+                    promise_id: crate::PromiseId::new("promise_1"),
                     resolution: crate::PromiseResolution::Failed { error_ref: None },
                 },
                 92,
@@ -7016,7 +7154,7 @@ mod tests {
                 .state()
                 .promises
                 .promises
-                .get(&crate::PromiseId::new("promise_a"))
+                .get(&crate::PromiseId::new("promise_1"))
                 .expect("promise")
                 .status,
             crate::PromiseStatus::Resolved
@@ -7025,7 +7163,7 @@ mod tests {
         let unknown = drive
             .admit_command(
                 CoreAgentCommand::ResolvePromise {
-                    promise_id: crate::PromiseId::new("promise_missing"),
+                    promise_id: crate::PromiseId::new("promise_99"),
                     resolution: crate::PromiseResolution::Cancelled,
                 },
                 93,

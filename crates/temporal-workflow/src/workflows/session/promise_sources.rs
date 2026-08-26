@@ -357,9 +357,16 @@ fn queue_resolution(
     resolution: engine::PromiseResolution,
 ) {
     ctx.state_mut(|state| {
+        let promise_id = match engine::PromiseId::try_new(promise_id) {
+            Ok(promise_id) => promise_id,
+            Err(error) => {
+                state.last_error = Some(format!("cannot queue promise resolution: {error}"));
+                return;
+            }
+        };
         state.pending_admissions.push(AgentAdmission {
             command: CoreAgentCommand::ResolvePromise {
-                promise_id: engine::PromiseId::new(promise_id),
+                promise_id,
                 resolution,
             },
             correlation_token: None,

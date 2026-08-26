@@ -35,8 +35,8 @@ use uuid::Uuid;
 use crate::{
     config::DeploymentStores,
     environment_gateway::EnvironmentGatewayClientConfig,
-    subagents::AgentApiSubagentRuntime,
     gateway::GatewayAgentApi,
+    subagents::AgentApiSubagentRuntime,
     worker::{ActivityState, AudioTranscoder},
 };
 

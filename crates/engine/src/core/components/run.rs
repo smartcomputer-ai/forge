@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActiveToolBatch, BlobRef, CompletedToolBatch, ContextEntryId, ContextEntryInput,
     ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, PlanningError, PromiseId, RunConfig, RunId,
-    SteeringId, SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
+    CoreAgentStatus, DomainError, PlanningError, PromiseId, RunConfig, RunId, SteeringId,
+    SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,7 +341,6 @@ pub struct RunQueueState {
     pub queued: Vec<AcceptedRun>,
     pub completed: Vec<RunRecord>,
 }
-
 
 pub fn plan_next(state: &CoreAgentState) -> Result<Vec<CoreAgentEventProposal>, PlanningError> {
     if state.lifecycle.status != CoreAgentStatus::Open {

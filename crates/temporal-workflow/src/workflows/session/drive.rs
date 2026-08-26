@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn detached_session_promise_resolution_produces_followup_candidate() {
-        let promise_id = engine::PromiseId::new("promise_detached");
+        let promise_id = engine::PromiseId::new("promise_1");
         let payload_ref = BlobRef::from_bytes(b"child output");
         let mut workflow = AgentSessionWorkflow::default();
         workflow.core_state.lifecycle.status = CoreAgentStatus::Open;

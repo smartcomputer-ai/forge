@@ -59,9 +59,7 @@ impl SubagentToolKind {
     pub fn from_binding(tool_id: &str, semantic_type: &str) -> Option<Self> {
         match (tool_id, semantic_type) {
             (AGENT_RUN_WORKFLOW_TOOL_ID, AGENT_RUN_WORKFLOW_SEMANTIC_TYPE) => Some(Self::Run),
-            (AGENT_SPAWN_WORKFLOW_TOOL_ID, AGENT_SPAWN_WORKFLOW_SEMANTIC_TYPE) => {
-                Some(Self::Spawn)
-            }
+            (AGENT_SPAWN_WORKFLOW_TOOL_ID, AGENT_SPAWN_WORKFLOW_SEMANTIC_TYPE) => Some(Self::Spawn),
             _ => None,
         }
     }
@@ -255,7 +253,9 @@ pub async fn prepare_subagent_catalog_publication(
     }))
 }
 
-pub fn clear_subagent_catalog_command(active_catalog_ref: Option<&BlobRef>) -> Option<CoreAgentCommand> {
+pub fn clear_subagent_catalog_command(
+    active_catalog_ref: Option<&BlobRef>,
+) -> Option<CoreAgentCommand> {
     active_catalog_ref.map(|_| CoreAgentCommand::RemoveContext {
         expected_revision: None,
         key: ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY),

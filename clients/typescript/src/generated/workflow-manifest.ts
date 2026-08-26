@@ -4,7 +4,7 @@
  */
 export const WORKFLOW_CONTRACT_MANIFEST =
 {
-  "contractVersion": 1,
+  "contractVersion": 2,
   "emissionIds": {
     "framing": "sha256 over the hash domain, then the kind, then each part in order; every piece is prefixed by its byte length as an unsigned 64-bit big-endian integer. Universe ids are hashed as hyphenated lowercase UUID strings; run ids as 8-byte big-endian unsigned integers.",
     "hashDomain": "lightspeed.emission.v1",
@@ -30,6 +30,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
         "parts": [
           "universeId:utf8",
           "producerWorkflowId:utf8",
+          "holderWorkflowId:utf8",
           "promiseId:utf8"
         ]
       },
@@ -55,7 +56,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
     "emissionIds": {
       "invocationCancellation": "emission:sha256:6b88bd2ef714193fc9274b5f212cc415da4dd25733e1717fa89c7fdddc3eca4e",
       "runTerminal": "emission:sha256:a477a56dbeb4f3937959dc5ece1cf363c7030bec130415e4019b507e48098240",
-      "sourceResolution": "emission:sha256:51d9a2407d88b108245467c9123395fce853ed9737d59e8b82ede4d2774fa99f",
+      "sourceResolution": "emission:sha256:8980ea03cd17fbacf2682cdf4e5a13593d6c596ca8965ebcdb601ad56e40ec85",
       "toolInvocation": "wti:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     },
     "envelopes": [
@@ -79,13 +80,13 @@ export const WORKFLOW_CONTRACT_MANIFEST =
       {
         "body": {
           "kind": "source_resolution",
-          "promise_id": "wtp:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "promise_id": "promise_1",
           "resolution": {
             "kind": "resolved",
             "payload_ref": null
           }
         },
-        "emission_id": "emission:sha256:51d9a2407d88b108245467c9123395fce853ed9737d59e8b82ede4d2774fa99f",
+        "emission_id": "emission:sha256:8980ea03cd17fbacf2682cdf4e5a13593d6c596ca8965ebcdb601ad56e40ec85",
         "producer": {
           "kind": "workflow",
           "universe_id": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f",
@@ -99,7 +100,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
             "arguments_ref": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
             "binding_fingerprint": "binding:v1:vector",
             "completion_promises": {
-              "reply": "wtp:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              "reply": "promise_1"
             },
             "execution_context_ref": null,
             "invocation_id": "wti:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -128,7 +129,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
           "completion_key": "reply",
           "invocation_id": "wti:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "kind": "invocation_cancellation",
-          "promise_id": "wtp:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          "promise_id": "promise_1"
         },
         "emission_id": "emission:sha256:6b88bd2ef714193fc9274b5f212cc415da4dd25733e1717fa89c7fdddc3eca4e",
         "producer": {
@@ -142,10 +143,11 @@ export const WORKFLOW_CONTRACT_MANIFEST =
     "inputs": {
       "completionKey": "reply",
       "environmentId": "env_1",
+      "holderWorkflowId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/bot:v1:triage",
       "invocationId": "wti:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "jobGroupId": "job_1",
       "producerWorkflowId": "lightspeed.bots.v1/6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/triage",
-      "promiseId": "wtp:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "promiseId": "promise_1",
       "recipeJson": "{\"workflowType\":\"botControllerWorkflowV1\",\"taskQueue\":\"lightspeed-bots-workflows-v1\"}",
       "runId": 7,
       "sessionId": "bot:v1:triage",
@@ -172,7 +174,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
         "arguments_ref": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "binding_fingerprint": "binding:v1:vector",
         "completion_promises": {
-          "reply": "wtp:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          "reply": "promise_1"
         },
         "execution_context_ref": null,
         "invocation_id": "wti:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",

@@ -33,6 +33,13 @@
      which stays core-only. Bots are already P138's good exemplar (`#N`,
      names); what remains is subtractive — §8 — and ships as its own first
      slice, independent of federation.
+  5. Same day, from Lukas: separate bot *id* from bot *name*, as the
+     platform does everywhere else. First answer was uuid identity plus a
+     mutable name; Lukas asked why not an authored, readable id like a
+     session or profile id. That is the platform's real pattern — an
+     authored immutable id plus a mutable display name — and today's bot
+     `name` already *is* the authored id; the uuid the API and UI address
+     bots by is the odd one out. §9; part of slice 1.
 - Absorbs P131 workstream 6 (bot → bot events) and the "Bot federation"
   note in `later/pNNN-fleet-vs-bots.md`. What else "make bots really good"
   means, unrelated to federation, is in
@@ -302,6 +309,63 @@ and labels.** Concretely:
   payloads in `platform/bots/src/activities/tools.ts` and the controller
   summary change.
 
+### 9. Identity: an authored id and a display name, like a profile
+
+**The platform's pattern**, verified 2026-08-26: a profile is created with
+a user-authored `profileId` ("what routing rules and tooling reference —
+cannot be changed later", the create dialog derives it from the display
+name until edited) and a mutable `displayName`; a session has a
+client-authored id (`bot:v1:triage`) and a mutable `display_name`; a
+universe has an immutable `slug` as its URL segment beside its uuid row
+key. Readable, authored, immutable ids for everything people and models
+refer to; labels are separate and mutable.
+
+**Bots today** have the authored id — `name`, `^[a-z0-9][a-z0-9-]*$`,
+unique per universe, immutable — and every runtime identity is correctly
+built from it: `botWorkflowId` is `lightspeed.bots.v1/<universe>/<name>`,
+sessions are `bot:v1:<name>…`, schedules `…/<name>/schedule/<trigger>`,
+`source` and the directory say it, `to` / `from` will say it. What is
+inconsistent is that the **API and web UI address bots by the uuid row
+key** (`/api/v1/bots/<uuid>`, `/u/<slug>/bots/<uuid>`), and that there is
+no display name, so the handle has to do double duty as the label.
+
+**Rule.** A bot has an authored id and a display name, and nothing else
+names it:
+
+- **`botId`** — today's `name`, renamed on the wire to say what it is
+  (`sessionId`, `profileId`, `botId`). Authored at creation, validated as
+  today, unique per universe, immutable. It is what models say (`to:
+  "infra"`, `from: ["triage"]`, the directory), what humans type in briefs
+  and URLs, and what every Temporal and session identity is derived from
+  — unchanged. The create dialog derives it from the display name until
+  edited, as the profile dialog does.
+- **`displayName`** — new, mutable, nullable (falls back to the id);
+  `description` (§4) is the one-liner other bots see. Managed sessions get
+  `bot <displayName>` / `bot <displayName> · <label>` and the controller
+  applies a change with `session/rename`.
+- **The uuid row key stays internal**, exactly like `universes.id` beside
+  `slug`: foreign keys (`bot_triggers`, `bot_events`, `sender_bot_id`,
+  `reply_to`) use it, nothing outside the database does. API routes
+  become universe-scoped and addressed by id —
+  `/api/v1/universes/:universeId/bots/:botId/…` — and the web URL is
+  `/u/<slug>/bots/<botId>`. Responses carry `botId` and `displayName`;
+  the uuid disappears from the wire.
+- **Triggers get the same treatment**: `name` is the authored id (already
+  what `bot_trigger_put` keys on and what schedule ids use); the API
+  addresses `…/triggers/:triggerName`; the uuid stays a row key. The
+  webhook ingest URL keeps its opaque `<uuid>/<token>` path — it is a
+  capability URL, and opaque is right there.
+- **No handle rename**, same as a profile id, a universe slug, or a
+  session id. Human-written briefs and other bots' `from` lists mention
+  the handle; renaming it would silently break that text anyway. The
+  label renames freely.
+
+**Why not a uuid identity with a mutable name** (the first answer): it
+buys handle renames at the price of an unreadable identity in every
+Temporal and session id and a second spelling of every bot in the API —
+and the platform has already decided this question the other way for
+profiles, sessions, and universes.
+
 ## Worked example: an incident team
 
 - `triage` — Sentry/PagerDuty webhooks (`perKey` on incident id), `emit`.
@@ -340,10 +404,14 @@ through admission or a promise through P134.
 
 ## Slices
 
-1. **Ids** (~0.25 d, independent — can ship before anything else): the §8
-   subtractions in the tool activity and `BotControllerSummary`, plus a
-   test that no model-facing bot tool result or event rendering contains
-   a uuid or a ≥32-hex digest.
+1. **Identity and ids** (~0.5 d, independent — can ship before anything
+   else): §9 — `botId` / `displayName` / `description` on the wire,
+   universe-scoped routes addressed by `botId` and `triggerName`, web
+   URLs and dialogs, `displayName` in `botUpdateSchema` with the
+   controller applying `session/rename`; §8 — the subtractions in the
+   tool activity and `BotControllerSummary`, plus a test that no
+   model-facing bot tool result or event rendering contains a uuid or a
+   ≥32-hex digest. Temporal and session identities do not change.
 2. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
    form, create-dialog checkbox); `bot_emit { to }` joined with typed
    refusals; shared admission function in the bots package; `emit` grant
@@ -364,7 +432,8 @@ through admission or a promise through P134.
   rendering, over a fixture with webhook, poll, schedule, self, and
   federation events, matches no `/[0-9a-f]{32}/` and no uuid — the
   §8 guarantee, so a new field cannot quietly reintroduce a digest;
-  inbox matching (`from` allowlist,
+  route tests for universe-scoped `botId` / `triggerName` addressing and
+  the uuid's absence from every response; inbox matching (`from` allowlist,
   disabled trigger, disabled bot, missing inbox, one-per-bot validation);
   deterministic ids across a retried invocation; `hops` propagation and the
   cut; sender rate cap across self and addressed emits; typed refusal for
@@ -375,7 +444,9 @@ through admission or a promise through P134.
   keyed session with `reply: true` → `b` runs and resolves → the receipt
   lands in `a`'s keyed session (after a generation rotation too); `b`'s
   filter rejects → `a`'s tool result says `filtered` and `b` never runs;
-  `a`→`b`→`a` ping-pong stops at `MAX_BOT_HOPS` with `loop_cut`; controller
-  history replay.
+  `a`→`b`→`a` ping-pong stops at `MAX_BOT_HOPS` with `loop_cut`; change
+  `b`'s `displayName` while its controller runs → its sessions show the
+  new label, every id and `from` list untouched; controller history
+  replay.
 - **Platform**: `test:migrations` asserts the columns; `npm run check` and
   `check:identity` green; the bots integration suite keeps its scenarios.

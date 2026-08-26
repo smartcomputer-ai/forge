@@ -3,11 +3,11 @@
 use std::collections::BTreeMap;
 
 use engine::{
-    BlobRef, PromiseId, REPLY_COMPLETION_KEY, RunId, SessionId, ToolBatchId, ToolInvocationRequest,
-    ToolKind, TurnId, WorkflowToolBinding, WorkflowToolCompletion, WorkflowToolDefinition,
-    WorkflowToolInvocation, WorkflowToolInvocationId, WorkflowToolTarget, storage::BlobStore,
-    validate_completion_key, with_completion_deadline, workflow_tool_emit_effect,
-    workflow_tool_execution_id, workflow_tool_promise_id,
+    BlobRef, PromiseId, PromiseIdAllocator, REPLY_COMPLETION_KEY, RunId, SessionId, ToolBatchId,
+    ToolInvocationRequest, ToolKind, TurnId, WorkflowToolBinding, WorkflowToolCompletion,
+    WorkflowToolCompletionKeySource, WorkflowToolDefinition, WorkflowToolInvocation,
+    WorkflowToolInvocationId, WorkflowToolTarget, storage::BlobStore, validate_completion_key,
+    with_completion_deadline, workflow_tool_emit_effect, workflow_tool_execution_id,
 };
 use serde_json::{Value, json};
 
@@ -107,6 +107,10 @@ pub async fn validate_workflow_tool_arguments(
 /// `now_ms` is the runtime's observed wall clock, used only to convert the
 /// binding's trusted relative deadline into an absolute per-promise
 /// deadline; the durable invocation record itself carries no time.
+///
+/// Completion promises are numbered from the batch's allocator; the model
+/// sees only the promise handle(s) it can act on, while `output_json`
+/// keeps the invocation and execution ids for clients.
 #[allow(clippy::too_many_arguments)]
 pub async fn invoke_workflow_tool(
     blobs: &dyn BlobStore,
@@ -117,6 +121,7 @@ pub async fn invoke_workflow_tool(
     tool_batch_id: ToolBatchId,
     call: &ToolInvocationRequest,
     execution_context_ref: Option<BlobRef>,
+    promise_ids: &PromiseIdAllocator,
     now_ms: u64,
 ) -> ToolResult<ToolInvocationOutput> {
     binding
@@ -153,7 +158,7 @@ pub async fn invoke_workflow_tool(
         } => {
             let promises = BTreeMap::from([(
                 engine::REPLY_COMPLETION_KEY.to_owned(),
-                workflow_tool_promise_id(&invocation_id, engine::REPLY_COMPLETION_KEY),
+                promise_ids.allocate(),
             )]);
             (
                 Some(promises),
@@ -166,10 +171,7 @@ pub async fn invoke_workflow_tool(
             let keys = derive_completion_keys(binding, &arguments)?;
             let promises: BTreeMap<String, PromiseId> = keys
                 .into_iter()
-                .map(|key| {
-                    let promise_id = workflow_tool_promise_id(&invocation_id, &key);
-                    (key, promise_id)
-                })
+                .map(|key| (key, promise_ids.allocate()))
                 .collect();
             (
                 Some(promises),
@@ -203,21 +205,34 @@ pub async fn invoke_workflow_tool(
             &start.recipe_fingerprint,
         ));
     }
-    if matches!(binding.completion, WorkflowToolCompletion::Promises { .. })
+    // The model gets exactly what it can act on: the single promise of a
+    // reply-keyed call, or the keyed map of a multi-item call. Invocation
+    // and execution ids are client diagnostics and stay in `output_json`.
+    let mut model_visible = json!({ "accepted": true });
+    if let WorkflowToolCompletion::Promises { key_source, .. } = &binding.completion
         && let Some(promises) = &invocation.completion_promises
     {
-        let map: serde_json::Map<String, Value> = promises
-            .iter()
-            .map(|(key, promise_id)| (key.clone(), Value::String(promise_id.to_string())))
-            .collect();
-        acknowledgement["promises"] = Value::Object(map);
+        if matches!(key_source, WorkflowToolCompletionKeySource::Reply)
+            && let Some(promise_id) = promises.get(REPLY_COMPLETION_KEY)
+        {
+            let promise = Value::String(promise_id.to_string());
+            acknowledgement["promise"] = promise.clone();
+            model_visible["promise"] = promise;
+        } else {
+            let map: serde_json::Map<String, Value> = promises
+                .iter()
+                .map(|(key, promise_id)| (key.clone(), Value::String(promise_id.to_string())))
+                .collect();
+            acknowledgement["promises"] = Value::Object(map.clone());
+            model_visible["promises"] = Value::Object(map);
+        }
     }
     let effect = with_completion_deadline(
         workflow_tool_emit_effect(&invocation),
         completion_deadline_ms,
     );
     Ok(ToolInvocationOutput {
-        model_visible_text: acknowledgement.to_string(),
+        model_visible_text: model_visible.to_string(),
         output_json: acknowledgement,
         effects: vec![effect],
     })
@@ -292,6 +307,47 @@ fn derive_completion_keys_from_source(
                     return Err(ToolError::InvalidRequest {
                         message: format!(
                             "workflow tool {tool_id} completion keys at {pointer} must be unique"
+                        ),
+                    });
+                }
+                keys.push(key.clone());
+            }
+            Ok(keys)
+        }
+        engine::WorkflowToolCompletionKeySource::ArrayItemField { pointer, field } => {
+            let Some(Value::Array(entries)) = arguments.pointer(pointer) else {
+                return Err(ToolError::InvalidRequest {
+                    message: format!(
+                        "workflow tool {tool_id} arguments do not contain an item array at {pointer}"
+                    ),
+                });
+            };
+            if entries.is_empty() || entries.len() as u32 > max_promises {
+                return Err(ToolError::InvalidRequest {
+                    message: format!(
+                        "workflow tool {tool_id} requires 1..={max_promises} completion items at {pointer}, got {}",
+                        entries.len()
+                    ),
+                });
+            }
+            let mut keys = Vec::with_capacity(entries.len());
+            for (index, entry) in entries.iter().enumerate() {
+                let Some(Value::String(key)) = entry.get(field) else {
+                    return Err(ToolError::InvalidRequest {
+                        message: format!(
+                            "workflow tool {tool_id} item {pointer}/{index} needs a string `{field}`"
+                        ),
+                    });
+                };
+                validate_completion_key(key).map_err(|error| ToolError::InvalidRequest {
+                    message: format!(
+                        "workflow tool {tool_id} item {pointer}/{index} has an invalid `{field}`: {error}"
+                    ),
+                })?;
+                if keys.contains(key) {
+                    return Err(ToolError::InvalidRequest {
+                        message: format!(
+                            "workflow tool {tool_id} items at {pointer} must have unique `{field}` values, got {key:?} twice"
                         ),
                     });
                 }
@@ -418,6 +474,7 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -431,6 +488,7 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -518,25 +576,18 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
         .expect("invoke");
 
-        let invocation_id = WorkflowToolInvocationId::for_call(
-            binding.session_universe_id,
-            &SessionId::new("session-1"),
-            RunId::new(1),
-            TurnId::new(2),
-            ToolBatchId::new(3),
-            &call.call_id,
-            &binding.binding_fingerprint,
-        );
-        let expected_promise = workflow_tool_promise_id(&invocation_id, REPLY_COMPLETION_KEY);
+        assert_eq!(output.output_json["promise"], json!("promise_1"));
         assert_eq!(
-            output.output_json["promises"][REPLY_COMPLETION_KEY],
-            json!(expected_promise.to_string())
+            output.model_visible_text, r#"{"accepted":true,"promise":"promise_1"}"#,
+            "the model sees the promise handle and nothing else"
         );
+        assert!(output.output_json["invocationId"].is_string());
         assert_eq!(output.effects.len(), 1);
         assert_eq!(
             output.effects[0].data.get("completion_deadline_ms"),
@@ -587,13 +638,14 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
         .expect("invoke Joined call");
 
         assert!(output.output_json.get("promises").is_none());
-        assert!(!output.model_visible_text.contains("wtp:sha256:"));
+        assert_eq!(output.model_visible_text, r#"{"accepted":true}"#);
         assert_eq!(
             output.effects[0].data.get("completion_deadline_ms"),
             Some(&"31000".to_owned())
@@ -603,7 +655,7 @@ mod tests {
             .get("completion_promises")
             .expect("internal reply map");
         assert!(encoded_promises.contains(engine::REPLY_COMPLETION_KEY));
-        assert!(encoded_promises.contains("wtp:sha256:"));
+        assert!(encoded_promises.contains("promise_1"));
     }
 
     #[tokio::test]
@@ -638,6 +690,7 @@ mod tests {
             ToolBatchId::new(3),
             &call(arguments_ref),
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -662,6 +715,7 @@ mod tests {
             ToolBatchId::new(3),
             &call(duplicate_ref),
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -682,6 +736,7 @@ mod tests {
             ToolBatchId::new(3),
             &call(over_cap_ref),
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -722,6 +777,7 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -733,6 +789,73 @@ mod tests {
         assert_eq!(promises.len(), 2);
         assert!(promises.contains_key("job-0"));
         assert!(promises.contains_key("job-1"));
+    }
+
+    #[tokio::test]
+    async fn array_item_field_source_keys_promises_by_the_model_s_item_names() {
+        let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
+        let binding = promise_bearing_binding(
+            blobs.as_ref(),
+            4,
+            engine::WorkflowToolCompletionKeySource::ArrayItemField {
+                pointer: "/jobs".to_owned(),
+                field: "job_id".to_owned(),
+            },
+        )
+        .await;
+        let call = |arguments_ref| ToolInvocationRequest {
+            call_id: ToolCallId::new("call-1"),
+            tool_name: ToolName::new("request_approval"),
+            arguments_ref,
+            workflow_tool: None,
+            promise_control: None,
+        };
+        let invoke = |arguments: &'static [u8]| {
+            let blobs = blobs.clone();
+            let binding = binding.clone();
+            async move {
+                let arguments_ref = blobs
+                    .put_bytes(arguments.to_vec())
+                    .await
+                    .expect("arguments");
+                invoke_workflow_tool(
+                    blobs.as_ref(),
+                    &binding,
+                    &SessionId::new("session-1"),
+                    RunId::new(1),
+                    TurnId::new(2),
+                    ToolBatchId::new(3),
+                    &call(arguments_ref),
+                    None,
+                    &PromiseIdAllocator::new(7),
+                    1_000,
+                )
+                .await
+            }
+        };
+
+        let output = invoke(br#"{"jobs":[{"job_id":"build","argv":["make"]},{"job_id":"test","argv":["make","test"]}]}"#)
+            .await
+            .expect("invoke keyed by job id");
+        assert_eq!(
+            output.output_json["promises"],
+            json!({ "build": "promise_7", "test": "promise_8" })
+        );
+        assert_eq!(
+            output.model_visible_text,
+            r#"{"accepted":true,"promises":{"build":"promise_7","test":"promise_8"}}"#
+        );
+
+        for arguments in [
+            br#"{"jobs":[{"argv":["make"]}]}"#.as_slice(),
+            br#"{"jobs":[{"job_id":7}]}"#.as_slice(),
+            br#"{"jobs":[{"job_id":"build"},{"job_id":"build"}]}"#.as_slice(),
+            br#"{"jobs":[{"job_id":"build:1"}]}"#.as_slice(),
+            br#"{"jobs":[]}"#.as_slice(),
+        ] {
+            let error = invoke(arguments).await.expect_err("rejected item set");
+            assert!(matches!(error, ToolError::InvalidRequest { .. }));
+        }
     }
 
     #[tokio::test]
@@ -797,6 +920,7 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await
@@ -819,8 +943,12 @@ mod tests {
             ))
         );
         assert!(
-            output.output_json["promises"][REPLY_COMPLETION_KEY].is_string(),
-            "start-on-call acknowledgement carries the keyed promise map"
+            output.output_json["promise"].is_string(),
+            "start-on-call acknowledgement carries the reply promise"
+        );
+        assert!(
+            !output.model_visible_text.contains("executionId"),
+            "execution ids are client diagnostics, not model input"
         );
 
         let joined_binding = WorkflowToolBinding::admit(
@@ -842,6 +970,7 @@ mod tests {
             ToolBatchId::new(3),
             &call,
             None,
+            &PromiseIdAllocator::new(1),
             1_000,
         )
         .await

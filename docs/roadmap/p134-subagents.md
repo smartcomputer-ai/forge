@@ -135,7 +135,8 @@ agent_run   { agent: string, input: string, label?: string }
      one turn park together and resume together (fan-out / fan-in)
 
 agent_spawn { agent: string, input: string, label?: string }
-  -> { promise, sessionId, runId }; join with await/cancel/detach
+  -> { accepted, promise }; join with await/cancel/detach. The child's
+     session id and run id arrive in the result envelope (P138).
 
 await { promises, mode: all|any, timeout_ms }   unchanged
 cancel { promises }                              unchanged; a child promise's

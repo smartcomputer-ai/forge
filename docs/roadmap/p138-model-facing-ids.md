@@ -20,6 +20,29 @@
   the context, so nothing here touches the cached prefix.
 - Greenfield: promise ids change shape without back-compat; dev databases
   reset; the workflow contract export regenerates.
+- **Implemented 2026-08-26** (slices 1–3, one pass):
+  - Engine: `PromiseId` is a validated `promise_<n>` string with a numeric
+    accessor and numeric ordering (one string in the log, emissions, API,
+    and tool arguments — no boundary conversions); `IdCursors.last_promise_id`;
+    `ActiveToolBatch::promise_id_base` recorded at batch creation;
+    `promise_id_base` on batch and per-call requests (a per-call dispatch
+    owns slot `base + index`); the drive rejects a minted id below the
+    batch base or already held; `workflow_tool_promise_id` and the
+    canonical-derivation check are gone (keyed maps must be distinct);
+    `WorkflowToolCompletionKeySource::ArrayItemField`; `PromiseIdAllocator`.
+  - Executors: one allocator per batch dispatch in the session tool
+    runtime, threaded into `invoke_workflow_tool` and `sleep`;
+    model-visible acknowledgements are `{"accepted":true,"promise":…}` /
+    `{"accepted":true,"promises":{…}}` with invocation/execution ids kept
+    in `output_json`; `await`/`cancel`/`detach` parse `promise_<n>` and
+    turn a malformed id into a tool error.
+  - Jobs: `job_submit` bound with `ArrayItemField { "/jobs", "job_id" }`,
+    subscriptions keyed by the model's `job_id`, `job_id` validated to the
+    completion-key shape (schema pattern + argument check); job handles
+    default to the active environment; `JobSubmitted.handle` populated.
+  - Contract: `sourceResolution` emission ids include the holder workflow
+    id (`WORKFLOW_CONTRACT_VERSION` 2); Rust and TS derivations, the
+    export, the TS client, and the bot/channel producers updated.
 
 ## Goal
 
@@ -101,19 +124,27 @@ fail the call — but it burns a turn, and weak models loop on it.
 
 ### 1. `PromiseId` becomes a session counter
 
-`numeric_id!(PromiseId)`, allocated from a new `IdCursors.last_promise_id`,
+A session counter allocated from a new `IdCursors.last_promise_id`,
 rendered as `promise_7` — the same convention as `run_7`, one string at
 the tool surface, in await results, in `PromiseCreated` notifications and
-`PromiseView`. (`p7` is shorter; a second convention is not worth it.)
+`PromiseView`. (`p7` is shorter; a second convention is not worth it.) As
+built, `PromiseId` stays a string newtype that validates the
+`promise_<n>` shape and exposes the number, rather than a `numeric_id!`:
+the same value then travels through the log, emissions, the API, and tool
+arguments without conversions at every boundary.
 
 The acknowledgement text is written by the executor before the engine
 applies the event, so the executor must know the number:
 
-- **Engine.** `ToolInvocationBatchRequest.promise_id_base = last_promise_id + 1`,
-  set where the drive builds the request; the batch state records the
-  base. `Promise(Created)` apply checks `id >= base` and not already
-  present, and bumps the cursor to `max(last, id)`. Deterministic, because
-  the batch result is a recorded event.
+- **Engine.** The batch records `promise_id_base = last_promise_id + 1`
+  when it is created; the drive copies it onto
+  `ToolInvocationBatchRequest`, and a per-call dispatch (P114) gets slot
+  `base + call index`, since a per-call tool creates at most one promise.
+  Turning a result's effects into events checks `id >= base` and not
+  already present; `Promise(Created)` apply bumps the cursor to
+  `max(last, id)`. Deterministic, because the batch result is a recorded
+  event, and order-independent, because the base — not the live cursor —
+  is the floor.
 - **Executors.** A per-batch allocator seeded from the base hands out
   `base + k`; `invoke_workflow_tool` and `invoke_sleep_call` take it. Parallel
   calls receive numbers in nondeterministic order — harmless, since only
@@ -197,7 +228,7 @@ copies. Registry and API change, not core; not sliced here.
 
 ## Slices
 
-1. **Counter ids.** `IdCursors.last_promise_id`, `numeric_id!(PromiseId)`,
+1. **Counter ids.** `IdCursors.last_promise_id`, the `promise_<n>` `PromiseId`,
    `promise_id_base` on the batch request and batch state, apply check,
    executor allocator, `sleep`, reply-token paths, `sourceResolution`
    derivation with holder, contract export, TS fixtures. The largest slice.
@@ -241,6 +272,6 @@ copies. Registry and API change, not core; not sliced here.
 [P134 §1](p134-subagents.md) says `agent_spawn -> { promise, sessionId,
 runId }`. The code returns the generic acknowledgement, and the child
 session id is not known at acknowledgement time (the execution's prepare
-activity creates it). After slice 2 the acknowledgement is
-`{ accepted, promise }` and the child ids arrive in the result envelope;
-update P134 when slice 2 lands.
+activity creates it). The acknowledgement is now `{ accepted, promise }`
+and the child ids arrive in the result envelope; P134 §1 was updated with
+this implementation.

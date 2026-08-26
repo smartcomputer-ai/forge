@@ -145,6 +145,8 @@ pub struct IdCursors {
     pub last_turn_id: u64,
     pub last_tool_batch_id: u64,
     pub last_context_item_id: u64,
+    #[serde(default)]
+    pub last_promise_id: u64,
 }
 
 fn validate_tool_name(kind: &'static str, value: &str) -> Result<(), StringIdError> {

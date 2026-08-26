@@ -478,10 +478,7 @@ pub fn await_spec_from_args(
 ) -> Result<engine::AwaitSpec, AgentApiError> {
     let promise_ids = args
         .validated_promise_ids()
-        .map_err(|error| AgentApiError::invalid_request(error.to_string()))?
-        .into_iter()
-        .map(engine::PromiseId::new)
-        .collect();
+        .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
     Ok(engine::AwaitSpec {
         promise_ids,
         mode: match args.mode {
@@ -711,7 +708,7 @@ mod tests {
     }
 
     fn reply_promise() -> PromiseId {
-        PromiseId::new("promise_reply_7")
+        PromiseId::new("promise_7")
     }
 
     /// A start for `agent_run` of `agent` by `parent`, admitted for

@@ -76,7 +76,7 @@ function invocation(): EmissionEnvelope {
         tool_batch_id: 1,
         tool_call_id: "call_1",
         arguments_ref: `sha256:${"c".repeat(64)}`,
-        completion_promises: { reply: `wtp:sha256:${"d".repeat(64)}` },
+        completion_promises: { reply: "promise_1" },
       },
     },
   };
@@ -150,13 +150,13 @@ describe("Channel workflow state", () => {
         kind: "invocation_cancellation",
         invocation_id: invocationId,
         completion_key: "reply",
-        promise_id: `wtp:sha256:${"d".repeat(64)}`,
+        promise_id: "promise_1",
       },
     });
     expect(effect).toEqual({
       type: "invocation_cancelled",
       invocationId,
-      promiseId: `wtp:sha256:${"d".repeat(64)}`,
+      promiseId: "promise_1",
     });
   });
 

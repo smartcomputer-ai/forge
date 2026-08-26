@@ -29,12 +29,13 @@ impl GatewayAgentApi {
             return Ok(());
         };
         for agent in &subagents.agents {
-            let profile_id = api::ProfileId::try_new(agent.profile_id.clone()).map_err(|error| {
-                AgentApiError::invalid_request(format!(
-                    "invalid subagents agent profile id {:?}: {error}",
-                    agent.profile_id
-                ))
-            })?;
+            let profile_id =
+                api::ProfileId::try_new(agent.profile_id.clone()).map_err(|error| {
+                    AgentApiError::invalid_request(format!(
+                        "invalid subagents agent profile id {:?}: {error}",
+                        agent.profile_id
+                    ))
+                })?;
             self.read_profile(ProfileReadParams { profile_id })
                 .await
                 .map_err(|error| {

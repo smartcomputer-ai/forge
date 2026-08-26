@@ -6,8 +6,7 @@ use uuid::Uuid;
 use crate::{
     BlobRef, ContextEntryInput, ContextEntryKey, EnvironmentId, ManagedSessionWorkflowTools,
     PromiseId, PromiseResolution, ResumeToolBatchCommand, RunId, RunRequestCommand, SessionConfig,
-    ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration,
-    WorkflowToolInvocationId,
+    ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration, WorkflowToolInvocationId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

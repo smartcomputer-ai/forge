@@ -6,8 +6,9 @@ use crate::{
     environment::{
         EnvironmentToolContext,
         jobs::{
-            JobError, JobReadArgs, JobSubmitArgs, JobSubmitResult, JobSubmitted, ModelJobResultSet,
-            NormalizeJobResultInput, normalize_job_result, visible_job_read_output,
+            JobError, JobHandle, JobReadArgs, JobSubmitArgs, JobSubmitResult, JobSubmitted,
+            ModelJobResultSet, NormalizeJobResultInput, normalize_job_result,
+            visible_job_read_output,
         },
     },
     error::ToolResult,
@@ -25,7 +26,7 @@ pub async fn invoke_job_submit(
     let jobs = ctx.jobs.as_ref().ok_or_else(unsupported_job_capability)?;
     let params = submit_params_from_args(ctx, args)?;
     let response = jobs.start_jobs(params).await?;
-    Ok(submit_result_from_response(response))
+    Ok(submit_result_from_response(ctx, response))
 }
 
 pub async fn invoke_job_read(
@@ -99,15 +100,21 @@ fn job_namespace(
         .map_err(Into::into)
 }
 
-fn submit_result_from_response(response: StartJobsResponse) -> JobSubmitResult {
+fn submit_result_from_response(
+    ctx: &EnvironmentToolContext,
+    response: StartJobsResponse,
+) -> JobSubmitResult {
     JobSubmitResult {
         jobs: response
             .jobs
             .into_iter()
             .map(|summary| JobSubmitted {
                 name: summary.name,
+                handle: ctx.environment_id.clone().map(|environment_id| JobHandle {
+                    environment_id,
+                    job_id: summary.job_id.clone(),
+                }),
                 job_id: summary.job_id,
-                handle: None,
                 status: summary.status,
                 dependencies: summary.dependencies,
                 queue_key: summary.queue_key,

@@ -37,8 +37,8 @@ use temporalio_sdk::{
 
 use crate::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,
-    AgentCompletedRunSummary, AgentQueuedRunSummary,
-    AgentSessionArgs, AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
+    AgentCompletedRunSummary, AgentQueuedRunSummary, AgentSessionArgs,
+    AgentSessionContinuationState, AgentSessionStatus, AppendEventsRequest,
     AwaitMaterializationRequest, AwaitOutcome, AwaitPromiseResult, CancellingWatchdog,
     CreateOrLoadSessionRequest, DEFAULT_CONTINUE_AS_NEW_HISTORY_THRESHOLD,
     LlmGenerateActivityRequest, PendingEmission, PendingPromiseCancellation,

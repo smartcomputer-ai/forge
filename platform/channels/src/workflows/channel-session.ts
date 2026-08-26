@@ -844,6 +844,7 @@ export async function channelSessionWorkflowV1(
       const envelope = sourceResolutionEnvelope({
         universeId: workflowStart.universeId,
         producerWorkflowId,
+        holderWorkflowId,
         promiseId,
         resolution,
       });
